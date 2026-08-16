@@ -1,0 +1,2 @@
+### Added
+- Cluster nodes can be revoked, blocked and unblocked from the Cluster UI, matching what was already possible for devices. Revoke kills a node's signing key and lets it re-pair; block additionally refuses re-pairing until an admin unblocks it; unblock clears the block but leaves the old key dead, so the node must re-pair for a fresh one. Revoked and blocked nodes are marked offline at once so the scheduler stops routing work to them, while staying visible in the worker list so they can be unblocked (#2410).

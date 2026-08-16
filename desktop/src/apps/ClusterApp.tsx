@@ -3,10 +3,11 @@ import { MobileSplitView } from "@/components/mobile/MobileSplitView";
 import {
   Network, RefreshCw, ExternalLink, Copy, Check, Trash2, Wand2,
   Cpu, MemoryStick, HardDrive, CircuitBoard, Zap, Server, Monitor,
-  X, Plus,
+  X, Plus, Shield, ShieldOff, LogOut,
 } from "lucide-react";
 import { Button, Card, CardContent } from "@/components/ui";
-import type { ClusterWorker, WorkerStatus } from "@/lib/cluster";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import type { ClusterWorker, ClusterDevice, WorkerStatus } from "@/lib/cluster";
 import {
   workerStatus,
   workerHardwareSummary,
@@ -19,6 +20,7 @@ import {
 import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
 
 type SortKey = "name" | "status" | "last_seen";
+type Tab = "nodes" | "devices";
 
 const STATUS_ORDER: Record<WorkerStatus, number> = {
   online: 0,
@@ -125,6 +127,108 @@ function WorkerListCard({
   );
 }
 
+function DeviceListCard({
+  device,
+  selected,
+  onSelect,
+  onRevoke,
+  onBlock,
+  onUnblock,
+}: {
+  device: ClusterDevice;
+  selected: boolean;
+  onSelect: () => void;
+  onRevoke: (d: ClusterDevice) => void;
+  onBlock: (d: ClusterDevice) => void;
+  onUnblock: (d: ClusterDevice) => void;
+}) {
+  const live = device.live_token;
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={selected}
+      aria-label={`Select device ${device.display_name || device.device_id}`}
+      className={`w-full text-left p-2.5 rounded-lg border transition-colors ${
+        selected
+          ? "border-accent/50 bg-accent/10"
+          : "border-white/5 bg-white/[0.02] hover:bg-white/[0.04]"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-[12px] font-semibold text-shell-text truncate">
+            {device.display_name || device.device_id}
+          </span>
+          <span className="text-[10px] text-shell-text-tertiary">
+            {"\u00b7"} {device.platform}
+          </span>
+        </div>
+        <span
+          className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold border ${
+            live
+              ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/25"
+              : "bg-red-500/15 text-red-300 border-red-500/25"
+          }`}
+          aria-label={live ? "Token live" : "Token dead"}
+        >
+          {live ? "live" : "dead"}
+        </span>
+      </div>
+      <div className="text-[10px] text-shell-text-tertiary truncate">
+        last seen {formatRelativeSeconds(device.last_seen || device.registered_at)}
+      </div>
+      <div className="mt-1.5 flex gap-1">
+         {device.live_token && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRevoke(device);
+            }}
+            aria-label="Revoke device"
+            className="hover:bg-red-500/15 hover:text-red-300"
+            title="Sign this device out. Revoking cancels nothing already approved."
+          >
+            <LogOut size={13} />
+            Revoke
+          </Button>
+        )}
+        {device.blocked ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={(e) => {
+              e.stopPropagation();
+              onUnblock(device);
+            }}
+            aria-label="Unblock device"
+            title="Allow this device to re-pair"
+          >
+            <ShieldOff size={13} />
+            Unblock
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={(e) => {
+              e.stopPropagation();
+              onBlock(device);
+            }}
+            aria-label="Block device"
+            title="Block this device. It stays signed out and cannot re-pair until unblocked."
+          >
+            <Shield size={13} />
+            Block
+          </Button>
+        )}
+      </div>
+    </button>
+  );
+}
+
 function LabelValue({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-0.5">
@@ -161,12 +265,18 @@ function WorkerDetail({
   onRefresh,
   onDeregister,
   onOptimise,
+  onNodeRevoke,
+  onNodeBlock,
+  onNodeUnblock,
   busy,
 }: {
   worker: ClusterWorker;
   onRefresh: () => void;
   onDeregister: (name: string) => Promise<void>;
   onOptimise: () => Promise<void>;
+  onNodeRevoke: (name: string) => Promise<void>;
+  onNodeBlock: (name: string) => Promise<void>;
+  onNodeUnblock: (name: string) => Promise<void>;
   busy: boolean;
 }) {
   const [copied, setCopied] = useState<"name" | "url" | null>(null);
@@ -503,11 +613,52 @@ function WorkerDetail({
               variant="outline"
               disabled
               aria-label="Restart worker (coming soon)"
-              title="Coming soon \u2014 no backend endpoint yet"
+              title="Coming soon -- no backend endpoint yet"
             >
               <RefreshCw size={13} />
               Restart
             </Button>
+            {worker.blocked ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onNodeUnblock(worker.name)}
+                disabled={busy}
+                aria-label={`Unblock node ${worker.name}`}
+                title="Clear the block. The old signing key stays dead; the node must re-pair."
+              >
+                <ShieldOff size={13} />
+                Unblock
+              </Button>
+            ) : (
+              <>
+                {worker.live_token !== false && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onNodeRevoke(worker.name)}
+                    disabled={busy}
+                    className="hover:bg-red-500/15 hover:text-red-300"
+                    aria-label={`Revoke node ${worker.name}`}
+                    title="Revoke this node's signing key. The node is signed out; nothing already approved is cancelled."
+                  >
+                    <LogOut size={13} />
+                    Revoke
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onNodeBlock(worker.name)}
+                  disabled={busy}
+                  aria-label={`Block node ${worker.name}`}
+                  title="Block this node. It stays signed out and cannot re-pair until unblocked."
+                >
+                  <Shield size={13} />
+                  Block
+                </Button>
+              </>
+            )}
             <Button
               size="sm"
               variant="outline"
@@ -521,6 +672,123 @@ function WorkerDetail({
               Deregister
             </Button>
           </div>
+          <p className="text-[10px] text-shell-text-tertiary mt-2">
+            Revoking or blocking signs the node out -- it cannot authenticate
+            again. This cancels nothing already approved: in-flight tasks and
+            completed work are unaffected. Unblock (not re-pair) restores
+            pairing if the node was blocked.
+          </p>
+        </Section>
+      </div>
+    </div>
+  );
+}
+
+function DeviceDetail({
+  device,
+  onRevoke,
+  onBlock,
+  onUnblock,
+  busy,
+}: {
+  device: ClusterDevice;
+  onRevoke: (d: ClusterDevice) => void;
+  onBlock: (d: ClusterDevice) => Promise<void>;
+  onUnblock: (d: ClusterDevice) => Promise<void>;
+  busy: boolean;
+}) {
+  const status = device.live_token ? "online" : "offline";
+  return (
+    <div className="flex flex-col h-full min-h-0 overflow-hidden">
+      <div className="flex flex-wrap items-start justify-between gap-2 px-4 py-3 border-b border-white/5 shrink-0">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="text-sm font-semibold text-shell-text">
+              {device.display_name || device.device_id}
+            </h2>
+            <StatusPill status={status} />
+          </div>
+          <p className="text-[11px] text-shell-text-tertiary mt-0.5 break-all">
+            {device.platform}
+            {device.last_seen !== undefined
+              ? `  \u00b7  last seen ${formatRelativeSeconds(device.last_seen || device.registered_at)}`
+              : ""}
+          </p>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        <Section title="Identity" icon={<Monitor size={14} className="text-emerald-400" />}>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <LabelValue label="Device ID" value={device.device_id} />
+            <LabelValue label="Platform" value={device.platform} />
+            <LabelValue
+              label="Token"
+              value={device.live_token ? "live" : "signed out"}
+            />
+            <LabelValue
+              label="Blocked"
+              value={device.blocked ? "yes" : "no"}
+            />
+            <LabelValue
+              label="Last seen"
+              value={formatRelativeSeconds(device.last_seen || device.registered_at)}
+            />
+            <LabelValue
+              label="Registered"
+              value={formatRelativeSeconds(device.registered_at)}
+            />
+          </div>
+        </Section>
+        <Section title="Actions" icon={<Wand2 size={14} className="text-white/70" />}>
+          <div className="flex flex-wrap gap-2">
+            {device.blocked ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onUnblock(device)}
+                disabled={busy}
+                aria-label={`Unblock device ${device.device_id}`}
+                title="Clear the block. The old token stays dead; the device must re-pair."
+              >
+                <ShieldOff size={13} />
+                Unblock
+              </Button>
+            ) : (
+              <>
+                {device.live_token && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onRevoke(device)}
+                    disabled={busy}
+                    className="hover:bg-red-500/15 hover:text-red-300"
+                    aria-label={`Revoke device ${device.device_id}`}
+                    title="Revoke this device's token. The device is signed out; nothing already approved is cancelled."
+                  >
+                    <LogOut size={13} />
+                    Revoke
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onBlock(device)}
+                  disabled={busy}
+                  aria-label={`Block device ${device.device_id}`}
+                  title="Block this device. It stays signed out and cannot re-pair until unblocked."
+                >
+                  <Shield size={13} />
+                  Block
+                </Button>
+              </>
+            )}
+          </div>
+          <p className="text-[10px] text-shell-text-tertiary mt-2">
+            Revoking or blocking signs the device out -- it cannot authenticate
+            again. This cancels nothing already approved: active sessions and
+            completed work are unaffected. A blocked device can re-pair once
+            unblocked; a revoked-only device can re-pair freely.
+          </p>
         </Section>
       </div>
     </div>
@@ -530,10 +798,19 @@ function WorkerDetail({
 export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   const [workers, setWorkers] = useState<ClusterWorker[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [devices, setDevices] = useState<ClusterDevice[]>([]);
+  const [selectedDevice, setSelectedDevice] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<Tab>("nodes");
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [loading, setLoading] = useState(true);
+  const [devicesLoading, setDevicesLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
   // True after user explicitly hits "back"; suppresses auto-select on refresh.
   const userNavigatedBack = useRef(false);
 
@@ -568,7 +845,39 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     return () => clearInterval(interval);
   }, [fetchWorkers]);
 
-  useRefreshOnFocus(fetchWorkers);
+  const fetchDevices = useCallback(async () => {
+    setDevicesLoading(true);
+    try {
+      const res = await fetch("/api/devices", { headers: { Accept: "application/json" } });
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json.items)) {
+          setDevices(json.items as ClusterDevice[]);
+          setSelectedDevice((cur) => {
+            if (cur && json.items.some((d: ClusterDevice) => d.device_id === cur))
+              return cur;
+            return json.items.length > 0 ? json.items[0].device_id : null;
+          });
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    setDevicesLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "devices") {
+      fetchDevices();
+    } else {
+      fetchWorkers();
+    }
+  }, [activeTab, fetchDevices, fetchWorkers]);
+
+  useRefreshOnFocus(
+    activeTab === "devices" ? fetchDevices : fetchWorkers,
+    1000,
+  );
 
   const sortedWorkers = useMemo(() => {
     const list = [...workers];
@@ -675,47 +984,236 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     setAddBusy(false);
   }, [addIp, addPin, showToast, fetchWorkers]);
 
+  const handleNodeRevoke = useCallback(
+    async (name: string) => {
+      setBusy(true);
+      try {
+        const res = await fetch(`/api/cluster/workers/${encodeURIComponent(name)}/revoke`, {
+          method: "POST",
+        });
+        if (res.ok) {
+          showToast(`Node "${name}" revoked`);
+          fetchWorkers();
+        } else {
+          const j = await res.json().catch(() => ({}));
+          showToast(j.error ? `Revoke failed: ${j.error}` : `Revoke failed (${res.status})`);
+        }
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "Network error");
+      }
+      setBusy(false);
+    },
+    [fetchWorkers, showToast],
+  );
+
+  const handleNodeBlock = useCallback(
+    async (name: string) => {
+      setBusy(true);
+      try {
+        const res = await fetch(`/api/cluster/workers/${encodeURIComponent(name)}/block`, {
+          method: "POST",
+        });
+        if (res.ok) {
+          showToast(`Node "${name}" blocked`);
+          fetchWorkers();
+        } else {
+          const j = await res.json().catch(() => ({}));
+          showToast(j.error ? `Block failed: ${j.error}` : `Block failed (${res.status})`);
+        }
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "Network error");
+      }
+      setBusy(false);
+    },
+    [fetchWorkers, showToast],
+  );
+
+  const handleNodeUnblock = useCallback(
+    async (name: string) => {
+      setBusy(true);
+      try {
+        const res = await fetch(`/api/cluster/workers/${encodeURIComponent(name)}/unblock`, {
+          method: "POST",
+        });
+        if (res.ok) {
+          showToast(`Node "${name}" unblocked`);
+          fetchWorkers();
+        } else {
+          const j = await res.json().catch(() => ({}));
+          showToast(j.error ? `Unblock failed: ${j.error}` : `Unblock failed (${res.status})`);
+        }
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "Network error");
+      }
+      setBusy(false);
+    },
+    [fetchWorkers, showToast],
+  );
+
+  const handleDeviceRevoke = useCallback(
+    (device: ClusterDevice) => {
+      setConfirmDialog({
+        title: `Revoke ${device.display_name || device.device_id}?`,
+        message: "This signs the device out. Nothing already approved is cancelled.",
+        onConfirm: async () => {
+          setBusy(true);
+          try {
+            const res = await fetch(
+              `/api/devices/${encodeURIComponent(device.device_id)}`,
+              { method: "DELETE" },
+            );
+            if (res.ok) {
+              showToast("Device revoked");
+              fetchDevices();
+            } else {
+              const j = await res.json().catch(() => ({}));
+              showToast(j.error ? `Revoke failed: ${j.error}` : `Revoke failed (${res.status})`);
+            }
+          } catch (e) {
+            showToast(e instanceof Error ? e.message : "Network error");
+          }
+          setBusy(false);
+          setConfirmDialog(null);
+        },
+      });
+    },
+    [fetchDevices, showToast],
+  );
+
+  const handleDeviceBlock = useCallback(
+    async (device: ClusterDevice) => {
+      setBusy(true);
+      try {
+        const res = await fetch(
+          `/api/devices/${encodeURIComponent(device.device_id)}/block`,
+          { method: "POST" },
+        );
+        if (res.ok) {
+          showToast("Device blocked");
+          fetchDevices();
+        } else {
+          const j = await res.json().catch(() => ({}));
+          showToast(j.error ? `Block failed: ${j.error}` : `Block failed (${res.status})`);
+        }
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "Network error");
+      }
+      setBusy(false);
+    },
+    [fetchDevices, showToast],
+  );
+
+  const handleDeviceUnblock = useCallback(
+    async (device: ClusterDevice) => {
+      setBusy(true);
+      try {
+        const res = await fetch(
+          `/api/devices/${encodeURIComponent(device.device_id)}/unblock`,
+          { method: "POST" },
+        );
+        if (res.ok) {
+          showToast("Device unblocked");
+          fetchDevices();
+        } else {
+          const j = await res.json().catch(() => ({}));
+          showToast(j.error ? `Unblock failed: ${j.error}` : `Unblock failed (${res.status})`);
+        }
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "Network error");
+      }
+      setBusy(false);
+    },
+    [fetchDevices, showToast],
+  );
+
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden bg-shell-bg text-shell-text select-none">
-      {/* Toolbar */}
+       {/* Toolbar */}
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-white/5 shrink-0">
         <div className="flex items-center gap-2 min-w-0">
           <Network size={18} className="text-accent shrink-0" />
           <h1 className="text-sm font-semibold shrink-0">Cluster</h1>
-          <span className="text-xs text-shell-text-tertiary truncate">
-            {workers.length} worker{workers.length === 1 ? "" : "s"}
-          </span>
+          <div className="flex items-center gap-0.5 text-xs bg-white/[0.04] rounded-md border border-white/10 p-0.5">
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("nodes");
+                setSelected(null);
+                setSelectedDevice(null);
+              }}
+              className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                activeTab === "nodes"
+                  ? "bg-accent text-white"
+                  : "text-shell-text-tertiary hover:text-shell-text hover:bg-white/[0.06]"
+              }`}
+              aria-label="Show nodes"
+            >
+              Nodes
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("devices");
+                setSelected(null);
+                setSelectedDevice(null);
+              }}
+              className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                activeTab === "devices"
+                  ? "bg-accent text-white"
+                  : "text-shell-text-tertiary hover:text-shell-text hover:bg-white/[0.06]"
+              }`}
+              aria-label="Show devices"
+            >
+              Devices
+            </button>
+          </div>
+          {activeTab === "nodes" && (
+            <span className="text-xs text-shell-text-tertiary truncate">
+              {workers.length} worker{workers.length === 1 ? "" : "s"}
+            </span>
+          )}
+          {activeTab === "devices" && (
+            <span className="text-xs text-shell-text-tertiary truncate">
+              {devices.length} device{devices.length === 1 ? "" : "s"}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setAddOpen(true)}
-            aria-label="Add a worker"
-            className="gap-1.5"
-          >
-            <Plus size={14} />
-            Add worker
-          </Button>
-          <label htmlFor="cluster-sort" className="sr-only">
-            Sort by
-          </label>
-          <select
-            id="cluster-sort"
-            value={sortKey}
-            onChange={(e) => setSortKey(e.target.value as SortKey)}
-            className="h-8 rounded-md border border-white/10 bg-shell-bg-deep px-2 text-xs text-shell-text focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20 transition-colors"
-            aria-label="Sort workers"
-          >
-            <option value="name">Name</option>
-            <option value="status">Status</option>
-            <option value="last_seen">Last seen</option>
-          </select>
+          {activeTab === "nodes" && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setAddOpen(true)}
+              aria-label="Add a worker"
+              className="gap-1.5"
+            >
+              <Plus size={14} />
+              Add worker
+            </Button>
+          )}
+          {activeTab === "nodes" && (
+            <>
+              <label htmlFor="cluster-sort" className="sr-only">
+                Sort by
+              </label>
+              <select
+                id="cluster-sort"
+                value={sortKey}
+                onChange={(e) => setSortKey(e.target.value as SortKey)}
+                className="h-8 rounded-md border border-white/10 bg-shell-bg-deep px-2 text-xs text-shell-text focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20 transition-colors"
+                aria-label="Sort workers"
+              >
+                <option value="name">Name</option>
+                <option value="status">Status</option>
+                <option value="last_seen">Last seen</option>
+              </select>
+            </>
+          )}
           <Button
             variant="ghost"
             size="icon"
-            onClick={fetchWorkers}
-            aria-label="Refresh worker list"
+            onClick={activeTab === "devices" ? fetchDevices : fetchWorkers}
+            aria-label={activeTab === "devices" ? "Refresh device list" : "Refresh worker list"}
           >
             <RefreshCw size={14} />
           </Button>
@@ -725,59 +1223,112 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
       {/* Master-detail */}
       <div className="flex-1 min-h-0 overflow-hidden">
         <MobileSplitView
-          listTitle="Cluster"
-          detailTitle={selectedWorker?.name ?? ""}
+          listTitle={activeTab === "devices" ? "Cluster devices" : "Cluster"}
+          detailTitle={activeTab === "devices" ? selectedDevice ?? "" : selectedWorker?.name ?? ""}
           listWidth={288}
-          selectedId={selected}
-          onBack={() => { userNavigatedBack.current = true; setSelected(null); }}
+          selectedId={activeTab === "devices" ? selectedDevice : selected}
+          onBack={() => {
+            userNavigatedBack.current = true;
+            if (activeTab === "devices") setSelectedDevice(null);
+            else setSelected(null);
+          }}
           list={
-            <div className="p-3 space-y-2" aria-label="Cluster worker list">
-              {loading ? (
-                <div className="text-[11px] text-shell-text-tertiary px-2 py-6 text-center">
-                  Loading workers...
-                </div>
-              ) : sortedWorkers.length === 0 ? (
-                <div className="flex flex-col items-center gap-2 py-6 text-center">
-                  <p className="text-[11px] text-shell-text-tertiary">No workers registered yet.</p>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setAddOpen(true)}
-                    className="gap-1.5"
-                    aria-label="Add a worker"
-                  >
-                    <Plus size={14} />
-                    Add worker
-                  </Button>
-                  <a
-                    href="https://github.com/jaylfc/tinyagentos#distributed-compute-cluster"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[10px] text-shell-text-tertiary hover:text-shell-text-secondary underline underline-offset-2"
-                    aria-label="How to add a worker (opens docs in new tab)"
-                  >
-                    or read the docs
-                  </a>
-                </div>
-              ) : (
-                sortedWorkers.map((w) => (
-                  <WorkerListCard
-                    key={w.name}
-                    worker={w}
-                    selected={selected === w.name}
-                    onSelect={() => { userNavigatedBack.current = false; setSelected(w.name); }}
-                  />
-                ))
-              )}
-            </div>
+            activeTab === "devices" ? (
+              <div className="p-3 space-y-2" aria-label="Cluster device list">
+                {devicesLoading ? (
+                  <div className="text-[11px] text-shell-text-tertiary px-2 py-6 text-center">
+                    Loading devices...
+                  </div>
+                ) : devices.length === 0 ? (
+                  <div className="flex flex-col items-center gap-2 py-6 text-center">
+                    <p className="text-[11px] text-shell-text-tertiary">No devices paired yet.</p>
+                  </div>
+                ) : (
+                  devices
+                    .slice()
+                    .sort((a, b) => (a.display_name || a.device_id).localeCompare(b.display_name || b.device_id))
+                    .map((d) => (
+                      <DeviceListCard
+                        key={d.device_id}
+                        device={d}
+                        selected={selectedDevice === d.device_id}
+                        onSelect={() => {
+                          userNavigatedBack.current = false;
+                          setSelectedDevice(d.device_id);
+                        }}
+                        onRevoke={handleDeviceRevoke}
+                        onBlock={handleDeviceBlock}
+                        onUnblock={handleDeviceUnblock}
+                      />
+                    ))
+                )}
+              </div>
+            ) : (
+              <div className="p-3 space-y-2" aria-label="Cluster worker list">
+                {loading ? (
+                  <div className="text-[11px] text-shell-text-tertiary px-2 py-6 text-center">
+                    Loading workers...
+                  </div>
+                ) : sortedWorkers.length === 0 ? (
+                  <div className="flex flex-col items-center gap-2 py-6 text-center">
+                    <p className="text-[11px] text-shell-text-tertiary">No workers registered yet.</p>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setAddOpen(true)}
+                      className="gap-1.5"
+                      aria-label="Add a worker"
+                    >
+                      <Plus size={14} />
+                      Add worker
+                    </Button>
+                    <a
+                      href="https://github.com/jaylfc/tinyagentos#distributed-compute-cluster"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[10px] text-shell-text-tertiary hover:text-shell-text-secondary underline underline-offset-2"
+                      aria-label="How to add a worker (opens docs in new tab)"
+                    >
+                      or read the docs
+                    </a>
+                  </div>
+                ) : (
+                  sortedWorkers.map((w) => (
+                    <WorkerListCard
+                      key={w.name}
+                      worker={w}
+                      selected={selected === w.name}
+                      onSelect={() => { userNavigatedBack.current = false; setSelected(w.name); }}
+                    />
+                  ))
+                )}
+              </div>
+            )
           }
           detail={
-            selectedWorker ? (
+            activeTab === "devices" ? (
+              selectedDevice ? (
+                <DeviceDetail
+                  device={devices.find((d) => d.device_id === selectedDevice) as ClusterDevice}
+                  onRevoke={handleDeviceRevoke}
+                  onBlock={handleDeviceBlock}
+                  onUnblock={handleDeviceUnblock}
+                  busy={busy}
+                />
+              ) : (
+                <div className="flex items-center justify-center h-full text-shell-text-tertiary text-sm">
+                  {devicesLoading ? "Loading..." : "No device selected"}
+                </div>
+              )
+            ) : selectedWorker ? (
               <WorkerDetail
                 worker={selectedWorker}
                 onRefresh={fetchWorkers}
                 onDeregister={handleDeregister}
                 onOptimise={handleOptimise}
+                onNodeRevoke={handleNodeRevoke}
+                onNodeBlock={handleNodeBlock}
+                onNodeUnblock={handleNodeUnblock}
                 busy={busy}
               />
             ) : (
@@ -846,6 +1397,18 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
             </div>
           </div>
         </div>
+      )}
+
+      {confirmDialog && (
+        <ConfirmDialog
+          open={true}
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          confirmLabel="Revoke"
+          danger={true}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
       )}
 
       {/* Toast */}

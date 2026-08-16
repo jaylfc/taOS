@@ -155,9 +155,15 @@ class DeviceStore(BaseStore):
 
     async def find_blocked_by_push_token(self, user_id: str, push_token: str) -> str | None:
         """Return the device_id of a BLOCKED device for this user that shares
-        the given APNs push token, or None. The push token is the stable
-        per-(device, app) identity, so a blocked phone cannot silently re-pair
-        under a new scoped token while in the hands of an attacker."""
+        the given push token, or None.
+
+        NOTE: push_token is client-supplied on register. A well-behaved client
+        re-sends the same APNs token it was paired with, so this check catches
+        the common silent-re-pair case. But a caller that sends a DIFFERENT
+        push token also slips past it -- this is defense-in-depth against
+        silent re-pair, NOT a hard guarantee. The register route already
+        requires the owner's auth, so the caller could simply call unblock
+        instead; this gate only prevents the accidental case."""
         assert self._db is not None
         cur = await self._db.execute(
             "SELECT device_id FROM devices "

@@ -169,3 +169,57 @@ class TestDeviceRoutes:
         # And the foreign device was not touched.
         row = await app.state.device_store.get(other["device_id"])
         assert row["blocked"] == 0 and row["revoked"] == 0
+
+    async def test_blocked_token_rejected_on_real_bearer_route(self, client, app):
+        """Criterion (a): a BLOCKED device token is rejected on a real
+        device-bearer route (PATCH push-token), not just at the store."""
+        uid = self._admin_uid(app)
+        device = await self._register_device(app, uid)
+        await app.state.device_store.block(device["device_id"])
+        resp = await client.patch(
+            f"/api/devices/{device['device_id']}/push-token",
+            json={"push_token": "new"},
+            headers=self._bearer(device["scoped_token"]),
+        )
+        assert resp.status_code == 401
+
+    async def test_revoke_does_not_affect_sibling_device(self, client, app):
+        """Criterion (d): revoking device A does not affect device B on the
+        same account -- B can still use its live_token on a real bearer route."""
+        uid = self._admin_uid(app)
+        dev_a = await self._register_device(app, uid)
+        dev_b = await self._register_device(app, uid)
+        await app.state.device_store.revoke(dev_a["device_id"])
+        # A is dead.
+        assert await app.state.device_store.get_by_token(dev_a["scoped_token"]) is None
+        # B still authenticates on a real bearer route.
+        resp = await client.patch(
+            f"/api/devices/{dev_b['device_id']}/push-token",
+            json={"push_token": "b-works"},
+            headers=self._bearer(dev_b["scoped_token"]),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["push_token"] == "b-works"
+
+    async def test_blocked_device_consumes_max_devices_slot(self, client, monkeypatch):
+        """Pinned behaviour: a blocked device counts against _MAX_DEVICES_PER_USER
+        until unblocked."""
+        import tinyagentos.routes.devices as devices_mod
+        monkeypatch.setattr(devices_mod, "_MAX_DEVICES_PER_USER", 2)
+        # Fill the cap with two active devices.
+        await client.post("/api/devices/register", json={"platform": "ios"})
+        await client.post("/api/devices/register", json={"platform": "ios"})
+        # Cap reached.
+        resp = await client.post("/api/devices/register", json={"platform": "ios"})
+        assert resp.status_code == 429
+        # Block one device. It still consumes a slot (list_for_user includes
+        # blocked rows), so the cap is still reached.
+        items = (await client.get("/api/devices")).json()["items"]
+        blocked_id = items[0]["device_id"]
+        await client.post(f"/api/devices/{blocked_id}/block")
+        resp = await client.post("/api/devices/register", json={"platform": "ios"})
+        assert resp.status_code == 429
+        # Unblock: the slot frees, registration succeeds again.
+        await client.post(f"/api/devices/{blocked_id}/unblock")
+        resp = await client.post("/api/devices/register", json={"platform": "ios"})
+        assert resp.status_code == 200

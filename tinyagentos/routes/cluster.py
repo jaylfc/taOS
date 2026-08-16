@@ -298,6 +298,7 @@ class MoveRequest(BaseModel):
 @router.get("/api/cluster/workers")
 async def list_workers(request: Request):
     cluster = request.app.state.cluster_manager
+    pairing = getattr(request.app.state, "cluster_pairing", None)
     registry = getattr(request.app.state, "registry", None)
     workers = cluster.get_workers()
     result = []
@@ -306,10 +307,29 @@ async def list_workers(request: Request):
         # signing_key is the worker's raw HMAC secret (bytes). Two reasons
         # to strip it from API responses: (1) FastAPI's default encoder
         # tries to utf-8 decode bytes fields, which crashes on random key
-        # material — the entire workers list 500s when any worker has a
+        # material -- the entire workers list 500s when any worker has a
         # non-utf8 signing key, and (2) even when serialization didn't
         # crash, the secret has no business being on the wire.
         d.pop("signing_key", None)
+        # Surface the persistent auth state from the pairing store so the
+        # Cluster UI can show whether a node's signing key is live (not
+        # revoked/blocked) and offer revoke/block/unblock actions. A worker
+        # with no pairing row (e.g. the local controller) is treated as
+        # having a live token.
+        if pairing is not None:
+            state = await pairing.pairing_state(w.name)
+            if state is not None:
+                d["revoked"] = state["revoked"]
+                d["blocked"] = state["blocked"]
+                d["live_token"] = not state["revoked"] and not state["blocked"]
+            else:
+                d["revoked"] = False
+                d["blocked"] = False
+                d["live_token"] = True
+        else:
+            d["revoked"] = False
+            d["blocked"] = False
+            d["live_token"] = True
         if registry is not None:
             tier_id, pot_caps = _potential_capabilities(w.hardware, registry)
             d["tier_id"] = tier_id
@@ -542,6 +562,85 @@ async def unregister_worker(request: Request, name: str):
     if not removed:
         return JSONResponse({"error": "Worker not found"}, status_code=404)
     return {"status": "removed", "name": name}
+
+
+@router.post("/api/cluster/workers/{name}/revoke")
+async def revoke_node(request: Request, name: str):
+    """Admin -- revoke a node's signing key.
+
+    Invalidates the node's HMAC signing key so subsequent register/heartbeat
+    requests are rejected. The node can re-pair (announce/confirm/claim) to
+    obtain a fresh key; this is the node analogue of device revoke.
+    """
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
+    pairing = getattr(request.app.state, "cluster_pairing", None)
+    if pairing is None:
+        return JSONResponse({"error": "pairing store unavailable"}, status_code=503)
+    # The node must exist in the pairing store (have been paired at least once).
+    state = await pairing.pairing_state(name)
+    if state is None:
+        return JSONResponse({"error": f"Worker '{name}' not found"}, status_code=404)
+    changed = await pairing.revoke(name)
+    # Flag the in-memory worker as offline so the scheduler stops routing tasks
+    # to it immediately (rather than waiting for the heartbeat timeout). The
+    # worker itself stays in the registry so it remains visible in /api/cluster
+    # /workers and can be unblocked/re-paired from the UI.
+    cluster = request.app.state.cluster_manager
+    worker = cluster.get_worker(name)
+    if worker is not None and worker.status == "online":
+        worker.status = "offline"
+    return {"revoked": True, "changed": changed}
+
+
+@router.post("/api/cluster/workers/{name}/block")
+async def block_node(request: Request, name: str):
+    """Admin -- block a node.
+
+    Revokes the signing key (so the node can no longer authenticate) AND
+    prevents re-pairing until an admin unblocks it. The node analogue of
+    device block: a blocked node is refused at the pairing gate, not just
+    at the auth gate.
+    """
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
+    pairing = getattr(request.app.state, "cluster_pairing", None)
+    if pairing is None:
+        return JSONResponse({"error": "pairing store unavailable"}, status_code=503)
+    state = await pairing.pairing_state(name)
+    if state is None:
+        return JSONResponse({"error": f"Worker '{name}' not found"}, status_code=404)
+    changed = await pairing.block(name)
+    # Same as revoke: mark in-memory worker offline so no new tasks are routed,
+    # but keep it registered so it shows in the UI and can be unblocked.
+    cluster = request.app.state.cluster_manager
+    worker = cluster.get_worker(name)
+    if worker is not None and worker.status == "online":
+        worker.status = "offline"
+    return {"blocked": True, "changed": changed}
+
+
+@router.post("/api/cluster/workers/{name}/unblock")
+async def unblock_node(request: Request, name: str):
+    """Admin -- unblock a node so it may re-pair.
+
+    Clears the blocked flag. The old signing key stays dead (revoked), so
+    the node must re-pair via the normal announce/confirm/claim flow to
+    obtain a fresh key. The node analogue of device unblock.
+    """
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
+    pairing = getattr(request.app.state, "cluster_pairing", None)
+    if pairing is None:
+        return JSONResponse({"error": "pairing store unavailable"}, status_code=503)
+    state = await pairing.pairing_state(name)
+    if state is None:
+        return JSONResponse({"error": f"Worker '{name}' not found"}, status_code=404)
+    changed = await pairing.unblock(name)
+    return {"unblocked": True, "changed": changed}
 
 
 @router.get("/api/cluster/capabilities")
