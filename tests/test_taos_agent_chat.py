@@ -888,7 +888,8 @@ async def test_status_scopes_subagent_fields(client, app):
     ok_id = await loop.spawn_subagent("index files", ok_worker)
     bad_id = await loop.spawn_subagent("doomed job", bad_worker)
     await loop.await_subagent(ok_id)
-    await loop.await_subagent(bad_id)
+    with pytest.raises(RuntimeError, match="server-side error detail"):
+        await loop.await_subagent(bad_id)
 
     resp = await client.get("/api/taos-agent/status")
     assert resp.status_code == 200
