@@ -548,6 +548,17 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
     if rejection is not None:
         return rejection
 
+    # A caller that skips the memory layer without naming a mode gets the only
+    # coherent mode, rather than a 400 for a contradiction it never stated.
+    # memory_mode postdates memory_plugin, so a client that predates it sends
+    # `memory_plugin: null` alone and would otherwise be rejected by the pair
+    # check below against the "both" default it never chose. This is a
+    # DERIVATION, not a guess: with no taOSmd plugin, "framework" is the only
+    # mode left. An EXPLICIT contradiction is still an error, which is what the
+    # deploy wizard sends (it always names memory_mode).
+    if "memory_mode" not in body.model_fields_set and body.memory_plugin in (None, "none"):
+        body.memory_mode = "framework"
+
     # Reject an invalid memory selection before any side effects, for the same
     # reason. memory_mode is persisted on the agent record AND injected as the
     # TAOS_MEMORY_MODE env var, so an unchecked value reaches the runtime as a

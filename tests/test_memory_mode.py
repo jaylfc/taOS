@@ -140,6 +140,52 @@ class TestMemoryModeDeployValidation:
         })
         assert resp.status_code == 200
 
+    async def test_skipped_layer_without_a_mode_derives_framework(self, client, app):
+        """A caller that skips memory and never names a mode is NOT rejected.
+
+        memory_mode postdates memory_plugin, so a client written before it
+        sends `memory_plugin: null` alone. Rejecting that would break a
+        pre-existing contract over a contradiction the caller never stated
+        (the "both" default is the server's choice, not theirs). With no
+        taOSmd plugin, "framework" is the only coherent mode, so it is
+        derived rather than guessed.
+
+        The agent record must show the DERIVED mode, not "both" -- otherwise
+        the incoherent pair is merely stored instead of rejected, and
+        TAOS_MEMORY_MODE reaches the runtime as a mode the prompt cannot back.
+        """
+        app.state.archive = MagicMock(
+            record=AsyncMock(), query=AsyncMock(return_value=[{}])
+        )
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "SkipNoMode",
+            "framework": "openclaw",
+            "memory_plugin": None,
+        })
+        assert resp.status_code == 200
+        agent = next(a for a in app.state.config.agents if a["name"] == resp.json()["name"])
+        assert agent["memory_mode"] == "framework"
+
+    async def test_explicit_both_still_rejected_when_layer_skipped(self, client, app):
+        """Control for the derivation: it must not swallow a STATED contradiction.
+
+        Without this, the derivation above could be widened to always coerce,
+        and the guard would silently stop rejecting anything. This is the exact
+        payload the deploy wizard sends, which always names memory_mode.
+        """
+        app.state.archive = MagicMock(
+            record=AsyncMock(), query=AsyncMock(return_value=[{}])
+        )
+        before = len(app.state.config.agents)
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "SkipExplicitBoth",
+            "framework": "openclaw",
+            "memory_plugin": None,
+            "memory_mode": "both",
+        })
+        assert resp.status_code == 400
+        assert len(app.state.config.agents) == before
+
     async def test_deploy_still_accepts_a_valid_mode(self, client, app):
         """Control: the guard rejects bad values without rejecting good ones.
 
