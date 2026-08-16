@@ -711,6 +711,35 @@ user had set. This has now happened twice: `archive`, `archived_agents` and
 key set against what survives a round trip and fails if one is forgotten.
 Never fix such a leak by removing the field from `to_dict()`: `save_config()`
 serialises from there, so that makes the setting unpersistable.
+## Task checklist items (`/api/projects/{project_id}/tasks/{task_id}/checklist-items`)
+
+Route module `tinyagentos/routes/projects.py`. Session owner/admin **or** an
+approved external agent's registry JWT bound to THIS project.
+
+- `POST .../checklist-items` requires scope **`project_tasks_create`**, the same
+  narrower authoring grant task creation uses. `project_tasks` alone is NOT
+  enough: it is documented and tested as read plus lifecycle plus comments, so
+  authoring deliberately does not ride on it.
+- `GET .../checklist-items` requires only **`project_tasks`**. Takes
+  `?include_archived=true` to include archived items; the default is
+  non-archived only.
+- Both answer `404` when the task is not in the named project, so a task id from
+  another project is existence-hiding rather than merely forbidden.
+- Creating an item logs `checklist.item.created` to the project activity feed
+  with the actor, task id, item id and text.
+
+**The create route takes `text` as a REQUIRED QUERY PARAMETER and accepts no
+request body**, unlike `POST /api/projects/{project_id}/tasks` next to it, which
+takes a JSON body. Verified against the generated OpenAPI schema, not inferred:
+
+    POST params: [('project_id','path',True), ('task_id','path',True), ('text','query',True)]
+    POST requestBody: NONE
+
+So the call is `POST .../checklist-items?text=<the+item+text>`. A client that
+follows the neighbouring convention and sends `{"text": "..."}` as JSON gets a
+`422` for a missing query parameter, which reads as a validation bug rather than
+a shape mismatch.
+
 ## Identity rules
 
 Work as jaylfc on all git and GitHub activity. Do not add AI attribution to

@@ -1,0 +1,2 @@
+### Added
+- Tasks gain an OS-owned checklist: `POST` and `GET /api/projects/{project_id}/tasks/{task_id}/checklist-items` let an owner or a project-bound agent add and read checklist items, so an objective's steps are tracked by the OS instead of living in an agent's head where they can be silently dropped. Creating an item is recorded in the project activity feed, and archived items are hidden unless `include_archived=true` (#2415).
