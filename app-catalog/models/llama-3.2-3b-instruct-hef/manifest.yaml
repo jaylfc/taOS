@@ -14,7 +14,7 @@ variants:
   size_mb: 3214
   download_url: https://dev-public.hailo.ai/v5.1.1/blob/Llama-3_2-3B-Instruct.hef
   # Accuracy is under active optimization in the v5.1.1 Hailo Model Zoo release.
-  sha256: 1129f5f8384e4e45c5890104dc4ec1aee77e800ce1484ddc3aa942399aada425
+  sha256: 7fc9c7723282482cc3acf08244212668f8b7684deb792b791504ab7f68a83708
   requires:
     backends:
     - id: hailo-ollama
