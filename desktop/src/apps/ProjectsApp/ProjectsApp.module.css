@@ -885,6 +885,13 @@
   min-height: 0;
 }
 
+.listsContainer {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 12px;
+}
+
 .listsEntriesPanel {
   flex: 1;
   min-height: 0;
@@ -895,6 +902,9 @@
 }
 
 @media (max-width: 767px) {
+  .listsContainer {
+    flex-direction: column;
+  }
   .listsRail {
     width: 100%;
     min-height: auto;

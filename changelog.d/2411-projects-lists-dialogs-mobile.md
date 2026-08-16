@@ -1,0 +1,2 @@
+### Fixed
+- Projects Lists tab no longer uses the browser's native `prompt`, `confirm` and `alert`: creating a list, deleting a list, removing an entry and viewing an entry's original text now use real in-app dialogs, so they are keyboard-accessible, themable and cannot be suppressed by the browser. The rail and entries panel also stack vertically under 768px instead of being squeezed side by side (#2411).

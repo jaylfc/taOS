@@ -23,6 +23,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 6144
+  sha256: 9258bf05b12686d097ff3b6b18d968ab393649780aa2b3cd67fec43d50554392
 - id: unsloth-q4
   name: Unsloth Q4_K_M (4.7GB)
   format: gguf
@@ -37,6 +38,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 6144
+  sha256: d16776dcd9a28d42758c2958ed3a752aabf20a305252cd64ff2be72b4a78c503
 hardware_tiers:
   arm-cpu-16gb:
     recommended: q4_k_m

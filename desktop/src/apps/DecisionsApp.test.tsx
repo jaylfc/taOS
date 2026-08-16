@@ -91,6 +91,12 @@ describe("DecisionsApp", () => {
     fireEvent.click(screen.getByText("Excalidraw"));
     await flush();
 
+    const submitBtn = await waitFor(() =>
+      screen.getByRole("button", { name: /submit/i }),
+    );
+    fireEvent.click(submitBtn);
+    await flush();
+
     const post = fetchMock.mock.calls.find(
       (c) => (c[1] as RequestInit)?.method === "POST",
     );
@@ -98,6 +104,82 @@ describe("DecisionsApp", () => {
     expect(post![0]).toBe("/api/decisions/dec-1/answer");
     const sent = JSON.parse((post![1] as RequestInit).body as string);
     expect(sent.value).toBe("excalidraw");
+  });
+
+  it("submits other_value and note when Other is chosen on single_select", async () => {
+    const fetchMock = mockFetch({
+      "GET /api/decisions?status=pending": { ok: true, body: [singleSelect] },
+      "GET /api/decisions?status=answered": { ok: true, body: [] },
+      "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
+      "POST /api/decisions/dec-1/answer": {
+        ok: true,
+        body: { ...singleSelect, status: "answered", answer: { value: "my answer", other_value: "my answer", note: "caveat" } },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DecisionsApp windowId="w1" />);
+    await flush();
+
+    await waitFor(() => expect(screen.getByText("Other")).toBeTruthy());
+    fireEvent.click(screen.getByText("Other"));
+    await flush();
+
+    const textarea = screen.getByLabelText(/other answer/i);
+    fireEvent.change(textarea, { target: { value: "my answer" } });
+    const noteInput = screen.getByLabelText(/answer note/i);
+    fireEvent.change(noteInput, { target: { value: "caveat" } });
+
+    const submitBtn = screen.getByRole("button", { name: /submit/i });
+    fireEvent.click(submitBtn);
+    await flush();
+
+    const post = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit)?.method === "POST",
+    );
+    expect(post).toBeTruthy();
+    const sent = JSON.parse((post![1] as RequestInit).body as string);
+    expect(sent.other_value).toBe("my answer");
+    expect(sent.note).toBe("caveat");
+  });
+
+  it("submits other_value and selected options on multi_select", async () => {
+    const multiSelect = {
+      ...singleSelect,
+      type: "multi_select",
+    };
+    const fetchMock = mockFetch({
+      "GET /api/decisions?status=pending": { ok: true, body: [multiSelect] },
+      "GET /api/decisions?status=answered": { ok: true, body: [] },
+      "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
+      "POST /api/decisions/dec-1/answer": {
+        ok: true,
+        body: { ...multiSelect, status: "answered", answer: { value: ["excalidraw", "other text"] } },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DecisionsApp windowId="w1" />);
+    await flush();
+
+    fireEvent.click(screen.getByText("Excalidraw"));
+    await flush();
+
+    fireEvent.click(screen.getByText("Other"));
+    await flush();
+
+    const textarea = screen.getByLabelText(/other answer/i);
+    fireEvent.change(textarea, { target: { value: "other text" } });
+
+    const submitBtn = screen.getByRole("button", { name: /submit/i });
+    fireEvent.click(submitBtn);
+    await flush();
+
+    const post = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit)?.method === "POST",
+    );
+    expect(post).toBeTruthy();
+    const sent = JSON.parse((post![1] as RequestInit).body as string);
+    expect(sent.value).toEqual(["excalidraw"]);
+    expect(sent.other_value).toBe("other text");
   });
 
   it("shows an empty state when no decisions are pending", async () => {

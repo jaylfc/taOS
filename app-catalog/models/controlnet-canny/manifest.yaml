@@ -31,6 +31,7 @@ variants:
       targets:
       - cpu
       min_ram_mb: 2048
+  sha256: e19821a00e6d1817b37286a21d5c4f8915076949b0e81846c4f92c96ffb46db7
 hardware_tiers:
   arm-cpu-16gb:
     recommended: safetensors

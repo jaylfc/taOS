@@ -28,6 +28,7 @@ variants:
       targets:
       - cpu
       min_ram_mb: 1024
+  sha256: 893c16c340b1ddafc93e78457a4d94190da9b7179149f8574284c83caebf5e8c
 - id: pytorch-bin
   name: PyTorch Bin (176MB)
   format: pytorch
@@ -43,6 +44,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 1024
+  sha256: 59569acdb281ac9fc9f78f9d33b6f9f17f68e25086b74f9025c35bb5f2848967
 hardware_tiers:
   arm-cpu-8gb:
     recommended: pth

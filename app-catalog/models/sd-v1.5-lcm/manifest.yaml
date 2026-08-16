@@ -15,7 +15,7 @@ variants:
   size_mb: 900
   min_ram_mb: 2048
   download_url: https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf
-  sha256: ''
+  sha256: b8944e9fe0b69b36ae1b5bb0185b3a7b8ef14347fe0fa9af6c64c4829022261f
   quality: acceptable
   requires:
     backends:
@@ -36,6 +36,7 @@ variants:
       targets:
       - cpu
       min_ram_mb: 4096
+  sha256: d0555243938c62faeefb4ac93f6c7a053ad373a4290c5256bce229aeb193bf94
 - id: f16
   name: F16 GGUF (3.2GB, GPU)
   format: gguf
@@ -49,6 +50,7 @@ variants:
       targets:
       - cpu
       min_ram_mb: 5120
+  sha256: da017009aa86a3f46468857d95833435fe55e4a2856afab76ba7722ef8ee4d8b
 - id: safetensors
   name: Safetensors FP16 (4.3GB)
   format: safetensors
@@ -72,6 +74,7 @@ variants:
       targets:
       - cpu
       min_ram_mb: 5120
+  sha256: 6ce0161689b3853acaa03779ec93eafe75a02f4ced659bee03f50797806fa2fa
 hardware_tiers:
   arm-cpu-8gb:
     recommended: q4_0

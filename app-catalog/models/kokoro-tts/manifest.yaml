@@ -23,6 +23,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 1024
+  sha256: 496dba118d1a58f5f3db2efc88dbdc216e0483fc89fe6e47ee1f2c53f18ad1e4
 hardware_tiers:
   arm-cpu-8gb:
     recommended: pytorch

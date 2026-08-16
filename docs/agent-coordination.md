@@ -739,6 +739,41 @@ memory systems the framework runtime is told to use:
 - Agents deployed before this field existed are backfilled to `both` by
   `config.py` when the config loads, so an older agent record without the key
   reads as the default rather than as empty.
+## Answering a select decision with free text (`other_value`)
+
+Route module `tinyagentos/routes/decisions.py`. Applies to BOTH answer paths:
+the human `POST /api/decisions/{id}/answer` and the agent mirror
+`POST /api/decisions/{id}/answer/agent` (scope `decisions_write`).
+
+A `single_select` or `multi_select` decision can be answered off-menu by sending
+`other_value` instead of, or alongside, `value`:
+
+- `single_select`: send `other_value` and leave `value` empty. Sending both is a
+  `400` ("cannot combine value with other_value"). The stored answer is the
+  stripped `other_value`.
+- `multi_select`: `value` must still be a list and **every element is still
+  validated against the declared options**; the free-text entry is appended, so
+  the stored answer is `[*declared_values, other_value.strip()]`. A non-list
+  `value` is a `400`.
+- `note` is a separate optional field. When present it is appended to the text
+  routed to the agent as `<answer> (note: <note>)`.
+- With no `other_value`, the original strict validation is unchanged: the answer
+  must be one of, or a subset of, the declared options, and a non-hashable or
+  non-iterable value fails closed as `400` rather than `500`.
+
+**Two consequences worth knowing before you build on this.**
+
+- **There is no per-decision opt-out.** No `allow_other` flag exists, so the
+  free-text path is available on EVERY select decision. A decision author cannot
+  declare a closed option set and have it enforced. Before this, the route
+  comment asserted that "the answer must reference the declared options so a
+  stale or malformed client cannot record an arbitrary value"; that invariant now
+  holds only for callers who do not send `other_value`.
+- **The agent path gained it too.** An agent holding `decisions_write` can record
+  arbitrary free text where it was previously constrained to the declared
+  options. `source` is still derived server-side and cannot be spoofed, so the
+  audit trail still distinguishes `in_app` from `mirrored_from_chat`, but the
+  VALUE is no longer bounded by the option list.
 
 ## Identity rules
 

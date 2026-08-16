@@ -14,7 +14,7 @@ variants:
   size_mb: 6500
   min_ram_mb: 10240
   download_url: https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-Q4_K_S.gguf
-  sha256: ''
+  sha256: 4fd16477b3a5296d0cf722c4b92a9fd7f30d09ac7495826e4465d8de9c9fd973
   quality: good
   requires:
     backends:
@@ -28,7 +28,7 @@ variants:
   size_mb: 8200
   min_ram_mb: 14336
   download_url: https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-Q5_K_S.gguf
-  sha256: ''
+  sha256: 19f63562d9a20d2123288dddd9abb3d5560554e5694ded951aaf6bfafe46b5df
   quality: better
   requires:
     backends:
@@ -42,7 +42,7 @@ variants:
   size_mb: 12500
   min_ram_mb: 18432
   download_url: https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-Q8_0.gguf
-  sha256: ''
+  sha256: f6694941193b10148dbf1f0f498d4ccd3e9875c127fc53946213b68580c66f10
   quality: best
   requires:
     backends:

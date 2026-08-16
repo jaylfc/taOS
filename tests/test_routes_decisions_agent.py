@@ -604,3 +604,61 @@ class TestAuthRunsBeforeBodyValidation:
             headers={"Authorization": f"Bearer {local_token}"},
         )
         assert resp.status_code == 401
+
+
+# ── Other / free-text answer tests ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_agent_single_select_other_answer_accepted(client):
+    """An agent can answer its own single_select decision with a free-text
+    Other value via the mirror endpoint."""
+    app = client._transport.app
+    pid = await _new_project(client)
+    cid, token = await _mint_agent(app, pid, ("decisions_write",))
+
+    body = _decision_body(
+        project_id=pid,
+        type="single_select",
+        options=[{"label": "A", "value": "a"}],
+    )
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/decisions", json=body)
+    assert resp.status_code == 200, resp.text
+    did = resp.json()["id"]
+
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post(
+            f"/api/decisions/{did}/answer/agent",
+            json={"value": None, "other_value": "my custom answer"},
+        )
+    assert resp.status_code == 200, resp.text
+    d = resp.json()
+    assert d["answer"]["value"] == "my custom answer"
+    assert d["answer"]["other_value"] == "my custom answer"
+
+
+@pytest.mark.asyncio
+async def test_agent_multi_select_other_plus_option_accepted(client):
+    """An agent can answer its own multi_select with a real option plus Other."""
+    app = client._transport.app
+    pid = await _new_project(client)
+    cid, token = await _mint_agent(app, pid, ("decisions_write",))
+
+    body = _decision_body(
+        project_id=pid,
+        type="multi_select",
+        options=[{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    )
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/decisions", json=body)
+    assert resp.status_code == 200, resp.text
+    did = resp.json()["id"]
+
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post(
+            f"/api/decisions/{did}/answer/agent",
+            json={"value": ["a"], "other_value": "custom"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["answer"]["value"] == ["a", "custom"]

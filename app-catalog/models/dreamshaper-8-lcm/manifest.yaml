@@ -15,7 +15,7 @@ variants:
   size_mb: 1530
   min_ram_mb: 2560
   download_url: https://huggingface.co/stduhpf/dreamshaper-8LCM-im-GGUF-sdcpp/resolve/main/dreamshaper_8LCM-iq2_xs.gguf
-  sha256: ''
+  sha256: 1e523b8a05e74c6a14c33bf2ee1ea26a92b5bbad539c2b4edf1f735b767f8b9b
   quality: good
   requires:
     backends:
@@ -29,7 +29,7 @@ variants:
   size_mb: 1570
   min_ram_mb: 3072
   download_url: https://huggingface.co/stduhpf/dreamshaper-8LCM-im-GGUF-sdcpp/resolve/main/dreamshaper_8LCM-iq4_nl.gguf
-  sha256: ''
+  sha256: 71de0a974fdde448581b971bd4c468790363a3c79aa2756bb039ccd44504d35f
   quality: better
   requires:
     backends:
@@ -43,7 +43,7 @@ variants:
   size_mb: 2130
   min_ram_mb: 4096
   download_url: https://huggingface.co/Lykon/DreamShaper/resolve/main/DreamShaper8_LCM.safetensors
-  sha256: ''
+  sha256: a4f3e1526c5dc4fcbe342f5c410d83ae202c7a415fcefcbb92e0f93fcd0a87c3
   quality: best
   requires:
     backends:
@@ -67,7 +67,7 @@ variants:
   size_mb: 2100
   min_ram_mb: 4096
   download_url: https://huggingface.co/Lykon/DreamShaper/resolve/main/DreamShaper_8_pruned.safetensors
-  sha256: ''
+  sha256: 879db523c30d3b9017143d56705015e15a2cb5628762c11d086fed9538abd7fd
   quality: best
   requires:
     backends:

@@ -663,3 +663,172 @@ async def test_device_bearer_history_rejects_other_user(client, app):
         headers=_bearer(device["scoped_token"]),
     )
     assert resp.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Other / free-text answer tests
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_single_select_other_answer_accepted(client):
+    """A free-text Other answer on a single_select decision is accepted and
+    stored distinguishably."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "single_select",
+        "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    })
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": None, "other_value": "my custom answer"},
+    )
+    assert resp.status_code == 200
+    ans = resp.json()["answer"]
+    assert ans["value"] == "my custom answer"
+    assert ans["other_value"] == "my custom answer"
+
+
+@pytest.mark.asyncio
+async def test_single_select_other_with_note(client):
+    """A free-text Other answer with a note stores both."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "single_select",
+        "options": [{"label": "A", "value": "a"}],
+    })
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": None, "other_value": "custom", "note": "with caveat"},
+    )
+    assert resp.status_code == 200
+    ans = resp.json()["answer"]
+    assert ans["value"] == "custom"
+    assert ans["other_value"] == "custom"
+    assert ans["note"] == "with caveat"
+
+
+@pytest.mark.asyncio
+async def test_single_select_other_and_option_mutually_exclusive(client):
+    """Sending both a value and other_value for single_select is rejected."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "single_select",
+        "options": [{"label": "A", "value": "a"}],
+    })
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": "a", "other_value": "custom"},
+    )
+    assert resp.status_code == 400
+    assert "cannot combine value with other_value" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_single_select_option_still_rejects_invalid_with_other_support(client):
+    """An invalid option value is still rejected even when Other is available."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "single_select",
+        "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    })
+    d = resp.json()
+    # A value outside the declared options is still rejected.
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": "zzz"},
+    )
+    assert resp.status_code == 400
+    # The decision is still answerable with a valid option.
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": "a"})
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_multi_select_other_answer_accepted(client):
+    """A free-text Other answer on a multi_select decision is accepted."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "multi_select",
+        "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    })
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": ["a"], "other_value": "custom"},
+    )
+    assert resp.status_code == 200
+    ans = resp.json()["answer"]
+    assert ans["value"] == ["a", "custom"]
+    assert ans["other_value"] == "custom"
+
+
+@pytest.mark.asyncio
+async def test_multi_select_other_plus_option_works(client):
+    """multi_select with Other plus a real option stores both."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "multi_select",
+        "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    })
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": ["a", "b"], "other_value": "also this"},
+    )
+    assert resp.status_code == 200
+    ans = resp.json()["answer"]
+    assert ans["value"] == ["a", "b", "also this"]
+
+
+@pytest.mark.asyncio
+async def test_multi_select_invalid_option_still_rejected(client):
+    """An invalid option value in multi_select is still rejected."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "multi_select",
+        "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    })
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": ["a", "nope"]},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_other_answer_routes_to_agent_with_note(client, monkeypatch):
+    """A free-text Other answer with a note reaches the agent in the same
+    shape as an option answer, with the note appended."""
+    import tinyagentos.routes.decisions as dmod
+
+    posted = {}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None):
+            posted["url"] = url
+            posted["json"] = json
+            return None
+
+    monkeypatch.setattr(dmod.httpx, "AsyncClient", _FakeClient)
+
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@taOS-dev", "question": "Pick one", "type": "single_select",
+        "options": [{"label": "A", "value": "a"}],
+    })
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": None, "other_value": "custom", "note": "caveat"},
+    )
+    assert resp.status_code == 200
+    assert posted["url"].endswith("/a2a/send")
+    assert "@taOS-dev" in posted["json"]["body"]
+    assert "custom" in posted["json"]["body"]
+    assert "(note: caveat)" in posted["json"]["body"]

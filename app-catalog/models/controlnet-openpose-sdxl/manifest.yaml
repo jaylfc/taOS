@@ -31,6 +31,7 @@ variants:
       targets:
       - cpu
       min_ram_mb: 6144
+  sha256: 5a4b928cb1e93748217900cb66d4135bf70d932d2924232f925910fad9e43a92
 hardware_tiers:
   x86-cuda-8gb:
     recommended: safetensors

@@ -14,7 +14,8 @@ variants:
     name: "Safetensors 224px (5.5GB)"
     format: safetensors
     size_mb: 5500
-    download_url: https://huggingface.co/google/paligemma2-3b-mix-224/resolve/main/model.safetensors
+    download_url: https://huggingface.co/google/paligemma2-3b-mix-224/resolve/main/model-00001-of-00002.safetensors
+    sha256: d66f653b186abdd1b3b092ac3d45efe94ddeda852615f8bf6766888e6ba7acc6
     requires:
       backends:
         - id: transformers

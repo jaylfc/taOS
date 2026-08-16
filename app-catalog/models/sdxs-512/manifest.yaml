@@ -14,7 +14,7 @@ variants:
   size_mb: 3010
   min_ram_mb: 3072
   download_url: https://huggingface.co/rupeshs/sdxs-512-0.9-openvino/resolve/main/model_index.json
-  sha256: ''
+  sha256: e7acfdfc1081a5624d84427014ea86eecc76da2cc3559c378bba0989521470e0
   requires:
     backends:
     - id: fastsdcpu
@@ -27,7 +27,7 @@ variants:
   size_mb: 4380
   min_ram_mb: 4096
   download_url: https://huggingface.co/IDKiro/sdxs-512-0.9/resolve/main/unet/diffusion_pytorch_model.safetensors
-  sha256: ''
+  sha256: c2afb7dbea11b64d0bfbc4d1a45854aa65408b8a74a732438225d3f2ec85c71c
   requires:
     backends:
     - id: diffusers

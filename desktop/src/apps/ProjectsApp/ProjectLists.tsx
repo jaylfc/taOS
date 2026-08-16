@@ -1,5 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { projectsApi, type Project, type ProjectList, type ProjectListEntry } from "@/lib/projects";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { CreateListDialog } from "./CreateListDialog";
 import styles from "./ProjectsApp.module.css";
 
 const STATUS_STYLE: Record<string, string> = {
@@ -19,6 +21,10 @@ export function ProjectLists({ project }: { project: Project }) {
   const [error, setError] = useState<string | null>(null);
   const [quickText, setQuickText] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [removeConfirmEntry, setRemoveConfirmEntry] = useState<{ listId: string; entryId: string } | null>(null);
+  const [showOriginalId, setShowOriginalId] = useState<string | null>(null);
   const quickInputRef = useRef<HTMLInputElement>(null);
   // Current selection, readable from inside an async closure that captured an
   // older one. Assigned during render so it is correct before any effect runs.
@@ -109,22 +115,16 @@ export function ProjectLists({ project }: { project: Project }) {
     return () => { cancelled = true; };
   }, [selectedListId, refreshEntries]);
 
-  const createList = async () => {
-    // Trim BEFORE the empty check: "   " is truthy, so a whitespace-only
-    // answer used to reach the API as an empty title.
-    const title = prompt("New list name")?.trim();
-    if (!title) return;
-    try {
-      const created = await projectsApi.lists.create(project.id, { title });
-      await refreshLists();
-      setSelectedListId(created.id);
-    } catch (err) {
-      setError(String(err));
-    }
-  };
+  const handleCreatedList = useCallback((listId: string) => {
+    setCreateDialogOpen(false);
+    setSelectedListId(listId);
+    refreshLists();
+  }, [refreshLists]);
 
-  const deleteList = async (listId: string) => {
-    if (!confirm("Delete this list and all its entries?")) return;
+  const confirmDeleteList = useCallback(async () => {
+    if (!deleteConfirmId) return;
+    const listId = deleteConfirmId;
+    setDeleteConfirmId(null);
     try {
       await projectsApi.lists.remove(project.id, listId);
       if (selectedListId === listId) setSelectedListId(null);
@@ -132,7 +132,19 @@ export function ProjectLists({ project }: { project: Project }) {
     } catch (err) {
       setError(String(err));
     }
-  };
+  }, [deleteConfirmId, project.id, refreshLists, selectedListId]);
+
+  const confirmRemoveEntry = useCallback(async () => {
+    if (!removeConfirmEntry) return;
+    const { listId, entryId } = removeConfirmEntry;
+    setRemoveConfirmEntry(null);
+    try {
+      await projectsApi.lists.entries.remove(project.id, listId, entryId);
+      await refreshEntries();
+    } catch (err) {
+      setError(String(err));
+    }
+  }, [removeConfirmEntry, project.id, refreshEntries]);
 
   const createEntry = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -169,27 +181,17 @@ export function ProjectLists({ project }: { project: Project }) {
     }
   };
 
-  const removeEntry = async (entry: ProjectListEntry) => {
-    if (!confirm("Remove this entry?")) return;
-    try {
-      await projectsApi.lists.entries.remove(project.id, entry.list_id, entry.id);
-      await refreshEntries();
-    } catch (err) {
-      setError(String(err));
-    }
-  };
-
   const selectedList = lists.find((l) => l.id === selectedListId) ?? EMPTY_LIST;
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="flex flex-1 min-h-0 gap-3">
+      <div className={`${styles.listsContainer} flex flex-1 min-h-0 gap-3`}>
         <aside className={styles.listsRail} aria-label="Lists">
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-sm font-semibold text-shell-text">Lists</h2>
             <button
               type="button"
-              onClick={createList}
+              onClick={() => setCreateDialogOpen(true)}
               aria-label="Create new list"
               className="rounded-full bg-accent/10 px-2 py-1 text-xs font-medium text-accent hover:bg-accent/20"
             >
@@ -216,7 +218,7 @@ export function ProjectLists({ project }: { project: Project }) {
                   <button
                     type="button"
                     aria-label={`Delete ${lst.title || "Untitled list"}`}
-                    onClick={(e) => { e.stopPropagation(); deleteList(lst.id); }}
+                    onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(lst.id); }}
                     className="rounded p-0.5 text-shell-text-tertiary hover:text-red-400"
                   >
                     ×
@@ -301,20 +303,25 @@ export function ProjectLists({ project }: { project: Project }) {
                             {entry.status}
                           </span>
                           {tidied && (
-                            <span
-                              className="inline-flex items-center gap-1 text-xs text-shell-text-tertiary cursor-pointer hover:text-shell-text"
-                              title={entry.original_text}
-                              tabIndex={0}
-                              role="button"
-                              aria-label={`View original text for ${entry.text}`}
-                              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alert(entry.original_text); } }}
-                              onClick={() => alert(entry.original_text)}
-                            >
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                                <circle cx="12" cy="12" r="3" />
-                              </svg>
-                              original
+                            <span className="relative inline-flex">
+                              <button
+                                type="button"
+                                className="inline-flex items-center gap-1 text-xs text-shell-text-tertiary hover:text-shell-text"
+                                title={entry.original_text}
+                                onClick={() => setShowOriginalId(showOriginalId === entry.id ? null : entry.id)}
+                                aria-label={`View original text for ${entry.text}`}
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                                  <circle cx="12" cy="12" r="3" />
+                                </svg>
+                                original
+                              </button>
+                              {showOriginalId === entry.id && (
+                                <div className="absolute left-0 top-full mt-1 z-50 text-xs text-shell-text bg-shell-bg-deep border border-shell-border rounded-lg p-2.5 shadow-lg whitespace-pre-wrap max-w-[280px]" role="tooltip">
+                                  {entry.original_text}
+                                </div>
+                              )}
                             </span>
                           )}
                           <div className="ml-auto flex gap-2 text-xs">
@@ -331,7 +338,7 @@ export function ProjectLists({ project }: { project: Project }) {
                             </select>
                             <button
                               type="button"
-                              onClick={() => removeEntry(entry)}
+                              onClick={() => setRemoveConfirmEntry({ listId: entry.list_id, entryId: entry.id })}
                               aria-label={`Delete entry ${entry.text}`}
                               className="text-red-400 hover:underline"
                             >
@@ -351,6 +358,36 @@ export function ProjectLists({ project }: { project: Project }) {
           )}
         </main>
       </div>
+
+      {createDialogOpen && (
+        <CreateListDialog
+          projectId={project.id}
+          onClose={() => setCreateDialogOpen(false)}
+          onCreated={handleCreatedList}
+        />
+      )}
+
+      <ConfirmDialog
+        open={!!deleteConfirmId}
+        title="Delete list"
+        message="This will delete the list and all its entries. This cannot be undone."
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        danger
+        onConfirm={confirmDeleteList}
+        onCancel={() => setDeleteConfirmId(null)}
+      />
+
+      <ConfirmDialog
+        open={!!removeConfirmEntry}
+        title="Remove entry"
+        message="Remove this entry from the list?"
+        confirmLabel="Remove"
+        cancelLabel="Cancel"
+        danger
+        onConfirm={confirmRemoveEntry}
+        onCancel={() => setRemoveConfirmEntry(null)}
+      />
     </div>
   );
 }

@@ -21,6 +21,7 @@ variants:
       targets:
       - cpu
       min_ram_mb: 2048
+  sha256: 6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208
 hardware_tiers:
   arm-cpu-8gb:
     recommended: ggml

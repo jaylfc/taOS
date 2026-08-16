@@ -27,6 +27,7 @@ variants:
       - x86-vulkan
       - apple-silicon
       min_ram_mb: 6144
+  sha256: 5282eec23430ca46de87de984521fbf04e3cf78fa4152b05610089bc71d8a535
 - id: q8_0
   name: Q8_0 GGUF (5GB)
   format: gguf
@@ -46,6 +47,7 @@ variants:
       - x86-vulkan
       - apple-silicon
       min_ram_mb: 8192
+  sha256: 32b5ede87470ff486a5abcff3954cc2650292a2601af1c17724108e0abb5905d
 - id: fp16
   name: FP16 GGUF (6.9GB)
   format: gguf
@@ -65,6 +67,7 @@ variants:
       - x86-vulkan
       - apple-silicon
       min_ram_mb: 10240
+  sha256: 1001a76e5c86594a68898050095976db0f29ccea7b0d4917d8cd5a44081dba03
 hardware_tiers:
   arm-cpu-16gb:
     recommended: q4_0
