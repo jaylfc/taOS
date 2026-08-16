@@ -41,10 +41,14 @@ export function MemoryTab({ agent, onUpdated }: MemoryTabProps) {
 
   const changePlugin = async (p: string) => {
     setPlugin(p);
+    const body: Record<string, unknown> = { memory_plugin: p };
+    if (p === "none") {
+      body.memory_mode = "framework";
+    }
     await fetch(`/api/agents/${agent.name}/memory`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ memory_plugin: p }),
+      body: JSON.stringify(body),
     });
     onUpdated();
   };

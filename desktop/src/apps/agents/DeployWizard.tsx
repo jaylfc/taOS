@@ -416,6 +416,16 @@ export function DeployWizard({
   const [memorySetupError, setMemorySetupError] = useState<string | null>(null);
   const [memoryPickerMode, setMemoryPickerMode] = useState<"default" | "picker">("default");
 
+  // When the taOSmd memory layer is skipped, the only coherent mode is
+  // "framework". "both" and "taosmd" modes require the taOSmd plugin, so snap
+  // the mode whenever the plugin is null. This makes the pair unrepresentable
+  // instead of surfacing a 400 at deploy time.
+  useEffect(() => {
+    if (memoryPlugin === null) {
+      setMemoryMode("framework");
+    }
+  }, [memoryPlugin]);
+
   // Step 5 — Permissions
   const [canReadUserMemory, setCanReadUserMemory] = useState(false);
 
@@ -1312,21 +1322,30 @@ export function DeployWizard({
                   ["both", "Both", "Framework memory + taOSmd"],
                   ["framework", "Framework only", "Native memory, no taOSmd"],
                   ["taosmd", "taOSmd only", "Durable shared memory"],
-                ] as const).map(([value, label, desc]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setMemoryMode(value)}
-                    className={`p-2.5 rounded-lg border text-left transition-colors ${
-                      memoryMode === value
-                        ? "border-accent bg-accent/10"
-                        : "border-white/10 bg-shell-bg-deep hover:bg-white/5"
-                    }`}
-                  >
-                    <div className="text-xs font-semibold">{label}</div>
-                    <p className="text-[10px] text-shell-text-tertiary leading-tight mt-0.5">{desc}</p>
-                  </button>
-                ))}
+                ] as const).map(([value, label, desc]) => {
+                  const needsTaosmd = value === "both" || value === "taosmd";
+                  const disabled = needsTaosmd && memoryPlugin === null;
+                  const selected = (memoryPlugin === null ? "framework" : memoryMode) === value;
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setMemoryMode(value)}
+                      disabled={disabled}
+                      title={disabled ? "needs the taOSmd memory layer" : undefined}
+                      className={`p-2.5 rounded-lg border text-left transition-colors ${
+                        disabled
+                          ? "border-white/5 bg-shell-bg-deep opacity-50 cursor-not-allowed"
+                          : selected
+                            ? "border-accent bg-accent/10"
+                            : "border-white/10 bg-shell-bg-deep hover:bg-white/5"
+                      }`}
+                    >
+                      <div className="text-xs font-semibold">{label}</div>
+                      <p className="text-[10px] text-shell-text-tertiary leading-tight mt-0.5">{desc}</p>
+                    </button>
+                  );
+                })}
               </div>
 
               <div className="text-xs text-shell-text-tertiary">

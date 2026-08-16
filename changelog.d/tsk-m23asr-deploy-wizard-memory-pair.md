@@ -1,0 +1,2 @@
+### Fixed
+- Deploy wizard no longer lets the user reach the incoherent memory pair (skipped layer + `both`/`taosmd` mode) that triggered a 400 at the end of the wizard: clicking "Skip memory for this agent" now snaps the mode to `framework`, and the `both`/`taosmd` mode buttons are disabled with a "needs the taOSmd memory layer" tooltip while the layer is skipped. The same guard is mirrored in the agent Settings memory tab, which now sends `memory_mode: framework` when switching the plugin off. The server-side validation guard from #2405 remains in place.
