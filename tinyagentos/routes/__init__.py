@@ -14,6 +14,9 @@ def register_all_routers(app):
     from tinyagentos.routes.auth import router as auth_router
     app.include_router(auth_router, dependencies=_csrf)
 
+    from tinyagentos.routes.password import router as password_router
+    app.include_router(password_router, dependencies=_csrf)
+
     from tinyagentos.routes.system import router as system_router
     app.include_router(system_router, dependencies=_csrf)
 

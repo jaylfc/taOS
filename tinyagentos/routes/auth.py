@@ -218,6 +218,7 @@ def _login_page(error: str = "", multi_user: bool = False, next_url: str = "") -
         </label>
         ''' if multi_user else ""
     next_field = f'<input type="hidden" name="next" value="{html.escape(next_url)}">' if next_url else ""
+    forgot = '<p class="hint" style="margin-top:12px"><a href="/api/password/request" role="button">Forgot password?</a></p>'
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -234,6 +235,7 @@ def _login_page(error: str = "", multi_user: bool = False, next_url: str = "") -
       <p>Sign in to continue</p>
     </div>
     {err}
+    {forgot}
     {username_field}
     {next_field}
     <label class="field">

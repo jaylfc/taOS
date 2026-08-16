@@ -474,7 +474,6 @@ class AuthManager:
 
     def recover_password(self, new_password: str, username: str | None = None) -> str:
         """Offline recovery: force-set an account's password without the old one.
-
         For use by the ``recover-password`` CLI when the admin is locked out.
         Works across every store shape: sets the ``password_hash`` on the
         matching user record (found by ``username``, or the sole user in
@@ -512,9 +511,64 @@ class AuthManager:
             if user.get("id"):
                 self.revoke_user_sessions(user["id"])
             return user.get("username", "(unknown)")
-        # No user records: legacy single-password store.
+        # No user records: legacy single-password file.
         self.set_password(new_password)
         return "(legacy)"
+
+    def reset_password_with_token(self, username: str, token: str, new_password: str) -> bool:
+        """Reset a user's password using a password-reset token.
+
+        Verifies the token is valid and unused (via the PasswordResetStore),
+        consumes it atomically, sets the new password, and revokes all
+        existing sessions.  Does NOT require the current password.
+
+        Returns True on success, False if the token is invalid/expired/already-used.
+        """
+        import hashlib
+
+        from tinyagentos.password_reset_store import PasswordResetStore
+
+        store = None
+        # Look for the store on the app state if available
+        if hasattr(self, "_app_state") and self._app_state:
+            store = getattr(self._app_state, "password_reset_store", None)
+        if store is None:
+            import pathlib
+            store_path = pathlib.Path(self.data_dir) / "password_resets.db"
+            if store_path.exists():
+                store = PasswordResetStore(store_path)
+
+        if store is None:
+            return False
+
+        # Look up the user
+        user_record = self.find_user(username)
+        if user_record is None:
+            return False
+        user_id = user_record["id"]
+
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+        # Atomically consume the token
+        import asyncio
+        consumed = asyncio.run(store.consume_token(token_hash, user_id))
+        if not consumed:
+            return False
+
+        # Set the new password
+        data = self._read_users()
+        users = data.get("users", [])
+        for u in users:
+            if u.get("id") == user_id:
+                u["password_hash"] = hash_password(new_password)
+                users[users.index(u)] = u
+                break
+        data["users"] = users
+        self._write_users(data)
+
+        # Revoke all existing sessions for this user
+        self.revoke_user_sessions(user_id)
+        return True
 
     def check_password(self, password: str, username: str | None = None) -> tuple[bool, dict | None]:
         """Verify credentials.

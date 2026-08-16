@@ -72,6 +72,7 @@ from tinyagentos.broker import BrokerService, BrokerStore
 from tinyagentos.broker.store import default_broker_path
 from tinyagentos.secrets import SecretsStore
 from tinyagentos.mail_store import MailAccountStore
+from tinyagentos.password_reset_store import PasswordResetStore  # NEW
 from tinyagentos.training import TrainingManager
 from tinyagentos.conversion import ConversionManager
 from tinyagentos.agent_messages import AgentMessageStore
@@ -601,6 +602,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await broker_store.init()
         await mail_store.init()
         app.state.mail_store = mail_store
+        # Password-reset token store — initialized on app.state so the
+        # /request and /reset routes can access it without the full lifespan.
+        password_reset_store = PasswordResetStore(data_dir / "password_resets.db")
+        await password_reset_store.init()
+        app.state.password_reset_store = password_reset_store
         await github_identities_store.init()
         await github_app_installations.init()
         await relationship_mgr.init()
