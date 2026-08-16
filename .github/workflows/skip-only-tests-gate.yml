@@ -1,0 +1,39 @@
+name: Skip-only tests gate
+
+# Fails PRs where every test in a touched test file skips. The PR looks like
+# it added coverage and added none, and it keeps passing silently after merge.
+#
+# A "Tests-Skipped-Intentionally: <file>, <why>" trailer in the PR body waives
+# a named file, making deliberate skip-only landing a conscious act rather than
+# a silent one.
+#
+# See scripts/check_skip_only_tests.py for the implementation.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [master, dev]
+
+jobs:
+  skip-only-tests-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      BASE_REF: ${{ github.base_ref }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch base branch
+        run: git fetch origin "$BASE_REF"
+
+      - name: Check for skip-only test files
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python scripts/check_skip_only_tests.py --base "origin/$BASE_REF"
