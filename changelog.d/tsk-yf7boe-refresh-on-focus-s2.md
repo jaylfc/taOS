@@ -1,2 +1,0 @@
-- Adopted `useRefreshOnFocus` in Tasks, Activity, Models, and Notes so each window refetches its current data on focus without requiring a reopen.
-- Fixed Routines (Tasks) blanking to "No scheduled routines" when a background refresh hits an unreachable backend; the routines already on screen are kept instead.

@@ -1,1 +1,0 @@
-- Fixed memory settings, catalog indexing and per-agent memory-config updates failing with a 403 "CSRF token missing" on a cookie-authenticated session: the three mutating calls in the Memory API client did not send the double-submit token.

@@ -3063,7 +3063,7 @@ wheels = [
 
 [[package]]
 name = "tinyagentos"
-version = "1.0.0b48"
+version = "1.0.0b49"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

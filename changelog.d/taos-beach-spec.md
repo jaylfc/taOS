@@ -1,1 +1,0 @@
-- Design spec for taOS Beach, the sandbox provisioning system: object model, state machine, approval flow over the Decisions app, quotas, port and DNS hygiene, harness-agnostic agent access, and a Phase 1 cut with acceptance criteria (`docs/design/taos-beach.md`).
