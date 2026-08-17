@@ -1,0 +1,2 @@
+### Fixed
+- Dispatcher: a card labelled `fix-forward` without a `BASE: exec/tsk-<id>` line is now refused before dispatch, so it cannot consume a lane run by cutting a worktree from dev and discarding the target PR's work. The throttle exemption for fix-forward cards is retained and documented: a revision card supersedes an existing PR, so closing the superseded PR leaves the open-PR count unchanged.
