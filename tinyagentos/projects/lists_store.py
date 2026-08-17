@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from typing import ClassVar
 
 from tinyagentos.base_store import BaseStore
 from tinyagentos.projects.ids import new_id
@@ -122,7 +123,7 @@ class ProjectListEntriesStore(BaseStore):
     CREATE INDEX IF NOT EXISTS idx_entries_list_project ON project_list_entries(list_id, project_id);
     CREATE INDEX IF NOT EXISTS idx_entries_status ON project_list_entries(project_id, status);
     """
-    MIGRATIONS = []
+    MIGRATIONS: ClassVar[list] = []
 
     async def add_entry(
         self,

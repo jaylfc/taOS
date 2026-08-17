@@ -52,7 +52,7 @@ class ReorderIn(BaseModel):
 
 async def _authorize_lists_actor(
     request: Request, pstore, project_id: str
-) -> "tuple[str, bool, dict] | JSONResponse":
+) -> tuple[str, bool, dict] | JSONResponse:
     """Resolve the actor for a project-lists route that accepts EITHER a session
     owner/admin OR an approved external agent's registry JWT holding _LISTS_SCOPE
     bound to THIS project.
