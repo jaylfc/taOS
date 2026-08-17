@@ -38,12 +38,15 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import io
 import os
 import re
 import subprocess
 import sys
 import tarfile
+import tempfile
+import types
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -87,6 +90,13 @@ def _extract_symbols(source: str, file_path: str) -> dict[str, str]:
                 name = f"{prefix}{child.name}" if prefix else child.name
                 symbols[f"{file_path}:{name}"] = "class"
                 visit(child, f"{name}.")
+            elif isinstance(child, ast.ImportFrom):
+                if file_path.endswith("/__init__.py") and child.module:
+                    for alias in child.names:
+                        if alias.name == "*":
+                            continue
+                        public_name = alias.asname or alias.name
+                        symbols[f"{file_path}:{public_name}"] = "import"
             else:
                 visit(child, prefix)
 
@@ -111,6 +121,81 @@ def _get_symbols_at_ref(ref: str, repo_root: Path = REPO_ROOT) -> dict[str, str]
             source = f.read().decode("utf-8", errors="ignore")
             symbols.update(_extract_symbols(source, member.name))
     return symbols
+
+
+def _file_path_to_module_path(file_path: str) -> str:
+    """Convert a file path like 'pkg/mod.py' or 'pkg/__init__.py' to a module path."""
+    if file_path.endswith("/__init__.py"):
+        file_path = file_path[: -len("/__init__.py")]
+    elif file_path.endswith(".py"):
+        file_path = file_path[: -len(".py")]
+    return file_path.replace("/", ".")
+
+
+def _extract_tree_to_dir(ref: str, dest: Path, repo_root: Path = REPO_ROOT) -> None:
+    """Extract a git tree to a directory."""
+    result = subprocess.run(
+        ["git", "archive", ref],
+        cwd=repo_root, capture_output=True, check=True,
+    )
+    with tarfile.open(fileobj=io.BytesIO(result.stdout)) as tar:
+        tar.extractall(dest)
+
+
+def _resolve_symbol(merge_result_dir: Path, file_path: str, name: str) -> bool:
+    """Check if a symbol is still importable from the merge result.
+
+    Loads the module directly from the merge result tree using
+    importlib.util, bypassing sys.path and editable-install path hooks
+    that would otherwise route the import back to the working tree.
+    """
+    module_path = _file_path_to_module_path(file_path)
+
+    parts = module_path.split(".")
+    file_rel_path = "/".join(parts)
+    if file_path.endswith("/__init__.py"):
+        file_rel_path += "/__init__.py"
+    else:
+        file_rel_path += ".py"
+
+    abs_file = merge_result_dir / file_rel_path
+
+    # If the original module file was deleted but a same-named package
+    # directory exists in the merge result, the public import path resolves
+    # through the package's __init__.py.
+    if not abs_file.is_file():
+        package_init = merge_result_dir / file_rel_path.replace(".py", "/__init__.py")
+        if package_init.is_file():
+            abs_file = package_init
+        else:
+            return False
+
+    name_parts = name.split(".")
+    attr_name = name_parts[-1]
+
+    try:
+        parent_pkg_name = ".".join(parts[:-1])
+        if parent_pkg_name:
+            parent_pkg_path = str((merge_result_dir / parent_pkg_name.replace(".", "/")).resolve())
+            if parent_pkg_name not in sys.modules:
+                parent_pkg = types.ModuleType(parent_pkg_name)
+                parent_pkg.__path__ = [parent_pkg_path]
+                sys.modules[parent_pkg_name] = parent_pkg
+
+        sys.modules.pop(module_path, None)
+        spec = importlib.util.spec_from_file_location(module_path, str(abs_file))
+        if spec is None or spec.loader is None:
+            return False
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_path] = module
+        spec.loader.exec_module(module)
+
+        obj = module
+        for part in name_parts:
+            obj = getattr(obj, part)
+        return True
+    except Exception:
+        return False
 
 
 def _merge_tree(base_ref: str, pr_head_sha: str, repo_root: Path = REPO_ROOT) -> str | None:
@@ -218,15 +303,28 @@ def check_deleted_symbols(
     """
     base_symbols = _get_symbols_at_ref(base_ref, repo_root)
 
+    merge_result_dir: Path
     if pr_head_sha:
         merge_tree = _merge_tree(base_ref, pr_head_sha, repo_root)
         if merge_tree is None:
             return [], set(), True
         head_symbols = _get_symbols_at_ref(merge_tree, repo_root)
+        merge_result_dir = Path(tempfile.mkdtemp())
+        _extract_tree_to_dir(merge_tree, merge_result_dir, repo_root)
     else:
         head_symbols = _get_symbols_at_ref("HEAD", repo_root)
+        merge_result_dir = repo_root
 
     signal = find_signal_symbols(base_symbols, head_symbols)
+
+    # Resolve each signal symbol against the merge result. A symbol that is
+    # still importable at its public path is not a genuine deletion.
+    resolved_signal: dict[str, str] = {}
+    for symbol, kind in sorted(signal.items()):
+        file_path, name = symbol.rsplit(":", 1)
+        if _resolve_symbol(merge_result_dir, file_path, name):
+            continue
+        resolved_signal[symbol] = kind
 
     waived_set: set[str] = set()
     if waived:
@@ -235,7 +333,7 @@ def check_deleted_symbols(
 
     violations: list[Violation] = []
     waived_in_signal: set[str] = set()
-    for symbol, kind in sorted(signal.items()):
+    for symbol, kind in sorted(resolved_signal.items()):
         if symbol in waived_set:
             waived_in_signal.add(symbol)
             continue

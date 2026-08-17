@@ -442,6 +442,66 @@ class TestCheckDeletedSymbols:
         assert "function_c" in violations[0].symbol
         assert "tinyagentos/foo.py:function_b" in waived
 
+    def test_module_shadowed_by_package_is_silent(self, tmp_path: Path):
+        """A module file deleted but shadowed by a same-named package is
+        SILENT: the public import path still resolves through the package."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(
+            repo, "tinyagentos/containers/__init__.py",
+            "class ContainerInfo:\n    pass\n",
+            "init: add containers package",
+        )
+        _commit_file(
+            repo, "tinyagentos/containers.py",
+            "class ContainerInfo:\n    pass\n",
+            "init: add containers module (shadowed by package)",
+        )
+        base_tip = _get_head(repo)
+        _branch(repo, "pr-branch")
+        _checkout(repo, "pr-branch")
+        _delete_file(repo, "tinyagentos/containers.py")
+        _checkout(repo, "main")
+        _git(repo, "merge", "pr-branch", "--no-edit")
+
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo)
+
+        assert violations == []
+        assert waived == set()
+
+    def test_reexport_dropped_from_init_fires(self, tmp_path: Path):
+        """A re-export dropped from __init__.py while the def survives FIREs:
+        the public name in the package namespace is gone."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(
+            repo, "tinyagentos/foo.py",
+            "def function_a():\n    pass\n\ndef function_b():\n    pass\n",
+            "init: add function_a and function_b",
+        )
+        _commit_file(
+            repo, "tinyagentos/__init__.py",
+            "from .foo import function_b\n",
+            "init: re-export function_b",
+        )
+        base_tip = _get_head(repo)
+        _branch(repo, "pr-branch")
+        _checkout(repo, "pr-branch")
+        _commit_file(
+            repo, "tinyagentos/__init__.py",
+            "",
+            "refactor: drop re-export",
+        )
+        _checkout(repo, "main")
+        _git(repo, "merge", "pr-branch", "--no-edit")
+
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo)
+
+        assert len(violations) == 1
+        assert "function_b" in violations[0].symbol
+        assert "tinyagentos/__init__.py" in violations[0].symbol
+        assert violations[0].added_by != "unknown"
+
 
 # ---------------------------------------------------------------------------
 # --pr-head (merge-tree recomputation) path
