@@ -1,6 +1,7 @@
 import pytest
 import pytest_asyncio
 
+from tinyagentos.projects.events import ProjectEventBroker
 from tinyagentos.projects.task_store import ProjectTaskStore
 
 
@@ -9,6 +10,15 @@ async def store(tmp_path):
     s = ProjectTaskStore(tmp_path / "tasks.db")
     await s.init()
     yield s
+    await s.close()
+
+
+@pytest_asyncio.fixture
+async def store_with_broker(tmp_path):
+    broker = ProjectEventBroker()
+    s = ProjectTaskStore(tmp_path / "tasks.db", broker=broker)
+    await s.init()
+    yield s, broker
     await s.close()
 
 
@@ -454,3 +464,87 @@ async def test_survives_agent_restart(store):
     # from the OS-owned store rather than relying on model memory
     all_items = await store.list_checklist_items(task_id=t["id"], include_archived=True)
     assert len(all_items) == 1
+
+
+@pytest.mark.asyncio
+async def test_checklist_item_event_delivered_at_project_scope(store_with_broker):
+    """Defect 1: checklist.item.created must be published under the PROJECT id
+    so project-scoped subscribers receive it.
+
+    On the BASE branch the event is published under the task_id, so the project
+    subscription never fires and this test fails.
+    """
+    store, broker = store_with_broker
+    t = await store.create_task(project_id="proj-red", title="Objective", created_by="u")
+    queue = await broker.subscribe("proj-red")
+    await store.create_checklist_item(task_id=t["id"], text="step one", created_by="u")
+    # Collect all events that arrived at the project scope
+    collected = []
+    while not queue.empty():
+        collected.append(queue.get_nowait())
+    checklist_events = [e for e in collected if e.kind == "checklist.item.created"]
+    assert checklist_events, (
+        f"expected checklist.item.created at project scope, got: {[e.kind for e in collected]}"
+    )
+    assert checklist_events[0].payload["task_id"] == t["id"]
+
+
+@pytest.mark.asyncio
+async def test_archive_nonexistent_item_raises_value_error(store):
+    """Defect 2: archiving a missing checklist item should raise a clean
+    ValueError, not a TypeError from indexing None.
+    """
+    with pytest.raises(ValueError, match="not found"):
+        await store.archive_checklist_item(item_id="cki-nonexistent", reported_by="u")
+
+
+# ---------------------------------------------------------------------------
+# close_task ownership guard (merged from dev)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_close_by_claimer_passes(store):
+    """Claim holder can close their own claimed card."""
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    await store.claim_task(t["id"], claimer_id="agent-1")
+    ok = await store.close_task(t["id"], closed_by="agent-1", reason="done")
+    assert ok is True
+    again = await store.get_task(t["id"])
+    assert again["status"] == "closed"
+    assert again["closed_by"] == "agent-1"
+
+
+@pytest.mark.asyncio
+async def test_close_by_stranger_rejected(store):
+    """A non-claimer cannot close a claimed card (ownership guard)."""
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    await store.claim_task(t["id"], claimer_id="agent-1")
+    ok = await store.close_task(t["id"], closed_by="agent-2", reason="intruder")
+    assert ok is False
+    again = await store.get_task(t["id"])
+    assert again["status"] == "claimed"
+    assert again["claimed_by"] == "agent-1"
+
+
+@pytest.mark.asyncio
+async def test_close_by_lead_passes(store):
+    """Lead/curator can force-close a card claimed by someone else."""
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    await store.claim_task(t["id"], claimer_id="agent-1")
+    ok = await store.close_task(t["id"], closed_by="lead", reason="escalation", force=True)
+    assert ok is True
+    again = await store.get_task(t["id"])
+    assert again["status"] == "closed"
+    assert again["closed_by"] == "lead"
+
+
+@pytest.mark.asyncio
+async def test_close_unclaimed_unchanged(store):
+    """Unclaimed cards can still be closed by any authorised caller."""
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    ok = await store.close_task(t["id"], closed_by="reviewer", reason="stale")
+    assert ok is True
+    again = await store.get_task(t["id"])
+    assert again["status"] == "closed"
+    assert again["closed_by"] == "reviewer"
