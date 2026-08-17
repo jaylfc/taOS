@@ -50,6 +50,20 @@ describe("ImageViewerApp", () => {
     expect(screen.getByText(/open image/i)).toBeInTheDocument();
   });
 
+  it("shows only the basename when the url encodes a nested path (#tsk-dldkma)", async () => {
+    const encoded = encodeURIComponent("nested/photo.png");
+    render(
+      <ImageViewerApp
+        windowId="win-1"
+        url={`https://taos.local/api/files/${encoded}`}
+      />,
+    );
+    await flush();
+
+    expect(screen.getByText("photo.png")).toBeInTheDocument();
+    expect(screen.queryByText("nested/photo.png")).not.toBeInTheDocument();
+  });
+
   it("loads a selected file, shows its name, and reveals the toolbar", () => {
     const { container } = render(<ImageViewerApp windowId="win-1" />);
     const input = container.querySelector(

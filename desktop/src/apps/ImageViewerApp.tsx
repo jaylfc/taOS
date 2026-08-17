@@ -16,8 +16,8 @@ export function ImageViewerApp({ windowId: _windowId, url }: { windowId: string;
   useEffect(() => {
     if (!url) return;
     setImageUrl(url);
-    const path = url.split("/").pop() ?? "";
-    setFileName(decodeURIComponent(path));
+    const segment = decodeURIComponent(url.split("/").pop() ?? "");
+    setFileName(segment.split("/").pop() ?? "");
   }, [url]);
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {

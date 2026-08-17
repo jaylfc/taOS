@@ -12,8 +12,8 @@ export function MediaPlayerApp({ windowId: _windowId, url }: { windowId: string;
   useEffect(() => {
     if (!url) return;
     setMediaUrl(url);
-    const path = url.split("/").pop() ?? "";
-    setFileName(decodeURIComponent(path));
+    const segment = decodeURIComponent(url.split("/").pop() ?? "");
+    setFileName(segment.split("/").pop() ?? "");
   }, [url]);
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {

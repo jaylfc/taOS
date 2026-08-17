@@ -74,6 +74,20 @@ describe("MediaPlayerApp", () => {
     );
   });
 
+  it("shows only the basename when the url encodes a nested path (#tsk-dldkma)", async () => {
+    const encoded = encodeURIComponent("nested/photo.png");
+    render(
+      <MediaPlayerApp
+        windowId="win-1"
+        url={`https://taos.local/api/files/${encoded}`}
+      />,
+    );
+    await flush();
+
+    expect(screen.getByText("photo.png")).toBeInTheDocument();
+    expect(screen.queryByText("nested/photo.png")).not.toBeInTheDocument();
+  });
+
   it("loads a selected file, shows its name, and mounts the video element", () => {
     const { container } = render(<MediaPlayerApp windowId="win-1" />);
     fireEvent.change(getFileInput(container), {
