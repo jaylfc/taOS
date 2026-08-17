@@ -834,6 +834,31 @@ where `revoked=0 OR blocked=1`, so a blocked device counts against
 `_MAX_DEVICES_PER_USER` until it is unblocked, at which point the row falls out
 and the slot frees. Deliberate: a blocked device is a retained safety valve the
 owner can still see and act on.
+## Task checklist items (`/api/projects/{project_id}/tasks/{task_id}/checklist-items`)
+
+Route module `tinyagentos/routes/projects.py`.
+
+- `POST .../checklist-items` takes a JSON body `{"text": "..."}` and creates one
+  item. A missing `text` is a `422`.
+- `GET .../checklist-items` lists items, newest state included. Takes
+  `?include_archived=true`; the default hides archived items.
+- Both answer `404` when the task is not in the named project, so a task id from
+  another project is existence-hiding rather than merely forbidden.
+- Creating an item logs `checklist.item.created` to the project activity feed
+  with the actor, task id, item id and text.
+- Archiving is store-level only and refuses unless the item is both **verified**
+  and **reported**; there is no archive route.
+
+The handlers call `_authorize_task_actor(...)` and accept EITHER a session
+owner/admin OR a project-bound agent's registry JWT. The Bearer allowlist in
+`tinyagentos/auth_middleware.py` now matches both `GET` and `POST .../checklist-items`
+(see `## Agent-token API surface (Bearer allowlist)` above), so the middleware
+gate no longer refuses agent tokens with `401` and the handler scope check now
+runs: `POST` (create) requires the narrower `project_tasks_create` grant, while
+`GET` (list) takes the default `project_tasks` read grant. A `project_tasks`
+worker lane is therefore refused on `POST` (it lacks the create grant, `403`)
+and authorised on `GET`. `tests/test_routes_task_checklist.py` pins this scope
+split directly, not behind an xfail.
 ## Answering a select decision with free text (`other_value`)
 
 Route module `tinyagentos/routes/decisions.py`. Applies to BOTH answer paths:
@@ -887,10 +912,11 @@ place.
 Task checklist items (added with the OS-owned objective checklist, #2415):
 
 - `GET /api/projects/{project_id}/tasks/{task_id}/checklist-items` -- list;
-  Bearer-reachable so the handler's `project_tasks_create` scope check runs
+  Bearer-reachable so the handler's `project_tasks` (read) scope check runs
   instead of the middleware refusing 401 at the gate.
 - `POST /api/projects/{project_id}/tasks/{task_id}/checklist-items` -- create;
-  same scope check.
+  Bearer-reachable, gated by the narrower `project_tasks_create` scope check
+  rather than the middleware refusing 401 at the gate.
 - `DELETE` and per-item subpaths (`.../checklist-items/{item_id}`) stay
   session-only: no agent-reachable handler exists, and the allowlist must not
   widen past list + create.

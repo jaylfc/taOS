@@ -1247,6 +1247,79 @@ async def list_comments(
     return {"items": await store.list_comments(task_id)}
 
 
+# ---------------------------------------------------------------------------
+# Checklist routes
+# ---------------------------------------------------------------------------
+
+class CreateChecklistItemIn(BaseModel):
+    text: str
+
+
+@router.post("/api/projects/{project_id}/tasks/{task_id}/checklist-items")
+async def create_checklist_item(
+    project_id: str,
+    task_id: str,
+    payload: CreateChecklistItemIn,
+    request: Request,
+):
+    """Create a checklist item for a task.
+
+    Authorized as session owner/admin or an agent holding
+    ``project_tasks_create`` on this project.
+    """
+    pstore = request.app.state.project_store
+    auth = await _authorize_task_actor(
+        request, pstore, project_id, scope="project_tasks_create"
+    )
+    if isinstance(auth, JSONResponse):
+        return auth
+    actor_id, _is_agent, _project = auth
+    store = request.app.state.project_task_store
+    guard = await _require_task_in_project(store, project_id, task_id)
+    if isinstance(guard, JSONResponse):
+        return guard
+    t = await store.get_task(task_id)
+    if t is None or t["project_id"] != project_id:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    item = await store.create_checklist_item(
+        task_id=task_id,
+        text=payload.text,
+        created_by=actor_id,
+    )
+    _beads_mark_dirty(request, project_id)
+    await pstore.log_activity(
+        project_id, actor_id, "checklist.item.created", {"task_id": task_id, "item_id": item["id"], "text": item["text"]}
+    )
+    return item
+
+
+@router.get("/api/projects/{project_id}/tasks/{task_id}/checklist-items")
+async def list_checklist_items(
+    project_id: str,
+    task_id: str,
+    request: Request,
+    include_archived: bool = False,
+):
+    """List checklist items for a task.
+
+    By default shows only non-archived items. Set ``include_archived=true``
+    to see all items including archived ones.
+    """
+    pstore = request.app.state.project_store
+    auth = await _authorize_task_actor(request, pstore, project_id)
+    if isinstance(auth, JSONResponse):
+        return auth
+    store = request.app.state.project_task_store
+    guard = await _require_task_in_project(store, project_id, task_id)
+    if isinstance(guard, JSONResponse):
+        return guard
+    items = await store.list_checklist_items(
+        task_id=task_id,
+        include_archived=include_archived,
+    )
+    return {"items": items}
+
+
 @router.get("/api/projects/{project_id}/tasks/{task_id}/relationships")
 async def list_relationships(
     project_id: str,
