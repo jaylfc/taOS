@@ -942,23 +942,32 @@ class AgentRegistryStore(BaseStore):
         """Set (or, with ``None``, clear) the sponsor_contact_id on a registry row.
 
         Does NOT re-parent an identity that already has a sponsor — once
-        sponsored, the sponsor is immutable (cross-user collab D1 guard).
+        sponsored, the sponsor is immutable (cross-user collab D1 guard).  The
+        guard lives in the UPDATE predicate (atomic, no read→check→write race):
+        setting a non-null sponsor only matches rows whose sponsor is still NULL
+        or empty, so two concurrent set_sponsor calls cannot both win (the loser's
+        WHERE matches 0 rows).  Clearing with ``None`` always matches.
 
         Returns the updated record, or None if *canonical_id* does not exist.
         """
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
-        record = await self.get(canonical_id)
-        if record is None:
-            return None
-        # Guard: never overwrite an existing sponsor (clearing with None is
-        # always allowed so revoke cascades can reset the field).
-        if sponsor_contact_id is not None and record.get("sponsor_contact_id"):
-            return record
-        await self._db.execute(
-            "UPDATE agent_registry SET sponsor_contact_id = ? WHERE canonical_id = ?",
-            (sponsor_contact_id, canonical_id),
-        )
+        if sponsor_contact_id is not None:
+            # Atomic re-parent guard: only a row with no current sponsor is
+            # eligible for a new sponsor.
+            await self._db.execute(
+                "UPDATE agent_registry SET sponsor_contact_id = ? "
+                "WHERE canonical_id = ? "
+                "AND (sponsor_contact_id IS NULL OR sponsor_contact_id = '')",
+                (sponsor_contact_id, canonical_id),
+            )
+        else:
+            # Clearing is always allowed so revoke cascades can reset the field.
+            await self._db.execute(
+                "UPDATE agent_registry SET sponsor_contact_id = NULL "
+                "WHERE canonical_id = ?",
+                (canonical_id,),
+            )
         await self._db.commit()
         return await self.get(canonical_id)
     # ------------------------------------------------------------------

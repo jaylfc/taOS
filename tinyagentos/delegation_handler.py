@@ -41,27 +41,26 @@ _PROJECT_SCOPES: frozenset[str] = frozenset({"project_tasks", "canvas_read", "ca
 
 def validate_delegation_scopes(
     requested_scopes: list[str],
-) -> tuple[list[str], list[str]]:
-    """Validate and filter scopes for a delegation request.
+) -> tuple[list[str], list[str], list[str]]:
+    """Split *requested_scopes* into ``(tier, elevated, denied)``.
 
-    Returns ``(granted_scopes, denied_scopes)``.  Scopes in
-    ``SPONSORED_DENY_SCOPES`` are stripped with a warning; scopes outside
-    ``SPONSORED_DEFAULT_SCOPES`` require explicit per-scope Decisions approval
-    but are NOT auto-denied — they surface to the human for approval.
-
-    The returned ``granted_scopes`` are safe-to-mint; any scope in
-    ``denied_scopes`` was hard-denied and will never be included in the minted
-    invite.
+    * ``tier`` — scopes in the #2019 default allowlist
+      (``SPONSORED_DEFAULT_SCOPES``); safe to auto-grant.
+    * ``elevated`` — scopes outside BOTH the allowlist and the deny list;
+      require explicit per-scope human approval and are NEVER auto-granted.
+    * ``denied`` — scopes in ``SPONSORED_DENY_SCOPES``; hard-denied and never
+      minted.
     """
     requested_set = set(requested_scopes)
     denied = sorted(requested_set & SPONSORED_DENY_SCOPES)
-    allowed = sorted(requested_set - SPONSORED_DENY_SCOPES)
+    tier = sorted(requested_set & SPONSORED_DEFAULT_SCOPES)
+    elevated = sorted(requested_set - SPONSORED_DEFAULT_SCOPES - SPONSORED_DENY_SCOPES)
     if denied:
         logger.warning(
             "delegation: hard-denied scopes %r from request %r",
             denied, sorted(requested_set),
         )
-    return allowed, denied
+    return tier, elevated, denied
 
 
 def _validate_delegation_envelope_body(body: dict) -> tuple[bool, str, Optional[dict]]:
@@ -150,22 +149,27 @@ async def process_delegation_request(
             ),
         }
 
-    # Apply scope denylist.
-    granted_scopes, denied_scopes = validate_delegation_scopes(requested_scopes)
+    # Split the request into the default (allowlist) tier, elevated scopes, and
+    # hard-denied scopes.  Only the tier is ever auto-grantable; elevated scopes
+    # require explicit human approval and hard-denied scopes are never minted.
+    tier_scopes, elevated_scopes, denied_scopes = validate_delegation_scopes(requested_scopes)
 
     # Check project policy: auto_approve_delegation knob.
     auto_approve = await project_store.get_project_setting(
         project_id, "auto_approve_delegation", default=False
     )
 
-    if auto_approve:
-        # Future dev-swarm path: immediate approval.
+    # Auto-approve is only ever allowed when there are NO elevated scopes — a
+    # remote contact must never be auto-granted a scope outside the default
+    # tier.  Any elevated scope forces the manual path.
+    if auto_approve and not elevated_scopes:
+        # Future dev-swarm path: immediate approval (tier scopes only).
         return await _auto_approve_delegation(
             request,
             contact_id=contact_id,
             agent_slug=agent_slug,
             display_name=display_name,
-            granted_scopes=granted_scopes,
+            granted_scopes=tier_scopes,
             denied_scopes=denied_scopes,
             project_id=project_id,
         )
@@ -176,7 +180,8 @@ async def process_delegation_request(
         contact_id=contact_id,
         agent_slug=agent_slug,
         display_name=display_name,
-        granted_scopes=granted_scopes,
+        granted_scopes=tier_scopes,
+        elevated_scopes=elevated_scopes,
         denied_scopes=denied_scopes,
         project_id=project_id,
     )
@@ -189,15 +194,16 @@ async def _create_delegation_decision(
     agent_slug: str,
     display_name: str,
     granted_scopes: list[str],
+    elevated_scopes: list[str],
     denied_scopes: list[str],
     project_id: str,
 ) -> dict:
     """Create a blocking Decisions card for manual delegation approval.
 
-    The human sees: "contact {contact_id} wants to delegate agent
-    '{display_name}' ({agent_slug}) to project {project_id} with scopes
-    {granted_scopes}."  Any hard-denied scopes are noted in the question
-    text so the human knows they were stripped.
+    The human sees the routine (tier) scopes and — separately and per-scope —
+    any elevated scopes that require explicit approval, so elevated scopes are
+    never bundled silently into the routine grant.  Hard-denied scopes are
+    noted in the question text so the human knows they were stripped.
     """
     decision_store = getattr(request.app.state, "decision_store", None)
     if decision_store is None:
@@ -206,8 +212,13 @@ async def _create_delegation_decision(
     question_parts = [
         f"{contact_id} wants to delegate agent "
         f"'{display_name}' ({agent_slug}) to this project",
-        f"Requested scopes: {', '.join(granted_scopes)}",
+        f"Routine scopes: {', '.join(granted_scopes) or '(none)'}",
     ]
+    if elevated_scopes:
+        question_parts.append(
+            f"Elevated scopes — require explicit approval: "
+            f"{', '.join(elevated_scopes)}"
+        )
     if denied_scopes:
         question_parts.append(
             f"(Hard-denied: {', '.join(denied_scopes)} — "
@@ -229,6 +240,7 @@ async def _create_delegation_decision(
                 "agent_slug": agent_slug,
                 "display_name": display_name,
                 "granted_scopes": granted_scopes,
+                "elevated_scopes": elevated_scopes,
                 "denied_scopes": denied_scopes,
                 "project_id": project_id,
             },
@@ -278,6 +290,7 @@ async def _auto_approve_delegation(
             created_by=contact_id,
             pin_required=False,
             display_name=display_name,
+            metadata={"sponsor_contact_id": contact_id},
         )
     except Exception:
         logger.warning(
@@ -311,6 +324,7 @@ async def complete_delegation_approval(
     agent_slug = decision_metadata.get("agent_slug", "")
     display_name = decision_metadata.get("display_name", "")
     granted_scopes = decision_metadata.get("granted_scopes", [])
+    elevated_scopes = decision_metadata.get("elevated_scopes", [])
     project_id = decision_metadata.get("project_id", "")
 
     if not all([contact_id, agent_slug, display_name, project_id]):
@@ -319,9 +333,12 @@ async def complete_delegation_approval(
     # Re-validate project membership at approval time: the contact may have
     # been removed from the project between decision creation and approval.
     # This is the fail-closed runtime check required by section 5 of the
-    # cross-user-collab design spec.
+    # cross-user-collab design spec.  A missing project_store is an error, not
+    # a pass (the old code failed OPEN and minted anyway).
     project_store = getattr(request.app.state, "project_store", None)
-    if project_store is not None and not await project_store.is_project_member(
+    if project_store is None:
+        return {"status": "error", "error": "project store not available"}
+    if not await project_store.is_project_member(
         project_id, contact_id, member_kind="human"
     ):
         return {
@@ -341,7 +358,9 @@ async def complete_delegation_approval(
     # approval.  The denylist is the authoritative gate; the stored scopes are
     # the human-approved set, but the code must never mint tokens for
     # hard-denied scopes regardless.
-    safe_scopes, re_denied = validate_delegation_scopes(granted_scopes)
+    combined = list(dict.fromkeys(granted_scopes + elevated_scopes))
+    safe_tier, safe_elevated, re_denied = validate_delegation_scopes(combined)
+    safe_scopes = safe_tier + safe_elevated
     if re_denied:
         logger.warning(
             "complete_delegation_approval: re-stripped hard-denied scopes %r from stored grant",
@@ -357,6 +376,7 @@ async def complete_delegation_approval(
             created_by=contact_id,
             pin_required=False,
             display_name=display_name,
+            metadata={"sponsor_contact_id": contact_id},
         )
     except Exception:
         logger.warning(
@@ -482,36 +502,42 @@ async def _unassign_agent_tasks(
     canonical_id: str,
     project_id: str | None = None,
 ) -> int:
-    """Unassign all in-flight tasks for *canonical_id*, moving them back to 'ready'.
+    """Release every in-flight (claimed) task held by *canonical_id*.
 
-    Returns the count of tasks unassigned.
+    The task store's vocabulary is ``open``/``claimed`` with ``claimed_by`` —
+    NOT ``status="in_progress"`` + ``assignee_id``.  It enforces one active
+    claim per agent, so there is at most one 'claimed' task to release.  Uses
+    the store's real release path (``release_task`` — the ``claimed -> open``
+    transition that clears ``claimed_by``/``claimed_at``).
+
+    Returns the count of tasks released.
     """
-    # The task store interface varies by implementation; use the available
-    # method to find and unassign.  We query for tasks with assignee matching
-    # the agent's canonical_id and reset them.
-    try:
-        tasks = await task_store.list_for_assignee(canonical_id)
-    except AttributeError:
-        # Fall back: try list_tasks with filter.
-        try:
-            all_tasks = await task_store.list_tasks(
-                project_id=project_id,
-                status="in_progress",
-            )
-            tasks = [t for t in all_tasks if t.get("assignee_id") == canonical_id]
-        except Exception:
-            return 0
-
     count = 0
-    for task in tasks:
-        task_id = task.get("id") or task.get("task_id")
-        if not task_id:
-            continue
+    while True:
         try:
-            await task_store.update_task(task_id, assignee_id=None, status="ready")
-            count += 1
+            task_id = await task_store.held_task(canonical_id)
+        except AttributeError:
+            logger.warning(
+                "unassign_agent_tasks: task store has no held_task(); "
+                "skipping task release for %s",
+                canonical_id,
+            )
+            return count
+        if task_id is None:
+            break
+        try:
+            released = await task_store.release_task(task_id, canonical_id)
         except Exception:
-            pass
+            logger.warning(
+                "unassign_agent_tasks: release_task(%s) failed for %s",
+                task_id, canonical_id, exc_info=True,
+            )
+            break
+        if not released:
+            # The claim changed under us (e.g. already released); stop rather
+            # than spin.
+            break
+        count += 1
 
     return count
 

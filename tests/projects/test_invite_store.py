@@ -847,9 +847,9 @@ async def test_boot_migration_adds_kind_pin_required_contact_id(tmp_path):
 @pytest.mark.asyncio
 async def test_mint_redeem_pin_not_required_e2e(store):
     """End-to-end: mint an invite with pin_required=False, redeem with any
-    pin, and verify the invite is claimed. This kills A1 (mint returns pin
-    even when not required) + A2 (redeem skips PIN verification when
-    pin_required=False) in one test."""
+    pin, and verify the invite is claimed.  Covers two #2048 regressions in
+    one path: mint returns a ``pin_required=0`` record when the flag is False,
+    and redeem skips PIN verification when ``pin_required=False``."""
     result = await store.mint(
         project_id="prj-e2e",
         scopes=["a2a_send"],
@@ -861,17 +861,13 @@ async def test_mint_redeem_pin_not_required_e2e(store):
     assert result["record"]["pin_required"] == 0
 
     # Redeem with empty string — must succeed even though PIN was never
-    # communicated to the invitee (A2 fix).
+    # communicated to the invitee (pin_required=False skips PIN verification).
     record = await store.redeem(result["record"]["invite_id"], "")
     assert record["status"] == "claimed"
     assert record["project_id"] == "prj-e2e"
 
-    # Redeem again with any other string — already claimed.
+    # Redeem again — already claimed, so any further redeem (with any pin)
+    # raises InviteAlreadyRedeemedError, not InvitePinError: the status guard
+    # fires before the PIN check.
     with pytest.raises(InviteAlreadyRedeemedError):
         await store.redeem(result["record"]["invite_id"], "0000")
-
-    # Also verify: a wrong-PIN attempt on the same invite (already claimed)
-    # raises InviteAlreadyRedeemedError, not InvitePinError — the status
-    # guard fires before the PIN check.
-    with pytest.raises(InviteAlreadyRedeemedError):
-        await store.redeem(result["record"]["invite_id"], "wrong")

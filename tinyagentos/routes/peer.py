@@ -224,21 +224,29 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
     if kind in ("collab_invite_accept", "collab_invite_decline"):
         return await _handle_collab_response(request, contact_id, envelope, body_data, kind)
 
+    # Dispatch delegation requests to the cross-user collab handler (D1).
+    # This MUST sit above the unrecognised-kind log so a delegation request
+    # does not log "no dispatch" and then dispatch.
+    if kind == "delegation_request":
+        from tinyagentos.delegation_handler import process_delegation_request
+
+        result = await process_delegation_request(
+            request, contact_id=contact_id, envelope_body=body_data,
+        )
+        # Return a summary to the peer; do NOT leak handler internals (the full
+        # result dict) verbatim.
+        return {
+            "status": result.get("status", "unknown"),
+            "decision_id": result.get("decision_id"),
+            "invite_id": result.get("invite_id"),
+            "agent_slug": result.get("agent_slug"),
+        }
+
     # Log unrecognised kinds for debugging; they are accepted but not dispatched.
     logger.info(
         "peer_inbox: contact=%s kind=%s nonce=%s (unrecognised kind — accepted, no dispatch)",
         contact_id, kind, envelope.get("nonce", "?"),
     )
-
-    # Dispatch delegation requests to the cross-user collab handler (D1).
-    if kind == "delegation_request":
-        from tinyagentos.delegation_handler import process_delegation_request
-
-        body_data = envelope.get("body", {})
-        result = await process_delegation_request(
-            request, contact_id=contact_id, envelope_body=body_data,
-        )
-        return {"status": result.get("status", "unknown"), "detail": result}
 
     return {"status": "received", "kind": kind, "nonce": envelope.get("nonce")}
 

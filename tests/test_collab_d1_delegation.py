@@ -16,37 +16,41 @@ class TestDelegationScopeValidation:
     def test_hard_denies_files_write(self):
         from tinyagentos.delegation_handler import validate_delegation_scopes
 
-        granted, denied = validate_delegation_scopes(
+        tier, elevated, denied = validate_delegation_scopes(
             ["a2a_send", "files_write", "project_tasks"]
         )
         assert "files_write" in denied
-        assert "files_write" not in granted
-        assert "a2a_send" in granted
-        assert "project_tasks" in granted
+        assert "files_write" not in tier
+        assert "a2a_send" in tier
+        assert "project_tasks" in tier
+        assert elevated == []
 
     def test_hard_denies_decisions_write(self):
         from tinyagentos.delegation_handler import validate_delegation_scopes
 
-        granted, denied = validate_delegation_scopes(
+        tier, elevated, denied = validate_delegation_scopes(
             ["decisions_write", "canvas_read"]
         )
         assert "decisions_write" in denied
-        assert "decisions_write" not in granted
-        assert "canvas_read" in granted
+        assert "decisions_write" not in tier
+        assert "canvas_read" in tier
+        assert elevated == []
 
     def test_allows_default_scopes(self):
         from tinyagentos.delegation_handler import validate_delegation_scopes
         from tinyagentos.delegation_handler import SPONSORED_DEFAULT_SCOPES
 
-        granted, denied = validate_delegation_scopes(list(SPONSORED_DEFAULT_SCOPES))
+        tier, elevated, denied = validate_delegation_scopes(list(SPONSORED_DEFAULT_SCOPES))
         assert len(denied) == 0
-        assert set(granted) == SPONSORED_DEFAULT_SCOPES
+        assert elevated == []
+        assert set(tier) == SPONSORED_DEFAULT_SCOPES
 
     def test_empty_request_returns_no_scopes(self):
         from tinyagentos.delegation_handler import validate_delegation_scopes
 
-        granted, denied = validate_delegation_scopes([])
-        assert granted == []
+        tier, elevated, denied = validate_delegation_scopes([])
+        assert tier == []
+        assert elevated == []
         assert denied == []
 
 
@@ -350,7 +354,7 @@ class TestMintReturnShape:
         assert result["status"] == "approved"
         invite_id = result["invite_id"]
         assert isinstance(invite_id, str)
-        assert len(invite_id) == 6  # 6-digit invite ID
+        assert len(invite_id) >= 20  # token_urlsafe id (PIN-free invite)
 
         # The invite must actually exist in the store and be redeemable.
         invite_row = await store.get(invite_id)
@@ -566,7 +570,7 @@ class TestDelegationE2E:
 
         assert result["status"] == "approved"
         invite_id = result["invite_id"]
-        assert len(invite_id) == 6
+        assert len(invite_id) >= 20  # token_urlsafe id (PIN-free invite)
 
         # Step 2: verify invite in store
         invite = await store.get(invite_id)
@@ -718,4 +722,233 @@ class TestManualApprovalWiring:
 
         await invite_store.close()
         await decision_store.close()
+
+
+# ---------------------------------------------------------------------------
+# Security blockers (jaylfc Aug 17 14:16 re-review) — red-first regression tests.
+# ---------------------------------------------------------------------------
+
+
+class TestSponsoredInviteMetadata:
+    """Blockers #1 — sponsored-invite metadata must carry sponsor_contact_id."""
+
+    @pytest.mark.asyncio
+    async def test_process_delegation_request_writes_sponsor_metadata(self, tmp_path):
+        from unittest.mock import AsyncMock, MagicMock
+        from tinyagentos.delegation_handler import process_delegation_request
+        from tinyagentos.projects.invite_store import ProjectInviteStore
+
+        store = ProjectInviteStore(tmp_path / "invites.db")
+        await store.init()
+
+        project_store = AsyncMock()
+        project_store.is_project_member.return_value = True
+        project_store.get_project_setting.return_value = True
+
+        request = MagicMock()
+        request.app.state.project_store = project_store
+        request.app.state.project_invites = store
+
+        result = await process_delegation_request(
+            request,
+            contact_id="hub:sponsor",
+            envelope_body={
+                "agent_slug": "grok-taos",
+                "display_name": "Grok TAOS",
+                "requested_scopes": ["a2a_send"],
+                "project_id": "prj-test",
+            },
+        )
+        assert result["status"] == "approved"
+
+        invite = await store.get(result["invite_id"])
+        assert invite["metadata"]["sponsor_contact_id"] == "hub:sponsor"
+        await store.close()
+
+
+class TestScopeTierVsElevated:
+    """Blockers #2 — tier (allowlist) vs elevated scopes must be split."""
+
+    def test_validate_splits_tier_from_elevated(self):
+        from tinyagentos.delegation_handler import validate_delegation_scopes
+
+        tier, elevated, denied = validate_delegation_scopes(
+            ["a2a_send", "tools_execute"]
+        )
+        assert "a2a_send" in tier
+        assert "tools_execute" in elevated
+        assert "tools_execute" not in tier
+        assert denied == []
+
+    @pytest.mark.asyncio
+    async def test_auto_approve_never_grants_elevated(self, tmp_path):
+        from unittest.mock import AsyncMock, MagicMock
+        from tinyagentos.delegation_handler import process_delegation_request
+        from tinyagentos.projects.invite_store import ProjectInviteStore
+        from tinyagentos.decisions.decision_store import DecisionStore
+
+        store = ProjectInviteStore(tmp_path / "invites.db")
+        await store.init()
+        decision_store = DecisionStore(tmp_path / "decisions.db")
+        await decision_store.init()
+
+        project_store = AsyncMock()
+        project_store.is_project_member.return_value = True
+        project_store.get_project_setting.return_value = True  # auto-approve ON
+
+        request = MagicMock()
+        request.app.state.project_store = project_store
+        request.app.state.project_invites = store
+        request.app.state.decision_store = decision_store
+
+        result = await process_delegation_request(
+            request,
+            contact_id="hub:sponsor",
+            envelope_body={
+                "agent_slug": "grok-taos",
+                "display_name": "Grok TAOS",
+                "requested_scopes": ["a2a_send", "tools_execute"],
+                "project_id": "prj-test",
+            },
+        )
+        # An elevated scope must never be auto-granted: the request must route
+        # to manual approval, not mint an invite containing tools_execute.
+        assert result["status"] == "pending_approval"
+        # And no invite may have been minted on the auto path.
+        invites = await store.list_for_project("prj-test")
+        assert invites == []
+        await store.close()
+        await decision_store.close()
+
+
+class TestApprovalMembershipFailClosed:
+    """Blockers #3 — approval-time membership re-check must fail closed."""
+
+    @pytest.mark.asyncio
+    async def test_complete_approval_fails_closed_without_project_store(self, tmp_path):
+        from unittest.mock import MagicMock
+        from tinyagentos.delegation_handler import complete_delegation_approval
+        from tinyagentos.projects.invite_store import ProjectInviteStore
+
+        store = ProjectInviteStore(tmp_path / "invites.db")
+        await store.init()
+
+        request = MagicMock()
+        request.app.state.project_store = None  # missing -> must fail closed
+        request.app.state.project_invites = store
+
+        result = await complete_delegation_approval(
+            request,
+            decision_metadata={
+                "contact_id": "hub:sponsor",
+                "agent_slug": "grok-taos",
+                "display_name": "Grok TAOS",
+                "granted_scopes": ["a2a_send"],
+                "project_id": "prj-test",
+            },
+        )
+        # Failing closed: a missing project_store must yield an error, not a
+        # silently minted invite (the old code failed OPEN and minted anyway).
+        assert result["status"] == "error"
+        assert "project store" in result["error"]
+        # And no invite may have been minted.
+        invites = await store.list_for_project("prj-test")
+        assert invites == []
+        await store.close()
+
+
+class TestSetSponsorAtomicGuard:
+    """Blockers #4 — set_sponsor immutability must be enforced in the UPDATE
+    predicate, not a read->check->write race."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_set_sponsor_reparents_once(self, tmp_path):
+        import asyncio
+
+        from tinyagentos.agent_registry_store import AgentRegistryStore
+
+        db_path = tmp_path / "registry.db"
+        # Two stores over the same file = two connections = a real race window.
+        store_a = AgentRegistryStore(db_path)
+        await store_a.init()
+        store_b = AgentRegistryStore(db_path)
+        await store_b.init()
+
+        reg = await store_a.register(
+            framework="test",
+            display_name="Race Agent",
+            user_id="user-1",
+            origin="external-selfjoin",
+            handle="race-agent",
+        )
+        cid = reg["canonical_id"]
+
+        # Concurrent re-parent attempts: whichever wins, the identity ends up
+        # with exactly one sponsor and cannot be re-parented a second time.
+        await asyncio.gather(
+            store_a.set_sponsor(cid, "hub:A"),
+            store_b.set_sponsor(cid, "hub:B"),
+        )
+
+        agent = await store_a.get(cid)
+        assert agent["sponsor_contact_id"] in ("hub:A", "hub:B")
+
+        # A later re-parent to a third sponsor must be refused.
+        await store_a.set_sponsor(cid, "hub:C")
+        agent = await store_a.get(cid)
+        assert agent["sponsor_contact_id"] != "hub:C"
+        await store_a.close()
+        await store_b.close()
+
+
+class TestUnassignAgentTasks:
+    """Blockers #5 — cascade revoke must release claimed tasks via the store's
+    real release path (claimed -> open), not a non-existent in_progress/assignee
+    vocabulary."""
+
+    @pytest.mark.asyncio
+    async def test_unassign_releases_claimed_task(self, tmp_path):
+        from tinyagentos.delegation_handler import _unassign_agent_tasks
+        from tinyagentos.projects.task_store import ProjectTaskStore
+
+        store = ProjectTaskStore(tmp_path / "tasks.db")
+        await store.init()
+
+        task = await store.create_task("prj-1", "Fix bug", "alice")
+        tid = task["id"]
+        claimed = await store.claim_task(tid, "agent-1")
+        assert claimed is True
+
+        count = await _unassign_agent_tasks(store, "agent-1", project_id="prj-1")
+        assert count == 1
+
+        fetched = await store.get_task(tid)
+        assert fetched["status"] == "open"
+        assert fetched["claimed_by"] is None
+        await store.close()
+
+
+class TestPinFreeInviteIdEntropy:
+    """Blockers #6 — PIN-free invite IDs must be high-entropy, not 6 digits."""
+
+    @pytest.mark.asyncio
+    async def test_pin_free_invite_id_is_high_entropy(self, tmp_path):
+        from tinyagentos.projects.invite_store import ProjectInviteStore
+
+        store = ProjectInviteStore(tmp_path / "invites.db")
+        await store.init()
+
+        result = await store.mint(
+            project_id="prj-1",
+            scopes=["a2a_send"],
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by="u",
+            pin_required=False,
+        )
+        invite_id = result["record"]["invite_id"]
+        # token_urlsafe-class id, not a guessable 6-digit numeric credential.
+        assert len(invite_id) >= 20
+        assert not invite_id.isdigit()
+        await store.close()
 

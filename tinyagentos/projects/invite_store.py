@@ -126,7 +126,14 @@ class ProjectInviteStore(BaseStore):
         )
         await self._db.commit()
 
-    def _generate_invite_id(self) -> str:
+    def _generate_invite_id(self, *, pin_required: bool = True) -> str:
+        # PIN-free invites carry no PIN gate, so a 6-digit numeric id would be a
+        # guessable credential (the per-IP rate limit does not hold across
+        # source IPs).  Use a high-entropy token_urlsafe id for those kinds.
+        # PIN-required invites keep the short 6-digit id — the PIN supplies the
+        # entropy.
+        if not pin_required:
+            return secrets.token_urlsafe(32)
         return f"{secrets.randbelow(1_000_000):06d}"
 
     def _generate_pin(self) -> str:
@@ -197,7 +204,7 @@ class ProjectInviteStore(BaseStore):
         # collision surfaces as a slight latency bump rather than a 500.
         max_retries = 5
         for attempt in range(max_retries):
-            invite_id = self._generate_invite_id()
+            invite_id = self._generate_invite_id(pin_required=pin_required)
             try:
                 await self._db.execute(
                     """
