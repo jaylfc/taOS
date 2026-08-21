@@ -37,6 +37,15 @@ class _FakeStore:
     async def update_state(self, message_id: str, state: str) -> None:
         self.states[message_id] = state
 
+    async def append_content_block(self, message_id: str, block: dict):
+        if message_id not in self.messages:
+            return None
+        blocks = self.messages[message_id].get("content_blocks") or []
+        blocks = list(blocks)
+        blocks.append(block)
+        self.messages[message_id]["content_blocks"] = blocks
+        return blocks
+
 
 class _FakeChannelStore:
     def __init__(self, channels=None):
@@ -317,3 +326,101 @@ async def test_delta_buffer_flushed_per_trace_id():
     assert "A" in contents
     # tB buffer not yet flushed — no message for it yet
     assert "B" not in contents
+
+
+# ---------------------------------------------------------------------------
+# Decision content block attachment (request_decision tool_result -> inline block)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_request_decision_tool_result_attaches_block():
+    """A tool_result for request_decision must append a {kind:"decision",
+    decision_id} content block to the pending streaming message and broadcast."""
+    reg, msg_store, ch_store, hub, tr = _make_registry()
+
+    # Simulate deltas that create a streaming placeholder message.
+    await reg.record_reply("bot1", {
+        "kind": "delta", "trace_id": "t-dec", "content": "Let me ask...",
+    })
+    pending_msg_id = reg._sessions["bot1"]._pending_msg_ids["t-dec"]
+    assert pending_msg_id is not None
+
+    # tool_result carrying a dict result with decision_id.
+    await reg.record_reply("bot1", {
+        "kind": "tool_result", "trace_id": "t-dec",
+        "tool": "request_decision",
+        "result": {"ok": True, "decision_id": "dec-abc", "status": "pending"},
+        "success": True,
+    })
+
+    msg = msg_store.messages[pending_msg_id]
+    blocks = msg.get("content_blocks", [])
+    assert {"kind": "decision", "decision_id": "dec-abc"} in blocks
+
+    # A message_edit broadcast carrying the full updated blocks was fired.
+    edits = [p for _, p in hub.broadcasts if p["type"] == "message_edit"]
+    assert any(p["message_id"] == pending_msg_id for p in edits)
+    assert edits[-1]["content_blocks"] == blocks
+
+
+@pytest.mark.asyncio
+async def test_request_decision_json_string_result():
+    """The result may arrive as a JSON string; the bridge must parse it."""
+    reg, msg_store, ch_store, hub, tr = _make_registry()
+
+    await reg.record_reply("bot1", {
+        "kind": "delta", "trace_id": "t-js", "content": "hi",
+    })
+    pending_msg_id = reg._sessions["bot1"]._pending_msg_ids["t-js"]
+
+    await reg.record_reply("bot1", {
+        "kind": "tool_result", "trace_id": "t-js",
+        "tool": "request_decision",
+        "result": '{"ok": true, "decision_id": "dec-xyz", "status": "pending"}',
+        "success": True,
+    })
+
+    msg = msg_store.messages[pending_msg_id]
+    assert {"kind": "decision", "decision_id": "dec-xyz"} in msg["content_blocks"]
+
+
+@pytest.mark.asyncio
+async def test_non_request_decision_tool_result_no_block():
+    """A tool_result for a different tool must NOT attach a decision block."""
+    reg, msg_store, ch_store, hub, tr = _make_registry()
+
+    await reg.record_reply("bot1", {
+        "kind": "delta", "trace_id": "t-other", "content": "hi",
+    })
+    pending_msg_id = reg._sessions["bot1"]._pending_msg_ids["t-other"]
+
+    await reg.record_reply("bot1", {
+        "kind": "tool_result", "trace_id": "t-other",
+        "tool": "web_search",
+        "result": {"url": "https://example.com"},
+        "success": True,
+    })
+
+    msg = msg_store.messages[pending_msg_id]
+    assert msg.get("content_blocks") in (None, [])
+
+
+@pytest.mark.asyncio
+async def test_request_decision_no_pending_message_no_block():
+    """A decision raised with no chat origin (no pending message) must NOT
+    create a chat block -- the block is keyed to an in-flight chat message."""
+    reg, msg_store, ch_store, hub, tr = _make_registry()
+
+    # No preceding delta: there is no pending streaming message for this trace.
+    await reg.record_reply("bot1", {
+        "kind": "tool_result", "trace_id": "t-orphan",
+        "tool": "request_decision",
+        "result": {"ok": True, "decision_id": "dec-orphan", "status": "pending"},
+        "success": True,
+    })
+
+    # No message should have been created with a decision block.
+    assert not any(
+        {"kind": "decision", "decision_id": "dec-orphan"} in (m.get("content_blocks") or [])
+        for m in msg_store.messages.values()
+    )

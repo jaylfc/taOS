@@ -31,6 +31,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 2048
+  sha256: b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897
 - id: q8_0
   name: Q8_0 (1.83GB)
   format: gguf
@@ -53,6 +54,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 2560
+  sha256: 061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a
 hardware_tiers:
   arm-cpu-8gb:
     recommended: q4_k_m

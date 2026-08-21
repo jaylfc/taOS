@@ -45,4 +45,13 @@ export interface ProjectGroup {
   channels: Channel[];
 }
 
+/**
+ * Sidebar presence state for an agent DM channel, derived from the agent's
+ * registry status plus real-time "thinking" events.
+ * - "working" -- agent is actively generating (thinking / running a tool).
+ * - "live"    -- agent is registered as running and available.
+ * - "idle"    -- agent is paused, stopped, failed, or otherwise unavailable.
+ */
+export type AgentPresence = "live" | "working" | "idle";
+
 export type WsStatus = "connecting" | "connected" | "disconnected";

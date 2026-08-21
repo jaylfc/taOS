@@ -18,16 +18,12 @@ def _first_framework_with_shortcuts():
 def test_validate_accepts_shortcuts_field():
     """validate_framework_manifest must not raise when shortcuts are well-formed."""
     name, fw = _first_framework_with_shortcuts()
-    if fw is None:
-        pytest.skip("No framework has shortcuts yet — will pass after Task 11 adds them")
     validate_framework_manifest(name, fw)  # must not raise
 
 
 def test_validate_rejects_malformed_shortcut():
     """validate_framework_manifest raises ValueError for a bad shortcut entry."""
     name, fw = _first_framework_with_shortcuts()
-    if fw is None:
-        pytest.skip("No framework has shortcuts yet")
     bad = copy.deepcopy(fw)
     bad["shortcuts"][0].pop("kind")
     with pytest.raises(ValueError, match="missing 'kind'"):

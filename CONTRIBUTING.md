@@ -180,7 +180,7 @@ The UI is a React SPA (`desktop/`) built with Vite. Static assets are served fro
 ### Tests
 
 - Use pytest; fixtures live in `tests/conftest.py` - use them
-- Mirror the module structure: `tinyagentos/routes/agents.py` -> `tests/test_agents.py`
+- Mirror the module structure: `tinyagentos/routes/agents.py` -> `tests/test_routes_agents.py`
 - All PRs must pass CI before merge
 
 ### Commits
@@ -253,24 +253,59 @@ Applied to your own changes:
 
 ## Documentation gate
 
-A gate blocks PRs that add or remove certain feature code without a matching doc update. It only fires on structural changes (a file added or deleted), never on a plain edit, and only for a small set of conservative rules configured in `docs/doc-gate.toml`:
+A gate blocks PRs that change feature code without a matching doc update, unless
+a commit in the PR carries a non-empty `Docs-Reviewed: <why>` trailer. The gate
+is configured in `docs/doc-gate.toml`; rules are data, no code changes needed to
+add new ones.
+
+### What triggers the gate
+
+The gate fires on **additions, deletions, and modifications** (plain edits count)
+for the following trees:
 
 | Change | Requires editing one of |
 |--------|--------------------------|
-| A desktop app under `desktop/src/apps/` is added or removed | `README.md` |
-| A route module under `tinyagentos/routes/` is added or removed | `docs/agent-coordination.md` |
-| An installer under `tinyagentos/installers/` or `scripts/install*` is added or removed | `README.md` |
-| A manifest under `app-catalog/` is added or removed | `README.md` |
+| A route module under `tinyagentos/routes/` is added, removed, or modified | `docs/agent-coordination.md` |
+| An installer under `tinyagentos/installers/` or `scripts/install*` is added, removed, or modified | `README.md` |
+| A manifest under `app-catalog/` is added, removed, or modified | `README.md` |
+| `tinyagentos/auth_middleware.py` is added, removed, or modified | `docs/agent-coordination.md` |
 
-If your PR trips a rule and there is genuinely nothing to document (or you already covered it elsewhere), add a trailer line to a commit message instead of editing a doc:
+In addition, **any non-test change under `tinyagentos/` or `desktop/src/`**
+(docs and assets under those trees included, not only code) requires a
+changelog entry: either a line in `CHANGELOG.md`
+or a new file under `changelog.d/` (preferred, avoids merge conflicts on the
+shared `[Unreleased]` anchor).
 
-```
+Agent-facing changes (agent registry, token auth, the scope-requests store,
+`tinyagentos/routes/agent_*.py`, and the MCP surface) also require a doc:
+either a page under `docs/agent-manual/` or `docs/agent-coordination.md`
+satisfies the rule.
+
+### Test-file exemption
+
+Test files are never structural changes and do not trip the gate. This covers
+Python `test_*.py` modules, co-located `__tests__/` directories, and frontend
+`*.test.*` / `*.spec.*` files.
+
+### Docs-Reviewed trailer
+
+If your PR trips a rule and there is genuinely nothing to document (or you
+already covered it elsewhere), add a trailer line to a commit message instead of
+editing a doc:
+
+```text
 Docs-Reviewed: no user-facing change, internal refactor only
 ```
 
-The trailer must have non-empty text after the colon; a bare `Docs-Reviewed:` does not count.
+The trailer must have non-empty text after the colon; a bare `Docs-Reviewed:`
+does not count. When CI detects the trailer it logs which commit used it and who
+authored it, then passes all rules for that PR.
 
-Run `scripts/install-git-hooks.sh` once to enable local hooks (`.githooks/pre-commit` and `.githooks/commit-msg`) so the gate runs before you push instead of after you open the PR. Local hooks are a convenience only: `.github/workflows/doc-gate.yml` is the authoritative check and runs on every PR regardless of local setup or `--no-verify`.
+Run `scripts/install-git-hooks.sh` once to enable local hooks (`.githooks/pre-commit`
+and `.githooks/commit-msg`) so the gate runs before you push instead of after you
+open the PR. Local hooks are a convenience only: `.github/workflows/doc-gate.yml`
+is the authoritative check and runs on every PR regardless of local setup or
+`--no-verify`.
 
 To add a new rule, edit `docs/doc-gate.toml` -- rules are data, no code changes needed.
 

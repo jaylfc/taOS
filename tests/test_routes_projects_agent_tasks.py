@@ -64,7 +64,7 @@ async def _new_task(ctx, pid, title="T"):
     return resp.json()["id"]
 
 
-async def _mint_agent(ctx, project_id, scopes=("project_tasks",)):
+async def _mint_agent(ctx, project_id, scopes=("project_tasks",), handle="@grok"):
     registry = ctx.app.state.agent_registry
     grants = ctx.app.state.agent_grants
     priv, _pub = ctx.app.state.agent_registry_keypair
@@ -72,7 +72,7 @@ async def _mint_agent(ctx, project_id, scopes=("project_tasks",)):
         framework="grok",
         display_name="Grok",
         origin="external-selfjoin",
-        handle="@grok",
+        handle=handle,
     )
     cid = rec["canonical_id"]
     await registry.set_status(cid, "active")
@@ -529,6 +529,64 @@ class TestSessionRegression:
         )
         assert close.status_code == 200
         assert close.json()["status"] == "closed"
+
+    async def test_admin_session_closes_agent_claimed_card_lead_is_agent(self, ctx):
+        """Issue #2191 repro: the board lead is an AGENT registry id, so a
+        session admin's actor id (a USER id) can never equal lead_member_id.
+        The ownership guard's force bypass must cover owner + session admin,
+        not just the lead, or every admin-session close of an agent-claimed
+        card returns 409."""
+        pid = await _new_project(ctx, "alpha")
+        tid = await _new_task(ctx, pid)
+        lead_cid, _lead_token = await _mint_agent(ctx, pid, handle="@lead")
+        pstore = ctx.app.state.project_store
+        await pstore.add_member(pid, lead_cid, "native")
+        await pstore.set_lead(pid, lead_cid)
+        # A different lane agent claims the card.
+        lane_cid, lane_token = await _mint_agent(ctx, pid, handle="@lane")
+        async with _bare(ctx.app) as bare:
+            claim = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/claim",
+                json={"claimer_id": lane_cid},
+                headers=_hdr(lane_token),
+            )
+        assert claim.status_code == 200, claim.text
+        assert claim.json()["claimed_by"] == lane_cid
+        # The admin session closes it, recording the closer as its own user id.
+        close = await ctx.client.post(
+            f"/api/projects/{pid}/tasks/{tid}/close",
+            json={"closed_by": ctx.uid},
+        )
+        assert close.status_code == 200, close.text
+        assert close.json()["status"] == "closed"
+        assert close.json()["closed_by"] == ctx.uid
+
+    async def test_lead_agent_closes_other_agents_card(self, ctx):
+        """Control (merge-gate path): the lead-agent bypass is preserved — a
+        lead agent still force-closes a card claimed by a different lane
+        agent."""
+        pid = await _new_project(ctx, "alpha")
+        tid = await _new_task(ctx, pid)
+        lead_cid, lead_token = await _mint_agent(ctx, pid, handle="@lead")
+        pstore = ctx.app.state.project_store
+        await pstore.add_member(pid, lead_cid, "native")
+        await pstore.set_lead(pid, lead_cid)
+        lane_cid, lane_token = await _mint_agent(ctx, pid, handle="@lane")
+        async with _bare(ctx.app) as bare:
+            claim = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/claim",
+                json={"claimer_id": lane_cid},
+                headers=_hdr(lane_token),
+            )
+            assert claim.status_code == 200, claim.text
+            close = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/close",
+                json={"closed_by": lead_cid},
+                headers=_hdr(lead_token),
+            )
+        assert close.status_code == 200, close.text
+        assert close.json()["status"] == "closed"
+        assert close.json()["closed_by"] == lead_cid
 
     async def test_unauthenticated_still_401(self, ctx):
         pid = await _new_project(ctx, "alpha")

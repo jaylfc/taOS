@@ -16,6 +16,12 @@ The ``verify_code`` is a human-comparison nonce (F3): it is persisted only so
 the Decision text can display it for the approving user, and is NEVER returned
 by ``get``/poll -- the route layer strips it. It is never server-checked and no
 endpoint accepts it as input.
+
+Concurrency scope: the pending-cap check-then-insert is serialized by an
+in-process lock (``_create_lock``), which is sound because taOS serves from a
+single process (``uvicorn.run`` with an app object -- no worker forking). If
+multi-process serving is ever introduced, the cap check must move into a
+single transactional INSERT ... WHERE (SELECT COUNT ...) statement.
 """
 
 import uuid
@@ -23,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import aiosqlite
+import asyncio
 
 from tinyagentos.base_store import BaseStore
 
@@ -97,6 +104,10 @@ class DevicePairRequestsStore(BaseStore):
     """Persistent store for device pairing (consent) requests."""
 
     SCHEMA = SCHEMA
+
+    def __init__(self, db_path):
+        super().__init__(db_path)
+        self._create_lock = asyncio.Lock()
 
     async def init(self) -> None:
         await super().init()
@@ -240,7 +251,7 @@ class DevicePairRequestsStore(BaseStore):
             raise RuntimeError("DevicePairRequestsStore not initialised")
         now_iso = _iso(_now())
         cur = await self._db.execute(
-            "SELECT * FROM device_pair_requests "
+            f"SELECT {_SAFE_COLS} FROM device_pair_requests "
             "WHERE status = 'pending' AND expires_at_ts > ? "
             "ORDER BY created_ts",
             (now_iso,),

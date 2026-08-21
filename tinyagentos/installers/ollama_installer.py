@@ -29,15 +29,56 @@ from tinyagentos.installers.base import AppInstaller
 logger = logging.getLogger(__name__)
 
 
+_DEFAULT_OLLAMA_PORT = 11434
+_DEFAULT_HAILO_OLLAMA_PORT = 7836
+
+
 def _default_host() -> str:
     """Resolve daemon URL from OLLAMA_HOST or fallback to localhost:11434."""
     raw = os.environ.get("OLLAMA_HOST", "").strip()
     if not raw:
         return "http://localhost:11434"
-    # OLLAMA_HOST sometimes carries just `host:port` without scheme — normalize.
+    # OLLAMA_HOST sometimes carries just `host:port` without scheme -- normalize.
     if "://" not in raw:
         raw = f"http://{raw}"
     return raw.rstrip("/")
+
+
+def _hailo_ollama_port() -> int:
+    """Return the hailo-ollama port, honouring TAOS_HAILO_OLLAMA_PORT override."""
+    raw = os.environ.get("TAOS_HAILO_OLLAMA_PORT", "").strip()
+    if not raw:
+        return _DEFAULT_HAILO_OLLAMA_PORT
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "TAOS_HAILO_OLLAMA_PORT=%r is not an integer; using default %d",
+            raw, _DEFAULT_HAILO_OLLAMA_PORT,
+        )
+        return _DEFAULT_HAILO_OLLAMA_PORT
+
+
+def resolve_ollama_url(target_remote: str | None, backend_id: str = "ollama") -> str:
+    """Resolve which ollama/hailo-ollama instance to talk to.
+
+    - ``None`` / empty / "local" -> the controller's own daemon (localhost).
+    - Anything else -> the remote worker's hostname on the backend's port.
+
+    Ports:
+    - ollama: 11434 (``_default_host`` honours ``OLLAMA_HOST``).
+    - hailo-ollama: 7836, overridable via ``TAOS_HAILO_OLLAMA_PORT``
+      (see docs/design/hailo-llm-backend.md section B).
+    """
+    if backend_id == "hailo-ollama":
+        port = _hailo_ollama_port()
+        if not target_remote or target_remote == "local":
+            return f"http://localhost:{port}"
+        return f"http://{target_remote}:{port}"
+    # Plain ollama backend.
+    if not target_remote or target_remote == "local":
+        return _default_host()
+    return f"http://{target_remote}:{_DEFAULT_OLLAMA_PORT}"
 
 
 class OllamaInstaller(AppInstaller):

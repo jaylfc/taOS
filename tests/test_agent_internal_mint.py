@@ -225,6 +225,112 @@ class TestMintInternalRoute:
         rows = await mint_client._app.state.agent_registry.list_all()
         assert sum(1 for r in rows if r["handle"] == "@taOS-dev") == 1
 
+    async def test_adopt_finds_selfjoined_driver_stored_under_slugified_handle(self, mint_client):
+        """A driver that self-joined is stored under the SLUGIFIED handle.
+
+        The consent approve path registers with ``_slugify(identity_claim)``, so
+        `@taOSmd-dev` lands in the registry as `taosmd-dev` -- while
+        ``_INTERNAL_AGENTS`` carries the display spelling. ``get_by_handle`` is an
+        exact SQL match, so a mint that looks up only the display spelling misses
+        the existing row and registers a SECOND one: the duplicate receives the
+        driver scopes and a token while the original keeps the project grants, and
+        the agent silently owns two identities with the wrong one credentialed.
+
+        Note the sibling adopt tests seed the fixture with the '@' spelling, which
+        is not what the real approve path writes -- that mismatch is why this went
+        unnoticed. This test reproduces what is actually in the live registry.
+        """
+        registry = mint_client._app.state.agent_registry
+        rec = await registry.register(
+            framework="claude-code", display_name="taosmd-dev",
+            origin="external-selfjoin", handle="taosmd-dev",
+        )
+        await registry.set_status(rec["canonical_id"], "active")
+
+        resp = await mint_client.post(
+            "/api/agents/registry/mint-internal",
+            json={"handle": "@taOSmd-dev", "slug": "taosmd-dev",
+                  "scopes": ["a2a_send", "a2a_receive"], "adopt": True},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["canonical_id"] == rec["canonical_id"], "forked a second identity"
+        assert data["created"] is False and data["adopted"] is True
+
+        # The scopes must land on the ORIGINAL identity, not on a duplicate.
+        grants = await mint_client._app.state.agent_grants.list_grants(rec["canonical_id"])
+        assert {g["scope"] for g in grants} == {"a2a_send", "a2a_receive"}
+
+        # Exactly one row for this driver under EITHER spelling.
+        rows = await registry.list_all()
+        assert sum(1 for r in rows if r["handle"] in ("taosmd-dev", "@taOSmd-dev")) == 1
+
+    async def test_mint_finds_row_stored_under_display_spelling_when_given_the_slug(
+        self, mint_client
+    ):
+        """The spelling mismatch forks a row in BOTH directions.
+
+        The sibling test above covers the direction we hit in production (row
+        stored slugified, mint given the display spelling). This is the reverse:
+        ``handle`` arrives from a request body, so an admin can just as easily
+        pass ``taosmd-dev`` while the registry holds ``@taOSmd-dev``. String
+        surgery cannot close this one -- slugifying discards case, so
+        ``taosmd-dev`` can never be turned back into ``@taOSmd-dev``. Only
+        comparing slugs on both sides works, which is why the lookup normalises
+        rather than trying a second hand-written spelling.
+        """
+        registry = mint_client._app.state.agent_registry
+        rec = await registry.register(
+            framework="claude-code", display_name="taosmd-dev",
+            origin="external-selfjoin", handle="@taOSmd-dev",
+        )
+        await registry.set_status(rec["canonical_id"], "active")
+
+        resp = await mint_client.post(
+            "/api/agents/registry/mint-internal",
+            json={"handle": "taosmd-dev", "slug": "taosmd-dev",
+                  "scopes": ["a2a_send", "a2a_receive"], "adopt": True},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["canonical_id"] == rec["canonical_id"], "forked a second identity"
+        assert data["created"] is False
+
+        rows = await registry.list_all()
+        assert sum(1 for r in rows if r["handle"] in ("taosmd-dev", "@taOSmd-dev")) == 1
+
+    async def test_mint_without_adopt_rejects_slugified_selfjoined_driver(
+        self, mint_client
+    ):
+        """The normalised lookup must not become an adoption back door.
+
+        Finding the row under its other spelling is only half the contract: the
+        non-internal owner check has to fire on the row we found. Without this,
+        widening the lookup would silently hand driver scopes and a token to an
+        identity the admin never vouched for -- the exact impostor case the 409
+        exists for, reachable through the spelling the existing 409 tests do not
+        seed.
+        """
+        registry = mint_client._app.state.agent_registry
+        rec = await registry.register(
+            framework="claude-code", display_name="taosmd-dev",
+            origin="external-selfjoin", handle="taosmd-dev",
+        )
+        await registry.set_status(rec["canonical_id"], "active")
+
+        resp = await mint_client.post(
+            "/api/agents/registry/mint-internal",
+            json={"handle": "@taOSmd-dev", "slug": "taosmd-dev",
+                  "scopes": ["a2a_send", "a2a_receive"]},
+        )
+        assert resp.status_code == 409, resp.text
+
+        # And it stayed uncredentialed: no grants, no second row.
+        grants = await mint_client._app.state.agent_grants.list_grants(rec["canonical_id"])
+        assert grants == []
+        rows = await registry.list_all()
+        assert sum(1 for r in rows if r["handle"] in ("taosmd-dev", "@taOSmd-dev")) == 1
+
     async def test_adopt_writes_governance_audit(self, mint_client):
         """Adopting a pre-existing identity is trust-changing -- it must leave a
         governance audit event (action='adopt') for a forensic trail."""

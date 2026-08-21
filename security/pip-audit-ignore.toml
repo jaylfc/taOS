@@ -1,0 +1,13 @@
+# security/pip-audit-ignore.toml
+# Suppressions for advisories with no released fix.
+# The recheck script drops entries automatically when a fix resolves.
+# DO NOT edit by hand without understanding the two checks in
+# scripts/check_dependency_audit_ignores.py.
+#
+# check_upgrade = false for tool-level deps (pip, setuptools, etc.)
+# that are not pinned by the project itself.
+
+[[ignore]]
+package = "pip"
+id = "CVE-2026-3219"
+check_upgrade = false

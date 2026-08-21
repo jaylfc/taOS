@@ -176,7 +176,7 @@ class TestCheckDeletedSymbols:
         _checkout(repo, "main")
         _git(repo, "merge", "pr-branch", "--no-edit")
 
-        violations, waived = cds.check_deleted_symbols(base_tip, repo)
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo)
 
         assert len(violations) == 1
         v = violations[0]
@@ -213,7 +213,7 @@ class TestCheckDeletedSymbols:
         _checkout(repo, "main")
         _git(repo, "merge", "pr-branch", "--no-edit")
 
-        violations, waived = cds.check_deleted_symbols(base_tip, repo)
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo)
 
         assert violations == []
         assert waived == set()
@@ -240,7 +240,7 @@ class TestCheckDeletedSymbols:
         _git(repo, "merge", "pr-branch", "--no-edit")
 
         pr_body = "Removes-Intentionally: tinyagentos/foo.py:function_b"
-        violations, waived = cds.check_deleted_symbols(base_tip, repo, pr_body=pr_body)
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo, pr_body=pr_body)
 
         assert violations == []
         assert "tinyagentos/foo.py:function_b" in waived
@@ -265,7 +265,7 @@ class TestCheckDeletedSymbols:
         _checkout(repo, "main")
         _git(repo, "merge", "pr-branch", "--no-edit")
 
-        violations, waived = cds.check_deleted_symbols(base_tip, repo)
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo)
 
         assert len(violations) == 1
         assert "NewClass" in violations[0].symbol
@@ -297,7 +297,7 @@ class TestCheckDeletedSymbols:
         _checkout(repo, "main")
         _git(repo, "merge", "pr-branch", "--no-edit")
 
-        violations, waived = cds.check_deleted_symbols(base_tip, repo)
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo)
 
         assert len(violations) == 1
         assert "Foo.new_method" in violations[0].symbol
@@ -322,7 +322,7 @@ class TestCheckDeletedSymbols:
         _checkout(repo, "main")
         _git(repo, "merge", "pr-branch", "--no-edit")
 
-        violations, waived = cds.check_deleted_symbols(base_tip, repo)
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo)
 
         assert len(violations) == 1
         assert "test_new" in violations[0].symbol
@@ -351,7 +351,7 @@ class TestCheckDeletedSymbols:
         _checkout(repo, "main")
         _git(repo, "merge", "pr-branch", "--no-edit")
 
-        violations, waived = cds.check_deleted_symbols(base_tip, repo)
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo)
 
         assert len(violations) == 1
         assert "test_old_case" in violations[0].symbol
@@ -383,7 +383,7 @@ class TestCheckDeletedSymbols:
         _checkout(repo, "main")
         _git(repo, "merge", "pr-branch", "--no-edit")
 
-        violations, waived = cds.check_deleted_symbols(base_tip, repo)
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo)
 
         assert len(violations) == 1
         assert "function_b" in violations[0].symbol
@@ -409,7 +409,7 @@ class TestCheckDeletedSymbols:
         _git(repo, "merge", "pr-branch", "--no-edit")
 
         waived_arg = {"tinyagentos/foo.py:function_b"}
-        violations, waived = cds.check_deleted_symbols(base_tip, repo, waived=waived_arg)
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo, waived=waived_arg)
 
         assert violations == []
         assert "tinyagentos/foo.py:function_b" in waived
@@ -436,8 +436,212 @@ class TestCheckDeletedSymbols:
         _git(repo, "merge", "pr-branch", "--no-edit")
 
         pr_body = "Removes-Intentionally: tinyagentos/foo.py:function_b"
-        violations, waived = cds.check_deleted_symbols(base_tip, repo, pr_body=pr_body)
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo, pr_body=pr_body)
 
         assert len(violations) == 1
         assert "function_c" in violations[0].symbol
         assert "tinyagentos/foo.py:function_b" in waived
+
+
+# ---------------------------------------------------------------------------
+# --pr-head (merge-tree recomputation) path
+#
+# On pull_request events GitHub pins checkout HEAD to the event-time
+# test-merge commit. A re-run (no new push) after the base advances compares
+# the *current* base against that *stale* merge result, so symbols added to
+# base after the pin are falsely reported as deleted. Passing the PR head SHA
+# via --pr-head recomputes the merge result in-script against the fresh base.
+# ---------------------------------------------------------------------------
+
+
+def _build_stale_re_run_repo(repo: Path) -> tuple[str, str]:
+    """Reproduce the stale re-run false positive.
+
+    Produces a merge commit M (PR merged at event time), advances the base
+    branch with a brand-new symbol in a file the PR never touches, then checks
+    HEAD out at the stale merge commit M. Returns (base_ref, pr_head_sha) where
+    base_ref resolves to the advanced base carrying the new symbol.
+    """
+    _commit_file(
+        repo,
+        "tinyagentos/foo.py",
+        "def function_a():\n    pass\n",
+        "init: add function_a",
+    )
+    _branch(repo, "pr-branch")
+    _checkout(repo, "pr-branch")
+    _commit_file(
+        repo,
+        "tinyagentos/foo.py",
+        "def function_a():\n    pass\n\ndef function_pr():\n    pass\n",
+        "pr: add function_pr",
+    )
+    pr_head = _get_head(repo)
+    _checkout(repo, "main")
+    _git(repo, "merge", "pr-branch", "--no-edit")
+    stale_merge = _get_head(repo)
+    # The base advances after the event-time merge: a new symbol lands on main
+    # in a file the PR branch never touches.
+    _commit_file(
+        repo,
+        "tests/test_stale.py",
+        "def TestNewSymbol():\n    pass\n",
+        "base: add TestNewSymbol after event-time merge",
+    )
+    # Pin HEAD at the stale merge commit, mirroring a re-run with a fresh base.
+    _checkout(repo, stale_merge)
+    return "main", pr_head
+
+
+class TestStaleReRunFalsePositive:
+    def test_head_based_lookup_on_stale_checkout_is_red(self, tmp_path: Path):
+        """RED (pre-fix bug): without --pr-head the check trusts HEAD -- the
+        event-time merge commit -- so a symbol added to base after the pin is
+        falsely reported as deleted. This documents the exact false positive
+        the --pr-head fix addresses."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        base_ref, _pr_head = _build_stale_re_run_repo(repo)
+
+        violations, waived, conflicted = cds.check_deleted_symbols(base_ref, repo)
+
+        assert not conflicted
+        assert len(violations) == 1
+        assert "TestNewSymbol" in violations[0].symbol
+        assert "test_stale.py" in violations[0].symbol
+
+    def test_pr_head_merge_tree_is_green(self, tmp_path: Path):
+        """GREEN: with --pr-head the merge result is recomputed against the
+        fresh base, so the post-pin symbol survives the merge and the check
+        passes with exit code 0."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        base_ref, pr_head = _build_stale_re_run_repo(repo)
+
+        violations, waived, conflicted = cds.check_deleted_symbols(
+            base_ref, repo, pr_head_sha=pr_head
+        )
+
+        assert not conflicted
+        assert violations == []
+        assert waived == set()
+
+    def test_pr_body_waiver_still_applies_with_pr_head(self, tmp_path: Path):
+        """The Removes-Intentionally trailer still waives a named signal symbol
+        when the merge result is recomputed via merge-tree."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(
+            repo,
+            "tinyagentos/foo.py",
+            "def function_a():\n    pass\n\ndef function_b():\n    pass\n",
+            "init: add function_a and function_b",
+        )
+        _branch(repo, "pr-branch")
+        _checkout(repo, "pr-branch")
+        _commit_file(
+            repo,
+            "tinyagentos/foo.py",
+            "def function_a():\n    pass\n",
+            "refactor: remove function_b",
+        )
+        pr_head = _get_head(repo)
+        _checkout(repo, "main")
+
+        pr_body = "Removes-Intentionally: tinyagentos/foo.py:function_b"
+        violations, waived, conflicted = cds.check_deleted_symbols(
+            "main", repo, pr_body=pr_body, pr_head_sha=pr_head
+        )
+
+        assert not conflicted
+        assert violations == []
+        assert "tinyagentos/foo.py:function_b" in waived
+
+
+class TestPrHeadControlAndConflicts:
+    def test_genuine_deletion_with_pr_head_still_fails(self, tmp_path: Path):
+        """CONTROL: a PR that genuinely deletes a base-added symbol is still
+        caught when the merge result is recomputed via merge-tree -- the gate's
+        original red case stays red on the new code path."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(
+            repo,
+            "tinyagentos/foo.py",
+            "def function_a():\n    pass\n\ndef function_b():\n    pass\n",
+            "init: add function_a and function_b",
+        )
+        _branch(repo, "pr-branch")
+        _checkout(repo, "pr-branch")
+        _commit_file(
+            repo,
+            "tinyagentos/foo.py",
+            "def function_a():\n    pass\n",
+            "refactor: remove function_b",
+        )
+        pr_head = _get_head(repo)
+        _checkout(repo, "main")
+
+        violations, waived, conflicted = cds.check_deleted_symbols(
+            "main", repo, pr_head_sha=pr_head
+        )
+
+        assert not conflicted
+        assert len(violations) == 1
+        assert "function_b" in violations[0].symbol
+        assert violations[0].added_by != "unknown"
+
+    def test_conflicting_merge_tree_skips_check(self, tmp_path: Path):
+        """When the recomputed merge reports conflicts the gate exits 0 with a
+        note instead of failing: mergeability is gated elsewhere and a
+        conflicted PR cannot silently delete symbols by merging cleanly."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(
+            repo,
+            "tinyagentos/foo.py",
+            "def function_a():\n    pass\n",
+            "init: add function_a",
+        )
+        _branch(repo, "pr-branch")
+        _checkout(repo, "pr-branch")
+        _commit_file(
+            repo,
+            "tinyagentos/foo.py",
+            "def function_a():\n    THEIR_CHANGE\n\ndef function_pr():\n    pass\n",
+            "pr: conflicting edit",
+        )
+        pr_head = _get_head(repo)
+        _checkout(repo, "main")
+        _commit_file(
+            repo,
+            "tinyagentos/foo.py",
+            "def function_a():\n    BASE_CHANGE\n",
+            "base: conflicting edit",
+        )
+
+        violations, waived, conflicted = cds.check_deleted_symbols(
+            "main", repo, pr_head_sha=pr_head
+        )
+
+        assert conflicted
+        assert violations == []
+        assert waived == set()
+
+    def test_merge_tree_tool_error_is_loud_not_skipped(self, tmp_path: Path):
+        """rc>1 from merge-tree (invalid ref, missing object) is a tooling
+        failure, not a conflict: the gate must raise, never report
+        conflicted=True and exit 0."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(
+            repo,
+            "tinyagentos/foo.py",
+            "def function_a():\n    pass\n",
+            "init: add function_a",
+        )
+
+        with pytest.raises(RuntimeError, match="merge-tree"):
+            cds.check_deleted_symbols(
+                "main", repo, pr_head_sha="0000000000000000000000000000000000000000"
+            )

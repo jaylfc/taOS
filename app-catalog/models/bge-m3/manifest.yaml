@@ -32,6 +32,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 1024
+  sha256: 6d39681b26c61279ac1f82db35a04a05009e94c415b51c858ff571489a82fc06
 - id: pytorch
   name: PyTorch (2.3GB)
   format: pytorch
@@ -47,6 +48,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 3072
+  sha256: b5e0ce3470abf5ef3831aa1bd5553b486803e83251590ab7ff35a117cf6aad38
 hardware_tiers:
   arm-cpu-8gb:
     recommended: q4_k_m

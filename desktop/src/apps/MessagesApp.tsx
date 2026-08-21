@@ -2,17 +2,19 @@ import React, { useState, useEffect, useRef, useCallback, useId } from "react";
 import {
   MessageCircle,
   Hash,
-  Users,
   Plus,
   X,
   AtSign,
   ChevronDown,
+  ChevronRight,
   PanelRight,
   Archive,
+  Bot,
   CircleDot,
-  PauseCircle,
   AlertTriangle,
   Loader2,
+  Check,
+  Clock,
 } from "lucide-react";
 import {
   Button,
@@ -56,7 +58,7 @@ import {
   readLastChannel,
   writeLastChannel,
 } from "./MessagesApp.a2aSelection";
-import { bucketAgentChannels } from "./MessagesApp.agentSections";
+import { bucketAgentChannels, buildAgentPresence } from "./MessagesApp.agentSections";
 import {
   pickWatchAgent,
   computeStallInfo,
@@ -72,6 +74,8 @@ import remarkGfm from "remark-gfm";
 import { SearchPanel } from "./chat/SearchPanel";
 import { ChannelSidebar } from "./chat/ChannelSidebar";
 import { A2aBusMessageView, useBusChannels } from "./chat/A2aBusPanel";
+import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
+import { useDecisionEventsStore } from "@/stores/decision-events-store";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -133,9 +137,9 @@ interface ArchivedAgentEntry {
 export type AuthorDisplayState = "active" | "archived" | "removed";
 
 /**
- * Resolve the display state of a message author.
- * Pure function — exported for unit testing.
- */
+* Resolve the display state of a message author.
+* Pure function — exported for unit testing.
+*/
 export function resolveAuthorDisplayState(
   authorId: string,
   authorType: "user" | "agent",
@@ -188,18 +192,24 @@ export interface QuestionContentBlock {
   options?: string[];
 }
 
+export interface DecisionContentBlock {
+  kind: "decision";
+  decision_id: string;
+}
+
 /**
- * Structured message content for taOStalk session turns.
- * Known kinds are handled by dedicated block components (separate cards);
- * any unrecognized kind falls through to the unknown-block fallback in
- * renderContent, which is the slice-2 seam.
- */
+* Structured message content for taOStalk session turns.
+* Known kinds are handled by dedicated block components (separate cards);
+* any unrecognized kind falls through to the unknown-block fallback in
+* renderContent, which is the slice-2 seam for the renderer registry.
+*/
 export type ContentBlock =
   | TextContentBlock
   | ThinkingContentBlock
   | ToolCallContentBlock
   | StatusContentBlock
   | QuestionContentBlock
+  | DecisionContentBlock
   | { kind: string; [key: string]: unknown };
 
 interface Message {
@@ -240,10 +250,10 @@ type WsStatus = "connecting" | "connected" | "disconnected";
 /* ------------------------------------------------------------------ */
 
 /**
- * Coerce a server timestamp (number = seconds since epoch, string = ISO
- * or numeric) to milliseconds suitable for `new Date(...)`. The 1e12
- * threshold safely distinguishes seconds (~1.7e9 today) from ms (~1.7e12).
- */
+* Coerce a server timestamp (number = seconds since epoch, string = ISO
+* or numeric) to milliseconds suitable for `new Date(...)`. The 1e12
+* threshold safely distinguishes seconds (~1.7e9 today) from ms (~1.7e12).
+*/
 export function toMs(ts: number | string): number {
   if (typeof ts === "number") return ts < 1e12 ? ts * 1000 : ts;
   if (ts === "" || ts == null) return Date.now();
@@ -263,11 +273,11 @@ export function relativeTime(ts: number | string, nowMs: number = Date.now()): s
 }
 
 /**
- * Dispatch a single content block to its renderer. All four slice-1 kinds now
- * have dedicated components: text and thinking (cards 3+4), tool call and
- * status/question (cards 5+6). Any unrecognised kind still falls through to
- * the unknown-block fallback -- the slice-2 seam for the renderer registry.
- */
+* Dispatch a single content block to its renderer. All four slice-1 kinds now
+* have dedicated components: text and thinking (cards 3+4), tool call and
+* status/question (cards 5+6). Any unrecognised kind still falls through to
+* the unknown-block fallback -- the slice-2 seam for the renderer registry.
+*/
 function renderContentBlock(block: ContentBlock, index: number): React.ReactElement {
   switch (block.kind) {
     case "text": {
@@ -289,6 +299,10 @@ function renderContentBlock(block: ContentBlock, index: number): React.ReactElem
     case "question":
       return (
         <StatusBlock block={block as QuestionContentBlock} key={`block-${index}`} />
+      );
+    case "decision":
+      return (
+        <DecisionBlock block={block as DecisionContentBlock} key={`block-${index}`} />
       );
     default:
       return (
@@ -385,22 +399,22 @@ export function renderInline(text: string, keyPrefix: string) {
 /* ------------------------------------------------------------------ */
 
 /**
- * TextBlock -- renders a {kind:"text"} content block by reusing the existing
- * inline markdown renderer (renderInline), so a text block renders
- * identically to a plain message's markdown body.
- */
+* TextBlock -- renders a {kind:"text"} content block by reusing the existing
+* inline markdown renderer (renderInline), so a text block renders
+* identically to a plain message's markdown body.
+*/
 export function TextBlock({ block, index }: { block: TextContentBlock; index: number }): React.ReactElement {
   return <>{renderInline(block.text, `text-block-${index}`)}</>;
 }
 
 /**
- * ThinkingBlock -- renders a {kind:"thinking"} content block as a
- * collapsed-by-default disclosure. The toggle button carries the ARIA
- * disclosure contract (aria-expanded / aria-controls) and a chevron; the
- * panel is dim-styled to de-emphasize the agent's internal reasoning. The
- * container matches the Store/Images card bar (rounded border, shell
- * surface background, dim tertiary text).
- */
+* ThinkingBlock -- renders a {kind:"thinking"} content block as a
+* collapsed-by-default disclosure. The toggle button carries the ARIA
+* disclosure contract (aria-expanded / aria-controls) and a chevron; the
+* panel is dim-styled to de-emphasize the agent's internal reasoning. The
+* container matches the Store/Images card bar (rounded border, shell
+* surface background, dim tertiary text).
+*/
 export function ThinkingBlock({ block, index }: { block: ThinkingContentBlock; index: number }): React.ReactElement {
   const [open, setOpen] = useState(block.collapsed === false);
   const summaryRef = useId();
@@ -438,6 +452,341 @@ export function ThinkingBlock({ block, index }: { block: ThinkingContentBlock; i
   );
 }
 
+
+type DecisionBlockStatus = "pending" | "answered" | "superseded" | string;
+
+interface DecisionData {
+  id: string;
+  from_agent: string;
+  question: string;
+  type: string;
+  options?: Array<{ label: string; value: string; rationale?: string }>;
+  context?: string | null;
+  priority?: string;
+  status: DecisionBlockStatus;
+  answer?: { value: unknown; answered_by?: string; answered_at?: number } | null;
+  created_at: number | string;
+}
+
+function decisionTypeLabel(t: string): string {
+  switch (t) {
+    case "single_select": return "Pick one";
+    case "multi_select": return "Pick any";
+    case "approve_deny": return "Approve / Deny";
+    case "free_text": return "Free text";
+    default: return t;
+  }
+}
+
+function resolveAnswerLabel(d: DecisionData): string | null {
+  const ans = d.answer;
+  if (!ans || ans.value == null) return null;
+  const opts = d.options || [];
+  const optMap = new Map(opts.map((o) => [o.value, o.label]));
+  const vals = Array.isArray(ans.value) ? ans.value : [ans.value];
+  const labels = vals.map((v) => optMap.get(String(v)) ?? String(v));
+  return labels.join(", ");
+}
+
+/**
+* DecisionBlock -- inline renderer for a `{kind:"decision", decision_id}`
+* content block. Fetches the decision from the Decisions API and renders the
+* question, options (as click-to-answer buttons when pending), type, and
+* current state (open / answered).
+*
+* Answering posts to the SAME path the Decisions app uses
+* (POST /api/decisions/{id}/answer), so first-answer-wins is enforced server-side
+* and the answer is attributed to the real user identity (session cookie).
+*
+* Live propagation: subscribes to the decision-events store, which the global
+* SSE handler (useEventStream) updates on every `decision.answered` broadcast.
+* When another surface (e.g. the Decisions app) answers this decision, the
+* block re-fetches and resolves in place without a refresh.
+*/
+export function DecisionBlock({ block }: { block: DecisionContentBlock }): React.ReactElement {
+  const [decision, setDecision] = useState<DecisionData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [answer, setAnswer] = useState("");
+  const [answerError, setAnswerError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const lastAnsweredId = useDecisionEventsStore((s) => s.lastAnsweredId);
+
+  function fetchDecision() {
+    let cancelled = false;
+    fetch(`/api/decisions/${block.decision_id}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled) {
+          if (data && typeof data === "object" && "question" in data) {
+            setDecision(data as DecisionData);
+            setError(null);
+          } else {
+            setError("decision not found");
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setError("could not load decision");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }
+
+  useEffect(fetchDecision, [block.decision_id]);
+
+  // Live propagation: when another surface (Decisions app) answers this
+  // decision while it is still pending, the SSE handler bumps
+  // lastAnsweredId. Re-fetch only for our own decision to avoid noise.
+  useEffect(() => {
+    if (lastAnsweredId === block.decision_id && decision?.status === "pending") {
+      // Propagate fetchDecision's cancel-cleanup so a re-fetch still in
+      // flight at unmount cannot set state afterwards.
+      return fetchDecision();
+    }
+  }, [lastAnsweredId, block.decision_id, decision?.status]);
+
+  useEffect(() => {
+    setAnswer("");
+    setAnswerError(null);
+  }, [block.decision_id]);
+
+  async function answerDecision(
+    value: string | string[],
+    otherValue?: string,
+    note?: string
+  ) {
+    setAnswerError(null);
+    if (!decision || decision.status !== "pending") return;
+    setSubmitting(true);
+    const body: Record<string, unknown> = { value };
+    if (otherValue !== undefined) body.other_value = otherValue;
+    if (note !== undefined) body.note = note;
+    
+    try {
+      const res = await fetch(`/api/decisions/${decision.id}/answer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const detail = data?.error ?? data?.detail;
+        // 409 = someone else answered first; refetch so the block flips to answered
+        if (res.status === 409) {
+          // The refetch itself can fail (network reject, invalid JSON) --
+          // fall through to the conflict fallback rather than surfacing a
+          // generic "Failed to answer" for an answer that someone else won.
+          try {
+            const updatedRes = await fetch(`/api/decisions/${decision.id}`);
+            if (updatedRes.ok) {
+              const updated = await updatedRes.json();
+              setDecision(updated as DecisionData);
+              return;
+            }
+          } catch {
+            // fall through
+          }
+          setAnswerError(
+            "This decision was already answered -- refresh to see the outcome",
+          );
+          return;
+        }
+        throw new Error(
+          typeof detail === "string" ? detail : "Could not record answer.",
+        );
+      }
+      // Refresh the decision to get the updated state (including answer)
+      const updatedRes = await fetch(`/api/decisions/${decision.id}`);
+      if (updatedRes.ok) {
+        const updated = await updatedRes.json();
+        setDecision(updated as DecisionData);
+      } else {
+        // Refresh failed: answer was recorded, don't show "Failed to answer"
+        // (the SSE broker path will also correct it)
+        setSubmitting(false);
+        setAnswerError(null);
+      }
+    } catch (e) {
+      console.error("Failed to answer decision:", e);
+      throw e;
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 text-[12px] text-shell-text-tertiary py-2">
+        <Loader2 size={12} className="animate-spin" />
+        loading decision...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="text-[12px] text-red-400 py-1" role="alert">
+        {error}
+      </div>
+    );
+  }
+
+  if (!decision) return <></>
+
+  const isOpen = decision.status === "pending";
+  const isAnswered = decision.status === "answered";
+  const showOptions = decision.type !== "free_text" && decision.options && decision.options.length > 0;
+
+  return (
+    <div
+      data-decision-block="true"
+      className="rounded-xl border border-shell-border bg-shell-surface/60 py-2.5 text-[13px]"
+    >
+      {/* header: question + type badge + state */}
+      <div className="flex flex-col gap-1 px-3">
+        <p className="text-sm font-semibold text-shell-text">{decision.question}</p>
+        {decision.context && (
+          <p className="text-xs leading-relaxed text-shell-text-secondary">
+            {decision.context}
+          </p>
+        )}
+        <span className="text-[11px] uppercase tracking-wide text-shell-text-tertiary">
+          {decisionTypeLabel(decision.type)}
+        </span>
+      </div>
+
+      {/* options (clickable for answering) */}
+      {showOptions && (
+        <div className="mt-2 flex flex-col gap-1.5 px-3">
+          {decision.options!.map((opt) => {
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => {
+                  if (!isOpen || submitting) return;
+                  answerDecision(opt.value).catch((e) =>
+                    setAnswerError(`Failed to answer: ${e.message}`)
+                  );
+                }}
+                disabled={!isOpen || submitting}
+                className={[
+                  "flex w-full flex-col gap-0.5 rounded-lg border px-3 py-1.5 text-left transition-colors",
+                  "disabled:cursor-not-allowed disabled:opacity-60",
+                  isOpen
+                    ? "border-shell-border bg-shell-surface hover:border-shell-border-strong"
+                    : "border-shell-border bg-shell-bg-deep text-shell-text-secondary",
+                  "cursor-pointer",
+                ].join(" ")}
+              >
+                <span className="text-sm">{opt.label}</span>
+                {opt.rationale && (
+                  <span className="text-[10px] text-shell-text-tertiary">{opt.rationale}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* answer line for select-type answered decisions */}
+      {isAnswered && showOptions && (
+        <div className="mt-2 px-3 text-[12px] text-shell-text-secondary">
+          answered: {resolveAnswerLabel(decision) ?? "no answer recorded"}
+        </div>
+      )}
+
+      {/* free_text answered: show the answer text */}
+      {isAnswered && decision.type === "free_text" && decision.answer && (
+        <div className="mt-2 px-3 text-[12px] text-shell-text-secondary">
+          answered: {String(decision.answer.value)}
+        </div>
+      )}
+
+      {/* free_text pending: show a textarea for answering */}
+      {isOpen && decision.type === "free_text" && (
+        <div className="mt-2 px-3">
+          <div className="flex flex-col gap-2">
+            <textarea
+              placeholder="Type your answer..."
+              className="w-full resize-none rounded border border-shell-border bg-shell-surface px-2 py-1.5 text-[12px] text-shell-text placeholder:text-shell-text-tertiary"
+              rows={3}
+              value={answer}
+              onChange={(e) => setAnswer(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (!isOpen || submitting) return;
+                  const trimmed = e.currentTarget.value.trim();
+                  if (trimmed) {
+                    answerDecision(trimmed).catch((e) =>
+                      setAnswerError(`Failed to answer: ${e.message}`)
+                    );
+                  }
+                }
+              }}
+            />
+            <button
+              onClick={() => {
+                if (!isOpen || submitting) return;
+                const trimmed = answer.trim();
+                if (trimmed) {
+                  answerDecision(trimmed).catch((e) =>
+                    setAnswerError(`Failed to answer: ${e.message}`)
+                  );
+                }
+              }}
+              disabled={!answer || answer.trim() === "" || submitting}
+              className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] text-shell-text hover:text-shell-text-hover hover:bg-shell-surface-focus focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              aria-label="Submit answer"
+            >
+              <ChevronRight size={12} aria-hidden="true" /> Submit
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* submission errors: one shared alert region for option and
+          free-text answers alike (option errors were invisible when this
+          lived inside the free_text branch) */}
+      {answerError && (
+        <div className="mt-2 px-3 text-[12px] text-red-400" role="alert">
+          {answerError}
+        </div>
+      )}
+
+      {/* footer: state + answerer/timestamp */}
+      <div className="mt-2 flex items-center gap-3 px-3 text-[11px] text-shell-text-tertiary">
+        <span className="inline-flex items-center gap-1">
+          {isOpen ? (
+            <CircleDot size={10} className="text-amber-400" />
+          ) : isAnswered ? (
+            <Check size={10} className="text-green-400" />
+          ) : (
+            <AlertTriangle size={10} className="text-shell-text-tertiary" />
+          )}
+          <span>
+            {decision.status === "pending" ? "open" : decision.status}
+          </span>
+        </span>
+        {isAnswered && decision.answer && (
+          <span className="inline-flex items-center gap-1">
+            <Clock size={10} />
+            <span>
+              {decision.answer.answered_by
+                ? `answered by ${decision.answer.answered_by}`
+                : "answered"}
+            </span>
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // Best-effort per-channel draft storage. Drafts are user input that may
 // contain sensitive material; they are kept in localStorage (the same
@@ -856,11 +1205,14 @@ export function MessagesApp({
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === data.message_id
-                  ? {
+              ? {
                       ...m,
                       ...(data.content !== undefined && { content: data.content }),
                       ...(data.edited_at !== undefined && { edited_at: data.edited_at }),
                       ...(data.metadata !== undefined && { metadata: data.metadata }),
+                      ...(data.content_blocks !== undefined && {
+                        content_blocks: data.content_blocks as ContentBlock[],
+                      }),
                     }
                   : m,
               ),
@@ -934,17 +1286,19 @@ export function MessagesApp({
     };
   }, [fetchChannels, fetchArchivedChannels, fetchAgentLists, connectWs]);
 
+  useRefreshOnFocus(fetchChannels);
+
   /* ---- keep unreadRef in sync with the unread state without re-running
-   * the channel-selection effect (which would re-capture the pending count). ---- */
+  * the channel-selection effect (which would re-capture the pending count). ---- */
   useEffect(() => {
     unreadRef.current = unread;
   }, [unread]);
 
   /* ---- default-select A2A channel on first project visit ----
-   * Also runs when the project switches: if the previously selected channel
-   * is not in the new project's channel list, it's stale — fall back to
-   * the remembered/A2A channel for the new project, or clear the selection.
-   */
+  * Also runs when the project switches: if the previously selected channel
+  * is not in the new project's channel list, it's stale — fall back to
+  * the remembered/A2A channel for the new project, or clear the selection.
+  */
   useEffect(() => {
     if (!scope?.projectId) return;
     if (channels.length === 0) return;
@@ -961,10 +1315,10 @@ export function MessagesApp({
   }, [scope?.projectId, channels, selectedChannel]);
 
   /* ---- persist last-selected channel per project ----
-   * Split from the channel-join effect so we only write when we know the
-   * current selection actually belongs to the current project — prevents
-   * cross-project leakage when the user switches projects mid-flight.
-   */
+  * Split from the channel-join effect so we only write when we know the
+  * current selection actually belongs to the current project — prevents
+  * cross-project leakage when the user switches projects mid-flight.
+  */
   useEffect(() => {
     if (!scope?.projectId) return;
     if (!selectedChannel) return;
@@ -973,11 +1327,11 @@ export function MessagesApp({
   }, [scope?.projectId, selectedChannel, channels]);
 
   /* ---- bus / project-channel selection are mutually exclusive ----
-   * Modeled as render precedence: while busSelected is set the bus viewer
-   * wins, otherwise the project channel shows. Picking a project channel
-   * clears busSelected (project view takes over); picking a bus channel keeps
-   * selectedChannel intact so returning from the bus restores it.
-   */
+  * Modeled as render precedence: while busSelected is set the bus viewer
+  * wins, otherwise the project channel shows. Picking a project channel
+  * clears busSelected (project view takes over); picking a bus channel keeps
+  * selectedChannel intact so returning from the bus restores it.
+  */
   useEffect(() => {
     if (selectedChannel) setBusSelected(null);
   }, [selectedChannel]);
@@ -1602,9 +1956,11 @@ export function MessagesApp({
     group: channels.filter((c) => c.type === "group" && inSidebarSection(c)),
   };
 
-  // Split DM channels into agent lifecycle buckets (Live / Suspended /
-  // Archived) so deleted-agent DMs no longer mix in with live ones. Plain
-  // user DMs and a2a channels stay under nonAgent (their original placement).
+  // DM channels are bucketed by agent lifecycle (live/suspended/archived)
+  // so we can compute per-channel presence. In the sidebar they are
+  // consolidated into one "Agents-DMs" group with a presence dot, rather
+  // than split across separate lifecycle sections. Plain user DMs and a2a
+  // channels stay under nonAgent ("Direct Messages").
   const dmSections = bucketAgentChannels(grouped.dm, liveAgents, archivedAgents);
 
   const allChannels = [...channels, ...archivedChannels];
@@ -1690,18 +2046,17 @@ export function MessagesApp({
   /*  Sections definition (shared between mobile + desktop lists)     */
   /* ---------------------------------------------------------------- */
 
-  // Agent DMs are grouped by lifecycle so live, suspended, and
-  // archived/deleted agents are visually separated. Empty buckets are
-  // omitted so the list stays compact. Plain user DMs and a2a channels
-  // (nonAgent) keep their original "Direct Messages" placement.
+  // Agent DMs are consolidated into a single "Agents-DMs" group; their
+  // live/working/idle state is conveyed by a per-channel presence dot
+  // (computed above from registry status + thinking events) rather than
+  // by splitting them across separate lifecycle sections. Plain user DMs
+  // and a2a channels stay under nonAgent ("Direct Messages"). Topic and
+  // group channels are merged into one "Channels" group.
   const SECTIONS = [
-    { label: "Live", icon: <CircleDot size={13} />, items: dmSections.live },
-    { label: "Suspended", icon: <PauseCircle size={13} />, items: dmSections.suspended },
-    { label: "Archived Agents", icon: <Archive size={13} />, items: dmSections.archived },
+    { label: "Channels", icon: <Hash size={13} />, items: [...grouped.topic, ...grouped.group] },
+    { label: "Agents-DMs", icon: <Bot size={13} />, items: [...dmSections.live, ...dmSections.suspended, ...dmSections.archived] },
     { label: "Direct Messages", icon: <AtSign size={13} />, items: dmSections.nonAgent },
-    { label: "Topics", icon: <Hash size={13} />, items: grouped.topic },
-    { label: "Groups", icon: <Users size={13} />, items: grouped.group },
-  ].filter((s) => s.items.length > 0 || s.label === "Topics" || s.label === "Groups");
+  ].filter((s) => s.items.length > 0 || s.label === "Channels");
 
   const allEmpty =
     channelsLoaded &&
@@ -1709,12 +2064,23 @@ export function MessagesApp({
     archivedChannels.length === 0 &&
     projectGroups.length === 0;
 
-  const thinkingChannelIds: string[] = channels
-    .filter((ch) => {
-      const bound = (ch.settings as { taostalk_agent?: string } | undefined)?.taostalk_agent;
-      return bound && typingAgents.some((a) => a.slug === bound);
-    })
-    .map((ch) => ch.id);
+  /* ------------------------------------------------------------------ */
+  /*  Agent presence map for sidebar dots (live/working/idle)           */
+  /* ------------------------------------------------------------------ */
+  // Working slugs come from live WS thinking events on bound channels.
+  const workingSlugs = new Set(typingAgents.map((a) => a.slug));
+  const agentPresence = buildAgentPresence(
+    dmSections,
+    // Bound channels from all three buckets: standalone-mode project
+    // channels are excluded from `grouped`, so include them explicitly or
+    // a working bound project channel renders no dot.
+    [
+      ...grouped.topic,
+      ...grouped.group,
+      ...projectGroups.flatMap((g) => g.channels),
+    ],
+    workingSlugs,
+  );
 
   /* ---------------------------------------------------------------- */
   /*  Channel list — iOS 26 grouped on mobile, flat sidebar on desktop */
@@ -1753,7 +2119,7 @@ export function MessagesApp({
       busSelected={busSelected}
       onSelectBusChannel={selectBusChannel}
       formatRelativeTime={relativeTime}
-      thinkingChannelIds={thinkingChannelIds}
+      agentPresence={agentPresence}
     />
   );
 
@@ -1868,14 +2234,14 @@ export function MessagesApp({
               slow or has gone quiet, so a stalled generation no longer looks
               like a frozen window. */}
 {stallInfo && (
-             <div
-               role="status"
-               className={`mx-4 mb-2 px-3 py-2 rounded-lg border text-[12px] flex items-center gap-2 shrink-0 ${
-                 stallInfo.stalled
-                   ? "bg-amber-500/10 border-amber-500/25 text-amber-300/90"
-                   : "bg-shell-surface border-shell-border text-shell-text-secondary"
-               }`}
-             >
+            <div
+              role="status"
+              className={`mx-4 mb-2 px-3 py-2 rounded-lg border text-[12px] flex items-center gap-2 shrink-0 ${
+                stallInfo.stalled
+                  ? "bg-amber-500/10 border-amber-500/25 text-amber-300/90"
+                  : "bg-shell-surface border-shell-border text-shell-text-secondary"
+              }`}
+            >
               {stallInfo.stalled ? (
                 <AlertTriangle size={13} aria-hidden="true" className="shrink-0" />
               ) : (
@@ -1930,7 +2296,7 @@ export function MessagesApp({
                   setInput("");
                 }}
 className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-colors"
-                 aria-label="Dismiss prefill"
+                aria-label="Dismiss prefill"
               >
                 <X size={12} aria-hidden="true" />
               </button>

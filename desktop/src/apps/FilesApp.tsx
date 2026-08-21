@@ -37,6 +37,7 @@ import { resolveAgentEmoji } from "@/lib/agent-emoji";
 import { projectsApi, type DocReviewState } from "@/lib/projects";
 import { useDragSource } from "@/shell/dnd/use-drag-source";
 import { DocViewer } from "@/apps/ProjectsApp/files/DocViewer";
+import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -141,9 +142,31 @@ const EXT_ICONS: Record<string, typeof File> = {
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
 
-function isImage(name: string): boolean {
+export function isImage(name: string): boolean {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
   return IMAGE_EXTS.has(ext);
+}
+
+const TEXT_EXTS = new Set(["txt", "md", "markdown", "log", "csv", "json", "yaml", "yml", "toml", "xml", "html", "css", "js", "ts", "tsx", "py", "rs", "go", "c", "cpp", "h", "java", "rb", "sh", "gitignore", "env"]);
+
+export function isText(name: string): boolean {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return TEXT_EXTS.has(ext);
+}
+
+const AUDIO_EXTS = new Set(["mp3", "wav", "ogg", "flac", "aac"]);
+const VIDEO_EXTS = new Set(["mp4", "mkv", "avi", "mov", "webm"]);
+
+export function isMedia(name: string): boolean {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext);
+}
+
+export function handlerAppForFile(name: string): string | null {
+  if (isText(name)) return "text-editor";
+  if (isImage(name)) return "image-viewer";
+  if (isMedia(name)) return "media-player";
+  return null;
 }
 
 const AGENT_LOCATION_PREFIX = "agent:";
@@ -657,6 +680,14 @@ export function FilesApp({
   useEffect(() => {
     fetchFiles(currentPath);
   }, [currentPath, fetchFiles]);
+
+  // fetchFiles defaults its path to the workspace root, and the hook calls its
+  // refetch with no arguments — so it has to be handed the current directory.
+  const refreshCurrentDir = useCallback(
+    () => fetchFiles(currentPath),
+    [fetchFiles, currentPath],
+  );
+  useRefreshOnFocus(refreshCurrentDir);
 
   // Live updates via SSE — supports both the user workspace and per-agent
   // workspaces. Shared folders don't expose a watch stream, so the SSE setup
@@ -1674,7 +1705,16 @@ export function FilesApp({
                   }}
                   onDoubleClick={() => {
                     if (!f.is_dir && isWritable) {
-                      window.open(fileUrl(location, f.path || f.name), "_blank");
+                      const handler = handlerAppForFile(f.name);
+                      if (handler) {
+                        window.dispatchEvent(
+                          new CustomEvent("taos:open-app", {
+                            detail: { app: handler, props: { url: fileUrl(location, f.path || f.name) } },
+                          }),
+                        );
+                      } else {
+                        window.open(fileUrl(location, f.path || f.name), "_blank");
+                      }
                     }
                   }}
                   className="flex flex-col items-center gap-2 p-3 text-center w-full rounded-xl"
@@ -1829,6 +1869,15 @@ export function FilesApp({
     const isMarkdown = lowerName.endsWith(".md") || lowerName.endsWith(".markdown");
     if (isMarkdown && isProjectLocation(location)) {
       setDocViewer({ url: fileUrl(location, f.path || f.name), title: f.name });
+      return;
+    }
+    const handler = handlerAppForFile(f.name);
+    if (handler) {
+      window.dispatchEvent(
+        new CustomEvent("taos:open-app", {
+          detail: { app: handler, props: { url: fileUrl(location, f.path || f.name) } },
+        }),
+      );
       return;
     }
     if (isWritable) {

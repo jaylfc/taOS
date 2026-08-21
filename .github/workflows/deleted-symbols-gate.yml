@@ -14,6 +14,9 @@ name: Deleted symbols gate
 
 on:
   pull_request:
+    # "edited" so a waiver trailer added by editing the PR body retriggers the
+    # gate (a re-run replays the stale event payload with the old body).
+    types: [opened, synchronize, reopened, edited]
     branches: [master, dev]
 
 jobs:
@@ -23,6 +26,7 @@ jobs:
       contents: read
     env:
       BASE_REF: ${{ github.base_ref }}
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -38,4 +42,4 @@ jobs:
       - name: Check for silently deleted symbols
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: python scripts/check_deleted_symbols.py --base "origin/$BASE_REF"
+        run: python scripts/check_deleted_symbols.py --base "origin/$BASE_REF" --pr-head "$PR_HEAD"

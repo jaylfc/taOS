@@ -64,6 +64,25 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
+def _extract_decision_id(result: Any) -> str | None:
+    """Extract decision_id from a request_decision tool_result.
+
+    The result may arrive as a dict (``{"ok": True, "decision_id": "...", ...}``)
+    or as a JSON string (openclaw serialises non-trivial payloads).  Any other
+    shape or a missing key returns None.
+    """
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if isinstance(result, dict):
+        did = result.get("decision_id")
+        if isinstance(did, str) and did:
+            return did
+    return None
+
+
 class _AgentSession:
     """Per-agent mutable state held by the registry."""
 
@@ -427,6 +446,34 @@ class BridgeSessionRegistry:
                     )
                 except Exception:
                     logger.exception("archive dual-write failed (tool_result)")
+
+            # Attach a read-only decision content block to the in-flight chat
+            # message when the agent raises a decision via the request_decision
+            # tool. The block references only the decision id so the frontend
+            # can fetch the full decision and render it inline (read-only).
+            if tool_name == "request_decision":
+                decision_id = _extract_decision_id(body.get("result"))
+                if decision_id and self._chat_messages and self._chat_hub:
+                    msg_id = session._pending_msg_ids.get(trace_id)
+                    if msg_id:
+                        try:
+                            blocks = await self._chat_messages.append_content_block(
+                                msg_id,
+                                {"kind": "decision", "decision_id": decision_id},
+                            )
+                            if blocks and channel_id:
+                                await self._chat_hub.broadcast(channel_id, {
+                                    "type": "message_edit",
+                                    "seq": self._chat_hub.next_seq(),
+                                    "message_id": msg_id,
+                                    "content_blocks": blocks,
+                                })
+                        except Exception:
+                            logger.exception(
+                                "bridge_session: failed to attach decision block "
+                                "for decision %s on message %s",
+                                decision_id, msg_id,
+                            )
 
         elif kind == "error":
             error_text = body.get("error") or ""

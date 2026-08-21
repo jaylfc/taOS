@@ -560,7 +560,15 @@ class TestAgentRegistryRoutes:
     # -- Revoked feed --------------------------------------------------------
 
     async def test_revoked_feed_shape(self, registry_client):
-        """GET /api/agents/registry/revoked returns {revoked: [{canonical_id, revoked_at}]}."""
+        """GET /api/agents/registry/revoked returns {revoked: [{canonical_id, revoked_at}]}.
+
+        The exact-keys assertion below is a deliberate scope guard, not just a shape
+        check. Decided 2026-08-13: the revocation feed covers agent identities ONLY,
+        and human credential withdrawal is handled through the session/auth layer.
+        Adding a principal_kind or subject_type field to the feed will fail here, which
+        is the point -- widening it is a design decision that must be taken explicitly
+        rather than arrived at by editing a serializer.
+        """
         reg_resp = await registry_client.post(
             "/api/agents/registry/register",
             json={"framework": "openclaw", "display_name": "To Revoke"},

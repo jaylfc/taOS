@@ -63,6 +63,8 @@ async def download_file(
     expected_sha256: str | None = None,
     *,
     on_progress: ProgressCallback | None = None,
+    proxy: str | None = None,
+    trust_env: bool = True,
 ) -> Path:
     """Download a file with optional SHA256 verification.
 
@@ -74,6 +76,14 @@ async def download_file(
     Every URL hop (initial + redirects) is SSRF-validated via
     :func:`resolve_safe_public_ip` and the connection is pinned to the
     validated IP to prevent DNS-rebinding TOCTOU attacks.
+
+    ``proxy`` routes this download through an explicit HTTP/SOCKS proxy
+    (LoRA Studio's Civitai ingest uses this for its geo-blocked fetches).
+    Every other caller leaves it ``None`` and egress is unaffected.
+    ``trust_env`` defaults to True (httpx's own default, preserving existing
+    behaviour); callers that pass an explicit ``proxy`` should pass
+    ``trust_env=False`` so an unrelated HTTPS_PROXY env var cannot silently
+    override the caller's explicit choice.
     """
     from urllib.parse import urljoin, urlparse
 
@@ -85,7 +95,9 @@ async def download_file(
     total = 0
     last_cb = 0.0
 
-    async with httpx.AsyncClient(timeout=None, follow_redirects=False) as client:
+    async with httpx.AsyncClient(
+        timeout=None, follow_redirects=False, proxy=proxy, trust_env=trust_env
+    ) as client:
         current_url = url
         max_redirects = 10
 

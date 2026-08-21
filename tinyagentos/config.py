@@ -60,8 +60,18 @@ class AppConfig:
     archived_agents: list[dict] = field(default_factory=list)
     archive: dict = field(default_factory=lambda: DEFAULT_ARCHIVE_CONFIG.copy())
     memory_url: str = "http://localhost:7900"
+    # Locally-hosted taOSmd deployment hooks for /api/settings/update: the git
+    # checkout the running service imports from, and the command that restarts
+    # it (e.g. "sudo systemctl restart taosmd"). Both empty on installs where
+    # taOSmd is remote or unmanaged; settings-update then reports the skip.
+    taosmd_dir: str = ""
+    taosmd_restart_cmd: str = ""
     wallhaven_api_key: str | None = None
     github_app_id: str = ""
+    # Explicit, opt-in proxy for LoRA Studio's Civitai ingest fetcher only
+    # (httpx.AsyncClient(proxy=...) per-request). Empty = direct connection.
+    # Nothing else in taOS reads this field or changes its egress behaviour.
+    lora_ingest_proxy_url: str = ""
     config_path: Path | None = None
 
     def to_dict(self) -> dict:
@@ -81,8 +91,14 @@ class AppConfig:
             d["archive"] = self.archive
         if self.memory_url != "http://localhost:7900":
             d["memory_url"] = self.memory_url
+        if self.taosmd_dir:
+            d["taosmd_dir"] = self.taosmd_dir
+        if self.taosmd_restart_cmd:
+            d["taosmd_restart_cmd"] = self.taosmd_restart_cmd
         if self.github_app_id:
             d["github_app_id"] = self.github_app_id
+        if self.lora_ingest_proxy_url:
+            d["lora_ingest_proxy_url"] = self.lora_ingest_proxy_url
         return d
 
 # rkllama's taOS default port moved from the upstream 8080 to 7833. Installs
@@ -191,7 +207,10 @@ def load_config(path: Path) -> AppConfig:
         archived_agents=data.get("archived_agents", []),
         archive=archive_cfg,
         memory_url=data.get("memory_url", "http://localhost:7900"),
+        taosmd_dir=str(data.get("taosmd_dir", "") or ""),
+        taosmd_restart_cmd=str(data.get("taosmd_restart_cmd", "") or ""),
         github_app_id=str(data.get("github_app_id", "") or ""),
+        lora_ingest_proxy_url=str(data.get("lora_ingest_proxy_url", "") or ""),
         config_path=path,
         wallhaven_api_key=wallhaven_api_key,
     )
@@ -325,7 +344,8 @@ def normalize_agent(agent: dict) -> dict:
     agent.setdefault("soul_md", "")
     agent.setdefault("agent_md", "")
     agent.setdefault("memory_plugin", "taosmd")
-    agent.setdefault("memory_config", None)  # device_id + tier_id; None → use global taosmd_default.json
+    agent.setdefault("memory_config", None)  # device_id + tier_id; None -> use global taosmd_default.json
+    agent.setdefault("memory_mode", "both")  # "both" | "framework" | "taosmd"
     agent.setdefault("source_persona_id", None)
     # False for pre-existing rows; new deploys flip to True explicitly.
     agent.setdefault("migrated_to_v2_personas", False)

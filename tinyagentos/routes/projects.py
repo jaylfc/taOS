@@ -469,6 +469,8 @@ class _TaskRequestModelMixin:
 
 
 class CreateTaskIn(_TaskRequestModelMixin, BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str
     body: str = ""
     priority: int = 0
@@ -476,6 +478,16 @@ class CreateTaskIn(_TaskRequestModelMixin, BaseModel):
     assignee_id: str | None = None
     parent_task_id: str | None = None
     element_id: str | None = None
+
+    @model_validator(mode="after")
+    def _assert_body_for_claimable(self) -> CreateTaskIn:
+        labels = self.labels
+        has_claimable = any(l.strip().lower() == "claimable" for l in labels)
+        if has_claimable and not self.body.strip():
+            raise ValueError(
+                "Claimable cards must have a non-empty body"
+            )
+        return self
 
 
 class UpdateTaskIn(_TaskRequestModelMixin, BaseModel):
@@ -994,8 +1006,20 @@ async def close_task(
     existing = await store.get_task(task_id)
     if existing is None or existing["project_id"] != project_id:
         return JSONResponse({"error": "not found"}, status_code=404)
-    ok = await store.close_task(task_id, closed_by=closed_by, reason=payload.reason)
+    # Ownership-guard bypass: a card claimed by one agent may still be closed
+    # by the project lead (lead_member_id), the project owner (user_id), or a
+    # session admin.  The lead is typically an AGENT registry id, so an
+    # admin/owner session caller (a USER id) can never equal it — widen the
+    # bypass to cover all three (issue #2191).
+    force = (
+        project.get("lead_member_id") == actor_id
+        or project.get("user_id") == actor_id
+        or bool(getattr(request.state, "is_admin", False))
+    )
+    ok = await store.close_task(task_id, closed_by=closed_by, reason=payload.reason, force=force)
     if not ok:
+        if existing.get("claimed_by") and existing["claimed_by"] != closed_by:
+            return JSONResponse({"error": "not claimed by you"}, status_code=409)
         return JSONResponse({"error": "cannot close"}, status_code=409)
     _beads_mark_dirty(request, project_id)
     await pstore.log_activity(project_id, closed_by, "task.closed", {"task_id": task_id})

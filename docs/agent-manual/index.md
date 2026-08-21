@@ -20,6 +20,9 @@ Run `python3 scripts/build-agent-manual.py` to compile these into `docs/taos-age
 | `09-os-control.md` | Driving the desktop: open_app / arrange_windows tools |
 | `10-image-prompting.md` | Writing good prompts for the generate_image tool |
 | `11-files-api.md` | Project Files REST API for agents: upload (multipart), list, fetch, and the one-write principle |
+| `12-memory-mode-both.md` | Memory mode `both`: framework memory for live state, taOSmd for durable facts, turn-boundary rules |
+| `13-memory-mode-framework.md` | Memory mode `framework`: native memory only, no taOSmd calls, redeploy clears all |
+| `14-memory-mode-taosmd.md` | Memory mode `taosmd`: taOSmd only, for frameworks with no native memory, single source of truth |
 
 ## Companion skills
 

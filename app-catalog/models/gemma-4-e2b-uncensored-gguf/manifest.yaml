@@ -2,53 +2,81 @@ id: gemma-4-e2b-uncensored-gguf
 name: Gemma 4 E2B Uncensored (GGUF)
 type: model
 version: 4.0.0
-description: "Google Gemma 4 E2B (~5B raw / 2.3B effective via PLE), abliterated/uncensored GGUF (no refusals, original Google behaviour). Natively multimodal: text, image, video and audio in one model (mmproj needed for vision/audio). CPU/llama.cpp + Ollama path only; does NOT run on the Hailo NPU."
+description: 'Google Gemma 4 E2B (~5B raw / 2.3B effective via PLE), abliterated/uncensored
+  GGUF (no refusals, original Google behaviour). Natively multimodal: text, image,
+  video and audio in one model (mmproj needed for vision/audio). CPU/llama.cpp + Ollama
+  path only; does NOT run on the Hailo NPU.'
 homepage: https://huggingface.co/mradermacher/gemma-4-E2B-it-uncensored-GGUF
-license: "Gemma Terms of Use"
-capabilities: [chat, tool-calling, vision, audio]
+license: Gemma Terms of Use
+capabilities:
+- chat
+- tool-calling
+- vision
+- audio
 context_window: 131072
-
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M GGUF (3.4GB)"
-    format: gguf
-    size_mb: 3512
-    download_url: https://huggingface.co/mradermacher/gemma-4-E2B-it-uncensored-GGUF/resolve/main/gemma-4-E2B-it-uncensored.Q4_K_M.gguf
-    # TODO: sha256 not yet resolved (xet-backed repo, no LFS pointer). Fill in before release.
-    sha256: ''
-    requires:
-      backends:
-        - id: ollama
-          targets: [apple-silicon, x86-cuda, x86-vulkan, arm-vulkan, cpu]
-          min_ram_mb: 4096
-        - id: llama-cpp
-          targets: [x86-vulkan, arm-vulkan, cpu]
-          min_ram_mb: 4096
-
-  - id: q3_k_m
-    name: "Q3_K_M GGUF (3.2GB)"
-    format: gguf
-    size_mb: 3277
-    download_url: https://huggingface.co/mradermacher/gemma-4-E2B-it-uncensored-GGUF/resolve/main/gemma-4-E2B-it-uncensored.Q3_K_M.gguf
-    # TODO: sha256 not yet resolved (xet-backed repo, no LFS pointer). Fill in before release.
-    sha256: ''
-    requires:
-      backends:
-        - id: ollama
-          targets: [apple-silicon, x86-cuda, x86-vulkan, arm-vulkan, cpu]
-          min_ram_mb: 4096
-        - id: llama-cpp
-          targets: [x86-vulkan, arm-vulkan, cpu]
-          min_ram_mb: 4096
-
+- id: q4_k_m
+  name: Q4_K_M GGUF (3.4GB)
+  format: gguf
+  size_mb: 3512
+  download_url: https://huggingface.co/mradermacher/gemma-4-E2B-it-uncensored-GGUF/resolve/main/gemma-4-E2B-it-uncensored.Q4_K_M.gguf
+  sha256: eab48fd774827068e6473eaf038dc5bb92ad2590a45b1ebff1a42229eec0bafa
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
+- id: q3_k_m
+  name: Q3_K_M GGUF (3.2GB)
+  format: gguf
+  size_mb: 3277
+  download_url: https://huggingface.co/mradermacher/gemma-4-E2B-it-uncensored-GGUF/resolve/main/gemma-4-E2B-it-uncensored.Q3_K_M.gguf
+  sha256: cff5a9c9faf29809468aaa8a0ee0553e3458063b6fc203061b5e7c4d2ece171f
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
 hardware_tiers:
-  arm-npu-16gb: {recommended: q4_k_m}
-  arm-npu-32gb: {recommended: q4_k_m}
-  apple-silicon: {recommended: q4_k_m}
-  x86-cuda-12gb: {recommended: q4_k_m}
-  x86-vulkan-8gb: {recommended: q4_k_m}
-  x86-vulkan-16gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q3_k_m}
-  arm-npu-4gb: {recommended: q3_k_m}
-  x86-cuda-4gb: {recommended: q3_k_m}
-  x86-vulkan-4gb: {recommended: q3_k_m}
+  arm-npu-16gb:
+    recommended: q4_k_m
+  arm-npu-32gb:
+    recommended: q4_k_m
+  apple-silicon:
+    recommended: q4_k_m
+  x86-cuda-12gb:
+    recommended: q4_k_m
+  x86-vulkan-8gb:
+    recommended: q4_k_m
+  x86-vulkan-16gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q3_k_m
+  arm-npu-4gb:
+    recommended: q3_k_m
+  x86-cuda-4gb:
+    recommended: q3_k_m
+  x86-vulkan-4gb:
+    recommended: q3_k_m

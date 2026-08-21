@@ -1,6 +1,7 @@
 """Tests for ChatMessageStore — 19 tests."""
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 
@@ -265,3 +266,63 @@ async def test_soft_delete_nonexistent_returns_false(tmp_path):
     await store.init()
     ok = await store.soft_delete_message("does-not-exist")
     assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_append_content_block(tmp_path):
+    store = ChatMessageStore(tmp_path / "chat.db")
+    await store.init()
+    msg = await _send(store)
+    blocks = await store.append_content_block(msg["id"], {"kind": "decision", "decision_id": "dec-1"})
+    assert blocks is not None
+    assert blocks[-1] == {"kind": "decision", "decision_id": "dec-1"}
+    fetched = await store.get_message(msg["id"])
+    assert fetched["content_blocks"] == blocks
+
+
+@pytest.mark.asyncio
+async def test_concurrent_appends_do_not_drop_blocks(tmp_path):
+    """Every concurrent append must survive.
+
+    A read-modify-write in Python interleaves at its await points: two callers
+    SELECT the same array, each appends to its own copy, and the second UPDATE
+    overwrites the first. The loser disappears with no error and no log line,
+    so this asserts on the surviving SET rather than on any ordering.
+    """
+    store = ChatMessageStore(tmp_path / "chat.db")
+    await store.init()
+    msg = await _send(store)
+    count = 12
+    await asyncio.gather(
+        *(
+            store.append_content_block(msg["id"], {"kind": "text", "text": f"b{i}"})
+            for i in range(count)
+        )
+    )
+    fetched = await store.get_message(msg["id"])
+    assert len(fetched["content_blocks"]) == count
+    assert {b["text"] for b in fetched["content_blocks"]} == {
+        f"b{i}" for i in range(count)
+    }
+
+
+@pytest.mark.asyncio
+async def test_append_content_block_missing_message(tmp_path):
+    store = ChatMessageStore(tmp_path / "chat.db")
+    await store.init()
+    result = await store.append_content_block("nope", {"kind": "decision", "decision_id": "dec-1"})
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_append_multiple_content_blocks(tmp_path):
+    store = ChatMessageStore(tmp_path / "chat.db")
+    await store.init()
+    msg = await _send(store)
+    await store.append_content_block(msg["id"], {"kind": "decision", "decision_id": "dec-1"})
+    await store.append_content_block(msg["id"], {"kind": "text", "text": "follow-up"})
+    fetched = await store.get_message(msg["id"])
+    assert fetched["content_blocks"] == [
+        {"kind": "decision", "decision_id": "dec-1"},
+        {"kind": "text", "text": "follow-up"},
+    ]

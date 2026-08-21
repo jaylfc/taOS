@@ -106,6 +106,56 @@ async def test_find_blocked_by_push_token(store):
 
 
 @pytest.mark.asyncio
+async def test_blocked_token_rejected_by_get_by_token(store):
+    """A blocked device's scoped token must not resolve -- get_by_token is the
+    store-level gate used by require_device (the real device-bearer auth path)."""
+    dev = await store.register(user_id="u1", platform="ios", push_token="pt1")
+    await store.block(dev["device_id"])
+    assert await store.get_by_token(dev["scoped_token"]) is None
+    # Revoke-only also kills the token.
+    dev2 = await store.register(user_id="u1", platform="ios")
+    await store.revoke(dev2["device_id"])
+    assert await store.get_by_token(dev2["scoped_token"]) is None
+
+
+@pytest.mark.asyncio
+async def test_blocked_device_consumes_slot(store):
+    """Pinned behaviour: a blocked device remains in list_for_user (and thus
+    counts against _MAX_DEVICES_PER_USER) until unblocked. Revoked-only
+    devices do NOT count."""
+    a = await store.register(user_id="u1", platform="ios")
+    b = await store.register(user_id="u1", platform="ios")
+    # Block device b -- it stays listed.
+    await store.block(b["device_id"])
+    listed = [r["device_id"] for r in await store.list_for_user("u1")]
+    assert set(listed) == {a["device_id"], b["device_id"]}
+    # Unblock b -- it now falls out of list_for_user (revoked-only, hidden).
+    await store.unblock(b["device_id"])
+    listed = [r["device_id"] for r in await store.list_for_user("u1")]
+    assert listed == [a["device_id"]]
+
+
+@pytest.mark.asyncio
+async def test_revoke_isolates_devices(store):
+    """Revoking device A must not affect device B on the same account."""
+    a = await store.register(user_id="u1", platform="ios", display_name="A")
+    b = await store.register(user_id="u1", platform="ios", display_name="B")
+    assert await store.revoke(a["device_id"]) is True
+    # A's token is dead...
+    assert await store.get_by_token(a["scoped_token"]) is None
+    # ...but B is untouched.
+    row_b = await store.get(b["device_id"])
+    assert row_b["revoked"] == 0
+    b_token = await store.get_by_token(b["scoped_token"])
+    assert b_token is not None
+    assert b_token["device_id"] == b["device_id"]
+    # A is revoked-only (not blocked), so it is hidden from list_for_user;
+    # B remains listed. Revoking A did not affect B's slot or token.
+    listed = [r["device_id"] for r in await store.list_for_user("u1")]
+    assert listed == [b["device_id"]]
+
+
+@pytest.mark.asyncio
 async def test_blocked_column_migration_over_existing_db(tmp_path):
     """The `blocked` column must be retrofitted onto a database created BEFORE
     this change. A fresh-schema test passes vacuously; this one builds the old

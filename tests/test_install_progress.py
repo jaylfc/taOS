@@ -80,6 +80,22 @@ class TestInstallProgressStore:
         assert entry.target_remote is None
         assert len(entry.install_id) > 0
 
+    def test_start_returns_entry_with_defaults(self, monkeypatch):
+        fake_id = "abc123"
+        import types
+        monkeypatch.setattr(
+            "tinyagentos.install_progress.uuid",
+            types.SimpleNamespace(uuid4=lambda: types.SimpleNamespace(hex=fake_id)),
+        )
+        store = self._store()
+        entry = store.start("myapp", "myremote")
+        assert entry.install_id == fake_id
+        assert entry.app_id == "myapp"
+        assert entry.target_remote == "myremote"
+        assert entry.state == "queued"
+        assert entry.bytes_downloaded == 0
+        assert entry.bytes_total == 0
+
     def test_start_with_target_remote(self):
         s = self._store()
         entry = s.start("myapp", target_remote="http://example.com")

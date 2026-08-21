@@ -88,6 +88,12 @@ VALID_SCOPES = frozenset({
     # read+write surface for a lightweight persistent notes surface.
     "project_notes",
     "observatory_control",
+    # Project lists: read/write a project's checklist lists (title, description,
+    # status) and their entries (text, category, status, done, position) by a
+    # session owner/admin or a project-bound project_lists grant holder. Mirrors
+    # project_notes' single-scope read+write surface for a lightweight lists
+    # surface scoped to a project.
+    "project_lists",
 })
 
 
@@ -210,7 +216,7 @@ async def _retire_scope_request_notification(request: Request, request_id: str) 
 # project_tasks_create globally. One definition, referenced everywhere.
 _CANVAS_SCOPES = {"canvas_read", "canvas_write"}
 _FILES_SCOPES = {"files_read", "files_write"}
-_PROJECT_SCOPES = {"project_tasks", "project_tasks_create", "project_tasks_update"} | _CANVAS_SCOPES | _FILES_SCOPES
+_PROJECT_SCOPES = {"project_tasks", "project_tasks_create", "project_tasks_update", "project_lists", "project_notes"} | _CANVAS_SCOPES | _FILES_SCOPES
 
 
 def _get_approve_lock(request: Request, request_id: str) -> asyncio.Lock:

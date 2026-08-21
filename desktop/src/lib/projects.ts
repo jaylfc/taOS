@@ -139,6 +139,34 @@ export type DocReview = {
   updated_at: number;
 };
 
+export type ProjectList = {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string;
+  status: string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+};
+
+export type ProjectListEntry = {
+  id: string;
+  list_id: string;
+  project_id: string;
+  text: string;
+  original_text: string;
+  category: string | null;
+  status: string;
+  done: number;
+  author_kind: string;
+  author_id: string;
+  edited_by: string | null;
+  position: number;
+  created_at: number;
+  updated_at: number;
+};
+
 export type DocReviewMissing = {
   project_id: string;
   doc_path: string;
@@ -357,6 +385,46 @@ export const projectsApi = {
 
   activity: (pid: string) =>
     http<{ items: ProjectActivity[] }>(`/api/projects/${pid}/activity`).then((r) => r.items),
+
+  lists: {
+    list: (pid: string) =>
+      http<{ items: ProjectList[] }>(`/api/projects/${pid}/lists`).then((r) => r.items),
+    create: (pid: string, input: { title: string; description?: string }) =>
+      http<ProjectList>(`/api/projects/${pid}/lists`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    get: (pid: string, listId: string) =>
+      http<ProjectList>(`/api/projects/${pid}/lists/${listId}`),
+    update: (pid: string, listId: string, patch: Partial<Pick<ProjectList, "title" | "description" | "status">>) =>
+      http<ProjectList>(`/api/projects/${pid}/lists/${listId}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
+    remove: (pid: string, listId: string) =>
+      http<{ ok: boolean }>(`/api/projects/${pid}/lists/${listId}`, { method: "DELETE" }),
+    entries: {
+      list: (pid: string, listId: string) =>
+        http<{ items: ProjectListEntry[] }>(`/api/projects/${pid}/lists/${listId}/entries`).then((r) => r.items),
+      create: (pid: string, listId: string, input: { text: string; category?: string | null; position?: number | null }) =>
+        http<ProjectListEntry>(`/api/projects/${pid}/lists/${listId}/entries`, {
+          method: "POST",
+          body: JSON.stringify(input),
+        }),
+      update: (pid: string, listId: string, entryId: string, patch: Partial<Pick<ProjectListEntry, "text" | "category" | "status" | "done" | "position">>) =>
+        http<ProjectListEntry>(`/api/projects/${pid}/lists/${listId}/entries/${entryId}`, {
+          method: "PATCH",
+          body: JSON.stringify(patch),
+        }),
+      remove: (pid: string, listId: string, entryId: string) =>
+        http<{ ok: boolean }>(`/api/projects/${pid}/lists/${listId}/entries/${entryId}`, { method: "DELETE" }),
+      reorder: (pid: string, listId: string, entries: { id: string; position: number }[]) =>
+        http<{ ok: boolean }>(`/api/projects/${pid}/lists/${listId}/entries/reorder`, {
+          method: "POST",
+          body: JSON.stringify({ entries }),
+        }),
+    },
+  },
 
   docReviews: {
     list: (pid: string, state?: string) =>

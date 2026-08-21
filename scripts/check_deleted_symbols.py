@@ -9,9 +9,12 @@ because the PR branch simply wins on files dev touched after the branch point.
 
 Algorithm:
   1. Extract all Python def/class symbols at two points: the target branch
-     head and HEAD (the merge ref / PR head).
+     head and the PR merge result. The merge result is computed in-script via
+     `git merge-tree --write-tree <base> <pr-head>` when --pr-head is given,
+     so a stale checkout HEAD on a re-run cannot invent false deletions; when
+     omitted, the checkout HEAD is used directly.
   2. A symbol is "deleted by the PR" if it exists at the target head but not
-     at HEAD. The signal is that set.
+     at the merge result. The signal is that set.
   3. Fail with an explicit list of the deleted symbols and the commits that
      added them.
   4. A "Removes-Intentionally: <symbol>, ..." trailer in the PR body waives
@@ -21,9 +24,15 @@ Narrow by design: Python def/class names only (test functions are defs).
 No semantic analysis -- name-level matching catches every instance hit so far.
 
 Usage:
-    python scripts/check_deleted_symbols.py --base origin/dev
-    python scripts/check_deleted_symbols.py --base origin/dev --pr-body "..."
-    python scripts/check_deleted_symbols.py --base origin/dev --waived "path/file.py:func"
+    python scripts/check_deleted_symbols.py --base origin/dev --pr-head <sha>
+    python scripts/check_deleted_symbols.py --base origin/dev --pr-head <sha> --pr-body "..."
+    python scripts/check_deleted_symbols.py --base origin/dev --pr-head <sha> --waived "path/file.py:func"
+
+--pr-head passes github.event.pull_request.head.sha so the merge result is
+recomputed in-script with `git merge-tree --write-tree` instead of trusting
+checkout HEAD. On pull_request events HEAD is GitHub's event-time test-merge
+commit, which goes stale on a re-run after the base advances and falsely
+reports base-added symbols as deleted. When omitted, HEAD is used directly.
 """
 from __future__ import annotations
 
@@ -31,6 +40,7 @@ import argparse
 import ast
 import io
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -103,6 +113,37 @@ def _get_symbols_at_ref(ref: str, repo_root: Path = REPO_ROOT) -> dict[str, str]
     return symbols
 
 
+def _merge_tree(base_ref: str, pr_head_sha: str, repo_root: Path = REPO_ROOT) -> str | None:
+    """Compute the merge result tree of base_ref and pr_head_sha.
+
+    Uses `git merge-tree --write-tree` so the merge is computed in-script
+    without trusting the checkout's HEAD, which on pull_request events is the
+    event-time test-merge commit and goes stale on a re-run after the base
+    branch advances. Returns the result tree SHA on a clean merge, or None
+    when the merge reports conflicts (mergeability is gated elsewhere, and a
+    conflicted PR cannot silently delete symbols by merging cleanly).
+    """
+    result = subprocess.run(
+        ["git", "merge-tree", "--write-tree", base_ref, pr_head_sha],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    first_line = result.stdout.splitlines()[0].strip() if result.stdout else ""
+    oid_on_stdout = bool(re.fullmatch(r"[0-9a-f]{40,64}", first_line))
+    if result.returncode == 0 and oid_on_stdout:
+        return first_line
+    if result.returncode == 1 and oid_on_stdout:
+        # A genuine conflict still prints the merge-tree OID first; a bad ref
+        # ("not something we can merge") exits 1 with EMPTY stdout, so rc alone
+        # cannot distinguish them.
+        return None
+    # Anything else is a tooling failure (invalid ref, missing object, usage
+    # error). The gate must fail loudly here, not skip as "conflicted".
+    raise RuntimeError(
+        f"git merge-tree --write-tree {base_ref} {pr_head_sha} failed "
+        f"(rc={result.returncode}): {result.stderr.strip()}"
+    )
+
+
 def _find_adding_commit(
     file_path: str,
     name: str,
@@ -165,15 +206,25 @@ def check_deleted_symbols(
     repo_root: Path = REPO_ROOT,
     pr_body: str | None = None,
     waived: set[str] | None = None,
-) -> tuple[list[Violation], set[str]]:
+    pr_head_sha: str | None = None,
+) -> tuple[list[Violation], set[str], bool]:
     """Main check function.
 
-    Returns (violations, waived_symbols) where violations is a list of
-    Violation objects for non-waived signal symbols, and waived_symbols is
-    the set of signal symbols that were waived.
+    Returns (violations, waived_symbols, conflicted) where violations is a
+    list of Violation objects for non-waived signal symbols, waived_symbols is
+    the set of signal symbols that were waived, and conflicted is True when the
+    in-script merge-tree reported conflicts (the merge result was not clean and
+    the check is skipped with an exit code of 0).
     """
     base_symbols = _get_symbols_at_ref(base_ref, repo_root)
-    head_symbols = _get_symbols_at_ref("HEAD", repo_root)
+
+    if pr_head_sha:
+        merge_tree = _merge_tree(base_ref, pr_head_sha, repo_root)
+        if merge_tree is None:
+            return [], set(), True
+        head_symbols = _get_symbols_at_ref(merge_tree, repo_root)
+    else:
+        head_symbols = _get_symbols_at_ref("HEAD", repo_root)
 
     signal = find_signal_symbols(base_symbols, head_symbols)
 
@@ -192,12 +243,19 @@ def check_deleted_symbols(
         added_by = _find_adding_commit(file_path, name, kind, base_ref, repo_root)
         violations.append(Violation(symbol=symbol, added_by=added_by))
 
-    return violations, waived_in_signal
+    return violations, waived_in_signal, False
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True, help="Target branch ref (e.g. origin/dev)")
+    parser.add_argument(
+        "--pr-head",
+        default=None,
+        help="PR head commit SHA (github.event.pull_request.head.sha). When set, "
+        "the merge result is recomputed in-script via git merge-tree --write-tree "
+        "instead of trusting checkout HEAD.",
+    )
     parser.add_argument("--pr-body", default=None, help="PR body text (for Removes-Intentionally trailer)")
     parser.add_argument("--waived", default=None, help="Comma-separated list of waived symbols")
     args = parser.parse_args(argv)
@@ -206,6 +264,8 @@ def main(argv: list[str] | None = None) -> int:
     if pr_body is None:
         pr_body = os.environ.get("PR_BODY")
 
+    pr_head_sha = args.pr_head or os.environ.get("PR_HEAD") or None
+
     waived: set[str] = set()
     if args.waived:
         for sym in args.waived.split(","):
@@ -213,7 +273,17 @@ def main(argv: list[str] | None = None) -> int:
             if sym:
                 waived.add(sym)
 
-    violations, waived_symbols = check_deleted_symbols(args.base, REPO_ROOT, pr_body, waived)
+    violations, waived_symbols, conflicted = check_deleted_symbols(
+        args.base, REPO_ROOT, pr_body, waived, pr_head_sha
+    )
+
+    if conflicted:
+        print(
+            f"deleted-symbols-guard: merge-tree reported conflicts for "
+            f"{args.base}..{pr_head_sha or 'HEAD'}; not evaluating "
+            f"(mergeability is gated elsewhere)"
+        )
+        return 0
 
     if waived_symbols:
         for sym in sorted(waived_symbols):

@@ -439,6 +439,51 @@ async def delete_agent(request: Request, name: str):
     return result
 
 
+_VALID_MEMORY_PLUGINS = {"taosmd", "none"}
+_VALID_MEMORY_MODES = {"both", "framework", "taosmd"}
+
+
+def _memory_selection_error(memory_plugin: str | None, memory_mode: str | None) -> str | None:
+    """Return an error message if the plugin/mode pair is invalid, else None.
+
+    Shared by deploy and PATCH so the same request cannot be accepted on one
+    route and rejected on the other. Each value is checked against its own set,
+    and then the PAIR is checked: the two taOSmd-backed modes are incoherent
+    when the taOSmd plugin is switched off, and validating the fields
+    independently lets that combination through.
+
+    "Switched off" means None *or* the string "none". The deploy wizard's
+    "Skip memory for this agent" sends JSON null, not "none" (its state is
+    typed ``"taosmd" | null``), so a pair check that only matched the string
+    guarded a value the real caller never sends and let the one it does send
+    through. Nothing downstream repairs a stored None either: ``setdefault``
+    only fills a MISSING key and ``.get(k, default)`` returns the stored None,
+    so prompt_assembly's ``== "taosmd"`` gate is False and the agent runs in a
+    taOSmd-backed mode with no taOSmd rules in its prompt.
+
+    On PATCH ``memory_plugin`` is typed ``str`` (non-nullable), so None here
+    is always an explicit "skipped", never an omitted field.
+    """
+    if memory_plugin is not None and memory_plugin not in _VALID_MEMORY_PLUGINS:
+        return (
+            f"Invalid memory_plugin '{memory_plugin}'. "
+            f"Must be one of: {sorted(_VALID_MEMORY_PLUGINS)}"
+        )
+    if memory_mode is not None and memory_mode not in _VALID_MEMORY_MODES:
+        return (
+            f"Invalid memory_mode '{memory_mode}'. "
+            f"Must be one of: {sorted(_VALID_MEMORY_MODES)}"
+        )
+    if memory_plugin in (None, "none") and memory_mode in ("both", "taosmd"):
+        chosen = "skipped" if memory_plugin is None else "'none'"
+        return (
+            f"memory_mode '{memory_mode}' needs the taOSmd memory plugin, but "
+            f"the memory layer is {chosen}. Use memory_mode 'framework', or "
+            "set memory_plugin to 'taosmd'."
+        )
+    return None
+
+
 class DeployAgentRequest(BaseModel):
     name: str
     framework: str = "none"
@@ -462,9 +507,13 @@ class DeployAgentRequest(BaseModel):
     soul_md: str = ""
     agent_md: str = ""
     memory_plugin: str | None = "taosmd"
-    # Per-agent override for taOSmd device + tier. None → use global default
+    # Per-agent override for taOSmd device + tier. None -> use global default
     # from data_dir/taosmd_default.json set by the memory wizard.
     memory_config: dict | None = None
+    # Memory mode: "both" (default), "framework" (native only), "taosmd" (taOSmd only).
+    # Persisted on the agent record and injected as TAOS_MEMORY_MODE env var at
+    # deploy time so the framework runtime can honour it without a separate push.
+    memory_mode: str = "both"
     source_persona_id: str | None = None
     save_to_library: dict | None = None  # {"name": str, "description": str|None}
     # KV-cache quantisation — sent by DeployWizard; defaults mirror normalize_agent.
@@ -498,6 +547,25 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
     rejection = _reject_non_chat_model((body.model or "").strip())
     if rejection is not None:
         return rejection
+
+    # A caller that skips the memory layer without naming a mode gets the only
+    # coherent mode, rather than a 400 for a contradiction it never stated.
+    # memory_mode postdates memory_plugin, so a client that predates it sends
+    # `memory_plugin: null` alone and would otherwise be rejected by the pair
+    # check below against the "both" default it never chose. This is a
+    # DERIVATION, not a guess: with no taOSmd plugin, "framework" is the only
+    # mode left. An EXPLICIT contradiction is still an error, which is what the
+    # deploy wizard sends (it always names memory_mode).
+    if "memory_mode" not in body.model_fields_set and body.memory_plugin in (None, "none"):
+        body.memory_mode = "framework"
+
+    # Reject an invalid memory selection before any side effects, for the same
+    # reason. memory_mode is persisted on the agent record AND injected as the
+    # TAOS_MEMORY_MODE env var, so an unchecked value reaches the runtime as a
+    # mode no branch handles, with nothing failing at the boundary.
+    memory_error = _memory_selection_error(body.memory_plugin, body.memory_mode)
+    if memory_error is not None:
+        return JSONResponse({"error": memory_error}, status_code=400)
 
     # --- Idempotency guard ---
     idempotency_cache = getattr(request.app.state, "idempotency_cache", None)
@@ -629,6 +697,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         new_agent["agent_md"] = body.agent_md
         new_agent["memory_plugin"] = body.memory_plugin
         new_agent["memory_config"] = body.memory_config
+        new_agent["memory_mode"] = body.memory_mode
         new_agent["source_persona_id"] = body.source_persona_id
         new_agent["migrated_to_v2_personas"] = True
         new_agent["registry_canonical_id"] = canonical_id
@@ -683,6 +752,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                     secrets_store=secrets_store,
                     remote=deploy_remote,
                     taos_host=deploy_taos_host,
+                    memory_mode=body.memory_mode,
                 ))
                 agent = find_agent(config, body.name)
                 if result.get("success"):
@@ -1259,24 +1329,22 @@ async def patch_agent_persona(request: Request, slug: str, body: PersonaPatch):
 
 class MemoryPatch(BaseModel):
     memory_plugin: str
-
-
-_VALID_MEMORY_PLUGINS = {"taosmd", "none"}
+    memory_mode: str | None = None
 
 
 @router.patch("/api/agents/{slug}/memory")
 async def patch_agent_memory(request: Request, slug: str, body: MemoryPatch):
-    """Set the memory_plugin for an agent. Valid values: 'taosmd', 'none'."""
-    if body.memory_plugin not in _VALID_MEMORY_PLUGINS:
-        return JSONResponse(
-            {"error": f"Invalid memory_plugin '{body.memory_plugin}'. Must be one of: {sorted(_VALID_MEMORY_PLUGINS)}"},
-            status_code=400,
-        )
+    """Set the memory_plugin and/or memory_mode for an agent."""
+    memory_error = _memory_selection_error(body.memory_plugin, body.memory_mode)
+    if memory_error is not None:
+        return JSONResponse({"error": memory_error}, status_code=400)
     config = request.app.state.config
     agent = find_agent(config, slug)
     if not agent:
         return JSONResponse({"error": "agent not found"}, status_code=404)
     agent["memory_plugin"] = body.memory_plugin
+    if body.memory_mode is not None:
+        agent["memory_mode"] = body.memory_mode
     await save_config_locked(config, config.config_path)
     return {"status": "ok", "agent": agent}
 

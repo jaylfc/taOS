@@ -46,3 +46,10 @@ which folds every fragment into a new `## [<version>] - <date>` section beneath
 `[Unreleased]`, groups them by section in Keep-a-Changelog order, and deletes the
 fragments in the same commit. `--dry-run` prints the section without touching
 anything.
+
+Reruns are safe: if the `## [<version>]` section already exists (a previous run
+died between writing the section and deleting the fragments), the collator does
+not insert a duplicate. It consumes only leftover fragments whose content is
+already present in `CHANGELOG.md`; a fragment that landed after the failed run
+is folded nowhere, so it is kept on disk and the rerun exits non-zero naming
+it — fold it by rerunning with the correct (next) target version.

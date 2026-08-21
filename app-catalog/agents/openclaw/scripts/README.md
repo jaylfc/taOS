@@ -9,7 +9,8 @@ upstream OpenClaw agent runtime from npm.
    not just major — earlier 22.x releases are too old).
 2. Runs `npm install -g openclaw@latest` to install upstream OpenClaw.
 3. Writes `/root/.openclaw/openclaw.json` (gateway config) and `/root/.openclaw/env`
-   (env file) from env vars injected by the deployer.
+   (env file) from env vars injected by the deployer. These absolute `/root/...` paths
+   refer to the deployed openclaw host, not to files in this repository.
 4. Installs a system-level `openclaw.service` systemd unit that runs `openclaw gateway`.
 5. Enables the service (but does NOT start it — the deployer starts it after writing
    the LiteLLM key to prevent a crash-loop before the key is available).

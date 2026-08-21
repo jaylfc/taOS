@@ -2,6 +2,8 @@
 /*  Memory API client                                                  */
 /* ------------------------------------------------------------------ */
 
+import { withCsrf } from "./csrf";
+
 const API = '/api';
 
 async function fetchJson<T>(url: string, fallback: T, init?: RequestInit): Promise<T> {
@@ -87,11 +89,11 @@ export async function fetchMemorySettings(): Promise<Record<string, any>> {
 }
 
 export async function updateMemorySettings(settings: Record<string, any>): Promise<Record<string, any>> {
-  return fetchJson(`${API}/memory/settings`, {}, {
+  return fetchJson(`${API}/memory/settings`, {}, withCsrf({
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
-  });
+  }));
 }
 
 export async function fetchMemoryEndpoint(): Promise<TaOSmdEndpoint> {
@@ -128,11 +130,11 @@ export async function triggerCatalogIndex(body: {
   end_date?: string;
   force?: boolean;
 }): Promise<any> {
-  return fetchJson(`${API}/memory/catalog/index`, {}, {
+  return fetchJson(`${API}/memory/catalog/index`, {}, withCsrf({
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  });
+  }));
 }
 
 export async function fetchCatalogSearch(query: string): Promise<any[]> {
@@ -152,9 +154,9 @@ export async function fetchAgentMemoryConfig(name: string): Promise<Record<strin
 }
 
 export async function updateAgentMemoryConfig(name: string, config: Record<string, any>): Promise<Record<string, any>> {
-  return fetchJson(`${API}/agents/${encodeURIComponent(name)}/memory-config`, {}, {
+  return fetchJson(`${API}/agents/${encodeURIComponent(name)}/memory-config`, {}, withCsrf({
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
-  });
+  }));
 }

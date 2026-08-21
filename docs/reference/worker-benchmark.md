@@ -44,7 +44,9 @@ the real user path instead.
 
 ## Where the results are stored
 
-Controller-side, under `data/worker_benchmarks.json`:
+Controller-side, under `data/worker_benchmarks.json` (runtime-generated;
+the controller writes it when workers report benchmark results; `data/` is
+runtime state and is not tracked in git):
 
 ```json
 {
@@ -92,7 +94,7 @@ catalog expands.
 
 When a new metric becomes worth measuring:
 
-1. Extend the benchmark runner under `tinyagentos/worker/benchmark.py`
+1. Extend the benchmark runner under `tinyagentos/benchmark/runner.py`
 2. Add the field to `WorkerBenchmarkResult` in
    `tinyagentos/cluster/worker_protocol.py`
 3. Update the serialiser + the Workers page column

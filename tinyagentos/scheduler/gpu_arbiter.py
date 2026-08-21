@@ -55,6 +55,10 @@ class _QueuedGpuTask:
     evictable: bool = field(compare=False)
     required_gpu_arch: str | None = field(default=None, compare=False)
     queued_at: float = field(default_factory=time.time, compare=False)
+    op: str = field(default="inference", compare=False)
+    model: str | None = field(default=None, compare=False)
+    backend_name: str | None = field(default=None, compare=False)
+    resource_id: str | None = field(default=None, compare=False)
 
 
 @dataclass
@@ -97,6 +101,8 @@ class GpuArbiter:
         self._running: dict[str, tuple[Task, str | None, int, int]] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._running_lock = asyncio.Lock()
+        self._queued_entries: dict[str, _QueuedGpuTask] = {}
+        self._cancelled_ids: set[str] = set()
 
         # --- Single VRAM authority (taOS #185) ---
         # The arbiter does NOT keep its own VRAM ledger. It reserves against a
@@ -311,6 +317,9 @@ class GpuArbiter:
         self, task: Task, required_vram_mb: int = 0,
         evictable: bool = False, resource_id: str | None = None,
         required_gpu_arch: str | None = None,
+        op: str = "inference",
+        model: str | None = None,
+        backend_name: str | None = None,
     ) -> object:
         """Submit a GPU task with optional hardware-architecture requirements.
 
@@ -320,8 +329,17 @@ class GpuArbiter:
             evictable: Whether lower-priority tasks can be evicted for this.
             resource_id: Specific cluster resource to target.
             required_gpu_arch: CUDA compute capability required (e.g. ``"sm_86"``).
+            op: Operation kind — ``"inference"`` or ``"load"``.
+            model: Backend model name (e.g. ``"qwen2.5:7b"``).
+            backend_name: Config backend name (e.g. ``"local-ollama"``).
         """
         self._submitted += 1
+
+        # Validate op kind — only 'inference' and 'load' are known.
+        if op not in ("inference", "load"):
+            raise ValueError(
+                f"unknown gpu_op: {op!r} (expected 'inference' or 'load')"
+            )
 
         # Hardware architecture check (taOS #796)
         if required_gpu_arch:
@@ -351,8 +369,11 @@ class GpuArbiter:
                     priority=int(task.priority), seq=self._seq, task=task,
                     required_vram_mb=required_vram_mb, evictable=evictable,
                     required_gpu_arch=required_gpu_arch,
+                    op=op, model=model, backend_name=backend_name,
+                    resource_id=resource_id,
                 )
                 await self._queue.put(entry)
+                self._queued_entries[task.id] = entry
                 self._queued += 1
                 loop = asyncio.get_running_loop()
                 done: asyncio.Future = loop.create_future()
@@ -360,6 +381,8 @@ class GpuArbiter:
                 try:
                     return await done
                 except asyncio.CancelledError:
+                    self._queued_entries.pop(task.id, None)
+                    self._cancelled_ids.add(task.id)
                     self._evicted += 1
                     raise
             # Admitted — reservation already held by _reserve_and_check, so
@@ -381,6 +404,8 @@ class GpuArbiter:
         for worker in self._cluster_manager.get_workers():
             if worker.status != "online":
                 continue
+            if worker.free_vram_mb is None:
+                continue  # non-NVIDIA worker — no VRAM probe
             worker_leases = sum(
                 l.required_vram_mb for l in leases
                 if self._resource_on_worker(l.resource_id, worker.name) and l.required_vram_mb > 0
@@ -397,6 +422,78 @@ class GpuArbiter:
             reason=f"no cluster worker with {required_vram_mb} MiB free VRAM",
         )
 
+    async def _renew_lease_loop(
+        self, lease_id: str, stop_event: asyncio.Event,
+        task_to_cancel: asyncio.Task | None = None,
+        arbiter_future: asyncio.Future | None = None,
+    ) -> None:
+        """Periodically renew a lease until *stop_event* is set.
+
+        Renews every 200 s so the lease never expires mid-run (the claim
+        TTL is 300 s).  When *task_to_cancel* is provided and a renewal
+        failure or expiry is detected the referenced task is cancelled so
+        it doesn't keep executing GPU work without a valid lease (taOS
+        #1984 — lease-loss detection).
+
+        On lease loss, *arbiter_future* (the submitter's
+        ``_arbiter_future``) is also cancelled so the submitter does not
+        hang forever — ``_propagate`` skips already-cancelled futures,
+        so the lease-loss path must resolve the future directly (taOS
+        #1984 — lease-loss cancellation hang fix).
+        """
+        RENEW_INTERVAL = 200
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=RENEW_INTERVAL)
+                return  # stop_event set — exit cleanly
+            except asyncio.TimeoutError:
+                pass  # it's time to renew
+            try:
+                if self._cluster_manager is not None:
+                    renewed = await self._cluster_manager.renew_lease(
+                        lease_id, ttl_seconds=300,
+                    )
+                    if renewed is None:
+                        logger.warning(
+                            "gpu-arbiter: lease %s expired mid-renewal — "
+                            "cancelling running task", lease_id,
+                        )
+                        if task_to_cancel is not None and not task_to_cancel.done():
+                            task_to_cancel.cancel()
+                        if arbiter_future is not None and not arbiter_future.done():
+                            arbiter_future.cancel()
+                        return
+                    logger.debug("gpu-arbiter: renewed lease %s", lease_id)
+            except Exception:
+                logger.warning(
+                    "gpu-arbiter: failed to renew lease %s — retrying once",
+                    lease_id,
+                )
+                # One retry before declaring lease loss — a single transient
+                # network blip shouldn't kill a healthy running task.
+                try:
+                    if self._cluster_manager is not None:
+                        renewed2 = await self._cluster_manager.renew_lease(
+                            lease_id, ttl_seconds=300,
+                        )
+                        if renewed2 is not None:
+                            logger.info(
+                                "gpu-arbiter: lease %s renewal succeeded on retry",
+                                lease_id,
+                            )
+                            continue
+                except Exception:
+                    pass
+                logger.exception(
+                    "gpu-arbiter: failed to renew lease %s after retry — "
+                    "cancelling running task", lease_id,
+                )
+                if task_to_cancel is not None and not task_to_cancel.done():
+                    task_to_cancel.cancel()
+                if arbiter_future is not None and not arbiter_future.done():
+                    arbiter_future.cancel()
+                return
+
     async def _run_gpu_task(
         self, task: Task, required_vram_mb: int, evictable: bool, resource_id: str | None,
     ) -> object:
@@ -411,6 +508,8 @@ class GpuArbiter:
         claim_lease fails (taOS #1705 — reservation leak fix).
         """
         lease_id: str | None = None
+        renew_task: asyncio.Task | None = None
+        renew_stop: asyncio.Event | None = None
         try:
             if self._cluster_manager is not None and resource_id is not None:
                 lease = await self._cluster_manager.claim_lease(
@@ -422,6 +521,17 @@ class GpuArbiter:
                         f"GPU lease claim failed for {resource_id} (task {task.id})"
                     )
                 lease_id = lease.lease_id
+                # Start periodic lease renewal so the lease doesn't expire
+                # mid-run (taOS #1864 defect 4 — fixed 300 s TTL).
+                renew_stop = asyncio.Event()
+                current = asyncio.current_task()
+                renew_task = asyncio.create_task(
+                    self._renew_lease_loop(
+                        lease_id, renew_stop, current,
+                        getattr(task, "_arbiter_future", None),
+                    ),
+                    name=f"gpu-arbiter-renew-{task.id}",
+                )
             current = asyncio.current_task()
             async with self._running_lock:
                 self._running[task.id] = (task, lease_id, int(task.priority), required_vram_mb)
@@ -438,6 +548,15 @@ class GpuArbiter:
                          task.id, task.priority, required_vram_mb)
             raise
         finally:
+            # Stop lease renewal (taOS #1864 defect 4).
+            if renew_stop is not None:
+                renew_stop.set()
+            if renew_task is not None:
+                renew_task.cancel()
+                try:
+                    await renew_task
+                except asyncio.CancelledError:
+                    pass
             # Release the VRAM reservation whether we completed, errored,
             # or were cancelled.  _evict_task handles its own reservation
             # release so idempotency matters.
@@ -551,15 +670,49 @@ class GpuArbiter:
 
     async def _process_queue(self) -> None:
         try:
+            MAX_CONSECUTIVE_FAILURES = 10
+            COOLDOWN_BACKOFF = 300  # seconds to wait before restarting the processor
             while True:
-                try:
-                    await asyncio.wait_for(self._wake.wait(),
-                                           timeout=self._drain_tick_seconds)
-                except asyncio.TimeoutError:
-                    pass
-                self._wake.clear()
-                if not self._paused:
-                    await self._drain_queue()
+                consecutive_failures = 0
+                while True:
+                    try:
+                        await asyncio.wait_for(self._wake.wait(),
+                                               timeout=self._drain_tick_seconds)
+                    except asyncio.TimeoutError:
+                        pass
+                    self._wake.clear()
+                    if not self._paused:  # taOS #796: skip drain while paused
+                        try:
+                            await self._drain_queue()
+                            consecutive_failures = 0  # reset on success
+                        except (NoResourceAvailableError, asyncio.TimeoutError, OSError):
+                            consecutive_failures += 1
+                            backoff = min(2 * (2 ** consecutive_failures), 60)
+                            logger.exception(
+                                "gpu-arbiter: _drain_queue raised (consecutive=%d/%d) — "
+                                "backing off %ds",
+                                consecutive_failures, MAX_CONSECUTIVE_FAILURES, backoff,
+                            )
+                            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                                logger.critical(
+                                    "gpu-arbiter: _drain_queue failed %d consecutive "
+                                    "times — restarting queue processor after %ds cooldown",
+                                    consecutive_failures, COOLDOWN_BACKOFF,
+                                )
+                                break
+                            await asyncio.sleep(backoff)
+                        except Exception:
+                            logger.exception(
+                                "gpu-arbiter: _drain_queue raised an unexpected "
+                                "error — restarting queue processor after %ds cooldown",
+                                COOLDOWN_BACKOFF,
+                            )
+                            break
+                # Outer restart loop: wait cooldown, then restart the inner loop
+                await asyncio.sleep(COOLDOWN_BACKOFF)
+                logger.warning(
+                    "gpu-arbiter: restarting queue processor after cooldown"
+                )
         except asyncio.CancelledError:
             raise
 
@@ -580,6 +733,9 @@ class GpuArbiter:
         drained = False
         while not self._queue.empty() and not drained:
             entry = self._queue.get_nowait()
+            if entry.task.id in self._cancelled_ids:
+                self._cancelled_ids.discard(entry.task.id)
+                continue
             admission = await self._reserve_and_check(entry.task.id, entry.required_vram_mb)
             if not admission.admitted:
                 # Try eviction-to-make-room for higher-priority queued tasks.
@@ -591,11 +747,21 @@ class GpuArbiter:
                 if evicted > 0:
                     admission = await self._reserve_and_check(entry.task.id, entry.required_vram_mb)
             if admission.admitted:
+                # Re-check cancelled_ids after the await window above
+                # (reserve_and_check / eviction).  cancel_op may have fired
+                # concurrently while we were suspended, removing the entry
+                # from _queued_entries and cancelling its future.  Without
+                # this re-check the cancelled task is still admitted and
+                # runs to completion despite the cancellation.
+                if entry.task.id in self._cancelled_ids:
+                    self._cancelled_ids.discard(entry.task.id)
+                    self._release_reservation(entry.task.id)
+                    continue
                 future = getattr(entry.task, "_arbiter_future", None)
                 # Spawn as background task so drain doesn't block and
                 # eviction-to-make-room stays responsive on subsequent ticks.
                 t = asyncio.create_task(
-                    self._run_gpu_task(entry.task, entry.required_vram_mb, entry.evictable, None),
+                    self._run_gpu_task(entry.task, entry.required_vram_mb, entry.evictable, entry.resource_id),
                     name=f"gpu-arbiter-drain-{entry.task.id}",
                 )
 
@@ -615,6 +781,7 @@ class GpuArbiter:
 
                     t.add_done_callback(_propagate)
 
+                self._queued_entries.pop(entry.task.id, None)  # promoted → _running
                 drained = True
             else:
                 # Not admitted — release reservation (idempotent) and retry later.
@@ -622,8 +789,22 @@ class GpuArbiter:
                 retry.append(entry)
         # Re-queue tasks that still can't be admitted
         for entry in retry:
+            # Skip entries cancelled during the admission-await window
+            # (same race: cancel_op fired while we awaited reserve_and_check).
+            if entry.task.id in self._cancelled_ids:
+                self._cancelled_ids.discard(entry.task.id)
+                continue
             if not self._queue.full():
                 self._queue.put_nowait(entry)
+                self._queued_entries[entry.task.id] = entry
+                # Re-check _cancelled_ids after insertion — cancel_op may have
+                # fired between the check above and the put_nowait+dict insert,
+                # which would resurrect the shadow entry and leak a queue slot.
+                if entry.task.id in self._cancelled_ids:
+                    self._queued_entries.pop(entry.task.id, None)
+                    self._cancelled_ids.discard(entry.task.id)
+                    # The physical PriorityQueue entry can't be removed but
+                    # _drain_queue skips cancelled entries at dequeue time.
             else:
                 self._dropped += 1
                 future = getattr(entry.task, "_arbiter_future", None)
@@ -652,20 +833,50 @@ class GpuArbiter:
                 for tid, (task, lid, pri, vram) in self._running.items()
             ]
 
-    def queue_snapshot(self) -> list[dict]:
-        items: list[_QueuedGpuTask] = []
-        while not self._queue.empty():
-            try:
-                items.append(self._queue.get_nowait())
-            except asyncio.QueueEmpty:
+    def _ordered_queued(self) -> list[_QueuedGpuTask]:
+        return sorted(self._queued_entries.values(), key=lambda e: (e.priority, e.seq))
+
+    def queue_position(self, task_id: str) -> int | None:
+        entry = self._queued_entries.get(task_id)
+        if entry is None:
+            return None
+        ahead = 0
+        for other in self._ordered_queued():
+            if other.task.id == task_id:
                 break
-        result = [
+            if entry.op == "inference":
+                if other.model == entry.model:
+                    ahead += 1
+            else:
+                ahead += 1
+        return ahead + 1
+
+    async def cancel_op(self, task_id: str) -> bool:
+        entry = self._queued_entries.pop(task_id, None)
+        if entry is not None:
+            self._cancelled_ids.add(task_id)
+            # Release the VRAM reservation immediately so capacity is freed
+            # rather than leaking until _drain_queue eventually skips the entry.
+            # _release_reservation is idempotent — safe if no reservation exists.
+            self._release_reservation(task_id)
+            future = getattr(entry.task, "_arbiter_future", None)
+            if future is not None and not future.done():
+                future.cancel()
+            return True
+        async with self._running_lock:
+            running = task_id in self._running
+        if running:
+            return bool(await self._evict_task(task_id))
+        return False
+
+    def queue_snapshot(self) -> list[dict]:
+        now = time.time()
+        return [
             {"task_id": e.task.id, "capability": e.task.capability.value,
-             "priority": e.priority, "vram_mb": e.required_vram_mb,
-             "queued_seconds": time.time() - e.queued_at}
-            for e in items
+             "op": e.op, "model": e.model, "backend_name": e.backend_name,
+             "submitter": e.task.submitter, "priority": e.priority,
+             "vram_mb": e.required_vram_mb,
+             "queued_seconds": now - e.queued_at,
+             "position": self.queue_position(e.task.id)}
+            for e in self._ordered_queued()
         ]
-        for e in items:
-            if not self._queue.full():
-                self._queue.put_nowait(e)
-        return result

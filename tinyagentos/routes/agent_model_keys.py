@@ -13,6 +13,7 @@ its hash), so the response is the sole opportunity to show it to the user.
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
@@ -22,6 +23,21 @@ from pydantic import BaseModel
 from tinyagentos.auth_context import CurrentUser, current_user
 
 router = APIRouter()
+
+# Agent ids are used as filesystem path components (opencode home dirs) and
+# LiteLLM model identifiers; reject traversal, dot-segments, and anything
+# that isn't a safe slug so a malicious mint can't write configs outside
+# the data_dir boundary.  Matches the sanitizer in taos_agent_runtime.py.
+_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _validate_agent_id(v: str) -> str:
+    if not _AGENT_ID_RE.fullmatch(v):
+        raise ValueError(
+            f"agent_id {v!r} contains invalid characters; "
+            "only A-Z, a-z, 0-9, '.', '_', '-' are allowed"
+        )
+    return v
 
 
 class MintIn(BaseModel):
@@ -45,6 +61,10 @@ async def mint_key(
     """Mint a consent key exposing the caller's agent(s). Returns the token ONCE."""
     store = request.app.state.agent_model_keys
     try:
+        if not body.agent_ids:
+            raise ValueError("at least one agent_id is required")
+        for aid in body.agent_ids:
+            _validate_agent_id(aid)
         token, rec = await store.mint(
             user.user_id,
             body.agent_ids,

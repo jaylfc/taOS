@@ -74,6 +74,14 @@ describe("MediaPlayerApp", () => {
     );
   });
 
+  it("shows the basename of a decoded routed url, not the full nested path", async () => {
+    const url = `http://localhost/api/files/${encodeURIComponent("nested/intro.mp4")}`;
+    render(<MediaPlayerApp windowId="win-1" url={url} />);
+    await flush();
+    expect(screen.getByText("intro.mp4")).toBeInTheDocument();
+    expect(screen.queryByText("nested/intro.mp4")).not.toBeInTheDocument();
+  });
+
   it("loads a selected file, shows its name, and mounts the video element", () => {
     const { container } = render(<MediaPlayerApp windowId="win-1" />);
     fireEvent.change(getFileInput(container), {

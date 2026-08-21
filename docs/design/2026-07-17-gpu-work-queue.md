@@ -1,3 +1,5 @@
+> **Status (2026-08-14): Not implemented.** The file paths referenced below are proposed, not present in the codebase.
+
 # Unified GPU Work Queue — Design Specification
 
 - **Issue:** #1864 ("Follow-up: model loads as evictable submit_gpu tasks (arbiter Option B)"), evolved per owner direction into a broader feature.
@@ -47,7 +49,7 @@ There is no single controller-side inference call site. The real paths:
 
 - **Deployed agents → LiteLLM proxy → backend, bypassing the controller.** The controller spawns LiteLLM as a subprocess on port 7834 (`tinyagentos/llm_proxy.py:70-91`) and writes each local backend's URL straight into the LiteLLM config as `api_base` (`tinyagentos/litellm_config.py:259-261`). Agent tokens then travel LiteLLM → ollama/rkllama directly; the controller only *observes* the call afterwards via the LiteLLM `CustomLogger` callback that POSTs an `llm_call` trace to `/api/trace` (`tinyagentos/litellm_callback.py:76-229`, `tinyagentos/routes/trace.py:45`).
 - **Chat messages** enter at `POST` in `tinyagentos/routes/chat.py:266` and are routed by `AgentChatRouter.dispatch` (`tinyagentos/agent_chat_router.py:66`) to the agent's bridge session or an ACP turn — the agent process then calls LiteLLM. Again: the controller is not in the token path.
-- **Direct backend callers inside the controller:** the benchmark runner POSTs `{backend_url}/v1/chat/completions` directly (`tinyagentos/benchmark/runner.py:246`); the cluster `TaskRouter.chat` POSTs to workers (`tinyagentos/cluster/router.py:41-45`). `routes/agent_model_api.py:78` (agent-as-a-model) currently returns 501 — no inference yet.
+- **Direct backend callers inside the controller:** the benchmark runner POSTs `{backend_url}/v1/chat/completions` directly (`tinyagentos/benchmark/runner.py:246`); the cluster `TaskRouter.chat` POSTs to workers (`tinyagentos/cluster/router.py:41-45`). `routes/agent_model_api.py` (agent-as-a-model) drives a real one-shot agent turn via the opencode host-server seam and returns an OpenAI ChatCompletion envelope.
 
 **Consequence:** "ALL inference flows through the queue" cannot be achieved by editing controller call sites — most inference doesn't pass through the controller. It requires a **choke point on the network path to the backend**.
 
@@ -60,7 +62,7 @@ New component: a streaming reverse proxy on the controller, `tinyagentos/routes/
 ```
 
 - `generate_litellm_config` rewrites `api_base` for **local GPU LLM backends** (`LOCAL_TYPES` that are GPU-bound on this host — ollama, rkllama, llama-cpp, vllm, hailo-ollama; set from `tinyagentos/providers/__init__.py:20-58`) from the backend URL to `http://127.0.0.1:{port}/gpu/{backend_name}` (change at `litellm_config.py:259-261`). Cloud providers and remote workers are never rewritten.
-- Controller-internal direct callers (benchmark runner, future agent-as-a-model execution) switch from raw `backend_url` to the gateway URL — or, when running in-process, call the queue API directly and skip the HTTP hop.
+- Controller-internal direct callers (benchmark runner, agent-as-a-model execution) switch from raw `backend_url` to the gateway URL — or, when running in-process, call the queue API directly and skip the HTTP hop.
 - The gateway parses the target model from the request body (`model` field — present on `/api/chat`, `/api/generate`, `/v1/chat/completions`, `/api/pull`, `/api/embed`), admits through the queue, then streams the request/response bytes through unbuffered (same `X-Accel-Buffering: no` discipline as `tinyagentos/routes/event_stream.py:104-112`).
 - **Auth:** LiteLLM and internal callers present the local token (the same `data/.auth_local_token` the LiteLLM callback already reads, `litellm_callback.py:30-47`), passed via a per-model `extra_headers` entry in the generated LiteLLM config. The gateway path is not cookie-exempt; it accepts local-token bearer auth only.
 - Requests whose path has no model semantics (`/api/tags`, `/api/ps`, `/health`, `/api/version`) pass through with **zero** queue interaction.

@@ -21,6 +21,7 @@ NOT in this slice.
 
 import hashlib
 import json
+import re
 import secrets
 from datetime import datetime, timezone
 from typing import Optional
@@ -32,6 +33,10 @@ from tinyagentos.base_store import BaseStore
 # Recognisable in logs, never collides with LiteLLM's sk- or the internal
 # sk-taos- routing keys.
 _TOKEN_PREFIX = "sk-taosagent-"
+
+# Agent ids are used as filesystem path components (opencode home dirs);
+# must match the validator in routes/agent_model_keys.py.
+_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_model_keys (
@@ -107,6 +112,12 @@ class AgentModelKeyStore(BaseStore):
             raise RuntimeError("AgentModelKeyStore not initialised — call init() first")
         if not agent_ids:
             raise ValueError("a consent key must grant at least one agent")
+        for a in agent_ids:
+            if not _AGENT_ID_RE.fullmatch(a):
+                raise ValueError(
+                    f"agent_id {a!r} contains invalid characters; "
+                    "only A-Z, a-z, 0-9, '.', '_', '-' are allowed"
+                )
         if expires_at is not None:
             expires_at = _normalize_ts(expires_at)
         token = _TOKEN_PREFIX + secrets.token_urlsafe(32)

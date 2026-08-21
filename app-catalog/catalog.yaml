@@ -524,6 +524,23 @@ apps:
     name: Qwen 2.5 14B Instruct (RKLLM)
     description: "NPU-accelerated Qwen 2.5 14B on RK3588 32GB"
 
+  # --- Added: Hailo-10H NPU-accelerated (Hailo) ---
+  - id: qwen2-1.5b
+    type: model
+    version: 2.0.0
+    name: Qwen2 1.5B Instruct (HEF)
+    description: "Hailo-10H NPU-accelerated Qwen2 1.5B — Pi 5 + AI HAT+2"
+  - id: qwen2.5-coder-1.5b
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 Coder 1.5B Instruct (HEF)
+    description: "Hailo-10H NPU-accelerated Qwen 2.5 Coder 1.5B — Pi 5 + AI HAT+2"
+  - id: deepseek-r1-1.5b
+    type: model
+    version: 1.5.0
+    name: DeepSeek R1 1.5B (HEF)
+    description: "Hailo-10H NPU-accelerated DeepSeek R1 1.5B — Pi 5 + AI HAT+2"
+
   # --- Existing (re-registered for completeness) ---
   - id: deepseek-r1-14b
     type: model

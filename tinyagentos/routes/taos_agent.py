@@ -514,6 +514,10 @@ async def chat(request: Request, body: ChatRequest):
         try:
             await adapter.ensure_session()
             app_state.taos_opencode_session_id = adapter.session_id
+            # Keep the per-agent session cache in sync (agent-as-a-model path).
+            sess = getattr(app_state, "taos_opencode_sessions", None)
+            if sess is not None:
+                sess[model] = adapter.session_id
             await adapter.prompt(text, trace_id=trace_id, attachments=attachments)
             await adapter.close()
         except Exception as exc:

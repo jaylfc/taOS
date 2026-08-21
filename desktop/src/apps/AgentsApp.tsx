@@ -9,6 +9,7 @@ import { useNotificationStore } from "@/stores/notification-store";
 import { deriveTerminalShortcutTarget } from "./shortcut-launch";
 import { Button } from "@/components/ui";
 import { type Agent, type DiskState, type ArchivedAgent } from "./agents/types";
+import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
 import { AgentRow } from "./agents/AgentRow";
 import { AgentDetailPanel, type DetailTab } from "./agents/AgentDetailPanel";
 import { TaosAgentDetailPanel } from "./agents/TaosAgentDetailPanel";
@@ -218,6 +219,8 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
     fetchAgents();
     fetchArchived();
   }, [fetchAgents, fetchArchived]);
+
+  useRefreshOnFocus(fetchAgents);
 
   async function handleDelete(name: string) {
     if (!window.confirm(`Archive "${name}"? It can be restored later from the Archived section.`)) return;

@@ -287,6 +287,12 @@ class ProjectTaskStore(BaseStore):
                 patch["element_id"] = element_id
         if not sets:
             return
+        # A generic edit back to 'open' must also clear the claimer (as the
+        # dedicated to-open transitions do): claim_task requires
+        # claimed_by IS NULL, so a stale claimer leaves the card unclaimable.
+        if status == "open":
+            sets.append("claimed_by = ?"); params.append(None); patch["claimed_by"] = None
+            sets.append("claimed_at = ?"); params.append(None); patch["claimed_at"] = None
         sets.append("updated_at = ?"); params.append(time.time())
         params.append(task_id)
         await self._db.execute(
@@ -364,14 +370,25 @@ class ProjectTaskStore(BaseStore):
         task_id: str,
         closed_by: str,
         reason: str | None = None,
+        *,
+        force: bool = False,
     ) -> bool:
         now = time.time()
-        cursor = await self._db.execute(
-            """UPDATE project_tasks
-               SET status = 'closed', closed_by = ?, closed_at = ?, close_reason = ?, updated_at = ?
-               WHERE id = ? AND status NOT IN ('closed', 'cancelled')""",
-            (closed_by, now, reason, now, task_id),
-        )
+        if force:
+            cursor = await self._db.execute(
+                """UPDATE project_tasks
+                   SET status = 'closed', closed_by = ?, closed_at = ?, close_reason = ?, updated_at = ?
+                   WHERE id = ? AND status NOT IN ('closed', 'cancelled')""",
+                (closed_by, now, reason, now, task_id),
+            )
+        else:
+            cursor = await self._db.execute(
+                """UPDATE project_tasks
+                   SET status = 'closed', closed_by = ?, closed_at = ?, close_reason = ?, updated_at = ?
+                   WHERE id = ? AND status NOT IN ('closed', 'cancelled')
+                     AND (claimed_by IS NULL OR claimed_by = ?)""",
+                (closed_by, now, reason, now, task_id, closed_by),
+            )
         await self._db.commit()
         changed = cursor.rowcount == 1
         if changed:
@@ -462,13 +479,15 @@ class ProjectTaskStore(BaseStore):
 
         This is the explicit un-quarantine / retry action: the card re-enters
         the ready pool so the fleet may pick it up again.  Strikes are cleared
-        so a fresh failure count starts from zero.  Only acts on a quarantined
-        task; returns False otherwise.
+        so a fresh failure count starts from zero, and the claimer clears (as
+        in ``reopen_task``) -- claim_task requires ``claimed_by IS NULL``, so
+        a stale claimer would leave the card open but unclaimable forever.
+        Only acts on a quarantined task; returns False otherwise.
         """
         now = time.time()
         cursor = await self._db.execute(
             """UPDATE project_tasks
-               SET status = 'open', updated_at = ?
+               SET status = 'open', claimed_by = NULL, claimed_at = NULL, updated_at = ?
                WHERE id = ? AND status = 'quarantined'""",
             (now, task_id),
         )

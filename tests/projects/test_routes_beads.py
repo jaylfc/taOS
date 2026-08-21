@@ -210,15 +210,24 @@ async def test_bridge_render_failure_does_not_break_routes(app, monkeypatch):
             )
             assert r.status_code == 200, r.text
 
-            # Wait for first render attempt (fails) + re-mark dirty + retry
-            await asyncio.sleep(0.6)
-
             beads_file = (
                 Path(app.state.projects_root)
                 / project["slug"]
                 / ".beads"
                 / "tasks.jsonl"
             )
+
+            # Wait for render retry to complete (poll rather than fixed sleep:
+            # the writer loop debounces at 0.2s; retry may need multiple cycles).
+            for _ in range(30):
+                if beads_file.exists():
+                    break
+                await asyncio.sleep(0.2)
+            else:
+                raise AssertionError(
+                    f"beads file {beads_file} did not appear within 6s"
+                )
+
             assert beads_file.exists()
 
 

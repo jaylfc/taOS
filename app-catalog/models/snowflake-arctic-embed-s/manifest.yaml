@@ -30,6 +30,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 256
+  sha256: 3247e632c502a676e796c62fa0132bd329b0291e1d721f5f9c027cc095ac0ee5
 - id: f16
   name: F16 GGUF (64MB)
   format: gguf
@@ -52,6 +53,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 512
+  sha256: 6e3d14df024e30dc825ab830c1e8c8e37ab671f4ff1b10813d9a88d182d73d93
 hardware_tiers:
   arm-cpu-8gb:
     recommended: q4_k_m

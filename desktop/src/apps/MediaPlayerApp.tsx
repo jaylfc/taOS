@@ -3,11 +3,18 @@ import Plyr from "plyr";
 import "plyr/dist/plyr.css";
 import { Film, FolderOpen } from "lucide-react";
 
-export function MediaPlayerApp({ windowId: _windowId }: { windowId: string }) {
+export function MediaPlayerApp({ windowId: _windowId, url }: { windowId: string; url?: string }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<Plyr | null>(null);
-  const [mediaUrl, setMediaUrl] = useState<string | null>(null);
+  const [mediaUrl, setMediaUrl] = useState<string | null>(url ?? null);
   const [fileName, setFileName] = useState<string>("");
+
+  useEffect(() => {
+    if (!url) return;
+    setMediaUrl(url);
+    const path = decodeURIComponent(url.split("/").pop() ?? "");
+    setFileName(path.split("/").pop() ?? "");
+  }, [url]);
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];

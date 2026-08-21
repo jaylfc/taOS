@@ -11,6 +11,7 @@ from tinyagentos.auth_middleware import (
     AuthMiddleware,
     _is_agent_canvas_path,
     _is_agent_decisions_path,
+    _is_agent_task_path,
     _is_exempt,
     _is_loopback_client,
 )
@@ -382,6 +383,107 @@ class TestCanvasAgentTokenDispatch:
         req = _request(
             method="GET",
             path="/api/projects/proj-1/canvas/elements/el-1/extra",
+            headers={"authorization": "Bearer registry-jwt"},
+            auth_mgr=_default_auth_mgr(),
+        )
+        call_next = AsyncMock()
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 401
+        call_next.assert_not_awaited()
+
+
+class TestIsAgentTaskChecklistPath:
+    """The checklist-items list/create routes must be Bearer-reachable.
+
+    The handlers (PR #2415) authorize agents via project_tasks_create, but
+    without these allowlist entries the middleware refuses the registry JWT
+    401 before any scope check runs.
+    """
+
+    def test_list_checklist_items_get_allowed(self):
+        assert _is_agent_task_path("GET", "/api/projects/proj-1/tasks/tsk-1/checklist-items") is True
+
+    def test_create_checklist_item_post_allowed(self):
+        assert _is_agent_task_path("POST", "/api/projects/proj-1/tasks/tsk-1/checklist-items") is True
+
+    def test_delete_checklist_items_not_allowed(self):
+        # No DELETE handler exists; the allowlist must not widen past
+        # list + create.
+        assert _is_agent_task_path("DELETE", "/api/projects/proj-1/tasks/tsk-1/checklist-items") is False
+
+    def test_single_checklist_item_path_not_allowed(self):
+        # Sibling path with an extra {item_id} segment: no such route is
+        # agent-reachable (archiving is store-level only, no route).
+        assert _is_agent_task_path("GET", "/api/projects/proj-1/tasks/tsk-1/checklist-items/chk-1") is False
+        assert _is_agent_task_path("PATCH", "/api/projects/proj-1/tasks/tsk-1/checklist-items/chk-1") is False
+
+    def test_near_miss_sibling_not_allowed(self):
+        assert _is_agent_task_path("GET", "/api/projects/proj-1/tasks/tsk-1/checklists") is False
+
+
+class TestTaskChecklistAgentTokenDispatch:
+    @pytest.mark.asyncio
+    async def test_checklist_list_bearer_passes(self):
+        middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
+        auth_mgr.validate_local_token.return_value = False
+        req = _request(
+            method="GET",
+            path="/api/projects/proj-1/tasks/tsk-1/checklist-items",
+            headers={"authorization": "Bearer registry-jwt"},
+            auth_mgr=auth_mgr,
+        )
+        call_next = AsyncMock(return_value=JSONResponse({"items": []}))
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 200
+        assert req.state.via == "registry_jwt_candidate"
+        call_next.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_checklist_create_bearer_passes(self):
+        middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
+        auth_mgr.validate_local_token.return_value = False
+        req = _request(
+            method="POST",
+            path="/api/projects/proj-1/tasks/tsk-1/checklist-items",
+            headers={"authorization": "Bearer registry-jwt"},
+            auth_mgr=auth_mgr,
+        )
+        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 200
+        assert req.state.via == "registry_jwt_candidate"
+        call_next.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_checklist_delete_requires_session(self):
+        middleware = AuthMiddleware(app=MagicMock())
+        req = _request(
+            method="DELETE",
+            path="/api/projects/proj-1/tasks/tsk-1/checklist-items",
+            headers={"authorization": "Bearer registry-jwt"},
+            auth_mgr=_default_auth_mgr(),
+        )
+        call_next = AsyncMock()
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 401
+        call_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_checklist_item_subpath_requires_session(self):
+        middleware = AuthMiddleware(app=MagicMock())
+        req = _request(
+            method="GET",
+            path="/api/projects/proj-1/tasks/tsk-1/checklist-items/chk-1",
             headers={"authorization": "Bearer registry-jwt"},
             auth_mgr=_default_auth_mgr(),
         )

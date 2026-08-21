@@ -13,7 +13,7 @@ from fastapi import Request
 
 # The bell renders these severities; anything else falls back to "info" so a
 # stray level can never break rendering.
-VALID_LEVELS = frozenset({"info", "success", "warning", "error"})
+from tinyagentos.notifications import VALID_LEVELS
 
 NOTIFY_USER_TOOL = {
     "name": "notify_user",

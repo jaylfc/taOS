@@ -1,3 +1,5 @@
+> **Status (2026-08-14): Not implemented.** The file paths referenced below are proposed, not present in the codebase.
+
 # Unified GPU Work Queue (taOS #1864) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan slice-by-slice. Steps use checkbox (`- [ ]`) syntax for tracking.

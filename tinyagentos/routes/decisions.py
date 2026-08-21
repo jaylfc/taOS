@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, model_validator
 from tinyagentos.auth_context import CurrentUser
 from tinyagentos.decisions.decision_store import DECISION_TYPES, PRIORITIES
 from tinyagentos.device_auth import current_user_or_device
+from tinyagentos.events.bus import SystemEvent
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +44,19 @@ def _answer_text(decision: dict, value) -> str:
     return ", ".join(str(opts.get(v, v)) for v in vals)
 
 
-async def _route_answer_to_agent(decision: dict, value) -> None:
+async def _route_answer_to_agent(decision: dict, value, note: str | None = None) -> None:
     """Best-effort: post the recorded answer back to the asking agent on the
     A2A bus. Never raises; the answer is already persisted and the agent can
     also poll GET /api/decisions/{id}."""
     agent = (decision.get("from_agent") or "").strip()
     if not agent.startswith("@"):
         return
+    text = _answer_text(decision, value)
+    if note:
+        text = f"{text} (note: {note})"
     body = (
         f"{agent} decision {decision.get('id')} answered: "
-        f"{decision.get('question', '')} -> {_answer_text(decision, value)}"
+        f"{decision.get('question', '')} -> {text}"
     )
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -63,6 +67,43 @@ async def _route_answer_to_agent(decision: dict, value) -> None:
     except Exception:
         # Delivery is best-effort; do not fail the answer on a bus hiccup.
         pass
+
+
+async def _publish_answer_event(request: Request, decision: dict) -> None:
+    """Best-effort: push a ``decision.answered`` event to SSE clients so every open
+    surface (the chat thread that rendered the block, plus the Decisions app)
+    updates live without a refresh.
+
+    Published to the owner's ``user:<id>`` channel, NOT broadcast: the payload is
+    the full decision record and the list/get routes scope decisions per user, so
+    a broadcast would hand every connected user (and, via the replay buffer,
+    every late connector) other users' decision content. An ownerless decision
+    is skipped -- live update is best-effort and the apps refetch on focus.
+    It never runs consent side effects and never breaks the answer if the
+    emitter is absent (e.g. on hosts where the event bus has not been started)
+    or fails.
+    """
+    bus = getattr(request.app.state, "event_bus", None)
+    if bus is None:
+        return
+    payload = dict(decision) if isinstance(decision, dict) else {"id": decision.get("id")}
+    payload["decision_id"] = payload.get("id")
+    owner = str(payload.get("user_id") or "").strip()
+    if not owner:
+        return
+    try:
+        await bus.publish_to(f"user:{owner}", SystemEvent(
+            kind="decision.answered",
+            source="decisions",
+            targets=["user"],
+            payload=payload,
+        ))
+    except Exception:
+        logger.warning(
+            "decision.answered SSE broadcast failed for %s",
+            decision.get("id"),
+            exc_info=True,
+        )
 
 
 class OptionIn(BaseModel):
@@ -119,6 +160,8 @@ class DecisionIn(BaseModel):
 
 class AnswerIn(BaseModel):
     value: object
+    other_value: str | None = None
+    note: str | None = None
     answered_by: str = ""
     source: str = "in_app"
 
@@ -284,7 +327,12 @@ async def list_decisions(
     store = request.app.state.decision_store
     # Non-admins see only their own decisions; admins see all.
     uid = None if user.is_admin else user.user_id
-    items = await store.list(status=status, project_id=project_id, user_id=uid, limit=limit)
+    # Only forward project_id when the caller specified one; an absent query
+    # param means "no project filter", which is the store's default (_UNSET).
+    kwargs: dict[str, object] = {"status": status, "user_id": uid, "limit": limit}
+    if project_id is not None:
+        kwargs["project_id"] = project_id
+    items = await store.list(**kwargs)
     return {"items": items}
 
 
@@ -295,8 +343,18 @@ async def list_decisions(
 async def list_decisions_as_agent(request: Request):
     """Agent-facing list: filter by from_agent (the asking agent).  Only
     returns decisions whose project the agent holds an active decisions_write
-    grant for; a global (null-project) grant shows all.  The store layer
-    enforces the from_agent binding so there is no cross-agent leakage."""
+    grant for.  A global (null-project) grant means null-project decisions
+    only, matching _resolve_decision_actor's posting rule; otherwise, only
+    decisions from allowed projects are returned.  The store layer enforces
+    the from_agent binding so there is no cross-agent leakage.
+
+    LIMIT INTERACTION, and it is not uniform across the three paths: the global
+    and single-project paths push the project filter INTO the store query, so the
+    limit applies AFTER scoping (issue #2194).  The two-or-more-project path
+    cannot express that as one query, so it still fetches up to `limit` rows for
+    the agent and filters in Python afterwards; an agent holding grants on
+    several projects and carrying more than `limit` decisions in total can still
+    lose allowed-project rows to the limit there."""
     from datetime import datetime, timezone
     from tinyagentos.agent_token_auth import check_agent_scope, _grant_unexpired
 
@@ -315,11 +373,25 @@ async def list_decisions_as_agent(request: Request):
     }
 
     store = request.app.state.decision_store
-    items = await store.list(from_agent=canonical_id, limit=500)
-    # A global (null-project) grant shows all; otherwise filter to decisions
-    # whose project_id is in the allowed set.
-    if None not in allowed_projects:
-        items = [d for d in items if d.get("project_id") in allowed_projects]
+    # A global (null-project) grant means null-project decisions only,
+    # matching _resolve_decision_actor's posting rule.
+    # The project filter is pushed into the store query so the limit applies
+    # AFTER scoping (issue #2194) -- for the global and single-project paths.
+    # The multi-project fallback below still filters after the fetch.
+    if None in allowed_projects:
+        # Global grant: only null-project decisions
+        items = await store.list(from_agent=canonical_id, project_id=None, limit=500)
+    else:
+        # Per-project grants: only those projects.
+        # Push the project filter into the store query so the limit applies
+        # after scoping. If there is exactly one allowed project, use it
+        # directly; otherwise fall back to Python filtering after the fetch.
+        if len(allowed_projects) == 1:
+            project_id = allowed_projects.pop()
+            items = await store.list(from_agent=canonical_id, project_id=project_id, limit=500)
+        else:
+            items = await store.list(from_agent=canonical_id, limit=500)
+            items = [d for d in items if d.get("project_id") in allowed_projects]
     return {"items": items}
 
 
@@ -403,30 +475,51 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
     if existing is None or (not user.is_admin and existing["user_id"] != user.user_id):
         return JSONResponse({"error": "not found"}, status_code=404)
 
-    # For select types, the answer must reference the declared options so a
-    # stale or malformed client cannot record an arbitrary value.
+    # For select types, the answer may reference the declared options or use
+    # the free-text Other path.  A stale or malformed client cannot record an
+    # arbitrary value: explicit option values are still validated against the
+    # declared list so a typo is rejected; the free-text path is accepted only
+    # when flagged via other_value.
     dtype = existing.get("type")
     if dtype in ("single_select", "multi_select"):
-        valid = {
-            o.get("value")
-            for o in (existing.get("options") or [])
-            if o.get("value") is not None
-        }
-        if valid:
-            try:
-                if dtype == "single_select":
-                    if body.value not in valid:
-                        return JSONResponse({"error": "answer is not one of the options"}, status_code=400)
-                else:
-                    vals = body.value if isinstance(body.value, list) else None
-                    if vals is None or any(v not in valid for v in vals):
-                        return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
-            except TypeError:
-                # A list, dict, or other non-hashable/iterable value in the
-                # answer body can hit set membership or any() with a TypeError
-                # (e.g. a list value for single_select, or non-iterable for
-                # multi_select).  Fail closed: 400, not 500.
-                return JSONResponse({"error": "invalid answer value shape"}, status_code=400)
+        if body.other_value is not None:
+            # Other / free-text path: validate any explicit option values but
+            # accept the free-text value as-is.
+            if dtype == "single_select":
+                if body.value is not None and isinstance(body.value, str) and body.value.strip():
+                    return JSONResponse(
+                        {"error": "cannot combine value with other_value"},
+                        status_code=400,
+                    )
+            else:
+                vals = body.value if isinstance(body.value, list) else None
+                if vals is None:
+                    return JSONResponse({"error": "invalid answer value shape"}, status_code=400)
+                valid = {
+                    o.get("value")
+                    for o in (existing.get("options") or [])
+                    if o.get("value") is not None
+                }
+                if valid and any(v not in valid for v in vals):
+                    return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
+        else:
+            # Option-only path: existing strict validation.
+            valid = {
+                o.get("value")
+                for o in (existing.get("options") or [])
+                if o.get("value") is not None
+            }
+            if valid:
+                try:
+                    if dtype == "single_select":
+                        if body.value not in valid:
+                            return JSONResponse({"error": "answer is not one of the options"}, status_code=400)
+                    else:
+                        vals = body.value if isinstance(body.value, list) else None
+                        if vals is None or any(v not in valid for v in vals):
+                            return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
+                except TypeError:
+                    return JSONResponse({"error": "invalid answer value shape"}, status_code=400)
 
     # Source is derived server-side from the authenticated route, never trusted
     # from the request body.  The human path always records in_app; the agent
@@ -440,19 +533,34 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
         )
     source = "in_app"
     answered_by = body.answered_by or user.user_id or "user"
-    updated = await store.answer(decision_id, body.value, answered_by, source=source)
+    dtype = existing.get("type")
+    if dtype == "single_select" and body.other_value is not None:
+        stored_value = body.other_value.strip()
+    elif dtype == "multi_select" and body.other_value is not None:
+        vals = list(body.value) if isinstance(body.value, list) else []
+        stored_value = [*vals, body.other_value.strip()]
+    else:
+        stored_value = body.value
+    updated = await store.answer(
+        decision_id, stored_value, answered_by, source=source,
+        other_value=body.other_value, note=body.note,
+    )
     if updated is None:
         return JSONResponse({"error": "already answered or not pending"}, status_code=409)
+    # Broadcast a live event so open chat threads and the Decisions app resolve
+    # the card in place. Best-effort: never break the recorded answer on a
+    # notification hiccup.
+    await _publish_answer_event(request, updated)
     # Each kind-specific handler runs its side effect and returns True if it
     # already routed a reply to the asking agent (a more informative,
     # kind-specific message). Only route the generic answer when none did, so
     # a gated decision does not send the agent two messages.
-    routed_app = await _apply_app_grant(request, updated, body.value)
-    routed_exec = await _apply_execution_grant(request, updated, body.value)
-    routed_deleg = await _apply_delegation_grant(request, updated, body.value)
-    routed_pair = await _apply_device_pairing_grant(request, updated, body.value)
+    routed_app = await _apply_app_grant(request, updated, stored_value)
+    routed_exec = await _apply_execution_grant(request, updated, stored_value)
+    routed_deleg = await _apply_delegation_grant(request, updated, stored_value)
+    routed_pair = await _apply_device_pairing_grant(request, updated, stored_value)
     if not (routed_app or routed_exec or routed_deleg or routed_pair):
-        await _route_answer_to_agent(updated, body.value)
+        await _route_answer_to_agent(updated, stored_value, note=body.note)
     return updated
 
 
@@ -698,37 +806,70 @@ async def answer_decision_as_agent(
     # Validate select-type answers against declared options (same as human path).
     dtype = existing.get("type")
     if dtype in ("single_select", "multi_select"):
-        valid = {
-            o.get("value")
-            for o in (existing.get("options") or [])
-            if o.get("value") is not None
-        }
-        if valid:
-            try:
-                if dtype == "single_select":
-                    if body.value not in valid:
-                        return JSONResponse({"error": "answer is not one of the options"}, status_code=400)
-                else:
-                    vals = body.value if isinstance(body.value, list) else None
-                    if vals is None or any(v not in valid for v in vals):
-                        return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
-            except TypeError:
-                return JSONResponse({"error": "invalid answer value shape"}, status_code=400)
+        if body.other_value is not None:
+            if dtype == "single_select":
+                if body.value is not None and isinstance(body.value, str) and body.value.strip():
+                    return JSONResponse(
+                        {"error": "cannot combine value with other_value"},
+                        status_code=400,
+                    )
+            else:
+                vals = body.value if isinstance(body.value, list) else None
+                if vals is None:
+                    return JSONResponse({"error": "invalid answer value shape"}, status_code=400)
+                valid = {
+                    o.get("value")
+                    for o in (existing.get("options") or [])
+                    if o.get("value") is not None
+                }
+                if valid and any(v not in valid for v in vals):
+                    return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
+        else:
+            valid = {
+                o.get("value")
+                for o in (existing.get("options") or [])
+                if o.get("value") is not None
+            }
+            if valid:
+                try:
+                    if dtype == "single_select":
+                        if body.value not in valid:
+                            return JSONResponse({"error": "answer is not one of the options"}, status_code=400)
+                    else:
+                        vals = body.value if isinstance(body.value, list) else None
+                        if vals is None or any(v not in valid for v in vals):
+                            return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
+                except TypeError:
+                    return JSONResponse({"error": "invalid answer value shape"}, status_code=400)
 
     # Agent mirrors are always from chat; record the canonical agent id as the
     # mirroring actor (not "user") so the audit trail is complete.
     source = "mirrored_from_chat"
     answered_by = canonical_id
-    updated = await store.answer(decision_id, body.value, answered_by, source=source)
+    dtype = existing.get("type")
+    if dtype == "single_select" and body.other_value is not None:
+        stored_value = body.other_value.strip()
+    elif dtype == "multi_select" and body.other_value is not None:
+        vals = list(body.value) if isinstance(body.value, list) else []
+        stored_value = [*vals, body.other_value.strip()]
+    else:
+        stored_value = body.value
+    updated = await store.answer(
+        decision_id, stored_value, answered_by, source=source,
+        other_value=body.other_value, note=body.note,
+    )
     if updated is None:
         return JSONResponse({"error": "already answered or not pending"}, status_code=409)
+
+    # Broadcast live so open surfaces (chat + Decisions app) resolve in place.
+    await _publish_answer_event(request, updated)
 
     # Route the answer to the A2A bus so the asking agent can pick it up.
     # Consent side effects (app/execution/delegation grants) are intentionally
     # NOT run on the agent mirror path: an agent must not be able to create a
     # privileged decision and then self-approve the consent via its own mirror
     # endpoint.  Only the human answer path runs consent side effects.
-    await _route_answer_to_agent(updated, body.value)
+    await _route_answer_to_agent(updated, stored_value, note=body.note)
     return updated
 
 

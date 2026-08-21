@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { ModelsApp } from "./ModelsApp";
 
 // Pins #1581 (delete was UI-only, never hit the backend) and the #1548
@@ -199,5 +199,90 @@ describe("ModelsApp post-download refresh (#1548 remainder)", () => {
     expect(screen.getByText("Downloaded")).toBeInTheDocument();
     expect(screen.queryByText("model-b-default.gguf")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Download Model A" })).not.toBeInTheDocument();
+  });
+});
+
+describe("ModelsApp refresh-failure", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("preserves real models when a background refresh fails", async () => {
+    let modelsCallCount = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url === "/api/models") {
+          modelsCallCount += 1;
+          if (modelsCallCount === 1) {
+            return Promise.resolve(
+              json({
+                models: [
+                  {
+                    id: "m1",
+                    name: "Real Model",
+                    description: "",
+                    compatibility: "green",
+                    capabilities: [],
+                    variants: [],
+                  },
+                ],
+                downloaded_files: [
+                  { filename: "real-model.gguf", size_mb: 100, format: "gguf", model_id: "m1" },
+                ],
+                hardware_profile_id: "p1",
+              }),
+            );
+          }
+          return Promise.reject(new Error("network error"));
+        }
+        return Promise.resolve(json([]));
+      }) as unknown as typeof fetch,
+    );
+
+    render(<ModelsApp windowId="w1" />);
+
+    await waitFor(() => expect(screen.getByText("Real Model")).toBeInTheDocument());
+
+    window.dispatchEvent(new Event("focus"));
+
+    await act(async () => {
+      vi.advanceTimersByTime(1100);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Real Model")).toBeInTheDocument();
+    expect(screen.queryByText("No models yet")).not.toBeInTheDocument();
+  });
+
+  it("still shows 'No models yet' when no real data exists and refresh fails", async () => {
+    let callCount = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        callCount += 1;
+        if (url === "/api/models") {
+          return Promise.reject(new Error("network error"));
+        }
+        return Promise.resolve(json([]));
+      }) as unknown as typeof fetch,
+    );
+
+    render(<ModelsApp windowId="w1" />);
+
+    await waitFor(() => expect(screen.getByText("No models yet")).toBeInTheDocument());
+
+    window.dispatchEvent(new Event("focus"));
+
+    await act(async () => {
+      vi.advanceTimersByTime(1100);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("No models yet")).toBeInTheDocument();
   });
 });

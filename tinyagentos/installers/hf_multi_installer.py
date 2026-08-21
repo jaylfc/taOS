@@ -12,6 +12,8 @@ checkpoints, etc.) this installer:
    expect.
 3. Reports progress as bytes-downloaded across the whole repo so the UI's
    install bar moves smoothly instead of resetting per file.
+ 4. When the variant declares a ``file_set_hash``, verifies a combined hash of the
+    downloaded files after the transfer completes.
 
 Manifest variant fields:
 
@@ -19,6 +21,7 @@ Manifest variant fields:
     hf_revision: main                                 # optional, default "main"
     multi_file: true                                  # required marker
     exclude_patterns: ["*.md", ".gitattributes"]      # optional glob blocklist
+    file_set_hash: <64-hex>                           # optional combined metadata hash
 
 Single-file fallback: a variant with ``download_url`` and no ``hf_repo`` is
 delegated back to the regular DownloadInstaller so callers don't have to
@@ -27,6 +30,7 @@ care which path applies.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -43,7 +47,7 @@ from tinyagentos.installers.model_paths import (
 
 logger = logging.getLogger(__name__)
 
-HF_API = "https://huggingface.co/api/models/{repo}"
+HF_API = "https://huggingface.co/api/models/{repo}/revision/{rev}?blobs=true"
 HF_FILE = "https://huggingface.co/{repo}/resolve/{rev}/{path}"
 
 DEFAULT_EXCLUDE_PATTERNS = (
@@ -67,8 +71,7 @@ async def list_hf_repo_files(
     own_client = client is None
     c = client or httpx.AsyncClient(timeout=30, follow_redirects=True)
     try:
-        params = {"revision": revision} if revision and revision != "main" else None
-        resp = await c.get(HF_API.format(repo=repo), params=params)
+        resp = await c.get(HF_API.format(repo=repo, rev=revision))
         resp.raise_for_status()
         data = resp.json()
     finally:
@@ -82,18 +85,17 @@ async def list_hf_repo_files(
         rfilename = s.get("rfilename")
         if not rfilename:
             continue
-        # Some HF entries return size as None, missing, or a string. Coerce
-        # defensively — failing the whole listing because one sibling has a
-        # weird size field would be a poor reason to abort an install.
         raw_size = s.get("size", 0)
         try:
             size = int(raw_size) if raw_size is not None else 0
         except (TypeError, ValueError):
             size = 0
+        lfs_info = s.get("lfs") if isinstance(s.get("lfs"), dict) else None
         out.append({
             "rfilename": rfilename,
             "size": size,
-            "lfs": bool(s.get("lfs")) if "lfs" in s else False,
+            "lfs": bool(lfs_info) if lfs_info else False,
+            "lfs_sha256": (lfs_info.get("sha256") if lfs_info else None),
         })
     return out
 
@@ -124,6 +126,39 @@ def _file_excluded(rfilename: str, patterns: list[str]) -> bool:
         if fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(Path(name).name, pat):
             return True
     return False
+
+
+def _verify_lfs_sha256(local: Path, expected_hex: str) -> bool:
+    """Return True when the local file's SHA256 matches ``expected_hex``."""
+    h = hashlib.sha256()
+    with local.open("rb") as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest() == expected_hex
+
+
+def _compute_combined_hash(target_dir: Path, selected: list[dict]) -> str:
+    """Compute a combined SHA256 over the downloaded files.
+
+    Hashes each file's full relative path and size in deterministic order so
+    the manifest's ``file_set_hash`` can be verified after the transfer.
+    Boundaries are length-delimited with NUL bytes so the same filename at
+    different depths cannot collide.  Size comes from the HF repo ``blobs=true``
+    listing (the ``selected`` records), not from local stat, so the expected
+    value can be computed offline and the pin is independent of download
+    implementation details.
+    """
+    hasher = hashlib.sha256()
+    for f in sorted(selected, key=lambda x: x["rfilename"]):
+        rel = Path(f["rfilename"])
+        hasher.update(str(rel).encode())
+        hasher.update("\0".encode())
+        hasher.update(str(f["size"]).encode())
+        hasher.update("\0".encode())
+    return hasher.hexdigest()
 
 
 class HFMultiInstaller(AppInstaller):
@@ -240,9 +275,11 @@ class HFMultiInstaller(AppInstaller):
         # Resolve target_dir once for boundary checks below.
         target_resolved = target_dir.resolve()
 
+        written: list[dict] = []
         for f in selected:
             rfilename = f["rfilename"]
             file_size = f["size"]
+            lfs_sha256 = f.get("lfs_sha256")
 
             # Path traversal guard: HF rfilenames should always be repo-
             # relative, but a hostile API response (or a corrupted cache)
@@ -271,17 +308,35 @@ class HFMultiInstaller(AppInstaller):
 
             url = HF_FILE.format(repo=repo, rev=revision, path=rfilename)
             if local.exists():
-                # Skip files we've already downloaded — sha verification
-                # not in this iteration; HF resolve URLs are immutable per
-                # revision so a present file is a present file. Surface
-                # the byte count anyway so the aggregate progress is right.
+                # Skip files we've already downloaded — file_set_hash
+                # verification covers the final set, so a present file is
+                # a present file. Surface the byte count anyway so the
+                # aggregate progress is right.
                 downloaded_bytes += file_size
                 per_file_prev[rfilename] = file_size
                 if on_progress is not None:
                     try:
                         on_progress(downloaded_bytes, total_bytes)
-                    except Exception:  # noqa: BLE001
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "hf-multi: on_progress raised %s while skipping "
+                            "existing %s, continuing", exc, rfilename,
+                        )
+                # No size guard here: file_set_hash is computed from the
+                # listing, not local disk, so this sha check is the ONLY
+                # verification of local content — a 0-byte leftover from a
+                # crashed run must fail it, not skip it.
+                if lfs_sha256:
+                    if not _verify_lfs_sha256(local, lfs_sha256):
+                        return {
+                            "success": False,
+                            "error": (
+                                f"sha256 mismatch for existing file {repo}/{rfilename}"
+                            ),
+                            "downloaded_bytes": downloaded_bytes,
+                            "target_dir": str(target_dir),
+                        }
+                written.append(f)
                 continue
 
             try:
@@ -297,6 +352,39 @@ class HFMultiInstaller(AppInstaller):
                 return {
                     "success": False,
                     "error": f"download failed for {repo}/{rfilename}: {exc}",
+                    "downloaded_bytes": downloaded_bytes,
+                    "target_dir": str(target_dir),
+                }
+            if lfs_sha256:
+                if not _verify_lfs_sha256(local, lfs_sha256):
+                    return {
+                        "success": False,
+                        "error": (
+                            f"sha256 mismatch for {repo}/{rfilename}"
+                        ),
+                        "downloaded_bytes": downloaded_bytes,
+                        "target_dir": str(target_dir),
+                    }
+            written.append(f)
+
+        expected_file_set_hash = variant.get("file_set_hash")
+        if expected_file_set_hash:
+            try:
+                computed = _compute_combined_hash(target_dir, written)
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "success": False,
+                    "error": f"failed to compute combined hash: {exc}",
+                    "downloaded_bytes": downloaded_bytes,
+                    "target_dir": str(target_dir),
+                }
+            if computed != expected_file_set_hash:
+                return {
+                    "success": False,
+                    "error": (
+                        f"manifest hash mismatch: expected {expected_file_set_hash}, "
+                        f"got {computed}"
+                    ),
                     "downloaded_bytes": downloaded_bytes,
                     "target_dir": str(target_dir),
                 }

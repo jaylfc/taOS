@@ -104,6 +104,19 @@ async def test_list_filter_from_agent(store):
 
 
 @pytest.mark.asyncio
+async def test_list_project_id_none_is_null(store):
+    """An explicit project_id=None must match only NULL-project decisions
+    (IS NULL), not all decisions.  A global grant filters to null-project
+    decisions only, per _resolve_decision_actor's posting rule."""
+    null_d = await store.create("@a", "q1", "approve_deny", user_id="u1")
+    proj_d = await store.create("@a", "q2", "approve_deny", project_id="p1", user_id="u1")
+    items = await store.list(project_id=None)
+    assert len(items) == 1
+    assert items[0]["id"] == null_d["id"]
+    assert items[0]["project_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_answer_source_persistence(store):
     """Answer source field is persisted and round-trips correctly."""
     d = await store.create("@a", "q", "approve_deny", user_id="u1")

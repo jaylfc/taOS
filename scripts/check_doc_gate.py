@@ -9,12 +9,13 @@ Two layers:
                  scripts/, tinyagentos/, docs/, desktop/ path mentioned in the
                  configured doc set actually exists on disk.
   diff-gate   -- path -> doc rule engine (Layer B). A configured rule fires
-                when a *structural* change matches one of its `when_changed`
-                globs. By default only added/deleted files (status A/D) are
-                structural; set `on_modify = true` on a rule to also count
-                plain modifications (status M) for that rule. Any changed
-                file (any status) can *satisfy* a rule if it matches a
-                require_doc glob.
+                 when a *structural* change matches one of its `when_changed`
+                 globs. By default added, deleted, renamed, and copied files
+                 (status A/D/R/C) are structural; set `on_modify = true` on a
+                 rule to also count plain modifications (status M) for that
+                 rule. Only ADDED or MODIFIED files (status A/M) can *satisfy*
+                 a rule by matching a require_doc glob; a renamed, copied, or
+                 deleted require_doc does NOT count.
 
 Config lives in docs/doc-gate.toml. Rules are data, not code: add more by
 editing the TOML, no changes to this file required.
@@ -41,18 +42,25 @@ DEFAULT_TRAILER = "Docs-Reviewed:"
 # for argparse, never our own code), 3 a config error (broken, missing, or
 # unparseable config).  3 is kept off 2 so a typo'd flag is never mistaken for
 # a bad config: a misconfigured gate must be distinguishable from both a real
-# documentation-drift violation and a usage mistake.
+# documentation-drift violation and a usage mistake.  4 is a git infrastructure
+# failure (missing ref, network error, shallow clone, etc.) so it is never
+# confused with a rule violation.
 EXIT_OK = 0
 EXIT_VIOLATION = 1
 EXIT_CONFIG_ERROR = 3
+EXIT_GIT_ERROR = 4
 
 # A path-like token: one of the four known repo prefixes followed by a run of
 # non-whitespace / non-quoting characters. The negative lookbehind stops us
 # matching a prefix that is actually embedded inside a larger path (e.g. the
 # "tinyagentos/" inside "/home/<user>/tinyagentos/data/" in a deploy-layout
 # table), which would otherwise falsely flag deploy-time paths that never
-# exist in the repo itself.
-_TOKEN_RE = re.compile(r"(?<![\w/])(?:scripts|tinyagentos|docs|desktop)/[^\s`\"'|]+")
+# exist in the repo itself. `-` is in the lookbehind for the same reason:
+# home-dir slugs like "-*-tinyagentos/memory/MEMORY.md" embed a repo prefix
+# after a hyphen, and the glob `*` sits BEFORE the match so the glob filter
+# never sees it. `)` and `]` are excluded from the token body so a markdown
+# link's closing bracket ends the token instead of gluing the URL on.
+_TOKEN_RE = re.compile(r"(?<![\w/-])(?:scripts|tinyagentos|docs|desktop)/[^\s`\"'|)\]]+")
 
 # Chars that mark a token as a glob pattern or a <placeholder> rather than a
 # concrete repo path -- these are never asserted to exist.
@@ -61,16 +69,24 @@ _GLOB_OR_PLACEHOLDER_CHARS = set("*?[]{}<>$~")
 # Trailing punctuation that is prose/markdown decoration, not part of the path.
 _TRAILING_PUNCT = ".,;:!?)]}'\"`"
 
+# A line-citation suffix: `:123`, `:12-20`, `:1,5-9`, and repeated groups so
+# file:line:col (ripgrep, compiler output) collapses in one pass. Applied
+# AFTER the trailing-punct strip — the anchor is defeated by a trailing full
+# stop or comma otherwise, and citations ending a sentence are the common case.
+_LINE_SUFFIX_RE = re.compile(r"(?::[0-9]+(?:-[0-9]+)?(?:,[0-9]+(?:-[0-9]+)?)*)+$")
+
 
 def _clean_token(raw: str) -> str | None:
     """Normalize a raw regex match into a bare repo-relative path, or None
     if it should be ignored (glob, placeholder, anchor/query fragment)."""
     token = raw
-    for sep in ("#", "?"):
+    # "::" is a symbol reference (file.py::function), not part of the path.
+    for sep in ("#", "?", "::"):
         if sep in token:
             token = token.split(sep, 1)[0]
     while token and token[-1] in _TRAILING_PUNCT:
         token = token[:-1]
+    token = _LINE_SUFFIX_RE.sub("", token)
     if not token:
         return None
     if any(c in _GLOB_OR_PLACEHOLDER_CHARS for c in token):
@@ -99,7 +115,12 @@ def _validate_config(config: dict) -> None:
     A config that parses as valid TOML but has the wrong shape (e.g.
     ``rules = "not a list"``) is a config error, not a runtime crash: surface
     it as EXIT_CONFIG_ERROR rather than letting it die in the rule loop with
-    an AttributeError."""
+    an AttributeError. Also validates that rule members have correct types
+    (name, when_changed, require_doc, hint are strings, when_changed and
+    require_doc lists contain only strings, on_modify is boolean). Validates
+    that invariants.referenced_paths_scan and ignore_tokens contain only
+    strings.
+    """
     if not isinstance(config, dict):
         raise ValueError("config root must be a table")
     rules = config.get("rules", [])
@@ -108,6 +129,25 @@ def _validate_config(config: dict) -> None:
     for i, rule in enumerate(rules):
         if not isinstance(rule, dict):
             raise ValueError(f"rules[{i}] must be a table")
+        # Validate rule members
+        if "name" in rule and not isinstance(rule["name"], str):
+            raise ValueError(f"rules[{i}].name must be a string")
+        if "when_changed" in rule and not isinstance(rule["when_changed"], list):
+            raise ValueError(f"rules[{i}].when_changed must be a list")
+        elif "when_changed" in rule:
+            for j, item in enumerate(rule["when_changed"]):
+                if not isinstance(item, str):
+                    raise ValueError(f"rules[{i}].when_changed[{j}] must be a string")
+        if "require_doc" in rule and not isinstance(rule["require_doc"], list):
+            raise ValueError(f"rules[{i}].require_doc must be a list")
+        elif "require_doc" in rule:
+            for j, item in enumerate(rule["require_doc"]):
+                if not isinstance(item, str):
+                    raise ValueError(f"rules[{i}].require_doc[{j}] must be a string")
+        if "hint" in rule and not isinstance(rule["hint"], str):
+            raise ValueError(f"rules[{i}].hint must be a string")
+        if "on_modify" in rule and not isinstance(rule["on_modify"], bool):
+            raise ValueError(f"rules[{i}].on_modify must be a boolean")
     gate = config.get("gate", {})
     if not isinstance(gate, dict):
         raise ValueError("'gate' must be a table")
@@ -119,22 +159,96 @@ def _validate_config(config: dict) -> None:
     scan = invariants.get("referenced_paths_scan", [])
     if not isinstance(scan, list):
         raise ValueError("'invariants.referenced_paths_scan' must be a list")
+    # Validate scan list entries are strings
+    for j, item in enumerate(scan):
+        if not isinstance(item, str):
+            raise ValueError(f"invariants.referenced_paths_scan[{j}] must be a string")
+    ignore = invariants.get("ignore_tokens", [])
+    if not isinstance(ignore, list):
+        raise ValueError("'invariants.ignore_tokens' must be a list")
+    # Validate ignore list entries are strings
+    for j, item in enumerate(ignore):
+        if not isinstance(item, str):
+            raise ValueError(f"invariants.ignore_tokens[{j}] must be a string")
+    required_sections = invariants.get("required_sections", [])
+    if not isinstance(required_sections, list):
+        raise ValueError("'invariants.required_sections' must be a list")
+    for i, entry in enumerate(required_sections):
+        if not isinstance(entry, dict):
+            raise ValueError(f"invariants.required_sections[{i}] must be a table")
+        if "doc" in entry and not isinstance(entry["doc"], str):
+            raise ValueError(f"invariants.required_sections[{i}].doc must be a string")
+        if "headings" in entry and not isinstance(entry["headings"], list):
+            raise ValueError(f"invariants.required_sections[{i}].headings must be a list")
+        elif "headings" in entry:
+            for j, item in enumerate(entry["headings"]):
+                if not isinstance(item, str):
+                    raise ValueError(f"invariants.required_sections[{i}].headings[{j}] must be a string")
 
 
 def check_referenced_paths(repo_root: Path, files_to_scan: list[str], config: dict) -> list[str]:
     """Layer A: every scripts/tinyagentos/docs/desktop path token mentioned in
     the configured doc set must exist on disk. A scan-target file that itself
     does not exist (e.g. a local-only, gitignored doc) is silently skipped
-    rather than treated as a failure."""
-    failures: list[str] = []
+    rather than treated as a failure.
+
+    Scan entries may be globs (``docs/agent-manual/*.md``) -- expanded against
+    the working tree, so a newly added manual page or skill is scanned without
+    a config edit. ``invariants.ignore_tokens`` lists tokens that are
+    deliberate tombstones (docs that EXPLAIN a file was removed must be able
+    to name it without failing the gate forever).
+    """
+    ignore = set(config.get("invariants", {}).get("ignore_tokens", []))
+    expanded: list[str] = []
     for rel in files_to_scan:
+        if any(c in "*?[]" for c in rel):
+            expanded.extend(
+                sorted(str(p.relative_to(repo_root)) for p in repo_root.glob(rel) if p.is_file())
+            )
+        else:
+            expanded.append(rel)
+    failures: list[str] = []
+    for rel in expanded:
         doc_path = repo_root / rel
         if not doc_path.is_file():
             continue
         text = doc_path.read_text(encoding="utf-8", errors="ignore")
         for token in extract_path_tokens(text):
+            if token in ignore:
+                continue
             if not (repo_root / token).exists():
                 failures.append(f"{rel} references '{token}' which does not exist in the repo")
+    return failures
+
+
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+
+
+def check_required_sections(repo_root: Path, config: dict) -> list[str]:
+    """Layer A: every doc listed in ``invariants.required_sections`` must
+    contain each of its required headings in the working tree.
+
+    A scan-target file that itself does not exist (e.g. a local-only,
+    gitignored doc) is silently skipped rather than treated as a failure.
+    """
+    failures: list[str] = []
+    for entry in config.get("invariants", {}).get("required_sections", []):
+        doc_rel = entry.get("doc", "")
+        required_headings = entry.get("headings", [])
+        doc_path = repo_root / doc_rel
+        if not doc_path.is_file():
+            continue
+        text = doc_path.read_text(encoding="utf-8", errors="ignore")
+        found_headings: set[str] = set()
+        for line in text.splitlines():
+            m = _HEADING_RE.match(line)
+            if m:
+                found_headings.add(m.group(2).strip())
+        for heading in required_headings:
+            if heading not in found_headings:
+                failures.append(
+                    f"{doc_rel} is missing required section: '{heading}'"
+                )
     return failures
 
 
@@ -202,16 +316,17 @@ def evaluate_rules(
     By default only status "A" (added) or "D" (deleted) files count as
     structural change for triggering a rule. When a rule sets `on_modify =
     true`, status "M" (plain modification) also counts for that rule.
-    Any changed file (any status) can satisfy a rule if it matches a
-    require_doc glob. Test paths are never structural and are always
-    excluded.
+    Any added or modified file can satisfy a rule if it matches a
+    require_doc glob; a deleted require_doc does NOT count. Trigger scope (A/D,
+    plus M when on_modify is set) is separate from satisfaction scope (A/M only).
+    Test paths are never structural and are always excluded.
     commit_messages: full text of each commit message in range (empty list
     when there is no finalized commit yet, i.e. --staged mode).
     """
     trailer = get_trailer(config)
     rules = config.get("rules", [])
 
-    all_paths = [path for _status, path in changed_status]
+    all_paths = [path for status, path in changed_status if status in ("A", "M")]
 
     trailer_present = any(
         line.strip().startswith(trailer) and line.strip()[len(trailer):].strip()
@@ -229,7 +344,7 @@ def evaluate_rules(
 
         rule_structural_paths = [
             path for status, path in changed_status
-            if (status in ("A", "D") or (on_modify and status == "M"))
+            if (status in ("A", "D", "R", "C") or (on_modify and status == "M"))
             and not _is_test_path(path)
         ]
 
@@ -248,11 +363,22 @@ def evaluate_rules(
     return failures
 
 
-def _run_git(args: list[str]) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, check=True,
-    )
-    return result.stdout
+class GitCommandError(Exception):
+    """Raised when a git command fails, so infrastructure failures are
+    distinguishable from genuine doc-gate violations."""
+
+
+def _run_git(args: list[str], ref: str | None = None) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+        )
+        return result.stdout
+    except subprocess.CalledProcessError:
+        msg = f"git {' '.join(args)} failed"
+        if ref:
+            msg += f" (ref: {ref})"
+        raise GitCommandError(msg) from None
 
 
 def _parse_name_status(output: str) -> list[tuple[str, str]]:
@@ -274,12 +400,43 @@ def _git_changed_staged() -> list[tuple[str, str]]:
 
 
 def _git_changed_base(base_ref: str) -> list[tuple[str, str]]:
-    return _parse_name_status(_run_git(["diff", "--name-status", f"{base_ref}...HEAD"]))
+    return _parse_name_status(_run_git(["diff", "--name-status", f"{base_ref}...HEAD"], ref=base_ref))
 
 
 def _git_commit_messages(base_ref: str) -> list[str]:
-    out = _run_git(["log", f"{base_ref}..HEAD", "--format=%B%x00"])
+    out = _run_git(["log", f"{base_ref}..HEAD", "--format=%B%x00"], ref=base_ref)
     return [m for m in out.split("\x00") if m.strip()]
+
+
+def _git_commits_with_messages(base_ref: str) -> list[tuple[str, str, str]]:
+    """Return (hash, author_name, message_body) for each commit in the range."""
+    # %x1e terminates each commit record and %x1f separates the three fields
+    # inside it. A record terminator distinct from the field separator is what
+    # makes this parseable: with one separator for both, the flat split cannot
+    # tell a new commit's hash from the previous commit's body.
+    out = _run_git(["log", f"{base_ref}..HEAD", "--format=%H%x1f%an%x1f%B%x1e"], ref=base_ref)
+    commits: list[tuple[str, str, str]] = []
+    for record in out.split("\x1e"):
+        if not record.strip():
+            continue
+        fields = record.lstrip("\n").split("\x1f")
+        if len(fields) < 3:
+            continue
+        commit_hash, author, body = fields[0], fields[1], fields[2]
+        commits.append((commit_hash.strip(), author, body))
+    return commits
+
+
+def _log_trailer_usage(commits: list[tuple[str, str, str]], trailer: str) -> None:
+    """Print a log line for each commit that carries a non-empty trailer."""
+    for commit_hash, author, message in commits:
+        for line in message.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(trailer) and stripped[len(trailer):].strip():
+                short_hash = commit_hash[:8]
+                why = stripped[len(trailer):].strip()
+                print(f"doc-gate: trailer override used in {short_hash} by {author}: {why}")
+                break
 
 
 def get_trailer(config: dict) -> str:
@@ -320,6 +477,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "invariants":
         files_to_scan = config.get("invariants", {}).get("referenced_paths_scan", [])
         failures = check_referenced_paths(REPO_ROOT, files_to_scan, config)
+        failures.extend(check_required_sections(REPO_ROOT, config))
         return _report(failures)
 
     if args.command == "print-trailer":
@@ -327,12 +485,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # diff-gate
-    if args.staged:
-        changed = _git_changed_staged()
-        commit_messages: list[str] = []
-    else:
-        changed = _git_changed_base(args.base)
-        commit_messages = _git_commit_messages(args.base)
+    try:
+        if args.staged:
+            changed = _git_changed_staged()
+            commit_messages: list[str] = []
+        else:
+            changed = _git_changed_base(args.base)
+            commits_meta = _git_commits_with_messages(args.base)
+            commit_messages = [msg for _hash, _author, msg in commits_meta]
+            _log_trailer_usage(commits_meta, get_trailer(config))
+    except GitCommandError as e:
+        print(f"doc-gate: git error: {e}", file=sys.stderr)
+        return EXIT_GIT_ERROR
 
     failures = evaluate_rules(changed, commit_messages, config)
     return _report(failures)

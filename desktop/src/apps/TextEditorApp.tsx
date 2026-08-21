@@ -184,7 +184,7 @@ const MarkdownEditor = React.forwardRef<
 
 /* ── Main App ────────────────────────────────────────────── */
 
-export function TextEditorApp({ windowId: _windowId }: { windowId: string }) {
+export function TextEditorApp({ windowId: _windowId, url }: { windowId: string; url?: string }) {
   const [notes, setNotes] = useState<Note[]>(loadNotes);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -219,6 +219,27 @@ export function TextEditorApp({ windowId: _windowId }: { windowId: string }) {
     setNotes((prev) => prev.filter((n) => n.id !== id));
     if (activeId === id) setActiveId(null);
   }, [activeId]);
+
+  useEffect(() => {
+    if (!url) return;
+    let cancelled = false;
+    fetch(url)
+      .then((r) => (r.ok ? r.text() : Promise.reject(r.status)))
+      .then((text) => {
+        if (cancelled) return;
+        const note: Note = {
+          id: randomId("file-"),
+          content: text,
+          updatedAt: Date.now(),
+        };
+        setNotes((prev) => [note, ...prev]);
+        setActiveId(note.id);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
 
   const handleChange = useCallback(
     (value: string) => {

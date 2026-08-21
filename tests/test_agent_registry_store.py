@@ -647,6 +647,21 @@ class TestListRevoked:
         assert revoked[0]["revoked_at"] is not None
 
     @pytest.mark.asyncio
+    async def test_revoked_feed_scoped_to_agent_identities_only(self, store):
+        """Guard: the revocation feed covers agent identities only.
+
+        Decided 2026-08-13. Human credential withdrawal lives in the
+        session/auth layer, not this feed. Each entry must have exactly
+        canonical_id and revoked_at.
+        """
+        r1 = await store.register(framework="openclaw", display_name="Boundary")
+        await store.revoke(r1["canonical_id"])
+        revoked = await store.list_revoked()
+        assert len(revoked) == 1
+        assert revoked[0]["canonical_id"] == r1["canonical_id"]
+        assert set(revoked[0].keys()) == {"canonical_id", "revoked_at"}
+
+    @pytest.mark.asyncio
     async def test_not_initialized_raises(self, tmp_path):
         s = AgentRegistryStore(tmp_path / "not_init.db")
         with pytest.raises(RuntimeError, match="not initialised"):

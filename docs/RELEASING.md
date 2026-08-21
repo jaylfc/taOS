@@ -34,6 +34,21 @@ CI runs the backend pytest suite and frontend vitest on every PR; both must be g
 Once the PR is merged to `dev`, open a follow-up PR from `dev` to `master`.
 After that PR merges, the install-count telemetry at taos.my starts recording the new version for every fresh install.
 
+**If the dev→master PR reports `BEHIND`** (master protection requires branches
+up to date, and Dependabot merges land directly on master between releases),
+a direct promotion cannot merge. Use the sync-branch pattern (beta.45/46/48
+precedent):
+
+1. Branch from `dev` (e.g. `sync/dev-to-master-beta.N`), merge `master` into
+   it — the conflicts, if any, are lockfile-shaped (`uv.lock`,
+   `desktop/package-lock.json`). Re-verify the version lines survived the
+   merge (`test_version_lock_sync.py`).
+2. PR that branch → `master`, CI green, merge.
+3. **Back-merge master into dev** (PR `master` → `dev`) and confirm tree
+   identity: `git diff origin/dev origin/master` must be EMPTY after it
+   merges. Master-only content is an invisible surface — a promotion is not
+   done until that diff is empty.
+
 The `secret-ignores-gate` runs on the `master` push (and on the PR merge result)
 and confirms the promoted `.gitignore` still ignores every secret-shaped path it
 did on `dev` -- `identity.json`, `*.key`, `*.p8`, `*credentials.json`, `*creds*.json`

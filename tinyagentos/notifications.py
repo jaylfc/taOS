@@ -8,6 +8,11 @@ from pathlib import Path
 
 from tinyagentos.base_store import BaseStore
 
+# Canonical notification level vocabulary — single source of truth.
+# The notify_user tool schema, the POST /api/notifications route, and the
+# desktop toast/archive renderers all consume this set.
+VALID_LEVELS = frozenset({"info", "success", "warning", "error"})
+
 logger = logging.getLogger(__name__)
 
 NOTIF_SCHEMA = """
@@ -161,6 +166,8 @@ class NotificationStore(BaseStore):
                 user id, web-push delivery fans out only to that user's
                 subscriptions.
         """
+        if await self._is_event_muted(source):
+            return
         ts = int(time.time())
         data_json = json.dumps(data) if data is not None else None
         cursor = await self._db.execute(
@@ -306,7 +313,9 @@ class NotificationStore(BaseStore):
             "SELECT muted FROM notification_prefs WHERE event_type = ?", (event_type,)
         ) as cursor:
             row = await cursor.fetchone()
-        return bool(row[0]) if row else False
+        if row is not None:
+            return bool(row[0])
+        return False
 
     async def set_event_muted(self, event_type: str, muted: bool) -> None:
         await self._db.execute(

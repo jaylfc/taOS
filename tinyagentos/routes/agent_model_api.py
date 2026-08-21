@@ -7,19 +7,34 @@ consent flow) and gets THEIR agent(s) exposed as models. The key maps to
 
 GET /v1/models lists the agents the caller's key is consented for, each as an
 OpenAI model entry. POST /v1/chat/completions enforces the same consent contract
-(valid key, requested model in the key's agent_ids) but does NOT yet run the
-agent turn: that step drives the agent's harness and is the next slice, pending
-the turn-seam choice (see ~/.taos-team/pending-decisions.md), so a valid request
-returns 501. Scope (per-capability) enforcement and rate limiting also build on
-this binding. Per the spec, the endpoint must never resolve a model without a
-valid consent key, so the auth + scope contract lands first.
+(valid key, requested model in the key's agent_ids) and drives one non-streaming
+agent turn through the opencode host-server seam, returning an OpenAI
+ChatCompletion envelope. Scope (per-capability) enforcement and rate limiting
+build on this binding. Per the spec, the endpoint must never resolve a model
+without a valid consent key, so the auth + scope contract lands first.
 """
 from __future__ import annotations
 
+import json
+import logging
+import time
 from datetime import datetime
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+
+# Runtime calls referenced by module-level name so tests can monkeypatch them
+# (no opencode binary required in CI; the live path uses the real servers).
+try:
+    from tinyagentos.opencode_runtime import drive_turn
+except Exception:  # pragma: no cover - import shape guard
+    drive_turn = None
+try:
+    from tinyagentos.taos_agent_runtime import ensure_taos_opencode_server
+except Exception:  # pragma: no cover - import shape guard
+    ensure_taos_opencode_server = None
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -80,9 +95,9 @@ async def chat_completions(request: Request):
     """OpenAI /v1/chat/completions for an agent-as-a-model.
 
     Enforces the consent contract: a valid key is required, and the requested
-    model must be one of the agents that key is consented for. Running the turn
-    through the agent's harness is the next slice (pending the seam choice), so a
-    contract-valid request returns 501 rather than a fabricated completion.
+    model must be one of the agents that key is consented for. The turn is then
+    driven through the agent's opencode host-server seam and returned as an
+    OpenAI ChatCompletion envelope.
 
     The body is parsed manually AFTER the auth check (not via a Pydantic
     parameter) for two reasons: auth must take precedence so an unauthenticated
@@ -125,10 +140,139 @@ async def chat_completions(request: Request):
             code="model_not_found",
             status=404,
         )
-    # Contract satisfied; the turn execution is the next slice.
-    return _openai_error(
-        "agent turn execution is not yet implemented for this surface",
-        type="server_error",
-        code="not_implemented",
-        status=501,
+
+    # --- Turn execution slice (tsk-gkh4mi) ---------------------------------
+    # Consent + scope contract satisfied. Drive ONE non-streaming turn through
+    # the agent's opencode host-server (seam: consent key -> agent -> that
+    # agent's opencode server + LiteLLM virtual key -> one turn -> OpenAI shape).
+    # The requested `model` is the agent_id; the host runs the taOS agent's
+    # opencode server, so we resolve it the same way the chat endpoint does.
+    # `stream` must be an explicit JSON boolean: a string like "false" must
+    # not coerce to True (bool("false") is True), and a non-bool must be
+    # rejected rather than silently degraded to non-streaming.
+    raw_stream = body.get("stream")
+    if raw_stream is not None and not isinstance(raw_stream, bool):
+        return _bad_request("'stream' must be a boolean")
+    stream = raw_stream is True
+    try:
+        reply_text = await _run_agent_turn(request.app.state, model, messages)
+    except _BadRequest as e:
+        return _openai_error(str(e), type="invalid_request_error", code="invalid_request", status=400)
+    except _TurnError as e:
+        return _openai_error(str(e), type="server_error", code="agent_error", status=502)
+    except Exception as e:  # defensive: never leak internals as a 500 trace
+        logger.exception("agent_model_api: turn failed")
+        return _openai_error(
+            "agent turn failed", type="server_error", code="agent_error", status=502
+        )
+
+    if stream:
+        # Streaming not in the locked seam for this slice; return the completed
+        # turn as a single SSE chunk so standard clients still work.
+        return _chat_completion_stream(reply_text, model)
+    return _chat_completion(reply_text, model)
+
+
+class _TurnError(Exception):
+    """Raised when the agent turn cannot be driven (server not ready, etc.)."""
+
+
+class _BadRequest(Exception):
+    """Raised when the request body is malformed (client error, -> 400)."""
+
+
+async def _run_agent_turn(app_state, agent_id: str, messages: list) -> str:
+    """Drive one non-streaming agent turn and return the final reply text.
+
+    Reuses the host opencode server lifecycle (ensure_taos_opencode_server) and
+    the opencode turn driver (drive_turn). Collects the 'final' reply from the
+    sink; degrades to _TurnError on transport failure so the caller returns 502.
+
+    The two runtime calls are referenced via module-level names so tests can
+    monkeypatch them (no opencode binary required in CI).
+    """
+    # The last user message is the prompt; system/earlier messages are context
+    # the agent harness already carries per-turn, so we pass the latest user text.
+    # Validate content type before forwarding to drive_turn (Kilo finding: a
+    # non-str / non-list content must not reach the adapter as a string).
+    user_text: str | None = None
+    for m in reversed(messages):
+        if isinstance(m, dict) and m.get("role") == "user":
+            content = m.get("content", "")
+            if isinstance(content, str):
+                user_text = content
+            elif isinstance(content, list):  # content parts -> flatten to text
+                parts = []
+                for p in content:
+                    if isinstance(p, dict):
+                        if isinstance(p.get("text"), str):
+                            parts.append(p["text"])
+                        elif isinstance(p.get("text"), list):
+                            parts.append(" ".join(str(x) for x in p["text"]))
+                    elif isinstance(p, str):
+                        parts.append(p)
+                user_text = " ".join(parts)
+            else:
+                # content is int/null/object — malformed request.
+                raise _BadRequest("message content must be a string or list of parts")
+            break
+    if not user_text:
+        # Absent/empty user role is a client validation failure -> 400,
+        # not a transport error (Kilo finding: was mapped to 502).
+        raise _BadRequest("no user message found in request")
+
+    server = await ensure_taos_opencode_server(app_state, agent_id)
+    collected: dict = {"final": None}
+
+    def _sink(reply: dict) -> None:
+        if reply.get("kind") == "final":
+            collected["final"] = reply.get("content", "")
+        elif reply.get("kind") == "error" and collected["final"] is None:
+            collected["_error"] = reply.get("error", "agent turn failed")
+
+    await drive_turn(
+        user_text,
+        trace_id=None,
+        sink=_sink,
+        base_url=server.base_url,
+        model_id=agent_id,
+        model_provider_id="litellm",
+        server_password=getattr(app_state, "taos_opencode_password", None),
     )
+    if collected.get("_error") and collected["final"] is None:
+        raise _TurnError(collected["_error"])
+    if collected["final"] is None:
+        raise _TurnError("agent returned no reply")
+    return collected["final"]
+
+
+def _chat_completion(content: str, model: str) -> JSONResponse:
+    """OpenAI ChatCompletion (non-streaming) envelope."""
+    return JSONResponse({
+        "id": f"chatcmpl-{_short_id()}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    })
+
+
+def _chat_completion_stream(content: str, model: str):
+    """OpenAI SSE stream envelope (single completion chunk)."""
+    from fastapi.responses import StreamingResponse
+
+    def _gen():
+        yield f"data: {json.dumps({'id': f'chatcmpl-{_short_id()}', 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': content}, 'finish_reason': 'stop'}]})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+def _short_id() -> str:
+    import secrets
+    return secrets.token_hex(8)

@@ -148,7 +148,7 @@ describe("NotesApp", () => {
     );
     expect(fetchMock).toHaveBeenCalledWith("/api/notes", expect.objectContaining({
       method: "POST",
-      body: JSON.stringify({ kind: "note", title: "Standup notes" }),
+      body: JSON.stringify({ title: "Standup notes" }),
     }));
   });
 });

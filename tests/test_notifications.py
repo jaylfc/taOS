@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 import aiosqlite
@@ -245,3 +246,95 @@ async def test_notification_api_archived_history(client):
     assert resp.status_code == 200
     data = resp.json()
     assert [d["title"] for d in data] == ["Kept"]
+
+
+@pytest.mark.asyncio
+async def test_muted_event_type_is_not_dispatched(tmp_path):
+    store = NotificationStore(tmp_path / "notif.db")
+    await store.init()
+    try:
+        await store.set_event_muted("task.claimed", True)
+
+        seen_push: list[dict] = []
+        seen_emit: list[dict] = []
+
+        async def push_sender(row: dict) -> None:
+            seen_push.append(row)
+
+        async def emitter(row: dict) -> None:
+            seen_emit.append(row)
+
+        store.set_push_sender(push_sender)
+        store.set_event_emitter(emitter)
+
+        await store.add(
+            "Task claimed",
+            "task-42 claimed by worker-1",
+            level="info",
+            source="task.claimed",
+        )
+        await asyncio.sleep(0)
+
+        assert await store.list() == []
+        assert seen_push == []
+        assert seen_emit == []
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_unmuted_event_type_is_dispatched(tmp_path):
+    store = NotificationStore(tmp_path / "notif.db")
+    await store.init()
+    try:
+        seen_push: list[dict] = []
+
+        async def push_sender(row: dict) -> None:
+            seen_push.append(row)
+
+        store.set_push_sender(push_sender)
+
+        await store.add(
+            "Task closed",
+            "task-42 closed",
+            level="info",
+            source="task.closed",
+        )
+        await asyncio.sleep(0)
+
+        items = await store.list()
+        assert len(items) == 1
+        assert items[0]["title"] == "Task closed"
+        assert len(seen_push) == 1
+        assert seen_push[0]["title"] == "Task closed"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_default_on_event_type_delivered_without_prefs(tmp_path):
+    store = NotificationStore(tmp_path / "notif.db")
+    await store.init()
+    try:
+        seen_push: list[dict] = []
+
+        async def push_sender(row: dict) -> None:
+            seen_push.append(row)
+
+        store.set_push_sender(push_sender)
+
+        await store.add(
+            "Task claimed",
+            "task-42 claimed by worker-1",
+            level="info",
+            source="task.claimed",
+        )
+        await asyncio.sleep(0)
+
+        items = await store.list()
+        assert len(items) == 1
+        assert items[0]["title"] == "Task claimed"
+        assert len(seen_push) == 1
+        assert seen_push[0]["title"] == "Task claimed"
+    finally:
+        await store.close()

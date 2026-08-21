@@ -28,6 +28,7 @@ variants:
       targets:
       - rockchip
       min_ram_mb: 2048
+  sha256: 6627394521a3b1fc2cc43ebc0bdc270608b162a7bd246e683aed6264223b31bc
 hardware_tiers:
   arm-npu-32gb:
     recommended: w8a8

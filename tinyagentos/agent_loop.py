@@ -283,6 +283,7 @@ class AgentLoop:
                     handle.state = "failed"
                     handle.error = str(exc)
                 logger.exception("subagent %s (%s) failed", sub_id, task)
+                raise
 
         task_obj = _create_supervised_task(_runner(), self._subagent_tasks)
         task_obj.set_name(f"subagent:{sub_id}")
@@ -415,7 +416,8 @@ class AgentLoop:
 
         If the subagent was cancelled (e.g. via ``cancel_subagents`` or a
         redirect at a safe point), the handle state is ``"cancelled"`` and
-        the result (``None``) is returned without re-raising.
+        the result (``None``) is returned without re-raising. If the worker
+        raised, that exception is re-raised here at the caller.
 
         A *timeout* only limits how long this call waits. It does NOT cancel
         the subagent task. The subagent keeps running and can be awaited again
@@ -424,6 +426,7 @@ class AgentLoop:
         Raises:
             KeyError: if *sub_id* is unknown.
             asyncio.TimeoutError: if *timeout* is given and exceeded.
+            Exception: the worker's own exception, if the subagent failed.
         """
         async with self._lock:
             entry = self._subagents.get(sub_id)
@@ -432,6 +435,8 @@ class AgentLoop:
         if entry.task_obj.done():
             if entry.handle.state == "cancelled":
                 return entry.handle.result
+            if entry.handle.state == "failed":
+                raise entry.task_obj.exception()
             return entry.handle.result
         done, pending = await asyncio.wait([entry.task_obj], timeout=timeout)
         if entry.task_obj in pending:
@@ -440,6 +445,8 @@ class AgentLoop:
             )
         if entry.handle.state == "cancelled":
             return entry.handle.result
+        if entry.handle.state == "failed":
+            raise entry.task_obj.exception()
         return entry.handle.result
 
     def get_subagent(self, sub_id: str) -> SubagentHandle | None:

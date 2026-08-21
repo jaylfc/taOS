@@ -262,6 +262,56 @@ async def auth_client(app):
     await app.state.http_client.aclose()
 
 
+class TestCorruptStoreOverTheApi:
+    """A read that cannot answer must say so, not answer plausibly.
+
+    `list_users()` and friends raise AuthStoreCorruptError rather than
+    degrade to an empty list — "no users" and "cannot read the users" are
+    different facts. One app-level handler turns that into a single honest
+    503 instead of an opaque 500 per route.
+    """
+
+    @pytest.mark.asyncio
+    async def test_users_route_returns_503_not_an_empty_list(self, app, auth_client):
+        app.state.auth.setup_user("admin", "Admin", "", "adminpass")
+        login = await auth_client.post(
+            "/auth/login", json={"username": "admin", "password": "adminpass"},
+        )
+        assert login.status_code == 200
+
+        users_file = app.state.auth._user_file
+        users_file.write_bytes(b"\0" * users_file.stat().st_size)
+
+        resp = await auth_client.get("/auth/users")
+        assert resp.status_code == 503
+        assert resp.json()["error"] == "account_store_unreadable"
+
+    @pytest.mark.asyncio
+    async def test_status_reports_the_store_instead_of_offering_setup(
+        self, app, auth_client,
+    ):
+        app.state.auth.setup_user("admin", "Admin", "", "adminpass")
+        users_file = app.state.auth._user_file
+        users_file.write_bytes(b"\0" * users_file.stat().st_size)
+
+        resp = await auth_client.get("/auth/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["store_error"] == "unreadable"
+        assert body["configured"] is True
+        assert body["needs_onboarding"] is False
+
+    @pytest.mark.asyncio
+    async def test_setup_page_does_not_offer_the_form(self, app, auth_client):
+        app.state.auth.setup_user("admin", "Admin", "", "adminpass")
+        users_file = app.state.auth._user_file
+        users_file.write_bytes(b"\0" * users_file.stat().st_size)
+
+        resp = await auth_client.get("/auth/setup", follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/auth/login"
+
+
 class TestAuthRoutes:
     @pytest.mark.asyncio
     async def test_login_page_accessible(self, app, auth_client):

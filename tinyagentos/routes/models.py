@@ -62,9 +62,15 @@ def get_downloaded_models(models_dir: Path) -> list[dict]:
         if f.suffix.lower() not in _MODEL_FILE_SUFFIXES:
             continue
         try:
-            rel = str(f.relative_to(models_dir))
+            rel_path = f.relative_to(models_dir)
         except ValueError:
-            rel = f.name
+            rel_path = Path(f.name)
+        # LoRA Studio owns models_root()/loras/<slug>/ -- adapters aren't
+        # standalone runnable models, so this scan must not surface them
+        # (they'd otherwise appear loadable in the Models app).
+        if rel_path.parts and rel_path.parts[0] == "loras":
+            continue
+        rel = str(rel_path)
         results.append({
             "filename": f.name,
             "relative_path": rel,
@@ -456,6 +462,27 @@ async def download_model(request: Request, body: DownloadRequest):
             finally:
                 if vram_mgr is not None and reservation is not None:
                     vram_mgr.release(reservation.reservation_id)
+
+        dm.start_installer_task(download_id, _install_and_record)
+        return {
+            "status": "started",
+            "download_id": download_id,
+            "app_id": body.app_id,
+            "variant_id": body.variant_id,
+        }
+
+    # Variants that declare multi_file: true must be installed through
+    # HFMultiInstaller so the full shard set is fetched from the HF repo.
+    # Routing them through the generic single-file download path would only
+    # pull the shard named in download_url and then fail the metadata hash
+    # check (file_set_hash is not a content SHA256).
+    if variant.get("multi_file") is True:
+        from tinyagentos.installers.hf_multi_installer import HFMultiInstaller
+
+        async def _install_and_record(on_progress):
+            return await HFMultiInstaller().install(
+                body.app_id, {}, variant=variant, on_progress=on_progress
+            )
 
         dm.start_installer_task(download_id, _install_and_record)
         return {

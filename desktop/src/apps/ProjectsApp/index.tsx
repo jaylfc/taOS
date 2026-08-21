@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { projectsApi, type Project } from "@/lib/projects";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
 import { useIsMobile } from "../../hooks/use-is-mobile";
+import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
 import { MobileSplitView } from "../../components/mobile/MobileSplitView";
 import { ProjectList } from "./ProjectList";
 import { ProjectWorkspace } from "./ProjectWorkspace";
@@ -36,7 +37,7 @@ export function ProjectsApp({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const isMobile = useIsMobile();
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     try {
       const list = await projectsApi.list("active");
       setProjects(list);
@@ -54,11 +55,17 @@ export function ProjectsApp({
     } catch (e) {
       setError(String(e));
     }
-  };
+  }, [selectedId, isMobile]);
 
+  // Mount only. `refresh` is derived from selectedId, so depending on its
+  // identity re-lists every project on each selection; the focus hook keeps
+  // its own latest-callback ref, so it still runs the current closure.
   useEffect(() => {
-    refresh();
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useRefreshOnFocus(refresh);
 
   const selected = projects.find((p) => p.id === selectedId) ?? null;
 

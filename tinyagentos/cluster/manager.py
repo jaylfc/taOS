@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import secrets
 import time
@@ -8,6 +9,8 @@ from typing import TYPE_CHECKING
 from tinyagentos.cluster.worker_protocol import GpuLease, WorkerInfo
 
 if TYPE_CHECKING:
+    from tinyagentos.cluster.failure_tracker import FailureTracker
+    from tinyagentos.cluster.worker_registry_store import WorkerRegistryStore
     from tinyagentos.scheduler.gpu_arbiter import GpuArbiter
 
 logger = logging.getLogger(__name__)
@@ -38,7 +41,13 @@ def _format_hw(hw) -> str:
 
 
 class ClusterManager:
-    def __init__(self, notifications=None, capabilities=None):
+    def __init__(
+        self,
+        notifications=None,
+        capabilities=None,
+        worker_registry_store=None,
+        failure_tracker=None,
+    ):
         self._workers: dict[str, WorkerInfo] = {}
         self._leases: dict[str, GpuLease] = {}
         # Serializes all lease-table mutations (claim/release/renew/expiry
@@ -54,8 +63,22 @@ class ClusterManager:
         self._ever_seen: set[str] = set()
         # Strong references to background tasks to prevent GC before completion.
         self._background_tasks: set[asyncio.Task] = set()
+        # taOS #640: persistence + split-brain + circuit breaker
+        self._registry_store: WorkerRegistryStore | None = worker_registry_store
+        self._failure_tracker: FailureTracker | None = failure_tracker
+        self._generation: int = 1  # incremented in start() when store is wired
+        self._fenced: bool = False  # True when another controller has advanced generation
 
     async def start(self):
+        # taOS #640: increment generation on each controller start (split-brain
+        # protection). Workers must echo the current generation in heartbeats;
+        # a stale generation means another controller instance is (or was) active.
+        if self._registry_store is not None:
+            self._generation = await self._registry_store.increment_generation()
+            logger.info("Cluster generation: %d", self._generation)
+            # Load persisted workers and mark them stale — they must
+            # re-register or heartbeat before being used for routing.
+            await self._load_persisted_workers()
         self._monitor_task = asyncio.create_task(self._monitor_loop())
 
     async def stop(self):
@@ -66,14 +89,38 @@ class ClusterManager:
             except asyncio.CancelledError:
                 pass
 
-    async def register_worker(self, info: WorkerInfo) -> None:
-        # Snapshot capabilities before adding worker
+    async def register_worker(
+        self, info: WorkerInfo, generation: int | None = None
+    ) -> tuple[bool, str]:
+        """Register a worker, returning (ok, reason).
+
+        On success ``ok`` is True and ``reason`` is the empty string.
+        On refusal ``ok`` is False and ``reason`` is one of:
+
+        - ``"fenced"`` -- this controller instance has been superseded.
+        - ``"stale_generation"`` -- the worker echoed a generation that does
+          not match the controller's current generation.
+        """
         caps_before = set()
         if self._capabilities:
             caps_before = {k for k, v in self._capabilities.get_all_capabilities().items() if v["available"]}
 
         is_first_time = info.name not in self._ever_seen
         self._ever_seen.add(info.name)
+
+        # taOS #640: controller fence — if this instance has been superseded
+        # by another controller, reject all registrations (CodeRabbit PR #1928).
+        if self._fenced:
+            return (False, "fenced")
+        # taOS #640: split-brain protection — reject registration from a
+        # worker that echoes a different generation (another active controller).
+        # Legacy workers that don't send generation get a pass (None).
+        if generation is not None and generation != self._generation:
+            logger.warning(
+                "Registration from '%s' rejected: generation %s != controller %s",
+                info.name, generation, self._generation,
+            )
+            return (False, "stale_generation")
 
         prev_status = self._workers[info.name].status if info.name in self._workers else None
 
@@ -82,6 +129,15 @@ class ClusterManager:
         info.status = "online"
         self._workers[info.name] = info
         logger.info(f"Worker registered: {info.name} ({info.platform}, {len(info.capabilities)} capabilities)")
+
+        # taOS #640: persist worker to SQLite so the registry survives restarts.
+        # Generation is checked at the top of this method — if the worker echoes
+        # a stale generation, the registration is rejected before we reach here.
+        if self._registry_store is not None:
+            try:
+                await self._persist_worker(info)
+            except Exception:
+                logger.exception("Failed to persist worker '%s'", info.name)
 
         # The "local" worker is the controller registering itself on every boot;
         # that is not a noteworthy cluster event, so do not notify for it. Only
@@ -141,6 +197,7 @@ class ClusterManager:
         task = asyncio.create_task(_promote_bg())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+        return (True, "")
 
     def kv_quant_union(self) -> list[str]:
         """Return the set-union of KV cache quant types across all online workers.
@@ -211,6 +268,7 @@ class ClusterManager:
         bytes_deduped_total: int | None = None,
         status: str | None = None,
         drain_reason: str | None = None,
+        generation: int | None = None,
     ) -> bool:
         """Accept a worker heartbeat.
 
@@ -225,10 +283,35 @@ class ClusterManager:
         controller treats it identically to a controller-initiated drain:
         no new tasks are routed, existing leases complete, and the monitor
         loop auto-completes the drain when all leases are released.
+
+        taOS #640: When ``generation`` is provided and does not match the
+        controller's current generation, the heartbeat is rejected — this
+        protects against split-brain where two controllers are active
+        simultaneously. Workers that do not yet send generation (legacy)
+        are accepted for backward compatibility.
         """
         worker = self._workers.get(name)
         if not worker:
             return False
+        # taOS #640: controller fence — if this instance has been superseded
+        # by another controller, reject all heartbeats (CodeRabbit PR #1928).
+        if self._fenced:
+            return False
+        # taOS #640: split-brain protection — reject heartbeat from a worker
+        # that is echoing a different generation (another active controller).
+        # Legacy workers that don't send generation get a pass (None).
+        if generation is not None and generation != self._generation:
+            logger.warning(
+                "Heartbeat from '%s' rejected: generation %s != controller %s",
+                name, generation, self._generation,
+            )
+            return False
+        if generation is None and self._generation > 1:
+            logger.debug(
+                "Heartbeat from '%s' accepted without generation "
+                "(controller gen %d) — legacy worker or not-yet-upgraded",
+                name, self._generation,
+            )
         prev_status = worker.status
         worker.last_heartbeat = time.time()
         worker.load = load
@@ -340,6 +423,26 @@ class ClusterManager:
                 )
             except RuntimeError:
                 pass
+        # taOS #640: persist updated worker state to SQLite.
+        if self._registry_store is not None:
+            async def _safe_persist() -> None:
+                try:
+                    # Guard against resurrection: a queued persistence task
+                    # can run after remove_worker() deletes the row — verify
+                    # this exact WorkerInfo instance is still registered before
+                    # upserting (CodeRabbit PR #1928).
+                    if self._workers.get(worker.name) is not worker:
+                        return
+                    await self._persist_worker(worker)
+                except Exception:
+                    logger.exception("Failed to persist worker '%s'", worker.name)
+
+            try:
+                task = asyncio.get_running_loop().create_task(_safe_persist())
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+            except RuntimeError:
+                pass  # no running loop (e.g. sync tests) — skip gracefully
         # Fire worker.online notification when a previously-offline worker recovers.
         # heartbeat() is sync, so schedule the async emit as a background task.
         # Only fire for workers that are genuinely "online" — a worker recovering
@@ -388,6 +491,12 @@ class ClusterManager:
 
             self._workers.pop(name, None)
         logger.info("Worker '%s' unregistered — %d leases released", name, len(lids))
+        # taOS #640: remove from persistent store.
+        if self._registry_store is not None:
+            try:
+                await self._registry_store.remove_worker(name)
+            except Exception:
+                logger.exception("Failed to remove worker '%s' from store", name)
         return True
 
     def get_workers(self) -> list[WorkerInfo]:
@@ -749,11 +858,192 @@ class ClusterManager:
             "models": flat_models,
         }
 
+    # ── taOS #640: persistence + split-brain helpers ───────────────────
+
+    @property
+    def generation(self) -> int:
+        """Current controller generation for split-brain protection."""
+        return self._generation
+
+    @property
+    def failure_tracker(self):
+        """Circuit breaker for worker routing failures (Fix 3)."""
+        return self._failure_tracker
+
+    async def _persist_worker(self, worker: WorkerInfo) -> None:
+        """Serialize a WorkerInfo to a dict and upsert into the registry store."""
+        if self._registry_store is None:
+            return
+        info: dict = {
+            "name": worker.name,
+            "url": worker.url,
+            "hardware": json.dumps(worker.hardware or {}),
+            "backends": json.dumps(worker.backends or []),
+            "models": json.dumps(worker.models or []),
+            "available_models": json.dumps(worker.available_models or []),
+            "capabilities": json.dumps(worker.capabilities or []),
+            "status": worker.status,
+            "last_heartbeat": worker.last_heartbeat,
+            "registered_at": worker.registered_at,
+            "load": worker.load,
+            "platform": worker.platform,
+            "tier_id": worker.tier_id,
+            "potential_capabilities": json.dumps(worker.potential_capabilities or []),
+            "kv_cache_quant_support": json.dumps(
+                worker.kv_cache_quant_support or ["fp16"]
+            ),
+            "kv_cache_quant_k_support": json.dumps(
+                worker.kv_cache_quant_k_support or ["fp16"]
+            ),
+            "kv_cache_quant_v_support": json.dumps(
+                worker.kv_cache_quant_v_support or ["fp16"]
+            ),
+            "kv_cache_quant_boundary_layer_protect": int(
+                worker.kv_cache_quant_boundary_layer_protect
+            ),
+            "worker_url": worker.worker_url,
+            "signing_key": worker.signing_key,
+            "tls_cert_provider": worker.tls_cert_provider,
+            "host_lan_ip": worker.host_lan_ip,
+            "storage_cap_bytes": worker.storage_cap_bytes,
+            "storage_used_bytes": worker.storage_used_bytes,
+            "bytes_deduped_total": worker.bytes_deduped_total,
+            "worker_lxc_image_version": worker.worker_lxc_image_version,
+            "degraded": int(worker.degraded),
+            "degraded_reason": worker.degraded_reason,
+            "free_vram_mb": worker.free_vram_mb,
+            "used_vram_mb": worker.used_vram_mb,
+        }
+        await self._registry_store.upsert_worker(info)
+
+    async def _load_persisted_workers(self) -> None:
+        """Load persisted workers from the store and mark them 'stale'.
+
+        On restart, all loaded workers start in 'stale' status — they must
+        re-register or heartbeat before being considered online for routing.
+        The 'local' worker is skipped (it re-registers on every controller
+        boot from ``local_worker.enroll_local_worker()``).
+        """
+        if self._registry_store is None:
+            return
+        rows = await self._registry_store.load_all()
+        for row in rows:
+            name = row["name"]
+            if name == "local":
+                continue  # local worker re-registers on every boot
+            try:
+                worker = WorkerInfo(
+                    name=name,
+                    url=row.get("url", ""),
+                    hardware=json.loads(row.get("hardware", "{}")),
+                    backends=json.loads(row.get("backends", "[]")),
+                    models=json.loads(row.get("models", "[]")),
+                    available_models=json.loads(row.get("available_models", "[]")),
+                    capabilities=json.loads(row.get("capabilities", "[]")),
+                    status="stale",
+                    last_heartbeat=row.get("last_heartbeat", 0),
+                    registered_at=row.get("registered_at", 0),
+                    load=row.get("load", 0.0),
+                    platform=row.get("platform", ""),
+                    tier_id=row.get("tier_id", ""),
+                    potential_capabilities=json.loads(
+                        row.get("potential_capabilities", "[]")
+                    ),
+                    kv_cache_quant_support=json.loads(
+                        row.get("kv_cache_quant_support", '["fp16"]')
+                    ),
+                    kv_cache_quant_k_support=json.loads(
+                        row.get("kv_cache_quant_k_support", '["fp16"]')
+                    ),
+                    kv_cache_quant_v_support=json.loads(
+                        row.get("kv_cache_quant_v_support", '["fp16"]')
+                    ),
+                    kv_cache_quant_boundary_layer_protect=bool(
+                        row.get("kv_cache_quant_boundary_layer_protect", 0)
+                    ),
+                    worker_url=row.get("worker_url"),
+                    signing_key=row.get("signing_key", b""),
+                    tls_cert_provider=row.get("tls_cert_provider"),
+                    host_lan_ip=row.get("host_lan_ip"),
+                    storage_cap_bytes=row.get("storage_cap_bytes", 0),
+                    storage_used_bytes=row.get("storage_used_bytes", 0),
+                    bytes_deduped_total=row.get("bytes_deduped_total", 0),
+                    worker_lxc_image_version=row.get("worker_lxc_image_version"),
+                    degraded=bool(row.get("degraded", 0)),
+                    degraded_reason=row.get("degraded_reason"),
+                    free_vram_mb=row.get("free_vram_mb"),
+                    used_vram_mb=row.get("used_vram_mb"),
+                )
+                self._workers[name] = worker
+                self._ever_seen.add(name)
+                logger.info(
+                    "Loaded persisted worker '%s' (was %s, now stale)",
+                    name, row.get("status", "unknown"),
+                )
+            except Exception:
+                logger.exception("Failed to deserialize persisted worker '%s'", name)
+
     async def _monitor_loop(self):
         """Monitor worker heartbeats, mark stale workers as offline, and
         sweep expired GPU leases.  Auto-completes draining workers
         whose leases have all been released (taOS #890)."""
         while True:
+            # taOS #640: controller fence — if another controller instance
+            # has advanced the durable generation beyond ours, self-disable
+            # to prevent split-brain (CodeRabbit PR #1928).
+            if (
+                not self._fenced
+                and self._registry_store is not None
+            ):
+                try:
+                    durable_gen = await self._registry_store.current_generation()
+                    if durable_gen > self._generation:
+                        logger.warning(
+                            "Controller fenced: durable generation %d > local %d — "
+                            "disabling worker acceptance and routing",
+                            durable_gen, self._generation,
+                        )
+                        self._fenced = True
+                except Exception:
+                    logger.exception("Failed to check durable generation")
+            if self._fenced:
+                # Fenced controller — release all leases, cancel arbiter tasks,
+                # mark all workers offline and stop routing.
+                for worker in list(self._workers.values()):
+                    if worker.name == "local":
+                        continue
+                    if worker.status in ("online", "update-available"):
+                        worker.status = "offline"
+                        logger.info("Worker '%s' marked offline (controller fenced)", worker.name)
+                    # Release any active leases for this worker's resources —
+                    # for every non-local worker regardless of status: a
+                    # draining worker can still hold leases, and the fenced
+                    # branch skips the normal stale-drain cleanup below.
+                    # Match on the exact worker name (not a resource_id
+                    # prefix) so "gpu-node" and "gpu-node-2" don't collide.
+                    async with self._lease_lock:
+                        offline_lids = [
+                            lid for lid, lease in self._leases.items()
+                            if (parsed := self._parse_resource_id(lease.resource_id))
+                            and parsed[0] == worker.name
+                        ]
+                        for lid in offline_lids:
+                            self._leases.pop(lid, None)
+                            logger.debug("Lease %s released — worker %s fenced", lid, worker.name)
+                    # Cancel any running GPU arbiter tasks for the
+                    # released leases (taOS cross-cutting wiring).
+                    if offline_lids and self._gpu_arbiter is not None:
+                        try:
+                            cancelled, already_done = await self._gpu_arbiter.cancel_running_for_leases(set(offline_lids))
+                            logger.info(
+                                "Controller fenced: arbiter cancelled %d tasks, %d already done",
+                                cancelled, already_done)
+                        except Exception:
+                            logger.exception(
+                                "gpu-arbiter: cancel for fenced controller of '%s' failed",
+                                worker.name)
+                await asyncio.sleep(5)
+                continue
             now = time.time()
             for worker in list(self._workers.values()):
                 # The 'local' worker is the controller itself, kept alive by

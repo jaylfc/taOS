@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useNotificationStore } from "@/stores/notification-store";
+import { useDecisionEventsStore } from "@/stores/decision-events-store";
 import { mapRow, ServerNotificationRow } from "@/lib/server-notifications";
 
 type EventPayload = Record<string, unknown>;
@@ -20,6 +21,10 @@ const handlers: Record<string, EventHandler> = {
       (n) => n.id.startsWith("srv-") && !n.archived && n.id !== newItem.id,
     );
     store.mergeServerNotifications([newItem, ...existingSrv]);
+  },
+  "decision.answered": (payload) => {
+    const decisionId = payload["decision_id"] as string | undefined;
+    if (decisionId) useDecisionEventsStore.getState().recordAnswered(decisionId);
   },
 };
 

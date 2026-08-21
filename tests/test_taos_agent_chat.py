@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -509,6 +510,122 @@ async def test_ensure_server_reuses_persisted_key(tmp_path, monkeypatch):
     mock_proxy.update_agent_key.assert_awaited()
 
 
+@pytest.mark.asyncio
+async def test_ensure_server_rescope_failure_keeps_cached_server(tmp_path, monkeypatch):
+    """When update_agent_key returns False (re-scope no-op), the server is
+    created but NOT marked as born degraded — the proxy is already running
+    so this is a routing-only key-scope no-op, not a degradation. A second
+    ensure call must reuse the cached server, proving no restart churn."""
+    import tinyagentos.taos_agent_runtime as rt
+
+    spawned_cfgs: list = []
+
+    class _FakeServer:
+        def __init__(self, cfg):
+            spawned_cfgs.append(cfg)
+            self._cfg = cfg
+        async def ensure_running(self, **kwargs):
+            pass
+        async def stop(self):
+            pass
+        @property
+        def base_url(self):
+            return f"http://127.0.0.1:{self._cfg.port}"
+        def is_running(self):
+            return True
+
+    monkeypatch.setattr(rt, "OpenCodeServer", _FakeServer)
+
+    class _FakeSettings:
+        async def get_preference(self, user, ns):
+            return {"llm_key": "sk-persisted-9", "permitted_models": ["gpt-4o", "claude"]}
+        async def save_preference(self, user, ns, prefs):
+            pass
+
+    mock_proxy = MagicMock()
+    mock_proxy.create_agent_key = AsyncMock(return_value="sk-NEW-should-not-be-used")
+    # Re-scope returns False — routing-only no-op, not a proxy degradation.
+    mock_proxy.update_agent_key = AsyncMock(return_value=False)
+    mock_proxy.is_running.return_value = True
+
+    state = SimpleNamespace(
+        data_dir=tmp_path,
+        llm_proxy=mock_proxy,
+        desktop_settings=_FakeSettings(),
+        taos_opencode_password=None,
+        taos_opencode_server=None,
+        taos_opencode_model=None,
+        taos_opencode_session_id=None,
+    )
+
+    # First call: must create the server and NOT mark it degraded.
+    await rt.ensure_taos_opencode_server(state, "gpt-4o")
+
+    assert spawned_cfgs[0].litellm_key == "sk-persisted-9"
+    # Proxy IS running, re-scope no-op → NOT degraded.
+    assert state.taos_opencode_born_degraded["gpt-4o"] is False
+    mock_proxy.update_agent_key.assert_awaited()
+    assert len(spawned_cfgs) == 1
+
+    # Second call: must reuse the cached server, no restart churn.
+    mock_proxy.update_agent_key.reset_mock()
+    await rt.ensure_taos_opencode_server(state, "gpt-4o")
+    assert len(spawned_cfgs) == 1
+
+
+@pytest.mark.asyncio
+async def test_ensure_server_serializes_concurrent_different_models(tmp_path, monkeypatch):
+    """Two concurrent requests for different models must not both start a
+    server on the shared TAOS_OPENCODE_PORT. Regression for the race where the
+    existing-server check and ensure_running are separated by several awaits,
+    so two requests could both observe `existing is None` and double-start
+    (and the stop-on-model-change path can then clobber a server the other is
+    still starting)."""
+    import tinyagentos.taos_agent_runtime as rt
+
+    alive = {"count": 0, "peak": 0}
+
+    class _FakeServer:
+        def __init__(self, cfg):
+            self._cfg = cfg
+        async def ensure_running(self, **kwargs):
+            alive["count"] += 1
+            alive["peak"] = max(alive["peak"], alive["count"])
+            await asyncio.sleep(0)  # widen the overlap window
+        async def stop(self):
+            alive["count"] -= 1
+        @property
+        def base_url(self):
+            return f"http://127.0.0.1:{self._cfg.port}"
+        def is_running(self):
+            return True
+
+    monkeypatch.setattr(rt, "OpenCodeServer", _FakeServer)
+
+    async def _mint_key(*args, **kwargs):
+        # Yield here so both coroutines interleave at the key-mint await,
+        # before either caches a server — without the lock both then proceed
+        # to create a server on the shared port (peak alive == 2).
+        await asyncio.sleep(0)
+        return "sk-test"
+
+    mock_proxy = MagicMock()
+    mock_proxy.create_agent_key = _mint_key
+    mock_proxy.is_running.return_value = True
+
+    state = SimpleNamespace(data_dir=tmp_path, llm_proxy=mock_proxy)
+
+    await asyncio.gather(
+        rt.ensure_taos_opencode_server(state, "model-a"),
+        rt.ensure_taos_opencode_server(state, "model-b"),
+    )
+
+    assert alive["peak"] == 1, (
+        f"two servers started concurrently (peak alive={alive['peak']}); "
+        "the lifecycle must be serialized by the app-state lock"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Degraded-birth detection and self-heal
 # ---------------------------------------------------------------------------
@@ -552,7 +669,7 @@ async def test_ensure_server_born_degraded_when_proxy_not_running(tmp_path, monk
 
     await rt.ensure_taos_opencode_server(state, "gpt-4o")
 
-    assert state.taos_opencode_born_degraded is True
+    assert state.taos_opencode_born_degraded["gpt-4o"] is True
 
 
 @pytest.mark.asyncio
@@ -598,7 +715,7 @@ async def test_ensure_server_self_heals_when_proxy_becomes_ready(tmp_path, monke
 
     # First call: proxy not ready, server born degraded.
     await rt.ensure_taos_opencode_server(state, "gpt-4o")
-    assert state.taos_opencode_born_degraded is True
+    assert state.taos_opencode_born_degraded["gpt-4o"] is True
     assert len(spawned_cfgs) == 1
 
     # Proxy comes up.
@@ -609,7 +726,134 @@ async def test_ensure_server_self_heals_when_proxy_becomes_ready(tmp_path, monke
 
     assert len(stop_calls) == 1, "old server must have been stopped"
     assert len(spawned_cfgs) == 2, "a new server must have been created"
-    assert state.taos_opencode_born_degraded is False
+    assert state.taos_opencode_born_degraded["gpt-4o"] is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_server_model_switch_clears_legacy_session_id(tmp_path, monkeypatch):
+    """When the model changes, the legacy ``taos_opencode_session_id`` attr is
+    set to None so the desktop chat path does not feed a stale session from the
+    previous model into the new server."""
+    import tinyagentos.taos_agent_runtime as rt
+
+    stop_calls: list[str] = []
+    spawned_cfgs: list = []
+
+    class _FakeServer:
+        def __init__(self, cfg):
+            spawned_cfgs.append(cfg)
+            self._cfg = cfg
+
+        async def ensure_running(self, **kwargs):
+            pass
+
+        async def stop(self):
+            stop_calls.append(f"stopped:{self._cfg.home}")
+
+        @property
+        def base_url(self):
+            return f"http://127.0.0.1:{self._cfg.port}"
+
+        def is_running(self):
+            return True
+
+    monkeypatch.setattr(rt, "OpenCodeServer", _FakeServer)
+
+    mock_proxy = MagicMock()
+    mock_proxy.is_running.return_value = True
+    mock_proxy.create_agent_key = AsyncMock(return_value="sk-key-1")
+
+    state = SimpleNamespace(
+        data_dir=tmp_path,
+        llm_proxy=mock_proxy,
+        taos_opencode_password=None,
+        taos_opencode_server=None,
+        taos_opencode_model=None,
+        taos_opencode_session_id=None,
+    )
+
+    # First call: create model A's server and simulate a session.
+    await rt.ensure_taos_opencode_server(state, "gpt-4o")
+    assert len(spawned_cfgs) == 1
+    # Simulate the desktop chat path having stored a session id.
+    state.taos_opencode_session_id = "ses-old-model"
+    state.taos_opencode_sessions["gpt-4o"] = "ses-old-model"
+
+    # Second call: switch to model B — must stop model A and clear the legacy
+    # session id so the desktop chat path sees None for the new model.
+    await rt.ensure_taos_opencode_server(state, "claude-sonnet")
+
+    assert len(stop_calls) >= 1, "old-model server must have been stopped"
+    assert len(spawned_cfgs) == 2, "a new server must have been created"
+    assert state.taos_opencode_session_id is None, (
+        "legacy session id must be cleared after model switch; got "
+        f"{state.taos_opencode_session_id!r}"
+    )
+    assert "gpt-4o" not in state.taos_opencode_servers
+    assert "gpt-4o" not in state.taos_opencode_sessions
+    assert "claude-sonnet" in state.taos_opencode_servers
+
+
+@pytest.mark.asyncio
+async def test_ensure_server_model_switch_preserves_home_directory(tmp_path, monkeypatch):
+    """Switching models stops the old server but must NOT delete the old
+    model's home directory. The per-model home IS the conversation store, so
+    deleting it on model switch discards history and re-pays the one-time SQLite
+    migration the 180s ensure_running deadline exists to absorb. Regression for
+    the stop-on-model-change path that previously ``shutil.rmtree``'d the
+    previous model's home."""
+    import tinyagentos.taos_agent_runtime as rt
+
+    spawned_cfgs: list = []
+
+    class _FakeServer:
+        def __init__(self, cfg):
+            spawned_cfgs.append(cfg)
+            self._cfg = cfg
+
+        async def ensure_running(self, **kwargs):
+            pass
+
+        async def stop(self):
+            pass
+
+        @property
+        def base_url(self):
+            return f"http://127.0.0.1:{self._cfg.port}"
+
+        def is_running(self):
+            return True
+
+    monkeypatch.setattr(rt, "OpenCodeServer", _FakeServer)
+
+    mock_proxy = MagicMock()
+    mock_proxy.is_running.return_value = True
+    mock_proxy.create_agent_key = AsyncMock(return_value="sk-key-1")
+
+    state = SimpleNamespace(
+        data_dir=tmp_path,
+        llm_proxy=mock_proxy,
+        taos_opencode_password=None,
+        taos_opencode_server=None,
+        taos_opencode_model=None,
+        taos_opencode_session_id=None,
+    )
+
+    # Start model A, then drop a marker file into its home directory.
+    await rt.ensure_taos_opencode_server(state, "gpt-4o")
+    home_a = Path(spawned_cfgs[0].home)
+    home_a.mkdir(parents=True, exist_ok=True)
+    marker = home_a / "conversation-history.sqlite"
+    marker.write_text("precious conversation history")
+
+    # Switch to model B (stops A), then switch back to A.
+    await rt.ensure_taos_opencode_server(state, "claude-sonnet")
+    await rt.ensure_taos_opencode_server(state, "gpt-4o")
+
+    assert marker.exists(), (
+        "model A's home directory was deleted on model switch; the per-model "
+        "home is the conversation store and must survive a stop-on-model-change"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -888,7 +1132,8 @@ async def test_status_scopes_subagent_fields(client, app):
     ok_id = await loop.spawn_subagent("index files", ok_worker)
     bad_id = await loop.spawn_subagent("doomed job", bad_worker)
     await loop.await_subagent(ok_id)
-    await loop.await_subagent(bad_id)
+    with pytest.raises(RuntimeError, match="server-side error detail"):
+        await loop.await_subagent(bad_id)
 
     resp = await client.get("/api/taos-agent/status")
     assert resp.status_code == 200

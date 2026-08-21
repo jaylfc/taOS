@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -171,6 +172,60 @@ class TestCheckReferencedPaths:
         readme.write_text(
             "Wildcard install scripts live under `scripts/install*`.\n"
             "Per-framework bridges: `tinyagentos/scripts/install_<framework>.sh`.\n"
+        )
+        failures = dg.check_referenced_paths(tmp_path, ["README.md"], {})
+        assert failures == []
+
+    def test_file_line_citation_is_ignored(self, tmp_path: Path):
+        """A file:line citation like `scripts/foo.sh:123` must not be treated as
+        a nonexistent path; the line-number suffix is stripped before the
+        existence check."""
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "foo.sh").write_text("#!/bin/sh\n")
+        readme = tmp_path / "README.md"
+        readme.write_text("See `scripts/foo.sh:123` for details.\n")
+        failures = dg.check_referenced_paths(tmp_path, ["README.md"], {})
+        assert failures == []
+
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            "See scripts/foo.sh:123. That is the place.",   # sentence-ending stop
+            "In scripts/foo.sh:123, the loop starts.",       # list/apposition comma
+            "grep hit at scripts/foo.sh:12:34 today",        # file:line:col
+            "the range (scripts/foo.sh:12-20) covers it",    # paren-closed range
+            "multi scripts/foo.sh:1,5-9 selection",          # comma range list
+        ],
+    )
+    def test_citation_shapes_with_punctuation_are_ignored(self, tmp_path: Path, prose):
+        """The four shapes that false-positived when the suffix strip ran
+        BEFORE the trailing-punct loop (lead block on #2307): the punct
+        defeats an end-anchored regex. Each proved red on the pre-reorder
+        commit."""
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "foo.sh").write_text("#!/bin/sh\n")
+        (tmp_path / "README.md").write_text(prose + "\n")
+        failures = dg.check_referenced_paths(tmp_path, ["README.md"], {})
+        assert failures == []
+
+    def test_colon_in_real_filename_is_preserved(self, tmp_path: Path):
+        """A path legitimately containing a colon is NOT truncated - only
+        numeric line-citation suffixes are stripped."""
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "weird:name.md").write_text("x\n")
+        (tmp_path / "README.md").write_text("See docs/weird:name.md here.\n")
+        failures = dg.check_referenced_paths(tmp_path, ["README.md"], {})
+        assert failures == []
+
+    def test_markdown_link_url_not_consumed_as_path(self, tmp_path: Path):
+        """A markdown link whose URL points to another repo must not have the
+        URL consumed as part of the path token."""
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "agent-manual.md").write_text("# Agent Manual\n")
+        readme = tmp_path / "README.md"
+        readme.write_text(
+            "See [docs/agent-manual.md]"
+            "(https://github.com/other/repo/blob/main/docs/agent-manual.md).\n"
         )
         failures = dg.check_referenced_paths(tmp_path, ["README.md"], {})
         assert failures == []
@@ -367,3 +422,379 @@ class TestConfigErrorExitCode:
         assert dg.EXIT_CONFIG_ERROR != 1
         assert dg.EXIT_CONFIG_ERROR != 2
 
+
+ROUTES_MODIFY_CONFIG = {
+    "gate": {"trailer": "Docs-Reviewed:"},
+    "rules": [
+        {
+            "name": "routes",
+            "on_modify": True,
+            "when_changed": ["tinyagentos/routes/*.py"],
+            "require_doc": ["docs/agent-coordination.md"],
+            "hint": "an API route module was added, removed, or modified",
+        },
+    ],
+}
+
+
+class TestModificationTriggersGate:
+    def test_modification_to_route_fails_without_doc(self):
+        """A plain modification to a route with no doc edit FAILS the gate."""
+        changed = [("M", "tinyagentos/routes/agents.py")]
+        failures = dg.evaluate_rules(changed, [], ROUTES_MODIFY_CONFIG)
+        assert len(failures) == 1
+        assert failures[0].startswith("routes -- ")
+
+    def test_modification_to_route_passes_with_doc_edit(self):
+        changed = [
+            ("M", "tinyagentos/routes/agents.py"),
+            ("M", "docs/agent-coordination.md"),
+        ]
+        assert dg.evaluate_rules(changed, [], ROUTES_MODIFY_CONFIG) == []
+
+    def test_modification_to_route_passes_with_trailer(self):
+        changed = [("M", "tinyagentos/routes/agents.py")]
+        messages = ["feat: modify agents route\n\nDocs-Reviewed: internal refactor\n"]
+        assert dg.evaluate_rules(changed, messages, ROUTES_MODIFY_CONFIG) == []
+
+    def test_modified_test_file_does_not_trigger(self):
+        """Modifying a test file is never structural, even with on_modify.
+
+        The path must MATCH the rule's glob, otherwise the test passes for the
+        wrong reason -- it would pass with the exemption deleted.
+        """
+        changed = [("M", "tinyagentos/routes/test_agents.py")]
+        assert dg.evaluate_rules(changed, [], ROUTES_MODIFY_CONFIG) == []
+
+
+BROAD_CHANGELOG_CONFIG = {
+    "gate": {"trailer": "Docs-Reviewed:"},
+    "rules": [
+        {
+            "name": "user-visible-changelog",
+            "on_modify": True,
+            "when_changed": ["tinyagentos/**", "desktop/src/**"],
+            "require_doc": ["CHANGELOG.md", "changelog.d/*.md"],
+            "hint": "user-visible behaviour changed",
+        },
+    ],
+}
+
+
+class TestBroadChangelogRequired:
+    def test_tinyagentos_modification_requires_changelog(self):
+        changed = [("M", "tinyagentos/app.py")]
+        failures = dg.evaluate_rules(changed, [], BROAD_CHANGELOG_CONFIG)
+        assert len(failures) == 1
+        assert failures[0].startswith("user-visible-changelog -- ")
+
+    def test_desktop_src_modification_requires_changelog(self):
+        changed = [("M", "desktop/src/components/Foo.tsx")]
+        failures = dg.evaluate_rules(changed, [], BROAD_CHANGELOG_CONFIG)
+        assert len(failures) == 1
+        assert failures[0].startswith("user-visible-changelog -- ")
+
+    def test_changelog_fragment_satisfies_broad_rule(self):
+        changed = [
+            ("M", "tinyagentos/app.py"),
+            ("A", "changelog.d/1234-fix.md"),
+        ]
+        assert dg.evaluate_rules(changed, [], BROAD_CHANGELOG_CONFIG) == []
+
+    def test_changelog_md_edit_satisfies_broad_rule(self):
+        changed = [
+            ("M", "tinyagentos/app.py"),
+            ("M", "CHANGELOG.md"),
+        ]
+        assert dg.evaluate_rules(changed, [], BROAD_CHANGELOG_CONFIG) == []
+
+    def test_trailer_satisfies_broad_rule(self):
+        changed = [("M", "tinyagentos/app.py")]
+        messages = ["feat: update app\n\nDocs-Reviewed: no user-facing change\n"]
+        assert dg.evaluate_rules(changed, messages, BROAD_CHANGELOG_CONFIG) == []
+
+    def test_test_file_under_tinyagentos_exempt(self):
+        """A test file under tinyagentos/ is not a structural change.
+
+        `tests/` is outside the rule's globs, so it cannot prove the exemption;
+        these paths are inside them.
+        """
+        for path in ("tinyagentos/test_helpers.py", "desktop/src/apps/Foo/Foo.test.tsx"):
+            changed = [("M", path)]
+            assert dg.evaluate_rules(changed, [], BROAD_CHANGELOG_CONFIG) == [], path
+
+    def test_doc_file_under_tinyagentos_still_triggers(self):
+        """A non-test doc file under tinyagentos/ should still require changelog."""
+        changed = [("M", "tinyagentos/README.md")]
+        failures = dg.evaluate_rules(changed, [], BROAD_CHANGELOG_CONFIG)
+        assert len(failures) == 1
+
+
+class TestRequiredSections:
+    """RED 1 and RED 2: content assertion for Layer A.
+
+    Before this check the gate was path-only: a doc emptied of its protected
+    sections satisfied every rule as long as the file was touched. These tests
+    pin the new content-aware behaviour.
+    """
+
+    def _cfg(self, headings):
+        return {
+            "invariants": {
+                "required_sections": [
+                    {
+                        "doc": "docs/agent-coordination.md",
+                        "headings": headings,
+                    }
+                ]
+            }
+        }
+
+    def test_all_required_sections_present_passes(self, tmp_path: Path):
+        """RED 2: with all required sections present, the gate is GREEN."""
+        doc = tmp_path / "docs" / "agent-coordination.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text(
+            "# Working the repo\n\n"
+            "## Agent API surface (scoped registry JWT)\n\n"
+            "## Device bearer self-service (second, narrower passthrough)\n\n"
+            "## OS change-event stream (`GET /api/os/events`, session-only)\n"
+        )
+        failures = dg.check_required_sections(
+            tmp_path,
+            self._cfg([
+                "Agent API surface (scoped registry JWT)",
+                "Device bearer self-service (second, narrower passthrough)",
+                "OS change-event stream (`GET /api/os/events`, session-only)",
+            ]),
+        )
+        assert failures == []
+
+    def test_missing_required_section_fails(self, tmp_path: Path):
+        """RED 1: deleting a required section while the file is present and
+        touched causes the gate to FAIL."""
+        doc = tmp_path / "docs" / "agent-coordination.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text(
+            "# Working the repo\n\n"
+            "## Device bearer self-service (second, narrower passthrough)\n\n"
+            "## OS change-event stream (`GET /api/os/events`, session-only)\n"
+        )
+        failures = dg.check_required_sections(
+            tmp_path,
+            self._cfg([
+                "Agent API surface (scoped registry JWT)",
+                "Device bearer self-service (second, narrower passthrough)",
+                "OS change-event stream (`GET /api/os/events`, session-only)",
+            ]),
+        )
+        assert len(failures) == 1
+        assert "Agent API surface (scoped registry JWT)" in failures[0]
+        assert "docs/agent-coordination.md" in failures[0]
+
+    def test_missing_scan_target_is_skipped(self, tmp_path: Path):
+        """A required doc that does not exist on disk is skipped, not failed."""
+        failures = dg.check_required_sections(
+            tmp_path,
+            self._cfg(["Agent API surface (scoped registry JWT)"]),
+        )
+        assert failures == []
+
+    def test_empty_required_sections_list_passes(self, tmp_path: Path):
+        """No required_sections configured -> clean."""
+        assert dg.check_required_sections(tmp_path, {"invariants": {}}) == []
+
+    def test_invariants_command_reports_required_section_failure(self, tmp_path):
+        """The invariants command function must report missing required sections."""
+        doc = tmp_path / "docs" / "agent-coordination.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text(
+            "# Working the repo\n\n"
+            "## Device bearer self-service (second, narrower passthrough)\n"
+        )
+        cfg = {
+            "gate": {"trailer": "Docs-Reviewed:"},
+            "invariants": {
+                "required_sections": [
+                    {
+                        "doc": "docs/agent-coordination.md",
+                        "headings": [
+                            "Agent API surface (scoped registry JWT)",
+                        ],
+                    }
+                ]
+            }
+        }
+        failures = dg.check_required_sections(tmp_path, cfg)
+        assert len(failures) == 1
+        assert "Agent API surface (scoped registry JWT)" in failures[0]
+
+
+class TestTrailerLogged:
+    def test_trailer_usage_is_logged(self, capsys):
+        commits = [
+            ("abc1234567890", "John Doe", "fix: something\n\nDocs-Reviewed: internal refactor\n"),
+        ]
+        dg._log_trailer_usage(commits, "Docs-Reviewed:")
+        captured = capsys.readouterr()
+        assert "trailer override" in captured.out
+        assert "John Doe" in captured.out
+        assert "abc12345" in captured.out
+
+    def test_no_trailer_no_log(self, capsys):
+        commits = [
+            ("abc1234567890", "John Doe", "fix: something\n"),
+        ]
+        dg._log_trailer_usage(commits, "Docs-Reviewed:")
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_empty_trailer_text_not_logged(self, capsys):
+        commits = [
+            ("abc1234567890", "John Doe", "fix: something\n\nDocs-Reviewed:\n"),
+        ]
+        dg._log_trailer_usage(commits, "Docs-Reviewed:")
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_multiple_trailer_commits_all_logged(self, capsys):
+        commits = [
+            ("aaa1111111111", "Alice", "feat: add feature\n\nDocs-Reviewed: new feature\n"),
+            ("bbb2222222222", "Bob", "fix: bug\n\nDocs-Reviewed: bug fix\n"),
+        ]
+        dg._log_trailer_usage(commits, "Docs-Reviewed:")
+        captured = capsys.readouterr()
+        assert "Alice" in captured.out
+        assert "Bob" in captured.out
+        assert "aaa11111" in captured.out
+        assert "bbb22222" in captured.out
+
+
+
+class TestCommitsWithMessagesParsing:
+    """The producer half of the trailer audit.
+
+    The tests above hand-build the tuples, so they pass whether or not
+    anything can actually produce them. These drive the parser with the exact
+    bytes `git log --format=%H%x1f%an%x1f%B%x1f` emits.
+    """
+
+    LOG_FORMAT_OUTPUT = (
+        "abc1234567890\x1fJohn Doe\x1ffix: something\n\nDocs-Reviewed: internal refactor\n\x1e"
+        "\ndef4567890123\x1fJane Roe\x1ffeat: another thing\n\x1e"
+    )
+
+    def _parse(self, monkeypatch, out):
+        # Accepts ref= because _run_git now takes it: callers pass the base ref
+        # so a git failure can name it. A double that does not accept the real
+        # signature fails with TypeError and says nothing about the parser.
+        monkeypatch.setattr(dg, "_run_git", lambda args, ref=None: out)
+        return dg._git_commits_with_messages("origin/dev")
+
+    def test_parses_one_record_per_commit(self, monkeypatch):
+        commits = self._parse(monkeypatch, self.LOG_FORMAT_OUTPUT)
+        assert len(commits) == 2
+        assert [c[0] for c in commits] == ["abc1234567890", "def4567890123"]
+        assert [c[1] for c in commits] == ["John Doe", "Jane Roe"]
+        assert "Docs-Reviewed: internal refactor" in commits[0][2]
+        assert "Docs-Reviewed" not in commits[1][2]
+
+    def test_parsed_commits_reach_the_log(self, monkeypatch, capsys):
+        """End to end over the seam: real log bytes must produce a log line."""
+        commits = self._parse(monkeypatch, self.LOG_FORMAT_OUTPUT)
+        dg._log_trailer_usage(commits, "Docs-Reviewed:")
+        captured = capsys.readouterr()
+        assert "trailer override" in captured.out
+        assert "John Doe" in captured.out
+        assert "Jane Roe" not in captured.out
+
+    def test_empty_range_is_empty(self, monkeypatch):
+        assert self._parse(monkeypatch, "") == []
+
+
+# A config mirroring the real interaction between the routes rule and the
+# user-visible-changelog rule: a route addition triggers BOTH rules, so the
+# changelog fragment satisfies the latter while only a doc edit can satisfy the
+# former. This is the shape that lets the deletion bypass hide -- the
+# user-visible-changelog rule is always satisfiable, so a deleted routes
+# require_doc only shows as a bug once every OTHER rule is also satisfied.
+ROUTES_AND_CHANGELOG_CONFIG = {
+    "gate": {"trailer": "Docs-Reviewed:"},
+    "rules": [
+        {
+            "name": "routes",
+            "on_modify": True,
+            "when_changed": ["tinyagentos/routes/*.py"],
+            "require_doc": ["docs/agent-coordination.md"],
+            "hint": "an API route module was added, removed, or modified",
+        },
+        {
+            "name": "user-visible-changelog",
+            "on_modify": True,
+            "when_changed": ["tinyagentos/**", "desktop/src/**"],
+            "require_doc": ["CHANGELOG.md", "changelog.d/*.md"],
+            "hint": "user-visible behaviour changed",
+        },
+    ],
+}
+
+
+def _failure_names(failures: list[str]) -> list[str]:
+    return [f.split(" -- ")[0] for f in failures]
+
+
+class TestDeletedRequireDocDoesNotSatisfy:
+    """A deleted require_doc must NOT satisfy a rule.
+
+    Bug: scripts/check_doc_gate.py line 247 ``all_paths`` discarded the git
+    status, so a ``git rm``'d require_doc was treated as having satisfied the
+    rule. These tests assert on the rule NAME in the failures list, not just
+    the exit code: with only the route add + doc deletion (no changelog
+    fragment) the routes failure is masked by a coinciding user-visible-changelog
+    failure, so an exit-code-only assertion stays green even while the bug is
+    live. Red-first: criterion 1 fails before the fix, passes after.
+    """
+
+    def test1_delete_require_doc_routes_still_fails(self):
+        """Criterion 1: add a when_changed path + delete the require_doc +
+        satisfy every other rule -- the routes rule MUST appear in failures."""
+        changed = [
+            ("A", "tinyagentos/routes/zzz_probe.py"),
+            ("D", "docs/agent-coordination.md"),
+            ("A", "changelog.d/9999-probe.md"),
+        ]
+        failures = dg.evaluate_rules(changed, [], ROUTES_AND_CHANGELOG_CONFIG)
+        names = _failure_names(failures)
+        assert "routes" in names
+        assert "user-visible-changelog" not in names
+
+    def test2_edit_require_doc_passes(self):
+        """Criterion 2: add a when_changed path + genuinely edit the require_doc
+        -> clean. Guards against fixing this by deadening satisfaction entirely."""
+        changed = [
+            ("A", "tinyagentos/routes/zzz_probe.py"),
+            ("M", "docs/agent-coordination.md"),
+            ("A", "changelog.d/9999-probe.md"),
+        ]
+        failures = dg.evaluate_rules(changed, [], ROUTES_AND_CHANGELOG_CONFIG)
+        assert failures == []
+
+    def test3_add_require_doc_as_new_file_passes(self):
+        """Criterion 3: add a when_changed path + ADD the require_doc as a new
+        file -> clean."""
+        changed = [
+            ("A", "tinyagentos/routes/zzz_probe.py"),
+            ("A", "docs/agent-coordination.md"),
+            ("A", "changelog.d/9999-probe.md"),
+        ]
+        failures = dg.evaluate_rules(changed, [], ROUTES_AND_CHANGELOG_CONFIG)
+        assert failures == []
+
+    def test4_delete_when_changed_path_still_triggers(self):
+        """Criterion 4: delete a when_changed path -- still triggers the rule,
+        unchanged from today. The triggering path must keep deletions; only
+        the satisfaction path must exclude them."""
+        changed = [("D", "tinyagentos/routes/zzz_probe.py")]
+        failures = dg.evaluate_rules(changed, [], ROUTES_AND_CHANGELOG_CONFIG)
+        names = _failure_names(failures)
+        assert "routes" in names

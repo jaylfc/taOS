@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderContent, dayLabel } from "../../MessagesApp";
 
@@ -92,6 +92,33 @@ describe("renderContent", () => {
     expect(line).not.toBeNull();
     expect(container.textContent).toContain("want more?");
     expect(container.textContent).toContain("reply below");
+  });
+
+  it("renders a decision block through DecisionBlock", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        id: "dec-1",
+        from_agent: "@agent",
+        question: "Which engine?",
+        type: "single_select",
+        options: [{ label: "React", value: "react" }],
+        context: null,
+        priority: "normal",
+        status: "pending",
+        answer: null,
+        created_at: 1700000000,
+      }),
+    }));
+    const { container } = render(
+      <div>{renderContent("", [{ kind: "decision", decision_id: "dec-1" }])}</div>,
+    );
+    await waitFor(() => {
+      expect(container.querySelector('[data-decision-block="true"]')).not.toBeNull();
+    });
+    expect(container.textContent).toContain("Which engine?");
+    expect(container.textContent).toContain("Pick one");
+    vi.restoreAllMocks();
   });
 
   it("renders unknown fallback for unrecognized block kinds", () => {

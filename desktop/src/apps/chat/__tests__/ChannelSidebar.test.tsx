@@ -80,9 +80,9 @@ function buildProps(overrides: Partial<ChannelSidebarProps> = {}): ChannelSideba
     bus: { channels: [], available: false, loaded: false },
     busSelected: null,
     onSelectBusChannel: vi.fn(),
-    formatRelativeTime: (ts) => String(ts),
-    thinkingChannelIds: [],
-    ...overrides,
+     formatRelativeTime: (ts) => String(ts),
+     agentPresence: {},
+     ...overrides,
   };
 }
 
@@ -572,6 +572,38 @@ describe("ChannelSidebar — projects", () => {
     expect(screen.getByText(/Projects/)).toBeInTheDocument();
   });
 
+  it("shows a working dot on a working bound project channel (desktop)", () => {
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          projectGroups: [projectGroup],
+          agentPresence: { "pc-1": "working" },
+        })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: "Channel proj-general" });
+    const dot = btn.querySelector(".taos-status-pulse");
+    expect(dot).toBeTruthy();
+    expect(dot).toHaveClass("bg-amber-400");
+  });
+
+  it("shows a working dot on a working bound project channel (mobile)", () => {
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          projectGroups: [projectGroup],
+          projectsExpanded: true,
+          agentPresence: { "pc-1": "working" },
+        })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: "Channel proj-general" });
+    const dot = btn.querySelector(".taos-status-pulse");
+    expect(dot).toBeTruthy();
+    expect(dot).toHaveClass("bg-amber-400");
+  });
+
   it("calls onToggleProjects on mobile Projects header click", () => {
     const onToggleProjects = vi.fn();
     render(
@@ -714,16 +746,16 @@ describe("ChannelSidebar — edge cases", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  Live thinking badge                                                 */
+/*  Agent presence dots                                                 */
 /* ------------------------------------------------------------------ */
 
-describe("ChannelSidebar — thinking badge", () => {
-  it("shows a pulsing amber dot on a thinking channel (desktop)", () => {
+describe("ChannelSidebar — presence dots", () => {
+  it("shows a pulsing amber 'working' dot on a working agent channel (desktop)", () => {
     const ch = makeChannel({ id: "ch-1", name: "session-alice" });
-    const sections = [makeSection("Live", [ch])];
+    const sections = [makeSection("Agents-DMs", [ch])];
     const { container } = render(
       <ChannelSidebar
-        {...buildProps({ sections, thinkingChannelIds: ["ch-1"] })}
+        {...buildProps({ sections, agentPresence: { "ch-1": "working" } })}
       />,
     );
     const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
@@ -732,24 +764,53 @@ describe("ChannelSidebar — thinking badge", () => {
     expect(dot).toHaveClass("bg-amber-400");
   });
 
-  it("does not show thinking dot on non-thinking channels (desktop)", () => {
-    const ch = makeChannel({ id: "ch-1", name: "general" });
-    const sections = [makeSection("Topics", [ch])];
+  it("shows a solid green 'live' dot on a live agent channel (desktop)", () => {
+    const ch = makeChannel({ id: "ch-1", name: "session-alice" });
+    const sections = [makeSection("Agents-DMs", [ch])];
     render(
       <ChannelSidebar
-        {...buildProps({ sections, thinkingChannelIds: [] })}
+        {...buildProps({ sections, agentPresence: { "ch-1": "live" } })}
       />,
     );
     const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
     expect(btn.querySelector(".taos-status-pulse")).toBeNull();
+    const dot = btn.querySelector('[aria-label="Agent is live"]');
+    expect(dot).toBeTruthy();
+    expect(dot).toHaveClass("bg-emerald-400");
   });
 
-  it("shows thinking dot on mobile when channel is thinking", () => {
-    const ch = makeChannel({ id: "ch-1", name: "session-bob" });
-    const sections = [makeSection("Live", [ch])];
-    const { container } = render(
+  it("shows a muted gray 'idle' dot on an idle agent channel (desktop)", () => {
+    const ch = makeChannel({ id: "ch-1", name: "session-alice" });
+    const sections = [makeSection("Agents-DMs", [ch])];
+    render(
       <ChannelSidebar
-        {...buildProps({ isMobile: true, sections, thinkingChannelIds: ["ch-1"] })}
+        {...buildProps({ sections, agentPresence: { "ch-1": "idle" } })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
+    expect(btn.querySelector(".taos-status-pulse")).toBeNull();
+    const dot = btn.querySelector('[aria-label="Agent is idle"]');
+    expect(dot).toBeTruthy();
+    expect(dot).toHaveClass("bg-shell-text-tertiary");
+  });
+
+  it("does not show a presence dot when channel has no presence entry", () => {
+    const ch = makeChannel({ id: "ch-1", name: "general" });
+    const sections = [makeSection("Topics", [ch])];
+    render(
+      <ChannelSidebar {...buildProps({ sections, agentPresence: {} })} />,
+    );
+    const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
+    expect(btn.querySelector(".taos-status-pulse")).toBeNull();
+    expect(btn.querySelector('[aria-label^="Agent is"]')).toBeNull();
+  });
+
+  it("shows working dot on mobile", () => {
+    const ch = makeChannel({ id: "ch-1", name: "session-bob" });
+    const sections = [makeSection("Agents-DMs", [ch])];
+    render(
+      <ChannelSidebar
+        {...buildProps({ isMobile: true, sections, agentPresence: { "ch-1": "working" } })}
       />,
     );
     const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
@@ -758,12 +819,12 @@ describe("ChannelSidebar — thinking badge", () => {
     expect(dot).toHaveClass("bg-amber-400");
   });
 
-  it("clears thinking dot when channel leaves thinkingChannelIds", () => {
+  it("clears presence dot when channel leaves the presence map", () => {
     const ch = makeChannel({ id: "ch-1", name: "session-carol" });
-    const sections = [makeSection("Live", [ch])];
+    const sections = [makeSection("Agents-DMs", [ch])];
     const { rerender } = render(
       <ChannelSidebar
-        {...buildProps({ sections, thinkingChannelIds: ["ch-1"] })}
+        {...buildProps({ sections, agentPresence: { "ch-1": "working" } })}
       />,
     );
     let btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
@@ -771,10 +832,151 @@ describe("ChannelSidebar — thinking badge", () => {
 
     rerender(
       <ChannelSidebar
-        {...buildProps({ sections, thinkingChannelIds: [] })}
+        {...buildProps({ sections, agentPresence: {} })}
       />,
     );
     btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
     expect(btn.querySelector(".taos-status-pulse")).toBeNull();
+  });
+
+  it("shows live dot on mobile when channel is live", () => {
+    const ch = makeChannel({ id: "ch-1", name: "session-dave" });
+    const sections = [makeSection("Agents-DMs", [ch])];
+    render(
+      <ChannelSidebar
+        {...buildProps({ isMobile: true, sections, agentPresence: { "ch-1": "live" } })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
+    const dot = btn.querySelector('[aria-label="Agent is live"]');
+    expect(dot).toBeTruthy();
+    expect(dot).toHaveClass("bg-emerald-400");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Active-channel accent rail                                          */
+/* ------------------------------------------------------------------ */
+
+describe("ChannelSidebar — accent rail", () => {
+  it("applies accent-left border to the selected channel (desktop)", () => {
+    const ch = makeChannel({ id: "ch-1", name: "general" });
+    const sections = [makeSection("Channels", [ch])];
+    render(
+      <ChannelSidebar
+        {...buildProps({ sections, selectedChannel: "ch-1" })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
+    expect(btn.className).toContain("border-l-2");
+    expect(btn.className).toContain("border-accent-line");
+  });
+
+  it("does not apply accent-left border to unselected channel (desktop)", () => {
+    const ch = makeChannel({ id: "ch-1", name: "general" });
+    const sections = [makeSection("Channels", [ch])];
+    render(
+      <ChannelSidebar
+        {...buildProps({ sections, selectedChannel: null })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
+    expect(btn.className).not.toContain("border-l-2");
+    expect(btn.className).not.toContain("border-accent-line");
+  });
+
+  it("applies accent-left border to the selected channel (mobile)", () => {
+    const ch = makeChannel({ id: "ch-1", name: "general" });
+    const sections = [makeSection("Channels", [ch])];
+    render(
+      <ChannelSidebar
+        {...buildProps({ isMobile: true, sections, selectedChannel: "ch-1" })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
+    expect(btn.style.borderLeft).toContain("var(--color-accent-line)");
+  });
+
+  it("does not apply accent-left border to unselected channel (mobile)", () => {
+    const ch = makeChannel({ id: "ch-1", name: "general" });
+    const sections = [makeSection("Channels", [ch])];
+    render(
+      <ChannelSidebar
+        {...buildProps({ isMobile: true, sections, selectedChannel: null })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
+    expect(btn.style.borderLeft).not.toContain("accent-line");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Selected-channel accent rail                                       */
+/* ------------------------------------------------------------------ */
+
+describe("ChannelSidebar — selected accent rail", () => {
+  const projectGroup = {
+    id: "proj-1",
+    name: "My Project",
+    channels: [makeChannel({ id: "pc-1", name: "proj-general" })],
+  };
+
+  it("shows the accent rail on the selected project channel (desktop)", () => {
+    render(
+      <ChannelSidebar
+        {...buildProps({ projectGroups: [projectGroup], selectedChannel: "pc-1" })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: "Channel proj-general" });
+    expect(btn).toHaveClass("border-l-2", "border-accent-line");
+  });
+
+  it("shows the accent rail on the selected project channel (mobile)", () => {
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          projectGroups: [projectGroup],
+          projectsExpanded: true,
+          projectChannelExpanded: { "proj-1": true },
+          selectedChannel: "pc-1",
+        })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: "Channel proj-general" });
+    expect(btn.getAttribute("style")).toContain(
+      "border-left: 3px solid var(--color-accent-line)",
+    );
+  });
+
+  it("shows the accent rail on the selected archived channel (desktop)", () => {
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          archivedChannels: [makeChannel({ id: "arc-1", name: "old-chan" })],
+          archivedExpanded: true,
+          selectedChannel: "arc-1",
+        })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: "Archived channel old-chan" });
+    expect(btn).toHaveClass("border-l-2", "border-accent-line");
+  });
+
+  it("shows the accent rail on the selected archived channel (mobile)", () => {
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          archivedChannels: [makeChannel({ id: "arc-1", name: "old-chan" })],
+          archivedExpanded: true,
+          selectedChannel: "arc-1",
+        })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: "Archived channel old-chan" });
+    expect(btn.getAttribute("style")).toContain(
+      "border-left: 3px solid var(--color-accent-line)",
+    );
   });
 });

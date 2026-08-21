@@ -31,11 +31,28 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 2048
+  sha256: 1adf0b11065d8ad2e8123ea110d1ec956dab4ab038eab665614adba04b6c3370
+- id: a8w4
+  name: A8W4 HEF (2.2GB, NPU)
+  format: hef
+  size_mb: 2250
+  min_ram_mb: 0
+  sha256: 5310176848638505fbc28add04ba60c97abe345cdb0ec7e3b8ffaa4b0a8c65dd
+  download_url: https://dev-public.hailo.ai/v5.1.1/blob/Qwen2.5-1.5B-Instruct.hef
+  context_window: 2048
+  requires:
+    backends:
+    - id: hailo-ollama
+      targets:
+      - hailo
+      min_ram_mb: 2048
 hardware_tiers:
   arm-cpu-8gb:
     recommended: q4_k_m
+  arm-npu-8gb:
+    recommended: a8w4
   arm-npu-16gb:
-    recommended: q4_k_m
+    recommended: a8w4
   x86-vulkan-4gb:
     recommended: q4_k_m
   cpu-only:

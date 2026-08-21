@@ -1,0 +1,60 @@
+name: Distrust Green Gate
+
+on:
+  pull_request:
+    # "edited" so the gate re-runs when the waiver trailer is added to the body
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+jobs:
+  check-all-skip:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run all-skip gate
+        id: all-skip
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          uv run .github/scripts/check_all_skip.py
+        continue-on-error: false
+
+      - name: Comment on PR if check fails
+        # gate on the all-skip step specifically — a checkout/setup failure
+        # must not post waiver instructions that do not apply
+        if: failure() && steps.all-skip.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const body = [
+              "**Distrust Green Gate**: this PR adds or modifies test file(s) where ALL",
+              "tests skip (e.g. `pytest.importorskip` on a module not yet available), so",
+              "CI reports GREEN while asserting nothing. See the check-all-skip job log",
+              "for the file and the guard that caused it.",
+              "",
+              "Either implement the guarded code, or waive deliberately with a",
+              "`Tests-Skipped-Intentionally: <file>, <why>` trailer in the PR body.",
+            ].join("\n");
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

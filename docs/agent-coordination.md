@@ -15,6 +15,11 @@ are a person or an agent.
   stale base is the most common cause of avoidable merge conflicts.
 - Small, low-risk fixes may go straight to `dev`. Anything larger, multi-commit,
   or worth review goes through a pull request so CI runs.
+- Automated card work uses `exec/<card-id>` for feature work and
+  `test/<card-id>` for test-only changes. Every open card lives on its own
+  branch cut from `origin/dev`.
+- Fetch `origin/dev` and rebase your branch on it before you open the PR, not
+  only when you cut it.
 
 ## One change per branch, one branch per PR
 
@@ -25,6 +30,8 @@ are a person or an agent.
   etc.) incidentally. If you notice unrelated dead code, mention it rather than
   deleting it in the same PR.
 - Every changed line should trace back to the change you set out to make.
+- If another open branch already touches a file, leave that file alone. Two
+  branches editing one file is the conflict you can still avoid.
 
 ## Isolate parallel work with worktrees
 
@@ -48,6 +55,18 @@ git worktree add ../taos-<task> -b feat/<task> origin/dev
 - One task maps to one branch maps to one PR. If a task grows, split it rather
   than letting the PR sprawl.
 
+
+## Never self-merge
+
+The CI gate merges. Open the PR, let the required checks run, and let the gate
+merge when they are green. A PR merged minutes after it opened has not been
+reviewed by anything, and an automated review warning on the PR body is a
+blocker rather than a note: resolve it before the merge, not after.
+
+## Block instead of guess
+
+If you cannot proceed, post `[BLOCKED] <card-id> <why>` on the coordination
+bus. Do not guess, and do not silently work around a blocker.
 
 ## Never kill a shared-path process by its path
 
@@ -78,6 +97,12 @@ Three traps in writing that check, all of which have bitten someone here:
 - So split on NUL and require an exact element (or an exact env assignment),
   then verify AFTER the signal that whatever you meant to keep alive still
   advances its own liveness file.
+- The check and the signal are two operations on a NUMBER, so they race: if the
+  process exits between them, Linux can recycle that pid and the `kill` lands on
+  something unrelated. Reading `/proc/$pid/environ` first narrows the window, it
+  does not close it, and neither does the post-signal liveness check. Where it
+  matters, signal through something that owns the process rather than through its
+  pid: `systemctl --user kill <unit>` for a unit-owned watcher.
 
 Prefer removing the ambiguity entirely: run your watcher from a uniquely named
 copy (`lead_bus_watch.sh`, `taosmd_bus_watch.sh`) so no one else's pattern can
@@ -214,8 +239,70 @@ POST <controller>/api/a2a/bus/send   (Authorization: Bearer <registry JWT, scope
 {"thread": "build", "body": "...", "reply_to": <id>?}
 ```
 
+## Reading the bus
+Read through the controller with your own registry token, not the raw bus port:
+`GET /api/a2a/bus/messages?channel=<name>` with `Authorization: Bearer <your JWT>`.
+
+- `channel=all` (or `*`) reads **every** thread. Use it unless you deliberately want one
+  channel. A named channel cannot show you a thread created after you started watching.
+- `since` is the cursor and takes a message **ts** (a float), not an id. Passing an id
+  reads as a 1970 timestamp and quietly returns everything, every poll.
+- Any other query param is a `400`. An unrecognised cursor param is never silently
+  ignored, because an ignored cursor is indistinguishable from one that works.
+- An empty result for a **named** channel carries `channel_known`. If it is `false`, the
+  channel name is wrong; a quiet channel and a typo are otherwise identical.
+
+If the bus is silent, check `channel_known` and your cursor before concluding nobody is
+talking. A read that returns `200` with nothing is the failure mode that looks like peace.
+
+## Bus restarts during a controller update
+
+`POST /api/settings/update` on a host that also runs taOSmd locally (config
+keys `taosmd_dir` + `taosmd_restart_cmd` set, `memory_url` local) brings
+taOSmd to latest in the same action: ff-only pull of the checkout, then a
+service restart, then verification against the **running** server's `/health`
+(Content-Type must be `application/json` and the core capability identifiers
+must appear in the body -- a `text/html` 200 is the SPA catch-all answering and
+fails the update loudly). Two consequences for agents:
+
+- A `SYSTEM: taOSmd updating…` message is posted to the `build` thread
+  **before** the bus restarts. If your SSE stream drops right after that
+  message, it is the update, not an outage -- reconnect and carry on.
+- If the hooks are not configured (or `memory_url` is remote) the update
+  response reports `taosmd: {"skipped": <why>}`; the skip is visible in the
+  response, never silent. On those installs taOSmd is updated on its own host.
+
 An admin session may also call it and set an explicit `from`. On a bus failure
 the proxy returns 502 (the read proxies degrade to an empty 200 instead).
+
+## The OS-native agent's identity
+Every install mints an identity for the built-in taOS agent at first boot. No admin step, no prompt: if the install has an owner, the agent has an identity.
+
+Before this, the native agent authenticated as the **owner** -- the caller's browser session, or `data/.auth_local_token`, which is admin-equivalent. Its actions were therefore indistinguishable from the human's in every audit trail, it could not appear on the A2A bus as itself, and nothing it did could be revoked without revoking the human.
+
+| | |
+|---|---|
+| canonical_id | `taos-agent-<install8>-<date>-<time>` |
+| handle | `@taOS-agent-<install8>` |
+| owner | the install's primary user (`user_id`) |
+| scopes | `a2a_send`, `a2a_receive` |
+| token | `<data_dir>/.taos_agent_token`, mode 0600 |
+
+Minted by `ensure_native_agent_identity()` in `tinyagentos/native_agent_identity.py`, from two idempotent call sites: `/auth/setup` (fresh install) and lifespan startup (an install that upgraded into this code). Neither is fatal on failure -- an install without the identity is degraded, not broken.
+
+**Anchored to `<data_dir>/.install_id`**, the same id the version ping uses. `install_id()` in `auto_update.py` is public for that reason: two readers of one id, never two ids that can drift apart.
+
+**The handle carries the install discriminator, and must.** The registry holds a unique index on `(handle) WHERE status = 'active'`, so a bare `@taOS-agent` makes the second insert impossible the moment two installs' identities share one registry -- which is exactly what the account/cluster model is for.
+
+**Registry rows carry `install_id`** (migration v6). Blank means **unknown**, not "this install": rows minted before installs were tracked have none, and `list_for_install()` refuses a blank id rather than scooping them all up. That query is what a per-machine revocation would be built on.
+
+**Scopes are deliberately minimal.** Bus participation only. Anything further goes through the normal user-mediated scope-request flow; a first-boot mint that silently granted file or task access would be a privilege grant nobody approved.
+
+**Three boundaries worth knowing before you build on this:**
+
+- The token does **not** authenticate desktop control. `/api/desktop/*` resolves the acting user from a session, and the middleware sets `user_id = None` for registry JWTs, so a registry token arrives there as nobody. Desktop control still uses the session or the host local token.
+- **The revocation feed covers agent identities only, and that is a decision rather than a gap.** `GET /api/agents/registry/revoked` reads `agent_registry` and returns `{canonical_id, revoked_at}` per entry. Human credential withdrawal is handled through the session/auth layer, so humans will never appear here. Decided 2026-08-13, after a downstream spec was written assuming the opposite. If you are building something that needs to learn a *human's* credential was withdrawn, this feed is the wrong source and the requirement should be raised rather than implemented against it -- `tests/test_agent_registry.py::test_revoked_feed_shape` fails if the feed is widened, deliberately.
+- **Nothing in the chat runtime reads the token yet.** The identity is minted; wiring it into what the agent sends is a separate change. It is deliberately absent from the agent manual until then -- the manual is injected into the agent's prompt and sits at its size ceiling, so it should not describe a capability the agent does not yet have.
 
 ## Agent API surface (scoped registry JWT)
 
@@ -226,7 +313,7 @@ allow, nothing else: the middleware allowlist is a closed set, no skeleton key.
 A SEPARATE credential class exists for the Agent-as-a-Model surface:
 `GET /v1/models` and `POST /v1/chat/completions` are reachable without a
 session using a CONSENT KEY (`Authorization: Bearer sk-taosagent-...`, minted
-by an owner via `/api/agent-model-keys`), which the route itself validates —
+by an owner via `/api/agent-model-keys`), which the route itself validates --
 no key, no resolution, OpenAI-shaped 401 otherwise. Only those two exact
 method+path pairs pass the middleware; any other `/v1` path stays
 session-gated. `POST /v1/chat/completions` returns 501 for a valid key until
@@ -276,14 +363,26 @@ The registry-JWT surface, by scope:
   and the trash restore/purge/empty routes. NOTE: the files routes key on the
   project SLUG in the path, not the id.
 - **decisions_write**: `POST /api/decisions` (raise a human-in-the-loop
-  decision). Listing/answering decisions stays session-only.
-- **observatory_control**: read/write the Observatory fleet dials
-  (`/api/observatory/pause|throttle|approval-mode|fleet`). Writes require a
-  global (null-project) grant; reads admit any active grant. Admin session and
-  local token are always allowed.
-- **a2a_send / a2a_receive**: the authenticated bus proxy above
-  (`/api/a2a/bus/send|messages|channels|stream`), which forces `from` to the
-  agent's own handle.
+  decision), `POST /api/decisions/{id}/answer/agent` (mirror an answer),
+  `GET /api/decisions/{id}/agent` (read its own), `GET /api/decisions/agent`
+  (list its own). The GENERAL routes stay session-only -- `GET /api/decisions`,
+  `GET /api/decisions/{id}`, `GET /api/decisions/{id}/history` and
+  `POST /api/decisions/{id}/answer`. The agent set is a separate, narrower
+  allowlist distinguished by the `/agent` suffix
+  (`_is_agent_decisions_path` in `tinyagentos/auth_middleware.py`).
+- **observatory_control**: the Observatory fleet dials.
+  `GET|POST /api/observatory/pause`, `GET|POST /api/observatory/throttle`,
+  `GET|POST /api/observatory/approval-mode`, and `GET /api/observatory/fleet`
+  (read-only, there is no POST). Writes require a global (null-project) grant;
+  reads admit any active grant. Admin session and local token are always
+  allowed.
+- **a2a_receive**: the bus READ routes only -- `GET /api/a2a/bus/channels`,
+  `GET /api/a2a/bus/messages`, `GET /api/a2a/bus/stream`.
+  **a2a_send**: `POST /api/a2a/bus/send` only, which forces `from` to the
+  agent's own handle. These are two separate allowlists in
+  `tinyagentos/auth_middleware.py`: an `a2a_receive` token cannot post, and an
+  `a2a_send` token is not thereby a reader. Do not describe them as one scope
+  covering four routes.
 
 Access is per-project: a token is authorized for a project only when the agent
 holds an active grant + membership there; a request for a project it has no
@@ -416,9 +515,24 @@ lifecycle routes (approve/reject/suspend/reactivate) still 403 non-admins
 before any lookup, which discloses nothing.
 
 Requested scopes are validated against the same closed `VALID_SCOPES` vocabulary
-as the consent flow. `project_tasks` and the canvas scopes still require an
-explicit `project_id`; `decisions_read` / `decisions_write` (and the other global
-scopes) may be granted globally (`project_id=None`) or per-project. Creation
+as the consent flow. The project-bound scopes -- `project_tasks`,
+`project_tasks_create`, `project_tasks_update`, `project_lists`, `project_notes`,
+the canvas scopes (`canvas_read`, `canvas_write`) and the files scopes
+(`files_read`, `files_write`) -- all require an explicit, operator-validated
+`project_id` on approval (see `_PROJECT_SCOPES` in
+`tinyagentos/routes/agent_auth_requests.py`). Omitting the project picker for
+one of these scopes is rejected with 400; the only way to mint a project-bound
+grant unbound (`project_id=None`) is the explicit `defer_binding` opt-in, and
+such a grant is inert until bound: `check_agent_scope_for_project` only
+authorizes a grant whose `project_id` equals the requested project, and the
+project-bound routes take their `project_id` from the URL, so an unbound grant
+matches nothing and authorizes nothing until assign-agent later binds it.
+`project_notes` joined this set in the beta.47 promote (#2320): it was
+previously grantable without a `project_id`, which minted an inert note grant
+the operator believed was usable; it now follows the same rule as
+`project_tasks`. `decisions_read` /
+`decisions_write` (and the other global scopes) may be granted globally
+(`project_id=None`) or per-project. Creation
 surfaces a bell notification (`source: agent_scope_requests`) to the owner/admin,
 retired when the request is decided.
 
@@ -430,18 +544,18 @@ external-agent consent pattern (`agent_auth_requests.py`): on share-create, a
 notification and a Decision record (type `approve_deny`) are raised to the
 target user so the desktop consent actions can approve or deny:
 
-- `POST /api/shares {resource_type, resource_id, to_username, permission}` —
+- `POST /api/shares {resource_type, resource_id, to_username, permission}` --
   share a resource with another user by username. Resolves the target via
   AuthManager; self-share is rejected (400). Duplicate shares (same owner,
   resource, target, permission) are idempotent.
-- `GET /api/shares?direction=out|in` — list shares. `out` (default) returns
+- `GET /api/shares?direction=out|in` -- list shares. `out` (default) returns
   shares the user owns; `in` returns shares where the user is the target.
-- `POST /api/shares/{id}/accept` — accept a pending share (target user only).
+- `POST /api/shares/{id}/accept` -- accept a pending share (target user only).
   Once accepted, the module-level helper `user_can_access()` returns True for
   that resource.
-- `POST /api/shares/{id}/deny` — deny a pending share (target user only).
+- `POST /api/shares/{id}/deny` -- deny a pending share (target user only).
   The share row is preserved with `status=denied` for audit.
-- `DELETE /api/shares/{id}` — revoke a share. Owner or admin only
+- `DELETE /api/shares/{id}` -- revoke a share. Owner or admin only
   (requires `require_owner_or_admin` against the share's `owner_user_id`).
 
 ## Project invite redeem route (link + PIN)
@@ -501,7 +615,282 @@ each other's work.
 Route module `tinyagentos/routes/device_pair_requests.py`:
 
 - `POST /api/devices/pair-requests` creates a pairing request for a device.
+  Returns `409 Conflict` when no instance admin exists (the request can never be
+  approved). The pending cap is enforced atomically so concurrent requests cannot
+  exceed it.
 - `GET /api/devices/pair-requests/{pair_request_id}` returns its status.
 
 Approval or denial of a pair request is surfaced to the user through the Decisions app;
 agents must not grant pairing directly.
+
+## OS change-event stream (`GET /api/os/events`, session-only)
+
+Route module `tinyagentos/routes/os_events.py`. A Server-Sent Events stream of
+typed OS-level change events, behind the session cookie: the path is NOT in
+`EXEMPT_PATHS`, so `AuthMiddleware` 401s an unauthenticated request before the
+handler runs, and no registry scope reaches it -- a scoped agent token cannot
+subscribe. `503` while `app.state.event_bus` is still starting.
+
+- `?kinds=a,b,c` -- comma-separated allowlist of event kinds. Omitted, empty, or
+  naming no kind at all (`?kinds=`, `?kinds=%20`, `?kinds=,`) means every kind:
+  the allowlist is derived first and an empty one means "no filter", because a
+  truthy-but-blank parameter otherwise built a set that matched nothing and the
+  stream delivered silence. Filtering happens as events enter the per-connection
+  buffer, not as they leave it, so an unrequested kind can never occupy a slot
+  and evict something the subscriber did ask for.
+- Frame shape is `data: {"kind": ..., "id": ..., "ts": ...}` and nothing else.
+  **The payload never crosses the wire** -- `id` is the event's trace id, so a
+  subscriber learns that something changed and must refetch to learn what.
+- A comment frame `:keepalive` is sent every 10 s so proxies do not close an
+  idle stream.
+- Frames deliberately carry **no SSE `id:` line**. An `id:` is what makes a
+  browser send `Last-Event-ID` on reconnect, and this endpoint ignores that
+  header: resume is best-effort through the EventBus replay buffer (the last
+  32 events per channel, delivered on subscribe).
+- At most 256 events are buffered per connection. Past that the OLDEST
+  buffered event is dropped and the client is sent
+  `{"kind": "events.lagged", "dropped": N}` -- its cue to refetch rather than
+  assume it saw everything. This is a CONTROL frame, not a change
+  notification: its `id` is null, and the hook delivers it even when the
+  caller asked for a narrow `kinds` list (a subscriber to one kind still needs
+  to learn it may have missed some of that kind) and never dedupes it, since a
+  null id would make every lag frame after the first look already-seen. The relay never blocks, because a blocked relay
+  would stall delivery for the rest of the connection while the bus kept
+  filling queues nobody drains.
+
+Both the subscriptions and the relay tasks are created INSIDE the response
+generator, not in the handler body. An async generator closed without ever
+being iterated never runs its body, so a `finally` there can only undo setup
+that also happened there; setting up in the handler leaked a subscription per
+client that disconnected before the stream started.
+
+The desktop side is `desktop/src/hooks/use-os-events.ts`:
+`useOsEvents(kinds, onEvent)` holds one connection, returns `connected` /
+`stale`, dedupes by event id, reconnects with exponential backoff, and reopens
+the stream when `kinds` changes (the URL is fixed for the life of a
+connection, so a widened list needs a new one).
+
+## LoRA Studio routes (session-only, no agent scope)
+
+Route module `tinyagentos/routes/lora_studio.py`. These are OWNER routes: they
+sit behind the session cookie plus the CSRF double-submit on writes, and no
+registry scope reaches them. A scoped agent token cannot call them at all, the
+same posture as `/api/memory`.
+
+- `POST /api/loras/ingest` -- form field `url`, a `civitai.com` / `civitai.red`
+  model page. Answers `202` with the pending row and runs the download in a
+  background task; `400` for any other host or an unparseable URL.
+- `GET /api/loras` -- `{"loras": [...], "count": n}`, newest first. Optional
+  `?status=pending|downloading|ready|failed`.
+- `GET /api/loras/{id}` -- one row, `404` if unknown.
+- `GET /api/loras/{id}/preview/{n}` -- serves stored preview image `n`; paths
+  are re-checked against the archive root before the file is served.
+- `DELETE /api/loras/{id}` -- removes the row, the safetensors file, and the
+  LoRA directory. Refuses with `400` if a stored path resolves outside the
+  archive root rather than deleting it.
+- `POST /api/loras/{id}/retry` -- re-runs a `failed` ingest. The `failed →
+  pending` transition is a single atomic UPDATE, so concurrent retries get one
+  `202` and one `409`, never two download jobs in one directory.
+
+Files land under `models_root()/loras/<slug>/`; `GET /api/models` excludes that
+subtree, so adapters never appear as loadable models.
+
+Ingest is direct-connection by default, which is all a host outside a blocked
+region needs. Civitai answers HTTP 451 to some regions; the config key
+`lora_ingest_proxy_url` (empty by default) is passed to this fetcher only, with
+`trust_env=False` so an ambient `HTTPS_PROXY` cannot redirect it. When the
+direct request is refused that way and no proxy is set, the ingest fails
+loudly, records the actionable error on the row, and leaves no file on disk --
+it never stores an error page as a `.safetensors`.
+
+A Civitai URL added to the Library takes the same path: `detect_kind` tags it
+`url:civitai` and `CivitaiProcessor` runs the identical ingest job, linking the
+resulting `lora_id` back onto the library item.
+
+## What `GET /api/decisions/agent` returns (grant scoping)
+
+Route module `tinyagentos/routes/decisions.py`, scope `decisions_write`. Lists
+the decisions THIS agent raised; the store layer enforces the `from_agent`
+binding, so there is no cross-agent leakage regardless of grants.
+
+Which of its own decisions come back depends on the shape of the grant:
+
+| grant | returns |
+|---|---|
+| global (null-project) | **null-project decisions ONLY** |
+| exactly one project | that project's decisions, filtered in the store query |
+| two or more projects | fetched by agent, then filtered in Python |
+
+**A global grant does NOT mean "see everything".** It means null-project
+decisions, matching the rule `_resolve_decision_actor` already applies when the
+agent POSTS a decision: an agent with a global grant raises null-project
+decisions, so that is what it reads back. Anything relying on a global grant
+returning every project's decisions is relying on the older, wider behaviour.
+
+**The `limit` interacts with scoping and only two of the three paths are safe.**
+The global and single-project paths push the project filter into the store query,
+so the 500 limit applies AFTER scoping (issue #2194). The **two-or-more-project
+path still fetches up to 500 rows for the agent and filters afterwards in
+Python**, so an agent holding grants on several projects and carrying more than
+500 decisions in total can still lose allowed-project rows to the limit. Same
+shape as the original bug, narrower blast radius.
+
+## Config save and restore (`/api/config`, session-only)
+
+Route module `tinyagentos/routes/settings.py`. Owner routes behind the session
+cookie plus the CSRF double-submit on writes; no registry scope reaches them.
+
+- `GET /api/config` -- `{"yaml": "<serialised AppConfig>"}`.
+- `PUT /api/config` -- body `{"yaml": "..."}`, optional `?validate_only=true` to
+  check without saving. Answers `400` with `details` when validation fails.
+- `POST /api/restore` -- multipart `file`, restores a backup tarball into the
+  data dir. **The path is `/api/restore`, NOT `/api/settings/restore`**, even
+  though the handler sits in `routes/settings.py` beside the `/api/settings/*`
+  routes.
+
+**Both write paths REBUILD `AppConfig` field by field**, and a field missing
+from either rebuild is silently dropped on the next save, wiping whatever the
+user had set. This has now happened twice: `archive`, `archived_agents` and
+`github_app_id` (#2375) and `lora_ingest_proxy_url` (#2374). Adding a field to
+`AppConfig` means adding it at BOTH sites in this module.
+`test_save_config_preserves_all_to_dict_keys` compares the whole `to_dict()`
+key set against what survives a round trip and fails if one is forgotten.
+Never fix such a leak by removing the field from `to_dict()`: `save_config()`
+serialises from there, so that makes the setting unpersistable.
+## Agent memory mode (deploy + `PATCH /api/agents/{slug}/memory`, session-only)
+
+Route module `tinyagentos/routes/agents.py`. Owner routes behind the session
+cookie; no registry scope reaches them.
+
+Every agent carries a `memory_mode` alongside its `memory_plugin`, deciding which
+memory systems the framework runtime is told to use:
+
+| value | meaning |
+|---|---|
+| `both` | framework-native memory AND taOSmd (the default) |
+| `framework` | the framework's own memory only |
+| `taosmd` | taOSmd only |
+
+- **`framework` is ADVISORY today, not enforced.** The mode tells the agent
+  runtime what to use; it does **not** yet stop the controller from involving
+  taOSmd. A `framework`-mode deploy still registers the agent with taOSmd
+  (`routes/agents.py`) and still splices taOSmd rules into `AGENTS.md`
+  (`deployer.py`, gated on the agent FRAMEWORK, not on this field). So a taOSmd
+  outage can still block a `framework` deploy, and the agent still receives
+  taOSmd rules. **Do not choose `framework` expecting isolation from taOSmd.**
+  Tracked as `tsk-6tfpun`; this note comes out when the mode is enforced.
+- `POST /api/agents/deploy` takes `memory_mode` on the body, defaulting to
+  `both`. It is persisted on the agent record and **injected into the agent's
+  environment as `TAOS_MEMORY_MODE`** at deploy time, so the runtime honours it
+  without a second push. **Deploy validates the pair before any side effect:**
+  an unknown `memory_mode` or `memory_plugin` answers `400` naming the valid
+  set, and so does a contradictory pair such as
+  `{"memory_plugin": "none", "memory_mode": "taosmd"}`, which asks for taOSmd-only
+  memory with the taOSmd plugin switched off. No agent is created on rejection.
+- `PATCH /api/agents/{slug}/memory` takes `{memory_plugin, memory_mode?}`.
+  `memory_plugin` must be one of `taosmd` or `none`; `memory_mode` must be one of
+  `both`, `framework` or `taosmd`. Either invalid value answers `400` naming the
+  valid set; an unknown slug answers `404`. **Deploy and PATCH share one
+  validator**, so a body rejected on one route is rejected on the other.
+- **`memory_mode` is OPTIONAL on the PATCH and omitting it leaves the stored
+  value alone.** Only `memory_plugin` is required, so a caller that wants to
+  change the plugin without disturbing the mode simply leaves it out.
+- Agents deployed before this field existed are backfilled to `both` by
+  `config.py` when the config loads, so an older agent record without the key
+  reads as the default rather than as empty.
+## Cluster node revoke, block and unblock (admin-only)
+
+Route module `tinyagentos/routes/cluster.py`. **Admin session only**
+(`_require_admin`); no registry scope reaches these, so an agent token cannot
+revoke a node. These are the node analogue of the device bearer revoke/block
+routes documented above.
+
+- `POST /api/cluster/workers/{name}/revoke` -- kills the node's HMAC signing key,
+  so subsequent register and heartbeat requests are rejected. The node **may
+  re-pair** through the normal announce/confirm/claim flow to obtain a fresh key.
+  Answers `{"revoked": true, "changed": <bool>}`.
+- `POST /api/cluster/workers/{name}/block` -- revokes the key AND refuses
+  re-pairing until an admin unblocks. **The distinction from revoke is the gate
+  it acts at**: a blocked node is turned away at the PAIRING gate, not merely at
+  the auth gate, so it cannot come back on its own.
+- `POST /api/cluster/workers/{name}/unblock` -- clears the blocked flag only.
+  **The old signing key stays dead**, so the node still has to re-pair for a
+  fresh one. Unblock is permission to return, not restoration of access.
+
+Behaviour common to all three:
+
+- `404` when the node is absent from the PAIRING store, meaning it was never
+  paired. A node that is in the worker registry but has never paired answers
+  `404` here.
+- `503` when the pairing store is unavailable, kept distinct from `404` so a
+  missing subsystem is never reported as a missing node.
+- revoke and block mark the in-memory worker **offline immediately** so the
+  scheduler stops routing tasks to it, rather than waiting out the heartbeat
+  timeout. The worker stays REGISTERED and therefore still visible in
+  `GET /api/cluster/workers`, which is what makes it unblockable from the UI.
+
+**Blocked devices keep consuming a per-user slot.** `list_for_user` returns rows
+where `revoked=0 OR blocked=1`, so a blocked device counts against
+`_MAX_DEVICES_PER_USER` until it is unblocked, at which point the row falls out
+and the slot frees. Deliberate: a blocked device is a retained safety valve the
+owner can still see and act on.
+## Answering a select decision with free text (`other_value`)
+
+Route module `tinyagentos/routes/decisions.py`. Applies to BOTH answer paths:
+the human `POST /api/decisions/{id}/answer` and the agent mirror
+`POST /api/decisions/{id}/answer/agent` (scope `decisions_write`).
+
+A `single_select` or `multi_select` decision can be answered off-menu by sending
+`other_value` instead of, or alongside, `value`:
+
+- `single_select`: send `other_value` and leave `value` empty. Sending both is a
+  `400` ("cannot combine value with other_value"). The stored answer is the
+  stripped `other_value`.
+- `multi_select`: `value` must still be a list and **every element is still
+  validated against the declared options**; the free-text entry is appended, so
+  the stored answer is `[*declared_values, other_value.strip()]`. A non-list
+  `value` is a `400`.
+- `note` is a separate optional field. When present it is appended to the text
+  routed to the agent as `<answer> (note: <note>)`.
+- With no `other_value`, the original strict validation is unchanged: the answer
+  must be one of, or a subset of, the declared options, and a non-hashable or
+  non-iterable value fails closed as `400` rather than `500`.
+
+**Two consequences worth knowing before you build on this.**
+
+- **There is no per-decision opt-out.** No `allow_other` flag exists, so the
+  free-text path is available on EVERY select decision. A decision author cannot
+  declare a closed option set and have it enforced. Before this, the route
+  comment asserted that "the answer must reference the declared options so a
+  stale or malformed client cannot record an arbitrary value"; that invariant now
+  holds only for callers who do not send `other_value`.
+- **The agent path gained it too.** An agent holding `decisions_write` can record
+  arbitrary free text where it was previously constrained to the declared
+  options. `source` is still derived server-side and cannot be spoofed, so the
+  audit trail still distinguishes `in_app` from `mirrored_from_chat`, but the
+  VALUE is no longer bounded by the option list.
+
+## Identity rules
+
+Work as jaylfc on all git and GitHub activity. Do not add AI attribution to
+commits, PRs, or issues. Do not use em dashes in any output: use commas, colons,
+or "--".
+
+## Agent-token API surface (Bearer allowlist)
+
+The auth middleware keeps an explicit allowlist of routes a registry JWT
+(agent Bearer token) may reach; everything else on `/api` requires a user
+session. When you change the allowlist in `tinyagentos/auth_middleware.py`,
+record the change here so the agent-facing surface stays reviewable in one
+place.
+
+Task checklist items (added with the OS-owned objective checklist, #2415):
+
+- `GET /api/projects/{project_id}/tasks/{task_id}/checklist-items` -- list;
+  Bearer-reachable so the handler's `project_tasks_create` scope check runs
+  instead of the middleware refusing 401 at the gate.
+- `POST /api/projects/{project_id}/tasks/{task_id}/checklist-items` -- create;
+  same scope check.
+- `DELETE` and per-item subpaths (`.../checklist-items/{item_id}`) stay
+  session-only: no agent-reachable handler exists, and the allowlist must not
+  widen past list + create.

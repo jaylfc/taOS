@@ -41,12 +41,9 @@ async def register_device(
 ):
     store = request.app.state.device_store
     # A blocked device (revoked + blocked) may not re-pair under a fresh token.
-    # The APNs push token is the stable per-(device, app) identity, so a phone
-    # that is blocked cannot silently register a new scoped token while in the
-    # hands of an attacker. An empty push token is treated as unidentifiable:
-    # real paired devices always carry a push token, so this check only engages
-    # when one is present. A caller sending a DIFFERENT push token also slips
-    # past it -- acceptable because register already requires the owner's own
+    # push_token is client-supplied, so a well-behaved client that re-sends the
+    # same APNs token is caught; a caller sending a DIFFERENT push token slips
+    # past this -- acceptable because register already requires the owner's own
     # auth, and that caller could simply unblock instead; this is
     # defense-in-depth against silent re-pair, not a hard boundary.
     if body.push_token and await store.find_blocked_by_push_token(user.user_id, body.push_token) is not None:
@@ -54,6 +51,12 @@ async def register_device(
             {"error": "device is blocked; unblock it before re-pairing"},
             status_code=403,
         )
+    # _MAX_DEVICES_PER_USER slot accounting: list_for_user returns rows where
+    # revoked=0 OR blocked=1, so a blocked device continues to consume a slot
+    # against the per-user cap until it is unblocked (at which point the
+    # blocked flag clears, the row falls out of list_for_user, and the slot
+    # frees). This is deliberate: a blocked device is a retained safety valve
+    # that the owner can still see and unblock, so it counts against the cap.
     if len(await store.list_for_user(user.user_id)) >= _MAX_DEVICES_PER_USER:
         return JSONResponse(
             {"error": f"device limit reached ({_MAX_DEVICES_PER_USER})"},

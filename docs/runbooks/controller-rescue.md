@@ -104,6 +104,76 @@ df -h /opt /var
 | `status=217/USER` | the `taos` system user does not exist (installer ran without privileges) | re-run the installer with sudo (#753) |
 | Port already in use on 6969/6970 | a previous half-dead process still holds the port | `sudo systemctl stop tinyagentos`, confirm with `ss -tlnp`, `kill` any leftover, start again |
 | UI loads but models error | LiteLLM child or postgres down | triage `ss \| grep 7834` (or 4000 on legacy installs), `systemctl status postgresql`, restart the controller |
+| taOS asks you to **create an account** on a machine that already had one | the account store `data/.auth_user.json` is unreadable — typically NUL-filled by an unclean power-off | **do not fill the form in.** See [Corrupt account store](#corrupt-account-store-create-an-account-on-a-configured-install) below |
+
+---
+
+## Corrupt account store ("create an account" on a configured install)
+
+A controller that has users but comes back showing the first-run onboarding
+screen has an unreadable `data/.auth_user.json`. The usual cause is an unclean
+power-off: ext4 can restore the file's size and mtime while its contents never
+reached the disk, leaving it the right length and full of NUL bytes.
+
+**Do not complete the onboarding form.** On releases before the fix, submitting
+it overwrote the damaged store and destroyed the real accounts permanently.
+Current releases fail closed — `is_configured()` reports `true` for a store it
+cannot parse, onboarding is refused, and `GET /auth/status` returns
+`"store_error": "unreadable"` — so the screen you see is a genuine fresh
+install, not this failure. Every other request answers **503
+`account_store_unreadable`** rather than a plausible empty result: "no such
+user" and "cannot read the users" are different facts, and a route that
+guesses between them is how the accounts got overwritten in the first place.
+
+Confirm which one you have:
+
+```bash
+curl -s http://localhost:6969/auth/status     # store_error: "unreadable" => corrupt
+sudo -u taos python3 -c "d=open('/opt/taos/data/.auth_user.json','rb').read(); \
+  print(len(d), 'bytes,', d.count(0), 'NUL')"
+```
+
+Recover by restoring the newest good copy, then verifying before you trust it:
+
+```bash
+sudo systemctl stop tinyagentos
+cd /opt/taos/data
+sudo cp -a .auth_user.json .auth_user.json.CORRUPT-$(date +%Y%m%d)   # keep the evidence
+find /opt/taos -name '.auth_user.json*' -printf '%TY-%Tm-%Td %TH:%TM %s %p\n' | sort
+sudo install -o taos -g taos -m 600 <newest-good-copy> /opt/taos/data/.auth_user.json
+sudo rm -f /opt/taos/data/.auth_sessions      # sessions are unrecoverable either way
+sudo systemctl start tinyagentos
+```
+
+If the restored copy predates a password change, reset it offline rather than
+guessing: `sudo -u taos /opt/taos/.venv/bin/taos recover-password --username <user>`.
+
+Then check whether anything else was truncated by the same event — a shell test
+like `tr -d '\0' | grep .` gives false positives on binary files, so test the
+bytes directly:
+
+```bash
+sudo python3 - <<'EOF'
+import os
+for dp, _, fn in os.walk("/opt/taos/data"):
+    for f in fn:
+        p = os.path.join(dp, f)
+        try:
+            b = open(p, "rb").read()
+        except OSError:
+            continue
+        if b and b.count(0) == len(b):
+            print("ALL-NUL", len(b), p)
+EOF
+```
+
+**Prevention.** taOS writes its account store, session store and auth token
+atomically (temp file, `fsync`, rename, directory `fsync`), which survives a
+crash mid-write. That does not help if the filesystem itself is mounted
+`data=writeback`, which journals metadata without ordering data behind it —
+check with `dmesg | grep "EXT4-fs.*mounted filesystem"` and prefer
+`data=ordered` with the default 5-second commit interval on any device users
+power-cycle at the wall.
 
 ---
 

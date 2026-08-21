@@ -836,10 +836,52 @@ async def test_create_with_unknown_key_tags_warns(client, caplog):
             f"/api/projects/{pid}/tasks",
             json={"title": "T", "tags": ["bug"]},
         )
+    assert resp.status_code == 422
+    err = resp.json()
+    assert "extra" in str(err).lower() or "validation" in str(err).lower() or "unknown" in str(err).lower()
+
+
+@pytest.mark.asyncio
+async def test_create_with_description_instead_of_body_returns_422(client):
+    """POST with 'description' instead of 'body' must be rejected with 422.
+
+    This catches the defect where sending "description" (a field that silently
+    vanishes) resulted in a card with an empty body - the only channel that
+    reaches a lane. The rejection here comes from ``extra="forbid"`` (unknown
+    key), before any model validator runs.
+    """
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+
+    resp = await client.post(
+        f"/api/projects/{pid}/tasks",
+        json={"title": "T", "description": "do the thing", "labels": ["claimable"]},
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert "description" in str(body).lower() or "extra" in str(body).lower()
+
+
+@pytest.mark.asyncio
+async def test_create_claimable_with_empty_body_returns_422(client):
+    """A claimable card with no body must be rejected by the model validator.
+
+    The payload contains ONLY declared fields, so ``extra="forbid"`` cannot
+    reject it first — this exercises ``_assert_body_for_claimable`` itself
+    (deleting that validator makes this test fail).
+    """
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+
+    for payload in (
+        {"title": "T", "labels": ["claimable"]},
+        {"title": "T", "labels": ["Claimable "], "body": "   "},
+    ):
+        resp = await client.post(f"/api/projects/{pid}/tasks", json=payload)
+        assert resp.status_code == 422, payload
+        assert "claimable" in str(resp.json()).lower()
+
+    resp = await client.post(
+        f"/api/projects/{pid}/tasks",
+        json={"title": "T", "labels": ["claimable"], "body": "do the thing"},
+    )
     assert resp.status_code == 200
-    warns = [r for r in caplog.records if "unknown keys" in r.message]
-    assert warns, "expected a warning for unknown key tags"
-    msg = warns[0].message
-    assert "CreateTaskIn" in msg
-    assert "tags" in msg
 

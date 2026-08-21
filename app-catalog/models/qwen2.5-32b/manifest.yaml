@@ -41,6 +41,7 @@ variants:
       targets:
       - cpu
       min_ram_mb: 22528
+  sha256: 2e5f6daea180dbc59f65a40641e94d3973b5dbaa32b3c0acf54647fa874e519e
 hardware_tiers:
   x86-cuda-24gb:
     recommended: q4_k_m

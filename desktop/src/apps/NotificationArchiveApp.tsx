@@ -1,10 +1,11 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { Search, Filter } from "lucide-react";
 import type { Notification } from "@/stores/notification-store";
 import {
   mapRow,
   type ServerNotificationRow,
 } from "@/lib/server-notifications";
+import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
 
 const ARCHIVE_POLL_MS = 120_000;
 
@@ -36,7 +37,7 @@ export function NotificationArchiveApp({ windowId: _windowId }: { windowId: stri
   const [filters, setFilters] = useState<Filters>({ search: "", source: "", level: "" });
   const [showFilters, setShowFilters] = useState(false);
 
-  const fetchArchived = async () => {
+  const fetchArchived = useCallback(async () => {
     try {
       const res = await fetch("/api/notifications/archived", {
         headers: { Accept: "application/json" },
@@ -53,14 +54,16 @@ export function NotificationArchiveApp({ windowId: _windowId }: { windowId: stri
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useRefreshOnFocus(fetchArchived);
 
   useEffect(() => {
     void fetchArchived();
     const interval = setInterval(() => void fetchArchived(), ARCHIVE_POLL_MS);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [fetchArchived]);
 
   const sources = useMemo(() => {
     const set = new Set(archived.map((n) => n.source));

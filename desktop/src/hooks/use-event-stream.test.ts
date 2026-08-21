@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useEventStream } from "./use-event-stream";
 import { useNotificationStore } from "@/stores/notification-store";
+import { useDecisionEventsStore } from "@/stores/decision-events-store";
 
 // ---------------------------------------------------------------------------
 // Mock EventSource — must use a regular function (not arrow) so `new` works
@@ -42,6 +43,8 @@ beforeEach(() => {
   lastEs = null;
   // Reset the notification store so tests start clean
   useNotificationStore.setState({ notifications: [] });
+  // Reset the decision events store so tests start clean
+  useDecisionEventsStore.setState({ answeredEpoch: 0, lastAnsweredId: null });
 });
 
 afterEach(() => {
@@ -142,5 +145,33 @@ describe("useEventStream", () => {
     const ids = notifications.map((n) => n.id);
     expect(ids).toContain("srv-1");
     expect(ids).toContain("srv-2");
+  });
+
+  it("routes decision.answered into the decision events store", () => {
+    renderHook(() => useEventStream());
+
+    act(() => {
+      lastEs?._fire({
+        type: "decision.answered",
+        payload: { decision_id: "dec-1", id: "dec-1", answer: { value: "approve" } },
+        ts: 1700000000,
+      });
+    });
+
+    const state = useDecisionEventsStore.getState();
+    expect(state.lastAnsweredId).toBe("dec-1");
+    expect(state.answeredEpoch).toBe(1);
+  });
+
+  it("does not update decision events store for unrelated events", () => {
+    renderHook(() => useEventStream());
+
+    act(() => {
+      lastEs?._fire({ type: "future.event.type", payload: {}, ts: 0 });
+    });
+
+    const state = useDecisionEventsStore.getState();
+    expect(state.lastAnsweredId).toBeNull();
+    expect(state.answeredEpoch).toBe(0);
   });
 });

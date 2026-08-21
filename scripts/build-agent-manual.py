@@ -22,7 +22,11 @@ HEADER = (
     " Edit the source files, not this file. -->\n"
 )
 
-SEPARATOR = "\n---\n\n"
+# Blank line BEFORE the rule as well as after. Sections are stripped, so
+# "\n---" would put the separator directly under the section's last prose
+# line, and Markdown parses `text` + `---` as a setext H2 rather than a
+# thematic break (markdownlint MD003). The blank line makes it a real rule.
+SEPARATOR = "\n\n---\n\n"
 
 
 def _collapse_blank_lines(text: str) -> str:

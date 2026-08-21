@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   bucketAgentChannels,
+  buildAgentPresence,
+  computeAgentPresence,
   type AgentSectionChannel,
   type AgentSectionLiveAgent,
   type AgentSectionArchivedAgent,
+  type AgentPresence,
 } from "./MessagesApp.agentSections";
 
 const dm = (
@@ -126,5 +129,83 @@ describe("bucketAgentChannels", () => {
     expect(result.suspended.map((c) => c.name)).toEqual(["paused-one"]);
     expect(result.archived.map((c) => c.name).sort()).toEqual(["archived-one", "orphan-one"]);
     expect(result.nonAgent.map((c) => c.name)).toEqual(["coord"]);
+  });
+});
+
+describe("computeAgentPresence", () => {
+  it("returns 'working' when the agent is working regardless of status", () => {
+    expect(computeAgentPresence("running", true)).toBe("working");
+    expect(computeAgentPresence("paused", true)).toBe("working");
+    expect(computeAgentPresence("stopped", true)).toBe("working");
+    expect(computeAgentPresence(undefined, true)).toBe("working");
+  });
+
+  it("returns 'live' when the agent is running and not working", () => {
+    expect(computeAgentPresence("running", false)).toBe("live");
+  });
+
+  it("returns 'idle' when the agent is paused and not working", () => {
+    expect(computeAgentPresence("paused", false)).toBe("idle");
+  });
+
+  it("returns 'idle' when the agent is stopped and not working", () => {
+    expect(computeAgentPresence("stopped", false)).toBe("idle");
+  });
+
+  it("returns 'idle' when the agent status is undefined and not working", () => {
+    expect(computeAgentPresence(undefined, false)).toBe("idle");
+  });
+
+  it("returns 'working' takes precedence over 'live'", () => {
+    expect(computeAgentPresence("running", true)).toBe("working");
+  });
+});
+
+describe("buildAgentPresence", () => {
+  const ch = (id: string, agent?: string) => ({
+    id,
+    settings: agent ? { taostalk_agent: agent } : undefined,
+  });
+  const noDm = { live: [], suspended: [], archived: [] };
+
+  it("marks a live agent DM 'working' while its agent is thinking", () => {
+    const presence = buildAgentPresence(
+      { live: [ch("c1", "hermes")], suspended: [], archived: [] },
+      [],
+      new Set(["hermes"]),
+    );
+    expect(presence).toEqual({ c1: "working" });
+  });
+
+  it("marks a live agent DM 'live' when its agent is not thinking", () => {
+    const presence = buildAgentPresence(
+      { live: [ch("c1", "hermes")], suspended: [], archived: [] },
+      [],
+      new Set(),
+    );
+    expect(presence).toEqual({ c1: "live" });
+  });
+
+  it("marks suspended and archived agent DMs 'idle'", () => {
+    const presence = buildAgentPresence(
+      { live: [], suspended: [ch("c2", "scout")], archived: [ch("c3")] },
+      [],
+      new Set(["scout"]),
+    );
+    expect(presence).toEqual({ c2: "idle", c3: "idle" });
+  });
+
+  it("marks a bound topic/group channel 'working' while its agent is thinking", () => {
+    const presence = buildAgentPresence(noDm, [ch("t1", "hermes")], new Set(["hermes"]));
+    expect(presence).toEqual({ t1: "working" });
+  });
+
+  it("gives bound-but-idle and unbound topic/group channels no entry", () => {
+    const presence = buildAgentPresence(
+      noDm,
+      [ch("t1", "hermes"), ch("t2")],
+      new Set(),
+    );
+    expect(presence).toEqual({});
   });
 });

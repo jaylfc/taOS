@@ -134,3 +134,29 @@ class TestAgentModelKeyStore:
             assert "key_hash" not in keys[0]
         finally:
             await store.close()
+
+    @pytest.mark.parametrize(
+        "agent_ids",
+        [
+            ["../../x"],
+            ["a/b"],
+            ["a\\b"],
+            ["/etc/passwd"],
+            ["valid", "../../escape"],
+            ["a b"],
+            [""],
+        ],
+    )
+    async def test_mint_rejects_path_traversal_agent_ids(self, tmp_path, agent_ids):
+        """Agent ids become filesystem path components — reject traversal.
+
+        Note: dots are allowed (safe slug set); ``...`` or ``../../x`` without
+        slashes are harmless as a single path component — the slugify layer
+        in taos_agent_runtime replaces the unsafe separators.
+        """
+        store = await self._store(tmp_path)
+        try:
+            with pytest.raises(ValueError):
+                await store.mint("u1", agent_ids, [])
+        finally:
+            await store.close()

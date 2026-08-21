@@ -17,6 +17,7 @@ import {
   UserCircle,
   ScrollText,
   Save,
+  Bell,
 } from "lucide-react";
 import {
   Button,
@@ -36,12 +37,13 @@ import { UpdatesSection } from "@/apps/SettingsApp/UpdatesPanel";
 import { UsersSection } from "@/apps/SettingsApp/UsersPanel";
 import { AccountSection } from "@/apps/SettingsApp/AccountPanel";
 import { LogsSection } from "@/apps/SettingsApp/LogsPanel";
+import { NotificationsPanel } from "@/apps/SettingsApp/NotificationsPanel";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs";
+type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs" | "notifications";
 
 interface SectionDef {
   id: Section;
@@ -83,6 +85,7 @@ const SECTIONS: SectionDef[] = [
   { id: "users", label: "Users", icon: Users },
   { id: "themes", label: "Themes", icon: Palette },
   { id: "logs", label: "Logs", icon: ScrollText },
+  { id: "notifications", label: "Notifications", icon: Bell },
 ];
 
 // Sections that require admin privileges to view (GHSA-47g9: backend already
@@ -936,6 +939,7 @@ export function SettingsApp({ windowId: _windowId, section: initialSection }: { 
     users: <UsersSection />,
     themes: <ThemesPanel />,
     logs: <LogsSection />,
+    notifications: <NotificationsPanel />,
   };
 
   const handleSelectSection = (id: Section) => {

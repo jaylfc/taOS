@@ -26,6 +26,7 @@ variants:
       targets:
       - cpu
       min_ram_mb: 8192
+  sha256: 87e61f60b85d9f1c577bd9053872c7678b7d39f6f52d470081ff6ea3b49ddf98
 - id: 4step
   name: 4-step Safetensors (5.1GB)
   format: safetensors
@@ -44,6 +45,7 @@ variants:
       targets:
       - cpu
       min_ram_mb: 8192
+  sha256: e0d996ee0013e79d9d3561f50fcafb9a17e3ff07b780358e3b66d67932c4d490
 hardware_tiers:
   arm-cpu-8gb:
     recommended: null

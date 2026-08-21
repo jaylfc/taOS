@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import re
 import time
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import RedirectResponse
+from starlette.responses import HTMLResponse, RedirectResponse
 
+from tinyagentos.auth import AuthStoreCorruptError
 from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
+
+logger = logging.getLogger(__name__)
 
 EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
 
@@ -73,6 +77,13 @@ _AGENT_TASK_ROUTES = (
     ("GET", re.compile(rf"^/api/projects/tasks/{_SEG}/context$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/comments$")),
     ("POST", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/comments$")),
+    # Task checklist items (list + create), gated by project_tasks_create in the
+    # handler (_authorize_task_actor). Reaching the handler is not
+    # authorisation: it then verifies the JWT, the project binding, and that
+    # scope. There is no archive route, so nothing beyond list + create is
+    # listed here.
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/checklist-items$")),
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/checklist-items$")),
     ("POST", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/(claim|release|close|reopen)$")),
     # PATCH (free task-field mutation) was intentionally NOT here: it is broader
     # than the "read + lifecycle + comments" the project_tasks scope documents.
@@ -105,6 +116,32 @@ _AGENT_DOC_REVIEW_ROUTES = (
     ("GET", re.compile(rf"^/api/projects/{_SEG}/doc-review/(.+)$")),
     ("PUT", re.compile(rf"^/api/projects/{_SEG}/doc-review/(.+)$")),
 )
+
+# Project lists routes an agent may reach with its own registry JWT
+# (scope project_lists, verified + project-bound by the route).  These
+# are DYNAMIC paths (/api/projects/{pid}/lists...), so a (method,
+# compiled-regex) allowlist is used instead.  The token only reaches the
+# handler, which then verifies the JWT + grant + project binding; nothing
+# else is reachable by the token.
+_AGENT_LISTS_ROUTES = (
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/lists$")),
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/lists$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/lists/{_SEG}$")),
+    ("PATCH", re.compile(rf"^/api/projects/{_SEG}/lists/{_SEG}$")),
+    ("DELETE", re.compile(rf"^/api/projects/{_SEG}/lists/{_SEG}$")),
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/lists/{_SEG}/entries$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/lists/{_SEG}/entries$")),
+    ("PATCH", re.compile(rf"^/api/projects/{_SEG}/lists/{_SEG}/entries/{_SEG}$")),
+    ("DELETE", re.compile(rf"^/api/projects/{_SEG}/lists/{_SEG}/entries/{_SEG}$")),
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/lists/{_SEG}/entries/reorder$")),
+)
+
+
+def _is_agent_lists_path(method: str, path: str) -> bool:
+    """True only for the exact subset of list routes a project_lists token may
+    reach.  Strict method + anchored-regex match; everything else is excluded."""
+    return any(m == method and rx.match(path) for m, rx in _AGENT_LISTS_ROUTES)
+
 
 # Project notes store routes an agent may reach with its own registry JWT
 # (scope project_notes, verified + project-bound by the route).  The token only
@@ -426,6 +463,38 @@ def _is_exempt(method: str, path: str) -> bool:
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        """Authenticate, or say plainly that we cannot.
+
+        This middleware runs outside Starlette's exception handling, so an
+        AuthStoreCorruptError raised while reading the account store would
+        escape as a bare 500 and the app-level handler would never see it.
+        Catch it here so an unreadable store gets the same honest answer
+        everywhere.
+        """
+        try:
+            return await self._dispatch(request, call_next)
+        except AuthStoreCorruptError:
+            logger.error(
+                "account store unreadable while authenticating %s",
+                request.url.path, exc_info=True,
+            )
+            accept = request.headers.get("accept", "")
+            detail = (
+                "The account store exists but cannot be read. Accounts are not "
+                "lost; restore it from a backup — see "
+                "docs/runbooks/controller-rescue.md."
+            )
+            if "text/html" in accept:
+                return HTMLResponse(
+                    "<h1>Account store unreadable</h1>"
+                    f"<p>{detail}</p>", status_code=503,
+                )
+            return JSONResponse(
+                {"error": "account_store_unreadable", "detail": detail},
+                status_code=503,
+            )
+
+    async def _dispatch(self, request: Request, call_next):
         auth_mgr = request.app.state.auth
         path = request.url.path
 
@@ -496,6 +565,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             or _is_agent_task_path(request.method, path)
             or _is_agent_doc_review_path(request.method, path)
             or _is_agent_notes_path(request.method, path)
+            or _is_agent_lists_path(request.method, path)
             or _is_agent_canvas_path(request.method, path)
             or _is_agent_decisions_path(request.method, path)
             or _is_agent_files_path(request.method, path)

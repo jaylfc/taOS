@@ -3,17 +3,56 @@
 # Read by scripts/check_doc_gate.py. Rules are data: add more [[rules]]
 # entries here to cover new feature areas without touching the script.
 #
-# Precision over recall: `when_changed` only triggers a rule on a structural
-# change (a file added or deleted, or a plain modification when the rule sets
-# `on_modify = true`), and every glob below is scoped to the specific tree it
-# names. This is deliberate -- a noisy gate gets disabled, so false positives
-# are worse than an occasional missed doc update.
+# Two trigger modes:
+#   when_changed  -- fires on structural add/delete by default; set
+#                    `on_modify = true` to also count plain modifications.
+#   require_doc   -- any changed file matching these globs satisfies the rule.
+#
+# Test paths (test_*.py, *.test.*, *.spec.*, __tests__/) are never structural
+# and are always excluded from triggering.
+#
+# The Docs-Reviewed: trailer is an explicit escape hatch: when present in a
+# commit message, the gate prints which commit used it and who authored it,
+# then passes all rules for that PR.
 
 [gate]
 trailer = "Docs-Reviewed:"
 
 [invariants]
-referenced_paths_scan = ["README.md", "docs/agent-coordination.md", "docs/agent-manual/index.md"]
+# Globs are expanded against the working tree, so new manual pages, runbooks
+# and skills are scanned without a config edit. Nested READMEs under app
+# trees are deliberately NOT scanned: their relative `scripts/` links point
+# inside their own directory and would false-positive against the repo root.
+referenced_paths_scan = [
+    "README.md",
+    "CONTRIBUTING.md",
+    "docs/agent-coordination.md",
+    "docs/AGENT_HANDOFF.md",
+    "docs/RELEASING.md",
+    "docs/contributor-pitfalls.md",
+    "docs/agent-manual/*.md",
+    "docs/runbooks/*.md",
+    ".claude/skills/*/SKILL.md",
+    "tinyagentos/worker/README.md",
+]
+# Deliberate tombstones: docs that explain a file was REMOVED must be able to
+# name it without failing the gate forever.
+ignore_tokens = ["docs/STATUS.md"]
+
+[[invariants.required_sections]]
+doc = "docs/agent-coordination.md"
+headings = [
+    "Agent API surface (scoped registry JWT)",
+    "Device bearer self-service (second, narrower passthrough)",
+    "Share destinations (device bearer)",
+    "Requesting more scope for an existing identity (scope requests)",
+    "User resource sharing (share routes)",
+    "Project invite redeem route (link + PIN)",
+    "OS change-event stream (`GET /api/os/events`, session-only)",
+    "LoRA Studio routes (session-only, no agent scope)",
+    "What `GET /api/decisions/agent` returns (grant scoping)",
+    "Agent memory mode (deploy + `PATCH /api/agents/{slug}/memory`, session-only)",
+]
 
 [[rules]]
 name = "apps"
@@ -23,27 +62,31 @@ hint = "a desktop app was added or removed"
 
 [[rules]]
 name = "routes"
+on_modify = true
 when_changed = ["tinyagentos/routes/*.py"]
 require_doc = ["docs/agent-coordination.md"]
-hint = "an API route module was added or removed"
+hint = "an API route module was added, removed, or modified"
 
 [[rules]]
 name = "installers"
+on_modify = true
 when_changed = ["tinyagentos/installers/*", "scripts/install*"]
 require_doc = ["README.md"]
-hint = "an installer was added or removed"
+hint = "an installer was added, removed, or modified"
 
 [[rules]]
 # The repo's catalog tree is app-catalog/, not catalog/ (there is no
 # catalog/ directory in this repo). Scoped to the real path so the rule can
 # actually fire instead of being permanently dead config.
 name = "catalog"
+on_modify = true
 when_changed = ["app-catalog/**"]
 require_doc = ["README.md"]
-hint = "a catalog manifest was added or removed"
+hint = "a catalog manifest was added, removed, or modified"
 
 [[rules]]
 name = "agent-api"
+on_modify = true
 when_changed = ["tinyagentos/auth_middleware.py"]
 require_doc = ["docs/agent-coordination.md"]
 hint = "the agent-token route allowlist changed; update the agent-facing API surface (or add a Docs-Reviewed trailer explaining why not)"
@@ -63,10 +106,15 @@ hint = "the agent-token route allowlist changed; update the agent-facing API sur
 # PR that merely touched the README satisfy the rule. Verified by probe: with the
 # doc inside the directory the gate went green on a change carrying no changelog
 # at all.
+#
+# Broadened to cover every NON-TEST change under tinyagentos/ or desktop/src/,
+# not only code: a doc or asset under those trees triggers it too (the test
+# suite pins tinyagentos/README.md as a trigger). Any such change requires a
+# CHANGELOG.md edit or a new changelog.d/ fragment in the same PR.
 [[rules]]
 name = "user-visible-changelog"
 on_modify = true
-when_changed = ["tinyagentos/routes/*.py", "desktop/src/apps/*/**", "desktop/src/App.tsx", "desktop/src/components/**", "desktop/src/stores/**", "tinyagentos/installers/*"]
+when_changed = ["tinyagentos/**", "desktop/src/**"]
 require_doc = ["CHANGELOG.md", "changelog.d/*.md"]
 hint = "user-visible behaviour changed; add a changelog.d/<pr>-<slug>.md fragment (preferred) or a CHANGELOG.md line (or add a Docs-Reviewed trailer explaining why not)"
 
@@ -74,7 +122,7 @@ hint = "user-visible behaviour changed; add a changelog.d/<pr>-<slug>.md fragmen
 [[rules]]
 name = "agent-manual"
 on_modify = true
-when_changed = ["tinyagentos/agent_registry*.py", "tinyagentos/agent_token_auth.py", "tinyagentos/routes/agent_*.py", "tinyagentos/mcp/**"]
+when_changed = ["tinyagentos/agent_registry*.py", "tinyagentos/agent_token_auth.py", "tinyagentos/agent_scope_requests_store.py", "tinyagentos/routes/agent_*.py", "tinyagentos/mcp/**"]
 require_doc = ["docs/agent-manual/*.md", "docs/agent-coordination.md"]
 hint = "agent-facing behaviour changed; review the agent manual or coordination doc (or add a Docs-Reviewed trailer explaining why not)"
 
@@ -87,3 +135,30 @@ on_modify = true
 when_changed = [".github/workflows/*.yml", "pyproject.toml", "CONTRIBUTING.md"]
 require_doc = [".claude/skills/taos-development-skill/*.md", "docs/*.md"]
 hint = "CI, packaging or contribution rules changed; review the contributor skill and docs (or add a Docs-Reviewed trailer explaining why not)"
+
+# The OS-native agent drives the desktop ONLY through the surfaces the
+# taos-agent skill and the OS-control manual page describe. When those routes
+# change shape, an undocumented agent surface is a broken agent.
+[[rules]]
+name = "taos-agent-skill"
+on_modify = true
+when_changed = ["tinyagentos/routes/desktop.py", "tinyagentos/routes/desktop_control.py", "tinyagentos/routes/taos_agent.py"]
+require_doc = [".claude/skills/taos-agent/*.md", "docs/agent-manual/*.md"]
+hint = "the agent-facing desktop-driving surface changed; review the taos-agent skill and the OS-control manual pages (or add a Docs-Reviewed trailer explaining why not)"
+
+# Update/release machinery drifts from its runbooks silently: the beta.48
+# promotion (2026-08-12) needed a sync-branch pattern RELEASING.md did not
+# describe, and pi_update-style tooling broke against a moved deploy path.
+[[rules]]
+name = "release-runbook"
+on_modify = true
+when_changed = ["tinyagentos/update_runner.py", "tinyagentos/auto_update.py", "tinyagentos/restart_orchestrator.py", "scripts/collate_changelog.py"]
+require_doc = ["docs/RELEASING.md", "docs/runbooks/*.md", "docs/UPDATE_BREAKAGE_LOG.md", "docs/*.md"]
+hint = "update/release machinery changed; review docs/RELEASING.md and the runbooks (or add a Docs-Reviewed trailer explaining why not)"
+
+# The worker README is the operator-facing contract for worker nodes.
+[[rules]]
+name = "worker-readme"
+when_changed = ["tinyagentos/worker/**"]
+require_doc = ["tinyagentos/worker/README.md"]
+hint = "a worker component was added or removed; update tinyagentos/worker/README.md (or add a Docs-Reviewed trailer explaining why not)"

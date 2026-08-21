@@ -134,8 +134,13 @@ class SharedDocsStore(BaseStore):
         await self._db.commit()
         return await self.get_doc(doc_id)
 
-    async def list_docs(self, user_id: str, *, include_archived: bool = False) -> list[dict]:
-        """Docs the user owns or is shared on, newest-updated first."""
+    async def list_docs(self, user_id: str, *, include_archived: bool = False, kind: str | None = None) -> list[dict]:
+        """Docs the user owns or is shared on, newest-updated first.
+
+        When ``kind`` is provided the query is additionally filtered to docs of
+        that specific kind (e.g. ``\"note\"``, ``\"list\"``).
+        """
+        params: list[str] = [user_id, user_id]
         q = (
             "SELECT DISTINCT d.* FROM shared_docs d "
             "LEFT JOIN shared_doc_members m ON m.doc_id = d.id "
@@ -143,8 +148,11 @@ class SharedDocsStore(BaseStore):
         )
         if not include_archived:
             q += "AND d.archived_at IS NULL "
+        if kind is not None:
+            q += "AND d.kind = ? "
+            params.append(kind)
         q += "ORDER BY d.updated_at DESC"
-        cur = await self._db.execute(q, (user_id, user_id))
+        cur = await self._db.execute(q, params)
         rows = await cur.fetchall()
         return [_row(cur.description, r) for r in rows]
 

@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import { Button, Textarea } from "@/components/ui";
 import { ConsentActions } from "@/components/ConsentActions";
+import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
+import { useDecisionEventsStore } from "@/stores/decision-events-store";
 
 type DecisionType =
   | "single_select"
@@ -33,6 +35,9 @@ interface DecisionAnswer {
   value: string | string[];
   answered_by?: string;
   answered_at?: number;
+  source?: string;
+  other_value?: string | null;
+  note?: string | null;
 }
 
 interface Decision {
@@ -168,10 +173,14 @@ function DecisionCard({
   onAnswer,
 }: {
   decision: Decision;
-  onAnswer: (id: string, value: string | string[]) => Promise<void>;
+  onAnswer: (id: string, value: string | string[], otherValue?: string, note?: string) => Promise<void>;
 }) {
   const [multi, setMulti] = useState<string[]>([]);
+  const [singleSelected, setSingleSelected] = useState<string | null>(null);
+  const [otherSelected, setOtherSelected] = useState(false);
   const [text, setText] = useState("");
+  const [otherText, setOtherText] = useState("");
+  const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -179,7 +188,7 @@ function DecisionCard({
     setError(null);
     setSubmitting(true);
     try {
-      await onAnswer(decision.id, value);
+      await onAnswer(decision.id, value, otherText.trim() || undefined, note.trim() || undefined);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not record answer.");
     } finally {
@@ -188,6 +197,10 @@ function DecisionCard({
   }
 
   function toggleMulti(value: string) {
+    if (value === "__other__") {
+      setOtherSelected((prev) => !prev);
+      return;
+    }
     setMulti((prev) =>
       prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value],
     );
@@ -227,11 +240,49 @@ function DecisionCard({
             <OptionRow
               key={opt.value}
               option={opt}
-              selected={false}
+              selected={singleSelected === opt.value}
               disabled={submitting}
-              onClick={() => submit(opt.value)}
+              onClick={() => setSingleSelected(opt.value)}
             />
           ))}
+          <OptionRow
+            option={{label: "Other", value: "__other__"}}
+            selected={singleSelected === "__other__"}
+            disabled={submitting}
+            onClick={() => setSingleSelected("__other__")}
+          />
+          {singleSelected === "__other__" && (
+            <Textarea
+              value={otherText}
+              onChange={(e) => setOtherText(e.target.value)}
+              placeholder="Type your answer..."
+              rows={2}
+              maxLength={20000}
+              aria-label="Other answer"
+              className="resize-none bg-shell-surface border-shell-border text-shell-text placeholder:text-shell-text-tertiary"
+            />
+          )}
+          <input
+            type="text"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Add a note (optional)"
+            maxLength={500}
+            aria-label="Answer note"
+            className="bg-shell-surface border-shell-border text-shell-text placeholder:text-shell-text-tertiary rounded-md px-3 py-2 text-sm"
+          />
+          {singleSelected && (
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                disabled={submitting || (singleSelected === "__other__" && otherText.trim().length === 0)}
+                onClick={() => submit(singleSelected === "__other__" ? "" : singleSelected)}
+                className="min-w-[100px]"
+              >
+                {submitting ? "Saving..." : "Submit"}
+              </Button>
+            </div>
+          )}
         </div>
       )}
 
@@ -246,10 +297,36 @@ function DecisionCard({
               onClick={() => toggleMulti(opt.value)}
             />
           ))}
+          <OptionRow
+            option={{label: "Other", value: "__other__"}}
+            selected={otherSelected}
+            disabled={submitting}
+            onClick={() => toggleMulti("__other__")}
+          />
+          {otherSelected && (
+            <Textarea
+              value={otherText}
+              onChange={(e) => setOtherText(e.target.value)}
+              placeholder="Type your other answer..."
+              rows={2}
+              maxLength={20000}
+              aria-label="Other answer"
+              className="resize-none bg-shell-surface border-shell-border text-shell-text placeholder:text-shell-text-tertiary"
+            />
+          )}
+          <input
+            type="text"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Add a note (optional)"
+            maxLength={500}
+            aria-label="Answer note"
+            className="bg-shell-surface border-shell-border text-shell-text placeholder:text-shell-text-tertiary rounded-md px-3 py-2 text-sm"
+          />
           <div className="flex justify-end">
             <Button
               type="button"
-              disabled={submitting || multi.length === 0}
+              disabled={submitting || (multi.length === 0 && !otherSelected)}
               onClick={() => submit(multi)}
               className="min-w-[100px]"
             >
@@ -337,7 +414,11 @@ function answerLabel(decision: Decision): string {
     const opt = decision.options.find((o) => o.value === v);
     return opt ? opt.label : v;
   });
-  return labels.join(", ");
+  let text = labels.join(", ");
+  if (decision.answer?.note) {
+    text = `${text} (${decision.answer.note})`;
+  }
+  return text;
 }
 
 /** Expandable supersession lineage for a revised decision. Fetches the chain
@@ -509,8 +590,10 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
   const [answered, setAnswered] = useState<Decision[]>([]);
   const [authRequests, setAuthRequests] = useState<AuthRequest[]>([]);
   const [loading, setLoading] = useState(true);
+  const latestSeq = useRef(0);
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const seq = ++latestSeq.current;
     if (!opts?.silent) setLoading(true);
     try {
       const [pRes, aRes, rRes] = await Promise.all([
@@ -520,16 +603,29 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
       ]);
       // Only overwrite a list when its request actually succeeded; a transient
       // failure must not blank out decisions the user can still act on.
-      if (pRes.ok) setPending(asDecisionList(await pRes.json()));
-      if (aRes.ok) setAnswered(asDecisionList(await aRes.json()));
+      // The seq re-check must sit AFTER each awaited json() parse — a newer
+      // load can start while a body is still streaming, and a check placed
+      // before the await would let the stale body land anyway.
+      if (pRes.ok) {
+        const next = asDecisionList(await pRes.json());
+        if (seq === latestSeq.current) setPending(next);
+      }
+      if (aRes.ok) {
+        const next = asDecisionList(await aRes.json());
+        if (seq === latestSeq.current) setAnswered(next);
+      }
       if (rRes.ok) {
         const data = await rRes.json();
         const reqs = (data?.requests ?? data ?? []) as AuthRequest[];
-        setAuthRequests(Array.isArray(reqs) ? reqs : []);
+        if (seq === latestSeq.current) setAuthRequests(Array.isArray(reqs) ? reqs : []);
       }
     } catch {
       // Network error: keep whatever was last loaded in place.
     } finally {
+      // Deliberately NOT seq-guarded: loading tracks this non-silent call's
+      // own lifecycle. Only the mount load is non-silent; if a silent focus
+      // refresh outraces it, a guarded clear would leave "Loading..." stuck
+      // forever with data already on screen.
       if (!opts?.silent) setLoading(false);
     }
   }, []);
@@ -538,12 +634,31 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
     load();
   }, [load]);
 
+  // Silent: a background refresh must not swap the decisions the user is
+  // reading for the loading placeholder.
+  const refreshSilently = useCallback(() => load({ silent: true }), [load]);
+  useRefreshOnFocus(refreshSilently);
+
+  // Live propagation: when a decision is answered from another surface (e.g.
+  // inline in chat), the SSE handler bumps answeredEpoch via the global event
+  // stream. Re-fetch the lists so the card moves from pending to archive
+  // without a refresh.
+  const answeredEpoch = useDecisionEventsStore((s) => s.answeredEpoch);
+  useEffect(() => {
+    if (answeredEpoch > 0) {
+      void refreshSilently();
+    }
+  }, [answeredEpoch, refreshSilently]);
+
   const answer = useCallback(
-    async (id: string, value: string | string[]) => {
+    async (id: string, value: string | string[], otherValue?: string, note?: string) => {
+      const body: Record<string, unknown> = { value };
+      if (otherValue !== undefined) body.other_value = otherValue;
+      if (note !== undefined) body.note = note;
       const res = await fetch(`/api/decisions/${id}/answer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ value }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));

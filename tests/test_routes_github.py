@@ -345,10 +345,10 @@ def _build_app_with_app_config(
     # ``github-app-private-key`` (moved out of config by #2009).
     mock_secrets = MagicMock()
 
-    async def _secrets_get(name):
-        if name == "github_token":
+    async def _secrets_get(key: str):
+        if key == "github_token":
             return {"value": token} if token else None
-        if name == "github-app-private-key":
+        if key == "github-app-private-key":
             return {"value": "fake-private-key"}
         return None
 

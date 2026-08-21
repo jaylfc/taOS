@@ -225,6 +225,32 @@ async def _migration_v5_add_token_min_iat(conn) -> None:
             "ALTER TABLE agent_registry ADD COLUMN token_min_iat INTEGER NOT NULL DEFAULT 0"
         )
         await conn.commit()
+async def _migration_v6_add_install_id(conn) -> None:
+    """Add install_id column (idempotent), anchoring an identity to ONE install.
+
+    Empty for every pre-existing row, which is correct rather than merely
+    convenient: those identities were minted before installs were distinguished,
+    so claiming to know which install they belong to would be an invention.  A
+    blank install_id therefore means "unknown", never "this install".
+
+    This is what makes per-install identities listable and revocable AS A GROUP
+    (``list_for_install``): the account/cluster model has one owner holding
+    identities across several installs, so "revoke that machine" has to be
+    answerable without string-matching canonical_ids.
+    """
+    existing_cols = {
+        row[1]
+        for row in await (
+            await conn.execute("PRAGMA table_info(agent_registry)")
+        ).fetchall()
+    }
+    if "install_id" not in existing_cols:
+        await conn.execute(
+            "ALTER TABLE agent_registry ADD COLUMN install_id TEXT NOT NULL DEFAULT ''"
+        )
+        await conn.commit()
+
+
 # ---------------------------------------------------------------------------
 # Signing-key helpers (Ed25519, persisted to disk)
 # ---------------------------------------------------------------------------
@@ -469,6 +495,7 @@ class AgentRegistryStore(BaseStore):
         # handles cannot make the CREATE UNIQUE INDEX (hence boot) fail.
         await _migration_v4_dedupe_active_handles(self._db)
         await _migration_v5_add_token_min_iat(self._db)
+        await _migration_v6_add_install_id(self._db)
         # Created after the status migration so the partial index's WHERE clause
         # can reference the status column on the pre-status migration path.
         # Guard the index creation too: if some path we did not anticipate still
@@ -500,6 +527,7 @@ class AgentRegistryStore(BaseStore):
         reports_to: Optional[str] = None,
         capabilities: Optional[list[str]] = None,
         allow_reserved: bool = False,
+        install_id: str = "",
     ) -> dict:
         """Mint a canonical_id, persist the record, and return it.
 
@@ -550,11 +578,13 @@ class AgentRegistryStore(BaseStore):
             """
             INSERT INTO agent_registry
                 (canonical_id, display_name, framework, user_id, origin,
-                 handle, role, title, reports_to, capabilities, created_ts, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 handle, role, title, reports_to, capabilities, created_ts, status,
+                 install_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (canonical_id, display_name, framework, user_id, origin,
-             handle, role, title, reports_to, caps_json, created_ts, initial_status),
+             handle, role, title, reports_to, caps_json, created_ts, initial_status,
+             install_id),
         )
         await self._db.commit()
 
@@ -670,6 +700,47 @@ class AgentRegistryStore(BaseStore):
         row = await cursor.fetchone()
         return _row_to_dict(row) if row else None
 
+    async def get_by_handle_normalised(
+        self, handle: str, *, status: str = "active"
+    ) -> Optional[dict]:
+        """Return the oldest entry whose handle SLUGIFIES to *handle*'s slug.
+
+        ``get_by_handle`` is an exact SQL match, which is why one identity can
+        exist under two spellings at once: the consent approve path registers
+        ``_slugify(identity_claim)`` (``taosmd-dev``) while ``_INTERNAL_AGENTS``
+        names the display spelling (``@taOSmd-dev``).  Looking up only the
+        spelling we happen to hold misses the other row and mints a duplicate.
+
+        Matching on the slug is direction-free: every spelling of one handle
+        maps to the same key, so it does not matter which the caller has.  The
+        reverse is impossible to do by string surgery -- ``taosmd-dev`` cannot
+        be turned back into ``@taOSmd-dev`` because slugifying discards case.
+
+        The scan is deliberate: the registry holds a handful of rows, there is
+        no index on a normalised handle, and correctness here is worth more than
+        an index.  Pass ``status=None`` to match any status.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        want = _slugify(handle)
+        if not want:
+            return None
+        if status is None:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE handle != '' ORDER BY id"
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE handle != '' AND status = ? ORDER BY id",
+                (status,),
+            )
+        rows = await cursor.fetchall()
+        for row in rows:
+            rec = _row_to_dict(row)
+            if _slugify(rec.get("handle") or "") == want:
+                return rec
+        return None
+
     async def list_all(self, *, status: Optional[str] = None) -> list[dict]:
         """Return all registry records, optionally filtered by *status*."""
         if self._db is None:
@@ -701,8 +772,43 @@ class AgentRegistryStore(BaseStore):
         rows = await cursor.fetchall()
         return [_row_to_dict(r) for r in rows]
 
+    async def list_for_install(
+        self, install_id: str, *, status: Optional[str] = None
+    ) -> list[dict]:
+        """Return every record minted by ONE install, optionally by status.
+
+        An empty *install_id* returns nothing rather than every legacy row.
+        Blank means "unknown install" (see the v6 migration), so matching on it
+        would quietly scoop up identities from before installs were tracked --
+        and this is the query a group revocation would be built on, where
+        over-matching costs an agent its credentials.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        if not install_id:
+            return []
+        if status is not None:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE install_id = ? AND status = ? ORDER BY id",
+                (install_id, status),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE install_id = ? ORDER BY id",
+                (install_id,),
+            )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
     async def list_revoked(self) -> list[dict]:
-        """Return [{canonical_id, revoked_at}] for all revoked entries (back-compat feed)."""
+        """Return [{canonical_id, revoked_at}] for all revoked agent identities.
+
+        This feed is deliberately scoped to agent identities only, as decided on
+        2026-08-13. Human credential withdrawal is handled through the
+        session/auth layer and does not appear here. Do not extend this feed to
+        include human principals or subject_type fields without a new design
+        decision.
+        """
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
         cursor = await self._db.execute(

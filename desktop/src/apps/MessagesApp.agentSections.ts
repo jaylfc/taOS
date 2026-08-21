@@ -46,6 +46,71 @@ export interface AgentSections<C> {
   nonAgent: C[];
 }
 
+/**
+ * Agent presence states for sidebar display.
+ * - "working" -- agent is actively thinking / running a tool.
+ * - "live"    -- agent is registered as running and available.
+ * - "idle"    -- agent is paused, stopped, failed, or otherwise unavailable.
+ */
+export type AgentPresence = "live" | "working" | "idle";
+
+/**
+ * Map a registry agent status + working flag to a sidebar presence state.
+ * Pure function -- exported for unit testing.
+ */
+export function computeAgentPresence(
+  status: string | undefined,
+  isWorking: boolean,
+): AgentPresence {
+  if (isWorking) return "working";
+  if (status === "running") return "live";
+  return "idle";
+}
+
+/** Minimal channel shape needed to build the sidebar presence map. */
+export interface PresenceSourceChannel {
+  id: string;
+  settings?: { taostalk_agent?: string };
+}
+
+/**
+ * Build the sidebar presence map from the bucketed agent DM sections plus
+ * the topic/group channels that may carry an agent binding.
+ *
+ * - Live agent DMs: "working" while the bound agent is in `workingSlugs`,
+ *   otherwise "live".
+ * - Suspended/archived agent DMs: "idle".
+ * - Topic/group channels bound via `settings.taostalk_agent`: "working"
+ *   only while the bound agent is in `workingSlugs`; no entry otherwise,
+ *   since absence renders no dot for non-agent channels.
+ *
+ * Pure function -- no side effects -- so it can be unit tested in isolation.
+ */
+export function buildAgentPresence<C extends PresenceSourceChannel>(
+  dm: { live: C[]; suspended: C[]; archived: C[] },
+  boundChannels: C[],
+  workingSlugs: ReadonlySet<string>,
+): Record<string, AgentPresence> {
+  const presence: Record<string, AgentPresence> = {};
+  for (const ch of dm.live) {
+    const bound = ch.settings?.taostalk_agent;
+    presence[ch.id] = computeAgentPresence(
+      "running",
+      !!bound && workingSlugs.has(bound),
+    );
+  }
+  for (const ch of [...dm.suspended, ...dm.archived]) {
+    presence[ch.id] = computeAgentPresence(undefined, false);
+  }
+  for (const ch of boundChannels) {
+    const bound = ch.settings?.taostalk_agent;
+    if (bound && workingSlugs.has(bound)) {
+      presence[ch.id] = computeAgentPresence(undefined, true);
+    }
+  }
+  return presence;
+}
+
 /** The agent identity a DM channel points at: its name or its non-"user" member. */
 function channelAgentKeys<C extends AgentSectionChannel>(ch: C): string[] {
   const keys = [ch.name];

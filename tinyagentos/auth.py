@@ -1,4 +1,5 @@
 from __future__ import annotations
+import functools
 import hashlib
 import json
 import logging
@@ -14,6 +15,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
 from fastapi import HTTPException, Request
 
+from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.shortcuts.capabilities import default_caps_for_admin, default_caps_for_new_user
 
 _ph = PasswordHasher()
@@ -22,6 +24,34 @@ _ph = PasswordHasher()
 _hash_upgrade_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
+
+
+def _serialized(method):
+    """Hold the instance's account-store lock for the whole method.
+
+    Every mutator reads the store, edits the parsed dict and writes it back.
+    Atomic writes make each *write* all-or-nothing, but two concurrent
+    read-modify-write cycles still lose one of the two edits -- invite a user
+    while another request renames one and the rename can vanish. Serialising
+    the cycle is the missing half. Re-entrant so a mutator may call another.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._users_lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
+class AuthStoreCorruptError(RuntimeError):
+    """Raised when the account store exists but cannot be parsed.
+
+    A *missing* store means a fresh install; a *corrupt* one means the
+    accounts are still there and we simply cannot read them.  Conflating the
+    two is what turned a truncated ``.auth_user.json`` into a first-run
+    onboarding screen on 2026-08-21 — an unauthenticated caller was one form
+    submission away from claiming the box and overwriting the real users.
+    Callers must fail closed on this rather than treat it as "no users".
+    """
 
 
 class _PersistentSessions:
@@ -55,7 +85,7 @@ class _PersistentSessions:
 
     def _save_pruned(self, data: dict) -> None:
         self._prune_expired(data)
-        self._path.write_text(json.dumps(data))
+        atomic_write_text(self._path, json.dumps(data), mode=0o600)
 
     def _prune_expired(self, data: dict) -> None:
         now = time.time()
@@ -190,6 +220,9 @@ class AuthManager:
         self._user_file = data_dir / ".auth_user.json"
         self._sessions_file = data_dir / ".auth_sessions"
         self._sessions = _PersistentSessions(self._sessions_file)
+        # Serialises read-modify-write cycles on the account store; see
+        # _serialized. Re-entrant so nested mutators do not self-deadlock.
+        self._users_lock = threading.RLock()
         self.session_ttl = 86400 * 7  # 7 days, default
         self.long_session_ttl = 86400 * 30  # 30 days for "stay signed in"
         self._prune_sessions_on_startup()
@@ -226,30 +259,85 @@ class AuthManager:
     # ------------------------------------------------------------------ #
 
     def _read_users(self) -> dict:
+        """Return the account store, or raise if it is present but unreadable.
+
+        Only a *missing* file yields the empty store — see
+        :class:`AuthStoreCorruptError` for why an unparseable one must not.
+        """
         if self._user_file.exists():
             try:
-                return json.loads(self._user_file.read_text())
-            except (json.JSONDecodeError, OSError):
-                return {"users": [], "current_user_id": None}
+                raw = self._user_file.read_text()
+            except OSError as exc:
+                raise AuthStoreCorruptError(
+                    f"cannot read account store {self._user_file}: {exc}"
+                ) from exc
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise AuthStoreCorruptError(
+                    f"account store {self._user_file} is not valid JSON "
+                    f"({len(raw)} bytes): {exc}"
+                ) from exc
+            if not isinstance(data, dict):
+                raise AuthStoreCorruptError(
+                    f"account store {self._user_file} is a "
+                    f"{type(data).__name__}, expected an object"
+                )
+            # Every store this code has ever written carries a list-valued
+            # "users". Anything else -- {}, {"users": null} -- parses as JSON
+            # but would read as "no accounts", which is the exact conclusion
+            # this class exists to prevent.
+            if not isinstance(data.get("users"), list):
+                raise AuthStoreCorruptError(
+                    f"account store {self._user_file} has no 'users' list "
+                    f"(found {type(data.get('users')).__name__})"
+                )
+            return data
         return {"users": [], "current_user_id": None}
 
     def _write_users(self, data: dict) -> None:
-        self._user_file.parent.mkdir(parents=True, exist_ok=True)
-        self._user_file.write_text(json.dumps(data, indent=2))
+        atomic_write_text(
+            self._user_file, json.dumps(data, indent=2), mode=0o600,
+        )
 
     # ------------------------------------------------------------------ #
     #  Predicates                                                          #
     # ------------------------------------------------------------------ #
 
     def is_configured(self) -> bool:
-        return bool(self._read_users().get("users")) or self._password_file.exists()
+        """True when this install already has an account.
+
+        This is the single gate every onboarding path consults, so a store we
+        cannot parse must answer True: the accounts exist, we just cannot read
+        them.  Answering False would offer the create-your-account form to
+        whoever asked.
+        """
+        try:
+            users = self._read_users().get("users")
+        except AuthStoreCorruptError:
+            logger.error(
+                "Account store %s is unreadable; refusing to report this "
+                "install as unconfigured. Recover it with "
+                "'taos recover-password' or restore the file from a backup.",
+                self._user_file,
+            )
+            return True
+        return bool(users) or self._password_file.exists()
 
     def needs_onboarding(self) -> bool:
         return not self.is_configured()
 
     def is_multi_user(self) -> bool:
-        """True when two or more fully-registered users exist."""
-        users = self._read_users().get("users", [])
+        """True when two or more fully-registered users exist.
+
+        A display hint (which login form to render), so an unreadable store
+        degrades to the single-user answer rather than raising — the gate
+        that matters, :meth:`is_configured`, already failed closed.
+        """
+        try:
+            users = self._read_users().get("users", [])
+        except AuthStoreCorruptError:
+            return False
         active = [u for u in users if "password_hash" in u]
         return len(active) >= 2
 
@@ -355,6 +443,7 @@ class AuthManager:
     #  First-user setup (admin path)                                       #
     # ------------------------------------------------------------------ #
 
+    @_serialized
     def setup_user(self, username: str, full_name: str, email: str, password: str) -> dict:
         users = self._read_users()
         if users.get("users"):
@@ -382,6 +471,7 @@ class AuthManager:
     #  Invite lifecycle                                                    #
     # ------------------------------------------------------------------ #
 
+    @_serialized
     def add_user_invite(self, username: str, invited_by_username: str) -> str:
         """Create a pending user and return a high-entropy invite code."""
         if not username:
@@ -403,6 +493,7 @@ class AuthManager:
         self._write_users(data)
         return code
 
+    @_serialized
     def complete_invite(
         self,
         username: str,
@@ -437,6 +528,7 @@ class AuthManager:
         self._write_users(data)
         return self._public_user(record)
 
+    @_serialized
     def admin_reset_password(self, username: str, by_admin_username: str) -> str:
         """Re-issue an invite code, marking the user pending again."""
         caller = self.find_user(by_admin_username)
@@ -469,9 +561,11 @@ class AuthManager:
 
     def set_password(self, password: str) -> None:
         """Legacy code path — keeps existing tests + the simple-setup endpoint working."""
-        self._password_file.parent.mkdir(parents=True, exist_ok=True)
-        self._password_file.write_text(hash_password(password))
+        atomic_write_text(
+            self._password_file, hash_password(password), mode=0o600,
+        )
 
+    @_serialized
     def recover_password(self, new_password: str, username: str | None = None) -> str:
         """Offline recovery: force-set an account's password without the old one.
 
@@ -584,6 +678,7 @@ class AuthManager:
             return (True, None)
         return (False, None)
 
+    @_serialized
     def change_password(self, username: str, current_password: str, new_password: str) -> bool:
         """Self-change, requires current password."""
         if not new_password or len(new_password) < 8:
@@ -601,6 +696,7 @@ class AuthManager:
                 return True
         return False
 
+    @_serialized
     def update_profile(self, username: str, full_name: str | None, email: str | None) -> dict:
         """Update own profile fields."""
         data = self._read_users()
@@ -617,6 +713,7 @@ class AuthManager:
                 return self._public_user(u)
         raise ValueError(f"user '{username}' not found")
 
+    @_serialized
     def delete_user(self, username: str, by_admin_username: str) -> None:
         """Remove a user. Admin only, can't delete self, can't delete last admin."""
         caller = self.find_user(by_admin_username)
@@ -757,9 +854,7 @@ class AuthManager:
         if path.exists():
             return path.read_text().strip()
         token = secrets.token_urlsafe(32)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(token)
-        os.chmod(path, 0o600)
+        atomic_write_text(path, token, mode=0o600)
         logger.info("local auth token written to %s", path)
         return token
 

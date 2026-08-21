@@ -99,6 +99,7 @@ _ALLOWED_SCOPES = frozenset({
     "project_tasks_update",
      "project_doc_review",
      "project_notes",
+     "project_lists",
      "canvas_read", "canvas_write",
     "decisions_read", "decisions_write",
     "observatory_control",
@@ -320,8 +321,28 @@ async def _mint_internal_identity(
 
     # The lock makes the check-then-register atomic: a concurrent mint of the
     # same handle waits, then sees the row the first one created and reuses it.
+    # The consent approve path registers with ``_slugify(identity_claim)``, so a
+    # driver that self-joined is stored as `taosmd-dev` while ``_INTERNAL_AGENTS``
+    # names it `@taOSmd-dev`.  ``get_by_handle`` is an exact SQL match, so looking
+    # up only the spelling we were given misses that row and registers a SECOND
+    # identity: the duplicate takes the driver scopes and the token while the
+    # original keeps the project grants, leaving the agent with two identities and
+    # the wrong one credentialed.
+    #
+    # Match on the SLUG rather than trying the two spellings we can think of.
+    # ``handle`` arrives from a request body here, so the caller may hold either
+    # spelling -- an admin passing `taosmd-dev` while the row is stored as
+    # `@taOSmd-dev` forks a row just as readily as the reverse, and no amount of
+    # string surgery recovers `@taOSmd-dev` from `taosmd-dev` (slugifying
+    # discards case).  Slug comparison is direction-free and closes both.
+    #
+    # The exact lookup still runs first: it is the indexed path and it is what
+    # almost every call hits.
+
     async with _mint_lock:
         existing = await store.get_by_handle(handle)
+        if existing is None:
+            existing = await store.get_by_handle_normalised(handle)
         if existing is not None:
             # A non-internal owner is only reused when the admin adopts it: this
             # blocks an impostor that grabbed "@Hermes" from silently receiving
@@ -484,7 +505,12 @@ async def get_pubkey(request: Request):
 
 @router.get("/api/agents/registry/revoked")
 async def list_revoked_entries(request: Request):
-    """Return the global revocation feed: [{canonical_id, revoked_at}, ...].
+    """Return the global revocation feed for agent identities: [{canonical_id, revoked_at}, ...].
+
+    This feed is scoped to agent identities only, as decided on 2026-08-13.
+    Human credential withdrawal is handled through the session/auth layer and
+    does not appear here. Do not extend this feed to include human principals
+    or subject_type fields without a new design decision.
 
     Accessible to admin sessions/local-token OR a registry JWT whose
     canonical_id holds an active ``registry_feeds_read`` grant.  The grant is

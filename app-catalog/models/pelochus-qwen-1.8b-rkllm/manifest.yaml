@@ -28,6 +28,7 @@ variants:
       targets:
       - cpu
       min_ram_mb: 4096
+  sha256: 1b7cbafc2b9de1d9ecc330a1c7cd74d5370b9557625a168797f11e347d82db87
 hardware_tiers:
   arm-npu-16gb:
     recommended: rkllm

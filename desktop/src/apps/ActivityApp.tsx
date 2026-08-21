@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
 import {
   Activity, Cpu, MemoryStick, Zap, HardDrive, Thermometer, Network, CircuitBoard,
   Gauge, Layers, RefreshCw, Loader2, Server,
@@ -252,6 +253,8 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
     const interval = setInterval(fetchData, 2000);
     return () => clearInterval(interval);
   }, [fetchData]);
+
+  useRefreshOnFocus(fetchData);
 
   useEffect(() => {
     fetchCluster();

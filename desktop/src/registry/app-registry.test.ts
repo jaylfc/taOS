@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { getApp, getOrRegisterServiceApp, getAllApps, prefetchApp, resolveApp } from "./app-registry";
+import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, prefetchApp, resolveApp } from "./app-registry";
 
 describe("resolveApp (deep-navigation token resolver)", () => {
   it("resolves an exact app id", () => {
@@ -57,5 +57,51 @@ describe("prefetchApp", () => {
 
   it("is a no-op for unknown apps and never throws", () => {
     expect(() => prefetchApp("does-not-exist")).not.toThrow();
+  });
+});
+
+describe("LoRA Studio launcher visibility", () => {
+  // An `optional: true` app only renders if its id is in the backend
+  // OPTIONAL_FRONTEND_APPS allowlist (routes/apps.py). LoRA Studio is not in it,
+  // so marking it optional made the app invisible in the launcher while every
+  // component test still passed. Lock it in as an always-on app.
+  it("is launchable with no optional apps installed", () => {
+    const ids = getLaunchableApps(new Set()).map((a) => a.id);
+    expect(ids).toContain("lora-studio");
+  });
+
+  it("is not marked optional", () => {
+    expect(getApp("lora-studio")?.optional).toBeFalsy();
+  });
+});
+
+describe("file handler tiering", () => {
+  const handlerIds = ["text-editor", "image-viewer", "media-player"];
+
+  it("handler apps are absent from launcher listings", () => {
+    const ids = getLaunchableApps(new Set()).map((a) => a.id);
+    for (const id of handlerIds) {
+      expect(ids, `handler app "${id}" should not be in launcher`).not.toContain(id);
+    }
+  });
+
+  it("handler apps are still openable programmatically via getApp", () => {
+    for (const id of handlerIds) {
+      expect(getApp(id)?.id).toBe(id);
+    }
+  });
+
+  it("handler apps are still openable programmatically via resolveApp", () => {
+    for (const id of handlerIds) {
+      expect(resolveApp(id)?.id).toBe(id);
+    }
+  });
+
+  it("handler apps have tier 4 and handler:true in the manifest", () => {
+    for (const id of handlerIds) {
+      const app = getApp(id);
+      expect(app?.tier).toBe(4);
+      expect(app?.handler).toBe(true);
+    }
   });
 });

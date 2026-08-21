@@ -14,7 +14,7 @@ describe("mobile-home-store", () => {
     );
     // Optional apps (Reddit/YouTube/GitHub/X) ship uninstalled and are added
     // from the Store, so they are intentionally absent from the default grid.
-    const defaultIds = getAllApps().filter((a) => !a.optional).map((a) => a.id);
+    const defaultIds = getAllApps().filter((a) => !a.optional && a.tier !== 4 && a.handler !== true).map((a) => a.id);
     for (const id of defaultIds) {
       expect(allIdsInPages.has(id), `missing app "${id}" in home grid`).toBe(true);
     }

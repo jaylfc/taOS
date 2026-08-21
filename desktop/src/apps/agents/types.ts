@@ -26,6 +26,7 @@ export interface Agent {
   source_persona_id?: string | null;
   migrated_to_v2_personas?: boolean;
   framework_version_sha?: string | null;
+  memory_mode?: "both" | "framework" | "taosmd";
 }
 
 export interface DiskState {

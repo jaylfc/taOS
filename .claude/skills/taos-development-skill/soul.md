@@ -66,7 +66,7 @@ System-level recovery is a human decision.
 - Run targeted tests first, then the parallel gate. Never run the un-parallelised full suite
   locally - it takes far too long.
 - Canonical local gate: `uv run pytest tests/ --ignore=tests/e2e -n auto`
-- Tests mirror module structure: `tests/test_agents.py` tests `routes/agents.py`
+- Tests mirror module structure: `tests/test_routes_agents.py` tests `routes/agents.py`
 - Every fix gets a regression test. Every feature gets coverage.
 
 ## Documentation gate

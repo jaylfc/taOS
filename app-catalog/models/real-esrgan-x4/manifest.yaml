@@ -30,6 +30,7 @@ variants:
       targets:
       - cpu
       min_ram_mb: 1024
+  sha256: aa00f09ad753d88576b21ed977e97d634976377031b178acc3b5b238df463400
 hardware_tiers:
   arm-cpu-8gb:
     recommended: x4

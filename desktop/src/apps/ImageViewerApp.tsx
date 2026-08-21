@@ -1,17 +1,24 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { ZoomIn, ZoomOut, RotateCw, Maximize } from "lucide-react";
 
 const ZOOM_STEP = 0.25;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 5;
 
-export function ImageViewerApp({ windowId: _windowId }: { windowId: string }) {
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
+export function ImageViewerApp({ windowId: _windowId, url }: { windowId: string; url?: string }) {
+  const [imageUrl, setImageUrl] = useState<string | null>(url ?? null);
   const [fileName, setFileName] = useState("");
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+
+  useEffect(() => {
+    if (!url) return;
+    setImageUrl(url);
+    const path = decodeURIComponent(url.split("/").pop() ?? "");
+    setFileName(path.split("/").pop() ?? "");
+  }, [url]);
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];

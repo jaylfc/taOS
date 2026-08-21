@@ -930,6 +930,54 @@ async def test_update_all_workers_re_register_timeout(client, app, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_register_returns_409_when_controller_fenced(client, app):
+    """A fenced controller must refuse registration with 409, not claim success."""
+    import json as _json
+    key = await pair_worker(client, app, "fenced-worker", "http://10.0.0.1:9000")
+    app.state.cluster_manager._fenced = True
+    reg_body = _json.dumps({
+        "name": "fenced-worker",
+        "url": "http://10.0.0.1:9000",
+        "capabilities": ["chat"],
+    }).encode()
+    resp = await client.post(
+        "/api/cluster/workers",
+        content=reg_body,
+        headers={**sign_worker_request(key, "fenced-worker", "POST", "/api/cluster/workers", reg_body), "content-type": "application/json"},
+    )
+    assert resp.status_code == 409, resp.text
+    assert "fenced" in resp.json().get("error", "").lower()
+    workers = (await client.get("/api/cluster/workers")).json()
+    assert not any(w["name"] == "fenced-worker" for w in workers)
+    app.state.cluster_manager._fenced = False
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_register_returns_409_when_generation_mismatch(client, app):
+    """A worker echoing a stale generation must be refused with 409."""
+    import json as _json
+    key = await pair_worker(client, app, "stale-gen-worker", "http://10.0.0.2:9000")
+    app.state.cluster_manager._generation = 999
+    reg_body = _json.dumps({
+        "name": "stale-gen-worker",
+        "url": "http://10.0.0.2:9000",
+        "capabilities": ["chat"],
+        "generation": 1,
+    }).encode()
+    resp = await client.post(
+        "/api/cluster/workers",
+        content=reg_body,
+        headers={**sign_worker_request(key, "stale-gen-worker", "POST", "/api/cluster/workers", reg_body), "content-type": "application/json"},
+    )
+    assert resp.status_code == 409, resp.text
+    assert "generation" in resp.json().get("error", "").lower()
+    workers = (await client.get("/api/cluster/workers")).json()
+    assert not any(w["name"] == "stale-gen-worker" for w in workers)
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
 async def test_update_all_workers_admin_gate_rejected(app, tmp_data_dir):
     """Unauthenticated callers are rejected with 401/403."""
     from httpx import ASGITransport, AsyncClient

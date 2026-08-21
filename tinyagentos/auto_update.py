@@ -77,11 +77,14 @@ def _ping_enabled_by_env() -> bool:
     return os.environ.get("TAOS_NO_UPDATE_PING", "").strip() not in ("1", "true", "yes")
 
 
-def _install_id(data_dir: Optional[Path]) -> str:
+def install_id(data_dir: Optional[Path]) -> str:
     """Return this install's stable random id, creating it once if needed.
 
     A random UUID with no PII and no hardware fingerprint, stored at
-    ``<data_dir>/.install_id``. The data dir is preserved across upgrades and
+    ``<data_dir>/.install_id``.  Public because it is no longer telemetry-only:
+    it is also the anchor for this install's native agent identity
+    (``native_agent_identity.py``), and both MUST read the same id or an install
+    would report one identity to the version ping and mint another. The data dir is preserved across upgrades and
     in-place reinstalls, so the id (and the install's place in the historical
     count) is stable. A full wipe yields a new id, which is correct: that is a
     genuinely new install.
@@ -114,7 +117,7 @@ async def send_version_ping(http_client, data_dir: Optional[Path] = None) -> Non
     version = getattr(tinyagentos, "__version__", "unknown")
     plat = f"{sys.platform}-{platform.machine()}"
     params = {"v": version, "platform": plat}
-    iid = _install_id(data_dir)
+    iid = install_id(data_dir)
     if iid:
         params["id"] = iid
     try:

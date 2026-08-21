@@ -26,7 +26,7 @@
 
 Self-hosted AI agent platform that runs on whatever hardware you have. An old laptop, a Raspberry Pi, a gaming PC, an SBC gathering dust, or all of them at once. taOS turns your spare hardware into a distributed AI compute cluster.
 
-A full web desktop environment with 40 bundled apps, 109 catalog apps, 47 MCP plugins, 17 agent frameworks, a curated local model catalog of 120 manifests covering LLMs, vision, embeddings, audio, and image generation (including RK3588 NPU variants via c01zaut/happyme531 and Hailo-10H HEF variants via hailo-ollama), plus 167k+ searchable models from HuggingFace, agent deployment, training, image/video/audio generation, and full system monitoring, all from a single web dashboard. Supports Apple Silicon (MLX), NVIDIA, AMD, Rockchip NPU, Raspberry Pi, Android phones, and more.
+A full web desktop environment with 43 bundled apps, 109 catalog apps, 47 MCP plugins, 17 agent frameworks, a curated local model catalog of 120 manifests covering LLMs, vision, embeddings, audio, and image generation (including RK3588 NPU variants via c01zaut/happyme531 and Hailo-10H HEF variants via hailo-ollama), plus 167k+ searchable models from HuggingFace, agent deployment, training, image/video/audio generation, and full system monitoring, all from a single web dashboard. Supports Apple Silicon (MLX), NVIDIA, AMD, Rockchip NPU, Raspberry Pi, Android phones, and more.
 
 **Framework-agnostic by design.** taOS owns everything that matters: your agent's memory, files, communication channels, model access, and configuration. The agent framework is just a replaceable execution engine. Switch from SmolAgents to LangChain to OpenClaw and your agent keeps its entire history, all its Telegram/Discord/Slack connections, its trained LoRA adapters, its files, and its API keys. No migration, no data loss, no reconfiguration. This is possible because taOS manages the full agent lifecycle outside the framework.
 
@@ -102,7 +102,7 @@ Open `http://your-host:6969` (or `http://taos.local:6969` with mDNS). The root U
 
 ## Web Desktop Experience
 
-taOS ships with a full browser-based desktop environment. Open it at `http://your-host:6969/` and you get a window manager, dock, launchpad, notifications, widgets, and 40 bundled apps, no native install required. On phones and tablets it automatically swaps to a widget-first home screen with swipeable pages, a persistent dock, and desktop-style app windows with close/minimise title bars, installable as a fullscreen PWA from the browser's "Add to Home Screen".
+taOS ships with a full browser-based desktop environment. Open it at `http://your-host:6969/` and you get a window manager, dock, launchpad, notifications, widgets, and 43 bundled apps, no native install required. On phones and tablets it automatically swaps to a widget-first home screen with swipeable pages, a persistent dock, and desktop-style app windows with close/minimise title bars, installable as a fullscreen PWA from the browser's "Add to Home Screen".
 
 - **Window manager.** Float, snap zones, drag, resize, minimise, maximise, close
 - **Top bar.** Global search (Ctrl+Space), clock, notifications, widget toggle
@@ -119,15 +119,15 @@ taOS ships with a full browser-based desktop environment. Open it at `http://you
 - **Standalone Chat PWA**. Messages available as a dedicated installable app at `/chat-pwa`
 - **shadcn/ui primitives**. Button, Card, Input, Tabs, Switch, Toolbar
 
-### 40 Bundled Desktop Apps
+### 43 Bundled Desktop Apps
 
-**Platform apps (27):** Messages (WebSocket chat), Mail (IMAP/SMTP accounts, read and send), Projects (Kanban + A2A), Agents (deploy wizard + logs + skills), Store (109+ apps), Settings (multi-section with Memory capture toggles), Models, Providers (cloud LLM provider management, add/test/remove OpenAI, Anthropic, DeepSeek, and compatible APIs), Memory (User + Agent sections), MCP (plugin manager), Channels, Secrets, Tasks, Import, Images (Image Studio: Create / Library / Edit with tier-aware inpaint + upscale backends), Dashboard (Activity), Cluster (worker management + health), Library (knowledge pipeline, document library with collections and search), Agent Browsers (manage agent browser sessions), Files (real VFS with workspace + shared folders), taOS Agent (Agent-as-a-Model endpoint), Guides, Feedback, Decisions, Observatory, Notes, Todo.
+**Platform apps (29):** Messages (WebSocket chat), Mail (IMAP/SMTP accounts, read and send), Projects (Kanban + A2A), Agents (deploy wizard + logs + skills), Store (109+ apps), Settings (multi-section with Memory capture toggles), Models, Providers (cloud LLM provider management, add/test/remove OpenAI, Anthropic, DeepSeek, and compatible APIs), Memory (User + Agent sections), MCP (plugin manager), Channels, Secrets, Tasks, Import, Images (Image Studio: Create / Library / Edit with tier-aware inpaint + upscale backends), Dashboard (Activity), Cluster (worker management + health), Library (knowledge pipeline, document library with collections and search), Agent Browsers (manage agent browser sessions), Files (real VFS with workspace + shared folders), taOS Agent (Agent-as-a-Model endpoint), Guides, Feedback, Decisions, Archive (notification history), Observatory, Notes, Todo, Hub (taOS hub account and sharing).
 
 **Optional taOS apps (4):** Reddit (subreddit browser with saved threads and memory ingest), YouTube (video library with transcript extraction), GitHub (repository browser with code search), and X (feed monitor with bookmarks and memory capture) ship in the build but are not installed by default; install or remove them from the Store's "taOS Apps" section.
 
 **OS apps (9):** Weather, Calculator (math.js), Calendar (month view), Contacts (CRUD), Browser (URL-rewriting proxy, agent-ready), Media Player (Plyr), Text Editor (CodeMirror 6 with Obsidian-style theme), Image Viewer (zoom/rotate), Terminal (real PTY + SSH client).
 
-**Games & studios (4):** Game Studio (AI-assisted game maker -- describe an idea or start from a real three.js/canvas template, edit the generated files with a live preview and an AI chat sidebar, then install locally or export a .taosapp package), Chess (plays against real agents via LLM), Wordle, Crosswords.
+**Games & studios (5):** LoRA Studio (archive Civitai LoRAs by URL -- safetensors, previews, trigger words, and tags stored on your own cluster), Game Studio (AI-assisted game maker -- describe an idea or start from a real three.js/canvas template, edit the generated files with a live preview and an AI chat sidebar, then install locally or export a .taosapp package), Chess (plays against real agents via LLM), Wordle, Crosswords.
 
 The Activity app includes a Cluster overview panel showing live worker status and resource stats alongside the process monitor. The Model Browser surfaces cloud models (from configured providers) alongside local catalog models, with a provider badge per entry. The deploy wizard accepts cloud models as inference targets.
 
@@ -140,7 +140,7 @@ The Activity app includes a Cluster overview panel showing live worker status an
 ## Key Features
 
 ### Web Desktop Shell
-Full browser-based desktop OS with window manager (float + snap), dock, launchpad, right-click context menu, wallpaper picker, notifications, widgets, and persistent sessions that follow you across devices. 40 bundled apps, platform tools, OS utilities, and games, plus an optional password login gate. See [Web Desktop Experience](#web-desktop-experience) above.
+Full browser-based desktop OS with window manager (float + snap), dock, launchpad, right-click context menu, wallpaper picker, notifications, widgets, and persistent sessions that follow you across devices. 43 bundled apps, platform tools, OS utilities, and games, plus an optional password login gate. See [Web Desktop Experience](#web-desktop-experience) above.
 
 ### Mobile & Tablet Mode
 Auto-detects touch devices and swaps the desktop for a widget-first home screen with customisable multi-page layout (swipe or tap dots to navigate), a persistent dock with app launcher and app switcher, and desktop-style app windows with close/minimise title bars. The top bar features iOS 26-style frosted glass buttons for search and notifications, with a "taOS" home button. Installable as a fullscreen PWA on iOS and Android. A standalone Chat PWA is available at `/chat-pwa` and installs like a private Discord.
@@ -215,7 +215,7 @@ lets the scheduler route work only to backends that are genuinely ready.
 See [docs/design/resource-scheduler.md](docs/design/resource-scheduler.md).
 
 ### Local Model Catalog + Live Model Browser
-A curated catalog of 120 vetted model manifests ships in-tree, every download URL is verified against its upstream host, covering LLMs (Qwen3, Qwen2.5, Llama 3.1/3.3, Gemma 2/3, Phi-4, Mistral, Mixtral, DeepSeek, Granite, Command-R), vision models (Qwen2.5-VL, MiniCPM-V 2.6, Moondream2, Florence-2, LLaVA), embeddings (nomic, bge, mxbai, snowflake-arctic), rerankers (bge-reranker-v2, qwen3-reranker), speech (Whisper tiny→large-v3-turbo, Kokoro TTS, Piper, Parakeet), image generation (SD 1.5 LCM, Dreamshaper 8 LCM, SDXL Turbo/Lightning, Flux schnell/dev, SD3.5, PixArt-Σ, Playground v2.5, Kolors, AuraFlow), and image tools (RMBG-1.4, BiRefNet, Real-ESRGAN, 4x-UltraSharp, GFPGAN, CodeFormer, ControlNet canny/depth/pose). **RK3588 NPU variants** are included via c01zaut (Qwen2.5 1.5B→14B RKLLM) and happyme531 (LCM Dreamshaper SD as multi-file RKNN). **Hailo-10H NPU variants** (Raspberry Pi 5 + AI HAT+2, served by hailo-ollama) ship as `.hef` manifests: DeepSeek-R1-Distill-Qwen 1.5B, Llama 3.2 3B, Qwen2 1.5B, Qwen2.5 1.5B, and Qwen2.5 Coder 1.5B. The live Model Browser also searches 167k+ GGUF models from HuggingFace and the Ollama library. Hardware-filtered compatibility indicators show what runs on your device (green/yellow/red).
+A curated catalog of 120 vetted model manifests ships in-tree, every download URL is verified against its upstream host and every download is SHA256-verified against a checksum pinned in its manifest, covering LLMs (Qwen3, Qwen2.5, Llama 3.1/3.3, Gemma 2/3, Phi-4, Mistral, Mixtral, DeepSeek, Granite, Command-R), vision models (Qwen2.5-VL, MiniCPM-V 2.6, Moondream2, Florence-2, LLaVA), embeddings (nomic, bge, mxbai, snowflake-arctic), rerankers (bge-reranker-v2, qwen3-reranker), speech (Whisper tiny→large-v3-turbo, Kokoro TTS, Piper, Parakeet), image generation (SD 1.5 LCM, Dreamshaper 8 LCM, SDXL Turbo/Lightning, Flux schnell/dev, SD3.5, PixArt-Σ, Playground v2.5, Kolors, AuraFlow), and image tools (RMBG-1.4, BiRefNet, Real-ESRGAN, 4x-UltraSharp, GFPGAN, CodeFormer, ControlNet canny/depth/pose). **RK3588 NPU variants** are included via c01zaut (Qwen2.5 1.5B→14B RKLLM) and happyme531 (LCM Dreamshaper SD as multi-file RKNN). **Hailo-10H NPU variants** (Raspberry Pi 5 + AI HAT+2, served by hailo-ollama) ship as `.hef` manifests: DeepSeek-R1-Distill-Qwen 1.5B, Llama 3.2 3B, Qwen2 1.5B, Qwen2.5 1.5B, and Qwen2.5 Coder 1.5B. The live Model Browser also searches 167k+ GGUF models from HuggingFace and the Ollama library. Hardware-filtered compatibility indicators show what runs on your device (green/yellow/red).
 
 ### Agent Templates (1,467 Templates)
 Pick from 1,467 agent templates, 12 built-in plus 196 from awesome-openclaw-agents and 1,259 from the System Prompt Library, and deploy in one click. Browse by category (28 categories), filter by source, or search. Each template includes a system prompt, recommended framework, model, and resource limits. All templates vendored locally so nothing depends on external services.
@@ -249,7 +249,7 @@ Hidden internal gateway that unifies all inference providers behind a single Ope
 Features unlock automatically based on your hardware and cluster. Solo Pi sees core features. Add a GPU worker and image generation, video, and training appear. No configuration, the platform just knows what's possible.
 
 ### Creative Studios
-Dedicated studio apps for every kind of project, each a focused, native taOS workspace that runs entirely on your own cluster. Two are bundled (Images, Game Studio); Coding, App, Design, Music, Office, Web, Video, and Assistant studios are implemented but gated as optional apps (App Studio is taOS's own app builder, so agents and users can build and share new apps).
+Dedicated studio apps for every kind of project, each a focused, native taOS workspace that runs entirely on your own cluster. Three are bundled (Images, Game Studio, LoRA Studio); Coding, App, Design, Music, Office, Web, Video, and Assistant studios are implemented but gated as optional apps (App Studio is taOS's own app builder, so agents and users can build and share new apps).
 
 <p align="center">
   <img src="docs/images/images-studio.jpg" alt="Images Studio -- generate from a prompt and edit on a local GPU" width="49%">
@@ -259,6 +259,7 @@ Dedicated studio apps for every kind of project, each a focused, native taOS wor
 - **Images Studio.** Create, Library, and Edit in one app. Generate from a prompt on any discovered Stable Diffusion backend (NPU / GPU / CPU), browse a thumbnail library, and edit with tier-aware backends: inpaint and object removal, plus upscale. The platform picks the best installed backend per task and degrades gracefully when a higher tier is missing.
 - **Game Studio.** An AI-assisted game maker. Describe a game or start from a real, playable starter template (a 3D platformer and orbit shooter on three.js, a 2D top-down collector and breakout on canvas); the taOS agent customizes the template's files to match your prompt. Edit files directly or ask the AI chat sidebar for changes, with a live sandboxed preview and a fullscreen Play mode with a mandatory exit-to-taOS control. Install a finished game locally as a sandboxed app, or export it as a .taosapp package.
 - **Web Studio.** An AI-assisted, Wix-style website builder. Describe a site or start from a template, then edit it as stacked sections (hero, features, gallery, contact, and more) with inline text, image swaps, live theming, add/remove/reorder, and a responsive desktop, tablet, and mobile preview. Export a self-contained static HTML page. Sites persist on your own cluster.
+- **LoRA Studio.** Paste a Civitai model URL and taOS archives the LoRA on your own cluster: the .safetensors file (SHA256-verified), preview images, name, description, creator, base model, trigger words, and tags. Civitai URLs shared into the Library ingest through the same pipeline. Where Civitai geo-blocks your connection (HTTP 451), set `lora_ingest_proxy_url` in config and only this fetcher uses it.
 - **Video Studio.** Create and Library in one app. Describe a scene, pick a resolution and duration, and generate a clip on any discovered video backend (WanGP / Wan 2.1). Generated clips land in a library with inline playback, download, and delete.
 
 ### AI Generation
@@ -378,7 +379,7 @@ Search across agents, apps, messages, and shared folders from a single endpoint.
 - **System Updates.** Pull latest from GitHub via Settings page. taOS periodically checks for updates and sends an install ping carrying the version, platform, and a stable random per-install id (a UUID stored in the data dir, no personal data) so the project keeps an exact install count; disable with `TAOS_NO_UPDATE_PING=1` or in Settings.
 - **Provider Management.** Add/test/remove inference providers with live connectivity checks. The Providers desktop app manages cloud LLM credentials; the model browser reflects configured providers automatically.
 
-## App Catalog (109 Catalog Apps + 49 Desktop Apps + 47 MCP Plugins)
+## App Catalog (109 Catalog Apps + 55 Desktop Apps + 47 MCP Plugins)
 
 | Category | Apps |
 |----------|------|
@@ -416,7 +417,7 @@ Search across agents, apps, messages, and shared folders from a single endpoint.
 
 ```
 taOS Controller (FastAPI + htmx + React Desktop Shell)
-├── Web Desktop Shell (window manager, dock, launchpad, widgets, 40 bundled apps)
+├── Web Desktop Shell (window manager, dock, launchpad, widgets, 43 bundled apps)
 ├── Mobile/Tablet Shell (widget home, dock, app title bars, swipeable pages, iOS PWA)
 ├── Skills & Plugins Registry (8 core skills + 20 platform skills, 20 framework adapters)
 ├── User Memory (taosmd proxy: /ingest/batch + /search?mode=bm25, SQLite FTS5 fallback, auto-capture, global search)
@@ -696,7 +697,7 @@ CI runs automatically on every push (Python 3.12 and 3.13 on every PR; Python 3.
 ## Roadmap
 
 ### Done ✅
-- [x] Web desktop GUI with 40 bundled apps
+- [x] Web desktop GUI with 43 bundled apps
 - [x] App Store (109 apps, 17 agent frameworks)
 - [x] Live model browser (HuggingFace + Ollama, 167k+ models)
 - [x] Agent deployment wizard (LXC containers)
@@ -730,7 +731,7 @@ CI runs automatically on every push (Python 3.12 and 3.13 on every PR; Python 3.
 - [x] Playwright E2E test scaffolding
 - [x] Message Hub, built-in chat with channels, threads, canvas, dual PWA
 - [x] Dual container runtime (LXC + Docker, auto-detected)
-- [x] Web desktop shell (window manager, dock, launchpad, widgets, 40 bundled apps)
+- [x] Web desktop shell (window manager, dock, launchpad, widgets, 43 bundled apps)
 - [x] Mobile/tablet responsive mode with iOS PWA support
 - [x] Persistent desktop sessions across devices (windows, dock, wallpaper)
 - [x] User memory system (taOSmd with temporal KG + FTS5 + auto-capture)

@@ -238,6 +238,7 @@ async def _skill_image_generation(args: dict, request: Request) -> dict:
             model=args.get("model") or None,
             guidance_scale=float(args.get("guidance_scale", 7.5)),
             negative_prompt=args.get("negative_prompt", ""),
+            seed=args.get("seed"),
         )
         return result
     except Exception as exc:
@@ -426,14 +427,25 @@ async def _skill_notes_add_entry(args: dict, request: Request) -> dict:
         return {"error": str(exc)}
 
 
-async def _skill_notes_set_done(args: dict, request: Request) -> dict:
-    """Mark a list task done/not-done on a shared doc the agent belongs to."""
-    try:
-        from tinyagentos.tools.notes_tools import execute_notes_set_done
+async def _skill_todo_list_lists(args: dict, request: Request) -> dict:
+    """List non-archived todo lists the calling agent has access to."""
+    from tinyagentos.tools.todo_tools import execute_todo_list_lists
 
-        return await execute_notes_set_done(args, request)
-    except Exception as exc:
-        return {"error": str(exc)}
+    return await execute_todo_list_lists(args, request)
+
+
+async def _skill_todo_add_item(args: dict, request: Request) -> dict:
+    """Append an item to a todo list the calling agent has access to."""
+    from tinyagentos.tools.todo_tools import execute_todo_add_item
+
+    return await execute_todo_add_item(args, request)
+
+
+async def _skill_todo_set_done(args: dict, request: Request) -> dict:
+    """Mark a todo item done/not-done on a list the agent has access to."""
+    from tinyagentos.tools.todo_tools import execute_todo_set_done
+
+    return await execute_todo_set_done(args, request)
 
 
 SKILL_IMPLEMENTATIONS = {
@@ -463,7 +475,9 @@ SKILL_IMPLEMENTATIONS = {
     "export_storybook": _skill_export_storybook,
     "notes_list_shared_docs": _skill_notes_list_shared_docs,
     "notes_add_entry": _skill_notes_add_entry,
-    "notes_set_done": _skill_notes_set_done,
+    "todo_list_lists": _skill_todo_list_lists,
+    "todo_add_item": _skill_todo_add_item,
+    "todo_set_done": _skill_todo_set_done,
 }
 
 
@@ -488,18 +502,24 @@ async def list_tools(request: Request, agent_name: str):
         schema = skill.get("tool_schema") or {}
         if not schema:
             continue
+        skill_id = skill["id"]
+        # Only advertise skills that have a wired implementation — orphaned
+        # rows (seeded with INSERT OR IGNORE, then removed from the default
+        # set) survive in the skills table but would 501 on call.
+        if skill_id not in SKILL_IMPLEMENTATIONS:
+            continue
         tools.append(
             {
                 "type": "function",
                 "function": {
-                    "name": schema.get("name", skill["id"]),
+                    "name": schema.get("name", skill_id),
                     "description": schema.get(
                         "description", skill.get("description", "")
                     ),
                     "parameters": schema.get("input_schema", {}),
                 },
-                "skill_id": skill["id"],
-                "exec_url": f"/api/skill-exec/{skill['id']}/call",
+                "skill_id": skill_id,
+                "exec_url": f"/api/skill-exec/{skill_id}/call",
             }
         )
 

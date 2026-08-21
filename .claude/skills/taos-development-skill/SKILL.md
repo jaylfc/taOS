@@ -132,12 +132,24 @@ uv run pytest tests/test_<changed_module>.py tests/<related>/ -v
 uv run pytest tests/ --ignore=tests/e2e -n auto
 ```
 
+### Dependency-audit ignore hygiene
+
+`security/pip-audit-ignore.toml` suppresses advisories that have no released
+fix. `scripts/check_dependency_audit_ignores.py` (run by
+`.github/workflows/security.yml` on PRs and a Monday cron) re-evaluates the
+list every run so it cannot rot: it probes `uv lock --upgrade-package` per
+ignored package to see whether a fixed version now resolves, and runs
+`pip-audit` WITHOUT the ignore flags to catch any finding not on the list.
+If it fires: a resolvable fix means take the upgrade and drop the entry; a
+new advisory means triage it, never blanket-add it. Entries for tool-level
+deps the project does not pin set `check_upgrade = false`.
+
 ### Test conventions
 
 - `conftest.py`: `tmp_data_dir` fixture creates temp config + SQLite
 - `app` fixture: `create_app(data_dir=tmp_data_dir)`
 - `client` fixture: `AsyncClient(transport=ASGITransport(app=app))` - async HTTP test client
-- Module mirroring: `tests/test_agents.py` tests `routes/agents.py`
+- Module mirroring: `tests/test_routes_agents.py` tests `routes/agents.py`
 - SPA stubs: conftest creates stub `index.html`/`sw.js` so tests don't need `npm run build`
 - E2E (Playwright) tests excluded from CI and local gate
 
@@ -148,7 +160,14 @@ uv run pytest tests/ --ignore=tests/e2e -n auto
 - Uses `uv sync --frozen` and `pytest -n auto`
 - Also required: `spa-build` (npm build + tsc + **vitest** - a desktop type error or failing
   component test fails CI), a "Verify app starts" `create_app` import smoke, `lint`
-  (`compileall`), and `cla`. The doc-gate and store-wiring gate are separate workflows.
+  (`compileall`), and `cla`. The doc-gate, store-wiring gate, bot-review gate, and
+  distrust-green gate are separate workflows.
+- `check-all-skip` (`.github/workflows/distrust-green-gate.yml`, implementation in
+  `.github/scripts/check_all_skip.py`) fails a PR when a test file it adds or modifies
+  has tests and ALL of them skip (e.g. `pytest.importorskip` on a module that does not
+  exist yet) — green CI that asserts nothing. The failure names the file and the guard.
+  Landing tests ahead of code stays legal via an explicit waiver trailer in the PR body:
+  `Tests-Skipped-Intentionally: <file>, <why>`. Files with SOME skips pass (v1 scope).
 
 ## CLA - HUMAN signs
 
@@ -206,6 +225,13 @@ After pushing a PR and marking it ready, automated bots review it. The reliable 
 no-op, so never treat a CodeRabbit pass alone as evidence of review (its findings, when it does
 run, still get folded). Qodo (`qodo-code-review`) appears on old PRs but is paused. Address all
 findings **before** surfacing the PR for human maintainer review.
+
+The rate-limited no-op is now also machine-gated: `.github/workflows/bot-review-gate.yml`
+(implementation in `scripts/check_bot_review.py`) fails the `bot-review-gate` check when the
+only CodeRabbit output on a PR is a rate-limit stub, and a companion `re-run-on-stub-comment`
+job re-runs the gate against the PR head SHA when a stub comment lands *after* the initial
+run went green. A red `bot-review-gate` check means the PR has no substantive CodeRabbit
+review yet — wait for (or retrigger) a real review; do not merge on the stub.
 
 ### Procedure
 
@@ -416,16 +442,28 @@ normalized form (`1.0.0bN`). Only pyproject vs uv.lock is test-gated
 
 ## Documentation gate
 
-A gate blocks PRs that add or remove certain feature code without a matching doc update
-(configured in `docs/doc-gate.toml`):
+A gate blocks PRs that change certain feature code without a matching doc update
+(configured in `docs/doc-gate.toml`). Rules marked **any change** also fire on a plain
+modification; the rest fire only when a matching file is added or deleted. Test files
+(`test_*.py`, `*.test.*`, `*.spec.*`, `__tests__/`) never trigger any rule.
 
-| Change | Requires editing |
-|--------|-----------------|
-| Desktop app under `desktop/src/apps/` added/removed | `README.md` |
-| Route module under `tinyagentos/routes/` added/removed | `docs/agent-coordination.md` |
-| Installer under `tinyagentos/installers/` or `scripts/install*` added/removed | `README.md` |
-| Manifest under `app-catalog/` added/removed | `README.md` |
-| `tinyagentos/auth_middleware.py` (agent-token route allowlist) changed | `docs/agent-coordination.md` |
+| Change | Fires on | Requires editing |
+|--------|----------|-----------------|
+| Desktop app under `desktop/src/apps/` | add/remove | `README.md` |
+| Route module under `tinyagentos/routes/` | any change | `docs/agent-coordination.md` |
+| Installer under `tinyagentos/installers/` or `scripts/install*` | any change | `README.md` |
+| Manifest under `app-catalog/` | any change | `README.md` |
+| `tinyagentos/auth_middleware.py` (agent-token route allowlist) | any change | `docs/agent-coordination.md` |
+| Anything under `tinyagentos/` or `desktop/src/` | any change | `CHANGELOG.md` or a `changelog.d/*.md` fragment |
+| Agent registry, token auth, scope-requests store, `routes/agent_*.py`, `tinyagentos/mcp/` | any change | `docs/agent-manual/*.md` or `docs/agent-coordination.md` |
+| `.github/workflows/*.yml`, `pyproject.toml`, `CONTRIBUTING.md` | any change | this skill or `docs/*.md` |
+| `routes/desktop.py`, `routes/desktop_control.py`, `routes/taos_agent.py` | any change | `.claude/skills/taos-agent/*.md` or `docs/agent-manual/*.md` |
+| `update_runner.py`, `auto_update.py`, `restart_orchestrator.py`, `scripts/collate_changelog.py` | any change | `docs/RELEASING.md`, a runbook, or another `docs/*.md` |
+| `tinyagentos/worker/` | add/remove | `tinyagentos/worker/README.md` |
+
+The changelog rule is the one that catches most PRs: any non-test change under
+`tinyagentos/` or `desktop/src/` needs a `changelog.d/<pr>-<slug>.md` fragment (preferred
+over editing `CHANGELOG.md` directly, which conflicts between PRs).
 
 `.github/workflows/doc-gate.yml` is authoritative (a local `--no-verify` does not bypass it) and
 also runs `scripts/check_schema_migrations.py` (the SCHEMA-before-migrations guard, see Pitfalls).
@@ -434,6 +472,10 @@ If your PR trips a rule and there is genuinely nothing to document, add a traile
 ```
 Docs-Reviewed: no user-facing change, internal refactor only
 ```
+The trailer passes **every** rule for that PR, so it is an escape hatch, not a shortcut:
+the gate prints `doc-gate: trailer override used in <sha> by <author>: <why>` in its CI
+log for each commit that carries one, and that line is reviewable. A reviewer may ask for
+a real doc instead.
 
 Run `scripts/install-git-hooks.sh` to enable local hooks (`.githooks/pre-commit` and
 `.githooks/commit-msg`) so the gate runs before you push.

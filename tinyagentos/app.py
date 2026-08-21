@@ -106,6 +106,7 @@ from tinyagentos.office_docs import OfficeDocStore
 from tinyagentos.contacts_store import ContactsStore
 from tinyagentos.web_sites import WebSiteStore
 from tinyagentos.music_songs import SongStore
+from tinyagentos.lora_store import LoraStore
 from tinyagentos.design_docs import DesignStore
 from tinyagentos.knowledge_store import KnowledgeStore
 from tinyagentos.knowledge_ingest import IngestPipeline
@@ -298,6 +299,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     cluster_pairing_store = ClusterPairingStore(data_dir / "cluster_pairing.db")
     from tinyagentos.cluster.capability_map import CapabilityMap
     capability_map_store = CapabilityMap(data_dir / "capability_map.db")
+    # taOS #640: worker registry persistence + generation counter
+    from tinyagentos.cluster.worker_registry_store import WorkerRegistryStore
+    worker_registry_store = WorkerRegistryStore(data_dir / "cluster_workers.db")
+    # taOS #640: circuit breaker for failing workers
+    from tinyagentos.cluster.failure_tracker import FailureTracker
+    failure_tracker = FailureTracker()
 
     metrics_store = MetricsStore(data_dir / "metrics.db")
     notif_store = NotificationStore(data_dir / "notifications.db")
@@ -334,7 +341,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         interval_seconds=30.0,
     )
     fallback = BackendFallback(config.backends, http_client)
-    cluster_manager = ClusterManager(notifications=notif_store)
+    cluster_manager = ClusterManager(
+        notifications=notif_store,
+        worker_registry_store=worker_registry_store,
+        failure_tracker=failure_tracker,
+    )
     task_router = TaskRouter(cluster_manager, http_client)
     cap_checker = CapabilityChecker(hardware_profile, cluster_manager)
     cluster_manager._capabilities = cap_checker  # wire after creation (circular dep)
@@ -428,6 +439,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     doc_review_store = DocReviewStore(data_dir / "projects.db")
     from tinyagentos.projects.notes_store import ProjectNotesStore
     project_notes_store = ProjectNotesStore(data_dir / "projects.db")
+    from tinyagentos.projects.lists_store import ProjectListsStore, ProjectListEntriesStore
+    project_lists_store = ProjectListsStore(data_dir / "projects.db")
+    project_list_entries_store = ProjectListEntriesStore(data_dir / "projects.db")
     from tinyagentos.decisions.decision_store import DecisionStore
     decision_store = DecisionStore(data_dir / "decisions.db")
     from tinyagentos.governance.policy_store import ExecutionPolicyStore
@@ -462,6 +476,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     office_docs = OfficeDocStore(data_dir / "office_docs.db")
     web_sites = WebSiteStore(data_dir / "web_sites.db")
     song_store = SongStore(data_dir / "songs.db")
+    lora_store = LoraStore(data_dir / "loras.db")
     design_docs = DesignStore(data_dir / "design_docs.db")
     contacts_store = ContactsStore(data_dir / "contacts.db")
     coding_workspaces_store = CodingWorkspaceStore(
@@ -520,12 +535,41 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await agent_scope_requests_store.init()
         await agent_grants_store.init()
         app.state.agent_grants = agent_grants_store
+
+        # First-boot identity for the OS-native agent.  Runs on EVERY start, not
+        # only on a fresh install: it is how an install that upgraded into this
+        # code gets an identity without the owner doing anything, and it is
+        # idempotent by install id.  An ownerless install (setup not completed
+        # yet) is skipped and picked up by the setup route the moment an owner
+        # exists.
+        #
+        # Never fatal.  An install with no agent identity is degraded -- the
+        # agent keeps working through the owner's credential exactly as it did
+        # before this existed -- and refusing to boot over it would turn that
+        # into an outage.
+        try:
+            from tinyagentos.native_agent_identity import ensure_native_agent_identity
+
+            _owner = auth_manager.get_primary_user()
+            await ensure_native_agent_identity(
+                registry=agent_registry_store,
+                grants=agent_grants_store,
+                data_dir=data_dir,
+                signing_key_pem=agent_registry_keypair[0],
+                user_id=(_owner or {}).get("id", ""),
+            )
+        except Exception:
+            logger.exception("native agent identity could not be ensured at startup")
         await user_shares_store.init()
         app.state.user_shares = user_shares_store
         await app_grants_store.init()
         await license_acceptances_store.init()
         await agent_model_key_store.init()
         await cluster_pairing_store.init()
+        app.state.cluster_pairing = cluster_pairing_store
+        # taOS #640: worker registry store (persistence + generation counter)
+        await worker_registry_store.init()
+        app.state.worker_registry = worker_registry_store
         await capability_map_store.init()
         await metrics_store.init()
         await notif_store.init()
@@ -596,6 +640,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await project_canvas_store.init()
         await doc_review_store.init()
         await project_notes_store.init()
+        await project_lists_store.init()
+        await project_list_entries_store.init()
         await decision_store.init()
         await execution_policy_store.init()
         await shared_docs_store.init()
@@ -617,6 +663,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await office_docs.init()
         await web_sites.init()
         await song_store.init()
+        await lora_store.init()
         await design_docs.init()
         await contacts_store.init()
         await coding_workspaces_store.init()
@@ -1429,6 +1476,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await office_docs.close()
         await web_sites.close()
         await song_store.close()
+        await lora_store.close()
         await design_docs.close()
         await contacts_store.close()
         await coding_workspaces_store.close()
@@ -1461,6 +1509,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await project_canvas_store.close()
         await doc_review_store.close()
         await project_notes_store.close()
+        await project_lists_store.close()
+        await project_list_entries_store.close()
         await project_invite_store.close()
         await strike_store.close()
         await project_task_store.close()
@@ -1515,6 +1565,30 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                     logger.debug("shutdown: close failed for app.state.%s", _name, exc_info=True)
 
     app = FastAPI(title="TinyAgentOS", version="0.1.0", lifespan=lifespan)
+
+    # An unreadable account store must never be answered with a plausible
+    # empty result — "no such user" and "cannot read the users" are different
+    # facts, and conflating them is what produced the 2026-08-21 onboarding
+    # screen. Reads therefore raise, and one handler turns that into a single
+    # honest answer instead of an opaque 500 per route.
+    from fastapi.responses import JSONResponse
+
+    from tinyagentos.auth import AuthStoreCorruptError
+
+    @app.exception_handler(AuthStoreCorruptError)
+    async def _account_store_unreadable(request, exc):  # noqa: ANN001
+        logger.error("account store unreadable serving %s: %s", request.url.path, exc)
+        return JSONResponse(
+            {
+                "error": "account_store_unreadable",
+                "detail": (
+                    "The account store exists but cannot be read. Accounts are "
+                    "not lost; restore it from a backup — see "
+                    "docs/runbooks/controller-rescue.md."
+                ),
+            },
+            status_code=503,
+        )
 
     # Auth middleware — must be added before GZip so it runs first
     from tinyagentos.auth_middleware import AuthMiddleware
@@ -1628,6 +1702,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.project_canvas_store = project_canvas_store
     app.state.doc_review_store = doc_review_store
     app.state.project_notes_store = project_notes_store
+    app.state.project_lists_store = project_lists_store
+    app.state.project_list_entries_store = project_list_entries_store
     app.state.decision_store = decision_store
     app.state.execution_policies = execution_policy_store
     app.state.shared_docs_store = shared_docs_store
@@ -1657,6 +1733,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.office_docs = office_docs
     app.state.web_sites = web_sites
     app.state.song_store = song_store
+    app.state.lora_store = lora_store
     app.state.design_docs = design_docs
     app.state.contacts_store = contacts_store
     app.state.peer_outbox = peer_outbox_store

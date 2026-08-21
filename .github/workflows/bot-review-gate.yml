@@ -1,0 +1,108 @@
+name: Bot review gate
+
+# Blocks merges when the only CodeRabbit output on a PR is a rate-limit stub —
+# a comment that only announces the plan quota was exhausted instead of
+# producing an actual review. This catches the "fake-green" condition where
+# 33 PRs merged with nothing but a CodeRabbit rate-limit notice in one week
+# (see the 2026-08-16 bot-review retrospective audit). CodeRabbit's own
+# "Review rate limited" check passes by design, so it cannot catch this --
+# this gate inspects the comment body instead.
+#
+# See scripts/check_bot_review.py for the implementation.
+#
+# Workflow structure:
+#   bot-review-gate          -- runs on pull_request / pull_request_review
+#                              events, gated to the PR head SHA so branch
+#                              protection sees a red check on fake-green.
+#                              Skipped on issue_comment events (DEFECT 1 fix:
+#                              those payloads lack pull_request.number, which
+#                              made argparse crash with exit 2 on every comment).
+#   re-run-on-stub-comment   -- runs on issue_comment events but ONLY when a
+#                              CodeRabbit bot posts a stub comment on a PR.
+#                              It re-runs bot-review-gate for the PR's head
+#                              SHA, closing the timing hole (DEFECT 2) where
+#                              a stub lands after the initial green run.
+
+on:
+  pull_request:
+    branches: [master, dev]
+  pull_request_review:
+  issue_comment:
+
+jobs:
+  bot-review-gate:
+    # Skip issue_comment events: the bot-review-gate job must run only on
+    # pull_request and pull_request_review events where
+    # github.event.pull_request.number resolves. On issue_comment payloads
+    # there is no pull_request key, so the script's argparse(type=int) would
+    # crash on the empty string (exit 2), which previously fired on every
+    # comment across the entire repo.
+    if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Check for rate-limited CodeRabbit stub
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The check exits 1 (FAIL) when the only CodeRabbit output is a
+          # rate-limit stub. Exiting non-zero fails the workflow, blocking
+          # the merge on the PR's branch protection rule.
+          python scripts/check_bot_review.py "${{ github.event.pull_request.number }}"
+
+  re-run-on-stub-comment:
+    # Closes the timing hole (DEFECT 2): issue_comment events run against the
+    # default-branch commit, not the PR head SHA, so they cannot gate
+    # directly. When CodeRabbit posts a stub comment on a PR AFTER the
+    # pull_request run of bot-review-gate went green, this job re-runs
+    # bot-review-gate for the PR's head SHA so the stub is caught and the
+    # check turns red on the commit that branch protection actually
+    # evaluates.
+    #
+    # Guards (both must hold):
+    #   github.event.issue.pull_request           -- skip plain issues
+    #                                                (the issue object has no
+    #                                                 pull_request sub-object
+    #                                                 when the comment is on a
+    #                                                 non-PR issue)
+    #   github.event.comment.user.login ==
+    #     'coderabbitai[bot]'                        -- skip non-CodeRabbit
+    #                                                comments
+    if: github.event.issue.pull_request && github.event.comment.user.login == 'coderabbitai[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Re-run bot-review-gate workflow for PR head SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          PR_NUMBER="${{ github.event.issue.number }}"
+
+          # Resolve the PR's head SHA -- the commit branch protection gates on.
+          HEAD_SHA="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha')"
+          echo "PR #${PR_NUMBER} head SHA: ${HEAD_SHA}"
+
+          # Find the most recent bot-review-gate workflow run for this head SHA.
+          RUN_ID="$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}" \
+            --jq '.workflow_runs[] | select(.name=="Bot review gate") | .id' \
+            2>/dev/null | head -n1 || true)"
+
+          if [ -z "${RUN_ID}" ]; then
+            echo "No bot-review-gate workflow run found for head SHA ${HEAD_SHA}; nothing to re-run."
+            exit 0
+          fi
+
+          echo "Re-running bot-review-gate workflow run ${RUN_ID} for PR #${PR_NUMBER}"
+          gh api -X POST "repos/${REPO}/actions/runs/${RUN_ID}/rerun"

@@ -50,6 +50,14 @@ describe("ImageViewerApp", () => {
     expect(screen.getByText(/open image/i)).toBeInTheDocument();
   });
 
+  it("shows the basename of a decoded routed url, not the full nested path", async () => {
+    const url = `http://localhost/api/files/${encodeURIComponent("nested/photo.png")}`;
+    render(<ImageViewerApp windowId="win-1" url={url} />);
+    await flush();
+    expect(screen.getByText("photo.png")).toBeInTheDocument();
+    expect(screen.queryByText("nested/photo.png")).not.toBeInTheDocument();
+  });
+
   it("loads a selected file, shows its name, and reveals the toolbar", () => {
     const { container } = render(<ImageViewerApp windowId="win-1" />);
     const input = container.querySelector(

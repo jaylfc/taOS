@@ -870,3 +870,47 @@
   font-size: 0.7rem;
   white-space: nowrap;
 }
+
+/* Lists Tab */
+.listsRail {
+  width: 220px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-shell-surface);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 12px;
+  padding: 12px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.listsContainer {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 12px;
+}
+
+.listsEntriesPanel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+@media (max-width: 767px) {
+  .listsContainer {
+    flex-direction: column;
+  }
+  .listsRail {
+    width: 100%;
+    min-height: auto;
+    max-height: 40vh;
+  }
+  .listsEntriesPanel {
+    width: 100%;
+  }
+}

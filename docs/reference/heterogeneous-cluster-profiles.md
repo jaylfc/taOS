@@ -71,7 +71,7 @@ workers but falls through to any worker with the needed capability.
 6. Dispatch to the best candidate
 
 Step 2-4 is the new part. Steps 5-6 are the existing capability router
-from `tinyagentos/cluster/task_router.py`.
+from `tinyagentos/cluster/router.py`.
 
 ## User experience
 

@@ -13,7 +13,7 @@ import {
 import { Button } from "@/components/ui";
 import { MessageAvatar } from "./MessageAvatar";
 import { A2aBusSection, type BusChannel } from "./A2aBusPanel";
-import type { Channel, LiveAgent, ArchivedAgentEntry, ProjectGroup, WsStatus } from "./types";
+import type { Channel, LiveAgent, ArchivedAgentEntry, ProjectGroup, WsStatus, AgentPresence } from "./types";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -61,8 +61,8 @@ export interface ChannelSidebarProps {
   onSelectBusChannel: (channel: string) => void;
   /** Relative time formatter. */
   formatRelativeTime: (ts: number | string, nowMs: number) => string;
-  /** Channel ids whose bound taostalk_agent is currently thinking (live badge). */
-  thinkingChannelIds: string[];
+  /** Per-channel agent presence: "live" | "working" | "idle", keyed by channel id. */
+  agentPresence: Record<string, AgentPresence>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -98,7 +98,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
     busSelected,
     onSelectBusChannel,
     formatRelativeTime,
-    thinkingChannelIds,
+    agentPresence,
   } = props;
 
   if (isMobile) {
@@ -195,6 +195,9 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
                                 ? "var(--color-shell-surface-active)"
                                 : "none",
                             border: "none",
+                            borderLeft: selectedChannel === ch.id
+                              ? "3px solid var(--color-accent-line)"
+                              : "none",
                             borderBottom:
                               idx === arr.length - 1
                                 ? "none"
@@ -258,30 +261,24 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
                                 gap: 8,
                               }}
                             >
-                               <span
-                                 style={{
-                                   flex: 1,
-                                   fontSize: 15,
-                                   fontWeight: count > 0 ? 700 : 600,
-                                   color: "var(--color-shell-text)",
-                                   overflow: "hidden",
-                                   textOverflow: "ellipsis",
-                                   whiteSpace: "nowrap",
-                                 }}
-                               >
-                                 {ch.name}
-                               </span>
-                               {thinkingChannelIds.includes(ch.id) && (
-                                 <span
-                                   className="relative inline-flex h-1.5 w-1.5 shrink-0"
-                                   role="img"
-                                   aria-label="Agent is thinking"
-                                 >
-                                   <span className="taos-status-pulse absolute inset-0 rounded-full bg-amber-400" />
-                                   <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-amber-400" />
-                                 </span>
-                               )}
-                               {ch.last_message_at && (
+                              <span
+                                style={{
+                                  flex: 1,
+                                  fontSize: 15,
+                                  fontWeight: count > 0 ? 700 : 600,
+                                  color: "var(--color-shell-text)",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {ch.name}
+                              </span>
+                                {(() => {
+                                  const presence = agentPresence[ch.id];
+                                  return presence ? <PresenceDot presence={presence} /> : null;
+                                })()}
+                              {ch.last_message_at && (
                                 <span
                                   style={{
                                     fontSize: 11,
@@ -349,6 +346,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
           onSelectChannel={onSelectChannel}
           unread={unread}
           scope={scope}
+          agentPresence={agentPresence}
         />
 
         {/* Archived channels — mobile */}
@@ -459,7 +457,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
                       aria-pressed={selectedChannel === ch.id}
                       className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[10px] text-left transition-colors ${
                         selectedChannel === ch.id
-                          ? "bg-shell-surface-active"
+                          ? "bg-shell-surface-active border-l-2 border-accent-line"
                           : "hover:bg-shell-surface-hover"
                       }`}
                       aria-label={`Channel ${ch.name}`}
@@ -489,26 +487,20 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
                           )}
                         </span>
                       )}
-                       <span
-                         className={`truncate flex-1 text-[14px] tracking-tight ${
-                           count > 0
-                             ? "font-bold text-shell-text"
-                             : "font-semibold text-shell-text"
-                         }`}
-                       >
-                         {ch.name}
-                       </span>
-                       {thinkingChannelIds.includes(ch.id) && (
-                         <span
-                           className="relative inline-flex h-1.5 w-1.5 shrink-0"
-                           role="img"
-                           aria-label="Agent is thinking"
-                         >
-                           <span className="taos-status-pulse absolute inset-0 rounded-full bg-amber-400" />
-                           <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-amber-400" />
-                         </span>
-                       )}
-                       {count > 0 && (
+                        <span
+                          className={`truncate flex-1 text-[14px] tracking-tight ${
+                            count > 0
+                              ? "font-bold text-shell-text"
+                              : "font-semibold text-shell-text"
+                          }`}
+                        >
+                          {ch.name}
+                        </span>
+                        {(() => {
+                          const presence = agentPresence[ch.id];
+                          return presence ? <PresenceDot presence={presence} /> : null;
+                        })()}
+                      {count > 0 && (
                         <span className="shrink-0 bg-unread text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1 tabular-nums">
                           {count}
                         </span>
@@ -547,7 +539,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
                       }
                       className={`w-full text-left text-xs py-1 px-2 rounded flex items-center gap-1.5 ${
                         selectedChannel === ch.id
-                          ? "bg-white/10"
+                          ? "bg-white/10 border-l-2 border-accent-line"
                           : "hover:bg-white/5"
                       }`}
                     >
@@ -561,7 +553,11 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
                           }}
                         />
                       )}
-                      {ch.name}
+                      <span className="truncate flex-1">{ch.name}</span>
+                      {(() => {
+                        const presence = agentPresence[ch.id];
+                        return presence ? <PresenceDot presence={presence} /> : null;
+                      })()}
                     </button>
                   ))}
                 </div>
@@ -597,7 +593,41 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Internal sub-components                                            */
+/*  Presence dot                                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+* Small status dot shown next to agent DM channel names in the sidebar.
+* - working: amber with a pulse animation (agent is actively generating).
+* - live:   emerald solid (agent is running and available).
+* - idle:   muted gray (agent is paused, stopped, or otherwise unavailable).
+*/
+function PresenceDot({ presence }: { presence: AgentPresence }) {
+  const is = (presence === "live") ? (
+    <span
+      className="relative inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400"
+      role="img"
+      aria-label="Agent is live"
+    />
+  ) : presence === "working" ? (
+    <span
+      className="relative inline-flex h-1.5 w-1.5 shrink-0"
+      role="img"
+      aria-label="Agent is working"
+    >
+      <span className="taos-status-pulse absolute inset-0 rounded-full bg-amber-400" />
+      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-amber-400" />
+    </span>
+  ) : (
+    <span
+      className="relative inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-shell-text-tertiary"
+      role="img"
+      aria-label="Agent is idle"
+    />
+  );
+  return is;
+}
+
 /* ------------------------------------------------------------------ */
 
 function ConnectionStatus({ wsStatus }: { wsStatus: WsStatus }) {
@@ -698,6 +728,7 @@ function ProjectsSectionMobile({
   onSelectChannel,
   unread,
   scope,
+  agentPresence,
 }: {
   projectGroups: ProjectGroup[];
   projectsExpanded: boolean;
@@ -708,6 +739,7 @@ function ProjectsSectionMobile({
   onSelectChannel: (id: string) => void;
   unread: Record<string, number>;
   scope?: { projectId?: string };
+  agentPresence: Record<string, AgentPresence>;
 }) {
   if (scope?.projectId || projectGroups.length === 0) return null;
 
@@ -818,6 +850,10 @@ function ProjectsSectionMobile({
                             ? "var(--color-shell-surface-active)"
                             : "none",
                         border: "none",
+                        borderLeft:
+                          selectedChannel === ch.id
+                            ? "3px solid var(--color-accent-line)"
+                            : "none",
                         borderBottom:
                           idx === arr.length - 1
                             ? "none"
@@ -850,6 +886,10 @@ function ProjectsSectionMobile({
                       >
                         {ch.name}
                       </span>
+                      {(() => {
+                        const presence = agentPresence[ch.id];
+                        return presence ? <PresenceDot presence={presence} /> : null;
+                      })()}
                       {(unread[ch.id] ?? 0) > 0 && (
                         <span
                           style={{
@@ -994,6 +1034,10 @@ function ArchivedSection({
                           ? "var(--color-shell-surface-active)"
                           : "none",
                       border: "none",
+                      borderLeft:
+                        selectedChannel === ch.id
+                          ? "3px solid var(--color-accent-line)"
+                          : "none",
                       cursor: "pointer",
                       color: "inherit",
                       textAlign: "left" as const,
@@ -1110,7 +1154,9 @@ function ArchivedSection({
                   selectedChannel === ch.id ? "secondary" : "ghost"
                 }
                 onClick={() => onSelectChannel(ch.id)}
-                className="flex-1 justify-start h-auto py-1.5 pl-3 pr-1 text-[13px] rounded-none font-normal min-w-0"
+                className={`flex-1 justify-start h-auto py-1.5 pl-3 pr-1 text-[13px] rounded-none font-normal min-w-0 ${
+                  selectedChannel === ch.id ? "border-l-2 border-accent-line" : ""
+                }`}
                 aria-label={`Archived channel ${ch.name}`}
               >
                 <Archive

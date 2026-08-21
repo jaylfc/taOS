@@ -169,6 +169,10 @@ class DeployRequest:
     # the container environment. Optional (None) so existing callers/tests
     # are unaffected. Typed loosely to avoid a runtime import cycle.
     secrets_store: "SecretsStore | None" = None
+    # Memory mode: "both" (default), "framework" (native only), "taosmd"
+    # (taOSmd only). Injected as TAOS_MEMORY_MODE so the framework runtime
+    # can honour it at turn boundaries without a separate config push.
+    memory_mode: str = "both"
 
 
 async def deploy_agent(req: DeployRequest) -> dict:
@@ -316,6 +320,8 @@ async def deploy_agent(req: DeployRequest) -> dict:
     env["TAOS_AGENT_NAME"] = req.name
     # Home is always /root inside the container (rootfs).
     env["TAOS_AGENT_HOME"] = "/root"
+    # Memory mode: "both" (default), "framework" (native only), "taosmd" (taOSmd only).
+    env["TAOS_MEMORY_MODE"] = req.memory_mode
 
     # Selected model name (always set; empty string when not configured).
     env["TAOS_MODEL"] = req.model or ""

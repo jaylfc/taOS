@@ -554,6 +554,46 @@ async def test_agent_list_respects_project_grants(client):
     assert items[0]["project_id"] == pid_b
 
 
+@pytest.mark.asyncio
+async def test_agent_global_grant_lists_only_null_project_decisions(client):
+    """A global (null-project) grant must list only OS-level (null-project)
+    decisions, never project-scoped ones -- matching _resolve_decision_actor's
+    posting rule and the per-project isolation enforced on read/answer.
+
+    This is the agent-list counterpart to the global-grant post/answer
+    isolation tests above.  It FAILS if the store treats project_id=None as
+    'no filter' instead of 'IS NULL': the project-scoped decision leaks."""
+    app = client._transport.app
+    pid = await _new_project(client)
+    cid, token = await _mint_agent(app, None, ("decisions_write",))
+
+    # OS-level decision (project_id=None) attributed to the agent.
+    resp = await client.post(
+        "/api/decisions",
+        json=_decision_body(project_id=None, from_agent=cid),
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Project-scoped decision attributed to the SAME agent.
+    resp = await client.post(
+        "/api/decisions",
+        json=_decision_body(project_id=pid, from_agent=cid),
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Agent lists its own decisions with a global grant.
+    async with _agent_client(app, token) as ac:
+        resp = await ac.get("/api/decisions/agent")
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["items"]
+    # Only the null-project decision should be visible under a global grant.
+    assert len(items) == 1, (
+        f"global grant leaked project-scoped decisions: {items}"
+    )
+    assert items[0]["project_id"] is None
+    assert items[0]["from_agent"] == cid
+
+
 class TestAuthRunsBeforeBodyValidation:
     """A bad bearer must 401 before Pydantic body validation can 422.
 
@@ -604,3 +644,90 @@ class TestAuthRunsBeforeBodyValidation:
             headers={"Authorization": f"Bearer {local_token}"},
         )
         assert resp.status_code == 401
+
+
+# ── Other / free-text answer tests ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_agent_single_select_other_answer_accepted(client):
+    """An agent can answer its own single_select decision with a free-text
+    Other value via the mirror endpoint."""
+    app = client._transport.app
+    pid = await _new_project(client)
+    cid, token = await _mint_agent(app, pid, ("decisions_write",))
+
+    body = _decision_body(
+        project_id=pid,
+        type="single_select",
+        options=[{"label": "A", "value": "a"}],
+    )
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/decisions", json=body)
+    assert resp.status_code == 200, resp.text
+    did = resp.json()["id"]
+
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post(
+            f"/api/decisions/{did}/answer/agent",
+            json={"value": None, "other_value": "my custom answer"},
+        )
+    assert resp.status_code == 200, resp.text
+    d = resp.json()
+    assert d["answer"]["value"] == "my custom answer"
+    assert d["answer"]["other_value"] == "my custom answer"
+
+
+@pytest.mark.asyncio
+async def test_agent_multi_select_other_plus_option_accepted(client):
+    """An agent can answer its own multi_select with a real option plus Other."""
+    app = client._transport.app
+    pid = await _new_project(client)
+    cid, token = await _mint_agent(app, pid, ("decisions_write",))
+
+    body = _decision_body(
+        project_id=pid,
+        type="multi_select",
+        options=[{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    )
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/decisions", json=body)
+    assert resp.status_code == 200, resp.text
+    did = resp.json()["id"]
+
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post(
+            f"/api/decisions/{did}/answer/agent",
+            json={"value": ["a"], "other_value": "custom"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["answer"]["value"] == ["a", "custom"]
+
+
+@pytest.mark.asyncio
+async def test_agent_cannot_answer_via_human_path(client):
+    """An agent with a bearer JWT must NEVER be able to answer its own question
+    via the human path POST /api/decisions/{id}/answer. That route is not in
+    _AGENT_DECISIONS_ROUTES, so the auth middleware does not pass the Bearer
+    through, current_user_or_device falls through to require_device (which
+    rejects a non-device token), and the request 401s. The answer is always
+    attributed to the real user identity (session/device), never the agent."""
+    app = client._transport.app
+    pid = await _new_project(client)
+    _cid, token = await _mint_agent(app, pid, ("decisions_write",))
+
+    # Agent creates its own decision
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/decisions", json=_decision_body(project_id=pid))
+    assert resp.status_code == 200, resp.text
+    did = resp.json()["id"]
+
+    # Agent attempts to answer via the human path with its bearer token
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post(f"/api/decisions/{did}/answer", json={"value": "approve"})
+    assert resp.status_code == 401, resp.text
+
+    # The decision is still pending — no answer was recorded by the agent.
+    stored = await app.state.decision_store.get(did)
+    assert stored["status"] == "pending"
+    assert stored["answer"] is None

@@ -104,7 +104,7 @@ async def test_list_docs_empty(client):
 
 @pytest.mark.asyncio
 async def test_create_and_get_doc(client):
-    resp = await client.post("/api/notes", json={"kind": "note", "title": "App ideas"})
+    resp = await client.post("/api/notes", json={"title": "App ideas"})
     assert resp.status_code == 200
     doc = resp.json()
     assert doc["title"] == "App ideas"
@@ -118,7 +118,7 @@ async def test_create_and_get_doc(client):
 
 @pytest.mark.asyncio
 async def test_patch_doc_title_and_archive(client):
-    doc = (await client.post("/api/notes", json={"kind": "list", "title": "Old"})).json()
+    doc = (await client.post("/api/notes", json={"title": "Old"})).json()
     doc_id = doc["id"]
 
     # Rename.
@@ -142,7 +142,7 @@ async def test_patch_doc_title_and_archive(client):
 
 @pytest.mark.asyncio
 async def test_add_and_list_entries(client):
-    doc = (await client.post("/api/notes", json={"kind": "list", "title": "Todo"})).json()
+    doc = (await client.post("/api/notes", json={"title": "Todo"})).json()
     doc_id = doc["id"]
 
     entry = (await client.post(f"/api/notes/{doc_id}/entries", json={"text": "Buy milk"})).json()
@@ -154,24 +154,8 @@ async def test_add_and_list_entries(client):
 
 
 @pytest.mark.asyncio
-async def test_patch_entry_done(client):
-    doc = (await client.post("/api/notes", json={"kind": "list", "title": "x"})).json()
-    entry = (await client.post(f"/api/notes/{doc['id']}/entries", json={"text": "task"})).json()
-    entry_id = entry["id"]
-
-    resp = await client.patch(
-        f"/api/notes/{doc['id']}/entries/{entry_id}", json={"done": True}
-    )
-    assert resp.status_code == 200
-
-    full = (await client.get(f"/api/notes/{doc['id']}")).json()
-    e = next(e for e in full["entries"] if e["id"] == entry_id)
-    assert e["done"] is True
-
-
-@pytest.mark.asyncio
 async def test_delete_entry(client):
-    doc = (await client.post("/api/notes", json={"kind": "list", "title": "x"})).json()
+    doc = (await client.post("/api/notes", json={"title": "x"})).json()
     entry = (await client.post(f"/api/notes/{doc['id']}/entries", json={"text": "delete me"})).json()
     entry_id = entry["id"]
 
@@ -188,7 +172,7 @@ async def test_delete_entry(client):
 async def test_other_user_cannot_access_doc(two_user_clients):
     alice, bob, _ = two_user_clients
 
-    doc = (await alice.post("/api/notes", json={"kind": "note", "title": "Alice's note"})).json()
+    doc = (await alice.post("/api/notes", json={"title": "Alice's note"})).json()
     doc_id = doc["id"]
 
     resp = await bob.get(f"/api/notes/{doc_id}")
@@ -206,7 +190,7 @@ async def test_user_member_can_read_shared_doc(two_user_clients):
     alice, bob, app = two_user_clients
     bob_id = app.state.auth.find_user("bob")["id"]
 
-    doc = (await alice.post("/api/notes", json={"kind": "note", "title": "Shared"})).json()
+    doc = (await alice.post("/api/notes", json={"title": "Shared"})).json()
     doc_id = doc["id"]
 
     # Before sharing, bob cannot read it (consistent with list_docs).
@@ -228,7 +212,7 @@ async def test_user_member_can_read_shared_doc(two_user_clients):
     entry = (await alice.post(f"/api/notes/{doc_id}/entries", json={"text": "alice entry"})).json()
     eid = entry["id"]
     assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}/text", json={"text": "x"})).status_code == 403
-    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 403
+    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 405
     assert (await bob.delete(f"/api/notes/{doc_id}/entries/{eid}")).status_code == 403
     assert (await bob.patch(f"/api/notes/{doc_id}", json={"title": "x"})).status_code == 403
 
@@ -238,7 +222,7 @@ async def test_editor_member_can_edit_and_remove_entries(two_user_clients):
     """A member shared with permission='editor' can add, edit, toggle-done, and delete."""
     alice, bob, app = two_user_clients
     bob_id = app.state.auth.find_user("bob")["id"]
-    doc = (await alice.post("/api/notes", json={"kind": "list", "title": "Groceries"})).json()
+    doc = (await alice.post("/api/notes", json={"title": "Groceries"})).json()
     doc_id = doc["id"]
     # Share with editor permission so bob can edit/delete.
     await alice.post(
@@ -249,7 +233,7 @@ async def test_editor_member_can_edit_and_remove_entries(two_user_clients):
     entry = (await bob.post(f"/api/notes/{doc_id}/entries", json={"text": "milk"})).json()
     eid = entry["id"]
     assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}/text", json={"text": "oat milk"})).status_code == 200
-    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 200
+    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 405
     assert (await bob.delete(f"/api/notes/{doc_id}/entries/{eid}")).status_code == 200
 
     # Once unshared, the former member can no longer write.
@@ -261,7 +245,7 @@ async def test_editor_member_can_edit_and_remove_entries(two_user_clients):
 
 @pytest.mark.asyncio
 async def test_add_list_remove_member(client):
-    doc = (await client.post("/api/notes", json={"kind": "note", "title": "Ideas"})).json()
+    doc = (await client.post("/api/notes", json={"title": "Ideas"})).json()
     doc_id = doc["id"]
 
     resp = await client.post(
@@ -287,7 +271,7 @@ async def test_add_list_remove_member(client):
 
 @pytest.mark.asyncio
 async def test_invalid_member_type_returns_400(client):
-    doc = (await client.post("/api/notes", json={"kind": "note", "title": "x"})).json()
+    doc = (await client.post("/api/notes", json={"title": "x"})).json()
     resp = await client.post(
         f"/api/notes/{doc['id']}/members",
         json={"member_type": "robot", "member_id": "r2d2"},
@@ -297,7 +281,7 @@ async def test_invalid_member_type_returns_400(client):
 
 @pytest.mark.asyncio
 async def test_invalid_permission_returns_400(client):
-    doc = (await client.post("/api/notes", json={"kind": "note", "title": "x"})).json()
+    doc = (await client.post("/api/notes", json={"title": "x"})).json()
     resp = await client.post(
         f"/api/notes/{doc['id']}/members",
         json={"member_type": "user", "member_id": "bob", "permission": "superuser"},
@@ -307,7 +291,7 @@ async def test_invalid_permission_returns_400(client):
 
 @pytest.mark.asyncio
 async def test_invalid_action_returns_400(client):
-    doc = (await client.post("/api/notes", json={"kind": "note", "title": "x"})).json()
+    doc = (await client.post("/api/notes", json={"title": "x"})).json()
     resp = await client.post(
         f"/api/notes/{doc['id']}/members",
         json={"member_type": "agent", "member_id": "atlas", "action": "sleep"},
@@ -320,7 +304,7 @@ async def test_viewer_cannot_add_or_edit(two_user_clients):
     """A viewer member can read but not add, edit, or delete entries."""
     alice, bob, app = two_user_clients
     bob_id = app.state.auth.find_user("bob")["id"]
-    doc = (await alice.post("/api/notes", json={"kind": "list", "title": "ViewOnly"})).json()
+    doc = (await alice.post("/api/notes", json={"title": "ViewOnly"})).json()
     doc_id = doc["id"]
     await alice.post(
         f"/api/notes/{doc_id}/members",
@@ -333,7 +317,7 @@ async def test_viewer_cannot_add_or_edit(two_user_clients):
     entry = (await alice.post(f"/api/notes/{doc_id}/entries", json={"text": "alice entry"})).json()
     eid = entry["id"]
     assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}/text", json={"text": "x"})).status_code == 403
-    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 403
+    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 405
     assert (await bob.delete(f"/api/notes/{doc_id}/entries/{eid}")).status_code == 403
 
 
@@ -342,7 +326,7 @@ async def test_contributor_can_add_but_not_edit(two_user_clients):
     """A contributor member can add new entries but cannot edit or delete existing ones."""
     alice, bob, app = two_user_clients
     bob_id = app.state.auth.find_user("bob")["id"]
-    doc = (await alice.post("/api/notes", json={"kind": "list", "title": "ContribOnly"})).json()
+    doc = (await alice.post("/api/notes", json={"title": "ContribOnly"})).json()
     doc_id = doc["id"]
     await alice.post(
         f"/api/notes/{doc_id}/members",
@@ -353,27 +337,27 @@ async def test_contributor_can_add_but_not_edit(two_user_clients):
 
     entry = (await alice.post(f"/api/notes/{doc_id}/entries", json={"text": "alice entry"})).json()
     eid = entry["id"]
-    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 403
+    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 405
     assert (await bob.delete(f"/api/notes/{doc_id}/entries/{eid}")).status_code == 403
 
 
 @pytest.mark.asyncio
 async def test_owner_always_has_full_access(two_user_clients):
     """The owner can add, edit, and delete regardless of any member permission rules."""
-    alice, bob, _ = two_user_clients
-    doc = (await alice.post("/api/notes", json={"kind": "list", "title": "Mine"})).json()
+    alice, _, _ = two_user_clients
+    doc = (await alice.post("/api/notes", json={"title": "Mine"})).json()
     doc_id = doc["id"]
     entry = (await alice.post(f"/api/notes/{doc_id}/entries", json={"text": "item"})).json()
     eid = entry["id"]
     assert (await alice.patch(f"/api/notes/{doc_id}/entries/{eid}/text", json={"text": "updated"})).status_code == 200
-    assert (await alice.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 200
+    assert (await alice.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 405
     assert (await alice.delete(f"/api/notes/{doc_id}/entries/{eid}")).status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_member_default_permission_is_contributor(client):
     """When no permission is passed, the member gets 'contributor' by default."""
-    doc = (await client.post("/api/notes", json={"kind": "note", "title": "x"})).json()
+    doc = (await client.post("/api/notes", json={"title": "x"})).json()
     doc_id = doc["id"]
     await client.post(
         f"/api/notes/{doc_id}/members",
@@ -388,7 +372,7 @@ async def test_member_default_permission_is_contributor(client):
 @pytest.mark.asyncio
 async def test_add_member_stores_permission_and_action(client):
     """The permission and action fields are persisted and returned via list_members."""
-    doc = (await client.post("/api/notes", json={"kind": "note", "title": "x"})).json()
+    doc = (await client.post("/api/notes", json={"title": "x"})).json()
     doc_id = doc["id"]
     await client.post(
         f"/api/notes/{doc_id}/members",
@@ -511,7 +495,7 @@ async def test_add_entry_triggers_agent_dm(tmp_path, monkeypatch):
         transport=transport, base_url="http://test",
         cookies={"taos_session": token},
     ) as c:
-        doc = (await c.post("/api/notes", json={"kind": "note", "title": "Ideas"})).json()
+        doc = (await c.post("/api/notes", json={"title": "Ideas"})).json()
         doc_id = doc["id"]
 
         # Add atlas as an agent member with a standing instruction.
@@ -569,7 +553,7 @@ async def test_add_entry_no_agent_members_no_send(tmp_path):
         transport=transport, base_url="http://test",
         cookies={"taos_session": token},
     ) as c:
-        doc = (await c.post("/api/notes", json={"kind": "note", "title": "Solo"})).json()
+        doc = (await c.post("/api/notes", json={"title": "Solo"})).json()
         await c.post(f"/api/notes/{doc['id']}/entries", json={"text": "Just me"})
 
     assert sent == [], "no message should be sent when there are no agent members"
@@ -746,4 +730,45 @@ async def test_discuss_action_falls_back_to_dm_without_channel_store(tmp_path):
 
     # Fell back to the DM channel rather than dropping the notification.
     assert sent == ["ch-atlas"]
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_list_notes_filters_by_kind(tmp_path):
+    """GET /api/notes only returns docs with kind='note'.
+
+    Regression for #2325: the list endpoint should not leak todo-list or
+    other-kind docs into the Notes UI.
+    """
+    config = _make_config(tmp_path)
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+    (tmp_path / ".setup_complete").touch()
+
+    app = create_app(data_dir=tmp_path)
+    store = SharedDocsStore(tmp_path / "shared_docs.db")
+    await store.init()
+    app.state.shared_docs_store = store
+    app.state.auth.setup_user("admin", "Admin", "", "adminpass")
+    record = app.state.auth.find_user("admin")
+    token = app.state.auth.create_session(user_id=record["id"], long_lived=True)
+    app.state._startup_complete = True
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": token},
+    ) as client:
+        # Create a note (kind="note") — should be visible
+        note = (await client.post("/api/notes", json={"title": "My Note"})).json()
+
+        # Insert a list-kind doc directly into the store — should NOT be visible
+        await store.create_doc(record["id"], "list", "My List")
+
+        # Only the note should appear
+        resp = (await client.get("/api/notes")).json()
+        ids = {d["id"] for d in resp}
+        assert note["id"] in ids, "Note should be in list"
+        assert len(ids) == 1, f"Expected only 1 note, got {len(resp)} docs"
+
     await store.close()

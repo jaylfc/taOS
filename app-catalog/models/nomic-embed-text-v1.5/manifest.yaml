@@ -31,6 +31,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 512
+  sha256: d4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac
 - id: f32
   name: F32 GGUF (548MB)
   format: gguf
@@ -53,6 +54,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 1024
+  sha256: ed3a84b570c5513bfd6bfe0ed4cdc8d5a5de5c6b5029fbbc2822d59fc893c1f8
 hardware_tiers:
   arm-cpu-8gb:
     recommended: q4_k_m

@@ -192,6 +192,9 @@ def register_all_routers(app):
     from tinyagentos.routes.project_notes import router as project_notes_router
     app.include_router(project_notes_router, dependencies=_csrf)
 
+    from tinyagentos.routes.project_lists import router as project_lists_router
+    app.include_router(project_lists_router, dependencies=_csrf)
+
     from tinyagentos.routes.desktop_control import router as desktop_control_router
     app.include_router(desktop_control_router, dependencies=_csrf)
 
@@ -353,6 +356,9 @@ def register_all_routers(app):
     from tinyagentos.routes.event_stream import router as event_stream_router
     app.include_router(event_stream_router, dependencies=_csrf)
 
+    from tinyagentos.routes.os_events import router as os_events_router
+    app.include_router(os_events_router, dependencies=_csrf)
+
     # OTLP/HTTP+JSON receiver -- Phase 2 observability.
     # POST /v1/traces accepts ExportTraceServiceRequest JSON and writes spans
     # to the per-agent SpanStore (app.state.span_store_registry).
@@ -426,6 +432,9 @@ def register_all_routers(app):
 
     from tinyagentos.routes.library import router as library_router
     app.include_router(library_router, dependencies=_csrf)
+
+    from tinyagentos.routes.lora_studio import router as lora_studio_router
+    app.include_router(lora_studio_router, dependencies=_csrf)
 
     from tinyagentos.routes import wallhaven as wallhaven_routes
     app.include_router(wallhaven_routes.router, dependencies=_csrf)

@@ -132,7 +132,6 @@ describe("NotesApp", () => {
       );
       expect(postCalls.length).toBeGreaterThan(0);
       const body = JSON.parse(postCalls[0]![1]!.body as string);
-      expect(body.kind).toBe("note");
       expect(body.title).toBe("New Note");
     });
 

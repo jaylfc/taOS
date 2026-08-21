@@ -39,6 +39,9 @@ class SkillStore(BaseStore):
         # backfills any builtin skills added since it was first seeded (e.g. new
         # desktop-control tools) without disturbing user-installed skills.
         await self._seed_defaults()
+        # Clean up skills removed from SKILL_IMPLEMENTATIONS — rows are seeded
+        # with INSERT OR IGNORE so they survive when the default-set is trimmed.
+        await self._remove_orphan_skills()
 
     async def _seed_defaults(self):
         """Seed the default skill set."""
@@ -203,6 +206,8 @@ class SkillStore(BaseStore):
                         "properties": {
                             "prompt": {"type": "string"},
                             "size": {"type": "string", "default": "512x512"},
+                            "steps": {"type": "integer", "default": 4, "minimum": 1, "maximum": 8},
+                            "seed": {"type": "integer", "description": "Random seed for reproducibility (omit for a fresh image; reuse a returned seed to tweak a liked image)."},
                             "model": {"type": "string"},
                             "guidance_scale": {"type": "number", "default": 7.5},
                             "negative_prompt": {"type": "string", "default": ""},
@@ -685,21 +690,16 @@ class SkillStore(BaseStore):
                 "install_target": "tinyagentos.tools.notes_tools",
             },
             {
-                "id": "notes_set_done",
-                "name": "Set Notes Task Done",
-                "category": "notes",
-                "description": "Mark a task done or not done on a shared list the agent is a member of",
+                "id": "todo_list_lists",
+                "name": "List Todo Lists",
+                "category": "todo",
+                "description": "List the non-archived todo lists the agent has access to",
                 "tool_schema": {
-                    "name": "notes_set_done",
-                    "description": "Mark a task on a shared list done or not done. Use notes_list_shared_docs to find the doc_id and read the entry ids. The agent needs contributor or editor permission.",
+                    "name": "todo_list_lists",
+                    "description": "List the non-archived todo lists this agent has access to. Returns id, title, and updated_at for each list.",
                     "input_schema": {
                         "type": "object",
-                        "properties": {
-                            "doc_id": {"type": "string", "description": "Id of the shared list (from notes_list_shared_docs)."},
-                            "entry_id": {"type": "string", "description": "Id of the task entry to mark."},
-                            "done": {"type": "boolean", "description": "True to mark done, false to reopen."},
-                        },
-                        "required": ["doc_id", "entry_id", "done"],
+                        "properties": {},
                     },
                 },
                 "frameworks": {
@@ -708,7 +708,58 @@ class SkillStore(BaseStore):
                     "openai-agents-sdk": "adapter", "generic": "adapter",
                 },
                 "install_method": "builtin",
-                "install_target": "tinyagentos.tools.notes_tools",
+                "install_target": "tinyagentos.tools.todo_tools",
+            },
+            {
+                "id": "todo_add_item",
+                "name": "Add Todo Item",
+                "category": "todo",
+                "description": "Append a new item to a todo list the agent has access to",
+                "tool_schema": {
+                    "name": "todo_add_item",
+                    "description": "Append a new item to a todo list this agent has access to. Use todo_list_lists first to get the list_id.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "list_id": {"type": "string", "description": "Id of the todo list (from todo_list_lists)."},
+                            "text": {"type": "string", "description": "The item text to append."},
+                        },
+                        "required": ["list_id", "text"],
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.todo_tools",
+            },
+            {
+                "id": "todo_set_done",
+                "name": "Set Todo Item Done",
+                "category": "todo",
+                "description": "Mark a todo item done or not done on a list the agent has access to",
+                "tool_schema": {
+                    "name": "todo_set_done",
+                    "description": "Mark a todo item done or not done. Use todo_list_lists to find the list_id and read the item ids. The agent needs access to the list (owner match).",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "list_id": {"type": "string", "description": "Id of the todo list (from todo_list_lists)."},
+                            "item_id": {"type": "string", "description": "Id of the todo item to mark."},
+                            "done": {"type": "boolean", "description": "True to mark done, false to reopen."},
+                        },
+                        "required": ["list_id", "item_id", "done"],
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.todo_tools",
             },
 
         ]
@@ -743,6 +794,45 @@ class SkillStore(BaseStore):
                     json.dumps(skill.get("requires_services", [])),
                     skill["install_target"], skill["id"],
                 ),
+            )
+        await self._db.commit()
+
+    async def _remove_orphan_skills(self) -> None:
+        """Delete seeded skills that no longer have an implementation.
+
+        Built-in skills are seeded with INSERT OR IGNORE on every startup,
+        so removing a skill from the default set does not delete its row
+        on existing installs.  This method cleans up known-orphaned rows
+        so agents that had the skill assigned are no longer advertised a
+        tool that will 501 on call.
+
+        Before deleting an orphan skill, any agent assignments are migrated
+        to the replacement skill (INSERT OR IGNORE) so agents do not
+        silently lose tool access after startup.
+        """
+        if self._db is None:
+            return
+        # Keys: old (orphaned) skill id → replacement skill id.
+        # Entries document *when* the skill was removed and why.
+        _ORPHAN_REPLACEMENTS: dict[str, str] = {
+            "notes_set_done": "todo_set_done",  # removed 2026-07, #1923 notes/todo split
+        }
+        for old_id, new_id in _ORPHAN_REPLACEMENTS.items():
+            # Migrate agents from the orphan skill to its replacement.
+            # INSERT OR IGNORE: if the agent already has the replacement,
+            # keep the existing (newer) assignment; only fill in for agents
+            # that would otherwise lose completion access.
+            await self._db.execute(
+                """INSERT OR IGNORE INTO agent_skills (agent_id, skill_id, enabled, config)
+                   SELECT agent_id, ?, enabled, '{}'
+                   FROM agent_skills
+                   WHERE skill_id = ?""",
+                (new_id, old_id),
+            )
+            # Now safe to remove the orphan rows.
+            await self._db.execute("DELETE FROM skills WHERE id = ?", (old_id,))
+            await self._db.execute(
+                "DELETE FROM agent_skills WHERE skill_id = ?", (old_id,)
             )
         await self._db.commit()
 

@@ -245,3 +245,41 @@ async def test_skill_exec_image_generation_no_regression(app_with_store):
     data = resp.json()
     assert data["success"] is True
     assert data["image_b64"] == "abc"
+
+
+@pytest.mark.asyncio
+async def test_skill_exec_image_generation_forwards_seed(app_with_store):
+    """A seed passed through the skill-exec path must reach execute_image_generation
+    so the documented iterate-with-same-seed workflow works end to end.
+
+    Regression test for tsk-47ix5m: seed was documented but never forwarded by
+    _skill_image_generation, so an agent reusing a seed read back from the result
+    silently got a fresh random seed on every call.
+    """
+    store = app_with_store.state.skills
+    await store.assign_skill("don", "image_generation")
+
+    gen_payload = {"success": True, "image_ref": "gen.png", "seed": 123}
+
+    with patch(
+        "tinyagentos.tools.image_tool.execute_image_generation",
+        new_callable=AsyncMock,
+        return_value=gen_payload,
+    ) as mock_gen:
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_store), base_url="http://test"
+        ) as client:
+            resp_a = await client.post(
+                "/api/skill-exec/image_generation/call",
+                json={"args": {"prompt": "a red barn", "seed": 123}},
+            )
+            resp_b = await client.post(
+                "/api/skill-exec/image_generation/call",
+                json={"args": {"prompt": "a red barn at dusk", "seed": 123}},
+            )
+
+    assert resp_a.status_code == 200
+    assert resp_b.status_code == 200
+    assert mock_gen.await_count == 2
+    assert mock_gen.call_args_list[0].kwargs.get("seed") == 123
+    assert mock_gen.call_args_list[1].kwargs.get("seed") == 123

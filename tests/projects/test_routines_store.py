@@ -1,5 +1,3 @@
-import time
-
 import pytest
 import pytest_asyncio
 from croniter import croniter
@@ -11,13 +9,13 @@ from tinyagentos.projects.routines_store import RoutineStore
 async def store(tmp_path):
     s = RoutineStore(tmp_path / "routines.db")
     await s.init()
+    s._clock = staticmethod(lambda: 43200.0)
     yield s
     await s.close()
 
 
 @pytest.mark.asyncio
 async def test_create_cron_routine_computes_next_fire(store):
-    before = time.time()
     r = await store.create_routine(
         project_id="prj-1",
         title="Daily standup task",
@@ -31,13 +29,7 @@ async def test_create_cron_routine_computes_next_fire(store):
     assert r["enabled"] == 1
     assert r["webhook_token"] is None
     assert r["last_fired"] is None
-    # next_fire must be exactly what croniter computes from a timestamp in
-    # [before, after] — assert it lands in the expected window rather than a
-    # frozen value, since real time elapsed during the call.
-    after = time.time()
-    expected_lo = croniter("0 3 * * *", before).get_next(float)
-    expected_hi = croniter("0 3 * * *", after).get_next(float)
-    assert expected_lo <= r["next_fire"] <= expected_hi + 1
+    assert r["next_fire"] == croniter("0 3 * * *", 43200.0).get_next(float)
 
 
 @pytest.mark.asyncio
@@ -152,11 +144,10 @@ async def test_list_routines_scoped_to_project(store):
 
 @pytest.mark.asyncio
 async def test_list_due_returns_only_past_due_enabled_cron_routines(store):
-    now = time.time()
+    now = 43200.0
     due = await store.create_routine(
         project_id="prj-1", title="Due", created_by="u", cron_expr="0 3 * * *",
     )
-    # Force it into the past so it is due right now.
     await store._db.execute(
         "UPDATE routines SET next_fire = ? WHERE id = ?", (now - 10, due["id"])
     )
@@ -186,7 +177,7 @@ async def test_list_due_returns_only_past_due_enabled_cron_routines(store):
 
 @pytest.mark.asyncio
 async def test_list_due_excludes_disabled_routine(store):
-    now = time.time()
+    now = 43200.0
     r = await store.create_routine(
         project_id="prj-1", title="Due but disabled", created_by="u", cron_expr="0 3 * * *",
     )
@@ -264,7 +255,7 @@ async def test_record_fire_on_webhook_routine_leaves_next_fire_none(store):
     r = await store.create_routine(
         project_id="prj-1", title="Hook", created_by="u", trigger_kind="webhook",
     )
-    updated = await store.record_fire(r["id"], time.time())
+    updated = await store.record_fire(r["id"], 43200.0)
     assert updated["next_fire"] is None
     assert updated["last_fired"] is not None
 
@@ -304,14 +295,14 @@ async def test_claim_due_ignores_non_cron_and_disabled(store):
     webhook = await store.create_routine(
         project_id="prj-1", title="Hook", created_by="u", trigger_kind="webhook",
     )
-    assert await store.claim_due(webhook["id"], 0.0, time.time()) is False
+    assert await store.claim_due(webhook["id"], 0.0, 43200.0) is False
 
     cron = await store.create_routine(
         project_id="prj-1", title="Disabled", created_by="u", cron_expr="* * * * *",
     )
     original_next = cron["next_fire"]
     await store.update_routine(cron["id"], enabled=False)
-    assert await store.claim_due(cron["id"], original_next, time.time()) is False
+    assert await store.claim_due(cron["id"], original_next, 43200.0) is False
 
 
 @pytest.mark.asyncio

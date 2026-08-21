@@ -24,6 +24,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 2048
+  sha256: 9ab37426bf4de0567af6b5d21b16151357149139362e6e8992021b8ce356a154
 hardware_tiers:
   arm-cpu-8gb:
     recommended: safetensors

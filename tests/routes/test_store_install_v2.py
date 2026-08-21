@@ -540,3 +540,237 @@ class TestGetDeviceCapabilityDisk:
         cap = await get_device_capability(req, None)
         assert cap.total_ram_mb == 15958
         assert cap.total_vram_mb == 24576
+
+
+class TestHailoDaemonHost:
+    """The hailo-ollama backend must receive the hailo daemon host (7836),
+    not the Ollama default (11434)."""
+
+    @pytest.mark.asyncio
+    async def test_hailo_ollama_installer_receives_hailo_host(self, client):
+        """get_installer is called with host=http://localhost:7836 for hailo-ollama."""
+        hailo_manifest = MagicMock()
+        hailo_manifest.id = "llama-3.2-3b"
+        hailo_manifest.type = "model"
+        hailo_manifest.variants = [
+            {
+                "id": "a8w4",
+                "size_mb": 3214,
+                "download_url": "https://dev-public.hailo.ai/v5.1.1/blob/Llama-3_2-3B-Instruct.hef",
+                "sha256": "7fc9c7723282482cc3acf08244212668f8b7684deb792b791504ab7f68a83708",
+                "requires": {
+                    "backends": [
+                        {"id": "hailo-ollama", "targets": ["hailo"], "min_ram_mb": 3072},
+                    ],
+                },
+            },
+        ]
+        hailo_manifest.context_window = 2048
+        hailo_manifest.hardware_tiers = {}
+        hailo_manifest.install = {}
+        hailo_manifest.version = "3.2.0"
+
+        hailo_backend = MagicMock()
+        hailo_backend.id = "hailo-ollama"
+        hailo_backend.type = "service"
+        hailo_backend.install = {"method": "ollama"}
+        hailo_backend.requires = {}
+        hailo_backend.hardware_tiers = {}
+        hailo_backend.version = "1.0.0"
+
+        registry = MagicMock()
+        registry.get_app = MagicMock(side_effect=lambda app_id: {
+            "llama-3.2-3b": hailo_manifest,
+            "hailo-ollama": hailo_backend,
+        }.get(app_id))
+        registry.get = MagicMock(side_effect=lambda app_id: {
+            "llama-3.2-3b": hailo_manifest,
+            "hailo-ollama": hailo_backend,
+        }.get(app_id))
+        registry.mark_installed = MagicMock()
+        registry.list_available = MagicMock(return_value=[])
+        client._transport.app.state.registry = registry
+
+        mock_installed_apps = MagicMock()
+        mock_installed_apps.install = AsyncMock(return_value=None)
+        mock_installed_apps.update_runtime_location = AsyncMock(return_value=None)
+        client._transport.app.state.installed_apps = mock_installed_apps
+
+        mock_installer = MagicMock()
+        mock_installer.install = AsyncMock(return_value={"success": True})
+        mock_get = MagicMock(return_value=mock_installer)
+
+        pi5_hailo = DeviceCapability(
+            device_id="pi5-hailo",
+            targets=("hailo", "cpu"),
+            total_ram_mb=8192,
+            total_vram_mb=0,
+            free_disk_mb=50_000,
+            installed_backends=(),
+        )
+
+        with patch(
+            "tinyagentos.routes.store_install.get_device_capability",
+            new=AsyncMock(return_value=pi5_hailo),
+        ), patch(
+            "tinyagentos.routes.store_install.get_installer",
+            mock_get,
+        ):
+            r = await client.post("/api/store/install-v2", json={
+                "manifest_id": "llama-3.2-3b",
+                "variant_id": "a8w4",
+            })
+
+        assert r.status_code == 200
+        model_call = next(
+            (
+                call
+                for call in mock_get.call_args_list
+                if call.args and call.args[0] == "ollama"
+                and call.kwargs.get("host") == "http://localhost:7836"
+            ),
+            None,
+        )
+        assert model_call is not None, (
+            f"expected a get_installer call with method='ollama' and "
+            f"host='http://localhost:7836', got {mock_get.call_args_list!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# target_remote boundary validation (hostile string hardening)
+# ---------------------------------------------------------------------------
+
+class TestTargetRemoteValidation:
+    """Reject hostile target_remote at the install API boundary.
+
+    An authenticated caller must not be able to inject an arbitrary
+    host/path/port into backend daemon URLs (SSRF-shaped) or silently route
+    an install to a typo'd host via a degenerate stub capability.
+    """
+
+    @pytest.mark.asyncio
+    async def test_hostile_target_remote_returns_400_no_installer(self, client, fake_registry):
+        """target_remote='attacker.example.com:9999/x' must 400 with no installer."""
+        client._transport.app.state.registry = fake_registry
+        with patch(
+            "tinyagentos.routes.store_install.get_installer"
+        ) as mock_get:
+            r = await client.post("/api/store/install-v2", json={
+                "manifest_id": "qwen2.5-3b",
+                "variant_id": "q4_k_m",
+                "target_remote": "attacker.example.com:9999/x",
+            })
+        assert r.status_code == 400
+        body = r.json()
+        assert body["reason"] == "invalid_target_remote"
+        mock_get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_target_remote_with_port_and_at_sign_rejected(self, client, fake_registry):
+        """Any target_remote carrying ':' or '@' is rejected at the boundary."""
+        client._transport.app.state.registry = fake_registry
+        with patch(
+            "tinyagentos.routes.store_install.get_installer"
+        ) as mock_get:
+            r = await client.post("/api/store/install-v2", json={
+                "manifest_id": "qwen2.5-3b",
+                "variant_id": "q4_k_m",
+                "target_remote": "10.0.0.1:443@attacker.com",
+            })
+        assert r.status_code == 400
+        assert r.json()["reason"] == "invalid_target_remote"
+        mock_get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_nonstring_target_remote_rejected_cleanly(self, client, fake_registry):
+        """A non-string target_remote (e.g. JSON 123) must 400, not crash 500."""
+        client._transport.app.state.registry = fake_registry
+        with patch(
+            "tinyagentos.routes.store_install.get_installer"
+        ) as mock_get:
+            r = await client.post("/api/store/install-v2", json={
+                "manifest_id": "qwen2.5-3b",
+                "variant_id": "q4_k_m",
+                "target_remote": 123,
+            })
+        assert r.status_code == 400
+        assert r.json()["reason"] == "invalid_target_remote"
+        mock_get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_local_target_remote_not_rejected(self, client, fake_registry, pi_capability):
+        """'local' / None / empty bypass the host validation entirely."""
+        client._transport.app.state.registry = fake_registry
+        with patch(
+            "tinyagentos.routes.store_install.get_device_capability",
+            new=AsyncMock(return_value=pi_capability),
+        ), patch(
+            "tinyagentos.routes.store_install.get_installer"
+        ) as mock_get:
+            backend_inst = MagicMock()
+            backend_inst.install = AsyncMock(return_value={"success": True, "method": "script"})
+            model_inst = MagicMock()
+            model_inst.install = AsyncMock(return_value={"success": True})
+            mock_get.side_effect = [backend_inst, model_inst]
+            r = await client.post("/api/store/install-v2", json={
+                "manifest_id": "qwen2.5-3b",
+                "variant_id": "q4_k_m",
+                "target_remote": "local",
+            })
+        assert r.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_registered_worker_target_remote_passes_validation(self, client, fake_registry, pi_capability):
+        """A target_remote that matches a registered cluster worker is accepted."""
+        from tinyagentos.cluster.worker_protocol import WorkerInfo
+
+        worker = WorkerInfo(
+            name="edge-gpu-01",
+            url="http://10.0.0.50:6969",
+            hardware={"ram_mb": 16384, "gpu": {"type": "nvidia", "vram_mb": 24576}, "disk": {"total_gb": 100, "free_gb": 50}},
+            backends=[{"name": "rkllama"}],
+        )
+        cluster = client._transport.app.state.cluster_manager
+        cluster._workers["edge-gpu-01"] = worker
+        client._transport.app.state.registry = fake_registry
+
+        with patch(
+            "tinyagentos.routes.store_install.get_device_capability",
+            new=AsyncMock(return_value=pi_capability),
+        ), patch(
+            "tinyagentos.routes.store_install.get_installer"
+        ) as mock_get:
+            backend_inst = MagicMock()
+            backend_inst.install = AsyncMock(return_value={"success": True, "method": "script"})
+            model_inst = MagicMock()
+            model_inst.install = AsyncMock(return_value={"success": True})
+            mock_get.side_effect = [backend_inst, model_inst]
+            r = await client.post("/api/store/install-v2", json={
+                "manifest_id": "qwen2.5-3b",
+                "variant_id": "q4_k_m",
+                "target_remote": "edge-gpu-01",
+            })
+        assert r.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_bare_hostname_passes_validation(self, client, fake_registry, pi_capability):
+        """A bare hostname (no port/path) is accepted as a registry-less install."""
+        client._transport.app.state.registry = fake_registry
+        with patch(
+            "tinyagentos.routes.store_install.get_device_capability",
+            new=AsyncMock(return_value=pi_capability),
+        ), patch(
+            "tinyagentos.routes.store_install.get_installer"
+        ) as mock_get:
+            backend_inst = MagicMock()
+            backend_inst.install = AsyncMock(return_value={"success": True, "method": "script"})
+            model_inst = MagicMock()
+            model_inst.install = AsyncMock(return_value={"success": True})
+            mock_get.side_effect = [backend_inst, model_inst]
+            r = await client.post("/api/store/install-v2", json={
+                "manifest_id": "qwen2.5-3b",
+                "variant_id": "q4_k_m",
+                "target_remote": "edge-host.pi",
+            })
+        assert r.status_code == 200

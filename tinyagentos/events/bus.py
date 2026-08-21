@@ -79,9 +79,21 @@ class EventBus:
         Bypasses the routing sinks (trace_store, notifications, agent_messages)
         so callers that have already persisted the event (e.g. NotificationStore)
         can push it to SSE subscribers without recursion or double-persistence.
+
+        Every connected SSE client receives broadcast events (and the replay
+        buffer re-delivers recent ones on connect) -- events whose payload is
+        scoped to one user must go through publish_to() instead.
         """
         async with self._lock:
             await self._publish_to_channel(_BROADCAST_CHANNEL, event)
+
+    async def publish_to(self, channel: str, event: SystemEvent) -> None:
+        """Publish *event* to a single channel -- the per-channel analogue of
+        broadcast(), with the same no-sinks contract. Use with a ``user:<id>``
+        channel for events that only that user may see.
+        """
+        async with self._lock:
+            await self._publish_to_channel(channel, event)
 
     # ------------------------------------------------------------------
     # Emit

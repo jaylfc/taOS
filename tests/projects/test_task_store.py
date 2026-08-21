@@ -153,6 +153,36 @@ async def test_reopen_task_is_noop_when_not_closed(store):
 
 
 @pytest.mark.asyncio
+async def test_unquarantine_returns_claimed_task_to_claimable_pool(store):
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    await store.claim_task(t["id"], claimer_id="agent-1")
+    assert await store.quarantine_task(t["id"], actor="lead") is True
+    assert await store.unquarantine_task(t["id"], actor="lead") is True
+    back = await store.get_task(t["id"])
+    assert back["status"] == "open"
+    # unquarantined task must return to the claimable pool, so the old claimer clears
+    assert back["claimed_by"] is None
+    assert back["claimed_at"] is None
+    # the pool must be real: claim_task requires claimed_by IS NULL, so a stale
+    # claimer would leave the card open-but-unclaimable forever
+    assert await store.claim_task(t["id"], claimer_id="agent-2") is True
+
+
+@pytest.mark.asyncio
+async def test_update_task_status_open_returns_task_to_claimable_pool(store):
+    # Same class via the generic edit path: the owner/admin PATCH route can
+    # set status='open' on a claimed card directly through update_task.
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    await store.claim_task(t["id"], claimer_id="agent-1")
+    await store.update_task(t["id"], status="open")
+    back = await store.get_task(t["id"])
+    assert back["status"] == "open"
+    assert back["claimed_by"] is None
+    assert back["claimed_at"] is None
+    assert await store.claim_task(t["id"], claimer_id="agent-2") is True
+
+
+@pytest.mark.asyncio
 async def test_add_relationship_and_list(store):
     a = await store.create_task(project_id="p", title="A", created_by="u")
     b = await store.create_task(project_id="p", title="B", created_by="u")
@@ -341,3 +371,53 @@ async def test_get_task_context_project_falls_back_without_project_store(store):
     t = await store.create_task(project_id="p", title="T", created_by="u")
     ctx = await store.get_task_context(t["id"])
     assert ctx["project"]["id"] == "p"
+
+
+# ── close_task ownership guard ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_close_by_claimer_passes(store):
+    """Claim holder can close their own claimed card."""
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    await store.claim_task(t["id"], claimer_id="agent-1")
+    ok = await store.close_task(t["id"], closed_by="agent-1", reason="done")
+    assert ok is True
+    again = await store.get_task(t["id"])
+    assert again["status"] == "closed"
+    assert again["closed_by"] == "agent-1"
+
+
+@pytest.mark.asyncio
+async def test_close_by_stranger_rejected(store):
+    """A non-claimer cannot close a claimed card (ownership guard)."""
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    await store.claim_task(t["id"], claimer_id="agent-1")
+    ok = await store.close_task(t["id"], closed_by="agent-2", reason="intruder")
+    assert ok is False
+    again = await store.get_task(t["id"])
+    assert again["status"] == "claimed"
+    assert again["claimed_by"] == "agent-1"
+
+
+@pytest.mark.asyncio
+async def test_close_by_lead_passes(store):
+    """Lead/curator can force-close a card claimed by someone else."""
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    await store.claim_task(t["id"], claimer_id="agent-1")
+    ok = await store.close_task(t["id"], closed_by="lead", reason="escalation", force=True)
+    assert ok is True
+    again = await store.get_task(t["id"])
+    assert again["status"] == "closed"
+    assert again["closed_by"] == "lead"
+
+
+@pytest.mark.asyncio
+async def test_close_unclaimed_unchanged(store):
+    """Unclaimed cards can still be closed by any authorised caller."""
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    ok = await store.close_task(t["id"], closed_by="reviewer", reason="stale")
+    assert ok is True
+    again = await store.get_task(t["id"])
+    assert again["status"] == "closed"
+    assert again["closed_by"] == "reviewer"

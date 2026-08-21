@@ -24,7 +24,7 @@ const DEFAULT_PAGES: HomePage[] = [
     // Optional apps (Reddit/YouTube/GitHub/X) are excluded from the default
     // home grid; they ship uninstalled and are added from the Store.
     items: getAllApps()
-      .filter((a) => !a.optional)
+      .filter((a) => !a.optional && a.tier !== 4 && a.handler !== true)
       .map((a) => ({ type: "app", appId: a.id }) as AppItem),
   },
 ];

@@ -102,6 +102,29 @@ export interface ClusterWorker {
   /** True when the worker supports the boundary-layer-protect feature that
    *  keeps the first N transformer layers in fp16 regardless of KV quant. */
   kv_cache_quant_boundary_layer_protect?: boolean;
+  /** Node auth-state flags surfaced by the controller for the Cluster UI.
+   *  revoked/blocked kill the signing key (HMAC auth fails); live_token is
+   *  the derived "can this node still authenticate?" flag. */
+  revoked?: boolean;
+  blocked?: boolean;
+  live_token?: boolean;
+}
+
+/**
+ * A paired user device (phone/watch) visible in the Cluster UI.
+ * Mirrors the safe subset of DeviceStore rows returned by GET /api/devices.
+ */
+export interface ClusterDevice {
+  device_id: string;
+  user_id: string;
+  platform: string;
+  push_token: string;
+  display_name: string;
+  registered_at: number;
+  last_seen?: number;
+  revoked: number;
+  blocked: number;
+  live_token: boolean;
 }
 
 export type WorkerStatus = "online" | "stale" | "offline" | "unknown";

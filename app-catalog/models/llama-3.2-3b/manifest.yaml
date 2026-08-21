@@ -5,6 +5,7 @@ version: 3.2.0
 description: Meta's edge model — explicit ARM support, tool calling, 6GB RAM. Great
   for mobile/Pi workers.
 homepage: https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct
+license: llama3.2
 capabilities:
 - chat
 - tool-calling
@@ -31,9 +32,26 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 4096
+  sha256: 6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff
+- id: a8w4
+  name: A8W4 HEF (3.2GB, NPU)
+  format: hef
+  size_mb: 3214
+  min_ram_mb: 0
+  sha256: 7fc9c7723282482cc3acf08244212668f8b7684deb792b791504ab7f68a83708
+  download_url: https://dev-public.hailo.ai/v5.1.1/blob/Llama-3_2-3B-Instruct.hef
+  context_window: 2048
+  requires:
+    backends:
+    - id: hailo-ollama
+      targets:
+      - hailo
+      min_ram_mb: 3072
 hardware_tiers:
+  arm-npu-8gb:
+    recommended: a8w4
   arm-npu-16gb:
-    recommended: q4_k_m
+    recommended: a8w4
   arm-cpu-8gb:
     recommended: q4_k_m
   x86-cuda-8gb:

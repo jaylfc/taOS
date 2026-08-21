@@ -121,3 +121,31 @@ class TestNotificationCreateRoutes:
         assert created["source"] == "review-request"
         assert created["data"] == {"pr": 42}
         assert created["read"] is False
+
+    async def test_admin_create_rejects_invalid_level(self, client):
+        """POST /api/notifications with an unknown level is rejected with 400."""
+        resp = await client.post(
+            "/api/notifications",
+            json={
+                "title": "bad level",
+                "message": "should not be stored",
+                "level": "bogus",
+            },
+        )
+        assert resp.status_code == 400
+        listing = await client.get("/api/notifications")
+        assert all(n["title"] != "bad level" for n in listing.json())
+
+    async def test_admin_create_accepts_success_level(self, client):
+        """'success' is part of the canonical level set (see VALID_LEVELS in
+        tinyagentos/notifications.py; notify_user tool schema and the toast UI
+        both support it) and must not be rejected at the route boundary."""
+        resp = await client.post(
+            "/api/notifications",
+            json={
+                "title": "success level",
+                "message": "stored fine",
+                "level": "success",
+            },
+        )
+        assert resp.status_code == 200

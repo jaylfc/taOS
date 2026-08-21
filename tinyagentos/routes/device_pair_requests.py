@@ -31,7 +31,7 @@ import logging
 import secrets
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tinyagentos.device_pair_requests_store import (
     DevicePairRequestsStore,
@@ -45,11 +45,12 @@ logger = logging.getLogger(__name__)
 # F5: the store does not validate the platform, so the whitelist lives here.
 _VALID_PLATFORMS = frozenset({"ios", "watchos", "android"})
 _VERIFY_CODE_DIGITS = 6
+_MAX_DISPLAY_NAME = 200
 
 
 class CreatePairRequest(BaseModel):
     platform: str
-    display_name: str = ""
+    display_name: str = Field(default="", max_length=_MAX_DISPLAY_NAME)
 
 
 def _get_pair_requests_store(request: Request) -> DevicePairRequestsStore:
@@ -107,27 +108,35 @@ async def create_pair_request(request: Request, body: CreatePairRequest):
 
     store = _get_pair_requests_store(request)
 
-    # F4: cap TOTAL pending (not per-IP) -- mirrors the agent auth-request cap.
-    pending_count = await store.count_pending()
-    if pending_count >= _PENDING_CAP:
+    if not _admin_user_id(request):
         raise HTTPException(
-            status_code=429,
-            detail=(
-                f"too many pending pair requests ({pending_count} pending; "
-                f"resolve existing requests first)"
-            ),
+            status_code=409,
+            detail="no admin exists to approve pairing requests",
         )
 
     verify_code = _generate_verify_code()
     requester_ip = _requester_ip(request)
     display = (body.display_name or "").strip() or body.platform
 
-    record = await store.create(
-        platform=body.platform,
-        display_name=display,
-        verify_code=verify_code,
-        requester_ip=requester_ip,
-    )
+    # The lock is what makes the cap atomic; a store without it must fail
+    # loudly rather than fall back to the racy count-then-create this fix
+    # removed.
+    async with store._create_lock:
+        pending_count = await store.count_pending()
+        if pending_count >= _PENDING_CAP:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"too many pending pair requests ({pending_count} pending; "
+                    f"resolve existing requests first)"
+                ),
+            )
+        record = await store.create(
+            platform=body.platform,
+            display_name=display,
+            verify_code=verify_code,
+            requester_ip=requester_ip,
+        )
     pair_request_id = record["id"]
 
     # Raise a Decision to the instance admin.  The metadata binds the approval to
