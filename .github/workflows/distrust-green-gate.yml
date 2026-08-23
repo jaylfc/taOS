@@ -39,7 +39,7 @@ jobs:
         # gate on the all-skip step specifically — a checkout/setup failure
         # must not post waiver instructions that do not apply
         if: failure() && steps.all-skip.outcome == 'failure'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
