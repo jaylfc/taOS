@@ -1,0 +1,30 @@
+name: Gate integrity
+
+# Runs on the BASE ref via pull_request_target so the checkout is never the
+# merge ref. Inspects the PR diff via the GitHub API and fails when the PR
+# touches .github/workflows/ or a gate-checker script unless the PR carries
+# the explicit allow label gate-integrity-allowed.
+#
+# This closes the class defect where a PR could modify its own gate checker
+# (and the workflow file itself) and make its own required check pass while
+# disabling detection.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+    branches: [master, dev]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gate-integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for gate tampering
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python scripts/check_gate_integrity.py "${{ github.event.pull_request.number }}"
