@@ -1,0 +1,2 @@
+### Fixed
+- CodeRabbit auto-generated acknowledgement and summary scaffolding is now detected as non-review content, preventing fake-green gate outcomes when CodeRabbit only posts trigger acknowledgements and summaries without actual review body text

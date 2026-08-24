@@ -61,6 +61,18 @@ RATE_LIMIT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# CodeRabbit auto-generated scaffolding markers. These appear in bodies
+# of acknowledgement replies (when @coderabbitai full review is accepted)
+# and auto-summary comments. They are not review content and must not be
+# treated as real review items, mirroring the rate-limit stub guard.
+CODERABBIT_AUTO_GEN_RE = re.compile(
+    r"<!-- This is an auto-generated (?:reply|comment) (?:by|: )(?:CodeRabbit|coderabbit\.ai) -->|"
+    r"CodeRabbit review command invocation:|"
+    r"Actions performed / Full review triggered\.?|"
+    r"<!-- This is an auto-generated comment: summarize by coderabbit\.ai -->",
+    re.IGNORECASE,
+)
+
 EXIT_OK = 0
 EXIT_STUB = 1
 EXIT_ERROR = 2
@@ -143,6 +155,10 @@ def is_real_item(item: CRItem) -> bool:
     (the review state itself is the substantive signal). Comments and
     COMMENTED reviews are real only when they carry non-empty, non-stub
     body text.
+
+    CodeRabbit's auto-generated acknowledgement and summary scaffolding
+    is not review content; items whose bodies match the auto-generated
+    marker pattern are treated the same way as rate-limit stubs.
     """
     if is_rate_limit_stub(item.body):
         return False
@@ -150,6 +166,8 @@ def is_real_item(item: CRItem) -> bool:
         state = (item.review_state or "").upper()
         if state in ("APPROVED", "CHANGES_REQUESTED"):
             return True
+    if CODERABBIT_AUTO_GEN_RE.search(item.body or ""):
+        return False
     return bool(item.body and item.body.strip())
 
 
@@ -249,6 +267,17 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
     if any(is_rate_limit_stub(i.body) for i in items):
         return EXIT_STUB, (
             f"FAIL: only CodeRabbit output is a rate-limit stub (exit {EXIT_STUB})"
+        )
+
+    # If there are items but no real review threads and no rate-limit stub,
+    # check whether the output is CodeRabbit auto-generated scaffolding
+    # (acknowledgement + summary without a real review). This is the same
+    # fake-green condition: a trigger was accepted but only stub scaffolding
+    # came back, which the merge gate must catch.
+    if any(CODERABBIT_AUTO_GEN_RE.search(i.body or "") for i in items):
+        return EXIT_STUB, (
+            f"FAIL: only CodeRabbit auto-generated scaffolding exists "
+            f"(exit {EXIT_STUB})"
         )
 
     # CR output exists but no real review threads and no recognizable stub.
