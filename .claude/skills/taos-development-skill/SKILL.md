@@ -160,8 +160,12 @@ deps the project does not pin set `check_upgrade = false`.
 - Uses `uv sync --frozen` and `pytest -n auto`
 - Also required: `spa-build` (npm build + tsc + **vitest** - a desktop type error or failing
   component test fails CI), a "Verify app starts" `create_app` import smoke, `lint`
-  (`compileall`), and `cla`. The doc-gate, store-wiring gate, bot-review gate, and
-  distrust-green gate are separate workflows.
+  (`compileall`), and `cla`. The doc-gate, store-wiring gate, bot-review gate,
+  distrust-green gate, and evil-merge gate (`.github/workflows/evil-merge-gate.yml`,
+  implementation in `scripts/check_evil_merge.py` — fails a PR whose merge resolution
+  invents test-file content differing from the `git merge-tree` baseline; the workflow
+  selftests that it fires RED on the known evil merge `ad5cdfb0c` before checking the
+  PR) are separate workflows.
 - `check-all-skip` (`.github/workflows/distrust-green-gate.yml`, implementation in
   `.github/scripts/check_all_skip.py`) fails a PR when a test file it adds or modifies
   has tests and ALL of them skip (e.g. `pytest.importorskip` on a module that does not
