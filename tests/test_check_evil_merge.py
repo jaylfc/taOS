@@ -136,27 +136,30 @@ class TestEvilMergeGuard:
         assert v.merge_hash
         assert v.parent1_hash
         assert v.parent2_hash
+        assert v.merge_tree_hash is not None
         assert v.merge_hash != v.parent1_hash
         assert v.merge_hash != v.parent2_hash
 
     def test_merge_taking_one_side_wholesale_stays_green(self, tmp_path: Path):
-        """CONTROL A: same two branches, but resolve by taking side-a
-        wholesale.  The test file blob matches a parent, so the guard passes."""
+        """CONTROL A: both branches touch different, non-overlapping parts of
+        the same test file, producing a clean auto-merge.  Resolving by
+        keeping side-a's content wholesale matches what git would produce,
+        so the guard passes."""
         repo = tmp_path / "repo"
         _init_repo(repo)
 
         _commit_file(
             repo, "tests/test_widget.py",
-            "def test_principal():\n    pass\n",
-            "test: add test_principal",
+            "def test_principal():\n    pass\n\ndef test_secondary():\n    pass\n",
+            "test: add two tests",
         )
 
         _branch(repo, "side-a")
         _checkout(repo, "side-a")
         _commit_file(
             repo, "tests/test_widget.py",
-            "def test_principal():\n    assert principal_is_accepted()\n",
-            "feat: assert accepted",
+            "def test_principal():\n    assert principal_is_accepted()\n\ndef test_secondary():\n    pass\n",
+            "feat: assert accepted on side-a",
         )
 
         _checkout(repo, "main")
@@ -164,16 +167,13 @@ class TestEvilMergeGuard:
         _checkout(repo, "side-b")
         _commit_file(
             repo, "tests/test_widget.py",
-            "def test_principal():\n    assert principal_is_rejected()\n",
-            "feat: assert rejected",
+            "def test_principal():\n    pass\n\ndef test_secondary():\n    assert principal_is_rejected()\n",
+            "feat: assert rejected on side-b",
         )
 
         _checkout(repo, "main")
         _git_merge(repo, "side-a")
         _git_merge(repo, "side-b")
-
-        side_a_content = "def test_principal():\n    assert principal_is_accepted()\n"
-        _resolve_and_commit(repo, "tests/test_widget.py", side_a_content)
 
         violations = cem.check_evil_merge(repo)
         assert violations == []
@@ -230,6 +230,48 @@ class TestEvilMergeGuard:
             repo, "tinyagentos/foo.py",
             "def function_a():\n    return 'b'\n",
             "feat: update function_a on side-b",
+        )
+
+        _checkout(repo, "main")
+        _git_merge(repo, "side-a")
+        _git_merge(repo, "side-b")
+
+        violations = cem.check_evil_merge(repo)
+        assert violations == []
+
+    def test_clean_auto_merge_different_parts_of_same_file_stays_green(self, tmp_path: Path):
+        """CONTROL D: two branches edit different, non-overlapping parts of
+        the same test file.  Git auto-merges cleanly with no conflict; the
+        guard must stay green because the resolution matches what git would
+        have produced on its own.  This is the case that previously produced
+        a false positive under the 'matches neither parent' predicate."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    pass\n\ndef test_secondary():\n    pass\n",
+            "test: add two tests",
+        )
+
+        _branch(repo, "side-a")
+        _checkout(repo, "side-a")
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "import pytest\n\n"
+            "def test_principal():\n    pass\n\n"
+            "def test_secondary():\n    pass\n",
+            "feat: add import on side-a",
+        )
+
+        _checkout(repo, "main")
+        _branch(repo, "side-b")
+        _checkout(repo, "side-b")
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    pass\n\n"
+            "def test_secondary():\n    assert True\n",
+            "feat: add body on side-b",
         )
 
         _checkout(repo, "main")

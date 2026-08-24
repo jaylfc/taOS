@@ -1,0 +1,32 @@
+name: Evil-merge gate
+
+# Blocks PRs whose merge resolution invents test-file content that neither
+# parent reviewed.  Uses ``git merge-tree --write-tree`` as the baseline so
+# ordinary automatic merges (non-overlapping edits) stay green.  See
+# scripts/check_evil_merge.py for the implementation.
+
+on:
+  pull_request:
+    branches: [master, dev]
+
+jobs:
+  evil-merge-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch origin "$BASE_REF"
+
+      - name: Run evil-merge guard
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: python scripts/check_evil_merge.py --head "HEAD"
