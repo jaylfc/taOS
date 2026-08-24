@@ -25,6 +25,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+class OctopusMergeError(Exception):
+    """Raised when ``head_ref`` is a merge commit with more than two parents.
+
+    The guard's comparison logic (parent1 vs parent2 vs merge-tree baseline)
+    is only defined for two-parent merges. An octopus merge (3+ parents) is
+    not analyzable with that logic: content dropped or invented relative to
+    the third-or-later parent would be invisible. Rather than silently
+    checking only the first two parents, this is treated as a guard failure.
+    """
+
+
 class Violation:
     def __init__(
         self,
@@ -154,19 +165,39 @@ def check_evil_merge(
     Returns an empty list when ``head_ref`` is not a merge commit or when
     every tests/ blob at head matches what ``git merge-tree`` would have
     produced.
+
+    Raises ``OctopusMergeError`` when ``head_ref`` has more than two
+    parents: the comparison below is only defined for two-parent merges,
+    so an octopus merge is treated as a guard failure rather than silently
+    analyzed against only the first two parents.
     """
     parents = _get_parents(repo_root, head_ref)
     if len(parents) < 2:
         return []
 
     merge_sha = _run_git(["rev-parse", head_ref], cwd=repo_root).strip()
+
+    if len(parents) > 2:
+        raise OctopusMergeError(
+            f"octopus merge ({len(parents)} parents) is not analyzable; "
+            f"refusing to pass: {merge_sha[:8]}"
+        )
+
     parent1 = parents[0]
     parent2 = parents[1]
 
+    # Candidate paths are the UNION of tests/ files at head and at both
+    # parents. Scoping to head-only paths misses a merge that silently
+    # deletes a test file both parents kept: that file is absent at head,
+    # so a head-only path set would never even consider it.
     head_paths = _get_test_files(repo_root, head_ref)
-    head_blobs = _get_blob_hashes(repo_root, head_ref, head_paths)
-    p1_blobs = _get_blob_hashes(repo_root, parent1, head_paths)
-    p2_blobs = _get_blob_hashes(repo_root, parent2, head_paths)
+    p1_paths = _get_test_files(repo_root, parent1)
+    p2_paths = _get_test_files(repo_root, parent2)
+    all_paths = sorted(set(head_paths) | set(p1_paths) | set(p2_paths))
+
+    head_blobs = _get_blob_hashes(repo_root, head_ref, all_paths)
+    p1_blobs = _get_blob_hashes(repo_root, parent1, all_paths)
+    p2_blobs = _get_blob_hashes(repo_root, parent2, all_paths)
 
     merge_tree_result = subprocess.run(
         ["git", "merge-tree", parent1, parent2],
@@ -175,12 +206,12 @@ def check_evil_merge(
         text=True,
     )
     merge_tree_out = merge_tree_result.stdout
-    tree_sha, conflict_blobs = _parse_merge_tree_stdout(merge_tree_out, head_paths)
+    tree_sha, conflict_blobs = _parse_merge_tree_stdout(merge_tree_out, all_paths)
 
     if conflict_blobs:
         merge_tree_blobs = conflict_blobs
     elif tree_sha:
-        merge_tree_blobs = _get_blob_hashes(repo_root, tree_sha, head_paths)
+        merge_tree_blobs = _get_blob_hashes(repo_root, tree_sha, all_paths)
     else:
         merge_tree_blobs = {}
 
@@ -195,9 +226,19 @@ def check_evil_merge(
     merge_tree_sha = merge_tree_write.stdout.strip()
 
     violations: list[Violation] = []
-    for path in head_paths:
+    for path in all_paths:
         head_blob = head_blobs.get(path)
         if head_blob is None:
+            # Absent at head. Clean only if it's an honest deletion: at
+            # least one parent must have already dropped it. If BOTH
+            # parents still carry it, the merge silently dropped a file
+            # neither side removed - that's a violation.
+            p1_blob = p1_blobs.get(path)
+            p2_blob = p2_blobs.get(path)
+            if p1_blob is not None and p2_blob is not None:
+                violations.append(
+                    Violation(path, merge_sha, parent1, parent2, merge_tree_sha)
+                )
             continue
 
         expected = merge_tree_blobs.get(path)
@@ -238,6 +279,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         violations = check_evil_merge(REPO_ROOT, args.head)
+    except OctopusMergeError as exc:
+        print(f"EVIL-MERGE FAIL: {exc}", file=sys.stderr)
+        return 1
     except subprocess.CalledProcessError as exc:
         print(
             f"evil-merge guard: git error: {exc.stderr.strip()}",

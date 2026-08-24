@@ -339,7 +339,11 @@ class TestEvilMergeGuardEdgeCases:
 
     def test_new_test_file_in_merge_inventing_content(self, tmp_path: Path):
         """A test file invented during merge resolution (not present in either
-        parent) is flagged as an evil merge."""
+        parent) is flagged as an evil merge. The resolution here also
+        deletes tests/test_widget.py outright even though both parents
+        carried a (conflicting) copy of it, so that deletion is correctly
+        flagged too - see TestOctopusAndDeletionHardening for the case in
+        isolation."""
         repo = tmp_path / "repo"
         _init_repo(repo)
 
@@ -377,8 +381,8 @@ class TestEvilMergeGuardEdgeCases:
 
         violations = cem.check_evil_merge(repo)
 
-        assert len(violations) == 1
-        assert violations[0].path == "tests/test_new.py"
+        paths = {v.path for v in violations}
+        assert paths == {"tests/test_new.py", "tests/test_widget.py"}
 
     def test_head_ref_parameter(self, tmp_path: Path):
         """The head_ref parameter lets the caller point at a specific ref
@@ -428,3 +432,157 @@ class TestEvilMergeGuardEdgeCases:
         violations = cem.check_evil_merge(repo, head_ref=evil_merge_sha)
         assert len(violations) == 1
         assert violations[0].path == "tests/test_widget.py"
+
+
+# ---------------------------------------------------------------------------
+# Octopus merges + deleted-conflicting-test-file hardening
+# ---------------------------------------------------------------------------
+
+
+class TestOctopusAndDeletionHardening:
+    """RED cases proving the two-parent-only comparison and head-only path
+    scan silently pass cases they should catch, plus a control proving the
+    fix does not over-fire on an honest one-side deletion."""
+
+    def test_octopus_merge_is_not_analyzable_and_fails(self, tmp_path: Path, monkeypatch):
+        """RED: a merge commit with more than two parents (octopus merge) is
+        not analyzable by a comparison defined only for two parents. The
+        guard must refuse to pass rather than silently checking only the
+        first two parents and missing anything about the third+."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    pass\n",
+            "test: add test_principal",
+        )
+
+        _branch(repo, "side-a")
+        _checkout(repo, "side-a")
+        _commit_file(
+            repo, "tests/test_a.py",
+            "def test_a():\n    pass\n",
+            "test: add test_a",
+        )
+
+        _checkout(repo, "main")
+        _branch(repo, "side-b")
+        _checkout(repo, "side-b")
+        _commit_file(
+            repo, "tests/test_b.py",
+            "def test_b():\n    pass\n",
+            "test: add test_b",
+        )
+
+        # Give main its own commit so it diverges from both side branches;
+        # otherwise git fast-forwards the first merge instead of producing
+        # a real 3-parent octopus merge commit.
+        _checkout(repo, "main")
+        _commit_file(
+            repo, "tests/test_main.py",
+            "def test_main():\n    pass\n",
+            "test: add main-only commit",
+        )
+
+        result = subprocess.run(
+            ["git", "merge", "side-a", "side-b", "--no-edit"],
+            cwd=repo, capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, f"octopus merge setup failed: {result.stderr}"
+
+        parents = cem._get_parents(repo, "HEAD")
+        assert len(parents) == 3, f"expected a 3-parent octopus merge, got {len(parents)}"
+
+        with pytest.raises(cem.OctopusMergeError):
+            cem.check_evil_merge(repo)
+
+        # main()'s exit-code contract is 0 clean / 1 violations / 2 git
+        # error. An octopus merge must land on exactly 1 (a refusal to
+        # pass) - not 0 (silently passed) and not 2 (infrastructure error).
+        monkeypatch.setattr(cem, "REPO_ROOT", repo)
+        rc = cem.main(["--head", "HEAD"])
+        assert rc == 1
+
+    def test_merge_deletes_file_both_parents_kept_is_violation(self, tmp_path: Path):
+        """RED: both parents carry a (conflicting) copy of a test file, and
+        the merge commit resolves the conflict by deleting the file
+        outright. The file never appears at head, so a head-only path scan
+        would never even look at it. Since both parents still had it, this
+        is a silent drop and must be flagged."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    pass\n",
+            "test: add test_principal",
+        )
+
+        _branch(repo, "side-a")
+        _checkout(repo, "side-a")
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    assert principal_is_accepted()\n",
+            "feat: assert accepted",
+        )
+
+        _checkout(repo, "main")
+        _branch(repo, "side-b")
+        _checkout(repo, "side-b")
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    assert principal_is_rejected()\n",
+            "feat: assert rejected",
+        )
+
+        _checkout(repo, "main")
+        _git_merge(repo, "side-a")
+        _git_merge(repo, "side-b")
+
+        # Resolve the conflict by deleting the file entirely, even though
+        # both parents kept a (conflicting) copy of it.
+        (repo / "tests/test_widget.py").unlink()
+        _git(repo, "add", "tests/test_widget.py")
+        _git(repo, "commit", "--no-edit")
+
+        violations = cem.check_evil_merge(repo)
+
+        assert len(violations) == 1
+        assert violations[0].path == "tests/test_widget.py"
+
+    def test_honest_one_side_deletion_stays_green(self, tmp_path: Path):
+        """CONTROL: parent1 deletes a test file while parent2 leaves it
+        untouched; git auto-resolves the merge by keeping it deleted. Since
+        the file is absent from at least one parent, this is an honest
+        deletion and must stay clean - it must not be conflated with the
+        both-parents-kept case above."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    pass\n",
+            "test: add test_principal",
+        )
+
+        _branch(repo, "side-a")
+        _checkout(repo, "side-a")
+        _git(repo, "rm", "tests/test_widget.py")
+        _git(repo, "commit", "-m", "test: remove test_widget")
+
+        _checkout(repo, "main")
+        _branch(repo, "side-b")
+        _checkout(repo, "side-b")
+        _commit_file(
+            repo, "tinyagentos/foo.py",
+            "def function_a():\n    pass\n",
+            "feat: unrelated change on side-b",
+        )
+
+        _checkout(repo, "main")
+        _git_merge(repo, "side-a")
+        _git_merge(repo, "side-b")
+
+        violations = cem.check_evil_merge(repo)
+        assert violations == []
