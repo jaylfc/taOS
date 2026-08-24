@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
-import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, prefetchApp, resolveApp } from "./app-registry";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, prefetchApp, resolveApp, addApp, removeApp, APP_REDIRECTS, resolveAppRedirect } from "./app-registry";
+import type { AppManifest } from "./app-registry";
 
 describe("resolveApp (deep-navigation token resolver)", () => {
   it("resolves an exact app id", () => {
@@ -103,5 +104,108 @@ describe("file handler tiering", () => {
       expect(app?.tier).toBe(4);
       expect(app?.handler).toBe(true);
     }
+  });
+});
+
+const S1_FIXTURE_IDS = ["s1-test-tier-3", "s1-test-handler", "s1-test-tier-5"];
+
+function makeFixture(overrides: Partial<AppManifest>): AppManifest {
+  return {
+    id: "fixture-default",
+    name: "Fixture App",
+    icon: "test-tube",
+    category: "platform",
+    component: (() => Promise.resolve({ default: (() => null) as never })) as never,
+    defaultSize: { w: 400, h: 300 },
+    minSize: { w: 300, h: 200 },
+    singleton: false,
+    pinned: false,
+    launchpadOrder: 99,
+    ...overrides,
+  };
+}
+
+describe("launcher tier filtering (S1 contract #2143)", () => {
+  beforeEach(() => {
+    addApp(makeFixture({ id: "s1-test-tier-3", tier: 3 }));
+    addApp(makeFixture({ id: "s1-test-handler", handler: true }));
+    addApp(makeFixture({ id: "s1-test-tier-5", tier: 5, optional: true }));
+  });
+
+  afterEach(() => {
+    for (const id of S1_FIXTURE_IDS) removeApp(id);
+  });
+
+  it("excludes tier 3 apps from the launcher", () => {
+    const ids = getLaunchableApps(new Set()).map((a) => a.id);
+    expect(ids, "tier 3 apps must not appear in the launcher").not.toContain("s1-test-tier-3");
+  });
+
+  it("excludes handler apps from the launcher", () => {
+    const ids = getLaunchableApps(new Set()).map((a) => a.id);
+    expect(ids, "handler apps must not appear in the launcher").not.toContain("s1-test-handler");
+  });
+
+  it("excludes tier 5 (Store-optional) apps even when marked installed", () => {
+    const ids = getLaunchableApps(new Set(["s1-test-tier-5"])).map((a) => a.id);
+    expect(ids).not.toContain("s1-test-tier-5");
+  });
+
+  it("includes tier 1 (default) and tier 2 apps", () => {
+    const ids = getLaunchableApps(new Set()).map((a) => a.id);
+    expect(ids).toContain("messages");
+    expect(ids).toContain("models");
+    expect(ids).toContain("cluster");
+  });
+
+  it("apps without an explicit tier default to tier 1 and remain launchable", () => {
+    const app = getApp("messages");
+    expect(app?.tier).toBeUndefined();
+    const ids = getLaunchableApps(new Set()).map((a) => a.id);
+    expect(ids).toContain("messages");
+  });
+
+  it("tier 2 entries carry their group", () => {
+    const launchable = getLaunchableApps(new Set());
+    const tier2 = launchable.find((a) => a.id === "models");
+    expect(tier2).toBeDefined();
+    expect(tier2?.tier).toBe(2);
+    expect(tier2?.group).toBe("System");
+  });
+
+  it("existing tier 3 registry apps are also excluded after the fix", () => {
+    const ids = getLaunchableApps(new Set()).map((a) => a.id);
+    expect(ids).not.toContain("providers");
+    expect(ids).not.toContain("mcp");
+    expect(ids).not.toContain("channels");
+  });
+});
+
+describe("APP_REDIRECTS and pin-restore resolution", () => {
+  beforeEach(() => {
+    APP_REDIRECTS["s1-retired-app"] = { appId: "messages" };
+    APP_REDIRECTS["s1-orphan-redirect"] = { appId: "s1-ghost-target" };
+  });
+
+  afterEach(() => {
+    delete APP_REDIRECTS["s1-retired-app"];
+    delete APP_REDIRECTS["s1-orphan-redirect"];
+  });
+
+  it("resolves a redirected pin to the target app id", () => {
+    expect(resolveAppRedirect("s1-retired-app")).toBe("messages");
+  });
+
+  it("keeps a pin for a registered app with no redirect entry", () => {
+    expect(resolveAppRedirect("messages")).toBe("messages");
+    expect(resolveAppRedirect("settings")).toBe("settings");
+  });
+
+  it("drops a pin whose redirect target is unknown without throwing", () => {
+    expect(resolveAppRedirect("s1-orphan-redirect")).toBeUndefined();
+  });
+
+  it("drops a pin that is neither a redirect nor a registered app", () => {
+    expect(resolveAppRedirect("s1-ghost-id")).toBeUndefined();
   });
 });

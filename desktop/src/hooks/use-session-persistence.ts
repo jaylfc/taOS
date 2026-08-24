@@ -3,7 +3,7 @@ import { useProcessStore, type SnapPosition } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
 import { useThemeStore } from "@/stores/theme-store";
 import { useWidgetStore, type Widget } from "@/stores/widget-store";
-import { getApp } from "@/registry/app-registry";
+import { getApp, resolveAppRedirect } from "@/registry/app-registry";
 import { useBrowserStore } from "@/stores/browser-store";
 import { loadWindows as loadBrowserWindows, saveWindows as saveBrowserWindows } from "@/lib/browser-windows-api";
 import type { BrowserWindowState } from "@/apps/BrowserApp/types";
@@ -96,7 +96,12 @@ export function useSessionPersistence() {
       .then((r) => r.json())
       .then((data: { pinned?: string[]; iconSize?: string; position?: string }) => {
         if (data.pinned && Array.isArray(data.pinned)) {
-          useDockStore.getState().reorder(data.pinned);
+          // Follow APP_REDIRECTS for renamed pins, then drop orphans that
+          // resolve to nothing, silently and without throwing.
+          const resolved = data.pinned
+            .map((id: string) => resolveAppRedirect(id))
+            .filter((id: string | undefined): id is string => id !== undefined);
+          useDockStore.getState().reorder(resolved);
         }
         if (data.iconSize === "small" || data.iconSize === "medium" || data.iconSize === "large") {
           useDockStore.getState().setIconSize(data.iconSize);

@@ -123,7 +123,31 @@ const APP_ALIASES: Record<string, string> = {
 };
 
 /**
- * Resolve a user- or agent-supplied app token to a registered manifest.
+ * Redirect map for dock/launchpad pin-restore (issue #2143).
+ * Maps a renamed or retired app id to its canonical replacement. When
+ * restoring saved pins, the launcher follows each id through this map before
+ * deciding it is orphaned: a pin whose id still matches a registered app is
+ * kept as-is; a pin whose id is in this map is rewritten to the target; a pin
+ * that matches neither is dropped silently.
+ *
+ * Seeded by app renames; later tiering slices add entries as apps move.
+ */
+export const APP_REDIRECTS: Record<string, { appId: string; section?: string }> = {};
+
+/**
+ * Resolve a pinned dock/launchpad id through APP_REDIRECTS.
+ *
+ * Returns the canonical id when the pin can be followed to a registered app
+ * (either directly or via a redirect entry). Returns undefined when the pin is
+ * orphaned, i.e. neither a known app nor a redirect target, so callers can
+ * drop it without throwing.
+ */
+export function resolveAppRedirect(pinnedId: string): string | undefined {
+  const resolved = APP_REDIRECTS[pinnedId]?.appId ?? pinnedId;
+  return getApp(resolved) ? resolved : undefined;
+}
+
+/**
  * Matches in order: exact id, alias, then case-insensitive name. Powers the
  * deep-navigation API (`?app=` and the `taos:open-app` event) so callers can
  * use friendly names ("activity", "Activity", "monitor") instead of ids.
@@ -161,7 +185,7 @@ export function getOptionalApps(): AppManifest[] {
  */
 export function getLaunchableApps(installedOptional: Set<string>): AppManifest[] {
   return getAllApps().filter(
-    (a) => (!a.optional || installedOptional.has(a.id)) && a.tier !== 4 && a.handler !== true,
+    (a) => (!a.optional || installedOptional.has(a.id)) && (a.tier ?? 1) <= 2 && a.handler !== true,
   );
 }
 
@@ -254,4 +278,15 @@ export function syncUserspaceApps(manifests: AppManifest[]): void {
   for (const m of manifests) {
     if (!present.has(m.id)) apps.push(m);
   }
+}
+
+/** (test-only) Register an additional app manifest into the registry. */
+export function addApp(manifest: AppManifest): void {
+  if (!apps.find((a) => a.id === manifest.id)) apps.push(manifest);
+}
+
+/** (test-only) Remove a manifest from the registry by id. */
+export function removeApp(appId: string): void {
+  const i = apps.findIndex((a) => a.id === appId);
+  if (i >= 0) apps.splice(i, 1);
 }

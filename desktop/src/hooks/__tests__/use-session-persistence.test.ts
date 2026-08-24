@@ -5,9 +5,12 @@ import { useDockStore } from "@/stores/dock-store";
 import { useThemeStore } from "@/stores/theme-store";
 import { useAuthReadyStore } from "@/stores/auth-ready-store";
 
+import { resolveAppRedirect } from "@/registry/app-registry";
+
 vi.mock("@/registry/app-registry", () => ({
   getApp: () => undefined,
   prefetchApp: () => {},
+  resolveAppRedirect: vi.fn((id: string) => id),
 }));
 
 vi.mock("@/lib/browser-windows-api", () => ({
@@ -38,6 +41,7 @@ beforeEach(() => {
   // which exercise restore-on-mount in isolation. The auth-gating tests
   // further down explicitly manipulate this.
   useAuthReadyStore.setState({ ready: true });
+  vi.mocked(resolveAppRedirect).mockImplementation((id: string) => id);
 });
 
 afterEach(() => {
@@ -86,6 +90,44 @@ describe("useSessionPersistence — dock settings restore (#1603)", () => {
       expect(useDockStore.getState().position).toBe("left");
     });
     expect(useDockStore.getState().pinned).toEqual(["messages", "files"]);
+  });
+
+  it("drops orphaned dock pins that resolve to nothing during restore", async () => {
+    vi.mocked(resolveAppRedirect).mockImplementation((id: string) =>
+      id === "ghost-app" ? undefined : id,
+    );
+    mockFetchWith({
+      "/api/desktop/dock": {
+        pinned: ["messages", "ghost-app", "files"],
+        iconSize: "medium",
+        position: "bottom",
+      },
+    });
+
+    renderHook(() => useSessionPersistence());
+
+    await waitFor(() => {
+      expect(useDockStore.getState().pinned).toEqual(["messages", "files"]);
+    });
+  });
+
+  it("restores redirected dock pins to their canonical id", async () => {
+    vi.mocked(resolveAppRedirect).mockImplementation((id: string) =>
+      id === "retired-id" ? "messages" : id,
+    );
+    mockFetchWith({
+      "/api/desktop/dock": {
+        pinned: ["retired-id", "files"],
+        iconSize: "medium",
+        position: "bottom",
+      },
+    });
+
+    renderHook(() => useSessionPersistence());
+
+    await waitFor(() => {
+      expect(useDockStore.getState().pinned).toEqual(["messages", "files"]);
+    });
   });
 
   it("ignores an invalid persisted icon size or position", async () => {
