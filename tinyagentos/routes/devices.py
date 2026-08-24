@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.device_auth import current_user_or_device
@@ -26,9 +26,16 @@ class RegisterIn(BaseModel):
     @field_validator("platform")
     @classmethod
     def platform_supported(cls, v: str) -> str:
-        if v not in ("ios", "watchos"):
-            raise ValueError("platform must be 'ios' or 'watchos'")
+        if v not in ("ios", "watchos", "android"):
+            raise ValueError("platform must be 'ios', 'watchos', or 'android'")
         return v
+
+    @model_validator(mode="after")
+    def _validate_push_token_for_platform(self) -> "RegisterIn":
+        if self.platform == "android" and self.push_token:
+            if not self.push_token.startswith(("http://", "https://")):
+                raise ValueError("push_token must be a URL for android devices")
+        return self
 
 
 class PushTokenIn(BaseModel):
@@ -125,6 +132,13 @@ async def update_push_token(
         # Session path: unchanged ownership check.
         if await _owned_or_404(store, device_id, user) is None:
             return JSONResponse({"error": "not found"}, status_code=404)
+        device = await store.get(device_id)
+    if device and device.get("platform") == "android" and body.push_token:
+        if not body.push_token.startswith(("http://", "https://")):
+            return JSONResponse(
+                {"error": "push_token must be a URL for android devices"},
+                status_code=422,
+            )
     updated = await store.update_push_token(device_id, body.push_token)
     updated.pop("scoped_token", None)
     return updated

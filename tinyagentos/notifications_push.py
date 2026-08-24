@@ -325,3 +325,105 @@ async def send_web_push(row: dict, *, store: NotificationPushStore, vapid: tuple
         else:
             failed += 1
     return {"sent": sent, "failed": failed, "removed": removed}
+
+
+def _build_device_push_payload(row: dict) -> tuple[dict, list[dict] | None]:
+    title = row.get("title") or "taOS"
+    body = row.get("message") or ""
+    data = row.get("data") if isinstance(row.get("data"), dict) else {}
+    actions: list[dict] | None = None
+    decision_type = data.get("decision_type")
+    if decision_type == "approve_deny":
+        actions = [{"id": "approve", "label": "Approve"}, {"id": "deny", "label": "Deny"}]
+    elif decision_type in ("single_select", "multi_select"):
+        opts = data.get("options") or []
+        actions = [{"id": o.get("value", o.get("label", "")), "label": o.get("label", "")} for o in opts]
+    elif decision_type == "free_text":
+        actions = [{"id": "quick_reply", "label": "Reply"}]
+    if actions:
+        payload_data = dict(data)
+        payload_data["actions"] = actions
+    else:
+        payload_data = data
+    return {"title": title, "body": body, "data": payload_data}, actions
+
+
+async def _send_one_device(
+    device: dict,
+    payload: dict,
+    actions: list[dict] | None,
+    apns_sender,
+    up_sender,
+) -> str:
+    platform = device.get("platform", "")
+    push_token = device.get("push_token", "")
+    if not push_token:
+        return "skipped"
+    try:
+        if platform in ("ios", "watchos"):
+            from tinyagentos.push.apns import build_apns_payload
+            apns_payload = build_apns_payload(
+                title=payload["title"],
+                body=payload["body"],
+                data=payload.get("data"),
+            )
+            ok = await apns_sender.send(push_token, apns_payload)
+        elif platform == "android":
+            from tinyagentos.push.unifiedpush import build_unifiedpush_payload
+            up_payload = build_unifiedpush_payload(
+                title=payload["title"],
+                body=payload["body"],
+                data=payload.get("data"),
+                actions=actions,
+            )
+            ok = await up_sender.send(push_token, up_payload)
+        else:
+            return "skipped"
+    except Exception:  # noqa: BLE001 - best-effort, never propagate
+        logger.warning("notif-push: device send failed for platform=%s token=%s", platform, push_token[:8], exc_info=True)
+        return "failed"
+    return "sent" if ok else "failed"
+
+
+async def send_device_push(
+    row: dict,
+    *,
+    device_store,
+    apns_sender,
+    up_sender,
+) -> dict:
+    """Best-effort fan-out of one notification row to registered devices.
+
+    Looks up devices for ``row["user_id"]`` via ``device_store.list_for_user``.
+    When ``user_id`` is None (broadcast), returns a no-op because device push
+    is strictly per-user. For each device, dispatches to APNs or UnifiedPush
+    based on the ``platform`` column. Returns {"sent", "failed", "skipped"}
+    counts. Never raises.
+    """
+    user_id = row.get("user_id")
+    if not user_id:
+        return {"sent": 0, "failed": 0, "skipped": 0}
+    try:
+        devices = await device_store.list_for_user(user_id)
+    except Exception:  # noqa: BLE001 - store read must never break add()
+        logger.warning("notif-push: failed to list devices", exc_info=True)
+        return {"sent": 0, "failed": 0, "skipped": 0}
+    if not devices:
+        return {"sent": 0, "failed": 0, "skipped": 0}
+
+    payload, actions = _build_device_push_payload(row)
+    results = await asyncio.gather(
+        *[_send_one_device(d, payload, actions, apns_sender, up_sender) for d in devices],
+        return_exceptions=True,
+    )
+    sent = failed = skipped = 0
+    for r in results:
+        if isinstance(r, Exception):
+            failed += 1
+        elif r == "sent":
+            sent += 1
+        elif r == "skipped":
+            skipped += 1
+        else:
+            failed += 1
+    return {"sent": sent, "failed": failed, "skipped": skipped}

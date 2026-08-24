@@ -464,6 +464,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     device_pair_requests_store = DevicePairRequestsStore(data_dir / "device_pair_requests.db")
     from tinyagentos.push.apns import apns_sender_from_env
     apns_sender = apns_sender_from_env()
+    from tinyagentos.push.unifiedpush import NullUnifiedPushSender
+    unifiedpush_sender = NullUnifiedPushSender()
     user_memory = UserMemoryStore(data_dir / "user_memory.db")
     user_personas = UserPersonaStore(data_dir / "user_personas.db")
     installed_apps = InstalledAppsStore(data_dir / "installed_apps.db")
@@ -1349,7 +1351,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # startup, and the sender itself is dispatched off-loop inside add().
         try:
             from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
-            from tinyagentos.notifications_push import send_web_push
+            from tinyagentos.notifications_push import send_web_push, send_device_push
 
             app.state.notif_vapid_keypair = load_or_create_vapid_keypair(
                 data_dir, filename="notif_vapid.pem"
@@ -1360,6 +1362,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                     row,
                     store=app.state.notif_push_store,
                     vapid=app.state.notif_vapid_keypair,
+                )
+                await send_device_push(
+                    row,
+                    device_store=app.state.device_store,
+                    apns_sender=app.state.apns_sender,
+                    up_sender=app.state.unifiedpush_sender,
                 )
 
             notif_store.set_push_sender(_web_push_sender)
@@ -1493,6 +1501,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 await _apns.aclose()
             except Exception:
                 logger.exception("apns sender aclose failed")
+        _up = getattr(app.state, "unifiedpush_sender", None)
+        if _up is not None and hasattr(_up, "aclose"):
+            try:
+                await _up.aclose()
+            except Exception:
+                logger.exception("unifiedpush sender aclose failed")
         await canvas_store.close()
         try:
             bb = getattr(app.state, "beads_bridge", None)
@@ -1723,6 +1737,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.device_store = device_store
     app.state.device_pair_requests = device_pair_requests_store
     app.state.apns_sender = apns_sender
+    app.state.unifiedpush_sender = unifiedpush_sender
     app.state.user_memory = user_memory
     app.state.user_personas = user_personas
     app.state.installed_apps = installed_apps

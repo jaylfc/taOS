@@ -223,3 +223,41 @@ class TestDeviceRoutes:
         await client.post(f"/api/devices/{blocked_id}/unblock")
         resp = await client.post("/api/devices/register", json={"platform": "ios"})
         assert resp.status_code == 200
+
+    async def test_register_android_accepts_url_push_token(self, client):
+        reg = await client.post(
+            "/api/devices/register",
+            json={"platform": "android", "push_token": "https://up.example.com/endpoint"},
+        )
+        assert reg.status_code == 200
+        assert reg.json()["push_token"] == "https://up.example.com/endpoint"
+
+    async def test_register_android_rejects_non_url_push_token(self, client):
+        resp = await client.post(
+            "/api/devices/register",
+            json={"platform": "android", "push_token": "not-a-url"},
+        )
+        assert resp.status_code == 422
+
+    async def test_android_push_token_round_trips_url(self, client, app):
+        reg = (await client.post(
+            "/api/devices/register",
+            json={"platform": "android", "push_token": "https://up.example.com/old"},
+        )).json()
+        resp = await client.patch(
+            f"/api/devices/{reg['device_id']}/push-token",
+            json={"push_token": "https://up.example.com/new"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["push_token"] == "https://up.example.com/new"
+
+    async def test_android_push_token_rejects_non_url_on_patch(self, client, app):
+        reg = (await client.post(
+            "/api/devices/register",
+            json={"platform": "android", "push_token": "https://up.example.com/ok"},
+        )).json()
+        resp = await client.patch(
+            f"/api/devices/{reg['device_id']}/push-token",
+            json={"push_token": "not-a-url"},
+        )
+        assert resp.status_code == 422

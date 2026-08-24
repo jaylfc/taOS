@@ -12,7 +12,7 @@ import requests
 from pywebpush import WebPushException
 
 from tinyagentos.notifications import NotificationStore
-from tinyagentos.notifications_push import NotificationPushStore, send_web_push
+from tinyagentos.notifications_push import NotificationPushStore, send_web_push, send_device_push
 from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
 
 # A real VAPID keypair once for the whole module - pywebpush parses the PEM,
@@ -551,3 +551,168 @@ def test_vapid_signing_key_is_accepted_by_pywebpush_vapid():
         signing_key = _vapid_signing_key(private_pem)
         # The whole point: this must NOT raise. Raw PEM would.
         Vapid01.from_string(private_key=signing_key)
+
+
+# ---------------------------------------------------------------------------
+# Device push dispatch (APNs vs UnifiedPush by platform lookup)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestSendDevicePush:
+    async def test_android_posts_to_unifiedpush_endpoint(self):
+        import json
+
+        class FakeUP:
+            sent = []
+
+            async def send(self, push_token, payload):
+                FakeUP.sent.append((push_token, payload))
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeApns:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeStore:
+            async def list_for_user(self, user_id):
+                return [
+                    {
+                        "device_id": "d1",
+                        "platform": "android",
+                        "push_token": "https://up.example.com/endpoint",
+                        "user_id": "u1",
+                    }
+                ]
+
+        row = {
+            "id": 1,
+            "title": "Decide",
+            "message": "deploy?",
+            "source": "decisions",
+            "user_id": "u1",
+            "data": {"decision_type": "approve_deny", "options": []},
+        }
+        result = await send_device_push(
+            row,
+            device_store=FakeStore(),
+            apns_sender=FakeApns(),
+            up_sender=FakeUP(),
+        )
+        assert result["sent"] == 1
+        assert FakeUP.sent[0][0] == "https://up.example.com/endpoint"
+        body = FakeUP.sent[0][1]
+        assert body["title"] == "Decide"
+        assert body["actions"] == [{"id": "approve", "label": "Approve"}, {"id": "deny", "label": "Deny"}]
+
+    async def test_ios_routes_to_apns_unchanged(self):
+        class FakeApns:
+            sent = []
+
+            async def send(self, push_token, payload, *, topic=None):
+                FakeApns.sent.append((push_token, payload))
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeUP:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeStore:
+            async def list_for_user(self, user_id):
+                return [
+                    {
+                        "device_id": "d1",
+                        "platform": "ios",
+                        "push_token": "apns-tok",
+                        "user_id": "u1",
+                    }
+                ]
+
+        row = {
+            "id": 1,
+            "title": "Hi",
+            "message": "there",
+            "source": "system",
+            "user_id": "u1",
+            "data": {},
+        }
+        result = await send_device_push(
+            row,
+            device_store=FakeStore(),
+            apns_sender=FakeApns(),
+            up_sender=FakeUP(),
+        )
+        assert result["sent"] == 1
+        assert FakeApns.sent[0][0] == "apns-tok"
+
+    async def test_broadcast_row_is_noop_for_device_push(self):
+        class FakeApns:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeUP:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeStore:
+            async def list_for_user(self, user_id):
+                return []
+
+        row = {"id": 1, "title": "Broadcast", "message": "", "source": "system", "user_id": None, "data": {}}
+        result = await send_device_push(
+            row,
+            device_store=FakeStore(),
+            apns_sender=FakeApns(),
+            up_sender=FakeUP(),
+        )
+        assert result == {"sent": 0, "failed": 0, "skipped": 0}
+
+    async def test_no_push_token_device_is_skipped(self):
+        class FakeApns:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeUP:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeStore:
+            async def list_for_user(self, user_id):
+                return [
+                    {"device_id": "d1", "platform": "android", "push_token": "", "user_id": "u1"},
+                    {"device_id": "d2", "platform": "ios", "push_token": "tok", "user_id": "u1"},
+                ]
+
+        row = {"id": 1, "title": "Hi", "message": "", "source": "system", "user_id": "u1", "data": {}}
+        result = await send_device_push(
+            row,
+            device_store=FakeStore(),
+            apns_sender=FakeApns(),
+            up_sender=FakeUP(),
+        )
+        assert result["sent"] == 1
+        assert result["skipped"] == 1
