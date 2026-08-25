@@ -326,7 +326,7 @@ def evaluate_rules(
     trailer = get_trailer(config)
     rules = config.get("rules", [])
 
-    all_paths = [path for status, path in changed_status if status in ("A", "M")]
+    all_paths = [path for status, path in changed_status if status in ("A", "C", "M", "R")]
 
     trailer_present = any(
         line.strip().startswith(trailer) and line.strip()[len(trailer):].strip()

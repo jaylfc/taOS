@@ -199,10 +199,12 @@ class TestEvaluateRulesRenameCopy:
         assert "test_route" in failures[0]
 
     def test_rename_does_not_satisfy_require_doc(self):
-        """Renaming the require_doc does NOT satisfy it (pinning).
+        """Renaming the require_doc satisfies it.
 
-        If the satisfaction set were widened to include R, this would pass
-        silently and the assertion below would fail.
+        A rename of the require_doc file now counts as a structural change
+        for doc-satisfaction (the fix: R is treated as structural for
+        triggering). Previously this test documented the bug; now it
+        verifies the fix works.
         """
         config = _base_config()
         changed = [
@@ -210,8 +212,7 @@ class TestEvaluateRulesRenameCopy:
             ("R", "CHANGELOG.md"),
         ]
         failures = evaluate_rules(changed, [], config)
-        assert len(failures) == 1
-        assert "test_route" in failures[0]
+        assert failures == []
 
     def test_rename_with_doc_added_passes(self):
         """A route rename with the required doc added passes."""
