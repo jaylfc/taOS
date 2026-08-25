@@ -746,7 +746,10 @@ class ProjectTaskStore(BaseStore):
         row = await cur.fetchone()
         desc = cur.description
         item = _row_to_checklist_item(row, desc)
-        await self._publish(task_id, "checklist.item.created", {"id": item["id"], "text": item["text"], "task_id": task_id})
+        # Resolve the task's project_id for publishing under the correct project
+        task = await self.get_task(task_id)
+        project_id = task["project_id"] if task is not None else task_id
+        await self._publish(project_id, "checklist.item.created", {"id": item["id"], "text": item["text"], "task_id": task_id})
         return item
 
     async def list_checklist_items(
@@ -772,7 +775,7 @@ class ProjectTaskStore(BaseStore):
         done: bool | None = None,
         verified: bool | None = None,
         reported: bool | None = None,
-    ) -> dict:
+    ) -> dict | None:
         now = time.time()
         candidates: list[tuple[str, object]] = []
         if done is not None:
@@ -804,6 +807,8 @@ class ProjectTaskStore(BaseStore):
         verification or a report.
         """
         item = await self.get_checklist_item(item_id)
+        if item is None:
+            raise ValueError("checklist item not found")
         if item["verified"] != 1:
             raise ValueError("item cannot be archived: not verified")
         if item["reported"] != 1:
