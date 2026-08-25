@@ -62,6 +62,34 @@ def _fake_subprocess_result() -> MagicMock:
 
 
 @pytest.mark.asyncio
+class TestSkillExecGateControl:
+    async def test_with_store_present_and_deny_policy_gate_still_denies(self, app):
+        """Control: with the store present and a deny policy in place, the gate
+        must still deny. This discriminates against a guard that passes with the
+        gate permanently open (because the store is absent)."""
+        execution_policies = app.state.execution_policies
+        if execution_policies._db is not None:
+            await execution_policies.close()
+        await execution_policies.init()
+        await app.state.execution_policies.set_policy("code-exec", "deny")
+        await _ensure_skills_seeded(app)
+
+        agent_client = _local_token_client(app)
+        try:
+            with patch("subprocess.run") as mock_run:
+                resp = await agent_client.post(
+                    "/api/skill-exec/code_exec/call",
+                    json={"args": {"code": "print('no')"}, "agent_name": "agent-a"},
+                )
+        finally:
+            await agent_client.aclose()
+
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "forbidden_by_policy"
+        mock_run.assert_not_called()
+
+
+@pytest.mark.asyncio
 class TestConservativeDefaultRequiresApproval:
     async def test_code_exec_pending_approval_and_no_run(self, client, app):
         """code-exec is a seeded conservative default: an agent (local-token)

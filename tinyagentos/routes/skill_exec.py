@@ -613,8 +613,9 @@ async def _check_execution_policy(
 
     policies = getattr(request.app.state, "execution_policies", None)
     if policies is None:
-        # Not wired in this deployment; fail open rather than break every
-        # skill call over an additive, not-yet-present store.
+        # Not wired in this deployment; fail open rather than break every skill call.
+        # Absence means not-wired BECAUSE app.py wires execution_policies unconditionally
+        # at startup (app.py:1708).
         return None
 
     effect = await policies.effective_effect(agent_name, action_class)

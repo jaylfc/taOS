@@ -51,6 +51,37 @@ def _seed_agents(app):
 
 
 @pytest.mark.asyncio
+class TestExecutionPoliciesWired:
+    async def test_execution_policies_is_not_none_when_app_builds(self, app):
+        """Assert that create_app wires execution_policies unconditionally.
+        This must FAIL if app.py:1708 (`app.state.execution_policies = execution_policy_store`)
+        is removed — the assertion becomes False and the test fails."""
+        assert app.state.execution_policies is not None
+
+
+@pytest.mark.asyncio
+class TestDelegationGateControl:
+    async def test_with_store_present_and_deny_policy_gate_still_denies(self, client, app):
+        """Control: with the store present and a deny policy in place, the gate
+        must still deny. This discriminates against a guard that passes with the
+        gate permanently open (because the store is absent)."""
+        await app.state.execution_policies.set_policy("delegate", "deny", agent_name="from-agent")
+        _project, task = await _make_project_and_task(app)
+
+        agent_client = _local_token_client(app)
+        try:
+            resp = await agent_client.post(
+                "/api/agents/from-agent/delegate",
+                json={"to_agent": "to-agent", "task_id": task["id"]},
+            )
+        finally:
+            await agent_client.aclose()
+
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "forbidden_by_policy"
+
+
+@pytest.mark.asyncio
 class TestDelegationGateDeny:
     async def test_deny_policy_returns_403_and_does_not_assign(self, client, app):
         await app.state.execution_policies.set_policy("delegate", "deny", agent_name="from-agent")
