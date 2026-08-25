@@ -24,6 +24,14 @@ def check_mod():
     return _load_module()
 
 
+ACK_BODY = (
+    "<!-- This is an auto-generated reply by CodeRabbit -->\n\n"
+    "CodeRabbit review command invocation: 12345678-0000-0000-0000-000000000000\n\n"
+    "Actions performed / Full review triggered."
+)
+SUMMARY_BODY = "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"
+
+
 class TestIsRateLimitStub:
     def test_review_limit_reached_matches(self, check_mod) -> None:
         assert check_mod.is_rate_limit_stub("review limit reached")
@@ -93,6 +101,39 @@ class TestIsRealItem:
     def test_rate_limit_stub_comment_is_not_real(self, check_mod) -> None:
         item = check_mod.CRItem(
             id=1, body="review limit reached", is_review=False,
+        )
+        assert not check_mod.is_real_item(item)
+
+    def test_coderabbit_acknowledgement_is_not_real(self, check_mod) -> None:
+        item = check_mod.CRItem(
+            id=1, body=ACK_BODY, is_review=False,
+        )
+        assert not check_mod.is_real_item(item)
+
+    def test_coderabbit_summary_is_not_real(self, check_mod) -> None:
+        item = check_mod.CRItem(
+            id=1, body=SUMMARY_BODY, is_review=False,
+        )
+        assert not check_mod.is_real_item(item)
+
+    def test_coderabbit_acknowledgement_review_is_not_real(self, check_mod) -> None:
+        item = check_mod.CRItem(
+            id=1, body=ACK_BODY, is_review=True, review_state="COMMENTED",
+        )
+        assert not check_mod.is_real_item(item)
+
+    def test_genuine_review_control_is_real(self, check_mod) -> None:
+        item = check_mod.CRItem(
+            id=1,
+            body="## Review\n\n### Findings\n\nLine 42 needs null-checking.",
+            is_review=True,
+            review_state="COMMENTED",
+        )
+        assert check_mod.is_real_item(item)
+
+    def test_rate_limit_stub_control_is_not_real(self, check_mod) -> None:
+        item = check_mod.CRItem(
+            id=1, body="Review rate limited. Please try again later.", is_review=False,
         )
         assert not check_mod.is_real_item(item)
 
@@ -208,6 +249,89 @@ class TestClassify:
         ]
         exit_code, message = check_mod.classify(items)
         assert f"(exit {exit_code})" in message
+
+    def _pr2482_items(self, check_mod):
+        """Build the exact #2482 item set: one auto-summary + two
+        acknowledgement replies, all is_review=False (the live instance
+        verified 2026-08-17 where GET /reviews returned zero reviews yet
+        the gate went green on three stub items)."""
+        return [
+            check_mod.CRItem(id=1, body=SUMMARY_BODY, is_review=False),
+            check_mod.CRItem(id=2, body=ACK_BODY, is_review=False),
+            check_mod.CRItem(id=3, body=ACK_BODY, is_review=False),
+        ]
+
+    def test_acknowledgement_only_fails(self, check_mod) -> None:
+        items = [
+            check_mod.CRItem(id=1, body=ACK_BODY, is_review=False),
+        ]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 1
+        assert "FAIL" in message
+
+    def test_summary_plus_acknowledgements_fails(self, check_mod) -> None:
+        """The #2482 set: summary + two acknowledgements. Must exit non-zero
+        -- a trigger was accepted and nothing came back."""
+        items = self._pr2482_items(check_mod)
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 1
+        assert "FAIL" in message
+        assert "scaffolding" in message
+
+    def test_genuine_review_control_passes(self, check_mod) -> None:
+        items = [
+            check_mod.CRItem(
+                id=1,
+                body="## Review\n\n### Findings\n\nLine 42 needs null-checking.",
+                is_review=True,
+                review_state="COMMENTED",
+            ),
+        ]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 0
+        assert "real CodeRabbit review" in message
+
+    def test_rate_limit_stub_control_fails(self, check_mod) -> None:
+        items = [
+            check_mod.CRItem(
+                id=1, body="Review rate limited. Please try again later.",
+                is_review=False,
+            ),
+        ]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 1
+        assert "FAIL" in message
+        assert "rate-limit stub" in message
+
+    def test_mixed_genuine_review_and_acknowledgement_passes(self, check_mod) -> None:
+        """A genuine review plus an acknowledgement must stay green -- the
+        real review is what counts."""
+        items = [
+            check_mod.CRItem(
+                id=1,
+                body="## Review\n\n### Findings\n\nLine 42 needs null-checking.",
+                is_review=True,
+                review_state="COMMENTED",
+            ),
+            check_mod.CRItem(id=2, body=ACK_BODY, is_review=False),
+            check_mod.CRItem(id=3, body=SUMMARY_BODY, is_review=False),
+        ]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 0
+        assert "real CodeRabbit review" in message
+
+    def test_mixed_rate_limit_stub_and_acknowledgement_fails(self, check_mod) -> None:
+        """Both kinds of stub present, no real review -> FAIL."""
+        items = [
+            check_mod.CRItem(
+                id=1, body="Review rate limited. Please try again later.",
+                is_review=False,
+            ),
+            check_mod.CRItem(id=2, body=ACK_BODY, is_review=False),
+        ]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 1
+        assert "FAIL" in message
 
 
 class TestCheckBotReview:

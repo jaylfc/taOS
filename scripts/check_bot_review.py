@@ -17,8 +17,12 @@ Three exit cases, all printed with the exit code so they can be read off
 the evidence at the granularity of the audit:
 
     0  PASS  -- a real CodeRabbit review exists, OR CodeRabbit is entirely
-                 absent (dependabot-class PRs; absence is not fake-green).
-    1  FAIL  -- the only CodeRabbit output on the PR is a rate-limit stub.
+               absent (dependabot-class PRs; absence is not fake-green).
+    1  FAIL  -- the only CodeRabbit output on the PR is a stub: a rate-limit
+               stub, or CodeRabbit's own auto-generated scaffolding (the
+               acknowledgement reply posted when a review trigger is accepted
+               but produces no review, or the auto-summary comment). Neither
+               is review content.
     2  ERROR -- infrastructure failure (network, auth, 404, etc.).
 
 Usage:
@@ -58,6 +62,18 @@ RATE_LIMIT_RE = re.compile(
     r"rate\s*limit(?:ed| reached| exhausted| hit| paused)|"
     r"plan\s*quota\s*(?:reached|exhausted)|"
     r"review\s*quota\s*(?:reached|exhausted)",
+    re.IGNORECASE,
+)
+
+# HTML comment markers that CodeRabbit injects into its own auto-generated
+# scaffolding rather than review content: the acknowledgement reply posted
+# when a `@coderabbitai full review` (or similar) trigger is accepted but
+# produces no actual review, and the auto-summary comment posted on
+# merge/close. Both carry no findings and must never read as a review.
+CODERABBIT_SCAFFOLDING_RE = re.compile(
+    r"<!-- This is an auto-generated "
+    r"(?:reply by CodeRabbit|"
+    r"comment: summarize by coderabbit\.ai) -->",
     re.IGNORECASE,
 )
 
@@ -135,16 +151,35 @@ def is_rate_limit_stub(body: str | None) -> bool:
     return bool(RATE_LIMIT_RE.search(body))
 
 
+def is_coderabbit_scaffolding(body: str | None) -> bool:
+    """Return True if a body is CodeRabbit's own auto-generated scaffolding
+    rather than review content.
+
+    Matches the HTML comment markers CodeRabbit appends to (a) the
+    acknowledgement reply posted when a review trigger is accepted but no
+    review follows, and (b) the auto-summary comment posted on merge/close.
+    Neither carries findings; both are machine-identifiable stubs that must
+    not read as a real review, exactly as a rate-limit stub does.
+    """
+    if not body:
+        return False
+    return bool(CODERABBIT_SCAFFOLDING_RE.search(body))
+
+
 def is_real_item(item: CRItem) -> bool:
     """Return True if a CR item represents real review content.
 
-    A rate-limit stub is never real. Review objects with state APPROVED
-    or CHANGES_REQUESTED are always real regardless of body content
-    (the review state itself is the substantive signal). Comments and
-    COMMENTED reviews are real only when they carry non-empty, non-stub
-    body text.
+    A rate-limit stub or CodeRabbit auto-generated scaffolding (acknowledgement
+    reply / auto-summary) is never real -- these are bots posting that a
+    trigger was accepted with no review content following. Review objects
+    with state APPROVED or CHANGES_REQUESTED are always real regardless of
+    body content (the review state itself is the substantive signal).
+    Comments and COMMENTED reviews are real only when they carry non-empty,
+    non-stub body text.
     """
     if is_rate_limit_stub(item.body):
+        return False
+    if is_coderabbit_scaffolding(item.body):
         return False
     if item.is_review:
         state = (item.review_state or "").upper()
@@ -230,7 +265,10 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
     Returns (exit_code, message):
     - (0, "PASS ...")            -- a real CodeRabbit review exists.
     - (0, "PASS (absent, ...)")  -- CodeRabbit is entirely absent.
-    - (1, "FAIL ...")            -- only rate-limit stubs exist.
+    - (1, "FAIL ...")            -- only stubs exist, i.e. rate-limit stubs
+                                  or CodeRabbit auto-generated scaffolding
+                                  (acknowledgement / auto-summary), neither
+                                  of which is review content.
     - (0, "PASS ...")            -- CR output exists but is neither a stub
                                   nor substantive (edge case, not fake-green).
     """
@@ -244,11 +282,20 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
             f"(exit {EXIT_OK})"
         )
 
-    # No real review threads. Check whether ANY CR output is a rate-limit
-    # stub -- that is the fake-green condition.
+    # No real review threads. A trigger was accepted but produced no review
+    # content: that is the fake-green condition. This covers both the
+    # rate-limit stub and CodeRabbit's own auto-generated scaffolding
+    # (acknowledgement reply / auto-summary), which the gate must treat
+    # the same way -- it must not land on the absent/PASS path above.
     if any(is_rate_limit_stub(i.body) for i in items):
         return EXIT_STUB, (
             f"FAIL: only CodeRabbit output is a rate-limit stub (exit {EXIT_STUB})"
+        )
+
+    if any(is_coderabbit_scaffolding(i.body) for i in items):
+        return EXIT_STUB, (
+            f"FAIL: only CodeRabbit output is auto-generated scaffolding "
+            f"(no real review, exit {EXIT_STUB})"
         )
 
     # CR output exists but no real review threads and no recognizable stub.
