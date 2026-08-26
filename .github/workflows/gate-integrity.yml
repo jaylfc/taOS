@@ -1,0 +1,68 @@
+name: Gate integrity
+
+# CLASS DEFECT fix (tsk-o2vhcq): every gate workflow triggered on
+# `pull_request` checks out the PR MERGE REF (actions/checkout's default on
+# that event) and runs its checker script FROM THAT CHECKOUT. A PR can
+# therefore edit its own checker (and its own workflow YAML -- `pull_request`
+# runs the workflow file from the merge ref too) to always-exit-0 and
+# green-pass the very check that is supposed to gate it.
+#
+# This workflow breaks that loop:
+#   * It triggers on `pull_request_target`, so the workflow file AND this
+#     script are resolved from the BASE branch, never from the PR head. A PR
+#     editing this workflow or its checker is inert here.
+#   * It does NOT check out or execute PR code. `actions/checkout` is pinned
+#     to `ref: ${{ github.base_ref }}` (the base branch) -- the PR merge ref is
+#     deliberately never fetched. The base-ref checker then inspects the PR diff
+#     via the GitHub REST API only.
+#   * It fails any PR whose diff touches a protected gate file -- the
+#     PROTECTED_PREFIXES set in scripts/check_gate_integrity.py (workflows,
+#     gate checkers, gate data and test config) -- unless the PR carries the
+#     human-set `gate-integrity-allow` label. The checker is the single
+#     source of truth for the protected set; this comment deliberately does
+#     not enumerate it.
+#
+# Token permissions are minimal (contents: read, pull-requests: read); the
+# GITHUB_TOKEN never acquires write scope here, and PR-controlled code is never
+# run, so a malicious PR cannot escalate through this job.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches: [master, dev]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gate-integrity:
+    name: Gate integrity
+    runs-on: ubuntu-latest
+    # permissions are set at the workflow root above; restated here so the
+    # job is safe even if copy-pasted into another workflow.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # On `pull_request_target` checkout defaults to the base branch,
+      # not the merge ref. Pinning `ref` to base_ref guarantees
+      # the base-ref checker (and this workflow) execute from base.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.base_ref }}
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Inspect PR diff via API for self-editing gates
+        # Fail closed on infrastructure errors (exit 2) so a transient API
+        # blip never reads as green -- see check_gate_integrity.EXIT_ERROR.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          python scripts/check_gate_integrity.py "$PR_NUMBER"
