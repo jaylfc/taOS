@@ -1,0 +1,3 @@
+### Fixed
+
+- Gate-integrity checker (`scripts/check_gate_integrity.py`) now calls `_get_token()` so the workflow's `GITHUB_TOKEN` env var is forwarded to the GitHub API when no `--token` flag is passed (previously defined but never called, so API calls were silently unauthenticated); the protected set also now covers gate rule data files (`docs/doc-gate.toml`, `pyproject.toml`, `tests/conftest.py`) so a PR cannot disable a gate by corrupting its config; and the `pull_request_target` checkout rationale in the workflow comments is corrected (the default ref is the base branch, not the merge ref).

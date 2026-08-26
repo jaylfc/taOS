@@ -12,9 +12,10 @@ name: Gate integrity
 #     script are resolved from the BASE branch, never from the PR head. A PR
 #     editing this workflow or its checker is inert here.
 #   * It does NOT check out or execute PR code. `actions/checkout` is pinned
-#     to `ref: ${{ github.base_ref }}` (the base branch) -- the PR merge ref is
-#     deliberately never fetched. The base-ref checker then inspects the PR diff
-#     via the GitHub REST API only.
+#     to `ref: ${{ github.base_ref }}` (the base branch) -- on
+#     `pull_request_target` the default ref is already the base branch, but the
+#     explicit pin is kept for defense-in-depth. The base-ref checker then
+#     inspects the PR diff via the GitHub REST API only.
 #   * It fails any PR whose diff touches a protected gate file --
 #     .github/workflows/, .github/scripts/, or scripts/check_*.py -- unless the
 #     PR carries the human-set `gate-integrity-allow` label.
@@ -42,10 +43,13 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      # Checkout the BASE branch ONLY. On `pull_request_target` the default
-      # ref would be the merge ref (PR head + base), which is PR-controlled
-      # code -- exactly what we must not run. Pinning `ref` to base_ref
-      # guarantees the base-ref checker (and this workflow) are what execute.
+      # On `pull_request_target`, actions/checkout's default `ref` is the
+      # BASE branch -- GITHUB_REF for this event resolves to the trusted base
+      # branch, not the PR merge ref. The explicit `ref: ${{ github.base_ref }}`
+      # pin is kept for defense-in-depth: the guard never silently trusts an
+      # action default, and the pin makes the trust boundary visible in the
+      # workflow itself. The base-ref checker then inspects the PR diff via
+      # the GitHub REST API only -- no PR code is ever checked out or executed.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.base_ref }}

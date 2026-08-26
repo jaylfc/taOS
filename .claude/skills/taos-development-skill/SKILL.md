@@ -166,8 +166,8 @@ deps the project does not pin set `check_upgrade = false`.
   `.github/scripts/check_all_skip.py`) fails a PR when a test file it adds or modifies
   has tests and ALL of them skip (e.g. `pytest.importorskip` on a module that does not
   exist yet) — green CI that asserts nothing. The failure names the file and the guard.
-   Landing tests ahead of code stays legal via an explicit waiver trailer in the PR body:
-   `Tests-Skipped-Intentionally: <file>, <why>`. Files with SOME skips pass (v1 scope).
+  Landing tests ahead of code stays legal via an explicit waiver trailer in the PR body:
+  `Tests-Skipped-Intentionally: <file>, <why>`. Files with SOME skips pass (v1 scope).
 - **Gate integrity** (`.github/workflows/gate-integrity.yml`, implementation in
   `scripts/check_gate_integrity.py`): because each `pull_request` gate checks
   out the PR merge ref and runs its checker FROM that checkout, a PR can edit

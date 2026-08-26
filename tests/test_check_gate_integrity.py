@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -75,6 +75,11 @@ class TestIsProtected:
             ".github/workflows/deleted-symbols-gate.yml",
             ".github/workflows/gate-integrity.yml",
             ".github/scripts/check_all_skip.py",
+            # Gate rules are data, not code: config files that control gate
+            # behaviour must be protected from self-editing PRs.
+            "docs/doc-gate.toml",
+            "pyproject.toml",
+            "tests/conftest.py",
         ],
     )
     def test_gate_files_are_protected(self, path: str) -> None:
@@ -114,7 +119,11 @@ class TestIsProtected:
             ".github/FUNDING.yml",
             ".coderabbit.yaml",
             "docs/something.md",
+            "docs/agent-coordination.md",
             "changelog.d/foo.md",
+            # protected data files must not over-match neighbours
+            "tests/test_foo.py",
+            "tests/fixtures/bar.py",
             # a check_*.py nested in a subdir is NOT matched by the single
             # scripts/check_*.py convention the guard enforces
             "scripts/platform/check_foo.py",
@@ -263,6 +272,98 @@ class TestCheckGateIntegrity:
 
 
 # ---------------------------------------------------------------------------
+# main() -- the workflow's entry point (zero tests exercised it before)
+# ---------------------------------------------------------------------------
+
+
+class TestMainEntry:
+    """main() is the workflow's entry point -- it is invoked directly from
+    .github/workflows/gate-integrity.yml via `python scripts/check_gate_integrity.py
+    "$PR_NUMBER"`.
+
+    These tests prove the workflow's GITHUB_TOKEN env var actually reaches
+    _api_get so the Authorization header is built. Pre-fix, _get_token() was
+    defined but NEVER CALLED: main() passed args.token (None, since the
+    workflow does not pass --token) straight to _api_get, so the token was
+    silently dropped and GitHub API calls went unauthenticated."""
+
+    def _fake_urlopen(self, captured: list) -> MagicMock:
+        """Return a side-effect that captures the outgoing Request and serves
+        an empty response so _api_get completes without network access. Must
+        mirror _api_get's response expectations: a JSON-decodable body and a
+        headers mapping with a blank Link (no pagination)."""
+
+        def _fake(req, *args, **kwargs):
+            captured.append(req)
+            resp = MagicMock()
+            resp.read.return_value = b"[]"
+            resp.headers = {"Link": ""}
+            resp.__enter__.return_value = resp
+            resp.__exit__.return_value = False
+            return resp
+
+        return _fake
+
+    def test_main_forwards_env_github_token_to_api_get(self, monkeypatch) -> None:
+        """RED proof through main(): with GITHUB_TOKEN set and _api_get
+        observed (urlopen mocked so _api_get's real header logic runs), the
+        Authorization header must be present on the outgoing Request.
+
+        Pre-fix this fails: _get_token() is never called, token stays None,
+        _api_get omits the Authorization header, and the assertion trips."""
+        monkeypatch.setenv("GITHUB_TOKEN", "proof-token")
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        captured: list = []
+        with patch(
+            "urllib.request.urlopen", side_effect=self._fake_urlopen(captured)
+        ):
+            code = cgi.main(["42", "--owner", "jaylfc", "--repo", "taOS"])
+
+        assert captured, "no outgoing API request observed from main()"
+        # _api_get sets headers["Authorization"] = f"Bearer {token}" when token
+        # is truthy; get_header does the case-insensitive lookup.
+        assert captured[0].get_header("Authorization") == "Bearer proof-token"
+        assert code == cgi.EXIT_OK
+
+    def test_main_no_token_means_no_auth_header(self, monkeypatch) -> None:
+        """Negative control: when neither GITHUB_TOKEN nor GH_TOKEN is set,
+        _api_get still runs cleanly (token=None -> no Authorization header),
+        so the guard degrades to unauthenticated calls rather than crashing."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        captured: list = []
+        with patch(
+            "urllib.request.urlopen", side_effect=self._fake_urlopen(captured)
+        ):
+            code = cgi.main(["42", "--owner", "jaylfc", "--repo", "taOS"])
+
+        assert captured, "no outgoing API request observed from main()"
+        assert captured[0].get_header("Authorization") is None
+        assert code == cgi.EXIT_OK
+
+    def test_main_explicit_token_arg_wins_over_env(self, monkeypatch) -> None:
+        """An explicit --token flag must take precedence over the env vars,
+        mirroring check_bot_review.py's `token = token or _get_token()`
+        contract."""
+        monkeypatch.setenv("GITHUB_TOKEN", "env-token")
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        captured: list = []
+        with patch(
+            "urllib.request.urlopen", side_effect=self._fake_urlopen(captured)
+        ):
+            code = cgi.main(
+                ["42", "--owner", "jaylfc", "--repo", "taOS", "--token", "flag-token"]
+            )
+
+        assert captured
+        assert captured[0].get_header("Authorization") == "Bearer flag-token"
+        assert code == cgi.EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # Live regression guards: the committed tree must not outrun the protected set
 # ---------------------------------------------------------------------------
 
@@ -297,6 +398,19 @@ class TestCoversRealGates:
         for path in sorted(gh_scripts.glob("**/*.py")):
             rel = path.relative_to(REPO_ROOT).as_posix()
             assert cgi.is_protected(rel), f".github gate script not protected: {rel}"
+
+    def test_protected_data_files_are_covered(self) -> None:
+        """Gate rules and their config/drivers are data, not code: a PR
+        deleting or corrupting them must trip the guard. These files must
+        stay in the protected set so the guard never goes blind to a gate
+        config edit."""
+        data_files = [
+            "docs/doc-gate.toml",
+            "pyproject.toml",
+            "tests/conftest.py",
+        ]
+        for rel in data_files:
+            assert cgi.is_protected(rel), f"protected data file missing: {rel}"
 
     def test_real_repo_passes_integrity(self) -> None:
         # The committed tree must be itself green: no gate script should be

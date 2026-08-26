@@ -68,6 +68,16 @@ DEFAULT_ALLOW_LABEL = "gate-integrity-allow"
 PROTECTED_PREFIXES: tuple[str, ...] = (
     ".github/workflows/",
     ".github/scripts/",
+    # Gate rules are data, not code: a PR corrupting or deleting these config
+    # files could disable a gate without editing a checker. docs/doc-gate.toml
+    # drives the doc-drift gate (test paths are already excluded by the gate).
+    "docs/doc-gate.toml",
+    # pyproject.toml pins the tooling (pytest, ruff, mypy) and test config the
+    # gates rely on; a PR could relax or disable those checks by editing it.
+    "pyproject.toml",
+    # tests/conftest.py holds shared fixtures and live-tree regression guards;
+    # a PR editing it could weaken tests the gates depend on.
+    "tests/conftest.py",
 )
 # Every repo gate checker is named `scripts/check_*.py` by convention; that
 # glob captures all current and future gate scripts in one rule so the guard
@@ -233,6 +243,7 @@ def check_gate_integrity(
     API cannot be reached or returns an error, so a cannot-see state never
     reads as a clean pass.
     """
+    token = token or _get_token()
     files = collect_pr_files(owner, repo, pr_number, token)
     if files is None:
         return EXIT_ERROR, (
