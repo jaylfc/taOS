@@ -376,6 +376,41 @@ class TestDetectRepo:
         with patch("check_gate_integrity.subprocess.run", return_value=fake):
             assert cgi._detect_repo() == ("acme", "widgets")
 
+    def test_a_slow_git_falls_back_instead_of_crashing(self, monkeypatch) -> None:
+        """`subprocess.run(..., timeout=5)` raises TimeoutExpired, which does
+        NOT descend from CalledProcessError -- so it escaped the handler and
+        left the script to die on an uncaught traceback.
+
+        The direction that matters is which way it failed. An uncaught
+        exception exits 1, and EXIT_BLOCKED is 1, so a merely SLOW `git` was
+        indistinguishable from "this PR edits a protected gate file": an
+        innocent PR gets blocked with a traceback in place of the fallback the
+        docstring promises. Asserting only "it does not raise" would be one
+        level too coarse -- it must land on the documented default.
+        """
+        monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+        with patch(
+            "check_gate_integrity.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["git"], timeout=5),
+        ):
+            assert cgi._detect_repo() == ("jaylfc", "taOS")
+
+    def test_dot_git_is_stripped_only_as_a_suffix(self, monkeypatch) -> None:
+        """`.replace(".git", "")` is global, so it also ate `.git` from the
+        MIDDLE of a repository name and reported a repo that does not exist.
+
+        Inert for `jaylfc/taOS`, which is exactly why it survived: the fault
+        only shows on a name carrying an embedded `.git`, and this checker is
+        meant to be portable to other repos.
+        """
+        monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+        fake = subprocess.CompletedProcess(
+            args=["git"], returncode=0,
+            stdout="https://github.com/acme/widgets.git.archive.git\n", stderr="",
+        )
+        with patch("check_gate_integrity.subprocess.run", return_value=fake):
+            assert cgi._detect_repo() == ("acme", "widgets.git.archive")
+
 
 # ---------------------------------------------------------------------------
 # Live regression guards: the committed tree must not outrun the protected set

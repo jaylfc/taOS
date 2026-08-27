@@ -310,11 +310,20 @@ def _detect_repo() -> tuple[str, str]:
         if "github.com" in url:
             # Handles both https://github.com/owner/repo(.git) and
             # SCP-style git@github.com:owner/repo(.git) remotes.
-            path = url.split("github.com", 1)[1].lstrip(":/").replace(".git", "").strip()
+            # `.git` is stripped as a SUFFIX only. `.replace(".git", "")` was
+            # global and also ate the marker out of the middle of a repository
+            # name, so `acme/widgets.git.archive.git` resolved to
+            # `acme/widgets.archive` -- a repo that does not exist.
+            path = url.split("github.com", 1)[1].lstrip(":/").strip().removesuffix(".git")
             parts = path.split("/")
             if len(parts) >= 2:
                 return parts[0], parts[1]
-    except (subprocess.CalledProcessError, FileNotFoundError, IndexError):
+    # subprocess.TimeoutExpired descends from SubprocessError, NOT from
+    # CalledProcessError, so the 5s timeout above escaped this handler and
+    # killed the script on an uncaught traceback. That exits 1 -- and
+    # EXIT_BLOCKED is also 1, so a merely slow `git` was indistinguishable from
+    # "this PR edits a protected gate file" and blocked an innocent PR.
+    except (subprocess.SubprocessError, FileNotFoundError, IndexError):
         pass
 
     return "jaylfc", "taOS"
