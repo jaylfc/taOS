@@ -17,7 +17,14 @@ Usage (callers drive the adapter):
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 from tinyagentos.adapters.acp_adapter import ACPAdapter, ACPConfig
+
+
+@dataclass
+class OMPConfig(ACPConfig):
+    command: list[str] = field(default_factory=lambda: ["omp", "acp"])
 
 
 class OMPAdapter(ACPAdapter):
@@ -25,5 +32,15 @@ class OMPAdapter(ACPAdapter):
 
     def __init__(self, config=None, sink=None):
         if config is None:
-            config = ACPConfig(command=["omp", "acp"])
+            config = OMPConfig()
+        elif not isinstance(config, OMPConfig):
+            config = OMPConfig(
+                cwd=config.cwd,
+                env=config.env,
+                protocol_version=config.protocol_version,
+                session_key=config.session_key,
+                permission_policy=config.permission_policy,
+                request_timeout=config.request_timeout,
+                client_capabilities=config.client_capabilities,
+            )
         super().__init__(config, sink)

@@ -17,7 +17,7 @@ import json
 import pytest
 
 from tinyagentos.adapters.acp_adapter import ACPConfig
-from tinyagentos.adapters.omp_adapter import OMPAdapter
+from tinyagentos.adapters.omp_adapter import OMPAdapter, OMPConfig
 
 
 class MockACPServer:
@@ -208,6 +208,19 @@ async def test_omp_defaults_to_acp_command():
     """OMPAdapter defaults to command=['omp', 'acp'] when no config is given."""
     adapter = OMPAdapter(sink=lambda r: None)
     assert adapter._effective_command() == ["omp", "acp"]
+
+
+def test_omp_forces_omp_command_when_config_given():
+    """OMPAdapter forces command=['omp', 'acp'] when handed a non-OMP ACPConfig."""
+    adapter = OMPAdapter(ACPConfig(command=["openclaw", "acp"]), sink=lambda r: None)
+    assert adapter._effective_command() == ["omp", "acp"]
+
+
+def test_omp_config_is_importable_and_usable():
+    """OMPConfig is importable and usable with only session_key supplied."""
+    cfg = OMPConfig(session_key="agent:main:main")
+    assert cfg.command == ["omp", "acp"]
+    assert cfg.session_key == "agent:main:main"
 
 
 @pytest.mark.asyncio
