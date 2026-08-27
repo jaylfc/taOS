@@ -104,6 +104,11 @@ timeout_method = "thread"
 markers = [
     "e2e: End-to-end browser tests (require running server)",
     "slow: Tests requiring a live stack (skipped in local CI; run with pytest -m slow)",
+    # Opt OUT of real CSRF enforcement for this test/class/module. CSRF is ON
+    # by default (tests/conftest.py); this marker is the only way to disable
+    # it, and every module carrying it is inventoried in
+    # tests/test_csrf_bypass_debt.py so the list cannot grow unnoticed.
+    "csrf_bypass: run this test with verify_csrf stubbed to a no-op (legacy debt)",
 ]
 filterwarnings = [
     # Asyncio teardown emits unraisable RuntimeError("Event loop is closed")

@@ -5,6 +5,7 @@ import os
 import sqlite3
 import sys
 import time
+from http.cookies import SimpleCookie
 from unittest.mock import patch
 
 import pytest
@@ -17,15 +18,43 @@ from tinyagentos.routes.desktop import SPA_DIR
 
 
 # ---------------------------------------------------------------------------
-# Test-mode CSRF bypass — the verify_csrf dependency is enforced globally
-# on all routers via register_all_routers().  Existing tests were written
-# before CSRF was enforced and do not include CSRF tokens.  Rather than
-# updating every test fixture, we monkey-patch verify_csrf to a no-op
-# during test runs.  The dedicated CSRF tests (test_csrf.py) import the
-# real function directly and test it in isolation.
+# CSRF in tests — ON by default, opted OUT explicitly.
+#
+# This used to be inverted: an autouse fixture no-op'd `verify_csrf` for every
+# test file whose path did not contain the substring "test_csrf".  Measured on
+# dev at the time of the change: 788 test files, exactly ONE inside that
+# carve-out, so 787 ran against an app whose CSRF dependency did nothing, and
+# 223 of those issue POSTs.
+#
+# That is an over-privileged fixture: it grants the test more privilege than
+# the real caller has, so the test cannot observe the check the real caller
+# must satisfy.  It is what hid #2081 (the CSRF login lockout).  A first repro
+# written as an ordinary test returned 303 and PASSED, and the tell was that
+# the CONTROL passed identically — the shape you get when the input never
+# reaches the system under test.
+#
+# Two properties of the replacement matter:
+#
+#   * The default is the REAL implementation.  A test written tomorrow gets
+#     production behaviour without anyone remembering to ask for it, and a new
+#     CSRF regression is red by default rather than invisible by default.
+#   * Opting out is an explicit MARKER, not a filename.  The old carve-out was
+#     a substring match on the path, so renaming a file silently re-armed the
+#     bypass with no failure anywhere.  A marker cannot be triggered by
+#     accident, it is greppable, and `tests/test_csrf_bypass_debt.py` holds the
+#     list of modules that still use it so the debt cannot grow unnoticed.
+#
+# To opt a whole module out, put this at module scope:
+#
+#     pytestmark = pytest.mark.csrf_bypass
+#
+# Do NOT add it to silence a new red.  A red here is a route that the real
+# caller could not reach the way the test reaches it.
 # ---------------------------------------------------------------------------
 
 from starlette.requests import HTTPConnection as _HTTPConnection
+
+CSRF_BYPASS_MARKER = "csrf_bypass"
 
 
 def _noop_verify_csrf(conn: _HTTPConnection) -> None:
@@ -36,14 +65,77 @@ def _noop_verify_csrf(conn: _HTTPConnection) -> None:
     return
 
 
+# The shared `client` fixture's half of the double-submit pair.  Any value
+# works -- the check is that the header equals the cookie -- but it must look
+# like a token so a failure message is self-explanatory.
+_TEST_CSRF_TOKEN = "testsuite-csrf-token-0123456789abcdef0123456789abcdef"
+
+
+async def _echo_csrf_cookie_into_header(request) -> None:
+    """Do what the SPA does: echo the CSRF cookie into the request header.
+
+    This is NOT a bypass.  The double-submit check is safe because a
+    third-party origin cannot READ the cookie and therefore cannot set a
+    matching header; a same-origin caller like our own SPA reads its own cookie
+    and echoes it, and that is the caller this fixture stands in for.  Tests
+    using the shared client therefore satisfy the real `verify_csrf` rather
+    than switching it off.
+
+    Safe methods are skipped because `verify_csrf` exempts them, and an
+    explicitly-set header is never overwritten -- a test that deliberately
+    sends a wrong or missing token is asserting something about CSRF itself
+    and must keep control of it.
+    """
+    if request.method.upper() in ("GET", "HEAD", "OPTIONS", "TRACE"):
+        return
+    if "x-csrf-token" in request.headers:
+        return
+
+    # Read the value actually on the wire rather than assuming the seeded
+    # constant. CSRFMiddleware issues a fresh token whenever a request arrives
+    # without one, so a client that picked one up mid-test holds a value this
+    # module never chose; echoing the constant would then MISMATCH and 403.
+    cookie_header = request.headers.get("cookie", "")
+    jar = SimpleCookie()
+    jar.load(cookie_header)
+    morsel = jar.get("csrf_token")
+
+    if morsel is not None:
+        request.headers["x-csrf-token"] = morsel.value
+        return
+
+    # No CSRF cookie yet. A real browser would already hold one, because
+    # CSRFMiddleware sets it on the first response -- but this fixture injects
+    # the session directly instead of navigating, so no response has reached
+    # the jar. Supply BOTH halves, which is the state that navigation would
+    # have produced.
+    #
+    # Injected here rather than seeded on the client's cookie jar so that SAFE
+    # requests still arrive without a CSRF cookie. The jar applies to every
+    # request, and a GET carrying the cookie makes CSRFMiddleware skip issuing
+    # one -- which silently breaks the tests asserting that it does issue one.
+    request.headers["cookie"] = (
+        f"{cookie_header}; csrf_token={_TEST_CSRF_TOKEN}"
+        if cookie_header
+        else f"csrf_token={_TEST_CSRF_TOKEN}"
+    )
+    request.headers["x-csrf-token"] = _TEST_CSRF_TOKEN
+
+
 @pytest.fixture(autouse=True)
 def _bypass_csrf_in_tests(request):
-    """Replace verify_csrf with a no-op in the module under test.
+    """Run against the REAL verify_csrf unless the test opts out.
 
-    Skips patching when the test file is test_csrf.py so those tests
-    exercise the real implementation.
+    Opt out with ``@pytest.mark.csrf_bypass`` on the test, its class, or the
+    module (``pytestmark``).  ``get_closest_marker`` sees all three.
+
+    The patch must be in place BEFORE the app is built: `register_all_routers`
+    does ``from ... import verify_csrf`` and freezes the resulting object into
+    ``Depends(...)`` at ``include_router`` time, so patching the module
+    attribute after ``create_app`` changes nothing.  Wrapping the whole test —
+    as this fixture does — is what makes it take effect.
     """
-    if "test_csrf" in str(request.node.fspath):
+    if request.node.get_closest_marker(CSRF_BYPASS_MARKER) is None:
         yield
         return
 
@@ -617,6 +709,12 @@ async def client(app, tmp_data_dir):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": _token},
+        # Supplies the CSRF half of a signed-in browser's state on mutating
+        # requests -- see _echo_csrf_cookie_into_header. Without it this client
+        # is authenticated but holds no CSRF cookie, a state no real browser is
+        # ever in, and every mutating request 403s for a reason that has
+        # nothing to do with the route under test.
+        event_hooks={"request": [_echo_csrf_cookie_into_header]},
     ) as c:
         yield c
     await canvas_store.close()
