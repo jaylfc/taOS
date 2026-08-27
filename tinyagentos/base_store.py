@@ -1,8 +1,12 @@
 from __future__ import annotations
 from pathlib import Path
-import aiosqlite
+from enum import Enum
 
-from tinyagentos.db_migrations import apply_wal_pragmas_async, run_migrations_async
+
+class Engine(Enum):
+    """Database engine selection."""
+    SQLITE = "sqlite"
+    POSTGRES = "postgres"
 
 
 class BaseStore:
@@ -31,13 +35,26 @@ class BaseStore:
     SCHEMA: str = ""
     # List of (version: int, sql_or_callable) pairs. See db_migrations.py.
     MIGRATIONS: list = []
+    # Database engine: SQLITE (default) or POSTGRES
+    ENGINE: Engine = Engine.SQLITE
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, engine: Engine | None = None):
         self.db_path = db_path
-        self._db: aiosqlite.Connection | None = None
+        self.engine = engine if engine is not None else self.ENGINE
+        self._db = None
 
     async def init(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        if self.engine == Engine.POSTGRES:
+            await self._init_postgres()
+        else:
+            await self._init_sqlite()
+
+    async def _init_sqlite(self) -> None:
+        import aiosqlite
+        from tinyagentos.db_migrations import apply_wal_pragmas_async, run_migrations_async
+        
         self._db = await aiosqlite.connect(str(self.db_path))
         await apply_wal_pragmas_async(self._db)
         if self.SCHEMA:
@@ -47,6 +64,9 @@ class BaseStore:
             await run_migrations_async(self._db, self.MIGRATIONS,
                                        namespace=self.__class__.__name__)
         await self._post_init()
+
+    async def _init_postgres(self) -> None:
+        raise NotImplementedError("Postgres engine not yet implemented")
 
     async def _post_init(self) -> None:
         """Override in subclasses for seeding data after schema creation."""
