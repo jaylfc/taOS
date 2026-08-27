@@ -153,6 +153,37 @@ deps the project does not pin set `check_upgrade = false`.
 - SPA stubs: conftest creates stub `index.html`/`sw.js` so tests don't need `npm run build`
 - E2E (Playwright) tests excluded from CI and local gate
 
+### CSRF in tests - ON by default
+
+`verify_csrf` runs for real in tests. It used to be no-op'd by an autouse fixture for every
+file whose path lacked the substring `test_csrf` - measured at 788 test files, exactly ONE
+inside that carve-out, so 787 ran against an app whose CSRF dependency did nothing. That is
+what hid #2081: a repro written as an ordinary test returned 303 and PASSED, and the tell was
+that the CONTROL passed identically, which is the shape you get when the input never reaches
+the system under test.
+
+What this means when you write a test:
+
+- **The shared `client` fixture already does the right thing.** It echoes the `csrf_token`
+  cookie into `X-CSRF-Token` on mutating requests, exactly as `taosFetch` does in the SPA.
+  Nothing to remember.
+- **If you build your own `AsyncClient`, it will 403 on mutating routes** once it carries a
+  `taos_session` cookie. Fix it the way the real caller does - send the header - not by
+  disabling the check.
+- **`verify_csrf` exempts** safe methods, `Authorization: Bearer` callers, `_CREDENTIAL_PATHS`
+  (the sign-in surfaces), and any request with no `taos_session` cookie. A test that never
+  authenticates is unaffected.
+- **Opting out is `@pytest.mark.csrf_bypass`** on the test, class, or module
+  (`pytestmark = pytest.mark.csrf_bypass`). It is legacy debt, tracked, and the list must
+  shrink. Do NOT add it to silence a new red: a red means a route the real caller could not
+  reach the way your test reaches it.
+- **A filename no longer changes behaviour.** The old carve-out was a substring match on the
+  path, so renaming a file silently re-armed the bypass with no failure anywhere.
+
+Patch timing matters if you ever stub it yourself: `register_all_routers` does
+`from ... import verify_csrf` and freezes the object into `Depends(...)` at `include_router`
+time, so patching the module attribute AFTER `create_app` does nothing.
+
 ### CI matrix
 
 - Python 3.12 + 3.13 on every PR/push; 3.11 on nightly cron only
@@ -429,9 +460,11 @@ Every mutating route requires `X-CSRF-Token` on cookie-session requests (`verify
 router-wide). Any SPA `fetch` that POSTs/PUTs/PATCHes/DELETEs must attach the double-submit header:
 use `withCsrf(init)` from `desktop/src/lib/csrf.ts`, or the `taosFetch` wrapper
 (`desktop/src/lib/taos-fetch.ts`) which applies it automatically. **A raw
-`fetch("/api/...", {method:"POST"})` passes vitest AND pytest (tests bypass CSRF) but 403s
-"CSRF token missing" in production** - this exact class shipped as a bug (#1977). Bearer-token
+`fetch("/api/...", {method:"POST"})` passes vitest but 403s "CSRF token missing" in
+production** - this exact class shipped as a bug (#1977). Bearer-token
 (agent JWT) calls are CSRF-exempt; only cookie sessions need the header.
+
+pytest used to miss this class too, and no longer does - see "CSRF in tests" below.
 
 ## Agent auth model (Bearer JWT vs session)
 
