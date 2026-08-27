@@ -155,4 +155,40 @@ describe("PA change confirmation", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(localStorage.getItem("taos.assistantStudio.pa")).toBe("atlas");
   });
+
+  // The Studio must stay on the shared shell/accent tokens. Raw palette classes
+  // (zinc-800, sky-500, ...) are pinned to one scheme: they render IDENTICALLY
+  // under every theme, so the app silently stops following taOS Light or any
+  // installed theme and no screenshot in a single theme can catch it. Asserting
+  // on the rendered class lists reds the moment a raw palette colour comes back.
+  it("uses theme tokens, never raw palette colours, on every rendered surface", async () => {
+    const { container } = render(<AssistantStudioApp windowId="win-1" />);
+    await waitFor(() =>
+      expect(screen.queryByText("Loading agents...")).not.toBeInTheDocument(),
+    );
+
+    // Walk every section so each view's markup is actually inspected, not just
+    // the Overview that happens to render first.
+    const sections = ["Journal", "Calendar", "Tasks", "Comms", "Canvas", "Deliverables"];
+    const offenders = new Set<string>();
+    const scan = () => {
+      for (const el of container.querySelectorAll<HTMLElement>("*")) {
+        for (const cls of Array.from(el.classList)) {
+          // Palette families that do not follow the theme. Status hues
+          // (emerald/amber/red) are deliberately allowed: they carry meaning,
+          // not chrome, and are the convention across the other apps.
+          if (/(^|:)(bg|text|border|ring|fill|stroke|divide)-(zinc|sky|slate|gray|neutral|stone|blue|indigo)-\d/.test(cls)) {
+            offenders.add(cls);
+          }
+        }
+      }
+    };
+    scan();
+    for (const label of sections) {
+      fireEvent.click(screen.getByRole("button", { name: label }));
+      scan();
+    }
+
+    expect(Array.from(offenders)).toEqual([]);
+  });
 });

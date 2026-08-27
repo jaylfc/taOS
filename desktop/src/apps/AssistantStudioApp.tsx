@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { Button, Card, Input, Label, Textarea } from "../components/ui";
 import {
   LayoutDashboard,
   NotebookPen,
@@ -23,6 +24,15 @@ import {
 /*  a Deliverables (files / reports) area. Journal / Tasks / Calendar    */
 /*  events / Deliverables persist locally per PA so switching PA swaps   */
 /*  the whole workspace. Comms and Canvas open the live taOS surfaces.   */
+/*                                                                     */
+/*  STYLING RULE: this app is built from the shared UI kit (Button,     */
+/*  Card, Input, Textarea, Label) and the semantic shell and accent      */
+/*  tokens - never a raw Tailwind palette class or a hex literal. Raw    */
+/*  palette colours are pinned to one scheme: they render identically    */
+/*  under every theme, so an app that uses them silently stops           */
+/*  following taOS Light and any installed theme. The rail, the frosted  */
+/*  header bar and the pill badges deliberately mirror Settings and the  */
+/*  App Store so the Studio reads as the same product.                   */
 /* ------------------------------------------------------------------ */
 
 type StudioView =
@@ -96,6 +106,17 @@ const rid = () => Math.random().toString(36).slice(2, 10);
 const fmtDate = (ts: number) =>
   new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
+/* Row and badge shapes shared across the panels, so every list in the Studio
+   has the same density, radius and hairline. */
+const ROW_CLS = "flex items-center gap-3 px-3 py-2";
+/* Card's own base leans on arbitrary white overlays (bg-white/[0.04]) that the
+   light-scheme compatibility layer in tokens.css does not invert, so pin every
+   Card here to the shell tokens, which do flip per theme. */
+const SURFACE_CLS = "border-shell-border bg-shell-surface";
+const BADGE_CLS =
+  "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium";
+const EMPTY_CLS = "text-sm text-shell-text-tertiary";
+
 export function AssistantStudioApp({ windowId: _windowId }: { windowId: string }) {
   const [view, setView] = useState<StudioView>("overview");
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -168,7 +189,7 @@ export function AssistantStudioApp({ windowId: _windowId }: { windowId: string }
   const paLabel = paAgent?.display_name || paAgent?.handle || pa || "no PA selected";
 
   return (
-    <div className="flex h-full w-full bg-zinc-950 text-zinc-100">
+    <div className="flex h-full w-full bg-shell-bg text-shell-text">
       {/* Not `danger`: switching PA is reversible and deletes nothing, so a red
           destructive button would overstate it. The point is that the change is
           easy to make by accident and re-scopes every panel at once. */}
@@ -188,51 +209,54 @@ export function AssistantStudioApp({ windowId: _windowId }: { windowId: string }
         }}
         onCancel={() => setPendingPa(null)}
       />
-      {/* Left rail */}
+      {/* Left rail — same shape as the Settings sidebar: a recessed surface
+          layer, one hairline, and icon-chipped rows. */}
       <nav
-        className="flex w-44 flex-shrink-0 flex-col border-r border-zinc-800 bg-zinc-900/60"
+        className="flex w-52 shrink-0 flex-col border-r border-white/5 bg-shell-surface/30"
         aria-label="Assistant Studio sections"
       >
-        <div className="flex items-center gap-2 px-3 py-3 border-b border-zinc-800">
-          <UserRound className="h-4 w-4 text-sky-400" aria-hidden />
-          <span className="text-sm font-semibold">Assistant Studio</span>
+        <div
+          className="flex shrink-0 items-center gap-2 border-b border-shell-border bg-shell-bg/95 px-3 py-3"
+          style={{ backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
+        >
+          <UserRound className="h-4 w-4 text-accent" aria-hidden />
+          <span className="text-sm font-semibold text-shell-text">Assistant Studio</span>
         </div>
-        <ul className="flex-1 overflow-y-auto py-1">
+        <ul className="flex-1 space-y-1 overflow-y-auto p-2">
           {RAIL.map((r) => {
             const Icon = r.icon;
             const active = view === r.id;
             return (
               <li key={r.id}>
-                <button
-                  type="button"
+                <Button
+                  variant={active ? "secondary" : "ghost"}
                   onClick={() => setView(r.id)}
                   aria-current={active ? "page" : undefined}
-                  className={`flex w-full items-center gap-2 px-3 py-2 text-sm ${
-                    active
-                      ? "bg-sky-500/15 text-sky-300 border-l-2 border-sky-400"
-                      : "text-zinc-300 hover:bg-zinc-800/60 border-l-2 border-transparent"
-                  }`}
+                  className="h-auto w-full justify-start gap-3 py-2"
                 >
-                  <Icon className="h-4 w-4" aria-hidden />
+                  <span
+                    className={`rounded-md p-1.5 transition-colors ${
+                      active ? "bg-accent/20 text-accent" : "bg-white/5"
+                    }`}
+                  >
+                    <Icon className="h-4 w-4" aria-hidden />
+                  </span>
                   {r.label}
-                </button>
+                </Button>
               </li>
             );
           })}
         </ul>
         {/* PA picker */}
-        <div className="border-t border-zinc-800 p-3">
-          <label
-            htmlFor="pa-select"
-            className="block text-[11px] uppercase tracking-wide text-zinc-500 mb-1"
-          >
+        <div className="border-t border-shell-border p-3">
+          <Label htmlFor="pa-select" className="mb-1 block uppercase tracking-wide">
             Your PA
-          </label>
+          </Label>
           <select
             id="pa-select"
             value={pa}
             onChange={(e) => requestPaChange(e.target.value)}
-            className="w-full rounded bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 border border-zinc-700 focus:border-sky-500 outline-none"
+            className="h-9 w-full rounded-lg border border-white/10 bg-shell-bg-deep px-2 text-sm text-shell-text transition-colors focus-visible:border-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/20"
             aria-label="Select the agent to act as your personal assistant"
           >
             {!pa && <option value="">Select an agent</option>}
@@ -243,7 +267,7 @@ export function AssistantStudioApp({ windowId: _windowId }: { windowId: string }
             ))}
           </select>
           {loadingAgents && (
-            <p className="mt-1 text-[11px] text-zinc-500">Loading agents...</p>
+            <p className="mt-1 text-[11px] text-shell-text-tertiary">Loading agents...</p>
           )}
         </div>
       </nav>
@@ -264,12 +288,18 @@ export function AssistantStudioApp({ windowId: _windowId }: { windowId: string }
   );
 }
 
-/* ---------- shared header ---------- */
+/* ---------- shared header ----------
+   The frosted bar the rest of taOS uses (see StoreApp): a hairline shell
+   border over a translucent shell background with a backdrop blur, pinned so
+   content scrolling underneath stays legible. */
 function Header({ title, sub }: { title: string; sub?: string }) {
   return (
-    <div className="border-b border-zinc-800 px-6 py-4">
-      <h2 className="text-lg font-semibold">{title}</h2>
-      {sub && <p className="mt-0.5 text-sm text-zinc-400">{sub}</p>}
+    <div
+      className="sticky top-0 z-10 shrink-0 border-b border-shell-border bg-shell-bg/95 px-6 py-4"
+      style={{ backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
+    >
+      <h2 className="text-lg font-semibold tracking-[-0.01em] text-shell-text">{title}</h2>
+      {sub && <p className="mt-0.5 text-sm text-shell-text-secondary">{sub}</p>}
     </div>
   );
 }
@@ -299,13 +329,13 @@ function OverviewView({
         <Stat label="Journal entries" value={journal.length} onClick={() => onNavigate("journal")} />
       </div>
       <div className="px-6 pb-6">
-        <h3 className="mb-2 text-sm font-medium text-zinc-300">Today</h3>
+        <h3 className="mb-2 text-sm font-medium text-shell-text-secondary">Today</h3>
         {dueToday.length === 0 ? (
-          <p className="text-sm text-zinc-500">Nothing due today.</p>
+          <p className={EMPTY_CLS}>Nothing due today.</p>
         ) : (
           <ul className="space-y-1">
             {dueToday.map((t) => (
-              <li key={t.id} className="text-sm text-zinc-200">
+              <li key={t.id} className="text-sm text-shell-text">
                 - {t.title}
               </li>
             ))}
@@ -317,14 +347,16 @@ function OverviewView({
 }
 function Stat({ label, value, onClick }: { label: string; value: number; onClick: () => void }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4 text-left hover:border-sky-600"
-    >
-      <div className="text-2xl font-semibold tabular-nums">{value}</div>
-      <div className="text-sm text-zinc-400">{label}</div>
-    </button>
+    <Card className={`${SURFACE_CLS} overflow-hidden transition-colors hover:border-accent/40 hover:bg-shell-surface-hover`}>
+      <button
+        type="button"
+        onClick={onClick}
+        className="w-full rounded-xl p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      >
+        <div className="text-2xl font-semibold tabular-nums text-shell-text">{value}</div>
+        <div className="text-sm text-shell-text-secondary">{label}</div>
+      </button>
+    </Card>
   );
 }
 
@@ -354,50 +386,54 @@ function JournalView({ pa }: { pa: string }) {
       <Header title="Journal" sub="Notes and daily log, kept per PA." />
       <div className="p-6">
         <div className="mb-4">
-          <textarea
+          <Textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             placeholder={pa ? "What happened, decisions, follow-ups..." : "Select a PA first"}
             disabled={!pa}
             aria-label="New journal entry"
-            className="h-24 w-full resize-y rounded border border-zinc-700 bg-zinc-900 p-3 text-sm outline-none focus:border-sky-500 disabled:opacity-50"
+            className="h-24 resize-y"
           />
           <div className="mt-2 flex justify-end">
-            <button
-              type="button"
-              onClick={add}
-              disabled={!draft.trim() || !pa}
-              className="flex items-center gap-1 rounded bg-sky-600 px-3 py-1.5 text-sm font-medium hover:bg-sky-500 disabled:opacity-40"
-            >
+            <Button type="button" onClick={add} disabled={!draft.trim() || !pa} size="sm">
               <Plus className="h-4 w-4" aria-hidden /> Add entry
-            </button>
+            </Button>
           </div>
         </div>
         <ul className="space-y-3">
           {entries.map((e) => (
-            <li key={e.id} className="rounded border border-zinc-800 bg-zinc-900/60 p-3">
-              <div className="mb-1 flex items-center justify-between">
-                <span className="text-xs text-zinc-500">
-                  {new Date(e.ts).toLocaleString()}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => remove(e.id)}
-                  aria-label="Delete entry"
-                  className="text-zinc-500 hover:text-red-400"
-                >
-                  <Trash2 className="h-4 w-4" aria-hidden />
-                </button>
-              </div>
-              <p className="whitespace-pre-wrap text-sm text-zinc-200">{e.body}</p>
+            <li key={e.id}>
+              <Card className={`${SURFACE_CLS} p-3`}>
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-xs text-shell-text-tertiary">
+                    {new Date(e.ts).toLocaleString()}
+                  </span>
+                  <DeleteButton onClick={() => remove(e.id)} label="Delete entry" />
+                </div>
+                <p className="whitespace-pre-wrap text-sm text-shell-text">{e.body}</p>
+              </Card>
             </li>
           ))}
-          {entries.length === 0 && (
-            <li className="text-sm text-zinc-500">No entries yet.</li>
-          )}
+          {entries.length === 0 && <li className={EMPTY_CLS}>No entries yet.</li>}
         </ul>
       </div>
     </div>
+  );
+}
+
+/* A delete affordance is repeated in three panels; keep one shape for it. */
+function DeleteButton({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      className="h-7 w-7 text-shell-text-tertiary transition-colors hover:text-red-400"
+    >
+      <Trash2 className="h-4 w-4" aria-hidden />
+    </Button>
   );
 }
 
@@ -428,63 +464,56 @@ function TasksView({ pa }: { pa: string }) {
       <Header title="Tasks" sub="What you have delegated or need to track." />
       <div className="p-6">
         <div className="mb-4 flex flex-wrap gap-2">
-          <input
+          <Input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && add()}
             placeholder={pa ? "New task" : "Select a PA first"}
             disabled={!pa}
             aria-label="New task title"
-            className="min-w-[200px] flex-1 rounded border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm outline-none focus:border-sky-500 disabled:opacity-50"
+            className="min-w-[200px] flex-1"
           />
-          <input
+          <Input
             type="date"
             value={due}
             onChange={(e) => setDue(e.target.value)}
             disabled={!pa}
             aria-label="Task due date"
-            className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm outline-none focus:border-sky-500 disabled:opacity-50"
+            className="w-auto"
           />
-          <button
-            type="button"
-            onClick={add}
-            disabled={!title.trim() || !pa}
-            className="flex items-center gap-1 rounded bg-sky-600 px-3 py-1.5 text-sm font-medium hover:bg-sky-500 disabled:opacity-40"
-          >
+          <Button type="button" onClick={add} disabled={!title.trim() || !pa} size="sm">
             <Plus className="h-4 w-4" aria-hidden /> Add
-          </button>
+          </Button>
         </div>
         <ul className="space-y-1">
           {tasks.map((t) => (
-            <li
-              key={t.id}
-              className="flex items-center gap-3 rounded border border-zinc-800 bg-zinc-900/60 px-3 py-2"
-            >
-              <button
-                type="button"
-                onClick={() => toggle(t.id)}
-                aria-label={t.done ? "Mark task not done" : "Mark task done"}
-                className={`flex h-5 w-5 items-center justify-center rounded border ${
-                  t.done ? "border-emerald-500 bg-emerald-500/20 text-emerald-400" : "border-zinc-600"
-                }`}
-              >
-                {t.done && <Check className="h-3.5 w-3.5" aria-hidden />}
-              </button>
-              <span className={`flex-1 text-sm ${t.done ? "text-zinc-500 line-through" : "text-zinc-200"}`}>
-                {t.title}
-              </span>
-              {t.due && <span className="text-xs text-zinc-500">{t.due}</span>}
-              <button
-                type="button"
-                onClick={() => remove(t.id)}
-                aria-label="Delete task"
-                className="text-zinc-500 hover:text-red-400"
-              >
-                <Trash2 className="h-4 w-4" aria-hidden />
-              </button>
+            <li key={t.id}>
+              <Card className={`${SURFACE_CLS} ${ROW_CLS}`}>
+                <button
+                  type="button"
+                  onClick={() => toggle(t.id)}
+                  aria-label={t.done ? "Mark task not done" : "Mark task done"}
+                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+                    t.done
+                      ? "border-emerald-500 bg-emerald-500/20 text-emerald-500"
+                      : "border-white/20 hover:border-accent/40"
+                  }`}
+                >
+                  {t.done && <Check className="h-3.5 w-3.5" aria-hidden />}
+                </button>
+                <span
+                  className={`flex-1 text-sm ${
+                    t.done ? "text-shell-text-tertiary line-through" : "text-shell-text"
+                  }`}
+                >
+                  {t.title}
+                </span>
+                {t.due && <span className="text-xs text-shell-text-tertiary">{t.due}</span>}
+                <DeleteButton onClick={() => remove(t.id)} label="Delete task" />
+              </Card>
             </li>
           ))}
-          {tasks.length === 0 && <li className="text-sm text-zinc-500">No tasks yet.</li>}
+          {tasks.length === 0 && <li className={EMPTY_CLS}>No tasks yet.</li>}
         </ul>
       </div>
     </div>
@@ -524,56 +553,53 @@ function CalendarView({ pa }: { pa: string }) {
       <Header title="Calendar and time" sub="Upcoming events and task due dates." />
       <div className="p-6">
         <div className="mb-4 flex flex-wrap gap-2">
-          <input
+          <Input
             type="date"
             value={date}
             onChange={(e) => setDate(e.target.value)}
             disabled={!pa}
             aria-label="Event date"
-            className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm outline-none focus:border-sky-500 disabled:opacity-50"
+            className="w-auto"
           />
-          <input
+          <Input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && add()}
             placeholder={pa ? "Event title" : "Select a PA first"}
             disabled={!pa}
             aria-label="Event title"
-            className="min-w-[200px] flex-1 rounded border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm outline-none focus:border-sky-500 disabled:opacity-50"
+            className="min-w-[200px] flex-1"
           />
-          <button
+          <Button
             type="button"
             onClick={add}
             disabled={!date || !title.trim() || !pa}
-            className="flex items-center gap-1 rounded bg-sky-600 px-3 py-1.5 text-sm font-medium hover:bg-sky-500 disabled:opacity-40"
+            size="sm"
           >
             <Plus className="h-4 w-4" aria-hidden /> Add
-          </button>
+          </Button>
         </div>
         <ul className="space-y-1">
           {agenda.map((a, i) => (
-            <li
-              key={i}
-              className="flex items-center gap-3 rounded border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm"
-            >
-              <span className="w-16 text-zinc-400">
-                {fmtDate(new Date(a.date + "T00:00:00").getTime())}
-              </span>
-              <span className="flex-1 text-zinc-200">{a.label}</span>
-              <span
-                className={`rounded px-1.5 py-0.5 text-[11px] ${
-                  a.kind === "event"
-                    ? "bg-sky-500/15 text-sky-300"
-                    : "bg-amber-500/15 text-amber-300"
-                }`}
-              >
-                {a.kind}
-              </span>
+            <li key={i}>
+              <Card className={`${SURFACE_CLS} ${ROW_CLS} text-sm`}>
+                <span className="w-16 shrink-0 text-shell-text-secondary">
+                  {fmtDate(new Date(a.date + "T00:00:00").getTime())}
+                </span>
+                <span className="flex-1 text-shell-text">{a.label}</span>
+                <span
+                  className={`${BADGE_CLS} ${
+                    a.kind === "event"
+                      ? "border-accent/20 bg-accent/10 text-accent"
+                      : "border-amber-500/20 bg-amber-500/15 text-amber-500"
+                  }`}
+                >
+                  {a.kind}
+                </span>
+              </Card>
             </li>
           ))}
-          {agenda.length === 0 && (
-            <li className="text-sm text-zinc-500">Nothing scheduled.</li>
-          )}
+          {agenda.length === 0 && <li className={EMPTY_CLS}>Nothing scheduled.</li>}
         </ul>
       </div>
     </div>
@@ -591,18 +617,14 @@ function CommsView({ paLabel }: { paLabel: string }) {
     <div>
       <Header title="Comms" sub={`Talk to ${paLabel} and route messages.`} />
       <div className="space-y-4 p-6">
-        <p className="text-sm text-zinc-400">
+        <p className="text-sm text-shell-text-secondary">
           Your PA is reachable through the taOS agent chat and the Messages app.
           Direct requests, briefs, and quick questions go here.
         </p>
         <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={openChat}
-            className="flex items-center gap-2 rounded bg-sky-600 px-3 py-2 text-sm font-medium hover:bg-sky-500"
-          >
+          <Button type="button" onClick={openChat}>
             <MessagesSquare className="h-4 w-4" aria-hidden /> Open chat with your PA
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -615,7 +637,7 @@ function CanvasView() {
     <div>
       <Header title="Canvas" sub="A shared visual space with your PA." />
       <div className="p-6">
-        <p className="text-sm text-zinc-400">
+        <p className="text-sm text-shell-text-secondary">
           Use the project Canvas for whiteboarding with your PA - notes, links,
           diagrams, and images your assistant can read and add to. Open a project
           and switch to its Canvas tab to collaborate there.
@@ -665,9 +687,9 @@ function DeliverablesView({ pa }: { pa: string }) {
   const remove = (id: string) => persist(items.filter((d) => d.id !== id));
 
   const statusColor: Record<Deliverable["status"], string> = {
-    draft: "bg-zinc-600/30 text-zinc-300",
-    "in-progress": "bg-amber-500/15 text-amber-300",
-    delivered: "bg-emerald-500/15 text-emerald-300",
+    draft: "border-white/15 bg-white/10 text-shell-text-secondary",
+    "in-progress": "border-amber-500/20 bg-amber-500/15 text-amber-500",
+    delivered: "border-emerald-500/20 bg-emerald-500/15 text-emerald-500",
   };
 
   return (
@@ -675,70 +697,55 @@ function DeliverablesView({ pa }: { pa: string }) {
       <Header title="Deliverables" sub="Files, reports, and outputs from your PA." />
       <div className="p-6">
         <div className="mb-4 flex flex-wrap gap-2">
-          <input
+          <Input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder={pa ? "Deliverable title" : "Select a PA first"}
             disabled={!pa}
             aria-label="Deliverable title"
-            className="min-w-[200px] flex-1 rounded border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm outline-none focus:border-sky-500 disabled:opacity-50"
+            className="min-w-[200px] flex-1"
           />
-          <input
+          <Input
             value={link}
             onChange={(e) => setLink(e.target.value)}
             placeholder="Link (optional)"
             disabled={!pa}
             aria-label="Deliverable link"
-            className="min-w-[160px] rounded border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm outline-none focus:border-sky-500 disabled:opacity-50"
+            className="min-w-[160px] w-auto"
           />
-          <button
-            type="button"
-            onClick={add}
-            disabled={!title.trim() || !pa}
-            className="flex items-center gap-1 rounded bg-sky-600 px-3 py-1.5 text-sm font-medium hover:bg-sky-500 disabled:opacity-40"
-          >
+          <Button type="button" onClick={add} disabled={!title.trim() || !pa} size="sm">
             <Plus className="h-4 w-4" aria-hidden /> Add
-          </button>
+          </Button>
         </div>
         <ul className="space-y-1">
           {items.map((d) => (
-            <li
-              key={d.id}
-              className="flex items-center gap-3 rounded border border-zinc-800 bg-zinc-900/60 px-3 py-2"
-            >
-              <span className="flex-1 text-sm text-zinc-200">{d.title}</span>
-              {d.link && (
-                <a
-                  href={d.link}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label="Open deliverable link"
-                  className="text-sky-400 hover:text-sky-300"
+            <li key={d.id}>
+              <Card className={`${SURFACE_CLS} ${ROW_CLS}`}>
+                <span className="flex-1 text-sm text-shell-text">{d.title}</span>
+                {d.link && (
+                  <a
+                    href={d.link}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="Open deliverable link"
+                    className="rounded text-accent transition-colors hover:text-accent-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  >
+                    <ExternalLink className="h-4 w-4" aria-hidden />
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => cycle(d.id)}
+                  aria-label="Cycle status"
+                  className={`${BADGE_CLS} transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${statusColor[d.status]}`}
                 >
-                  <ExternalLink className="h-4 w-4" aria-hidden />
-                </a>
-              )}
-              <button
-                type="button"
-                onClick={() => cycle(d.id)}
-                aria-label="Cycle status"
-                className={`rounded px-2 py-0.5 text-[11px] ${statusColor[d.status]}`}
-              >
-                {d.status}
-              </button>
-              <button
-                type="button"
-                onClick={() => remove(d.id)}
-                aria-label="Delete deliverable"
-                className="text-zinc-500 hover:text-red-400"
-              >
-                <Trash2 className="h-4 w-4" aria-hidden />
-              </button>
+                  {d.status}
+                </button>
+                <DeleteButton onClick={() => remove(d.id)} label="Delete deliverable" />
+              </Card>
             </li>
           ))}
-          {items.length === 0 && (
-            <li className="text-sm text-zinc-500">No deliverables yet.</li>
-          )}
+          {items.length === 0 && <li className={EMPTY_CLS}>No deliverables yet.</li>}
         </ul>
       </div>
     </div>
