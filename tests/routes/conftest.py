@@ -6,6 +6,7 @@ import uuid
 import pytest
 import yaml
 from fastapi.testclient import TestClient
+from taos_test_csrf import arm_test_client
 
 from tinyagentos.app import create_app
 from tinyagentos.shortcuts.capabilities import CAP_AGENT_SHELL
@@ -42,7 +43,11 @@ def test_client(app):
     # The app must be initialised enough for auth to work.  create_app sets up
     # app.state.auth eagerly, so this is fine without running lifespan.
     with TestClient(app, raise_server_exceptions=True) as client:
-        yield client
+        # Auth arrives as a Cookie header per request rather than on the jar, so
+        # these are signed-in browsers and `verify_csrf` applies to them. The
+        # hook echoes the csrf_token the way the SPA does; without it every
+        # mutating route here 403s for a reason unrelated to the route.
+        yield arm_test_client(client)
 
 
 def _create_user_with_caps(auth_mgr, username: str, caps: list[str]) -> str:
