@@ -68,4 +68,47 @@ describe("NotificationsPanel", () => {
     render(<NotificationsPanel />);
     expect(await screen.findByText("Loading...")).toBeInTheDocument();
   });
+
+  it("recovers to the toggle list when Retry succeeds after a rejected fetch", async () => {
+    let callCount = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) return Promise.reject(new Error("network"));
+      return Promise.resolve(
+        jsonResponse([
+          { event_type: "worker.join", muted: false },
+          { event_type: "backend.up", muted: true },
+        ]),
+      );
+    });
+    render(<NotificationsPanel />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not reach backend.");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    // loadPrefs resets state before re-fetching, so the loading state returns.
+    expect(screen.getByText("Loading...")).toBeInTheDocument();
+
+    expect(await screen.findByText("Worker joined")).toBeInTheDocument();
+    expect(screen.getByText("Backend up")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-shows the error when Retry still fails (not a blank panel or spinner)", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network"));
+    render(<NotificationsPanel />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not reach backend.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    // The loading state confirms `loaded` was reset to false before the re-fetch.
+    expect(screen.getByText("Loading...")).toBeInTheDocument();
+    // The error returns once the re-fetch rejects, rather than a blank panel or a
+    // permanent spinner (which a broken `loaded` reset would produce).
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not reach backend.");
+    expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
 });

@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Card, Label, Switch } from "@/components/ui";
+import { useState, useEffect, useCallback } from "react";
+import { Button, Card, Label, Switch } from "@/components/ui";
 
 interface NotifPref {
   event_type: string;
@@ -27,7 +27,9 @@ export function NotificationsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
-  useEffect(() => {
+  const loadPrefs = useCallback(() => {
+    setError(null);
+    setLoaded(false);
     fetch("/api/notifications/prefs")
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
@@ -37,6 +39,10 @@ export function NotificationsPanel() {
       .catch(() => setError("Could not reach backend."))
       .finally(() => setLoaded(true));
   }, []);
+
+  useEffect(() => {
+    loadPrefs();
+  }, [loadPrefs]);
 
   const toggle = async (eventType: string, muted: boolean) => {
     setSaving(eventType);
@@ -83,9 +89,14 @@ export function NotificationsPanel() {
         </p>
 
         {error && (
-          <p role="alert" className="mb-3 text-xs text-amber-400 flex items-center gap-1.5">
-            {error}
-          </p>
+          <>
+            <p role="alert" className="mb-3 text-xs text-amber-400 flex items-center gap-1.5">
+              {error}
+            </p>
+            <Button variant="outline" size="sm" onClick={loadPrefs}>
+              Retry
+            </Button>
+          </>
         )}
       </section>
     );
