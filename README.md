@@ -10,15 +10,11 @@
 >
 > **A heads-up on the catalogs:** with 100+ apps, 16 frameworks, and a large model catalog, plenty of install manifests have not been exercised on real hardware yet, so some apps, frameworks, and models will fail to install. If one does, [open an issue](https://github.com/jaylfc/taOS/issues) with the name and the error you saw and I will fix the manifest as soon as I can. These reports are genuinely useful, most manifest fixes ship same-day.
 
-<p align="center">
-<a href="https://www.star-history.com/?repos=jaylfc%2FtaOS&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=jaylfc/taOS&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=jaylfc/taOS&type=date&legend=top-left" />
-   <img alt="Star History Chart" width="600" src="https://api.star-history.com/chart?repos=jaylfc/taOS&type=date&legend=top-left" />
- </picture>
-</a>
-</p>
+<!-- The star-history chart was removed on 2026-08-27. GitHub restricted the
+     stargazers API to a repo's own admins and collaborators on 2026-06-30, so
+     third-party chart services can no longer build it and the embed rendered an
+     error notice instead of a chart. Please do not re-add a chart from another
+     host without opening an issue first. -->
 
 <p align="center">
   <a href="https://discord.gg/r3BaxfxVZ"><img alt="Join the taOS Discord" src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white"></a>
