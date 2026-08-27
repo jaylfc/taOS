@@ -867,6 +867,9 @@ async def client_with_qmd(app_with_qmd):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": _token},
+        # Same reason as the `client` fixture above: this is a signed-in
+        # browser, so every mutating request needs the double-submit header.
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
     await canvas_store.close()
