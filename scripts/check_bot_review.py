@@ -170,9 +170,16 @@ def is_real_item(item: CRItem) -> bool:
 
     A rate-limit stub or CodeRabbit auto-generated scaffolding (acknowledgement
     reply / auto-summary) is never real -- these are bots posting that a
-    trigger was accepted with no review content following. Review objects
-    with state APPROVED or CHANGES_REQUESTED are always real regardless of
-    body content (the review state itself is the substantive signal).
+    trigger was accepted with no review content following. **The stub checks
+    run FIRST and outrank the review state**: a review whose own body is a
+    stub is not review content no matter what state it carries. This gate
+    exists to catch fake-green, so where the two signals disagree it must
+    fail closed; trusting the state over a stub body would be the one
+    ordering that lets a fake-green through.
+
+    Otherwise, review objects with state APPROVED or CHANGES_REQUESTED are
+    real regardless of body content (the review state itself is then the
+    substantive signal -- e.g. an APPROVED review with an empty body).
     Comments and COMMENTED reviews are real only when they carry non-empty,
     non-stub body text.
     """
@@ -286,15 +293,20 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
     # rate-limit stub and CodeRabbit's own auto-generated scaffolding
     # (acknowledgement reply / auto-summary), which the gate must treat
     # the same way -- it must not land on the absent/PASS path above.
-    if any(is_rate_limit_stub(i.body) for i in items):
+    # Name every stub kind actually present. Reporting only the first match
+    # would describe a PR carrying both as if it carried one, and the message
+    # is the only thing a human reads off a red gate.
+    has_rate_limit = any(is_rate_limit_stub(i.body) for i in items)
+    has_scaffolding = any(is_coderabbit_scaffolding(i.body) for i in items)
+    if has_rate_limit or has_scaffolding:
+        kinds = []
+        if has_rate_limit:
+            kinds.append("a rate-limit stub")
+        if has_scaffolding:
+            kinds.append("auto-generated scaffolding")
         return EXIT_STUB, (
-            f"FAIL: only CodeRabbit output is a rate-limit stub (exit {EXIT_STUB})"
-        )
-
-    if any(is_coderabbit_scaffolding(i.body) for i in items):
-        return EXIT_STUB, (
-            f"FAIL: only CodeRabbit output is auto-generated scaffolding "
-            f"(no real review, exit {EXIT_STUB})"
+            f"FAIL: only CodeRabbit output is {' and '.join(kinds)} "
+            f"-- no review content (exit {EXIT_STUB})"
         )
 
     # CR output exists but no real review threads and no recognizable stub.

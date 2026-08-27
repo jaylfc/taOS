@@ -141,6 +141,50 @@ class TestIsRealItem:
         )
         assert not check_mod.is_real_item(item)
 
+    @pytest.mark.parametrize("state", ["APPROVED", "CHANGES_REQUESTED"])
+    def test_stub_bodied_review_is_not_real_whatever_the_state(
+        self, check_mod, state: str,
+    ) -> None:
+        """The stub checks outrank the review state, and must.
+
+        A review carrying a decisive state whose BODY is a rate-limit stub is
+        the fake-green shape this gate exists to catch. Trusting the state
+        here is the one ordering that lets it through, so the gate fails
+        closed and this test pins that ordering.
+        """
+        item = check_mod.CRItem(
+            id=1,
+            body="Review rate limited. Please try again later.",
+            is_review=True,
+            review_state=state,
+        )
+        assert not check_mod.is_real_item(item)
+
+    @pytest.mark.parametrize("state", ["APPROVED", "CHANGES_REQUESTED"])
+    def test_scaffolding_bodied_review_is_not_real_whatever_the_state(
+        self, check_mod, state: str,
+    ) -> None:
+        item = check_mod.CRItem(
+            id=1, body=ACK_BODY, is_review=True, review_state=state,
+        )
+        assert not check_mod.is_real_item(item)
+
+    @pytest.mark.parametrize("state", ["APPROVED", "CHANGES_REQUESTED"])
+    def test_empty_bodied_decisive_review_is_real(
+        self, check_mod, state: str,
+    ) -> None:
+        """Control for the two tests above.
+
+        Without this, they would pass just as well if the state guard had
+        been deleted outright. An empty-bodied APPROVED/CHANGES_REQUESTED
+        review is real ONLY because the state guard is still reached, so
+        this is the case that goes red if the guard is removed.
+        """
+        item = check_mod.CRItem(
+            id=1, body="", is_review=True, review_state=state,
+        )
+        assert check_mod.is_real_item(item)
+
 
 class TestClassify:
     def test_empty_items_is_absent(self, check_mod) -> None:
@@ -336,6 +380,37 @@ class TestClassify:
         exit_code, message = check_mod.classify(items)
         assert exit_code == 1
         assert "FAIL" in message
+        # The message is the only thing a human reads off a red gate, so it
+        # must name every stub kind present, not just whichever branch the
+        # implementation happened to test first.
+        assert "rate-limit stub" in message
+        assert "scaffolding" in message
+
+    def test_rate_limit_only_message_does_not_mention_scaffolding(
+        self, check_mod,
+    ) -> None:
+        """Control for the assertion above: with one stub kind present the
+        message names that kind ALONE. Without this, a message that blindly
+        listed both kinds every time would satisfy the mixed-case test."""
+        items = [
+            check_mod.CRItem(
+                id=1, body="Review rate limited. Please try again later.",
+                is_review=False,
+            ),
+        ]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 1
+        assert "rate-limit stub" in message
+        assert "scaffolding" not in message
+
+    def test_scaffolding_only_message_does_not_mention_rate_limit(
+        self, check_mod,
+    ) -> None:
+        items = [check_mod.CRItem(id=1, body=ACK_BODY, is_review=False)]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 1
+        assert "scaffolding" in message
+        assert "rate-limit stub" not in message
 
 
 class TestCheckBotReview:
