@@ -480,7 +480,7 @@ use `withCsrf(init)` from `desktop/src/lib/csrf.ts`, or the `taosFetch` wrapper
 production** - this exact class shipped as a bug (#1977). Bearer-token
 (agent JWT) calls are CSRF-exempt; only cookie sessions need the header.
 
-pytest used to miss this class too, and no longer does - see "CSRF in tests" below.
+pytest used to miss this class too, and no longer does - see "CSRF in tests" above.
 
 ## Agent auth model (Bearer JWT vs session)
 

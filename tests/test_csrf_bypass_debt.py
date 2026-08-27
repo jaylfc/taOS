@@ -50,7 +50,17 @@ def _modules_using_the_bypass(root: Path = TESTS_DIR) -> list[str]:
     # `conftest.py` -- which DOCUMENTS the marker in its comments and docstrings
     # -- is not debt, and matching it would make this guard permanently red on
     # the very text that explains it.
-    for path in sorted(root.rglob("test_*.py")):
+    #
+    # BOTH default patterns, not just `test_*.py`. pyproject.toml sets no
+    # `python_files`, so pytest's default discovery collects `test_*.py` AND
+    # `*_test.py`. Scanning only the first would let a module named
+    # `something_test.py` carry the marker, be collected and run with CSRF
+    # switched off, and stay invisible here -- the guard would then pass
+    # vacuously, which is the failure mode it exists to prevent. It is also the
+    # exact defect this PR removed from the bypass itself: behaviour that hangs
+    # on what a file is NAMED.
+    candidates = set(root.rglob("test_*.py")) | set(root.rglob("*_test.py"))
+    for path in sorted(candidates):
         if path.resolve() == Path(__file__).resolve():
             continue
         if _MARKER_USE.search(path.read_text(encoding="utf-8", errors="replace")):
@@ -87,6 +97,25 @@ def test_the_scanner_can_actually_see_a_marker(tmp_path):
     )
 
     assert _modules_using_the_bypass(tmp_path) == ["test_marked.py"]
+
+
+def test_the_scanner_sees_both_pytest_filename_patterns(tmp_path):
+    """The scanner's file set must match what pytest actually collects.
+
+    `pyproject.toml` sets no `python_files`, so pytest collects `test_*.py` AND
+    `*_test.py`.  A scanner covering only the first is one level coarser than
+    the thing it guards: a marker in `something_test.py` would run with CSRF
+    switched off and this guard would still report an empty debt list.
+
+    The sibling test above CANNOT catch that -- it only ever writes
+    `test_*.py` files, so it passes identically with either glob.  This one
+    fails on the narrow glob and passes on the correct one.
+    """
+    (tmp_path / "legacy_test.py").write_text(
+        "import pytest\npytestmark = pytest.mark.csrf_bypass\n"
+    )
+
+    assert _modules_using_the_bypass(tmp_path) == ["legacy_test.py"]
 
 
 @pytest.mark.csrf_bypass
