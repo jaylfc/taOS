@@ -20,9 +20,10 @@ while disabling detection. The gates affected by this class defect:
 
 Fix direction #1 (the one that actually closes the class): this guard runs on
 `pull_request_target`, which resolves BOTH the workflow file and this script
-to the BASE ref (`origin/dev`). It does NOT check out or execute any PR code
--- it reads the PR's changed-files list and its labels through the GitHub REST
-API only, using the base-ref version of this script. When the PR diff touches
+TO THE BASE ref (GitHub's default on that event), not the merge ref. It does NOT
+check out or execute any PR code -- it reads the PR's changed-files list and
+its labels through the GitHub REST API only, using the base-ref version of
+this script. When the PR diff touches
 a protected path, the run FAILS, unless the PR carries an explicit human-set
 allow label so legitimate changes to CI/gates can still land.
 
@@ -35,6 +36,9 @@ Protected paths (the minimal gate surface a lane could corrupt):
   - `.github/workflows/`        the required-check workflow YAML itself
   - `.github/scripts/`          gate checkers collocated under `.github`
   - `scripts/check_*.py`        every repo gate checker lives here by convention
+  - `docs/`                    documentation configuration (doc-gate.toml)
+  - `pyproject.toml`           project configuration
+  - `tests/conftest.py`         test configuration (fixtures, skip waivers)
 
 Usage:
     python scripts/check_gate_integrity.py <pr-number> [--owner O] [--repo R] [--label LABEL]
@@ -68,14 +72,16 @@ DEFAULT_ALLOW_LABEL = "gate-integrity-allow"
 PROTECTED_PREFIXES: tuple[str, ...] = (
     ".github/workflows/",
     ".github/scripts/",
+    "docs/doc-gate.toml",
+    "pyproject.toml",
+    "tests/conftest.py",
 )
+
 # Every repo gate checker is named `scripts/check_*.py` by convention; that
 # glob captures all current and future gate scripts in one rule so the guard
 # never silently goes blind to a new gate.
 GATE_SCRIPT_PREFIX = "scripts/check_"
 GATE_SCRIPT_SUFFIX = ".py"
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @dataclass
@@ -161,6 +167,7 @@ def collect_pr_files(
 ) -> list[str] | None:
     """Return the list of filenames changed by a PR (via the API, never a
     local checkout). None on infrastructure failure."""
+    token = token or _get_token()
     data = _api_get(f"{API}/repos/{owner}/{repo}/pulls/{pr_number}/files", token)
     if data is None:
         return None
@@ -172,6 +179,7 @@ def collect_pr_labels(
 ) -> set[str] | None:
     """Return the PR's label names (via the API). None on infrastructure
     failure."""
+    token = token or _get_token()
     data = _api_get(f"{API}/repos/{owner}/{repo}/pulls/{pr_number}", token)
     if data is None:
         return None

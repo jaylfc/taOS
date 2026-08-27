@@ -9,8 +9,9 @@ name: Gate integrity
 #
 # This workflow breaks that loop:
 #   * It triggers on `pull_request_target`, so the workflow file AND this
-#     script are resolved from the BASE branch, never from the PR head. A PR
-#     editing this workflow or its checker is inert here.
+#     script are resolved FROM THE BASE REF (GitHub's default on that event),
+#     never from the PR head. A PR editing this workflow or its checker is
+#     inert here.
 #   * It does NOT check out or execute PR code. `actions/checkout` is pinned
 #     to `ref: ${{ github.base_ref }}` (the base branch) -- the PR merge ref is
 #     deliberately never fetched. The base-ref checker then inspects the PR diff
