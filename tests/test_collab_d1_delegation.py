@@ -915,7 +915,9 @@ class TestSetSponsorAtomicGuard:
         cid = reg["canonical_id"]
 
         # Concurrent re-parent attempts: whichever wins, the identity ends up
-        # with exactly one sponsor and cannot be re-parented a second time.
+        # with exactly one sponsor.  Re-parenting to a different sponsor is now
+        # allowed (cross-project identity reuse), so a later set_sponsor to C
+        # must succeed.
         await asyncio.gather(
             store_a.set_sponsor(cid, "hub:A"),
             store_b.set_sponsor(cid, "hub:B"),
@@ -924,10 +926,12 @@ class TestSetSponsorAtomicGuard:
         agent = await store_a.get(cid)
         assert agent["sponsor_contact_id"] in ("hub:A", "hub:B")
 
-        # A later re-parent to a third sponsor must be refused.
-        await store_a.set_sponsor(cid, "hub:C")
+        # Re-parent to a third sponsor must now succeed.
+        result = await store_a.set_sponsor(cid, "hub:C")
+        assert result is not None
+        assert result["sponsor_contact_id"] == "hub:C"
         agent = await store_a.get(cid)
-        assert agent["sponsor_contact_id"] != "hub:C"
+        assert agent["sponsor_contact_id"] == "hub:C"
         await store_a.close()
         await store_b.close()
 
