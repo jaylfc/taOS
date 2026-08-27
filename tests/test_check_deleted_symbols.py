@@ -164,6 +164,25 @@ class TestFindSignalSymbols:
 
 
 class TestResolveSymbolIsolation:
+    @pytest.fixture(autouse=True)
+    def _restore_sys_modules(self):
+        """Restore sys.modules EXACTLY after every test in this class.
+
+        These tests deliberately purge and repopulate `tinyagentos.*` to isolate
+        _resolve_symbol. Without this, the purge escapes the test: sibling test
+        modules imported `tinyagentos.deployer` at collection time and hold that
+        object, while a later mock.patch("tinyagentos.deployer...") re-imports
+        and patches a DIFFERENT object -- so the patch silently misses and the
+        real binary runs. That is what turned 43 deployer tests red on dev with
+        FileNotFoundError: 'incus'.
+        """
+        saved = dict(sys.modules)
+        try:
+            yield
+        finally:
+            sys.modules.clear()
+            sys.modules.update(saved)
+
     @staticmethod
     def _write_tree(tmp_path: Path, files: dict[str, str]) -> Path:
         root = tmp_path / "merge"
@@ -208,6 +227,40 @@ class TestResolveSymbolIsolation:
             assert (
                 sys.modules.get("tinyagentos.foo") is sentinel
             ), "sys.modules entry identity changed"
+        finally:
+            self._purge_package("tinyagentos")
+
+    def test_resolve_symbol_does_not_leak_transitive_imports(self, tmp_path: Path):
+        """The module under inspection is EXECUTED, so whatever it imports is
+        imported too -- out of the merge tree, under real names.
+
+        The sibling test above uses a module with no imports, so it cannot fail
+        on this: it is one level coarser than the defect. Leaked transitive
+        modules shadow the installed ones for the rest of the process, which is
+        how this turned 43 unrelated deployer tests red on dev -- their
+        mock.patch targets resolved to a different module object than the code
+        under test was using.
+        """
+        merge = self._write_tree(
+            tmp_path,
+            {
+                "tinyagentos/__init__.py": "",
+                "tinyagentos/leaky_helper.py": "VALUE = 'from-merge-tree'\n",
+                "tinyagentos/leaky_main.py": (
+                    "from tinyagentos import leaky_helper\n"
+                    "def func_a():\n"
+                    "    return leaky_helper.VALUE\n"
+                ),
+            },
+        )
+        self._purge_package("tinyagentos")
+        before = set(sys.modules)
+
+        try:
+            assert cds._resolve_symbol(merge, "tinyagentos/leaky_main.py", "func_a")
+            gained = set(sys.modules) - before
+            assert not gained, f"sys.modules gained {gained}"
+            assert "tinyagentos.leaky_helper" not in sys.modules
         finally:
             self._purge_package("tinyagentos")
 
