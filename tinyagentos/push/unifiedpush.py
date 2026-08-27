@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import logging
 from typing import Protocol
+from urllib.parse import urlparse
 
 import httpx
+
+from tinyagentos.routes.desktop_browser.ssrf import SsrfBlockedError, validate_url_or_raise
 
 logger = logging.getLogger(__name__)
 
@@ -60,12 +63,16 @@ class HttpUnifiedPushSender:
 
     async def send(self, push_token: str, payload: dict) -> bool:
         try:
+            parsed = urlparse(push_token)
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                raise ValueError("invalid push_token URL")
+            validate_url_or_raise(push_token, allow_private=True)
             resp = await self._client.post(
                 push_token,
                 json=payload,
                 headers={"Content-Type": "application/json"},
             )
-        except httpx.HTTPError:
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError, SsrfBlockedError):
             logger.warning("UnifiedPush send failed for %s", push_token[:8], exc_info=True)
             return False
         return resp.status_code == 200

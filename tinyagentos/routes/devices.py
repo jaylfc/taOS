@@ -4,9 +4,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
+from urllib.parse import urlparse
 
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.device_auth import current_user_or_device
+from tinyagentos.routes.desktop_browser.ssrf import SsrfBlockedError, validate_url_or_raise
 
 router = APIRouter()
 
@@ -33,7 +35,8 @@ class RegisterIn(BaseModel):
     @model_validator(mode="after")
     def _validate_push_token_for_platform(self) -> "RegisterIn":
         if self.platform == "android" and self.push_token:
-            if not self.push_token.startswith(("http://", "https://")):
+            parsed = urlparse(self.push_token)
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
                 raise ValueError("push_token must be a URL for android devices")
         return self
 
@@ -69,6 +72,14 @@ async def register_device(
             {"error": f"device limit reached ({_MAX_DEVICES_PER_USER})"},
             status_code=429,
         )
+    if body.platform == "android" and body.push_token:
+        try:
+            validate_url_or_raise(body.push_token, allow_private=True)
+        except SsrfBlockedError:
+            return JSONResponse(
+                {"error": "push_token URL is not allowed"},
+                status_code=400,
+            )
     device = await store.register(
         user_id=user.user_id,
         platform=body.platform,
@@ -134,10 +145,18 @@ async def update_push_token(
             return JSONResponse({"error": "not found"}, status_code=404)
         device = await store.get(device_id)
     if device and device.get("platform") == "android" and body.push_token:
-        if not body.push_token.startswith(("http://", "https://")):
+        parsed = urlparse(body.push_token)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
             return JSONResponse(
                 {"error": "push_token must be a URL for android devices"},
                 status_code=422,
+            )
+        try:
+            validate_url_or_raise(body.push_token, allow_private=True)
+        except SsrfBlockedError:
+            return JSONResponse(
+                {"error": "push_token URL is not allowed"},
+                status_code=400,
             )
     updated = await store.update_push_token(device_id, body.push_token)
     updated.pop("scoped_token", None)

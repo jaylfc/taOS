@@ -34,7 +34,7 @@ def test_build_payload_with_actions():
 
 @pytest.mark.asyncio
 async def test_null_sender_returns_false():
-    assert await NullUnifiedPushSender().send("https://up.example.com/endpoint", {}) is False
+    assert await NullUnifiedPushSender().send("https://example.com/endpoint", {}) is False
 
 
 @pytest.mark.asyncio
@@ -50,9 +50,9 @@ async def test_http_sender_posts_json():
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     sender = HttpUnifiedPushSender(client=client)
     payload = build_unifiedpush_payload(title="T", body="B", actions=[{"id": "a", "label": "A"}])
-    ok = await sender.send("https://up.example.com/endpoint", payload)
+    ok = await sender.send("https://example.com/endpoint", payload)
     assert ok is True
-    assert seen["url"] == "https://up.example.com/endpoint"
+    assert seen["url"] == "https://example.com/endpoint"
     assert seen["headers"]["content-type"] == "application/json"
     assert seen["body"]["title"] == "T"
     assert seen["body"]["body"] == "B"
@@ -86,7 +86,7 @@ async def test_http_sender_handles_http_error():
     sender = HttpUnifiedPushSender(client=client)
     original_post = client.post
     client.post = _fail
-    ok = await sender.send("https://up.example.com/endpoint", {})
+    ok = await sender.send("https://example.com/endpoint", {})
     assert ok is False
     client.post = original_post
     await client.aclose()
@@ -350,3 +350,39 @@ async def test_send_device_push_broadcast_actions_for_decision_types():
             up_sender=FakeUP(),
         )
         assert len(FakeApns.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_refuses_host_that_resolves_to_loopback_at_send_time():
+    """Send-time re-resolution: a hostname that validated public at registration
+    but resolves to loopback when the sender runs must not issue a POST."""
+    from unittest.mock import patch
+
+    from tinyagentos.routes.desktop_browser.ssrf import validate_url_or_raise
+
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["called"] = True
+        return httpx.Response(200)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    call_count = [0]
+
+    def fake_getaddrinfo(*args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return [(2, 1, 6, "", ("93.184.216.34", 0))]
+        return [(2, 1, 6, "", ("127.0.0.1", 0))]
+
+    sender = HttpUnifiedPushSender(client=client)
+    with patch(
+        "tinyagentos.routes.desktop_browser.ssrf.socket.getaddrinfo",
+        side_effect=fake_getaddrinfo,
+    ):
+        validate_url_or_raise("http://rebind.example.com/endpoint", allow_private=True)
+        ok = await sender.send("http://rebind.example.com/endpoint", {})
+    assert ok is False
+    assert "called" not in seen
+    await client.aclose()

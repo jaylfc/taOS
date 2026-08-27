@@ -55,12 +55,16 @@ _BLOCKED_NETWORKS = (
 )
 
 
-def validate_url_or_raise(url: str) -> None:
+def validate_url_or_raise(url: str, *, allow_private: bool = False) -> None:
     """Validate that `url` is safe to fetch.
 
     Parses the URL, checks scheme + hostname suffix, resolves DNS, and
     verifies every resolved address against the blocklist. Raises
     `SsrfBlockedError` on any failure.
+
+    Pass ``allow_private=True`` to permit RFC1918 and CGNAT addresses
+    (e.g. self-hosted LAN services) while still refusing loopback,
+    link-local, multicast, reserved, and unspecified ranges.
     """
     parsed = urlparse(url)
 
@@ -114,15 +118,18 @@ def validate_url_or_raise(url: str) -> None:
         raise SsrfBlockedError("hostname resolved to no addresses")
 
     for addr in addrs:
-        validate_resolved_addr(addr)
+        validate_resolved_addr(addr, allow_private=allow_private)
 
 
-def validate_resolved_addr(addr: str) -> None:
+def validate_resolved_addr(addr: str, *, allow_private: bool = False) -> None:
     """Validate that a resolved IP address is safe to connect to.
 
     Rejects loopback, RFC1918, link-local, multicast, broadcast,
     unspecified (0.0.0.0), and the IPv6 equivalents (incl. IPv4-mapped
     IPv6 forms like ::ffff:127.0.0.1).
+
+    Pass ``allow_private=True`` to skip the ``is_private`` and RFC 6598
+    CGNAT checks (useful for self-hosted LAN services).
     """
     try:
         ip = ipaddress.ip_address(addr)
@@ -137,7 +144,7 @@ def validate_resolved_addr(addr: str) -> None:
 
     if (
         ip.is_loopback
-        or ip.is_private
+        or (not allow_private and ip.is_private)
         or ip.is_link_local
         or ip.is_multicast
         or ip.is_reserved
@@ -145,13 +152,12 @@ def validate_resolved_addr(addr: str) -> None:
     ):
         raise SsrfBlockedError(f"resolved address {addr!r} is in the blocklist")
 
-    # Backstop for ranges Python's `ipaddress` doesn't classify as
-    # private (e.g. RFC 6598 CGNAT).
-    for net in _BLOCKED_NETWORKS:
-        if ip in net:
-            raise SsrfBlockedError(
-                f"resolved address {addr!r} is in blocked network {net}"
-            )
+    if not allow_private:
+        for net in _BLOCKED_NETWORKS:
+            if ip in net:
+                raise SsrfBlockedError(
+                    f"resolved address {addr!r} is in blocked network {net}"
+                )
 
 
 def _try_parse_encoded_ipv4(host: str) -> str | None:
