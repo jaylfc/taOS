@@ -256,6 +256,28 @@ async def apply_pending_restart_check(app_state) -> None:
 _RESUME_RETRY_INTERVAL_S = 30
 _RESUME_RETRY_WINDOW_S = 600
 
+_MAX_CONTEXT_SNAPSHOT_BYTES = 32768
+
+
+def _cap_context_snapshot(note: dict) -> None:
+    snapshot = note.get("context_snapshot")
+    if not isinstance(snapshot, dict) or not snapshot:
+        return
+    encoded = json.dumps(snapshot, separators=(",", ":"))
+    if len(encoded) <= _MAX_CONTEXT_SNAPSHOT_BYTES:
+        return
+    overflow = len(encoded) - _MAX_CONTEXT_SNAPSHOT_BYTES
+    logger.warning(
+        "resume note context_snapshot capped: %d bytes over limit (%d bytes total)",
+        overflow,
+        len(encoded),
+    )
+    kept = encoded[-_MAX_CONTEXT_SNAPSHOT_BYTES:]
+    try:
+        note["context_snapshot"] = json.loads(kept)
+    except json.JSONDecodeError:
+        note["context_snapshot"] = {"_truncated": "snapshot exceeded context window; remainder dropped"}
+
 
 def _load_or_synthesize_note(note_path: Path) -> dict:
     if note_path.exists():
@@ -350,6 +372,7 @@ async def resume_agents_from_notes(app_state) -> None:
             continue
 
         note = _load_or_synthesize_note(note_path)
+        _cap_context_snapshot(note)
         if await _post_resume(host, port, note):
             finalize.append((agent, note_path))
             resumed.append(name)
@@ -438,6 +461,7 @@ async def _resume_retry_loop(app_state, names: list[str]) -> None:
                     continue
                 note_path = data_dir / "agent-memory" / name / "resume_note.json"
                 note = _load_or_synthesize_note(note_path)
+                _cap_context_snapshot(note)
                 if await _post_resume(agent.get("host", ""), agent.get("port", 8080), note):
                     # Per-agent config write is fine here: retry successes are
                     # rare, isolated events (one agent per 30s tick at worst),

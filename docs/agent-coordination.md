@@ -110,6 +110,18 @@ reach it, and write your pid to a pidfile. Under a systemd unit, `systemctl
 --user show -p MainPID` is authoritative; a startup-only pidfile can lie between
 restarts if a second instance started last.
 
+## Resume notes: context snapshot must be bounded
+
+A resume note's `context_snapshot` is carried through `POST /resume` and can grow
+without limit if the agent dumps its transcript or memory into it. An oversized
+snapshot saturates the framework's input window at wake, so the agent restarts
+into the same overflow every time and the recovery note is never consumed.
+
+`_cap_context_snapshot()` in `tinyagentos/restart_orchestrator.py` truncates the
+snapshot to a 32768-byte suffix (with a `_truncated` marker) before the note is
+posted. Do not bypass it: any code that writes a resume note by hand must still
+route it through that guard, lest a 32 KB transcript become a 32 KB failure.
+
 ## Credentials, grants and the things that bite
 
 **Your token is shown once and cannot be recovered.** Not by you, not by the

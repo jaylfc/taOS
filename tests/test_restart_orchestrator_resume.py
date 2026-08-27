@@ -156,3 +156,72 @@ class TestResumeAgentsFromNotes:
 
         state.notifications.add.assert_not_awaited()
         assert not state._background_tasks
+
+
+class TestCapContextSnapshot:
+    def test_leaves_small_snapshot_untouched(self):
+        note = {"context_snapshot": {"key": "value"}}
+        ro._cap_context_snapshot(note)
+        assert note["context_snapshot"] == {"key": "value"}
+
+    def test_truncates_oversized_snapshot(self):
+        big = {f"field_{i}": "x" * 200 for i in range(500)}
+        note = {"context_snapshot": big}
+        original_size = len(json.dumps(big, separators=(",", ":")))
+        assert original_size > ro._MAX_CONTEXT_SNAPSHOT_BYTES
+        ro._cap_context_snapshot(note)
+        capped_size = len(json.dumps(note["context_snapshot"], separators=(",", ":")))
+        assert capped_size <= ro._MAX_CONTEXT_SNAPSHOT_BYTES
+        assert note["context_snapshot"] is not big
+
+    def test_empty_snapshot_is_noop(self):
+        for val in [{}, None, "", "str"]:
+            note = {"context_snapshot": val}
+            ro._cap_context_snapshot(note)
+            assert note["context_snapshot"] == val
+
+    def test_missing_snapshot_is_noop(self):
+        note = {"reason": "pause"}
+        ro._cap_context_snapshot(note)
+        assert "context_snapshot" not in note
+
+
+class TestResumeRetryLoopCapsSnapshot:
+    @pytest.mark.asyncio
+    async def test_retry_loop_caps_oversized_snapshot(self, tmp_path, monkeypatch):
+        """When the first resume attempt fails (agent slow to boot), the
+        retry loop re-loads the note from disk and posts it again. The
+        context_snapshot must still be capped on every retry, not only on
+        the initial attempt."""
+        agent = {"name": "slow", "host": "10.0.0.7", "port": 8080, "paused": True}
+        state = _app_state(tmp_path, [agent])
+        note_dir = tmp_path / "agent-memory" / "slow"
+        note_dir.mkdir(parents=True)
+        big_snapshot = {f"field_{i}": "x" * 200 for i in range(500)}
+        (note_dir / "resume_note.json").write_text(
+            json.dumps({"reason": "pause", "context_snapshot": big_snapshot})
+        )
+
+        posted_notes = []
+        attempts = {"n": 0}
+
+        async def flaky_post(host, port, note):
+            attempts["n"] += 1
+            posted_notes.append(dict(note))
+            return attempts["n"] >= 2
+
+        monkeypatch.setattr(ro, "_post_resume", flaky_post)
+        monkeypatch.setattr(ro, "_RESUME_RETRY_INTERVAL_S", 0.01)
+        monkeypatch.setattr(ro, "_RESUME_RETRY_WINDOW_S", 5)
+
+        await ro.resume_agents_from_notes(state)
+
+        for task in list(state._background_tasks):
+            await task
+
+        assert attempts["n"] == 2
+        for posted in posted_notes:
+            encoded = json.dumps(
+                posted["context_snapshot"], separators=(",", ":")
+            )
+            assert len(encoded) <= ro._MAX_CONTEXT_SNAPSHOT_BYTES
