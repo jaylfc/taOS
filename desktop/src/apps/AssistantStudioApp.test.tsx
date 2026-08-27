@@ -73,3 +73,86 @@ describe("AssistantStudioApp", () => {
     expect(screen.getByText("hello journal")).toBeInTheDocument();
   });
 });
+
+describe("PA change confirmation", () => {
+  const agents = [
+    { name: "hermes", display_name: "Hermes" },
+    { name: "atlas", display_name: "Atlas" },
+  ];
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        String(url).includes("/api/agents")
+          ? { ok: true, json: async () => agents }
+          : { ok: true, json: async () => [] },
+      ),
+    );
+  });
+
+  async function openStudio() {
+    render(<AssistantStudioApp />);
+    return await screen.findByLabelText(
+      "Select the agent to act as your personal assistant",
+    );
+  }
+
+  it("does NOT commit the change until it is confirmed", async () => {
+    localStorage.setItem("taos.assistantStudio.pa", "hermes");
+    const select = await openStudio();
+
+    fireEvent.change(select, { target: { value: "atlas" } });
+
+    // The dialog is up and the stored PA is still the old one. This is the
+    // assertion that goes red if the guard is removed: without it, the change
+    // is written to localStorage synchronously on change.
+    expect(
+      screen.getByRole("dialog", { name: /change your personal assistant/i }),
+    ).toBeTruthy();
+    expect(localStorage.getItem("taos.assistantStudio.pa")).toBe("hermes");
+  });
+
+  it("keeps the old PA when cancelled", async () => {
+    localStorage.setItem("taos.assistantStudio.pa", "hermes");
+    const select = await openStudio();
+
+    fireEvent.change(select, { target: { value: "atlas" } });
+    fireEvent.click(screen.getByText("Keep current PA"));
+
+    expect(localStorage.getItem("taos.assistantStudio.pa")).toBe("hermes");
+    expect((select as HTMLSelectElement).value).toBe("hermes");
+  });
+
+  it("applies the new PA when confirmed", async () => {
+    localStorage.setItem("taos.assistantStudio.pa", "hermes");
+    const select = await openStudio();
+
+    fireEvent.change(select, { target: { value: "atlas" } });
+    fireEvent.click(screen.getByText("Change PA"));
+
+    expect(localStorage.getItem("taos.assistantStudio.pa")).toBe("atlas");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("does NOT prompt when there is no PA yet — nothing to move away from", async () => {
+    // Assigning a PA from an empty selection is a first assignment, not a
+    // change, and must not interrupt the user.
+    //
+    // This has to reach the picker with `pa` EMPTY and then choose a REAL
+    // agent. Selecting the empty option on its own returns through the `!name`
+    // branch, so a test that stops there still passes with the
+    // first-assignment guard deleted — it asserts nothing. Clearing first and
+    // then picking "atlas" is the only path that runs through `!pa`, and it
+    // goes red if that guard is removed.
+    localStorage.setItem("taos.assistantStudio.pa", "hermes");
+    const select = await openStudio();
+
+    fireEvent.change(select, { target: { value: "" } });
+    fireEvent.change(select, { target: { value: "atlas" } });
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(localStorage.getItem("taos.assistantStudio.pa")).toBe("atlas");
+  });
+});

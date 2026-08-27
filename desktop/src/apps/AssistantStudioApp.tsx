@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import {
   LayoutDashboard,
   NotebookPen,
@@ -138,6 +139,28 @@ export function AssistantStudioApp({ windowId: _windowId }: { windowId: string }
     localStorage.setItem(PA_KEY, name);
   };
 
+  const labelFor = useCallback(
+    (name: string) => {
+      const a = agents.find((x) => x.name === name);
+      return a?.display_name || a?.handle || name;
+    },
+    [agents],
+  );
+
+  // Every surface in this app is scoped to the assigned PA, so changing it
+  // swaps the whole workspace at once. Confirm first — but only for a real
+  // CHANGE: the first assignment has no previous PA to move away from, so
+  // interrupting it would be a prompt with nothing at stake.
+  const [pendingPa, setPendingPa] = useState<string | null>(null);
+
+  const requestPaChange = (name: string) => {
+    if (!name || name === pa || !pa) {
+      choosePa(name);
+      return;
+    }
+    setPendingPa(name);
+  };
+
   const paAgent = useMemo(
     () => agents.find((a) => a.name === pa),
     [agents, pa],
@@ -146,6 +169,25 @@ export function AssistantStudioApp({ windowId: _windowId }: { windowId: string }
 
   return (
     <div className="flex h-full w-full bg-zinc-950 text-zinc-100">
+      {/* Not `danger`: switching PA is reversible and deletes nothing, so a red
+          destructive button would overstate it. The point is that the change is
+          easy to make by accident and re-scopes every panel at once. */}
+      <ConfirmDialog
+        open={pendingPa !== null}
+        title="Change your personal assistant?"
+        message={
+          `Notes, tasks, calendar and deliverables here are all scoped to the assigned PA. ` +
+          `Switching from ${labelFor(pa)} to ${labelFor(pendingPa ?? "")} moves the whole ` +
+          `workspace over to ${labelFor(pendingPa ?? "")}. Nothing is deleted, and you can switch back.`
+        }
+        confirmLabel="Change PA"
+        cancelLabel="Keep current PA"
+        onConfirm={() => {
+          if (pendingPa) choosePa(pendingPa);
+          setPendingPa(null);
+        }}
+        onCancel={() => setPendingPa(null)}
+      />
       {/* Left rail */}
       <nav
         className="flex w-44 flex-shrink-0 flex-col border-r border-zinc-800 bg-zinc-900/60"
@@ -189,7 +231,7 @@ export function AssistantStudioApp({ windowId: _windowId }: { windowId: string }
           <select
             id="pa-select"
             value={pa}
-            onChange={(e) => choosePa(e.target.value)}
+            onChange={(e) => requestPaChange(e.target.value)}
             className="w-full rounded bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 border border-zinc-700 focus:border-sky-500 outline-none"
             aria-label="Select the agent to act as your personal assistant"
           >

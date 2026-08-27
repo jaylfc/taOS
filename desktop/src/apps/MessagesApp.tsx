@@ -58,7 +58,7 @@ import {
   readLastChannel,
   writeLastChannel,
 } from "./MessagesApp.a2aSelection";
-import { bucketAgentChannels, buildAgentPresence } from "./MessagesApp.agentSections";
+import { bucketAgentChannels, buildAgentPresence, collectBoundChannels } from "./MessagesApp.agentSections";
 import {
   pickWatchAgent,
   computeStallInfo,
@@ -2074,11 +2074,7 @@ export function MessagesApp({
     // Bound channels from all three buckets: standalone-mode project
     // channels are excluded from `grouped`, so include them explicitly or
     // a working bound project channel renders no dot.
-    [
-      ...grouped.topic,
-      ...grouped.group,
-      ...projectGroups.flatMap((g) => g.channels),
-    ],
+    collectBoundChannels(grouped, projectGroups),
     workingSlugs,
   );
 

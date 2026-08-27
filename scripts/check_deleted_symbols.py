@@ -188,6 +188,15 @@ def _resolve_symbol(merge_result_dir: Path, file_path: str, name: str) -> bool:
             sys.modules.get(parent_pkg_name),
         )
     touched[module_path] = (module_path in sys.modules, sys.modules.get(module_path))
+    # exec_module() runs the target's module-level code, which imports whatever
+    # that module imports. Those transitive modules are resolved through the
+    # synthesised parent's __path__, so they load OUT OF THE MERGE TREE and land
+    # in sys.modules under their real names. Snapshotting only the two keys above
+    # left them behind: a later importer -- including the rest of a pytest
+    # process, since this function is exercised in-process by its own tests --
+    # then got the merge-tree copy instead of the installed one, and any
+    # mock.patch target resolved to a different module object.
+    preexisting_keys = set(sys.modules)
 
     try:
         if parent_pkg_name:
@@ -212,6 +221,11 @@ def _resolve_symbol(merge_result_dir: Path, file_path: str, name: str) -> bool:
     except Exception:
         return False
     finally:
+        # Drop everything exec_module() added, then restore the explicitly
+        # snapshotted entries. Order matters: the generic sweep would otherwise
+        # delete a key we are about to put back.
+        for key in set(sys.modules) - preexisting_keys:
+            sys.modules.pop(key, None)
         for key, (was_present, old_obj) in touched.items():
             if was_present:
                 sys.modules[key] = old_obj
