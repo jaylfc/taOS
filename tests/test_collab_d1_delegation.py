@@ -468,7 +468,11 @@ class TestSetSponsorGuard:
     """
 
     @pytest.mark.asyncio
-    async def test_set_sponsor_skips_when_already_set(self, tmp_path):
+    async def test_set_sponsor_reparents_to_different_sponsor(self, tmp_path):
+        """Re-parenting an identity to a different sponsor (cross-project
+        reuse via handle) must now SUCCEED — the old immutability guard
+        was removed so cascade_sponsor_revoke(B) can find identities
+        sponsored by B even when the handle was first sponsored by A."""
         from tinyagentos.agent_registry_store import AgentRegistryStore
 
         db_path = tmp_path / "test_registry.db"
@@ -480,17 +484,44 @@ class TestSetSponsorGuard:
             display_name="Agent With Sponsor",
             user_id="user-1",
             origin="external-selfjoin",
-            handle="sponsored-reuse",
-            sponsor_contact_id="hub:original-sponsor",
+            handle="sponsored-reparent",
+            sponsor_contact_id="hub:sponsor-a",
         )
         cid = reg["canonical_id"]
 
-        # Try to re-parent — the guard in set_sponsor must block this.
-        await store.set_sponsor(cid, "hub:new-sponsor")
+        # Re-parent to a different sponsor — must succeed now.
+        result = await store.set_sponsor(cid, "hub:sponsor-b")
+        assert result is not None
+        assert result["sponsor_contact_id"] == "hub:sponsor-b"
 
-        # Sponsor must still be the original — guard blocked re-parenting.
+        # Verify the store agrees.
         agent = await store.get(cid)
-        assert agent["sponsor_contact_id"] == "hub:original-sponsor"
+        assert agent["sponsor_contact_id"] == "hub:sponsor-b"
+        await store.close()
+
+    @pytest.mark.asyncio
+    async def test_set_sponsor_noop_on_same_sponsor(self, tmp_path):
+        """Setting the same sponsor that is already set must be a no-op
+        (returns the current record without a write)."""
+        from tinyagentos.agent_registry_store import AgentRegistryStore
+
+        db_path = tmp_path / "test_registry.db"
+        store = AgentRegistryStore(db_path)
+        await store.init()
+
+        reg = await store.register(
+            framework="test",
+            display_name="Agent",
+            user_id="user-1",
+            origin="external-selfjoin",
+            handle="same-sponsor",
+            sponsor_contact_id="hub:sponsor-a",
+        )
+        cid = reg["canonical_id"]
+
+        result = await store.set_sponsor(cid, "hub:sponsor-a")
+        assert result is not None
+        assert result["sponsor_contact_id"] == "hub:sponsor-a"
         await store.close()
 
     @pytest.mark.asyncio

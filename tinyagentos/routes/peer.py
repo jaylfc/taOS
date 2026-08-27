@@ -242,12 +242,31 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
             "agent_slug": result.get("agent_slug"),
         }
 
+    # Dispatch delegation_status — the remote instance is notifying us that a
+    # delegation request was approved and an invite was minted.  Log and return
+    # the invite_id so it is visible in the node's logs.
+    if kind == "delegation_status":
+        body_data = envelope.get("body", {})
+        invite_id = body_data.get("invite_id", "unknown")
+        agent_slug = body_data.get("agent_slug", "unknown")
+        project_id = body_data.get("project_id", "unknown")
+        logger.info(
+            "peer_inbox: delegation_status contact=%s invite=%s agent=%s project=%s",
+            contact_id, invite_id, agent_slug, project_id,
+        )
+        return {
+            "status": "received",
+            "kind": kind,
+            "invite_id": invite_id,
+            "agent_slug": agent_slug,
+            "project_id": project_id,
+        }
+
     # Log unrecognised kinds for debugging; they are accepted but not dispatched.
     logger.info(
         "peer_inbox: contact=%s kind=%s nonce=%s (unrecognised kind — accepted, no dispatch)",
         contact_id, kind, envelope.get("nonce", "?"),
     )
-
     return {"status": "received", "kind": kind, "nonce": envelope.get("nonce")}
 
 

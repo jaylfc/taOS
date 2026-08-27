@@ -14,6 +14,8 @@ import logging
 import time
 from typing import Optional
 
+from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -84,15 +86,15 @@ def _validate_delegation_envelope_body(body: dict) -> tuple[bool, str, Optional[
             return False, f"{field} must be a non-empty string", None
 
     requested_scopes = body["requested_scopes"]
-    unknown = sorted(set(requested_scopes) - SPONSORED_DEFAULT_SCOPES - SPONSORED_DENY_SCOPES)
-    # Unknown scopes are not immediately denied — they require explicit
-    # per-scope Decisions approval.  We just log them here; the decision
-    # created later will surface them to the human.
+    # Reject any scope not in the closed vocabulary — the per-scope
+    # docstring requires explicit per-scope Decisions approval, but all
+    # delegated scopes are bundled into a single approve_deny card, so an
+    # unknown scope would ride through to the mint with no human awareness.
+    # Tightening to the closed vocabulary ensures only scopes the system
+    # actually enforces can be requested.
+    unknown = sorted(set(requested_scopes) - VALID_SCOPES)
     if unknown:
-        logger.info(
-            "delegation: elevated scopes in request: %r (require explicit approval)",
-            unknown,
-        )
+        return False, f"unknown scopes: {unknown}; valid: {sorted(VALID_SCOPES)}", None
 
     parsed = {
         "agent_slug": body["agent_slug"].strip(),

@@ -587,7 +587,12 @@ async def approve_request_record(
             # For sponsored agents (cross-user collab D1), set the sponsor
             # on the existing identity when reusing it for a new project.
             if sponsor_contact_id:
-                await registry.set_sponsor(existing_cid, sponsor_contact_id)
+                updated = await registry.set_sponsor(existing_cid, sponsor_contact_id)
+                if updated is None:
+                    logger.warning(
+                        "auth-approve: set_sponsor returned None for %s (identity gone?)",
+                        existing_cid,
+                    )
             await add_agent_to_project(
                 request,
                 canonical_id=existing_cid,

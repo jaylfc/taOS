@@ -43,7 +43,7 @@ def build_envelope(
     """Build a signed envelope from this node to a remote contact.
 
     ``kind`` is one of: ``handshake``, ``collab_invite``, ``delegation_request``,
-    ``chat``, ``ack``.  ``body`` is the payload dict.
+    ``delegation_status``, ``chat``, ``ack``.  ``body`` is the payload dict.
 
     The envelope is signed with this node's Ed25519 signing key (from
     ``hub.identity``), so the receiver can verify it against the pinned pubkey
@@ -296,6 +296,66 @@ async def deliver_handshake(
 
 # ---------------------------------------------------------------------------
 # helpers
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Outbound delivery
+# ---------------------------------------------------------------------------
+
+async def send_envelope(
+    contacts_store,
+    *,
+    from_username: str,
+    to_contact_id: str,
+    kind: str,
+    body: dict | None = None,
+) -> tuple[bool, str]:
+    """Build a signed envelope and deliver it to a remote contact's peer inbox.
+
+    Returns ``(delivered, error)``.  ``delivered`` is True when the envelope
+    was accepted (2xx) by at least one remote endpoint.  ``error`` is an empty
+    string on success, otherwise a human-readable reason.
+
+    This is the reusable outbound half of the peer channel — the inbound half
+    is ``POST /api/peer/inbox`` in ``routes/peer.py``.
+    """
+    envelope = build_envelope(
+        from_username=from_username,
+        to_username=to_contact_id,
+        kind=kind,
+        body=body,
+    )
+
+    peer_link = await contacts_store.get_peer_link(to_contact_id)
+    if peer_link is None or not peer_link.get("endpoints"):
+        return False, "no peer endpoints for contact"
+
+    import httpx
+
+    outbound_token = peer_link.get("outbound_token", "")
+    for ep in sorted(
+        peer_link["endpoints"],
+        key=lambda e: e.get("priority", 99),
+    ):
+        inbox_url = f"{ep['url'].rstrip('/')}/api/peer/inbox"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    inbox_url,
+                    json={"envelope": envelope},
+                    headers={
+                        "Authorization": f"Bearer {outbound_token}",
+                        "Content-Type": "application/json",
+                    },
+                )
+                if 200 <= resp.status_code < 300:
+                    return True, ""
+        except Exception:
+            continue
+    return False, "failed to deliver envelope to any peer endpoint"
+
+
 # ---------------------------------------------------------------------------
 
 

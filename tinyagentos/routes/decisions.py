@@ -803,6 +803,65 @@ async def _apply_delegation_grant(request: Request, decision: dict, value) -> bo
     return True
 
 
+async def _deliver_delegation_invite(
+    request: Request,
+    meta: dict,
+    invite_id: str,
+) -> None:
+    """Best-effort: deliver a minted delegation invite_id to the requester
+    over the peer channel so their agent runner can redeem it.
+
+    Never raises — the invite is already minted and persisted on this side,
+    so a delivery failure must not roll it back.
+    """
+    contact_id = meta.get("contact_id", "")
+    agent_slug = meta.get("agent_slug", "")
+    project_id = meta.get("project_id", "")
+
+    if not contact_id or not invite_id:
+        return
+
+    contacts_store = getattr(request.app.state, "contacts_store", None)
+    if contacts_store is None:
+        return
+
+    try:
+        import asyncio
+        from tinyagentos.peer import resolve_local_identity_id, send_envelope
+
+        data_dir = getattr(request.app.state, "data_dir", None)
+        local_id = await asyncio.to_thread(
+            resolve_local_identity_id, data_dir
+        )
+        if local_id is None:
+            return
+
+        from_username = local_id.removeprefix("hub:")
+        to_username = contact_id.removeprefix("hub:")
+
+        body: dict = {
+            "invite_id": invite_id,
+            "agent_slug": agent_slug,
+            "project_id": project_id,
+        }
+        delivered, err = await send_envelope(
+            contacts_store,
+            from_username=from_username,
+            to_contact_id=contact_id,
+            kind="delegation_status",
+            body=body,
+        )
+        if not delivered:
+            logger.warning(
+                "delegation_status delivery failed for decision invite %s: %s",
+                invite_id, err,
+            )
+    except Exception:
+        logger.warning(
+            "delegation_status delivery error for invite %s", invite_id, exc_info=True,
+        )
+
+
 async def _apply_collab_delegation_grant(request: Request, decision: dict, value) -> bool:
     """Side effect for a cross-user collab delegation-gate Decision (D1): the
     decision's metadata carries {kind: "collab_delegation_gate", contact_id,
@@ -818,6 +877,7 @@ async def _apply_collab_delegation_grant(request: Request, decision: dict, value
         return False
     approved = value == "approve"
     completed = False
+    invite_id = None
     if approved:
         try:
             from tinyagentos.delegation_handler import complete_delegation_approval
@@ -826,6 +886,8 @@ async def _apply_collab_delegation_grant(request: Request, decision: dict, value
                 request, decision_metadata=meta
             )
             completed = result.get("status") == "approved"
+            if completed:
+                invite_id = result.get("invite_id")
         except Exception:
             logger.warning(
                 "collab delegation approval failed for decision %s",
@@ -842,6 +904,11 @@ async def _apply_collab_delegation_grant(request: Request, decision: dict, value
     else:
         reply = "delegation approved, but minting the invite failed - please retry"
     await _route_answer_to_agent(decision, reply)
+    # Deliver the invite_id to the requester over the peer channel so their
+    # agent runner can redeem it.  Best-effort: the invite is already minted
+    # and persisted; a delivery failure does not roll back the mint.
+    if completed and invite_id:
+        await _deliver_delegation_invite(request, meta, invite_id)
     return True
 
 
