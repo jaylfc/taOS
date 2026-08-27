@@ -606,3 +606,32 @@ class TestObservatoryAgentAuth:
         handles = [a["handle"] for a in agents]
         assert "@lane-a" in handles
         assert "@lane-b" not in handles
+
+
+@pytest.mark.asyncio
+class TestObservatoryWakeBudget:
+    async def test_fleet_wake_budget_admin(self, client):
+        resp = await client.get("/api/observatory/wake-budget")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "agents" in data
+        for row in data["agents"]:
+            assert "agent_id" in row
+            assert "budget" in row
+            assert "consumed" in row
+            assert "remaining" in row
+            assert "mention_count" in row
+            assert "next_wake_epoch" in row
+
+    async def test_fleet_wake_budget_agent_token(self, app):
+        _cid, token = await _make_obs_agent_token(app, scopes=("observatory_control",))
+        from httpx import ASGITransport, AsyncClient
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            resp = await bare.get(
+                "/api/observatory/wake-budget",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "agents" in data

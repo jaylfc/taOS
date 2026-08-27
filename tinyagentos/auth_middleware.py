@@ -53,6 +53,7 @@ _OBSERVATORY_PATHS = frozenset({
     "/api/observatory/throttle",
     "/api/observatory/approval-mode",
     "/api/observatory/fleet",
+    "/api/observatory/wake-budget",
 })
 # Every path that accepts a registry JWT in place of the admin session.  The
 # passthrough is allowlisted to exactly these paths -- a registry JWT must never

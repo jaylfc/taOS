@@ -384,10 +384,10 @@ The registry-JWT surface, by scope:
   (`_is_agent_decisions_path` in `tinyagentos/auth_middleware.py`).
 - **observatory_control**: the Observatory fleet dials.
   `GET|POST /api/observatory/pause`, `GET|POST /api/observatory/throttle`,
-  `GET|POST /api/observatory/approval-mode`, and `GET /api/observatory/fleet`
-  (read-only, there is no POST). Writes require a global (null-project) grant;
-  reads admit any active grant. Admin session and local token are always
-  allowed.
+  `GET|POST /api/observatory/approval-mode`, `GET /api/observatory/fleet`,
+  and `GET /api/observatory/wake-budget` (read-only). Writes require a global
+  (null-project) grant; reads admit any active grant. Admin session and local
+  token are always allowed.
 - **a2a_receive**: the bus READ routes only -- `GET /api/a2a/bus/channels`,
   `GET /api/a2a/bus/messages`, `GET /api/a2a/bus/stream`.
   **a2a_send**: `POST /api/a2a/bus/send` only, which forces `from` to the

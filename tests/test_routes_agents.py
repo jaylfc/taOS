@@ -1817,3 +1817,27 @@ class TestAgentBudgetRoutes:
     async def test_reset_not_found_agent(self, client):
         resp = await client.post("/api/agents/no-such-agent/budget/reset")
         assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+class TestAgentWakeBudget:
+    async def test_get_wake_budget_defaults(self, client):
+        resp = await client.get("/api/agents/test-agent/wake-budget")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["agent"] == "test-agent"
+        assert data["budget"] == 2
+        assert data["consumed"] == 0
+        assert data["remaining"] == 2
+        assert data["mention_count"] == 0
+        assert data["date"] == _today_str()
+        assert data["next_wake_epoch"] is not None
+
+    async def test_get_wake_budget_not_found(self, client):
+        resp = await client.get("/api/agents/no-such-agent/wake-budget")
+        assert resp.status_code == 404
+
+
+def _today_str() -> str:
+    import datetime
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")

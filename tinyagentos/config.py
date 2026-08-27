@@ -35,6 +35,7 @@ DEFAULT_CONFIG = {
     "metrics": {"poll_interval": 30, "retention_days": 30},
     "memory_url": "http://localhost:7900",
     "webhooks": [],
+    "wake_budget": {"global_default": 2, "per_agent": {}, "per_project": {}, "mention_cap": {}},
 }
 
 _config_lock = asyncio.Lock()
@@ -60,6 +61,7 @@ class AppConfig:
     archived_agents: list[dict] = field(default_factory=list)
     archive: dict = field(default_factory=lambda: DEFAULT_ARCHIVE_CONFIG.copy())
     memory_url: str = "http://localhost:7900"
+    wake_budget: dict = field(default_factory=lambda: DEFAULT_CONFIG["wake_budget"].copy())
     # Locally-hosted taOSmd deployment hooks for /api/settings/update: the git
     # checkout the running service imports from, and the command that restarts
     # it (e.g. "sudo systemctl restart taosmd"). Both empty on installs where
@@ -81,6 +83,7 @@ class AppConfig:
             "qmd": self.qmd,
             "agents": self.agents,
             "metrics": self.metrics,
+            "wake_budget": self.wake_budget,
         }
         if self.webhooks:
             d["webhooks"] = self.webhooks
@@ -203,6 +206,7 @@ def load_config(path: Path) -> AppConfig:
         qmd=data.get("qmd", DEFAULT_CONFIG["qmd"].copy()),
         agents=agents,
         metrics=data.get("metrics", DEFAULT_CONFIG["metrics"].copy()),
+        wake_budget=data.get("wake_budget", DEFAULT_CONFIG["wake_budget"].copy()),
         webhooks=data.get("webhooks", []),
         archived_agents=data.get("archived_agents", []),
         archive=archive_cfg,
@@ -507,4 +511,42 @@ def validate_config(config: AppConfig) -> list[str]:
         fb = a.get("fallback_models")
         if fb is not None and not isinstance(fb, list):
             errors.append(f"agents[{i}]: fallback_models must be a list")
+    wb = config.wake_budget or {}
+    try:
+        gd = int(wb.get("global_default", 2))
+    except (TypeError, ValueError):
+        errors.append("wake_budget.global_default must be an integer")
+        gd = -1
+    if gd < 0:
+        errors.append("wake_budget.global_default must be >= 0")
+    for section in ("per_agent", "per_project"):
+        bucket = wb.get(section)
+        if bucket is None:
+            continue
+        if not isinstance(bucket, dict):
+            errors.append(f"wake_budget.{section} must be a mapping")
+            continue
+        for key, val in bucket.items():
+            try:
+                n = int(val)
+            except (TypeError, ValueError):
+                errors.append(f"wake_budget.{section}[{key!r}] must be an integer")
+                continue
+            if n < 0:
+                errors.append(f"wake_budget.{section}[{key!r}] must be >= 0")
+    mention_cap = wb.get("mention_cap")
+    if mention_cap is not None:
+        if not isinstance(mention_cap, dict):
+            errors.append("wake_budget.mention_cap must be a mapping")
+        else:
+            for key, val in mention_cap.items():
+                if val is None:
+                    continue
+                try:
+                    n = int(val)
+                except (TypeError, ValueError):
+                    errors.append(f"wake_budget.mention_cap[{key!r}] must be an integer or null")
+                    continue
+                if n < 0:
+                    errors.append(f"wake_budget.mention_cap[{key!r}] must be >= 0")
     return errors

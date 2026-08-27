@@ -33,6 +33,8 @@ import logging
 import time
 import uuid
 
+from tinyagentos.wake_budget import can_wake, record_scheduled_wake
+
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_INTERVAL = 60  # seconds between agent queue sweeps
@@ -156,6 +158,7 @@ async def _heartbeat_tick(app_state) -> None:
     project_task_store = app_state.project_task_store
     debounce = _debounce_map(app_state)
     now = time.time()
+    data_dir = getattr(app_state, "data_dir", None)
 
     woke_this_tick = 0
     staggered_seconds = 0.0
@@ -174,6 +177,12 @@ async def _heartbeat_tick(app_state) -> None:
             task = ready[0]
             if not _should_wake(debounce, agent_id, task["id"], now):
                 continue
+            if data_dir is not None:
+                project_id = task.get("project_id")
+                if not can_wake(
+                    data_dir, agent_id, agent.get("name", agent_id), project_id, config
+                ):
+                    continue
             # Spread successive wakes within a tick so the downstream LLM turns
             # don't all fire at one instant on a large fleet. Deterministic (not
             # random) to stay testable; only agents we actually wake sleep, so
@@ -188,6 +197,8 @@ async def _heartbeat_tick(app_state) -> None:
             # for the whole cooldown.
             if await _wake_agent_with_task(app_state, agent, task):
                 debounce[agent_id] = (task["id"], now)
+                if data_dir is not None:
+                    record_scheduled_wake(data_dir, agent_id, task.get("project_id"))
         except Exception:
             logger.exception("heartbeat: tick failed for agent %s", agent.get("name"))
 

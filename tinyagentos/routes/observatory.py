@@ -456,3 +456,16 @@ async def get_fleet(request: Request):
         "status": "degraded" if stale_handles else ("active" if working_count else "idle"),
     }
     return {"agents": agents, "paused": _read_state(request), "health": health}
+
+
+@router.get("/api/observatory/wake-budget")
+async def get_wake_budget(request: Request):
+    """Per-agent wake budget, consumption, and next scheduled wake.
+
+    Admin or an agent holding ``observatory_control`` may read it.
+    """
+    await _authorize_observatory_read(request)
+    from tinyagentos.wake_budget import get_fleet_wake_info
+    data_dir = Path(request.app.state.data_dir)
+    info = get_fleet_wake_info(data_dir, request.app.state.config, request.app.state.project_store)
+    return {"agents": info}
