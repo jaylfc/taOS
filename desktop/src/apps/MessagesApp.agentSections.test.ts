@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   bucketAgentChannels,
   buildAgentPresence,
+  collectBoundChannels,
   computeAgentPresence,
   type AgentSectionChannel,
   type AgentSectionLiveAgent,
@@ -225,7 +226,7 @@ describe("buildAgentPresence", () => {
       const workingSlugs = new Set(["hermes"]);
       const agentPresence = buildAgentPresence(
         dmSections,
-        [...grouped.topic, ...grouped.group, ...projectGroups.flatMap((g) => g.channels)],
+        collectBoundChannels(grouped, projectGroups),
         workingSlugs,
       );
       expect(agentPresence).toEqual({ p1: "working" });
@@ -240,7 +241,7 @@ describe("buildAgentPresence", () => {
       const workingSlugs = new Set();
       const agentPresence = buildAgentPresence(
         dmSections,
-        [...grouped.topic, ...grouped.group, ...projectGroups.flatMap((g) => g.channels)],
+        collectBoundChannels(grouped, projectGroups),
         workingSlugs,
       );
       expect(agentPresence).toEqual({});
