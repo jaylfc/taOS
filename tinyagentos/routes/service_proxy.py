@@ -17,6 +17,7 @@ import logging
 import httpx
 from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import RedirectResponse, StreamingResponse
+from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +37,12 @@ _HOP_BY_HOP = frozenset({
 })
 
 # Controller-scoped credentials must never leak to the upstream service
-# container. The taos_session cookie is stripped out of Cookie; everything
-# else in the cookie header passes through unchanged.
+# container. Every cookie this origin issues is stripped out of Cookie;
+# everything else in the cookie header passes through unchanged. The shared set
+# is imported rather than restated -- four local copies is exactly how
+# csrf_token, taos_browser and taos_cs came to leak from all four proxies.
 _SENSITIVE_HEADERS = frozenset({"authorization"})
-_STRIPPED_COOKIES = frozenset({"taos_session"})
+_STRIPPED_COOKIES = TAOS_ISSUED_COOKIES
 
 
 # Module-level HTTP client for proxying — avoids per-request connection churn

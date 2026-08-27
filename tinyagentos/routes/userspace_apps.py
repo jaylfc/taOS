@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter, Form, Request, UploadFile, File
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, Response, StreamingResponse
+from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -485,15 +486,16 @@ async def serve_bundle(request: Request, app_id: str, path: str):
 
 
 # Hop-by-hop headers must not be forwarded between the proxy and the
-# upstream/client (RFC 2616 §13.5.1). Authorization is stripped too, and the
-# taos_session cookie is scrubbed out of Cookie -- an untrusted container-app
-# backend must never see the controller session credential.
+# upstream/client (RFC 2616 §13.5.1). Authorization is stripped too, and every
+# cookie this origin issues is scrubbed out of Cookie -- an untrusted
+# container-app backend must never see the controller session credential, nor
+# the CSRF token that proves same-origin for this host.
 _PROXY_HOP_BY_HOP = frozenset({
     "connection", "keep-alive", "proxy-authorization", "te",
     "trailer", "transfer-encoding", "upgrade", "host",
 })
 _PROXY_SENSITIVE_HEADERS = frozenset({"authorization"})
-_PROXY_STRIPPED_COOKIES = frozenset({"taos_session"})
+_PROXY_STRIPPED_COOKIES = TAOS_ISSUED_COOKIES
 
 # Module-level HTTP client for the container-app proxy -- avoids per-request
 # connection churn, mirrors service_proxy.py's pattern.
