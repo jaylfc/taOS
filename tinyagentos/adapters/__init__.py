@@ -124,6 +124,12 @@ _REGISTRY: list[dict] = [
         "description": "ZeroClaw gateway proxy",
         "verification_status": "experimental",
     },
+    {
+        "id": "omp",
+        "name": "OMP (Oh My Pi)",
+        "description": "OMP coding agent via the Agent Client Protocol (omp acp)",
+        "verification_status": "experimental",
+    },
 ]
 
 _VALID_STATUSES = {"tested", "beta", "experimental", "broken"}
