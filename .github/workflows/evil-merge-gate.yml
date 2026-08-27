@@ -1,0 +1,37 @@
+name: Evil-merge gate
+
+# Detects PRs whose merge resolution invents test content that neither
+# parent reviewed.  Uses ``git merge-tree --write-tree`` as the automatic
+# baseline so ordinary non-conflicting auto-merges stay green.
+#
+# See scripts/check_evil_merge.py for the implementation.  Wired into CI as
+# its own gate (mirroring doc-gate.yml): a failing run blocks the merge via
+# branch protection.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [master, dev]
+
+jobs:
+  evil-merge-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      BASE_REF: ${{ github.base_ref }}
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch base branch
+        run: git fetch origin "$BASE_REF"
+
+      - name: Check for evil merges in test files
+        run: python scripts/check_evil_merge.py --head "$PR_HEAD"
