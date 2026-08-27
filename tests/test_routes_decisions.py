@@ -667,6 +667,96 @@ async def test_device_bearer_history_rejects_other_user(client, app):
     assert resp.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_device_bearer_execution_gate_refused(client, app):
+    """A device bearer must not approve an execution_gate decision: the phone
+    is a notification surface, not an approval channel for agent execution."""
+    admin_uid = _admin_uid(app)
+    device = await _register_device(app, admin_uid)
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "agent-a",
+        "question": "Agent agent-a wants to run code_exec (code-exec)",
+        "type": "approve_deny",
+        "priority": "blocking",
+        "metadata": {"kind": "execution_gate", "agent_name": "agent-a",
+                     "action_class": "code-exec", "tool": "code_exec"},
+    })
+    assert resp.status_code == 200
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": "approve"},
+        headers=_bearer(device["scoped_token"]),
+    )
+    assert resp.status_code == 409
+    assert await app.state.execution_policies.has_live_grant("agent-a", "code-exec") is False
+
+
+@pytest.mark.asyncio
+async def test_device_bearer_delegation_gate_refused(client, app):
+    """A device bearer must not approve a delegation_gate decision."""
+    admin_uid = _admin_uid(app)
+    device = await _register_device(app, admin_uid)
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "agent-a",
+        "question": "Delegate task to agent-b?",
+        "type": "approve_deny",
+        "priority": "blocking",
+        "metadata": {"kind": "delegation_gate", "from_agent": "agent-a",
+                     "to_agent": "agent-b", "task_id": "task-1", "task_title": "Task 1"},
+    })
+    assert resp.status_code == 200
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": "approve"},
+        headers=_bearer(device["scoped_token"]),
+    )
+    assert resp.status_code == 409
+    # No delegate grant must be written.
+    policies = getattr(app.state, "execution_policies", None)
+    if policies is not None:
+        assert await policies.has_live_grant("agent-a", "delegate") is False
+
+
+@pytest.mark.asyncio
+async def test_device_bearer_ordinary_consent_still_answered(client, app):
+    """Control: a device bearer can still answer a non-gate consent decision
+    (e.g. a plain approve_deny with no gate kind)."""
+    admin_uid = _admin_uid(app)
+    device = await _register_device(app, admin_uid)
+    decision = await _decision_for_user(
+        app, admin_uid, question="Notify me?", type="approve_deny",
+    )
+    resp = await client.post(
+        f"/api/decisions/{decision['id']}/answer",
+        json={"value": "approve"},
+        headers=_bearer(device["scoped_token"]),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "answered"
+    assert resp.json()["answer"]["value"] == "approve"
+
+
+@pytest.mark.asyncio
+async def test_session_user_execution_gate_still_approved(client, app):
+    """Control: a real session user can still approve an execution_gate."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "agent-a",
+        "question": "Agent agent-a wants to run code_exec (code-exec)",
+        "type": "approve_deny",
+        "priority": "blocking",
+        "metadata": {"kind": "execution_gate", "agent_name": "agent-a",
+                     "action_class": "code-exec", "tool": "code_exec"},
+    })
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer", json={"value": "approve"},
+    )
+    assert resp.status_code == 200
+    assert await app.state.execution_policies.has_live_grant("agent-a", "code-exec") is True
+
+
 # --------------------------------------------------------------------------- #
 # Other / free-text answer tests
 # --------------------------------------------------------------------------- #

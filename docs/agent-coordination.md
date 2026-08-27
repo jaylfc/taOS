@@ -569,10 +569,12 @@ Two properties hold this together and both are enforced in code and tests:
 Device identity always comes from the verified bearer, never from the path or
 body, and a device is never admin.
 
-Note for reviewers: answering a decision on this path can apply app, execution
-and delegation grants, so a device bearer carries real authority for its own
-user. Device scoped tokens do not expire and cannot be self-rotated; the only
-revocation is `DELETE /api/devices/{id}` from a session.
+Note for reviewers: a device bearer can answer ordinary decisions for its own
+user, but gate-kind decisions (execution_gate, delegation_gate, app_grant) are
+refused with 409 on this path. The phone is a notification surface, not an
+approval channel for privileged grants. Device scoped tokens do not expire and
+cannot be self-rotated; the only revocation is `DELETE /api/devices/{id}` from
+a session.
 
 ## Share destinations (device bearer)
 

@@ -32,6 +32,13 @@ router = APIRouter()
 _DEFAULT_BUS_URL = "http://127.0.0.1:7900"
 _ANSWER_THREAD = "decisions"
 
+# Decision metadata kinds that carry privileged grant authority.  The human
+# answer path must refuse these from device bearers (a phone is a notification
+# surface, not an approval channel), and the agent mirror path must refuse them
+# so an agent cannot self-approve a gate it created.  Keeping the list in one
+# place prevents drift between the two call sites and the applier functions.
+GATE_DECISION_KINDS = ("execution_gate", "delegation_gate", "app_grant")
+
 
 def _bus_url() -> str:
     return os.environ.get("TAOS_A2A_BUS_URL", _DEFAULT_BUS_URL).rstrip("/")
@@ -475,6 +482,19 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
     if existing is None or (not user.is_admin and existing["user_id"] != user.user_id):
         return JSONResponse({"error": "not found"}, status_code=404)
 
+    # Device bearers must not answer gate-kind decisions: the phone is a
+    # notification surface, not an approval channel for privileged grants.
+    # INVARIANT (c) in device_auth.py: request.state.user_id is None on this
+    # path, so a falsy user_id means the caller authenticated as a device.
+    if not getattr(request.state, "user_id", None):
+        meta = existing.get("metadata") or {}
+        gate_kind = meta.get("kind") if isinstance(meta, dict) else None
+        if gate_kind in GATE_DECISION_KINDS:
+            return JSONResponse(
+                {"error": "gate decisions cannot be answered by a device bearer"},
+                status_code=409,
+            )
+
     # For select types, the answer may reference the declared options or use
     # the free-text Other path.  A stale or malformed client cannot record an
     # arbitrary value: explicit option values are still validated against the
@@ -797,7 +817,7 @@ async def answer_decision_as_agent(
     # card from the owner's inbox without the owner ever seeing it.
     meta = (existing.get("metadata") or {})
     gate_kind = meta.get("kind") if isinstance(meta, dict) else None
-    if gate_kind in ("execution_gate", "delegation_gate", "app_grant"):
+    if gate_kind in GATE_DECISION_KINDS:
         return JSONResponse(
             {"error": "gate decisions cannot be answered by the asking agent"},
             status_code=409,
