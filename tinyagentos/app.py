@@ -1338,7 +1338,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 targets=["broadcast"],
                 payload=row,
             )
-            await app.state.event_bus.broadcast(ev)
+            user_id = row.get("user_id")
+            if user_id:
+                await app.state.event_bus.publish_to(f"user:{user_id}", ev)
+            else:
+                await app.state.event_bus.broadcast(ev)
 
         notif_store.set_event_emitter(_notify_emitter)
 
