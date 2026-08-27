@@ -6,11 +6,17 @@ this checkout's actual history.
 """
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+import check_doc_gate as dg  # noqa: E402
 
 # scripts/ is not a package; make it importable the same way the other
 # scripts/*.py unit tests do (see tests/test_kv_quant_validator.py).
@@ -798,3 +804,103 @@ class TestDeletedRequireDocDoesNotSatisfy:
         failures = dg.evaluate_rules(changed, [], ROUTES_AND_CHANGELOG_CONFIG)
         names = _failure_names(failures)
         assert "routes" in names
+
+
+class TestGitHooksTrailerEnforcement:
+    """End-to-end tests for the pre-commit / commit-msg hook split.
+
+    These create a temp git repo, install the actual hooks, and verify that
+    a valid Docs-Reviewed trailer lets a violating commit through while
+    missing or empty trailers still block.
+    """
+
+    def _write_hooks(self, repo: Path) -> None:
+        hooks_dir = repo / ".git" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+
+        pre_commit_src = (REPO_ROOT / ".githooks" / "pre-commit").read_text()
+        commit_msg_src = (REPO_ROOT / ".githooks" / "commit-msg").read_text()
+
+        (hooks_dir / "pre-commit").write_text(pre_commit_src)
+        (hooks_dir / "commit-msg").write_text(commit_msg_src)
+        os.chmod(hooks_dir / "pre-commit", 0o755)
+        os.chmod(hooks_dir / "commit-msg", 0o755)
+
+    def _setup_repo(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        scripts_dir = repo / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "check_doc_gate.py").write_text(
+            (REPO_ROOT / "scripts" / "check_doc_gate.py").read_text()
+        )
+
+        docs_dir = repo / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "doc-gate.toml").write_text(
+            '[gate]\ntrailer = "Docs-Reviewed:"\n\n[[rules]]\n'
+            'name = "test-rule"\non_modify = true\n'
+            'when_changed = ["*.py"]\nrequire_doc = ["README.md"]\n'
+            'hint = "test rule"\n'
+        )
+
+        (repo / "README.md").write_text("# README\n")
+        (repo / "feature.py").write_text("# feature\n")
+
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"], cwd=repo, check=True
+        )
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+
+        self._write_hooks(repo)
+
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "initial"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        return repo
+
+    def test_trailer_present_commit_succeeds(self, tmp_path: Path):
+        """A commit with a valid Docs-Reviewed trailer succeeds with hooks active."""
+        repo = self._setup_repo(tmp_path)
+
+        (repo / "feature.py").write_text("# feature v2\n")
+        subprocess.run(["git", "add", "feature.py"], cwd=repo, check=True)
+
+        result = subprocess.run(
+            [
+                "git", "commit",
+                "-m", "update feature\n\nDocs-Reviewed: internal change",
+            ],
+            cwd=repo, capture_output=True,
+        )
+        assert result.returncode == 0, f"Commit failed: {result.stderr.decode()}"
+
+    def test_no_trailer_commit_fails(self, tmp_path: Path):
+        """A commit with no Docs-Reviewed trailer fails with hooks active."""
+        repo = self._setup_repo(tmp_path)
+
+        (repo / "feature.py").write_text("# feature v2\n")
+        subprocess.run(["git", "add", "feature.py"], cwd=repo, check=True)
+
+        result = subprocess.run(
+            ["git", "commit", "-m", "update feature"],
+            cwd=repo, capture_output=True,
+        )
+        assert result.returncode != 0, "Commit should have failed without trailer"
+
+    def test_empty_trailer_commit_fails(self, tmp_path: Path):
+        """A commit with an empty Docs-Reviewed trailer fails with hooks active."""
+        repo = self._setup_repo(tmp_path)
+
+        (repo / "feature.py").write_text("# feature v2\n")
+        subprocess.run(["git", "add", "feature.py"], cwd=repo, check=True)
+
+        result = subprocess.run(
+            ["git", "commit", "-m", "update feature\n\nDocs-Reviewed:\n"],
+            cwd=repo, capture_output=True,
+        )
+        assert result.returncode != 0, "Commit should have failed with empty trailer"
