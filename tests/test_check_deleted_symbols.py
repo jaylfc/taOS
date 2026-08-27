@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -144,6 +145,104 @@ class TestFindSignalSymbols:
         head = {"f.py:a": "def", "f.py:b": "def"}
         signal = cds.find_signal_symbols(base, head)
         assert signal == {}
+
+
+# ---------------------------------------------------------------------------
+# _resolve_symbol isolation (in-process, no git required)
+#
+# _resolve_symbol mutates the interpreter's global sys.modules table. Two
+# defects flow from it never restoring that table:
+#   1. A synthetic parent package (with __path__ into the extracted merge
+#      tree) and the reloaded module are left installed for the rest of the
+#      run, so the verdict for a later symbol depends on which symbol was
+#      resolved first.
+#   2. A real module pre-existing at a touched key is popped and replaced
+#      with a merge-tree module and never put back.
+# The red assertions below fail on the buggy shape and pass once
+# _resolve_symbol restores sys.modules in a finally.
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSymbolIsolation:
+    @staticmethod
+    def _write_tree(tmp_path: Path, files: dict[str, str]) -> Path:
+        root = tmp_path / "merge"
+        for rel, content in files.items():
+            full = root / rel
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(content, encoding="utf-8")
+        return root
+
+    @staticmethod
+    def _purge_package(name: str) -> None:
+        for key in list(sys.modules):
+            if key == name or key.startswith(name + "."):
+                del sys.modules[key]
+
+    def test_resolve_symbol_leaves_sys_modules_unchanged(self, tmp_path: Path):
+        """_resolve_symbol must not leak into sys.modules: the key set must be
+        unchanged and any entry it replaces (its module path) must keep its
+        original object identity."""
+        merge = self._write_tree(
+            tmp_path,
+            {
+                "tinyagentos/__init__.py": "",
+                "tinyagentos/foo.py": "def func_a():\n    pass\n",
+            },
+        )
+        # Pre-seed a real module object at the path the function writes so the
+        # identity of a pre-existing entry is asserted, not just the key set.
+        sentinel = types.ModuleType("tinyagentos.foo")
+        self._purge_package("tinyagentos")
+        sys.modules["tinyagentos.foo"] = sentinel
+        before = set(sys.modules)
+        assert "tinyagentos" not in sys.modules
+
+        try:
+            cds._resolve_symbol(merge, "tinyagentos/foo.py", "func_a")
+            after = set(sys.modules)
+            gained = after - before
+            lost = before - after
+            assert not gained, f"sys.modules gained {gained}"
+            assert not lost, f"sys.modules lost {lost}"
+            assert (
+                sys.modules.get("tinyagentos.foo") is sentinel
+            ), "sys.modules entry identity changed"
+        finally:
+            self._purge_package("tinyagentos")
+
+    def test_second_symbol_verdict_is_order_independent(self, tmp_path: Path):
+        """Resolving symbol A before symbol B must yield the same verdict for B
+        as resolving B alone in a fresh state. The merge tree keeps both a
+        module file (tinyagentos/foo.py, func_a) and a same-named package
+        (tinyagentos/foo/__init__.py, func_b); bar.py re-exports func_b via
+        `from .foo import func_b`. Resolving the module caches tinyagentos.foo
+        as the func_a-only module, which then shadows the package for a later
+        bar.py resolution."""
+        merge = self._write_tree(
+            tmp_path,
+            {
+                "tinyagentos/__init__.py": "",
+                "tinyagentos/foo.py": "def func_a():\n    pass\n",
+                "tinyagentos/foo/__init__.py": "def func_b():\n    pass\n",
+                "tinyagentos/bar.py": "from .foo import func_b\n",
+            },
+        )
+        bar_file, bar_name = "tinyagentos/bar.py", "func_b"
+        foo_file, foo_name = "tinyagentos/foo.py", "func_a"
+
+        self._purge_package("tinyagentos")
+        verdict_alone = cds._resolve_symbol(merge, bar_file, bar_name)
+        assert verdict_alone is True
+
+        self._purge_package("tinyagentos")
+        try:
+            cds._resolve_symbol(merge, foo_file, foo_name)
+            verdict_after_a = cds._resolve_symbol(merge, bar_file, bar_name)
+
+            assert verdict_after_a == verdict_alone
+        finally:
+            self._purge_package("tinyagentos")
 
 
 # ---------------------------------------------------------------------------

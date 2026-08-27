@@ -91,7 +91,7 @@ def _extract_symbols(source: str, file_path: str) -> dict[str, str]:
                 symbols[f"{file_path}:{name}"] = "class"
                 visit(child, f"{name}.")
             elif isinstance(child, ast.ImportFrom):
-                if file_path.endswith("/__init__.py") and child.module:
+                if file_path.endswith("/__init__.py") and (child.module or child.level):
                     for alias in child.names:
                         if alias.name == "*":
                             continue
@@ -164,7 +164,7 @@ def _resolve_symbol(merge_result_dir: Path, file_path: str, name: str) -> bool:
     # directory exists in the merge result, the public import path resolves
     # through the package's __init__.py.
     if not abs_file.is_file():
-        package_init = merge_result_dir / file_rel_path.replace(".py", "/__init__.py")
+        package_init = merge_result_dir / (file_rel_path[:-len(".py")] + "/__init__.py")
         if package_init.is_file():
             abs_file = package_init
         else:
@@ -173,8 +173,23 @@ def _resolve_symbol(merge_result_dir: Path, file_path: str, name: str) -> bool:
     name_parts = name.split(".")
     attr_name = name_parts[-1]
 
+    parent_pkg_name = ".".join(parts[:-1])
+    # Snapshot every sys.modules key this call may mutate (the parent package
+    # it synthesises and the module path it pops and reinstalls) so the global
+    # table is restored verbatim on exit. _resolve_symbol runs in a loop over
+    # signal symbols, so a cached module or synthetic parent left behind would
+    # alter how a later symbol resolves and make the gate verdict depend on
+    # resolution order. A blanket sys.modules.clear() is wrong: it would evict
+    # entries unrelated to this call.
+    touched: dict[str, tuple[bool, types.ModuleType | None]] = {}
+    if parent_pkg_name:
+        touched[parent_pkg_name] = (
+            parent_pkg_name in sys.modules,
+            sys.modules.get(parent_pkg_name),
+        )
+    touched[module_path] = (module_path in sys.modules, sys.modules.get(module_path))
+
     try:
-        parent_pkg_name = ".".join(parts[:-1])
         if parent_pkg_name:
             parent_pkg_path = str((merge_result_dir / parent_pkg_name.replace(".", "/")).resolve())
             if parent_pkg_name not in sys.modules:
@@ -196,6 +211,12 @@ def _resolve_symbol(merge_result_dir: Path, file_path: str, name: str) -> bool:
         return True
     except Exception:
         return False
+    finally:
+        for key, (was_present, old_obj) in touched.items():
+            if was_present:
+                sys.modules[key] = old_obj
+            else:
+                sys.modules.pop(key, None)
 
 
 def _merge_tree(base_ref: str, pr_head_sha: str, repo_root: Path = REPO_ROOT) -> str | None:
@@ -286,6 +307,30 @@ def find_signal_symbols(
     return {k: base_symbols[k] for k in signal_keys}
 
 
+def _resolve_signal_symbols(
+    base_symbols: dict[str, str],
+    head_symbols: dict[str, str],
+    merge_result_dir: Path,
+) -> dict[str, str]:
+    """Resolve signal symbols against the merge result.
+
+    Returns the subset of signal symbols that are not importable from the merge
+    result (i.e. genuine deletions). A symbol still reachable at its public
+    path is silenced.
+    """
+    signal = find_signal_symbols(base_symbols, head_symbols)
+
+    # Resolve each signal symbol against the merge result. A symbol that is
+    # still importable at its public path is not a genuine deletion.
+    resolved_signal: dict[str, str] = {}
+    for symbol, kind in sorted(signal.items()):
+        file_path, name = symbol.rsplit(":", 1)
+        if _resolve_symbol(merge_result_dir, file_path, name):
+            continue
+        resolved_signal[symbol] = kind
+    return resolved_signal
+
+
 def check_deleted_symbols(
     base_ref: str,
     repo_root: Path = REPO_ROOT,
@@ -303,28 +348,22 @@ def check_deleted_symbols(
     """
     base_symbols = _get_symbols_at_ref(base_ref, repo_root)
 
-    merge_result_dir: Path
     if pr_head_sha:
         merge_tree = _merge_tree(base_ref, pr_head_sha, repo_root)
         if merge_tree is None:
             return [], set(), True
         head_symbols = _get_symbols_at_ref(merge_tree, repo_root)
-        merge_result_dir = Path(tempfile.mkdtemp())
-        _extract_tree_to_dir(merge_tree, merge_result_dir, repo_root)
+        # The merge tree is extracted into a TemporaryDirectory so it is cleaned
+        # up regardless of how the check exits (previously mkdtemp leaked).
+        with tempfile.TemporaryDirectory() as merge_dir:
+            merge_result_dir = Path(merge_dir)
+            _extract_tree_to_dir(merge_tree, merge_result_dir, repo_root)
+            resolved_signal = _resolve_signal_symbols(
+                base_symbols, head_symbols, merge_result_dir
+            )
     else:
         head_symbols = _get_symbols_at_ref("HEAD", repo_root)
-        merge_result_dir = repo_root
-
-    signal = find_signal_symbols(base_symbols, head_symbols)
-
-    # Resolve each signal symbol against the merge result. A symbol that is
-    # still importable at its public path is not a genuine deletion.
-    resolved_signal: dict[str, str] = {}
-    for symbol, kind in sorted(signal.items()):
-        file_path, name = symbol.rsplit(":", 1)
-        if _resolve_symbol(merge_result_dir, file_path, name):
-            continue
-        resolved_signal[symbol] = kind
+        resolved_signal = _resolve_signal_symbols(base_symbols, head_symbols, repo_root)
 
     waived_set: set[str] = set()
     if waived:
