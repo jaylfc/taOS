@@ -23,6 +23,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.agent_registry_store import AgentRegistryStore
+from taos_test_csrf import csrf_event_hooks
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +398,7 @@ async def gov_client(app, tmp_data_dir):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c, uid
 
@@ -443,6 +445,7 @@ async def gov_member_client(app, tmp_data_dir):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": member_token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
 

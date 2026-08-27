@@ -18,6 +18,7 @@ import yaml
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.app import create_app
+from taos_test_csrf import csrf_event_hooks
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,7 @@ async def client(app):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
     await ds.close()

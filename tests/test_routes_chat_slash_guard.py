@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from httpx import AsyncClient, ASGITransport
 from tinyagentos.app import create_app
 from tinyagentos.routes.chat import _validate_slash_target
+from taos_test_csrf import arm_test_client, csrf_event_hooks
 
 
 def _make_app(tmp_path):
@@ -39,6 +40,7 @@ async def _setup_client(tmp_path):
         transport=ASGITransport(app=app),
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     )
     return app, client
 
@@ -206,6 +208,7 @@ def test_ws_unaddressed_slash_in_group_returns_error_frame(tmp_path):
 
     with TestClient(app, raise_server_exceptions=False) as client:
         client.cookies.set("taos_session", token)
+        arm_test_client(client)
         with client.websocket_connect("/ws/chat") as ws:
             ws.send_text(json.dumps({
                 "type": "message",
@@ -231,6 +234,7 @@ def test_ws_addressed_slash_in_group_is_delivered(tmp_path):
 
     with TestClient(app, raise_server_exceptions=False) as client:
         client.cookies.set("taos_session", token)
+        arm_test_client(client)
         with client.websocket_connect("/ws/chat") as ws:
             ws.send_text(json.dumps({
                 "type": "join", "channel_id": ch_id,

@@ -7,6 +7,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient, Request as HttpxRequest, Response
 
 from tinyagentos.app import create_app
+from taos_test_csrf import csrf_event_hooks
 
 
 @pytest.fixture
@@ -31,7 +32,7 @@ async def images_client(images_app):
     _rec = images_app.state.auth.find_user("admin")
     _token = images_app.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
     transport = ASGITransport(app=images_app)
-    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}) as c:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}, event_hooks=csrf_event_hooks()) as c:
         yield c
     await store.close()
     await images_app.state.qmd_client.close()
@@ -99,7 +100,7 @@ class TestImagesGenerate:
         _rec = app.state.auth.find_user("admin")
         _token = app.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}) as c:
+        async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}, event_hooks=csrf_event_hooks()) as c:
             resp = await c.post("/api/images/generate", json={"prompt": "test"})
         assert resp.status_code == 503
         assert "error" in resp.json()

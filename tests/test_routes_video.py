@@ -7,6 +7,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient, Request as HttpxRequest, Response
 
 from tinyagentos.app import create_app
+from taos_test_csrf import csrf_event_hooks
 
 
 async def _drain_background_tasks(app) -> None:
@@ -37,7 +38,7 @@ async def video_client(video_app):
     _rec = video_app.state.auth.find_user("admin")
     _token = video_app.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
     transport = ASGITransport(app=video_app)
-    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}) as c:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}, event_hooks=csrf_event_hooks()) as c:
         yield c
     await store.close()
     await video_app.state.qmd_client.close()
@@ -65,7 +66,7 @@ class TestVideoGenerate:
         _rec = app.state.auth.find_user("admin")
         _token = app.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}) as c:
+        async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}, event_hooks=csrf_event_hooks()) as c:
             resp = await c.post("/api/video/generate", json={"prompt": "test"})
         assert resp.status_code == 503
         assert "error" in resp.json()

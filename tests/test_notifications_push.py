@@ -14,6 +14,7 @@ from pywebpush import WebPushException
 from tinyagentos.notifications import NotificationStore
 from tinyagentos.notifications_push import NotificationPushStore, send_web_push
 from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
+from taos_test_csrf import csrf_event_hooks
 
 # A real VAPID keypair once for the whole module - pywebpush parses the PEM,
 # but every send is mocked so no network call is ever made.
@@ -466,7 +467,8 @@ class TestPushRoutes:
 
         cookies = {"taos_session": _admin_token(app)} if authed else {}
         return AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test", cookies=cookies
+            transport=ASGITransport(app=app), base_url="http://test", cookies=cookies,
+            event_hooks=csrf_event_hooks(),
         )
 
     async def test_vapid_public_key_requires_auth(self, route_app):
@@ -517,6 +519,7 @@ class TestPushRoutes:
             transport=ASGITransport(app=route_app),
             base_url="http://test",
             cookies={"taos_session": token_b},
+            event_hooks=csrf_event_hooks(),
         ) as cb:
             r = await cb.post(
                 "/api/notifications/push/unsubscribe", json={"endpoint": endpoint}

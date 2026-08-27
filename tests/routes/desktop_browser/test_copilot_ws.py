@@ -9,6 +9,7 @@ import yaml
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 from starlette.websockets import WebSocketDisconnect
+from taos_test_csrf import arm_test_client, csrf_event_hooks
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +181,7 @@ class TestMintTicketEndpoint:
             transport=ASGITransport(app=app),
             base_url="http://test",
             cookies={"taos_session": token_b},
+            event_hooks=csrf_event_hooks(),
         ) as b_client:
             resp = await b_client.post(
                 "/api/desktop/browser/copilot/ticket",
@@ -356,6 +358,7 @@ def ws_client(ws_app):
     token = ws_app.state.auth.create_session(user_id=record["id"], long_lived=True)
     with TestClient(ws_app, raise_server_exceptions=False) as c:
         c.cookies.set("taos_session", token)
+        arm_test_client(c)
         yield c
 
 

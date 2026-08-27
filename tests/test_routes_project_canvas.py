@@ -11,6 +11,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.agent_registry_store import mint_registry_token
+from taos_test_csrf import csrf_event_hooks
 
 
 @pytest.fixture(autouse=True)
@@ -497,6 +498,7 @@ def _non_owner_client(app):
         transport=ASGITransport(app=app),
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     )
 
 

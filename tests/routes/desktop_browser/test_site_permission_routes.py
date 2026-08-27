@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from taos_test_csrf import csrf_event_hooks
 
 
 def _get_user_id(app):
@@ -25,6 +26,7 @@ def _make_auth_client(app, tmp_data_dir):
         transport=ASGITransport(app=app),
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     )
 
 

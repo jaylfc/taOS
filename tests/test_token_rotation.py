@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.agent_registry_store import mint_registry_token
 from tinyagentos.agent_token_auth import check_agent_scope
+from taos_test_csrf import csrf_event_hooks
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +98,7 @@ def _make_nonadmin_client(
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ), uid
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from taos_test_csrf import arm_test_client
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +49,7 @@ def authed_client(ws_app):
     token = ws_app.state.auth.create_session(user_id=record["id"], long_lived=True)
     with TestClient(ws_app, raise_server_exceptions=False) as c:
         c.cookies.set("taos_session", token)
+        arm_test_client(c)
         yield c
 
 

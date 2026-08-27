@@ -10,6 +10,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.browser_sessions import BrowserSessionManager, BrowserWorkerError
+from taos_test_csrf import csrf_event_hooks
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +96,7 @@ async def client(app, tmp_path):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
 
@@ -121,6 +123,7 @@ async def client_no_node(app, tmp_path):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
 
@@ -265,6 +268,7 @@ async def test_get_other_users_session_returns_404(app, tmp_path):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         resp = await c.get(f"/api/browser/sessions/{session_id}")
 
@@ -384,6 +388,7 @@ async def client_host_capable(app, tmp_path):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
 
@@ -413,6 +418,7 @@ async def client_no_capable_node(app, tmp_path):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
 
@@ -512,6 +518,7 @@ async def test_migrate_session_calls_migrate_and_returns_session(app, tmp_path):
             transport=transport,
             base_url="http://test",
             cookies={"taos_session": token},
+            event_hooks=csrf_event_hooks(),
         ) as c:
             resp = await c.post(
                 f"/api/browser/sessions/{sid}/migrate",
@@ -547,6 +554,7 @@ async def test_migrate_session_unknown_session_returns_404(app, tmp_path):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         resp = await c.post("/api/browser/sessions/no-such-id/migrate", json={"target": "node-1"})
 
@@ -612,6 +620,7 @@ async def test_migrate_session_unknown_target_returns_409(app, tmp_path):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         resp = await c.post(
             f"/api/browser/sessions/{sid}/migrate",
@@ -661,6 +670,7 @@ async def test_list_sessions_returns_own_and_agent_sessions(app, tmp_path):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         resp = await c.get("/api/browser/sessions")
 
@@ -688,6 +698,7 @@ async def test_list_sessions_excludes_stopped(app, tmp_path):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         resp = await c.get("/api/browser/sessions")
 
@@ -725,6 +736,7 @@ async def test_get_agent_session_in_config_returns_200_with_stream_token(app, tm
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         resp = await c.get(f"/api/browser/sessions/{sid}")
 
@@ -758,6 +770,7 @@ async def test_get_agent_session_not_in_config_returns_404(app, tmp_path):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         resp = await c.get(f"/api/browser/sessions/{sid}")
 
@@ -880,6 +893,7 @@ async def test_get_session_over_tailscale_rewrites_neko_url(app, tmp_path):
         base_url="http://test",
         cookies={"taos_session": token},
         headers={"host": "100.64.0.5:6969"},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         resp = await c.get(f"/api/browser/sessions/{sid}")
 

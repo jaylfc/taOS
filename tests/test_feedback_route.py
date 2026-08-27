@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import csrf_event_hooks
 
 import pytest
 import pytest_asyncio
@@ -199,6 +200,7 @@ async def test_post_feedback_rate_limit_per_user(client, app):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as user2_client:
         resp = await user2_client.post(
             "/api/feedback",

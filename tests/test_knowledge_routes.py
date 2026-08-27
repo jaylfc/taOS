@@ -6,6 +6,7 @@ from pathlib import Path
 from httpx import ASGITransport, AsyncClient
 from tinyagentos.app import create_app
 import yaml
+from taos_test_csrf import csrf_event_hooks
 
 
 @pytest_asyncio.fixture
@@ -40,6 +41,7 @@ async def knowledge_client(tmp_path):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": _token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
 

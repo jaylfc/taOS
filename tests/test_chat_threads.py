@@ -1,6 +1,7 @@
 import pytest
 import yaml
 from httpx import AsyncClient, ASGITransport
+from taos_test_csrf import csrf_event_hooks
 from unittest.mock import AsyncMock, MagicMock
 from tinyagentos.chat.message_store import ChatMessageStore
 from tinyagentos.chat.threads import resolve_thread_recipients
@@ -170,6 +171,7 @@ async def _authed_thread_client(tmp_path):
         transport=ASGITransport(app=app),
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     )
     return app, client
 

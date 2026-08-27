@@ -3,6 +3,7 @@ import pytest_asyncio
 import yaml
 from httpx import AsyncClient, ASGITransport
 from tinyagentos.app import create_app
+from taos_test_csrf import csrf_event_hooks
 
 
 @pytest.fixture
@@ -45,7 +46,7 @@ async def store_client(app_with_store):
     _rec = app_with_store.state.auth.find_user("admin")
     _token = app_with_store.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
     transport = ASGITransport(app=app_with_store)
-    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}) as c:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}, event_hooks=csrf_event_hooks()) as c:
         yield c
     await store.close()
     await app_with_store.state.qmd_client.close()
@@ -143,7 +144,7 @@ class TestCategoryPassthrough:
         _rec = app.state.auth.find_user("admin")
         _token = app.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}) as c:
+        async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}, event_hooks=csrf_event_hooks()) as c:
             yield c
         await store.close()
         await app.state.qmd_client.close()
@@ -337,7 +338,7 @@ class TestDockerInstallRecordsRuntimeLocation:
         _rec = app.state.auth.find_user("admin")
         _token = app.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}) as c:
+        async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}, event_hooks=csrf_event_hooks()) as c:
             yield c, app
         await store.close()
         await app.state.qmd_client.close()

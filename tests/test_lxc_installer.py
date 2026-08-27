@@ -9,6 +9,7 @@ from httpx import AsyncClient, ASGITransport
 
 from tinyagentos.installers.lxc_installer import LXCInstaller
 from tinyagentos.app import create_app
+from taos_test_csrf import csrf_event_hooks
 
 
 # ---------------------------------------------------------------------------
@@ -552,7 +553,8 @@ async def lxc_client(tmp_data_dir, lxc_catalog_dir):
     )
     transport = ASGITransport(app=app)
     async with AsyncClient(
-        transport=transport, base_url="http://test", cookies={"taos_session": _token}
+        transport=transport, base_url="http://test", cookies={"taos_session": _token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
     await installed_apps.close()

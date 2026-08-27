@@ -7,6 +7,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient, Request as HttpxRequest, Response
 
 from tinyagentos.app import create_app
+from taos_test_csrf import csrf_event_hooks
 
 
 @pytest.fixture
@@ -27,7 +28,7 @@ async def music_client(music_app):
     _rec = music_app.state.auth.find_user("admin")
     _token = music_app.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
     transport = ASGITransport(app=music_app)
-    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}) as c:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}, event_hooks=csrf_event_hooks()) as c:
         yield c
     await store.close()
     await music_app.state.qmd_client.close()

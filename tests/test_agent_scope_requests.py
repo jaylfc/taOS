@@ -20,6 +20,7 @@ from tinyagentos.agent_registry_store import (
 )
 from tinyagentos.agent_grants_store import AgentGrantsStore
 from tinyagentos.agent_scope_requests_store import AgentScopeRequestsStore
+from taos_test_csrf import csrf_event_hooks
 
 
 class _Env:
@@ -289,6 +290,7 @@ async def test_non_owner_cannot_approve(client, monkeypatch, tmp_path):
             transport=ASGITransport(app=app),
             base_url="http://test",
             cookies={"taos_session": bob_session},
+            event_hooks=csrf_event_hooks(),
         ) as bob_client:
             resp = await bob_client.post(
                 f"/api/agents/registry/{cid}/scope-requests/{rec['id']}/approve",
@@ -453,6 +455,7 @@ async def test_create_authorizes_before_scope_vocab(client, monkeypatch, tmp_pat
             transport=ASGITransport(app=app),
             base_url="http://test",
             cookies={"taos_session": carol_session},
+            event_hooks=csrf_event_hooks(),
         ) as carol_client:
             resp = await carol_client.post(
                 f"/api/agents/registry/{cid}/scope-requests",
@@ -626,6 +629,7 @@ async def test_create_scope_request_non_owner_and_nonexistent_identical(
             transport=ASGITransport(app=app),
             base_url="http://test",
             cookies={"taos_session": carol_session},
+            event_hooks=csrf_event_hooks(),
         ) as carol_client:
             resp_owner = await carol_client.post(
                 f"/api/agents/registry/{cid}/scope-requests",
@@ -668,6 +672,7 @@ async def test_approve_scope_request_non_owner_and_nonexistent_identical(
             transport=ASGITransport(app=app),
             base_url="http://test",
             cookies={"taos_session": carol_session},
+            event_hooks=csrf_event_hooks(),
         ) as carol_client:
             resp_owner = await carol_client.post(
                 f"/api/agents/registry/{cid}/scope-requests/{rec['id']}/approve",
@@ -707,6 +712,7 @@ async def test_deny_scope_request_non_owner_and_nonexistent_identical(
             transport=ASGITransport(app=app),
             base_url="http://test",
             cookies={"taos_session": carol_session},
+            event_hooks=csrf_event_hooks(),
         ) as carol_client:
             resp_owner = await carol_client.post(
                 f"/api/agents/registry/{cid}/scope-requests/{rec['id']}/deny",

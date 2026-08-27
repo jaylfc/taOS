@@ -1,6 +1,7 @@
 import pytest
 import yaml
 from httpx import AsyncClient, ASGITransport
+from taos_test_csrf import csrf_event_hooks
 
 
 def _make_app(tmp_path):
@@ -28,6 +29,7 @@ async def _authed_client(tmp_path, username="admin"):
         transport=ASGITransport(app=app),
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     )
     return app, client, rec
 

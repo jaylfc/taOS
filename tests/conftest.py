@@ -5,7 +5,6 @@ import os
 import sqlite3
 import sys
 import time
-from http.cookies import SimpleCookie
 from unittest.mock import patch
 
 import pytest
@@ -65,61 +64,17 @@ def _noop_verify_csrf(conn: _HTTPConnection) -> None:
     return
 
 
-# The shared `client` fixture's half of the double-submit pair.  Any value
-# works -- the check is that the header equals the cookie -- but it must look
-# like a token so a failure message is self-explanatory.
-_TEST_CSRF_TOKEN = "testsuite-csrf-token-0123456789abcdef0123456789abcdef"
-
-
-async def _echo_csrf_cookie_into_header(request) -> None:
-    """Do what the SPA does: echo the CSRF cookie into the request header.
-
-    This is NOT a bypass.  The double-submit check is safe because a
-    third-party origin cannot READ the cookie and therefore cannot set a
-    matching header; a same-origin caller like our own SPA reads its own cookie
-    and echoes it, and that is the caller this fixture stands in for.  Tests
-    using the shared client therefore satisfy the real `verify_csrf` rather
-    than switching it off.
-
-    Safe methods are skipped because `verify_csrf` exempts them, and an
-    explicitly-set header is never overwritten -- a test that deliberately
-    sends a wrong or missing token is asserting something about CSRF itself
-    and must keep control of it.
-    """
-    if request.method.upper() in ("GET", "HEAD", "OPTIONS", "TRACE"):
-        return
-    if "x-csrf-token" in request.headers:
-        return
-
-    # Read the value actually on the wire rather than assuming the seeded
-    # constant. CSRFMiddleware issues a fresh token whenever a request arrives
-    # without one, so a client that picked one up mid-test holds a value this
-    # module never chose; echoing the constant would then MISMATCH and 403.
-    cookie_header = request.headers.get("cookie", "")
-    jar = SimpleCookie()
-    jar.load(cookie_header)
-    morsel = jar.get("csrf_token")
-
-    if morsel is not None:
-        request.headers["x-csrf-token"] = morsel.value
-        return
-
-    # No CSRF cookie yet. A real browser would already hold one, because
-    # CSRFMiddleware sets it on the first response -- but this fixture injects
-    # the session directly instead of navigating, so no response has reached
-    # the jar. Supply BOTH halves, which is the state that navigation would
-    # have produced.
-    #
-    # Injected here rather than seeded on the client's cookie jar so that SAFE
-    # requests still arrive without a CSRF cookie. The jar applies to every
-    # request, and a GET carrying the cookie makes CSRFMiddleware skip issuing
-    # one -- which silently breaks the tests asserting that it does issue one.
-    request.headers["cookie"] = (
-        f"{cookie_header}; csrf_token={_TEST_CSRF_TOKEN}"
-        if cookie_header
-        else f"csrf_token={_TEST_CSRF_TOKEN}"
-    )
-    request.headers["x-csrf-token"] = _TEST_CSRF_TOKEN
+# The header-echoing hook lives in its own module so that the ~11 test modules
+# building their own AsyncClient can import it without a bare
+# `from conftest import ...` -- `tests/` is not a package and several
+# conftest.py files exist, so that import binds whichever one is on sys.path
+# first (card `tsk-xplzqy`).  Re-exported here under the old private names so
+# the shared `client` fixture below reads unchanged.
+from taos_test_csrf import (  # noqa: E402
+    TEST_CSRF_TOKEN as _TEST_CSRF_TOKEN,
+    csrf_event_hooks,
+    echo_csrf_cookie_into_header as _echo_csrf_cookie_into_header,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -714,7 +669,7 @@ async def client(app, tmp_data_dir):
         # is authenticated but holds no CSRF cookie, a state no real browser is
         # ever in, and every mutating request 403s for a reason that has
         # nothing to do with the route under test.
-        event_hooks={"request": [_echo_csrf_cookie_into_header]},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
     await canvas_store.close()

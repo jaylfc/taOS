@@ -3,6 +3,7 @@
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import csrf_event_hooks
 
 
 # ---------------------------------------------------------------------------
@@ -47,10 +48,12 @@ async def two_member_clients(app, tmp_data_dir):
     async with AsyncClient(
         transport=transport, base_url="http://test",
         cookies={"taos_session": alice_token},
+        event_hooks=csrf_event_hooks(),
     ) as alice_c:
         async with AsyncClient(
             transport=transport, base_url="http://test",
             cookies={"taos_session": bob_token},
+            event_hooks=csrf_event_hooks(),
         ) as bob_c:
             alice_c._test_uid = alice_uid
             alice_c._test_app = app

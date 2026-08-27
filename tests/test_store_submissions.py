@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from tinyagentos.app import create_app
 from tinyagentos.auth import hash_password
 from tinyagentos.store_submissions import StoreSubmissionStore
+from taos_test_csrf import csrf_event_hooks
 
 
 def _add_non_admin_user(auth_mgr, username, password):
@@ -59,6 +60,7 @@ async def client_with_store_submissions(app_with_store_submissions, tmp_data_dir
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": _token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
     await store.close()
@@ -79,6 +81,7 @@ async def client_non_admin(app_with_store_submissions, tmp_data_dir):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": _token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
     await store.close()

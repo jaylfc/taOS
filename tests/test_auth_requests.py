@@ -28,6 +28,7 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import csrf_event_hooks
 
 from tinyagentos.auth_requests_store import AuthRequestsStore
 from tinyagentos.agent_grants_store import AgentGrantsStore
@@ -226,6 +227,7 @@ async def consent_client(app, tmp_data_dir):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         c._test_admin_uid = uid
         yield c
@@ -275,6 +277,7 @@ async def consent_client_nonadmin(app, tmp_data_dir):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": member_token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
 
@@ -541,6 +544,7 @@ class TestAuthRequestRoutes:
                 transport=ASGITransport(app=consent_client._transport.app),
                 base_url="http://test",
                 cookies=cookies,
+                event_hooks=csrf_event_hooks(),
             ) as c:
                 return await c.post(
                     f"/api/agents/auth-requests/{request_id}/approve",

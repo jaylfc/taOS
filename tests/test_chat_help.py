@@ -1,6 +1,7 @@
 import pytest
 import yaml
 from httpx import AsyncClient, ASGITransport
+from taos_test_csrf import csrf_event_hooks
 from tinyagentos.chat.help import handle_help, KNOWN_TOPICS
 
 
@@ -29,6 +30,7 @@ async def _authed_help_client(tmp_path):
         transport=ASGITransport(app=app),
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     )
     return app, client
 

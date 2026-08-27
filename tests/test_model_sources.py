@@ -15,6 +15,7 @@ from tinyagentos.model_sources import (
     get_huggingface_model_files,
     _cache,
 )
+from taos_test_csrf import csrf_event_hooks
 
 
 # --- Unit tests for helper functions ---
@@ -317,7 +318,7 @@ async def search_client(search_app):
     _rec = search_app.state.auth.find_user("admin")
     _token = search_app.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
     transport = ASGITransport(app=search_app)
-    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}) as c:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}, event_hooks=csrf_event_hooks()) as c:
         yield c
     await store.close()
     await search_app.state.qmd_client.close()

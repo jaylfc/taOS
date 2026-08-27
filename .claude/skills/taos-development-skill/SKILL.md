@@ -169,14 +169,30 @@ What this means when you write a test:
   Nothing to remember.
 - **If you build your own `AsyncClient`, it will 403 on mutating routes** once it carries a
   `taos_session` cookie. Fix it the way the real caller does - send the header - not by
-  disabling the check.
+  disabling the check. One line does it:
+
+  ```python
+  from taos_test_csrf import csrf_event_hooks   # tests/taos_test_csrf.py
+
+  AsyncClient(
+      transport=ASGITransport(app=app),
+      base_url="http://test",
+      cookies={"taos_session": token},
+      event_hooks=csrf_event_hooks(),      # <- echoes the cookie into the header
+  )
+  ```
+
+  It lives in its own module, not in `conftest.py`, because `tests/` is not a package and
+  several `conftest.py` files exist, so a bare `from conftest import ...` binds whichever one
+  is on `sys.path` first.
 - **`verify_csrf` exempts** safe methods, `Authorization: Bearer` callers, `_CREDENTIAL_PATHS`
   (the sign-in surfaces), and any request with no `taos_session` cookie. A test that never
   authenticates is unaffected.
-- **Opting out is `@pytest.mark.csrf_bypass`** on the test, class, or module
-  (`pytestmark = pytest.mark.csrf_bypass`). It is legacy debt, tracked, and the list must
-  shrink. Do NOT add it to silence a new red: a red means a route the real caller could not
-  reach the way your test reaches it.
+- **`@pytest.mark.csrf_bypass` exists but nothing uses it, and
+  `tests/test_csrf_bypass_debt.py` asserts the list stays EMPTY.** Adding a marker turns that
+  guard red on purpose. Do NOT add it to silence a new red: a red means a route the real
+  caller could not reach the way your test reaches it - give the client the event hook
+  instead.
 - **A filename no longer changes behaviour.** The old carve-out was a substring match on the
   path, so renaming a file silently re-armed the bypass with no failure anywhere.
 

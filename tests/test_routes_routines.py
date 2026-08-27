@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import csrf_event_hooks
 
 
 @pytest.mark.asyncio
@@ -260,9 +261,11 @@ async def two_owner_clients(app, tmp_data_dir):
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport, base_url="http://test", cookies={"taos_session": alice_token},
+        event_hooks=csrf_event_hooks(),
     ) as alice_c:
         async with AsyncClient(
             transport=transport, base_url="http://test", cookies={"taos_session": bob_token},
+            event_hooks=csrf_event_hooks(),
         ) as bob_c:
             yield alice_c, bob_c
 

@@ -14,6 +14,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.agent_registry_store import AgentRegistryStore
+from taos_test_csrf import csrf_event_hooks
 
 
 def test_allowed_scopes_matches_canonical_valid_scopes():
@@ -98,6 +99,7 @@ async def mint_client(app, tmp_data_dir):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         c._app = app
         yield c
