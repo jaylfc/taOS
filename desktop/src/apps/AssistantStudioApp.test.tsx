@@ -137,16 +137,22 @@ describe("PA change confirmation", () => {
   });
 
   it("does NOT prompt when there is no PA yet — nothing to move away from", async () => {
-    // The agents fetch failing leaves the picker with no auto-defaulted PA, so
-    // `pa` is empty. Selecting from that state is a first assignment, not a
+    // Assigning a PA from an empty selection is a first assignment, not a
     // change, and must not interrupt the user.
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, json: async () => [] })));
-    render(<AssistantStudioApp />);
-    const select = await screen.findByLabelText(
-      "Select the agent to act as your personal assistant",
-    );
+    //
+    // This has to reach the picker with `pa` EMPTY and then choose a REAL
+    // agent. Selecting the empty option on its own returns through the `!name`
+    // branch, so a test that stops there still passes with the
+    // first-assignment guard deleted — it asserts nothing. Clearing first and
+    // then picking "atlas" is the only path that runs through `!pa`, and it
+    // goes red if that guard is removed.
+    localStorage.setItem("taos.assistantStudio.pa", "hermes");
+    const select = await openStudio();
+
     fireEvent.change(select, { target: { value: "" } });
+    fireEvent.change(select, { target: { value: "atlas" } });
 
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(localStorage.getItem("taos.assistantStudio.pa")).toBe("atlas");
   });
 });
