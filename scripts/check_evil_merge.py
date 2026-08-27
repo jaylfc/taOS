@@ -2,14 +2,15 @@
 """Evil-merge detection guard for test files.
 
 For a PR whose head is a merge commit M with parents P1 and P2,
-for every file under tests/ : if the blob at M matches NEITHER
-the blob at P1 NOR the blob at P2, the resolution invented content
-that neither side reviewed.
+compare every file under tests/ at M against the blob git would
+have produced automatically via ``git merge-tree --write-tree P1 P2``.
+Content a human introduced during resolution fails; content git
+produced by itself stays green.
 
 Scope is tests/ only so ordinary semantic hand-merges in source do not
 produce false positives.  A resolution that takes one side wholesale
-matches a parent and stays green; a genuine hand-merge is exactly the
-case that deserves a human read.
+or lets git auto-merge matches the baseline and stays green; a genuine
+hand-merge is exactly the case that deserves a human read.
 
 Usage:
     python3 scripts/check_evil_merge.py --head HEAD
@@ -65,13 +66,22 @@ def _get_parents(repo_root: Path, ref: str) -> list[str]:
     return [line for line in out.splitlines() if line.strip()]
 
 
-def _get_test_files(repo_root: Path, ref: str) -> list[str]:
-    """Return every file path under ``tests/`` that exists at ``ref``."""
+def _get_blob_hashes_for_ref(repo_root: Path, ref: str) -> dict[str, str]:
+    """Return a mapping of path -> blob hash for every file under ``tests/``
+    that exists at ``ref``.  Uses a single ``git ls-tree -r -z`` call."""
     try:
-        out = _run_git(["ls-tree", "-r", "--name-only", ref, "tests/"], cwd=repo_root)
+        out = _run_git(["ls-tree", "-r", "-z", ref, "tests/"], cwd=repo_root)
     except subprocess.CalledProcessError:
-        return []
-    return [line for line in out.splitlines() if line.strip()]
+        return {}
+    result: dict[str, str] = {}
+    for entry in out.split("\0"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        meta, path = entry.split("\t", 1)
+        _, _, blob_hash = meta.split(" ", 2)
+        result[path] = blob_hash
+    return result
 
 
 def check_evil_merge(
@@ -81,7 +91,8 @@ def check_evil_merge(
     """Detect evil merges in test files under ``head_ref``.
 
     Returns an empty list when ``head_ref`` is not a merge commit or when
-    every tests/ blob at head matches at least one parent.
+    every tests/ blob at head matches the blob git would have produced
+    automatically.
     """
     parents = _get_parents(repo_root, head_ref)
     if len(parents) < 2:
@@ -91,17 +102,41 @@ def check_evil_merge(
     parent1 = parents[0]
     parent2 = parents[1]
 
+    merge_blobs = _get_blob_hashes_for_ref(repo_root, head_ref)
+    p1_blobs = _get_blob_hashes_for_ref(repo_root, parent1)
+    p2_blobs = _get_blob_hashes_for_ref(repo_root, parent2)
+
+    try:
+        auto_tree = _run_git(
+            ["merge-tree", "--write-tree", parent1, parent2],
+            cwd=repo_root,
+        ).strip()
+    except subprocess.CalledProcessError:
+        auto_tree = None
+
+    if auto_tree:
+        auto_blobs = _get_blob_hashes_for_ref(repo_root, auto_tree)
+        use_new_predicate = True
+    else:
+        use_new_predicate = False
+
     violations: list[Violation] = []
-    for path in _get_test_files(repo_root, head_ref):
-        head_blob = _get_blob_hash(repo_root, head_ref, path)
-        p1_blob = _get_blob_hash(repo_root, parent1, path)
-        p2_blob = _get_blob_hash(repo_root, parent2, path)
-
-        if head_blob is None:
-            continue
-
-        if head_blob != p1_blob and head_blob != p2_blob:
-            violations.append(Violation(path, merge_sha, parent1, parent2))
+    for path, actual_blob in merge_blobs.items():
+        if use_new_predicate:
+            auto_blob = auto_blobs.get(path)
+            if auto_blob is None:
+                p1_blob = p1_blobs.get(path)
+                p2_blob = p2_blobs.get(path)
+                if p1_blob is None and p2_blob is None:
+                    continue
+                violations.append(Violation(path, merge_sha, parent1, parent2))
+            elif actual_blob != auto_blob:
+                violations.append(Violation(path, merge_sha, parent1, parent2))
+        else:
+            p1_blob = p1_blobs.get(path)
+            p2_blob = p2_blobs.get(path)
+            if actual_blob != p1_blob and actual_blob != p2_blob:
+                violations.append(Violation(path, merge_sha, parent1, parent2))
 
     return violations
 
@@ -129,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     v = violations[0]
-    print(f"EVIL-MERGE FAIL: {v.path} matches neither parent")
+    print(f"EVIL-MERGE FAIL: {v.path} differs from automatic merge baseline")
     print(f"  merge   M  {v.merge_hash[:8]}")
     print(f"  parent1 P1 {v.parent1_hash[:8]}")
     print(f"  parent2 P2 {v.parent2_hash[:8]}")

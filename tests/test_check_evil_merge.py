@@ -5,7 +5,10 @@ Each integration test builds a synthetic git repo in a temp directory,
 creates two branches with contradictory test changes, merges them, and
 then calls check_evil_merge() directly against the merge result.  The
 RED case hand-resolves a tests/ file to content matching neither parent;
-the three GREEN controls keep the resolution clean.
+the GREEN controls keep the resolution clean.
+
+Real-world RED fixtures caught by this gate include ad5cdfb0c
+(tests/test_model_manifest_integrity.py).
 """
 from __future__ import annotations
 
@@ -230,6 +233,44 @@ class TestEvilMergeGuard:
             repo, "tinyagentos/foo.py",
             "def function_a():\n    return 'b'\n",
             "feat: update function_a on side-b",
+        )
+
+        _checkout(repo, "main")
+        _git_merge(repo, "side-a")
+        _git_merge(repo, "side-b")
+
+        violations = cem.check_evil_merge(repo)
+        assert violations == []
+
+    def test_clean_auto_merge_stays_green(self, tmp_path: Path):
+        """CONTROL D: two branches edit different parts of one test file.
+        Git auto-merges cleanly with no conflict.  The guard must stay green
+        because the resolution is git's own automatic merge, not human
+        invention."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_accepted():\n    pass\n\ndef test_rejected():\n    pass\n",
+            "test: add two tests",
+        )
+
+        _branch(repo, "side-a")
+        _checkout(repo, "side-a")
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_accepted():\n    assert principal_is_accepted()\n\ndef test_rejected():\n    pass\n",
+            "feat: assert accepted",
+        )
+
+        _checkout(repo, "main")
+        _branch(repo, "side-b")
+        _checkout(repo, "side-b")
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_accepted():\n    pass\n\ndef test_rejected():\n    assert principal_is_rejected()\n",
+            "feat: assert rejected",
         )
 
         _checkout(repo, "main")
