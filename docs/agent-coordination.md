@@ -486,11 +486,66 @@ the exemption list cannot grow past the surface that is reachable without a
 credential. Adding a route here is a security decision — anything that acts on
 an already-valid session must stay protected.
 
-Note for anyone writing tests against these routes: `tests/conftest.py` has an
-autouse fixture that replaces `verify_csrf` with a no-op for **every** test file
-whose path does not contain `test_csrf`. A test of CSRF behaviour written
-anywhere else measures the fixture and passes green against broken code. Put it
-in a `test_csrf*.py` file and assert the real dependency is installed.
+Note for anyone writing tests against these routes: **`verify_csrf` runs for
+real.** It used to be no-op'd by an autouse fixture for every test file whose
+path did not contain the substring `test_csrf` — 788 test files, exactly one
+inside the carve-out — so a CSRF repro written as an ordinary test passed
+against broken code, which is how #2081 stayed hidden. The opt-out is now the
+explicit marker `@pytest.mark.csrf_bypass`, and `tests/test_csrf_bypass_debt.py`
+asserts nothing uses it; a filename no longer changes behaviour, so a rename
+cannot silently re-arm the bypass.
+
+The shared `client` fixture echoes the `csrf_token` cookie into `X-CSRF-Token`
+on mutating requests, exactly as `taosFetch` does in the SPA, so tests *satisfy*
+the real check rather than switching it off. A hand-built `AsyncClient` needs
+`event_hooks=csrf_event_hooks()` (from `tests/taos_test_csrf.py` — its own
+module, because `tests/` is not a package and a bare `from conftest import ...`
+binds whichever `conftest.py` is first on `sys.path`). If your test 403s, that
+means the real caller could not reach the route the way your test does: send the
+header, do not add the marker. See "CSRF in tests" in the development skill for
+the full rules.
+
+## Proxy cookie isolation (all four proxies, one shared set)
+
+taOS forwards requests to three different kinds of upstream — the taos.my
+account service, container-backed userspace apps, and shortcut targets — through
+four proxy modules. **None of them may relay a cookie this origin issued.**
+
+| module | upstream |
+| --- | --- |
+| `routes/account_proxy.py` | taos.my account service |
+| `routes/service_proxy.py` | local services |
+| `routes/userspace_apps.py` | container app backends |
+| `routes/shortcut_proxy.py` | shortcut targets |
+
+The deny-list lives in **`tinyagentos/issued_cookies.py`** as
+`TAOS_ISSUED_COOKIES`, and all four import it. Do not restate it locally: each
+proxy used to carry its own hand-written copy, and between them those four
+copies named **two** of the five cookies taOS issues. The other three —
+`csrf_token`, `taos_browser` (an httponly session id bound to a `user_id`) and
+`taos_cs` — leaked from all four. `csrf_token` is the sharp one: it is
+`httponly=False` on purpose so the SPA can read it, which makes it a readable
+origin-wide secret whose only job is proving same-origin, so relaying it hands
+an upstream exactly what satisfies `verify_csrf`.
+
+It is a deny-list rather than an allow-list because an allow-list is not
+writable here: upstream's cookie names appear nowhere in this repo —
+`account_proxy` relays upstream `Set-Cookie` verbatim (`_rewrite_set_cookie`)
+and never enumerates one. What *this* origin issues is knowable and finite.
+
+**Adding a cookie anywhere in the package means adding it to
+`TAOS_ISSUED_COOKIES`.** Two guards in `tests/test_proxy_cookie_isolation.py`
+enforce this: one asserts all four proxies share the set by **identity**, so
+re-forking a private copy fails even if the names match; the other scans every
+`set_cookie` call in the package and fails if a cookie is issued but missing
+from the set. That second check is the one whose absence caused the bug — all
+three leaked cookies were added long after the strip lists were written, and
+nothing forced anyone back.
+
+When testing a proxy, the client must hold the cookies whose leak you are
+guarding against, and the assertion must name a genuine upstream cookie that
+*survives*: a test asserting only "nothing leaked" is satisfied by dropping the
+Cookie header wholesale, which would break every proxied login.
 
 ## Device bearer self-service (second, narrower passthrough)
 
