@@ -283,6 +283,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.auth_requests_store import AuthRequestsStore
     auth_requests_store = AuthRequestsStore(data_dir / "auth_requests.db")
+    from tinyagentos.password_reset_store import PasswordResetStore
+    password_reset_store = PasswordResetStore(data_dir / "password_resets.db")
     from tinyagentos.agent_scope_requests_store import AgentScopeRequestsStore
     agent_scope_requests_store = AgentScopeRequestsStore(data_dir / "agent_scope_requests.db")
     from tinyagentos.agent_grants_store import AgentGrantsStore
@@ -532,6 +534,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state._startup_complete = False
         await agent_registry_store.init()
         await auth_requests_store.init()
+        await password_reset_store.init()
         await agent_scope_requests_store.init()
         await agent_grants_store.init()
         app.state.agent_grants = agent_grants_store
@@ -1545,6 +1548,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await license_acceptances_store.close()
         await agent_model_key_store.close()
         await auth_requests_store.close()
+        await password_reset_store.close()
         await cluster_pairing_store.close()
         await agent_registry_store.close()
         await github_identities_store.close()
@@ -1769,6 +1773,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.agent_registry_keypair = agent_registry_keypair
     app.state.agent_model_keys = agent_model_key_store
     app.state.auth_requests = auth_requests_store
+    app.state.password_reset = password_reset_store
     app.state.agent_scope_requests = agent_scope_requests_store
     app.state.agent_grants = agent_grants_store
     app.state.app_grants = app_grants_store
