@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 import { AssistantStudioApp } from "./AssistantStudioApp";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 describe("AssistantStudioApp", () => {
   beforeEach(() => {
@@ -155,13 +157,109 @@ describe("PA change confirmation", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(localStorage.getItem("taos.assistantStudio.pa")).toBe("atlas");
   });
+});
 
-  // The Studio must stay on the shared shell/accent tokens. Raw palette classes
-  // (zinc-800, sky-500, ...) are pinned to one scheme: they render IDENTICALLY
-  // under every theme, so the app silently stops following taOS Light or any
-  // installed theme and no screenshot in a single theme can catch it. Asserting
-  // on the rendered class lists reds the moment a raw palette colour comes back.
-  it("uses theme tokens, never raw palette colours, on every rendered surface", async () => {
+describe("AssistantStudioApp theming", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        String(url).includes("/api/agents")
+          ? { ok: true, json: async () => [{ name: "hermes" }, { name: "atlas" }] }
+          : { ok: true, json: async () => [] },
+      ),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Every colour-bearing utility family, not just the handful this app happens
+  // to use today. A guard narrower than the rule it states cannot fail on the
+  // gaps: `outline-sky-500` and `shadow-zinc-900` are exactly as scheme-pinned
+  // as `bg-zinc-800`, and an earlier revision of this test passed with one of
+  // them live in the markup.
+  const COLOUR_PROPS =
+    "bg|text|border|ring|outline|shadow|placeholder|from|via|to|decoration|caret|accent|fill|stroke|divide";
+  // Status hues (emerald/amber/red) are deliberately allowed: they carry
+  // meaning, not chrome, and that is the convention across the other apps.
+  const PINNED_FAMILIES = "zinc|sky|slate|gray|neutral|stone|blue|indigo|violet|purple|teal|cyan";
+  const PALETTE_RE = new RegExp(`(^|:)(${COLOUR_PROPS})-(${PINNED_FAMILIES})-\\d`);
+
+  // The light-scheme compatibility layer in tokens.css inverts a FIXED,
+  // enumerated set of white/black overlay utilities. Anything outside that set
+  // — notably arbitrary values like `bg-white/[0.04]`, which no `[class~=...]`
+  // rule matches — stays white on a light background. Read the covered set out
+  // of tokens.css itself rather than restating it here, so this guard tracks
+  // the source of truth instead of drifting from a copy of it.
+  // Read from disk, NOT via a `?raw` import: this project's vitest config does
+  // not process CSS, so `import css from "...?raw"` resolves to an empty string
+  // and would leave the covered set silently empty.
+  const tokensCss = (() => {
+    // Resolve from the working directory rather than `import.meta.url`, which
+    // vitest does not hand us as a file: URL. Both candidates are tried so the
+    // suite works whether it is run from desktop/ or from the repo root.
+    for (const p of ["src/theme/tokens.css", "desktop/src/theme/tokens.css"]) {
+      try {
+        return readFileSync(resolve(process.cwd(), p), "utf8");
+      } catch {
+        /* try the next candidate */
+      }
+    }
+    return "";
+  })();
+  const COVERED_OVERLAYS = new Set(
+    Array.from(tokensCss.matchAll(/\[class~="([^"]+)"\]/g), (m) => m[1]),
+  );
+  // Guard the guard: an empty covered-set would flag every overlay (noisy) and,
+  // worse, silently changes what this test means. Fail loudly instead.
+  it("reads the light-scheme compatibility layer out of tokens.css", () => {
+    expect(COVERED_OVERLAYS.size).toBeGreaterThan(10);
+    expect(COVERED_OVERLAYS.has("bg-white/5")).toBe(true);
+  });
+  const OVERLAY_RE = /(^|:)(bg|text|border|ring|outline|shadow|divide|from|via|to)-(white|black)(\/|$)/;
+
+  // Uncovered overlays DO reach this app's rendered tree, but they come from the
+  // shared primitives (Button's secondary/outline/ghost variants, Card, Tabs,
+  // Toolbar), which hardcode arbitrary values like `bg-white/[0.06]` that no
+  // `[class~=...]` rule in tokens.css matches. That is a fleet-wide light-theme
+  // gap affecting every app, tracked separately — fixing it here would change
+  // rendering across the whole desktop from a Studio reskin. What this PR owns
+  // is the Studio's OWN markup, so that is what is asserted, at source level.
+  it("introduces no uncovered white/black overlay of its own", () => {
+    const appSrc = (() => {
+      for (const p of [
+        "src/apps/AssistantStudioApp.tsx",
+        "desktop/src/apps/AssistantStudioApp.tsx",
+      ]) {
+        try {
+          return readFileSync(resolve(process.cwd(), p), "utf8");
+        } catch {
+          /* try the next candidate */
+        }
+      }
+      return "";
+    })();
+    expect(appSrc.length).toBeGreaterThan(0);
+
+    // Strip comments first: the file documents the very classes it avoids, and
+    // prose about `bg-white/[0.04]` is not a rendered overlay.
+    const code = appSrc
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ");
+
+    // Every whitespace/quote-delimited class token in the file, so an overlay
+    // added anywhere in the markup is seen.
+    const offenders = new Set<string>();
+    for (const tok of code.split(/[\s"'`{}()]+/)) {
+      if (OVERLAY_RE.test(tok) && !COVERED_OVERLAYS.has(tok)) offenders.add(tok);
+    }
+    expect(Array.from(offenders)).toEqual([]);
+  });
+
+  it("uses theme tokens, never scheme-pinned colours, on every rendered surface", async () => {
     const { container } = render(<AssistantStudioApp windowId="win-1" />);
     await waitFor(() =>
       expect(screen.queryByText("Loading agents...")).not.toBeInTheDocument(),
@@ -174,13 +272,11 @@ describe("PA change confirmation", () => {
     const scan = () => {
       for (const el of container.querySelectorAll<HTMLElement>("*")) {
         for (const cls of Array.from(el.classList)) {
-          // Palette families that do not follow the theme. Status hues
-          // (emerald/amber/red) are deliberately allowed: they carry meaning,
-          // not chrome, and are the convention across the other apps.
-          if (/(^|:)(bg|text|border|ring|fill|stroke|divide)-(zinc|sky|slate|gray|neutral|stone|blue|indigo)-\d/.test(cls)) {
-            offenders.add(cls);
-          }
+          if (PALETTE_RE.test(cls)) offenders.add(cls);
         }
+        // Inline colour literals bypass the class system entirely.
+        const style = el.getAttribute("style") || "";
+        if (/#[0-9a-fA-F]{3,8}\b|\brgba?\(/.test(style)) offenders.add(`style="${style}"`);
       }
     };
     scan();
