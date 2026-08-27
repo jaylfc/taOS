@@ -7,6 +7,7 @@ import time
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import csrf_event_hooks
 
 from tinyagentos.auth import (
     AuthManager,
@@ -250,7 +251,14 @@ async def auth_client(app):
         await relationship_mgr.close()
     await relationship_mgr.init()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        # Tests here pass `cookies=login.cookies` per request rather than
+        # seeding the jar, so the hook is the only place that sees the
+        # csrf_token this client actually carries.
+        event_hooks=csrf_event_hooks(),
+    ) as c:
         yield c
     await relationship_mgr.close()
     await channel_store.close()
@@ -848,7 +856,14 @@ async def no_cookie_client(app):
     # Configure auth so the app isn't in onboarding mode
     app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        # Tests here pass `cookies=login.cookies` per request rather than
+        # seeding the jar, so the hook is the only place that sees the
+        # csrf_token this client actually carries.
+        event_hooks=csrf_event_hooks(),
+    ) as c:
         yield c
     await relationship_mgr.close()
     await channel_store.close()

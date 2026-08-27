@@ -71,6 +71,17 @@ def _echo(request) -> None:
         request.headers["x-csrf-token"] = morsel.value
         return
 
+    # No session cookie either, so `verify_csrf` exempts this request outright
+    # and there is nothing to satisfy.  Returning here is not just an
+    # optimisation: injecting a csrf_token cookie makes CSRFMiddleware treat the
+    # caller as already holding one and skip ISSUING it, so a test that signs in
+    # and then reads `csrf_token` off the login response would read an empty
+    # string and send an empty header.  That is the same shape that broke
+    # `test_csrf.py::test_csrf_cookie_set_on_response` when this was seeded on
+    # the cookie jar instead.
+    if jar.get("taos_session") is None:
+        return
+
     # No CSRF cookie yet.  A real browser would already hold one, because
     # CSRFMiddleware sets it on the first response — but these clients inject
     # the session directly instead of navigating, so no response has reached the
