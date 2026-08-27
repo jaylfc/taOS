@@ -1,0 +1,3 @@
+### Fixed
+
+- **Bot-review gate fake-green on CodeRabbit acknowledgements**: `scripts/check_bot_review.py` treated CodeRabbit's auto-generated acknowledgement replies (posted when a `@coderabbitai full review` trigger is accepted but no review follows) and the auto-summary comment as real review items, reporting `PASS` on PRs CodeRabbit never reviewed (e.g. #2482 exited 0 on three stub items, zero real reviews). `is_real_item()` now rejects these via the HTML comment markers (`<!-- CodeRabbit review command invocation: ... -->` and `<!-- This is an auto-generated comment: summarize by coderabbit.ai -->`), and `classify()` routes acknowledgement/summary-only output to `FAIL` (exit 1). A genuine review alongside acknowledgements still passes (tsk-u7ho5n).
