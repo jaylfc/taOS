@@ -20,8 +20,8 @@ invisible. Every test below therefore hands the proxy a header holding ALL of
 them and asserts NONE survives.
 """
 
+import ast
 import pathlib
-import re
 
 import pytest
 
@@ -111,6 +111,61 @@ def test_every_proxy_shares_one_deny_list():
         )
 
 
+def _cookie_names_the_code_issues(pkg: pathlib.Path) -> set[str]:
+    """Every cookie name passed to a ``set_cookie`` call under *pkg*.
+
+    Parsed with ``ast`` rather than matched with a regex because the name is
+    not always a literal at the call site. ``middleware/csrf.py`` holds it in a
+    module constant::
+
+        _COOKIE_NAME = "csrf_token"      # line 36
+        response.set_cookie(_COOKIE_NAME, token, ...)   # line 94
+
+    A literal-only scanner sees four of the five cookies taOS issues and misses
+    exactly ``csrf_token`` -- the one this whole module exists for. It would
+    have reported a clean tree while a rename of ``_COOKIE_NAME`` leaked the
+    new cookie through all four proxies. So module-level ``NAME = "literal"``
+    assignments are resolved and the constant call shape is covered too.
+    """
+    names: set[str] = set()
+    for path in pkg.rglob("*.py"):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+        except SyntaxError:  # pragma: no cover - the package parses
+            continue
+
+        consts: dict[str, str] = {}
+        for node in tree.body:
+            targets: list[ast.expr] = []
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            value = getattr(node, "value", None)
+            if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    consts[target.id] = value.value
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if called != "set_cookie":
+                continue
+            # Both call shapes in the tree: positional name, or key="name".
+            arg: ast.expr | None = node.args[0] if node.args else None
+            if arg is None:
+                arg = next((kw.value for kw in node.keywords if kw.arg == "key"), None)
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                names.add(arg.value)
+            elif isinstance(arg, ast.Name) and arg.id in consts:
+                names.add(consts[arg.id])
+    return names
+
+
 def test_deny_list_covers_every_cookie_the_code_issues():
     """Drift guard: a cookie added tomorrow must not silently start leaking.
 
@@ -120,22 +175,53 @@ def test_deny_list_covers_every_cookie_the_code_issues():
     the four strip lists were written, and nothing forced anyone back here.
     """
     pkg = pathlib.Path(__file__).resolve().parent.parent / "tinyagentos"
-    # Matches both call shapes in the tree: set_cookie("name", ...) and
-    # set_cookie(key="name", ...), including when the name is on the next line.
-    pattern = re.compile(r"set_cookie\(\s*(?:key\s*=\s*)?[\"']([a-zA-Z_][\w-]*)[\"']")
-    found: set[str] = set()
-    for path in pkg.rglob("*.py"):
-        found |= set(pattern.findall(path.read_text(encoding="utf-8", errors="ignore")))
+    found = _cookie_names_the_code_issues(pkg)
 
     # The scanner must be able to SEE something, or an empty result would make
     # this test vacuously green -- the exact failure mode this suite is about.
-    assert "taos_session" in found, (
-        f"scanner found no taos_session among {sorted(found)}; it is broken, "
-        f"not the tree. An empty scan would pass this test while proving nothing."
-    )
+    # Both shapes are named on purpose: taos_session is a literal at its call
+    # site, csrf_token is a module constant. Asserting only the literal one
+    # would pass identically with constant resolution removed, so it could not
+    # fail on the defect that resolution exists to fix.
+    for shape, name in [("literal", "taos_session"), ("module constant", "csrf_token")]:
+        assert name in found, (
+            f"scanner found no {name} ({shape} call shape) among {sorted(found)}; "
+            f"it is broken, not the tree. An empty or partial scan would pass "
+            f"this test while proving nothing."
+        )
 
     leaking = found - TAOS_ISSUED_COOKIES
     assert not leaking, (
         f"these cookies are issued by taOS but absent from TAOS_ISSUED_COOKIES, "
         f"so every proxy will relay them upstream: {sorted(leaking)}"
     )
+
+
+def test_the_scanner_resolves_a_name_held_in_a_constant(tmp_path):
+    """The scanner must cover the call shape ``csrf_token`` actually uses.
+
+    The sibling test above runs against the real tree, where a regression in
+    constant resolution shows up as a missing name. This one pins the
+    behaviour in isolation: a literal-only scanner returns just the literal
+    cookie here and fails, which is precisely how ``csrf_token`` stayed
+    invisible to this guard.
+    """
+    (tmp_path / "constant_named.py").write_text(
+        '_COOKIE_NAME = "held_in_a_constant"\n'
+        "def f(response, token):\n"
+        "    response.set_cookie(_COOKIE_NAME, token, httponly=False)\n"
+    )
+    (tmp_path / "literal_named.py").write_text(
+        "def g(response, token):\n"
+        '    response.set_cookie("held_as_a_literal", token)\n'
+    )
+    (tmp_path / "kwarg_named.py").write_text(
+        "def h(response, token):\n"
+        '    response.set_cookie(key="held_as_a_kwarg", value=token)\n'
+    )
+
+    assert _cookie_names_the_code_issues(tmp_path) == {
+        "held_in_a_constant",
+        "held_as_a_literal",
+        "held_as_a_kwarg",
+    }
