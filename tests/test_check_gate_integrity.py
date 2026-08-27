@@ -29,6 +29,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 # scripts/ is not a package; make it importable like the other scripts/*.py
 # gate tests (see tests/test_check_secret_ignores.py).
@@ -447,6 +448,41 @@ class TestCoversRealGates:
         for path in sorted(gh_scripts.glob("**/*.py")):
             rel = path.relative_to(REPO_ROOT).as_posix()
             assert cgi.is_protected(rel), f".github gate script not protected: {rel}"
+
+    def test_workflow_subscribes_to_every_verdict_changing_activity(self) -> None:
+        """The gate's verdict is a function of (base..head diff, allow label).
+        It must therefore re-run on every activity that can change either, or a
+        stale PASS keeps satisfying the required check on an unchanged head SHA.
+
+        `edited` is the load-bearing one and the reason this test exists:
+        retargeting a PR's base fires `edited` (with `changes.base`) and NOTHING
+        else. Without it, a PR that passes against one base carries that PASS
+        onto a different base whose diff may include protected gate files --
+        with `dev` on loose protection (`strict: false`) the head SHA never
+        moves, so nothing forces a re-run and the bypass survives.
+
+        `labeled`/`unlabeled` are asserted alongside it because the
+        `gate-integrity-allow` label flips the verdict directly; dropping
+        either would make the label un-revokable in practice.
+        """
+        workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
+        # `on:` is parsed by PyYAML 1.1 rules as the boolean True, not "on".
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        trigger = spec.get("on", spec.get(True))
+        types = set(trigger["pull_request_target"]["types"])
+        required = {
+            "opened",
+            "synchronize",
+            "reopened",
+            "edited",
+            "labeled",
+            "unlabeled",
+        }
+        missing = required - types
+        assert not missing, (
+            f"gate-integrity.yml does not re-run on {sorted(missing)}; a verdict"
+            " that can change without a re-run is a bypass"
+        )
 
     def test_real_repo_passes_integrity(self) -> None:
         # The committed tree must be itself green: no gate script should be

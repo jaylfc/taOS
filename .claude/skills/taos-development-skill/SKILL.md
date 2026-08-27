@@ -180,6 +180,12 @@ deps the project does not pin set `check_upgrade = false`.
   `gate-integrity-allow` label (the only way to land a legitimate change to CI
   or a gate checker). Add that label yourself; lanes must not add it. Branch
   protection must require "Gate integrity" as a blocking check.
+  **Retargeting a PR re-runs this gate, and it can newly fail.** The verdict is
+  a function of the base..head diff, so a PR that passed against one base can
+  touch protected files against another; the workflow subscribes to the
+  `edited` activity type (which is what a base change fires) so the new diff is
+  actually inspected. If you change a PR's base and this gate goes red, that is
+  the new diff being judged, not a flake -- re-read what the failure names.
 
 ## CLA - HUMAN signs
 

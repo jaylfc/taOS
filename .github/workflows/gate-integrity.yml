@@ -26,9 +26,17 @@ name: Gate integrity
 # GITHUB_TOKEN never acquires write scope here, and PR-controlled code is never
 # run, so a malicious PR cannot escalate through this job.
 
+# `edited` is not cosmetic here. Retargeting a PR's base branch fires `edited`
+# (carrying `changes.base`) and no other activity type, so without it this gate
+# never re-inspects the new base..head file list. `dev` runs loose branch
+# protection (`strict: false`), so the head SHA does not move on a retarget and
+# nothing else forces a re-run -- a PASS earned against one base would keep
+# satisfying the required check against another whose diff touches protected
+# gate files. `edited` also fires on title/body edits; re-running is cheap and
+# read-only, so the gate takes the extra runs rather than the bypass.
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
     branches: [master, dev]
 
 permissions:
