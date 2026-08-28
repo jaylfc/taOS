@@ -353,9 +353,112 @@ async def test_send_device_push_broadcast_actions_for_decision_types():
 
 
 @pytest.mark.asyncio
-async def test_send_refuses_host_that_resolves_to_loopback_at_send_time():
+async def test_send_refuses_cgnat_endpoint():
+    """send() passes allow_private=True, which should still block CGNAT (100.64/10)."""
+    from unittest.mock import patch
+
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["called"] = True
+        seen["url"] = str(req.url)
+        return httpx.Response(200)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    sender = HttpUnifiedPushSender(client=client)
+    with patch(
+        "tinyagentos.routes.desktop_browser.ssrf.socket.getaddrinfo",
+        side_effect=lambda host, port: [(2, 1, 6, "", ("100.64.0.1", 0))],
+    ):
+        ok = await sender.send("http://100.64.0.1:7900/a2a/send", {})
+        assert ok is False
+        assert "called" not in seen
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_send_refuses_rfc1918_endpoint():
+    """send() passes allow_private=True, which allows RFC1918 (10.0.0.1) because is_private is skipped."""
+    from unittest.mock import patch
+
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["called"] = True
+        seen["url"] = str(req.url)
+        return httpx.Response(200)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    sender = HttpUnifiedPushSender(client=client)
+    with patch(
+        "tinyagentos.routes.desktop_browser.ssrf.socket.getaddrinfo",
+        side_effect=lambda host, port: [(2, 1, 6, "", ("10.0.0.1", 0))],
+    ):
+        ok = await sender.send("http://10.0.0.1:7900/a2a/send", {})
+        assert ok is True
+        assert "called" in seen
+        assert seen["url"] == "http://10.0.0.1:7900/a2a/send"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_send_refuses_linklocal_endpoint():
+    """send() passes allow_private=True, but link-local (169.254/16) should still be blocked."""
+    from unittest.mock import patch
+
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["called"] = True
+        seen["url"] = str(req.url)
+        return httpx.Response(200)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    sender = HttpUnifiedPushSender(client=client)
+    with patch(
+        "tinyagentos.routes.desktop_browser.ssrf.socket.getaddrinfo",
+        side_effect=lambda host, port: [(2, 1, 6, "", ("169.254.0.1", 0))],
+    ):
+        ok = await sender.send("http://169.254.0.1:7900/a2a/send", {})
+        assert ok is False
+        assert "called" not in seen
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_send_allows_public_endpoint():
+    """Control test: a public endpoint should succeed."""
+    from unittest.mock import patch
+
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["called"] = True
+        seen["url"] = str(req.url)
+        return httpx.Response(200)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    sender = HttpUnifiedPushSender(client=client)
+    with patch(
+        "tinyagentos.routes.desktop_browser.ssrf.socket.getaddrinfo",
+        side_effect=lambda host, port: [(2, 1, 6, "", ("93.184.216.34", 0))],
+    ):
+        payload = build_unifiedpush_payload(title="Hi", body="there")
+        ok = await sender.send("https://example.com/endpoint", payload)
+        assert ok is True
+        assert "called" in seen
+        assert seen["url"] == "https://example.com/endpoint"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_send_refuses_host_that_resolves_to_cgnat_at_send_time():
     """Send-time re-resolution: a hostname that validated public at registration
-    but resolves to loopback when the sender runs must not issue a POST."""
+    but resolves to CGNAT when the sender runs must not issue a POST."""
     from unittest.mock import patch
 
     from tinyagentos.routes.desktop_browser.ssrf import validate_url_or_raise
@@ -364,6 +467,7 @@ async def test_send_refuses_host_that_resolves_to_loopback_at_send_time():
 
     def handler(req: httpx.Request) -> httpx.Response:
         seen["called"] = True
+        seen["url"] = str(req.url)
         return httpx.Response(200)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -374,7 +478,7 @@ async def test_send_refuses_host_that_resolves_to_loopback_at_send_time():
         call_count[0] += 1
         if call_count[0] == 1:
             return [(2, 1, 6, "", ("93.184.216.34", 0))]
-        return [(2, 1, 6, "", ("127.0.0.1", 0))]
+        return [(2, 1, 6, "", ("100.64.0.1", 0))]
 
     sender = HttpUnifiedPushSender(client=client)
     with patch(
