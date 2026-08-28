@@ -754,6 +754,63 @@ class TestWorkflowTriggers:
         for required in ("opened", "synchronize", "reopened"):
             assert required in types
 
+    def test_workflow_invocation_passes_head_sha_and_binds_pr_head(
+        self, check_mod
+    ) -> None:
+        """The committed workflow must actually PASS --head-sha, bound to a
+        defined PR_HEAD.
+
+        The head-SHA reconciliation (#2493) is wired in exactly one place: the
+        `run:` line in bot-review-gate.yml. Every other test in this file drives
+        `main(["--head-sha", ...])` directly, so all of them stay green if that
+        flag is dropped from the workflow -- the fix would be dead in CI while
+        the suite reported success.
+
+        The env binding is asserted alongside it because losing it degrades
+        SILENTLY rather than loudly: `--head-sha ""` makes `args.head_sha`
+        falsy, `os.environ.get("PR_HEAD")` returns None, and the reconcile is
+        skipped with no error. A stale FAILURE would then pin the PR on
+        UNSTABLE exactly as it did before the fix.
+        """
+        workflow = REPO_ROOT / ".github" / "workflows" / "bot-review-gate.yml"
+        text = workflow.read_text(encoding="utf-8")
+        # Assert the load happened: a step lookup against an empty or truncated
+        # parse would raise KeyError, which reads as a broken test rather than
+        # as the missing-flag defect this asserts.
+        assert "bot-review-gate" in text, "workflow YAML did not load"
+        spec = yaml.safe_load(text)
+
+        steps = spec["jobs"]["bot-review-gate"]["steps"]
+        gate = [s for s in steps if "check_bot_review.py" in s.get("run", "")]
+        assert len(gate) == 1, (
+            f"expected exactly one step invoking check_bot_review.py, got {len(gate)}"
+        )
+        step = gate[0]
+
+        # Assert against the INVOCATION only. The `run:` block also contains a
+        # comment explaining --head-sha, so a substring match over the whole
+        # block matches the prose and stays green when the flag is dropped from
+        # the command line -- the exact defect this test exists to catch.
+        invocations = [
+            ln.strip() for ln in step["run"].splitlines()
+            if "check_bot_review.py" in ln and not ln.strip().startswith("#")
+        ]
+        assert len(invocations) == 1, (
+            f"expected exactly one check_bot_review.py invocation, "
+            f"got {invocations}"
+        )
+        assert "--head-sha" in invocations[0], (
+            "bot-review-gate.yml invokes check_bot_review.py without "
+            "--head-sha; the check run is not anchored to the PR head SHA and "
+            f"a stale FAILURE pins the PR on UNSTABLE forever (#2493). "
+            f"Invocation: {invocations[0]}"
+        )
+        assert "PR_HEAD" in step.get("env", {}), (
+            "bot-review-gate.yml passes --head-sha but does not bind PR_HEAD "
+            "in the step env; the flag would expand to an empty string and the "
+            "reconcile would be skipped silently"
+        )
+
 
 class TestCheckRunVerdict:
     """Acceptance #1: a self-healed PR -- a stale FAILURE check run followed by
