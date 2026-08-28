@@ -1,12 +1,12 @@
 # tsk-ha5iau: LoRa Off-Grid Transport for taOS - Design Note
 
 ## Executive Summary
-This design note addresses the requirement to bridge Meshtastic onto the A2A bus as a CONTROL channel, not a data tunnel, for LoRa off-grid transport. The solution implements a taOS <-> Meshtastic bridge that operates within the existing A2A bus architecture while addressing LoRa's broadcast nature and limited throughput constraints.
+This design note addresses the requirement to add Meshtastic as a first-class platform in the taOS channel hub, routing messages to the correct agent via the existing `MessageRouter`. The solution adds a `meshtastic_connector.py` alongside the seven existing connectors and a Talk app surface, inheriting routing, archive and the existing app for free. The hard work is degradation policy for the 237-byte text-only link, not transport plumbing.
 
 ## 1. Enforced Security Model for the Bridge
 
 ### Core Principles
-- **Zero Trust Extension**: The bridge does NOT inherit A2A bus trust. Messages must be authenticated at the bridge layer before reaching the bus.
+- **Zero Trust Extension**: The connector does NOT inherit channel hub trust. Messages must be authenticated at the connector ingress before reaching the router.
 - **Per-Device Authentication**: Each Heltec module is registered with unique cryptographic keys.
 - **Message Replay Protection**: All frames include a timestamp and sequence number to prevent replay attacks.
 - **Payload Integrity**: AES-256-GCM encryption with per-frame nonces for message integrity.
@@ -18,35 +18,36 @@ This design note addresses the requirement to bridge Meshtastic onto the A2A bus
 │  • Signed payload (device key)                              │
 │  • Sequence number + timestamp                             │
 │  • AES-256-GCM encrypted                                        │
-└─────────────────┬-------------------------------------------─┘
-                  │ Verify signature & decrypt
+└─────────────────┬-------------------------------------------┘
+                   │ Verify signature & decrypt
 ┌─────────────────▼-------------------------------------------─┐
-│  Bridge Server                                               │
+│  meshtastic_connector.py                                    │
 │  • Device key registry                                       │
 │  • Sequence number validation                                 │
 │  • Timestamp freshness check                                  │
 │  • If verification fails: drop & log                        │
 └─────────────────┬-------------------------------------------─┘
-                  │ Message passes security validation
+                   │ Emits IncomingMessage with platform="meshtastic"
+                   │ Routes via MessageRouter.get_agent_for_channel
 ┌─────────────────▼-------------------------------------------─┐
-│  A2A Bus (Controlled Trust)                                  │
-│  • Messages injected with bridge handle (@bridge-<id>)       │
-│  • No inheritance of sender field from LoRa                 │
-│  • Bridge is the verified source of all radio messages       │
+│  channel_hub/router.py MessageRouter                        │
+│  • assign_channel(platform="meshtastic", bot_id, agent_name) │
+│  • get_agent_for_channel resolves the target agent           │
+│  • Standard routing and archive pipeline                     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### Security Handling Policies
 
 **Unsigned Frames:**
-- Dropped immediately at bridge ingress
+- Dropped immediately at connector ingress
 - Logged with device identifier and geolocation (if available)
 - Alert generation: `"LoRa security breach: unsigned frame from <MAC>"
 
 **Replayed Frames:**
 - Detected via sequence number gap analysis
 - Old frames (timestamp > 5 minutes or sequence number < last_seen) rejected
-- Bridge maintains sliding window per device
+- Connector maintains sliding window per device
 - Alert generation: `"LoRa replay detected from <MAC> (seq <n>)"
 
 **Corrupted Frames:**
@@ -55,128 +56,110 @@ This design note addresses the requirement to bridge Meshtastic onto the A2A bus
 - Dropped, logged, and alert generated
 
 **Allowed Security Violations:**
-- Bridge may accept unencrypted messages during testing mode (configurable)
-- Bridge logs and forwards with bridge handle for debugging
+- Connector may accept unencrypted messages during testing mode (configurable)
+- Connector logs and forwards with testing flag for debugging
 - All production deployments require encryption
 
-## 2. Message Schema and Size Budget
+## 2. Integration via channel_hub
 
-### Meshtastic Payload Constraints
-- Maximum payload: 237 bytes per packet
-- Physical layer: LoRa SF7-BW500 @ 10kbps theoretical
-- Effective throughput: ~1kbps with Meshtastic defaults
-- Half-duplex with ~2-5 second latency
+### Existing Seam
+`tinyagentos/channel_hub/` holds seven working connectors on a common envelope: discord, telegram, slack, matrix, email, webchat, webhook (4-5K each). `channel_hub/message.py` defines `IncomingMessage` with a `platform` field and `OutgoingMessage` for replies. `channel_hub/router.py` `MessageRouter` already provides `assign_channel(platform, bot_id, agent_name)` and `get_agent_for_channel(platform, bot_id)`.
 
-### Bridge Message Schema
-```json
-{
-  "from": "@bridge-<module-id>",
-  "thread": "<a2a-thread-name>",
-  "body": "<meshtastic-payload>",
-  "metadata": {
-    "device_id": "<hex-mac-or-uuid>",
-    "sequence": <uint32>,
-    "timestamp": <unix-timestamp>,
-    "hop_limit": <uint8>,
-    "channel": "<meshtastic-channel-name>"
-  }
-}
-```
+### meshtastic_connector.py
+The new connector sits alongside the existing seven. It emits `IncomingMessage(platform="meshtastic", ...)` and calls `self.router.route_message(self.agent_name, incoming)`, exactly like `telegram_connector.py` or `webchat_connector.py`. A Meshtastic channel (or node) maps to one agent via `assign_channel`. Addressing lives on the channel the message arrived on, not in the payload.
 
-### Size Analysis
-| Component | Size (bytes) | Notes |
-|-----------|--------------|-------|
-| AES-256-GCM overhead | 16 | Tag + IV |
-| JSON serialization | 20-80 | Depends on content |
-| Bridge message wrapper | 30-50 | Static headers |
-| Actual Meshtastic data | ~130-180 | Remaining budget |
-| **Total** | **<=237** | **Fits exactly** |
+### Routing Keys on the Channel, Not the Payload
+Map one Meshtastic channel (or node) to one agent and addressing costs ZERO bytes of the ~237 byte packet. The naive alternative is bad: real agent identities on this fleet are 25-30 chars (kilo-taos-20260711-000740, laguna-s-ora-20260721-191750, stepflash-taos-20260713-103907). Carrying sender + recipient in-payload would burn ~60 of 237 bytes, a quarter of the packet, before a single character of content. Meshtastic supports 8 channels, so channel-per-agent caps there and node-per-agent needs a board per agent; past that use a SHORT-CODE REGISTRY (2-4 bytes) mapped to canonical identity. Never put canonical ids on the radio.
 
-### Payload Allocation
-- **Control Messages** (Status beacons): 50 bytes
-- **Command Messages**: 80 bytes  
-- **Data Messages** (short telemetry): 107 bytes
-- **Keep-Alive Messages**: 20 bytes
+## 3. Degradation Policy
 
-### Compression Strategies
-- Use CBOR instead of JSON for control messages (saves ~40%)
-- Delta encoding for timestamps and sequence numbers
-- Binary framing for critical messages
+### The Problem
+`OutgoingMessage` carries buttons, images and cards, and `message.py:parse_inline_hints` parses `[button:Label:action]` and `[image:path]` out of agent replies. NONE of that survives a text-only ~237 byte link. The connector needs an explicit policy for rich elements, long replies, and a hard per-message size budget enforced BEFORE transmit. An agent that answers in 2KB of prose must not silently become a 12-packet flood.
 
-## 3. Allowed A2A Kinds Over Radio
+### Rich Element Policy
+| Element | Policy |
+|---------|--------|
+| Buttons | Drop. Log a one-time notice per conversation: `"[button dropped: Meshtastic is text-only]"` |
+| Images | Drop. Log a one-time notice per conversation: `"[image dropped: Meshtastic is text-only]"` |
+| Cards | Drop. Log a one-time notice per conversation: `"[card dropped: Meshtastic is text-only]"` |
 
-### Permitted A2A Message Types
-The bridge allows only these A2A kinds to prevent security issues:
+### Long Reply Policy
+| Length | Policy |
+|--------|--------|
+| <= 237 bytes | Transmit as-is |
+| > 237 bytes | Chunk into 237-byte segments with a `[part N/M]` prefix; reassemble on receive if needed |
 
-**✓ Allowed (Read-Only):**
-- `status`: System status beacons from nodes
-- `alert`: Critical alerts and warnings
-- `command`: Short administrative commands
-- `heartbeat`: Connection health monitoring
+### Hard Size Budget
+Before transmit, the connector enforces a 237-byte limit on the serialized payload. Messages exceeding the budget are chunked or truncated with a `[truncated]` marker. No message exceeds 237 bytes on the wire.
 
-**✗ Refused (Security Risk):**
-- `chat`: User-to-user messaging (cannot be trusted)
-- `decision`: Decision records (require authentication)
-- `task`: Project task updates (must be authenticated)
-- `action`: State-changing operations
-- `file`: File transfers
-
-### A2A Kind Filtering Implementation
+### Example Degradation
 ```python
-# In bridge service
-ALLOWED_RADIO_KINDS = frozenset({
-    "status", "alert", "command", "heartbeat"
-})
+# In meshtastic_connector.py
+MAX_PAYLOAD = 237
 
-# Example bridge filtering logic
-if message["kind"] not in ALLOWED_RADIO_KINDS:
-    logger.warning("A2A kind %s rejected over radio", message["kind"])
-    return None  # Drop message
+def _degrade(self, response: OutgoingMessage) -> list[str]:
+    parts = []
+    text = response.content
+    text = text.replace("[button:", "[button dropped: Meshtastic is text-only] ")
+    text = text.replace("[image:", "[image dropped: Meshtastic is text-only] ")
+    text = text.replace("[card:", "[card dropped: Meshtastic is text-only] ")
+    text = text.strip()
+    if len(text.encode("utf-8")) <= MAX_PAYLOAD:
+        return [text]
+    chunks = []
+    start = 0
+    idx = 1
+    total = (len(text) + MAX_PAYLOAD - 1) // MAX_PAYLOAD
+    while start < len(text):
+        end = start + MAX_PAYLOAD - len(f"[part {idx}/{total}] ".encode("utf-8"))
+        chunk = text[start:end]
+        chunks.append(f"[part {idx}/{total}] {chunk}")
+        start = end
+        idx += 1
+    return chunks
 ```
 
-### Thread Channel Mapping
-| Radio Channel | A2A Thread | Purpose |
-|---------------|------------|---------|
-| `status` | `taos-status` | Node health + metrics |
-| `alerts` | `taos-alerts` | Critical system alerts |
-| `commands` | `taos-commands` | Administrative commands |
-| `heartbeats` | `taos-heartbeats` | Connection monitoring |
+## 4. Sovereignty
 
-## 4. Concrete First Milestone (Hardware Phase)
+### Real, With One Caveat
+Every other connector except webchat/webhook puts a company in the path. The sharper claim is not merely self-hosted but INFRASTRUCTURE INDEPENDENT: it keeps working with no ISP, no internet and no LAN. Caveat to design around rather than a blocker: encryption protects CONTENT, not PRESENCE. Broadcast RF means anyone in range observes that a transmission happened, roughly from where, how often and how large, and RF is direction-findable. Sovereignty over custody and content, not invisibility. Do not let the pitch drift into the latter.
+
+## 5. Concrete First Milestone (Hardware Phase)
 
 ### Version 0.1.0 - "Point-to-Point Prototype"
 **Target**: Q3 2026 (after hardware arrival)
 
 #### Primary Objectives
 1. **Hardware Setup**: Deploy two Heltec V4 modules in point-to-point configuration
-2. **Bridge Development**: Implement basic message forwarding from Meshtastic to A2A bus
+2. **Connector Development**: Implement `meshtastic_connector.py` emitting `platform="meshtastic"`
 3. **Authentication**: Complete per-device key registration and validation system
-4. **Security Testing**: Verify replay protection and message authenticity
+4. **Degradation Testing**: Verify rich elements are dropped, long replies are chunked, and the 237-byte budget is enforced
 
 #### Technical Deliverables
-- [ ] Bridge service daemon (`taos-lora-bridge`) with command-line interface
+- [ ] `meshtastic_connector.py` alongside the seven existing connectors
 - [ ] Device key management system with secure storage
-- [ ] Integration with existing A2A bus proxy (`/api/a2a/bus/send`)
+- [ ] `MessageRouter.assign_channel("meshtastic", <node_id>, <agent_name>)` wiring
 - [ ] Configuration management for radio parameters (freq, SF, channel)
-- [ ] Logging and monitoring for security events
-- [ ] Test suite for bridge functionality and security properties
+- [ ] Logging and monitoring for security events and degradation decisions
+- [ ] Test suite for connector functionality, security properties, and degradation policy
 
 #### Deployment Architecture
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  TAOS Controller (Bridge Host)                          │
+│  TAOS Controller                                        │
 │                                                         │
 │  ┌─────────────────────────────────────────────────┐   │
-│  │                                                 │   │
-│  │  +----------------------+    +----------------+ │   │
-│  │  │   taos-lora-bridge   │───▶│  A2A Bus       │ │   │
-│  │  │  (REST API)          │    │  @bridge-node1 │ │   │
-│  │  +----------------------+    +----------------+ │   │
-│  │                                                 │   │
-│  │  +----------------------+    +----------------+ │   │
-│  │  │  taos-lora-bridge   │───▶│  A2A Bus       │ │   │
-│  │  │  (REST API)          │    │  @bridge-node2 │ │   │
-│  │  +----------------------+    +----------------+ │   │
+│  │  channel_hub                                    │   │
+│  │  • MessageRouter.get_agent_for_channel("meshtastic", node_id) │
+│  │  • Archive and routing pipeline                  │   │
+│  └─────────────────────────────────────────────────┘   │
+│                                                         │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │  meshtastic_connector.py                         │   │
+│  │  • Ingest Meshtastic packets                     │   │
+│  │  • Verify signature & decrypt                    │   │
+│  │  • Degrade rich elements, chunk long replies     │   │
+│  │  • Emit IncomingMessage(platform="meshtastic")   │   │
 │  └─────────────────────────────────────────────────┘   │
 │                                                         │
 │  ┌─────────────────────────────────────────────────┐   │
@@ -196,31 +179,35 @@ if message["kind"] not in ALLOWED_RADIO_KINDS:
 ```
 
 #### MVP Testing Requirements
-- [ ] Message round-trip testing: Radio → Bridge → A2A → Bridge → Radio
+- [ ] Message round-trip testing: Radio -> connector -> router -> agent -> connector -> Radio
 - [ ] Security validation: Verify unsigned frames are rejected
+- [ ] Degradation validation: Verify buttons and images are dropped with logged notices
+- [ ] Size budget validation: Verify long replies are chunked or truncated to 237 bytes
 - [ ] Performance testing: 1kbps sustained throughput with <1s latency
-- [ ] Integration testing: Verify A2A bus messages appear correctly
 
 #### Success Criteria
 1. **Functional**: Both radio modules connect and exchange messages
 2. **Security**: All unsigned/replayed messages are rejected
-3. **Performance**: Status beacons sent every 30 seconds
-4. **Reliability**: Bridge survives controller reboot without reconnection
+3. **Degradation**: Rich elements are dropped and long replies are chunked
+4. **Performance**: Status beacons sent every 30 seconds
+5. **Reliability**: Connector survives controller reboot without reconnection
 
 ### Notes
 - This design focuses on the security model first as required
 - Firmware implementation will follow after this design is approved
-- The bridge operates as a CONTROL channel, not a data tunnel
+- The connector is a CONTROL channel, not a data tunnel
 - All security decisions must be made before hardware deployment
 
 ## References
 - [Heltec WiFi LoRa 32 V4 Datasheet](https://docs.heltec.org/en/latest/wifi_lora_32/tty/v4.html)
 - [Meshtastic Documentation](https://meshtastic.org/)
-- [taOS A2A Bus Architecture](/tinyagentos/routes/a2a_bus.py)
+- [taOS channel_hub Architecture](/tinyagentos/channel_hub/)
+- [channel_hub/message.py](/tinyagentos/channel_hub/message.py)
+- [channel_hub/router.py](/tinyagentos/channel_hub/router.py)
 - [Jay's Note 2026-08-28](note-260828-f0fa88.md - reference implementation)
 
 ---
 *Document created: 2026-08-28*
 *Status: Draft design note*
 *Author: taOS Lead*
-*Tags: lora, meshtastic, bridge, security, radio*
+*Tags: lora, meshtastic, channel_hub, security, radio*
