@@ -22,6 +22,36 @@ name: Bot review gate
 #                              It re-runs bot-review-gate for the PR's head
 #                              SHA, closing the timing hole (DEFECT 2) where
 #                              a stub lands after the initial green run.
+#
+# ENFORCEMENT CONTRACT (branch-protection parity):
+# `bot-review-gate` blocks merges only where a branch-protection rule lists it
+# in `required_status_checks.contexts`. That list is a GitHub-side setting -- NOT
+# in-repo config (no IaC manages branch protection here), so a repo commit can
+# record it but cannot change it.
+#
+#   master -- REQUIRED. `bot-review-gate` is in master's required_status_checks
+#              contexts (Jay's standing GitHub configuration; this repo never
+#              mutates it).
+#   dev    -- ADVISORY only. The job still runs on PRs to dev and turns red, but
+#              `bot-review-gate` is NOT in dev's required_status_checks contexts,
+#              so a red check still merges through dev.
+#
+# This asymmetry is the defect: a red `bot-review-gate` can merge through dev
+# and block only at the dev->master promotion, unreviewed on the way (PR #2548
+# merged with the red check, 2916e5e15). Same class as the gate-integrity-on-dev
+# defect.
+#
+# Recommended direction (hardening): bring dev into parity by adding
+# `bot-review-gate` to dev's required_status_checks contexts so red is caught on
+# dev too; master stays as-is. That edit is Jay's standing configuration and is
+# NOT applied here -- per the task's standing-config rule, the agent does not
+# edit branch protection without his sign-off. To apply once confirmed (the PUT
+# replaces the whole contexts list, so it must include the existing dev contexts
+# plus bot-review-gate):
+#   gh api --method PUT repos/jaylfc/taOS/branches/dev/protection/required_status_checks/contexts \
+#     -f required_status_checks='["test (3.12)","test (3.13)","spa-build","lint","doc-gate","shards (3.12, 1)","shards (3.12, 2)","shards (3.12, 3)","shards (3.12, 4)","shards (3.13, 1)","shards (3.13, 2)","shards (3.13, 3)","shards (3.13, 4)","bot-review-gate"]'
+# NOTE: editing `.github/workflows/*.yml` trips the `Gate integrity` gate; this
+# change needs the human-set `gate-integrity-allow` label to merge.
 
 on:
   pull_request:

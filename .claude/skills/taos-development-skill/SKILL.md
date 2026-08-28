@@ -302,6 +302,13 @@ job re-runs the gate against the PR head SHA when a stub comment lands *after* t
 run went green. A red `bot-review-gate` check means the PR has no substantive CodeRabbit
 review yet — wait for (or retrigger) a real review; do not merge on the stub.
 
+Enforcement parity is a GitHub-side branch-protection setting, not in-repo config:
+`bot-review-gate` is REQUIRED on `master` but only ADVISORY on `dev` (absent from dev's
+`required_status_checks.contexts`), so a red check can merge through dev and block only at the
+dev->master promotion. The hardening target is to add `bot-review-gate` to dev's required
+contexts too; that edit is Jay's standing GitHub configuration (master is left unchanged) and
+is not performed by a repo commit.
+
 ### Procedure
 
 1. **Push PR and mark ready.** Wait ~10 minutes for bot reviews to complete.
