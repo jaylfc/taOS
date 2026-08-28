@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+import respx
+from httpx import Response
 
 from tinyagentos.chat.chat_exporter import ChatExportError, ChatExporter, flatten_body
 from tinyagentos.chat.message_store import ChatMessageStore
@@ -668,3 +670,220 @@ async def test_oversize_envelope_never_exceeds_limit_serialized(store, tmp_path)
     assert len(serialized) <= 64 * 1024, (
         f"serialized envelope is {len(serialized)} bytes"
     )
+
+
+# ---------------------------------------------------------------------------
+# dry_run_channel tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_dry_run_reports_all_authors_and_mapping(store):
+    await store.send_message(
+        channel_id="ch1", author_id="user1", author_type="user",
+        content="hello", content_blocks=[{"type": "paragraph", "text": "hello"}],
+    )
+    await store.send_message(
+        channel_id="ch1", author_id="agent-1", author_type="agent",
+        content="hi", content_blocks=[{"type": "paragraph", "text": "hi"}],
+    )
+
+    exporter = ChatExporter(
+        message_store=store,
+        identity_map=_identity_map(["user1"], ["agent-1"]),
+    )
+    report = await exporter.dry_run_channel("ch1")
+
+    assert report["channel_id"] == "ch1"
+    assert report["message_count"] == 2
+    assert report["author_count"] == 2
+    assert report["all_mapped"] is True
+    authors_by_id = {a["author_id"]: a for a in report["authors"]}
+    assert authors_by_id["user1"]["mapped"] is True
+    assert authors_by_id["user1"]["handle"] == "@user1"
+    assert authors_by_id["agent-1"]["mapped"] is True
+    assert authors_by_id["agent-1"]["handle"] == "@agent-1"
+
+
+@pytest.mark.asyncio
+async def test_dry_run_fails_on_unmapped_author(store):
+    await store.send_message(
+        channel_id="ch1", author_id="user1", author_type="user",
+        content="hello",
+    )
+    await store.send_message(
+        channel_id="ch1", author_id="unknown", author_type="user",
+        content="world",
+    )
+
+    exporter = ChatExporter(
+        message_store=store,
+        identity_map=_identity_map(["user1"]),
+    )
+    with pytest.raises(ChatExportError, match="dry_run: 1 unmapped author"):
+        await exporter.dry_run_channel("ch1")
+
+
+@pytest.mark.asyncio
+async def test_dry_run_empty_channel(store):
+    exporter = ChatExporter(
+        message_store=store,
+        identity_map=_identity_map(["user1"]),
+    )
+    report = await exporter.dry_run_channel("ch1")
+    assert report["message_count"] == 0
+    assert report["author_count"] == 0
+    assert report["authors"] == []
+    assert report["all_mapped"] is True
+
+
+@pytest.mark.asyncio
+async def test_dry_run_excludes_deleted_and_streaming(store):
+    await store.send_message(
+        channel_id="ch1", author_id="user1", author_type="user",
+        content="ok",
+    )
+    await store.send_message(
+        channel_id="ch1", author_id="user2", author_type="user",
+        content="deleted", state="complete",
+    )
+    async with store._db.execute(
+        "SELECT id FROM chat_messages WHERE author_id = ?", ("user2",)
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row:
+        await store.soft_delete_message(row[0])
+    await store.send_message(
+        channel_id="ch1", author_id="user3", author_type="user",
+        content="streaming", state="streaming",
+    )
+
+    exporter = ChatExporter(
+        message_store=store,
+        identity_map=_identity_map(["user1"]),
+    )
+    report = await exporter.dry_run_channel("ch1")
+    assert report["message_count"] == 1
+    assert report["author_count"] == 1
+    assert report["authors"][0]["author_id"] == "user1"
+    assert report["all_mapped"] is True
+
+
+# ---------------------------------------------------------------------------
+# import_channel tests
+# ---------------------------------------------------------------------------
+
+_BUS = "http://bus.test"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_import_channel_posts_batch_to_bus(store, tmp_path):
+    await store.send_message(
+        channel_id="ch1", author_id="user1", author_type="user",
+        content="hello", content_blocks=[{"type": "paragraph", "text": "hello"}],
+    )
+    await store.send_message(
+        channel_id="ch1", author_id="agent-1", author_type="agent",
+        content="hi", content_blocks=[{"type": "paragraph", "text": "hi"}],
+    )
+
+    route = respx.post(f"{_BUS}/a2a/import").mock(
+        return_value=Response(200, json={"imported": 2, "skipped": 0}),
+    )
+
+    exporter = ChatExporter(
+        message_store=store,
+        identity_map=_identity_map(["user1"], ["agent-1"]),
+    )
+    result = await exporter.import_channel("ch1", _BUS)
+
+    assert result == {"imported": 2, "skipped": 0}
+    assert route.called
+    posted = json.loads(route.calls.last.request.content)
+    assert len(posted) == 2
+    assert posted[0]["from"] == "@user1"
+    assert posted[0]["ts"] > 0
+    assert posted[1]["from"] == "@agent-1"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_import_channel_skips_empty_channel(store):
+    exporter = ChatExporter(
+        message_store=store,
+        identity_map=_identity_map(["user1"]),
+    )
+    result = await exporter.import_channel("ch1", _BUS)
+    assert result == {"imported": 0, "skipped": 0}
+
+
+@pytest.mark.asyncio
+async def test_import_channel_fails_on_unmapped_author(store):
+    await store.send_message(
+        channel_id="ch1", author_id="user1", author_type="user",
+        content="hello",
+    )
+    await store.send_message(
+        channel_id="ch1", author_id="unknown", author_type="user",
+        content="world",
+    )
+
+    exporter = ChatExporter(
+        message_store=store,
+        identity_map=_identity_map(["user1"]),
+    )
+    with pytest.raises(ChatExportError, match="dry_run: 1 unmapped author"):
+        await exporter.import_channel("ch1", _BUS)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_import_channel_preserves_timestamps(store):
+    ts = 1700000000.0
+    await store.ensure_message({
+        "id": "msg1", "channel_id": "ch1", "author_id": "user1",
+        "author_type": "user", "content": "hello",
+        "content_blocks": [{"type": "paragraph", "text": "hello"}],
+        "created_at": ts,
+    })
+
+    respx.post(f"{_BUS}/a2a/import").mock(
+        return_value=Response(200, json={"imported": 1, "skipped": 0}),
+    )
+
+    exporter = ChatExporter(
+        message_store=store,
+        identity_map=_identity_map(["user1"]),
+    )
+    await exporter.import_channel("ch1", _BUS)
+
+    posted = json.loads(respx.routes[-1].calls.last.request.content)
+    assert posted[0]["ts"] == ts
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_import_channel_idempotent_same_source_ids(store):
+    for i in range(3):
+        await store.send_message(
+            channel_id="ch1", author_id="user1", author_type="user",
+            content=f"msg{i}",
+            content_blocks=[{"type": "paragraph", "text": f"msg{i}"}],
+        )
+
+    respx.post(f"{_BUS}/a2a/import").mock(
+        return_value=Response(200, json={"imported": 3, "skipped": 0}),
+    )
+
+    exporter = ChatExporter(
+        message_store=store,
+        identity_map=_identity_map(["user1"]),
+    )
+    batch1 = await exporter.import_channel("ch1", _BUS)
+    batch2 = await exporter.import_channel("ch1", _BUS)
+
+    assert batch1 == batch2 == {"imported": 3, "skipped": 0}
+    calls = respx.routes[0].calls
+    posted1 = json.loads(calls[0].request.content)
+    posted2 = json.loads(calls[1].request.content)
+    assert [e["source_id"] for e in posted1] == [e["source_id"] for e in posted2]

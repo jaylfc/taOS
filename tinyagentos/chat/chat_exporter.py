@@ -253,3 +253,80 @@ class ChatExporter:
         for ch_id in channel_ids:
             batch.extend(await self.export_channel(ch_id))
         return batch
+
+    async def dry_run_channel(self, channel_id: str) -> dict:
+        """Report distinct authors and mapping coverage for a channel.
+
+        Returns a dict with ``channel_id``, ``message_count``, ``author_count``,
+        ``authors`` (sorted list of ``{author_id, mapped, handle}``), and
+        ``all_mapped``.  Raises ``ChatExportError`` if any author_id in the
+        channel has no entry in ``identity_map``.
+        """
+        messages = await self._msg_store.get_all_messages_for_channel(channel_id)
+        messages = [
+            m
+            for m in messages
+            if m.get("deleted_at") is None
+            and m.get("state") in (None, "complete")
+        ]
+
+        distinct_authors = sorted({m.get("author_id", "") for m in messages})
+        author_status: list[dict[str, Any]] = []
+        unmapped: list[str] = []
+
+        for author_id in distinct_authors:
+            mapped = author_id in self._identity_map
+            handle = self._identity_map.get(author_id)
+            author_status.append({
+                "author_id": author_id,
+                "mapped": mapped,
+                "handle": handle,
+            })
+            if not mapped:
+                unmapped.append(author_id)
+
+        result: dict[str, Any] = {
+            "channel_id": channel_id,
+            "message_count": len(messages),
+            "author_count": len(distinct_authors),
+            "authors": author_status,
+            "all_mapped": len(unmapped) == 0,
+        }
+
+        if unmapped:
+            raise ChatExportError(
+                f"dry_run: {len(unmapped)} unmapped author(s) in channel "
+                f"{channel_id!r}: {unmapped}"
+            )
+
+        return result
+
+    async def import_channel(
+        self,
+        channel_id: str,
+        bus_url: str,
+        *,
+        timeout: float = 5.0,
+    ) -> dict:
+        """Import a channel to the taOSmd A2A bus.
+
+        Verifies 100 percent author mapping coverage via ``dry_run_channel``,
+        then exports the batch and POSTs it to ``{bus_url}/a2a/import``.
+        The bus is expected to deduplicate on ``(source, source_id)`` so
+        re-importing the same channel is idempotent.
+
+        Returns the JSON response from the bus.
+        """
+        import httpx
+
+        await self.dry_run_channel(channel_id)
+
+        batch = await self.export_channel(channel_id)
+        if not batch:
+            return {"imported": 0, "skipped": 0}
+
+        url = f"{bus_url.rstrip('/')}/a2a/import"
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, json=batch)
+            resp.raise_for_status()
+            return resp.json()
