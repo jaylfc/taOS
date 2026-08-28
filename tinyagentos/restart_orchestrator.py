@@ -272,11 +272,40 @@ def _cap_context_snapshot(note: dict) -> None:
         overflow,
         len(encoded),
     )
-    kept = encoded[-_MAX_CONTEXT_SNAPSHOT_BYTES:]
-    try:
-        note["context_snapshot"] = json.loads(kept)
-    except json.JSONDecodeError:
-        note["context_snapshot"] = {"_truncated": "snapshot exceeded context window; remainder dropped"}
+    snapshot_copy = dict(snapshot)
+    fields = sorted(
+        snapshot_copy.items(),
+        key=lambda kv: len(json.dumps(kv[0], separators=(",", ":")))
+        + len(json.dumps(kv[1], separators=(",", ":")))
+        + 1,
+        reverse=True,
+    )
+    dropped = []
+    for key, _ in fields:
+        del snapshot_copy[key]
+        dropped.append(key)
+        encoded = json.dumps(snapshot_copy, separators=(",", ":"))
+        if len(encoded) <= _MAX_CONTEXT_SNAPSHOT_BYTES:
+            break
+    if dropped:
+        snapshot_copy["_truncated"] = True
+        snapshot_copy["_dropped"] = dropped
+        encoded = json.dumps(snapshot_copy, separators=(",", ":"))
+        while len(encoded) > _MAX_CONTEXT_SNAPSHOT_BYTES and len(snapshot_copy) > 1:
+            remaining = [k for k in snapshot_copy if k not in ("_truncated", "_dropped")]
+            if not remaining:
+                break
+            smallest = min(
+                remaining,
+                key=lambda k: len(json.dumps(k, separators=(",", ":")))
+                + len(json.dumps(snapshot_copy[k], separators=(",", ":")))
+                + 1,
+            )
+            del snapshot_copy[smallest]
+            dropped.append(smallest)
+            snapshot_copy["_dropped"] = dropped
+            encoded = json.dumps(snapshot_copy, separators=(",", ":"))
+    note["context_snapshot"] = snapshot_copy
 
 
 def _load_or_synthesize_note(note_path: Path) -> dict:

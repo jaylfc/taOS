@@ -164,6 +164,18 @@ class TestCapContextSnapshot:
         ro._cap_context_snapshot(note)
         assert note["context_snapshot"] == {"key": "value"}
 
+    def test_oversized_snapshot_keeps_required_fields(self):
+        big = {"agent_id": "a1", "user_msg": "x" * 20000, "extra": "y" * 20000}
+        note = {"context_snapshot": big}
+        ro._cap_context_snapshot(note)
+        capped = note["context_snapshot"]
+        assert "agent_id" in capped
+        assert capped["agent_id"] == "a1"
+        assert json.dumps(capped, separators=(",", ":"))  # valid JSON
+        assert len(json.dumps(capped, separators=(",", ":"))) <= ro._MAX_CONTEXT_SNAPSHOT_BYTES
+        assert capped.get("_truncated") is True
+        assert "_dropped" in capped
+
     def test_truncates_oversized_snapshot(self):
         big = {f"field_{i}": "x" * 200 for i in range(500)}
         note = {"context_snapshot": big}

@@ -117,10 +117,12 @@ without limit if the agent dumps its transcript or memory into it. An oversized
 snapshot saturates the framework's input window at wake, so the agent restarts
 into the same overflow every time and the recovery note is never consumed.
 
-`_cap_context_snapshot()` in `tinyagentos/restart_orchestrator.py` truncates the
-snapshot to a 32768-byte suffix (with a `_truncated` marker) before the note is
-posted. Do not bypass it: any code that writes a resume note by hand must still
-route it through that guard, lest a 32 KB transcript become a 32 KB failure.
+`_cap_context_snapshot()` in `tinyagentos/restart_orchestrator.py` drops the largest
+fields from the snapshot until its serialized form fits within 32768 bytes, then
+adds a `_truncated` marker and a `_dropped` list naming the removed keys. The
+result is always valid JSON and preserves as much of the remaining structure as
+possible. Do not bypass it: any code that writes a resume note by hand must still
+route it through that guard, lest an unbounded transcript become a 32 KB failure.
 
 ## Credentials, grants and the things that bite
 
