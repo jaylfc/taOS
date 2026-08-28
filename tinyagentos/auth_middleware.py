@@ -554,6 +554,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.state.user_id = None
                     request.state.is_admin = False
                     request.state.via = "local_token"
+                # We have validated the credential, so continue to routing
+                # Let unknown paths return 404 and known paths proceed normally
+                # This allows routing to distinguish between valid credentials
+                # and invalid ones, fixing the bug where unknown routes returned
+                # 401 for valid tokens.
                 return await call_next(request)
 
         # Agent-token endpoints (registry feeds + A2A bus proxy + project kanban)

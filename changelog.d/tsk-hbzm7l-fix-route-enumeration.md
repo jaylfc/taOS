@@ -1,0 +1,2 @@
+### Fixed
+- Auth middleware now returns 404 for authenticated callers on unknown routes instead of 401. This fixes a bug where a wrong URL was indistinguishable from dead credentials. The auth middleware runs before routing, so previously routing failures were reported as auth failures. The fix allows validated credentials to continue to routing where unknown routes return 404, while unauthenticated callers still get 401 for anti-enumeration (issue #tsk-hbzm7l).
