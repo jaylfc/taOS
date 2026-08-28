@@ -62,9 +62,11 @@ def validate_url_or_raise(url: str, *, allow_private: bool = False) -> None:
     verifies every resolved address against the blocklist. Raises
     `SsrfBlockedError` on any failure.
 
-    Pass ``allow_private=True`` to permit RFC1918 and CGNAT addresses
-    (e.g. self-hosted LAN services) while still refusing loopback,
-    link-local, multicast, reserved, and unspecified ranges.
+    Pass ``allow_private=True`` to permit RFC1918 addresses and their IPv6
+    unique-local equivalent (e.g. self-hosted LAN services) while still
+    refusing loopback, link-local, multicast, reserved, and unspecified
+    ranges. CGNAT is NOT permitted by ``allow_private`` — see
+    `validate_resolved_addr` for the ranges that stay blocked either way.
     """
     parsed = urlparse(url)
 
@@ -128,9 +130,12 @@ def validate_resolved_addr(addr: str, *, allow_private: bool = False) -> None:
     unspecified (0.0.0.0), and the IPv6 equivalents (incl. IPv4-mapped
     IPv6 forms like ::ffff:10.0.0.1).
 
-    Pass ``allow_private=True`` to skip the ``is_private`` check (useful for
-    self-hosted LAN services). CGNAT (RFC 6598 100.64/10) is always blocked
-    regardless of allow_private to protect our A2A bus which lives in that range.
+    Pass ``allow_private=True`` to skip the ``is_private`` check, which
+    permits RFC1918 and IPv6 unique-local (``fc00::/7``) addresses for
+    self-hosted LAN services. Everything in `_BLOCKED_NETWORKS` — CGNAT
+    (RFC 6598 ``100.64.0.0/10``) and deprecated IPv6 site-local
+    (``fec0::/10``) — stays blocked regardless of allow_private, because
+    our own A2A bus lives in the CGNAT range.
     """
     try:
         ip = ipaddress.ip_address(addr)
@@ -146,13 +151,14 @@ def validate_resolved_addr(addr: str, *, allow_private: bool = False) -> None:
     if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
         raise SsrfBlockedError(f"resolved address {addr!r} is in the blocklist")
 
-    # Skip the is_private check when allow_private=True, but always block
-    # RFC1918 and CGNAT regardless.
+    # allow_private=True skips this check, which is what permits RFC1918
+    # and IPv6 unique-local for self-hosted LAN services. The
+    # _BLOCKED_NETWORKS pass below still applies either way.
     if not allow_private and ip.is_private:
         raise SsrfBlockedError(f"resolved address {addr!r} is in the blocklist")
 
-    # Always block CGNAT (RFC 6598 100.64/10) even when allow_private=True
-    # Our own A2A bus lives in this range, so we must keep it blocked.
+    # Always blocked, even when allow_private=True: CGNAT (our own A2A bus
+    # lives in that range) and deprecated IPv6 site-local.
     for net in _BLOCKED_NETWORKS:
         if ip in net:
             raise SsrfBlockedError(
