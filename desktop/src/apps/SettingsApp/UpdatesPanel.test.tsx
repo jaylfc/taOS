@@ -258,4 +258,29 @@ describe("UpdatesPanel -- error announcements", () => {
     await waitFor(() => expect(screen.getByText("You are up to date.")).toBeInTheDocument());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
+
+  it("clears a previous update-check error when a subsequent check succeeds", async () => {
+    let checkCalls = 0;
+    (global.fetch as any) = vi.fn(async (url: string) => {
+      if (url === "/api/preferences/auto-update") return jResp({ check_enabled: true });
+      if (url === "/api/settings/update-check") {
+        checkCalls++;
+        if (checkCalls === 1) return jResp({ has_updates: false, current_version: "1.0.0-beta.2", current_commit: "abc x" });
+        if (checkCalls === 2) return new Response(null, { status: 500 });
+        return jResp({ has_updates: false, current_version: "1.0.0-beta.2", current_commit: "abc x" });
+      }
+      if (url === "/api/settings/update-status") return jResp({ current_sha: "abc", pending_restart_sha: null });
+      if (url === "/api/apps/optional/catalog") return jResp({ apps: [] });
+      return jResp({});
+    });
+    render(<UpdatesPanel />);
+    await screen.findByText("1.0.0-beta.2");
+
+    fireEvent.click(screen.getByRole("button", { name: /check now/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Update check not available.");
+
+    fireEvent.click(screen.getByRole("button", { name: /check now/i }));
+    await waitFor(() => expect(screen.getByText("You are up to date.")).toBeInTheDocument());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
 });

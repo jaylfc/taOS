@@ -28,7 +28,7 @@ describe("ThemesPanel", () => {
   });
 
   it("announces a themes-fetch failure via role=alert", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network")));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500, statusText: "Internal Server Error" }));
     render(<ThemesPanel />);
     expect(await screen.findByRole("alert")).toBeInTheDocument();
   });
