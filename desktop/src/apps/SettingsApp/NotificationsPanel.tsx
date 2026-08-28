@@ -70,76 +70,60 @@ export function NotificationsPanel() {
     }
   };
 
-  if (!loaded) {
-    return (
-      <section aria-label="Notification settings">
-        <h2 className="text-lg font-semibold mb-5">Notifications</h2>
-        <p className="text-sm text-shell-text-tertiary">Loading...</p>
-      </section>
-    );
-  }
-
-  if (!prefs) {
-    return (
-      <section aria-label="Notification settings">
-        <h2 className="text-lg font-semibold mb-2">Notifications</h2>
-        <p className="text-sm text-shell-text-tertiary mb-5">
-          Choose which notification types to receive. Disabled types are suppressed
-          everywhere -- no in-app notification, no web push.
-        </p>
-
-        {error && (
-          <>
-            <p role="alert" className="mb-3 text-xs text-amber-400 flex items-center gap-1.5">
-              {error}
-            </p>
-            <Button variant="outline" size="sm" onClick={loadPrefs}>
-              Retry
-            </Button>
-          </>
-        )}
-      </section>
-    );
-  }
-
   return (
     <section aria-label="Notification settings">
       <h2 className="text-lg font-semibold mb-2">Notifications</h2>
-      <p className="text-sm text-shell-text-tertiary mb-5">
-        Choose which notification types to receive. Disabled types are suppressed
-        everywhere -- no in-app notification, no web push.
-      </p>
 
-      {error && (
-        <p role="alert" className="mb-3 text-xs text-amber-400 flex items-center gap-1.5">
-          {error}
-        </p>
+      {!loaded ? (
+        <p className="text-sm text-shell-text-tertiary">Loading...</p>
+      ) : (
+        <>
+          <p className="text-sm text-shell-text-tertiary mb-5">
+            Choose which notification types to receive. Disabled types are suppressed
+            everywhere -- no in-app notification, no web push.
+          </p>
+
+          {error && (
+            <>
+              <p role="alert" className="mb-3 text-xs text-amber-400 flex items-center gap-1.5">
+                {error}
+              </p>
+              {!prefs && (
+                <Button variant="outline" size="sm" onClick={loadPrefs}>
+                  Retry
+                </Button>
+              )}
+            </>
+          )}
+
+          {prefs && (
+            <div className="space-y-2">
+              {NOTIF_TYPES.map((item) => {
+                const pref = prefs.find((p) => p.event_type === item.type);
+                const checked = pref ? !pref.muted : true;
+                const id = `notif-${item.type}`;
+                return (
+                  <Card key={item.type} className="p-4 flex items-center justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <Label htmlFor={id} className="text-sm font-medium text-shell-text">
+                        {item.label}
+                      </Label>
+                      <p className="text-xs text-shell-text-tertiary mt-0.5">{item.desc}</p>
+                    </div>
+                    <Switch
+                      id={id}
+                      checked={checked}
+                      onCheckedChange={(v) => toggle(item.type, !v)}
+                      disabled={saving === item.type}
+                      aria-label={`${item.label} notifications`}
+                    />
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
-
-      <div className="space-y-2">
-        {NOTIF_TYPES.map((item) => {
-          const pref = prefs.find((p) => p.event_type === item.type);
-          const checked = pref ? !pref.muted : true;
-          const id = `notif-${item.type}`;
-          return (
-            <Card key={item.type} className="p-4 flex items-center justify-between gap-3">
-              <div className="flex-1 min-w-0">
-                <Label htmlFor={id} className="text-sm font-medium text-shell-text">
-                  {item.label}
-                </Label>
-                <p className="text-xs text-shell-text-tertiary mt-0.5">{item.desc}</p>
-              </div>
-              <Switch
-                id={id}
-                checked={checked}
-                onCheckedChange={(v) => toggle(item.type, !v)}
-                disabled={saving === item.type}
-                aria-label={`${item.label} notifications`}
-              />
-            </Card>
-          );
-        })}
-      </div>
     </section>
   );
 }
