@@ -986,7 +986,7 @@ class TestReconcileCheckRun:
             self._run(33070472073, "success", "2026-08-27T12:08:17Z"),
         ]
         with patch.object(check_mod, "_api_get", return_value=[{"total_count": 2, "check_runs": runs}]), \
-             patch.object(check_mod, "_api_mutate") as mutate:
+             patch.object(check_mod, "_api_mutate", return_value=True) as mutate:
             result = check_mod.reconcile_head_sha_check_run("jaylfc", "taOS", self.HEAD_SHA, "success")
         assert result is not None
         # Only the stale failure (== target differs) is patched; the already-
@@ -1001,13 +1001,13 @@ class TestReconcileCheckRun:
     def test_idempotent_when_all_match(self, check_mod) -> None:
         runs = [self._run(33070472073, "success", "2026-08-27T12:08:17Z")]
         with patch.object(check_mod, "_api_get", return_value=[{"total_count": 1, "check_runs": runs}]), \
-             patch.object(check_mod, "_api_mutate") as mutate:
+             patch.object(check_mod, "_api_mutate", return_value=True) as mutate:
             check_mod.reconcile_head_sha_check_run("jaylfc", "taOS", self.HEAD_SHA, "success")
         assert mutate.call_count == 0
 
     def test_creates_when_absent(self, check_mod) -> None:
         with patch.object(check_mod, "_api_get", return_value=[{"total_count": 0, "check_runs": []}]), \
-             patch.object(check_mod, "_api_mutate") as mutate:
+             patch.object(check_mod, "_api_mutate", return_value=True) as mutate:
             check_mod.reconcile_head_sha_check_run("jaylfc", "taOS", self.HEAD_SHA, "success")
         assert mutate.call_count == 1
         call = mutate.call_args
@@ -1024,7 +1024,7 @@ class TestReconcileCheckRun:
             self._run(32071499652, "failure", "2026-08-17T21:30:58Z"),
         ]
         with patch.object(check_mod, "_api_get", return_value=[{"total_count": 2, "check_runs": runs}]), \
-             patch.object(check_mod, "_api_mutate") as mutate:
+             patch.object(check_mod, "_api_mutate", return_value=True) as mutate:
             check_mod.reconcile_head_sha_check_run("jaylfc", "taOS", self.HEAD_SHA, "success")
         # Only the completed stale failure is patched; the in-progress run is
         # left for the job's exit code to settle.
@@ -1033,7 +1033,7 @@ class TestReconcileCheckRun:
 
     def test_returns_none_on_api_failure(self, check_mod) -> None:
         with patch.object(check_mod, "_api_get", return_value=None), \
-             patch.object(check_mod, "_api_mutate") as mutate:
+             patch.object(check_mod, "_api_mutate", return_value=True) as mutate:
             result = check_mod.reconcile_head_sha_check_run("jaylfc", "taOS", self.HEAD_SHA, "success")
         assert result is None
         assert mutate.call_count == 0
@@ -1046,7 +1046,7 @@ class TestReconcileCheckRun:
             self._run(33070472073, "failure", "2026-08-27T12:08:17Z"),
         ]
         with patch.object(check_mod, "_api_get", return_value=[{"total_count": 2, "check_runs": runs}]), \
-             patch.object(check_mod, "_api_mutate") as mutate:
+             patch.object(check_mod, "_api_mutate", return_value=True) as mutate:
             check_mod.reconcile_head_sha_check_run("jaylfc", "taOS", self.HEAD_SHA, "success")
         assert mutate.call_count == 2
         patched_ids = {call.args[0] for call in mutate.call_args_list}
@@ -1160,3 +1160,157 @@ class TestTrueGateFailure:
         ec2, msg2 = check_mod.classify(self._pr2554_items(check_mod))
         assert ec2 == 1
         assert "FAIL" in msg2
+
+
+class TestListCheckRunsPagination:
+    """The multi-page aggregation is the fix this PR exists for (tsk-vrat7o),
+    and nothing exercised it.
+
+    Every other mock in this file returns a SINGLE page dict, so reverting
+    `list_check_runs` to `data[0]["check_runs"]` -- the exact page-1-only
+    defect -- left all 97 tests green. A gate that cannot fail on the defect
+    it was written for is not coverage.
+
+    Raised by kilo-code-bot on #2594 and confirmed by mutation before these
+    tests were written.
+    """
+
+    @staticmethod
+    def _run(run_id, name="bot-review-gate", conclusion="success"):
+        return {
+            "id": run_id,
+            "name": name,
+            "status": "completed",
+            "conclusion": conclusion,
+            "started_at": "2026-08-28T12:00:00Z",
+            "completed_at": "2026-08-28T12:00:00Z",
+        }
+
+    def test_aggregates_runs_across_all_pages(self, check_mod) -> None:
+        """Runs on page 2+ must be returned, not silently dropped.
+
+        This is the assertion whose absence let the defect ship: a stale
+        FAILURE living on page 2 is invisible to a page-1-only read, so the
+        gate reports clean while the PR stays pinned on UNSTABLE.
+        """
+        pages = [
+            {"total_count": 2, "check_runs": [self._run(1)]},
+            {"total_count": 2, "check_runs": [self._run(2)]},
+        ]
+        with patch.object(check_mod, "_api_get", return_value=pages):
+            runs = check_mod.list_check_runs("jaylfc", "taOS", "deadbeef")
+        assert runs is not None
+        assert [r["id"] for r in runs] == [1, 2], (
+            "list_check_runs dropped runs from pages after the first"
+        )
+
+    def test_second_page_only_run_is_not_dropped(self, check_mod) -> None:
+        """The sharper case: page 1 carries no matching run at all.
+
+        A page-1-only read returns [] here, which is the legitimately-empty
+        verdict -- so the caller cannot distinguish 'no gate runs on this SHA'
+        from 'the gate run is on page 2'. Those have opposite remedies.
+        """
+        pages = [
+            {"total_count": 2, "check_runs": [self._run(10, name="lint")]},
+            {"total_count": 2, "check_runs": [self._run(11)]},
+        ]
+        with patch.object(check_mod, "_api_get", return_value=pages):
+            runs = check_mod.list_check_runs("jaylfc", "taOS", "deadbeef")
+        assert [r["id"] for r in runs] == [11]
+
+    def test_single_page_and_empty_shapes_still_work(self, check_mod) -> None:
+        """Control: the pre-existing single-page and empty shapes are
+        unchanged, so the aggregation did not trade one bug for another."""
+        one = [{"total_count": 1, "check_runs": [self._run(5)]}]
+        with patch.object(check_mod, "_api_get", return_value=one):
+            assert [r["id"] for r in check_mod.list_check_runs("jaylfc", "taOS", "s")] == [5]
+
+        empty = [{"total_count": 0, "check_runs": []}]
+        with patch.object(check_mod, "_api_get", return_value=empty):
+            assert check_mod.list_check_runs("jaylfc", "taOS", "s") == []
+
+        # Infrastructure failure stays distinguishable from empty.
+        with patch.object(check_mod, "_api_get", return_value=None):
+            assert check_mod.list_check_runs("jaylfc", "taOS", "s") is None
+
+
+class TestReconcileFailsClosedOnMutateFailure:
+    """A PATCH that fails on infrastructure must not be papered over by a POST.
+
+    `_api_mutate` returns None (not False) on a network/auth failure. The
+    caller used `if _api_mutate(...)`, so None was indistinguishable from a
+    no-op: `patched_any` stayed False, the "does a matching run already
+    exist" check found nothing -- the only run IS the stale failure that was
+    just not patched -- and reconcile POSTed a fresh success beside it.
+
+    mergeStateStatus keys off ANY failing run, so that leaves the SHA pinned
+    on UNSTABLE while reconcile returns a dict that reads as a successful
+    write: the exact condition #2493 exists to remove. Raised by
+    kilo-code-bot on #2594.
+    """
+
+    HEAD_SHA = "ba1e73cfa012cb313e161a668815e52c90a5dbb8"
+
+    @staticmethod
+    def _run(run_id, conclusion):
+        return {
+            "id": run_id,
+            "name": "bot-review-gate",
+            "status": "completed",
+            "conclusion": conclusion,
+            "started_at": "2026-08-28T12:00:00Z",
+            "completed_at": "2026-08-28T12:00:00Z",
+        }
+
+    def test_patch_infra_failure_does_not_post_a_new_run(self, check_mod) -> None:
+        runs = [self._run(1, "failure")]
+        with patch.object(check_mod, "_api_get",
+                          return_value=[{"total_count": 1, "check_runs": runs}]), \
+             patch.object(check_mod, "_api_mutate", return_value=None) as mutate:
+            result = check_mod.reconcile_head_sha_check_run(
+                "jaylfc", "taOS", self.HEAD_SHA, "success")
+
+        methods = [c.kwargs.get("method", "POST") for c in mutate.call_args_list]
+        assert "POST" not in methods, (
+            "reconcile POSTed a new check run after the PATCH failed; the stale "
+            "FAILURE survives and still pins the SHA on UNSTABLE"
+        )
+        assert result is None, "an infrastructure failure must not read as a write"
+
+    def test_patch_returning_false_also_does_not_post(self, check_mod) -> None:
+        """False (a non-2xx) is a refusal, not a no-op, and must fail closed too."""
+        runs = [self._run(1, "failure")]
+        with patch.object(check_mod, "_api_get",
+                          return_value=[{"total_count": 1, "check_runs": runs}]), \
+             patch.object(check_mod, "_api_mutate", return_value=False) as mutate:
+            check_mod.reconcile_head_sha_check_run(
+                "jaylfc", "taOS", self.HEAD_SHA, "success")
+        methods = [c.kwargs.get("method", "POST") for c in mutate.call_args_list]
+        assert "POST" not in methods
+
+    def test_control_successful_patch_still_reconciles(self, check_mod) -> None:
+        """Control: the happy path must be unchanged.
+
+        Without this, the two tests above would pass just as well if the PATCH
+        branch had been disabled outright.
+        """
+        runs = [self._run(1, "failure")]
+        with patch.object(check_mod, "_api_get",
+                          return_value=[{"total_count": 1, "check_runs": runs}]), \
+             patch.object(check_mod, "_api_mutate", return_value=True) as mutate:
+            result = check_mod.reconcile_head_sha_check_run(
+                "jaylfc", "taOS", self.HEAD_SHA, "success")
+        assert result == {"reconciled": True, "action": "patched",
+                          "head_sha": self.HEAD_SHA}
+        assert mutate.call_args.kwargs.get("method") == "PATCH"
+
+    def test_control_no_runs_at_all_still_posts(self, check_mod) -> None:
+        """Control: with nothing to patch, publishing a fresh run is correct."""
+        with patch.object(check_mod, "_api_get",
+                          return_value=[{"total_count": 0, "check_runs": []}]), \
+             patch.object(check_mod, "_api_mutate", return_value={"id": 9}) as mutate:
+            check_mod.reconcile_head_sha_check_run(
+                "jaylfc", "taOS", self.HEAD_SHA, "success")
+        methods = [c.kwargs.get("method", "POST") for c in mutate.call_args_list]
+        assert "POST" in methods

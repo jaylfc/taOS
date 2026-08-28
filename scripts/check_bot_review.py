@@ -551,7 +551,7 @@ def check_run_verdict(
 
 def _api_mutate(
     url: str, payload: dict, token: str | None = None, method: str = "POST",
-) -> bool:
+) -> bool | None:
     """Issue a write request to a GitHub REST API endpoint.
 
     Returns True on a 2xx, False on a non-2xx response, None on
@@ -602,6 +602,15 @@ def reconcile_head_sha_check_run(
         return None
     token = token or _get_token()
     patched_any = False
+    # A PATCH that fails on INFRASTRUCTURE (None, not False) means we cannot
+    # know whether the stale run was updated. Treating that as a plain no-op is
+    # what makes this function defeat its own purpose: `patched_any` stays
+    # False, the `any()` check below finds no run matching `conclusion` (the
+    # only run IS the stale failure we just failed to patch), and we POST a
+    # fresh success alongside it. mergeStateStatus keys off ANY failing run, so
+    # the stale FAILURE still pins the SHA on UNSTABLE -- while reconcile
+    # returns a dict that reads as a successful write. Fail closed instead.
+    mutate_failed = False
     for run in runs:
         status = run.get("status")
         existing = run.get("conclusion")
@@ -612,13 +621,30 @@ def reconcile_head_sha_check_run(
         if existing == conclusion:
             continue
         url = f"{API}/repos/{owner}/{repo}/check-runs/{run['id']}"
-        if _api_mutate(
+        result = _api_mutate(
             url,
             {"conclusion": conclusion, "status": "completed", "completed_at": run.get("completed_at") or ""},
             token=token,
             method="PATCH",
-        ):
+        )
+        # ONLY a 2xx (True) counts as patched. None (infrastructure failure)
+        # and False (GitHub refused the write) both leave the stale run in
+        # place, and the consequence is identical either way, so both fail
+        # closed.
+        if result is True:
             patched_any = True
+        else:
+            mutate_failed = True
+    if mutate_failed:
+        # Do NOT fall through to the POST below: publishing a fresh run while a
+        # stale FAILURE survives is strictly worse than writing nothing, because
+        # it leaves the SHA pinned on UNSTABLE and looks reconciled.
+        print(
+            f"error: could not PATCH one or more stale bot-review-gate runs on "
+            f"{head_sha}; refusing to publish a new run that would coexist with "
+            f"them", file=sys.stderr,
+        )
+        return None
     if patched_any:
         return {"reconciled": True, "action": "patched", "head_sha": head_sha}
 
