@@ -152,7 +152,6 @@ body.osk-open label.field { margin-bottom: 6px; }
 body.osk-open .brand { margin-bottom: 8px; gap: 6px; }
 body.osk-open .brand h1.wordmark { font-size: 26px; }
 body.osk-open .brand p { display: none; }
-.brand h1 { margin: 0; font-size: 18px; font-weight: 600; }
 /* The wordmark IS the brand mark on these pages: the product name set as type,
    carrying the card visually on its own. It replaces an earlier drawn glyph —
    a rounded square with a centre dot and an X through it — which on a sign-in
@@ -161,6 +160,7 @@ body.osk-open .brand p { display: none; }
    and no code point that can land as TOFU on a device missing a covering font,
    which is what the JS-free, CDN-free auth pages need. */
 .brand h1.wordmark {
+  margin: 0;
   font-size: 34px;
   font-weight: 600;
   letter-spacing: -0.02em;

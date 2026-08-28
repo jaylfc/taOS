@@ -12,16 +12,35 @@ from tinyagentos.routes.auth import _login_page, _setup_page
 _BRAND_GLYPHS = ("⌗", "✦")
 
 
+_BRAND_OPEN = re.compile(r'<div\b[^>]*\bclass="[^"]*\bbrand\b[^"]*"[^>]*>', re.DOTALL)
+_DIV_EDGE = re.compile(r"<div\b|</div\s*>", re.IGNORECASE)
+
+
 def _brand_inner(html: str) -> str:
     """Return the inner HTML of the `.brand` block.
 
     Anchors every assertion on the brand block itself rather than the whole
     page: the auth pages carry other markup, so a page-level check would be one
     level coarser than the defect and could not fail on a mark rendered here.
+
+    Matches the opening tag on the `brand` class token rather than on the exact
+    string `<div class="brand">`, so a modifier class or an added attribute does
+    not turn every assertion below into a "no .brand element" error, and walks
+    nested `<div>`s to the *matching* close. A non-greedy `(.*?)</div>` would
+    stop at the first close tag instead: nest one `<div>` in the brand block and
+    the drawn-mark assertions would only ever scan the part before it, which is
+    the shape that lets a mark come back while the test stays green.
     """
-    match = re.search(r'<div class="brand">(.*?)</div>', html, re.DOTALL)
-    assert match, "no .brand element found in page"
-    return match.group(1)
+    open_tag = _BRAND_OPEN.search(html)
+    assert open_tag, "no .brand element found in page"
+
+    depth = 1
+    pos = open_tag.end()
+    for edge in _DIV_EDGE.finditer(html, pos):
+        depth += 1 if edge.group(0).lower().startswith("<div") else -1
+        if depth == 0:
+            return html[open_tag.end() : edge.start()]
+    raise AssertionError("unbalanced .brand element: no matching </div>")
 
 
 class TestAuthBrandMark:
@@ -59,3 +78,15 @@ class TestAuthBrandMark:
             brand = _brand_inner(page)
             for glyph in _BRAND_GLYPHS:
                 assert glyph not in brand, f"bare brand glyph {glyph!r} is back in the brand block"
+
+    def test_no_bare_glyph_anywhere_on_the_auth_pages(self):
+        """The brand-scoped checks above cannot see a glyph that reappears
+        outside the brand block — as a header ornament or a submit-button
+        affordance, say. These pages are JS-free and CDN-free precisely so they
+        render on any device, so the TOFU risk is page-wide, not brand-local.
+        Kept alongside the scoped checks rather than replacing them: this one
+        cannot tell us the *mark* regressed, only that a glyph is present.
+        """
+        for name, page in (("login", _login_page()), ("setup", _setup_page())):
+            for glyph in _BRAND_GLYPHS:
+                assert glyph not in page, f"bare glyph {glyph!r} is back on the {name} page"
