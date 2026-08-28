@@ -170,9 +170,30 @@ class TestCapContextSnapshot:
         original_size = len(json.dumps(big, separators=(",", ":")))
         assert original_size > ro._MAX_CONTEXT_SNAPSHOT_BYTES
         ro._cap_context_snapshot(note)
-        capped_size = len(json.dumps(note["context_snapshot"], separators=(",", ":")))
+        capped = note["context_snapshot"]
+        capped_size = len(json.dumps(capped, separators=(",", ":")))
         assert capped_size <= ro._MAX_CONTEXT_SNAPSHOT_BYTES
-        assert note["context_snapshot"] is not big
+        assert capped is not big
+        assert "_truncated" in capped
+        assert isinstance(capped["_truncated"], dict)
+        assert "dropped_fields" in capped["_truncated"]
+
+    def test_oversized_snapshot_keeps_required_fields(self):
+        snapshot = {
+            "agent_id": "a" * 100,
+            "session_id": "b" * 100,
+            "transcript": "x" * 60000,
+            "memory": "y" * 1000,
+        }
+        note = {"context_snapshot": snapshot}
+        ro._cap_context_snapshot(note)
+        capped = note["context_snapshot"]
+        assert "agent_id" in capped
+        assert "session_id" in capped
+        json.dumps(capped)
+        assert len(json.dumps(capped, separators=(",", ":"))) <= ro._MAX_CONTEXT_SNAPSHOT_BYTES
+        assert "transcript" not in capped
+        assert capped["_truncated"]["dropped_fields"][0] == "transcript"
 
     def test_empty_snapshot_is_noop(self):
         for val in [{}, None, "", "str"]:
