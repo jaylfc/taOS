@@ -26,7 +26,7 @@ the evidence at the granularity of the audit:
     2  ERROR -- infrastructure failure (network, auth, 404, etc.).
 
 Usage:
-    python scripts/check_bot_review.py <pr-number> [--owner OWNER] [--repo REPO]
+    python scripts/check_bot_review.py <pr-number> [--owner OWNER] [--repo REPO] [--label LABEL]
 """
 from __future__ import annotations
 
@@ -79,6 +79,15 @@ CODERABBIT_SCAFFOLDING_RE = re.compile(
 EXIT_OK = 0
 EXIT_STUB = 1
 EXIT_ERROR = 2
+
+# A human-placed label that explicitly waives the bot-review gate for a PR
+# whose only CodeRabbit output is a rate-limit stub or auto-generated
+# scaffolding -- an infrastructure condition (CodeRabbit rate-limited, or a
+# review trigger accepted with no review produced), not a defect in the PR.
+# Applied by a lead; never by automation in a PR lane. Mirrors
+# `gate-integrity-allow` for the gate-integrity guard. Read from the API at
+# run time, never from a stale event payload.
+DEFAULT_ALLOW_LABEL = "bot-review-allow"
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -265,6 +274,29 @@ def collect_coderabbit_items(
     return items
 
 
+def collect_pr_labels(
+    owner: str, repo: str, pr_number: int, token: str | None = None,
+) -> set[str] | None:
+    """Fetch the PR's label NAMES via the GitHub REST API.
+
+    Returns None on infrastructure failure (network error, auth failure,
+    404, bad JSON), so cannot-see is never mistaken for "no waiver label set".
+    Returns a set of label names (possibly empty) on success. The label is
+    read here, at run time, from the API -- never from a stale event payload,
+    which is the contract that makes `labeled`/`unlabeled` activity reliable.
+    """
+    data = _api_get(f"{API}/repos/{owner}/{repo}/pulls/{pr_number}", token)
+    if data is None:
+        return None
+    pr = data[0] if isinstance(data, list) and data else {}
+    if not isinstance(pr, dict):
+        return None
+    return {
+        lbl.get("name", "") for lbl in pr.get("labels", [])
+        if isinstance(lbl, dict)
+    }
+
+
 def classify(items: list[CRItem]) -> tuple[int, str]:
     """Classify CR items and determine the exit code + message.
 
@@ -319,13 +351,29 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
 
 
 def check_bot_review(
-    owner: str, repo: str, pr_number: int, token: str | None = None,
+    owner: str, repo: str, pr_number: int,
+    allow_label: str = DEFAULT_ALLOW_LABEL,
+    token: str | None = None,
 ) -> tuple[int, str]:
     """Check a PR's CodeRabbit output for rate-limit stubs.
 
     Returns (exit_code, message). EXIT_ERROR (2) is returned when the
     GitHub API cannot be reached or returns an error, so a cannot-see
     state is never mistaken for a clean pass.
+
+    When the PR carries `allow_label` (read fresh from the GitHub API at
+    run time) AND the only CodeRabbit output is a stub -- a rate-limit stub
+    or CodeRabbit auto-generated scaffolding (acknowledgement reply /
+    auto-summary) -- the FAIL verdict is waived to exit 0 with a message
+    that explicitly says WAIVED. It is never reported as a genuine PASS, so
+    a human reading the check output always knows the gate was overridden by
+    a conscious lead act, not cleared by the bot.
+
+    The waiver covers only the EXIT_STUB verdict class (both stub kinds,
+    because both are infrastructural: CodeRabbit was rate-limited or its
+    trigger was accepted with no review produced -- neither is a defect in
+    the PR). It does NOT cover EXIT_ERROR (cannot fetch CR items), which
+    must stay fail-closed on a genuine cannot-see.
     """
     items = collect_coderabbit_items(owner, repo, pr_number, token)
     if items is None:
@@ -333,7 +381,17 @@ def check_bot_review(
             f"error: could not fetch CodeRabbit output for PR #{pr_number} "
             f"(exit {EXIT_ERROR})"
         )
-    return classify(items)
+    exit_code, message = classify(items)
+    if exit_code == EXIT_STUB:
+        labels = collect_pr_labels(owner, repo, pr_number, token)
+        if labels is not None and allow_label in labels:
+            return EXIT_OK, (
+                f"bot-review-gate: WAIVED -- `{allow_label}` label overrides the "
+                f"stub-only verdict (rate-limit stub / auto-generated scaffolding). "
+                f"A lead confirmed this is an infrastructural CodeRabbit condition, "
+                f"not a PR defect. Underlying verdict waived: {message}"
+            )
+    return exit_code, message
 
 
 def _detect_repo() -> tuple[str, str]:
@@ -386,6 +444,10 @@ def main(argv: list[str] | None = None) -> int:
         "--token", default=None,
         help="GitHub token (default: $GH_TOKEN or $GITHUB_TOKEN)",
     )
+    parser.add_argument(
+        "--label", default=DEFAULT_ALLOW_LABEL,
+        help=f"Allow label that waives the stub verdict (default: {DEFAULT_ALLOW_LABEL}).",
+    )
     args = parser.parse_args(argv)
 
     owner = args.owner
@@ -396,7 +458,7 @@ def main(argv: list[str] | None = None) -> int:
         repo = repo or detected_repo
 
     exit_code, message = check_bot_review(
-        owner, repo, args.pr_number, args.token,
+        owner, repo, args.pr_number, args.label, args.token,
     )
     print(message)
     return exit_code

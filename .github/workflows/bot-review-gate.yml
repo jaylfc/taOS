@@ -11,12 +11,14 @@ name: Bot review gate
 # See scripts/check_bot_review.py for the implementation.
 #
 # Workflow structure:
-#   bot-review-gate          -- runs on pull_request / pull_request_review
-#                              events, gated to the PR head SHA so branch
-#                              protection sees a red check on fake-green.
-#                              Skipped on issue_comment events (DEFECT 1 fix:
-#                              those payloads lack pull_request.number, which
-#                              made argparse crash with exit 2 on every comment).
+#   bot-review-gate          -- runs on pull_request (incl. opened, synchronize,
+#                              reopened, labeled, unlabeled) and
+#                              pull_request_review events, gated to the PR head
+#                              SHA so branch protection sees a red check on
+#                              fake-green. Skipped on issue_comment events
+#                              (DEFECT 1 fix: those payloads lack
+#                              pull_request.number, which made argparse crash
+#                              with exit 2 on every comment).
 #   re-run-on-stub-comment   -- runs on issue_comment events but ONLY when a
 #                              CodeRabbit bot posts a stub comment on a PR.
 #                              It re-runs bot-review-gate for the PR's head
@@ -48,8 +50,19 @@ name: Bot review gate
 # command. Jay signed this direction off on 2026-08-28, with the condition that an
 # override label ship FIRST: `check_bot_review.py` fails on a CodeRabbit rate-limit
 # stub, so requiring the context on dev before there is an escape hatch would block
-# every dev merge for the length of a rate-limit window. Sequence: override label,
-# then this PATCH.
+# every dev merge for the length of a rate-limit window. Sequence: override label
+# (now shipped as `bot-review-allow`, see scripts/check_bot_review.py), then this
+# PATCH.
+#
+# Override label (`bot-review-allow`): applied by a lead (NOT automation) when
+# the only CodeRabbit output is a rate-limit stub or auto-generated scaffolding
+# -- an infrastructural condition, not a PR defect. The script reads the label
+# fresh from the GitHub API at run time (never a stale event payload) and, when
+# present on a stub-only verdict, waives FAIL to exit 0 with an explicit WAIVED
+# message. The waiver covers only the stub verdict class (EXIT_STUB), not a
+# cannot-fetch infrastructure error (EXIT_ERROR), so fail-closed is preserved.
+# Applying or removing the label fires the `labeled`/`unlabeled` activities
+# above, re-running the gate so the waiver is revokable in practice.
 #   cat > /tmp/dev-contexts.json <<'JSON'
 #   {"contexts":["test (3.12)","test (3.13)","spa-build","lint","doc-gate",
 #                "shards (3.12, 1)","shards (3.12, 2)","shards (3.12, 3)","shards (3.12, 4)",
@@ -67,6 +80,7 @@ name: Bot review gate
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     branches: [master, dev]
   pull_request_review:
   issue_comment:
@@ -98,6 +112,11 @@ jobs:
           # The check exits 1 (FAIL) when the only CodeRabbit output is a
           # rate-limit stub. Exiting non-zero fails the workflow, blocking
           # the merge on the PR's branch protection rule.
+          #
+          # When the PR carries the `bot-review-allow` label (lead-applied),
+          # the script waives the stub verdict to exit 0 with a WAIVED
+          # message instead. See scripts/check_bot_review.py for the label
+          # contract.
           python scripts/check_bot_review.py "${{ github.event.pull_request.number }}"
 
   re-run-on-stub-comment:

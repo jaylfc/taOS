@@ -7,8 +7,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 _SCRIPT = Path(__file__).resolve().parent.parent.parent / "scripts" / "check_bot_review.py"
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def _load_module():
@@ -428,7 +430,8 @@ class TestCheckBotReview:
                 id=100, body="Review rate limited", is_review=False,
             ),
         ]
-        with patch.object(check_mod, "collect_coderabbit_items", return_value=items):
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "collect_pr_labels", return_value=set()):
             exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2416)
         assert exit_code == 1
         assert "FAIL" in message
@@ -464,7 +467,7 @@ class TestMain:
         ]
         with patch.object(
             check_mod, "collect_coderabbit_items", return_value=items,
-        ):
+        ), patch.object(check_mod, "collect_pr_labels", return_value=set()):
             rc = check_mod.main(["2416", "--owner", "jaylfc", "--repo", "taOS"])
         captured = capsys.readouterr()
         assert rc == 1
@@ -502,6 +505,251 @@ class TestMain:
         assert rc == 2
         assert "error" in captured.out.lower()
 
+    def test_main_label_waives_stub(self, check_mod, capsys: pytest.CaptureFixture) -> None:
+        """The --label flag wires through to check_bot_review's waiver: a stub
+        with the label waived via the CLI exits 0 and prints WAIVED."""
+        items = [
+            check_mod.CRItem(id=1, body="Review rate limited", is_review=False),
+        ]
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "collect_pr_labels",
+                          return_value={check_mod.DEFAULT_ALLOW_LABEL}):
+            rc = check_mod.main(["2578", "--owner", "jaylfc", "--repo", "taOS"])
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "WAIVED" in captured.out
+
+    def test_main_custom_label_waives_stub(self, check_mod, capsys: pytest.CaptureFixture) -> None:
+        """A custom --label value waives when that label is present."""
+        items = [
+            check_mod.CRItem(id=1, body="Review rate limited", is_review=False),
+        ]
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "collect_pr_labels",
+                          return_value={"my-custom-label"}):
+            rc = check_mod.main(
+                ["2578", "--owner", "jaylfc", "--repo", "taOS",
+                 "--label", "my-custom-label"],
+            )
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "WAIVED" in captured.out
+
     def test_main_requires_pr_number(self, check_mod) -> None:
         with pytest.raises(SystemExit):
             check_mod.main([])
+
+
+# ---------------------------------------------------------------------------
+# collect_pr_labels(owner, repo, pr) -- API-fetched label set (mocked at _api_get)
+# ---------------------------------------------------------------------------
+
+
+class TestCollectPrLabels:
+    def test_extracts_label_names(self, check_mod) -> None:
+        payload = [{"labels": [{"name": "bot-review-allow"}, {"name": "bug"}]}]
+        with patch.object(check_mod, "_api_get", return_value=payload):
+            labels = check_mod.collect_pr_labels("jaylfc", "taOS", 2578)
+        assert labels == {"bot-review-allow", "bug"}
+
+    def test_empty_labels_returns_empty_set(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", return_value=[{"labels": []}]):
+            labels = check_mod.collect_pr_labels("jaylfc", "taOS", 2578)
+        assert labels == set()
+
+    def test_none_on_api_failure(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", return_value=None):
+            labels = check_mod.collect_pr_labels("jaylfc", "taOS", 2578)
+        assert labels is None
+
+
+# ---------------------------------------------------------------------------
+# Waiver label (bot-review-allow) -- the override mechanism (tsk-4f2ix2)
+# ---------------------------------------------------------------------------
+
+
+class TestWaiverLabel:
+    """bot-review-allow override label.
+
+    Acceptance criteria from the task:
+      1. WAIVER WORKS: a rate-limit stub AND the label -> exit 0, output WAIVED.
+      2. MUTATION: same stub, label REMOVED -> exit 1 again.
+      3. The waiver must not hide a real failure of a different kind.
+    """
+
+    def test_stub_waived_by_allow_label(self, check_mod) -> None:
+        """1. WAIVER WORKS: rate-limit stub + label -> exit 0, WAIVED."""
+        items = [
+            check_mod.CRItem(id=1, body="Review rate limited", is_review=False),
+        ]
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "collect_pr_labels",
+                          return_value={check_mod.DEFAULT_ALLOW_LABEL}):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+        assert exit_code == 0
+        assert "WAIVED" in message
+        assert check_mod.DEFAULT_ALLOW_LABEL in message
+
+    def test_stub_not_waived_without_label(self, check_mod) -> None:
+        """2. MUTATION: same stub, label REMOVED -> exit 1 again. Removing the
+        label must restore the FAIL verdict, proving the waiver is a per-run
+        override, not a blanket disable of the gate."""
+        items = [
+            check_mod.CRItem(id=1, body="Review rate limited", is_review=False),
+        ]
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "collect_pr_labels", return_value=set()):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+        assert exit_code == 1
+        assert "FAIL" in message
+
+    def test_stub_waived_then_label_removed_exits_1(self, check_mod) -> None:
+        """The full mutation pair in one fixture: the SAME stub items, label
+        present -> waived (exit 0), label removed -> exits 1 again. The label
+        is the only switching variable between the two halves."""
+        items = [
+            check_mod.CRItem(id=1, body="Review rate limited", is_review=False),
+        ]
+
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "collect_pr_labels",
+                          return_value={check_mod.DEFAULT_ALLOW_LABEL}):
+            code_with, msg_with = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+        assert code_with == 0
+        assert "WAIVED" in msg_with
+
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "collect_pr_labels", return_value=set()):
+            code_without, msg_without = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+        assert code_without == 1
+        assert "FAIL" in msg_without
+
+    def test_waiver_does_not_mask_api_error(self, check_mod) -> None:
+        """3. The waiver must not hide a real failure of a different kind: a
+        cannot-fetch (EXIT_ERROR) is NOT waived, even with the label, so the
+        gate stays fail-closed on true infrastructure failure."""
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=None), \
+             patch.object(check_mod, "collect_pr_labels",
+                          return_value={check_mod.DEFAULT_ALLOW_LABEL}):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+        assert exit_code == 2
+        assert "error" in message.lower()
+
+    def test_waiver_covers_scaffolding_stub(self, check_mod) -> None:
+        """The waiver also covers the auto-generated-scaffolding verdict class --
+        intended, because ack/summary stubs are infrastructural (a trigger
+        accepted with no review produced), the same failure mode as the rate-limit
+        stub. The label overrides both stub kinds equally."""
+        items = [
+            check_mod.CRItem(id=1, body=SUMMARY_BODY, is_review=False),
+            check_mod.CRItem(id=2, body=ACK_BODY, is_review=False),
+        ]
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "collect_pr_labels",
+                          return_value={check_mod.DEFAULT_ALLOW_LABEL}):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+        assert exit_code == 0
+        assert "WAIVED" in message
+
+    def test_waiver_message_never_says_pass(self, check_mod) -> None:
+        """A waived gate must never print a message that looks like a genuine
+        pass -- the output always says WAIVED so a human can tell it was
+        overridden, not cleared by the bot."""
+        items = [
+            check_mod.CRItem(id=1, body="Review rate limited", is_review=False),
+        ]
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "collect_pr_labels",
+                          return_value={check_mod.DEFAULT_ALLOW_LABEL}):
+            _, message = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+        assert "WAIVED" in message
+        # The waiver message must not look like a real PASS -- "real CodeRabbit
+        # review" only appears on a genuine pass, never on a waiver.
+        assert "real CodeRabbit review" not in message
+
+    def test_label_read_from_api_not_payload(self, check_mod) -> None:
+        """The label is read from the API at run time, not from a stale event
+        payload: collect_pr_labels is consulted (here mocked) and the stub
+        verdict is flipped only when the API-served label is present."""
+        items = [
+            check_mod.CRItem(id=1, body="Review rate limited", is_review=False),
+        ]
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "collect_pr_labels",
+                          return_value={check_mod.DEFAULT_ALLOW_LABEL}) as mock_labels:
+            exit_code, _ = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+        assert exit_code == 0
+        mock_labels.assert_called_once_with("jaylfc", "taOS", 2578, None)
+
+    def test_wrong_label_does_not_waive(self, check_mod) -> None:
+        """A different label name is not the allow label -> still FAIL."""
+        items = [
+            check_mod.CRItem(id=1, body="Review rate limited", is_review=False),
+        ]
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "collect_pr_labels", return_value={"some-other-label"}):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+        assert exit_code == 1
+        assert "FAIL" in message
+
+    def test_label_fetch_failure_does_not_waive(self, check_mod) -> None:
+        """If the labels API errors (cannot-see), the waiver does not apply --
+        fail closed rather than assume the label is absent."""
+        items = [
+            check_mod.CRItem(id=1, body="Review rate limited", is_review=False),
+        ]
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "collect_pr_labels", return_value=None):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+        assert exit_code == 1
+        assert "FAIL" in message
+
+    def test_real_review_passes_without_label_fetch(self, check_mod) -> None:
+        """A genuine review passes regardless of the waiver label -- and on the
+        PASS path collect_pr_labels is NOT called (no extra API round-trip)."""
+        items = [
+            check_mod.CRItem(
+                id=1, body="## Review\n\nFound an issue.", is_review=True,
+                review_state="COMMENTED",
+            ),
+        ]
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "collect_pr_labels") as mock_labels:
+            exit_code, _ = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+        assert exit_code == 0
+        mock_labels.assert_not_called()
+
+    def test_absent_pr_does_not_fetch_labels(self, check_mod) -> None:
+        """On the absent path (no CR output) the waiver is irrelevant; labels
+        are not fetched to avoid an unnecessary API call."""
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=[]), \
+             patch.object(check_mod, "collect_pr_labels") as mock_labels:
+            exit_code, _ = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+        assert exit_code == 0
+        mock_labels.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Workflow YAML regression guard
+# ---------------------------------------------------------------------------
+
+
+class TestWorkflowTriggers:
+    """The committed workflow YAML must re-run on verdict-changing activities."""
+
+    def test_workflow_subscribes_to_labeled_unlabeled(self, check_mod) -> None:
+        """The bot-review-gate workflow must re-run on `labeled` and `unlabeled`
+        so applying and removing the override label both re-runs the gate --
+        otherwise the waiver is neither applicable nor revokable."""
+        workflow = REPO_ROOT / ".github" / "workflows" / "bot-review-gate.yml"
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        trigger = spec.get("on", spec.get(True))
+        types = set(trigger["pull_request"]["types"])
+        for required in ("labeled", "unlabeled"):
+            assert required in types, (
+                f"bot-review-gate.yml does not re-run on {required}; the "
+                "override label would be neither applicable nor revokable"
+            )
+        # The default activities must also remain present (no regression).
+        for required in ("opened", "synchronize", "reopened"):
+            assert required in types

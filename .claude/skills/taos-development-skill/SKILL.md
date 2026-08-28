@@ -300,7 +300,9 @@ The rate-limited no-op is now also machine-gated: `.github/workflows/bot-review-
 only CodeRabbit output on a PR is a rate-limit stub, and a companion `re-run-on-stub-comment`
 job re-runs the gate against the PR head SHA when a stub comment lands *after* the initial
 run went green. A red `bot-review-gate` check means the PR has no substantive CodeRabbit
-review yet — wait for (or retrigger) a real review; do not merge on the stub.
+review yet — wait for (or retrigger) a real review; do not merge on the
+stub. A lead may waive a known rate-limit/stub false positive by applying the
+`bot-review-allow` label (see below).
 
 Enforcement parity is a GitHub-side branch-protection setting, not in-repo config:
 `bot-review-gate` is REQUIRED on `master` but only ADVISORY on `dev` (absent from dev's
@@ -311,10 +313,14 @@ is not performed by a repo commit.
 
 Two things to know before applying it (both recorded in the workflow header):
 
-- **An override label must ship first.** `scripts/check_bot_review.py` fails on a CodeRabbit
-  rate-limit stub, which is an infrastructure condition, not a code problem. Making the context
-  required on `dev` before there is an escape hatch would block every merge to `dev` for the
-  length of a rate-limit window.
+- **An override label (`bot-review-allow`) ships first.** `scripts/check_bot_review.py` fails
+  on a CodeRabbit rate-limit stub, which is an infrastructure condition, not a code problem.
+  Making the context required on `dev` before there is an escape hatch would block every merge
+  to `dev` for the length of a rate-limit window. The `bot-review-allow` label (lead-applied,
+  never by automation) waives the stub-only FAIL verdict to exit 0 with an explicit WAIVED
+  message -- it covers only the stub verdict class (EXIT_STUB), not a cannot-fetch ERROR, so
+  fail-closed is preserved. The script reads the label from the API at run time (never a stale
+  event payload) and the workflow re-runs on `labeled`/`unlabeled` so the waiver is revokable.
 - **Use the right API shape.** The contexts endpoint takes a top-level `contexts` ARRAY. A
   `-f required_status_checks='[...]'` string field is the wrong shape and the update silently
   does not apply. Send `{"contexts":[...]}` via `gh api -X PATCH ... --input <file>`, carrying
