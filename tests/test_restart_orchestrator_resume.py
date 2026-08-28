@@ -195,6 +195,19 @@ class TestCapContextSnapshot:
         assert "transcript" not in capped
         assert capped["_truncated"]["dropped_fields"][0] == "transcript"
 
+    def test_oversized_snapshot_with_long_field_names_stays_within_cap(self):
+        snapshot = {"agent_id": "a" * 100}
+        for i in range(200):
+            snapshot[f"{'x' * 400}{i}"] = "y" * 200
+        note = {"context_snapshot": snapshot}
+        original_size = len(json.dumps(snapshot, separators=(",", ":")))
+        assert original_size > ro._MAX_CONTEXT_SNAPSHOT_BYTES
+        ro._cap_context_snapshot(note)
+        capped = note["context_snapshot"]
+        capped_size = len(json.dumps(capped, separators=(",", ":")))
+        assert capped_size <= ro._MAX_CONTEXT_SNAPSHOT_BYTES
+        assert "agent_id" in capped
+
     def test_empty_snapshot_is_noop(self):
         for val in [{}, None, "", "str"]:
             note = {"context_snapshot": val}

@@ -285,14 +285,11 @@ def _cap_context_snapshot(note: dict) -> None:
             break
         dropped.append(key)
         snapshot.pop(key)
-    _MAX_DROPPED = 100
-    reported = dropped[:_MAX_DROPPED]
-    if len(dropped) > _MAX_DROPPED:
-        reported.append(f"...and {len(dropped) - _MAX_DROPPED} more")
-    snapshot["_truncated"] = {
-        "dropped_fields": reported,
-        "reason": "snapshot exceeded context window; largest fields dropped first",
-    }
+
+    snapshot["_truncated"] = _build_truncated_marker(
+        dropped, snapshot, _MAX_CONTEXT_SNAPSHOT_BYTES
+    )
+
     while len(json.dumps(snapshot, separators=(",", ":"))) > _MAX_CONTEXT_SNAPSHOT_BYTES:
         remaining = sorted(
             (kv for kv in snapshot.items() if kv[0] != "_truncated"),
@@ -300,9 +297,35 @@ def _cap_context_snapshot(note: dict) -> None:
             reverse=True,
         )
         if not remaining:
+            snapshot.pop("_truncated", None)
             break
         key, _value = remaining[0]
         snapshot.pop(key)
+        dropped.append(key)
+
+    if "_truncated" in snapshot:
+        snapshot["_truncated"] = _build_truncated_marker(
+            dropped, snapshot, _MAX_CONTEXT_SNAPSHOT_BYTES
+        )
+
+
+def _build_truncated_marker(
+    dropped: list[str], snapshot: dict, max_bytes: int
+) -> dict:
+    _MAX_DROPPED = 100
+    for n_reported in range(min(len(dropped), _MAX_DROPPED), -1, -1):
+        reported = dropped[:n_reported]
+        extra = len(dropped) - n_reported
+        marker = {
+            "dropped_fields": reported
+            + ([f"...and {extra} more"] if extra > 0 else []),
+            "reason": "snapshot exceeded context window; largest fields dropped first",
+        }
+        candidate = dict(snapshot)
+        candidate["_truncated"] = marker
+        if len(json.dumps(candidate, separators=(",", ":"))) <= max_bytes:
+            return marker
+    return {"dropped_fields": [], "reason": "snapshot exceeded context window; largest fields dropped first"}
 
 
 def _load_or_synthesize_note(note_path: Path) -> dict:
