@@ -1645,15 +1645,15 @@ async def get_agent_wake_budget(request: Request, name: str):
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
     agent_id = agent.get("id") or name
     data_dir = Path(request.app.state.data_dir)
-    budget = resolve_budget(agent_id, None, config)
-    consumption = get_consumption(data_dir, agent_id, None)
-    next_wake = get_next_scheduled_wake(data_dir, agent_id, None, config)
+    project_id = agent.get("project_id")
+    budget = resolve_budget(agent_id, project_id, config)
+    consumption = get_consumption(data_dir, agent_id, project_id)
+    next_wake = get_next_scheduled_wake(data_dir, agent_id, project_id, config)
     return {
         "agent": name,
         "budget": budget,
         "consumed": consumption["scheduled"],
         "remaining": max(0, budget - consumption["scheduled"]),
-        "mention_count": consumption["mention"],
         "next_wake_epoch": next_wake,
         "date": consumption["date"],
     }

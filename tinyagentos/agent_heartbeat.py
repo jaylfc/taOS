@@ -177,12 +177,13 @@ async def _heartbeat_tick(app_state) -> None:
             task = ready[0]
             if not _should_wake(debounce, agent_id, task["id"], now):
                 continue
-            if data_dir is not None:
-                project_id = task.get("project_id")
-                if not can_wake(
-                    data_dir, agent_id, agent.get("name", agent_id), project_id, config
-                ):
-                    continue
+            if data_dir is None:
+                raise RuntimeError("data_dir is required for wake-budget enforcement")
+            project_id = task.get("project_id")
+            if not can_wake(
+                data_dir, agent_id, agent.get("name", agent_id), project_id, config
+            ):
+                continue
             # Spread successive wakes within a tick so the downstream LLM turns
             # don't all fire at one instant on a large fleet. Deterministic (not
             # random) to stay testable; only agents we actually wake sleep, so
@@ -197,8 +198,7 @@ async def _heartbeat_tick(app_state) -> None:
             # for the whole cooldown.
             if await _wake_agent_with_task(app_state, agent, task):
                 debounce[agent_id] = (task["id"], now)
-                if data_dir is not None:
-                    record_scheduled_wake(data_dir, agent_id, task.get("project_id"))
+                record_scheduled_wake(data_dir, agent_id, task.get("project_id"))
         except Exception:
             logger.exception("heartbeat: tick failed for agent %s", agent.get("name"))
 

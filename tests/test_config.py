@@ -545,7 +545,7 @@ class TestWakeBudgetConfig:
         p = tmp_path / "config.yaml"
         cfg = AppConfig(
             config_path=p,
-            wake_budget={"global_default": 5, "per_agent": {"a1": 10}, "per_project": {"p1": 1}, "mention_cap": {"a1": 3}},
+            wake_budget={"global_default": 5, "per_agent": {"a1": 10}, "per_project": {"p1": 1}},
         )
         from tinyagentos.config import save_config, load_config
         save_config(cfg, p)
@@ -553,13 +553,12 @@ class TestWakeBudgetConfig:
         assert reloaded.wake_budget["global_default"] == 5
         assert reloaded.wake_budget["per_agent"]["a1"] == 10
         assert reloaded.wake_budget["per_project"]["p1"] == 1
-        assert reloaded.wake_budget["mention_cap"]["a1"] == 3
 
     def test_validate_valid(self, tmp_path):
         p = tmp_path / "config.yaml"
         cfg = AppConfig(
             config_path=p,
-            wake_budget={"global_default": 2, "per_agent": {"a1": 3}, "per_project": {}, "mention_cap": {}},
+            wake_budget={"global_default": 2, "per_agent": {"a1": 3}, "per_project": {}},
         )
         errors = validate_config(cfg)
         assert not any("wake_budget" in e for e in errors)
@@ -575,9 +574,3 @@ class TestWakeBudgetConfig:
         cfg = AppConfig(config_path=p, wake_budget={"per_agent": {"a1": "bad"}})
         errors = validate_config(cfg)
         assert any("per_agent" in e for e in errors)
-
-    def test_validate_rejects_non_dict_mention_cap(self, tmp_path):
-        p = tmp_path / "config.yaml"
-        cfg = AppConfig(config_path=p, wake_budget={"mention_cap": [1, 2]})
-        errors = validate_config(cfg)
-        assert any("mention_cap" in e for e in errors)

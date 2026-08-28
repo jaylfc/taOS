@@ -1,8 +1,7 @@
 """Wake budget: OS-enforced per-agent / per-project / global daily wake limits.
 
 The scheduler and heartbeat call ``can_wake`` before firing a scheduled check.
-Mention wakes bypass the scheduled budget but are counted for Observatory
-visibility. Daily consumption is persisted in ``data_dir/wake_budget.json``
+Daily consumption is persisted in ``data_dir/wake_budget.json``
 and rolls over automatically by date.
 """
 
@@ -20,7 +19,6 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _DEFAULT_GLOBAL = 2
-_DEFAULT_MENTION_CAP = None
 
 
 def _budget_path(data_dir: Path) -> Path:
@@ -60,10 +58,7 @@ def _today() -> str:
 
 
 def _coerce_budget(v: Any) -> int:
-    try:
-        n = int(v)
-    except (TypeError, ValueError):
-        return _DEFAULT_GLOBAL
+    n = int(v)
     return max(0, n)
 
 
@@ -83,19 +78,12 @@ def resolve_budget(agent_id: str, project_id: str | None, config: Any) -> int:
     return _coerce_budget(wb.get("global_default", _DEFAULT_GLOBAL))
 
 
-def resolve_mention_cap(agent_id: str, config: Any) -> int | None:
-    """Return the daily mention cap for an agent, or None when uncapped."""
-    wb = getattr(config, "wake_budget", None) or {}
-    per_agent_caps = wb.get("mention_cap") or {}
-    if agent_id in per_agent_caps:
-        v = per_agent_caps[agent_id]
-        if v is None:
-            return None
-        return _coerce_budget(v)
-    return _DEFAULT_MENTION_CAP
-
-
 def record_scheduled_wake(data_dir: Path, agent_id: str, project_id: str | None) -> None:
+    """Record one scheduled wake for today.
+
+    The heartbeat loop is the single writer for this file. Do not call
+    concurrently from multiple processes without an external lock.
+    """
     path = _budget_path(data_dir)
     state = _read_state(path)
     today = _today()
@@ -103,16 +91,9 @@ def record_scheduled_wake(data_dir: Path, agent_id: str, project_id: str | None)
     daily = state.setdefault("daily", {})
     agent_daily = daily.setdefault(key, {})
     agent_daily[today] = int(agent_daily.get(today, 0)) + 1
-    _write_state(path, state)
-
-
-def record_mention_wake(data_dir: Path, agent_id: str) -> None:
-    path = _budget_path(data_dir)
-    state = _read_state(path)
-    today = _today()
-    mentions = state.setdefault("mentions", {})
-    agent_mentions = mentions.setdefault(agent_id, {})
-    agent_mentions[today] = int(agent_mentions.get(today, 0)) + 1
+    for k in list(agent_daily):
+        if k != today:
+            del agent_daily[k]
     _write_state(path, state)
 
 
@@ -122,8 +103,7 @@ def get_consumption(data_dir: Path, agent_id: str, project_id: str | None) -> di
     today = _today()
     key = f"{agent_id}:{project_id or 'global'}"
     scheduled = int(state.get("daily", {}).get(key, {}).get(today, 0))
-    mention = int(state.get("mentions", {}).get(agent_id, {}).get(today, 0))
-    return {"scheduled": scheduled, "mention": mention, "date": today}
+    return {"scheduled": scheduled, "date": today}
 
 
 def can_wake(
@@ -132,16 +112,8 @@ def can_wake(
     agent_name: str,
     project_id: str | None,
     config: Any,
-    wake_type: str = "scheduled",
 ) -> bool:
-    """Return True when the agent may be woken for *wake_type*.
-
-    Scheduled wakes are blocked when the resolved budget is exhausted.
-    Mention wakes always pass the gate (they bypass the schedule) but are
-    still recorded for observability.
-    """
-    if wake_type == "mention":
-        return True
+    """Return True when the agent may be woken for a scheduled check."""
     budget = resolve_budget(agent_id, project_id, config)
     if budget <= 0:
         return False
@@ -169,17 +141,18 @@ def get_next_scheduled_wake(
 
 
 def get_fleet_wake_info(data_dir: Path, config: Any, project_store: Any = None) -> list[dict]:
-    """Return wake info for every active agent in config."""
+    """Return wake info for every running agent in config."""
     rows: list[dict] = []
     agents = getattr(config, "agents", None) or []
     for agent in agents:
-        if agent.get("status") != "active":
+        if agent.get("status") != "running":
             continue
         agent_id = agent.get("id") or agent.get("name") or ""
         if not agent_id:
             continue
-        budget = resolve_budget(agent_id, None, config)
-        consumption = get_consumption(data_dir, agent_id, None)
+        project_id = agent.get("project_id")
+        budget = resolve_budget(agent_id, project_id, config)
+        consumption = get_consumption(data_dir, agent_id, project_id)
         remaining = max(0, budget - consumption["scheduled"])
         rows.append({
             "agent_id": agent_id,
@@ -187,7 +160,6 @@ def get_fleet_wake_info(data_dir: Path, config: Any, project_store: Any = None) 
             "budget": budget,
             "consumed": consumption["scheduled"],
             "remaining": remaining,
-            "mention_count": consumption["mention"],
-            "next_wake_epoch": get_next_scheduled_wake(data_dir, agent_id, None, config),
+            "next_wake_epoch": get_next_scheduled_wake(data_dir, agent_id, project_id, config),
         })
     return rows

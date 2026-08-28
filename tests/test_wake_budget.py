@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from tinyagentos.wake_budget import (
     _coerce_budget,
     _read_state,
@@ -9,10 +11,8 @@ from tinyagentos.wake_budget import (
     get_consumption,
     get_fleet_wake_info,
     get_next_scheduled_wake,
-    record_mention_wake,
     record_scheduled_wake,
     resolve_budget,
-    resolve_mention_cap,
 )
 
 
@@ -49,24 +49,10 @@ class TestResolveBudget:
         cfg = _FakeConfig({})
         assert resolve_budget("a1", None, cfg) == 2
 
-    def test_non_integer_global_defaults_to_two(self):
+    def test_non_integer_global_default_raises(self):
         cfg = _FakeConfig({"global_default": "bad", "per_agent": {}, "per_project": {}})
-        assert resolve_budget("a1", None, cfg) == 2
-
-
-class TestResolveMentionCap:
-    def test_uncapped_by_default(self):
-        cfg = _FakeConfig({"mention_cap": {}})
-        assert resolve_mention_cap("a1", cfg) is None
-
-    def test_per_agent_cap(self):
-        cfg = _FakeConfig({"mention_cap": {"a1": 10}})
-        assert resolve_mention_cap("a1", cfg) == 10
-        assert resolve_mention_cap("a2", cfg) is None
-
-    def test_null_is_uncapped(self):
-        cfg = _FakeConfig({"mention_cap": {"a1": None}})
-        assert resolve_mention_cap("a1", cfg) is None
+        with pytest.raises(ValueError):
+            resolve_budget("a1", None, cfg)
 
 
 class TestRecordAndConsume:
@@ -75,15 +61,7 @@ class TestRecordAndConsume:
         record_scheduled_wake(data_dir, "a1", "proj-1")
         c = get_consumption(data_dir, "a1", "proj-1")
         assert c["scheduled"] == 1
-        assert c["mention"] == 0
         assert c["date"] == _today()
-
-    def test_mention_wake_increments(self, tmp_path):
-        data_dir = tmp_path
-        record_mention_wake(data_dir, "a1")
-        c = get_consumption(data_dir, "a1", None)
-        assert c["mention"] == 1
-        assert c["scheduled"] == 0
 
     def test_global_key_for_scheduled(self, tmp_path):
         data_dir = tmp_path
@@ -100,7 +78,22 @@ class TestRecordAndConsume:
         })
         c = get_consumption(data_dir, "a1", "proj-1")
         assert c["scheduled"] == 0
-        assert c["mention"] == 0
+        assert c["date"] == _today()
+
+    def test_prunes_past_dates(self, tmp_path):
+        data_dir = tmp_path
+        state_path = data_dir / "wake_budget.json"
+        _write_state(state_path, {
+            "daily": {
+                "a1:proj-1": {"1999-01-01": 5, _today(): 1},
+            },
+            "mentions": {},
+        })
+        record_scheduled_wake(data_dir, "a1", "proj-1")
+        state = _read_state(state_path)
+        agent_daily = state["daily"]["a1:proj-1"]
+        assert "1999-01-01" not in agent_daily
+        assert agent_daily[_today()] == 2
 
 
 class TestCanWake:
@@ -114,13 +107,6 @@ class TestCanWake:
         record_scheduled_wake(data_dir, "a1", None)
         cfg = _FakeConfig({"global_default": 2, "per_agent": {}, "per_project": {}})
         assert can_wake(data_dir, "a1", "a1", None, cfg) is False
-
-    def test_mention_always_passes(self, tmp_path):
-        data_dir = tmp_path
-        record_scheduled_wake(data_dir, "a1", None)
-        record_scheduled_wake(data_dir, "a1", None)
-        cfg = _FakeConfig({"global_default": 2, "per_agent": {}, "per_project": {}})
-        assert can_wake(data_dir, "a1", "a1", None, cfg, wake_type="mention") is True
 
     def test_zero_budget_blocks(self, tmp_path):
         cfg = _FakeConfig({"global_default": 0, "per_agent": {}, "per_project": {}})
@@ -147,11 +133,11 @@ class TestNextScheduledWake:
 
 
 class TestFleetWakeInfo:
-    def test_returns_rows_for_active_agents(self, tmp_path):
+    def test_returns_rows_for_running_agents(self, tmp_path):
         cfg = _FakeConfig(
-            wake_budget={"global_default": 2, "per_agent": {}, "per_project": {}, "mention_cap": {}},
+            wake_budget={"global_default": 2, "per_agent": {}, "per_project": {}},
             agents=[
-                {"id": "a1", "name": "agent-1", "status": "active"},
+                {"id": "a1", "name": "agent-1", "status": "running"},
                 {"id": "a2", "name": "agent-2", "status": "paused"},
             ],
         )
@@ -161,3 +147,8 @@ class TestFleetWakeInfo:
         assert rows[0]["budget"] == 2
         assert rows[0]["consumed"] == 0
         assert rows[0]["remaining"] == 2
+
+
+def _today() -> str:
+    import datetime
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")

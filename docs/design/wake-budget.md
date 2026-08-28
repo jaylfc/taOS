@@ -21,8 +21,6 @@ wake_budget:
     "agent-42": 5
   per_project:               # project id -> override for project-bound agents
     "proj-abc": 1
-  mention_cap:               # agent id -> daily mention cap; null/absent = uncapped
-    "agent-99": 10
 ```
 
 Resolution order (most specific wins):
@@ -37,9 +35,6 @@ Every resolution is logged so cost is attributable.
 - **Scheduled** -- heartbeat ticks, routine fires, external poll cadence.
   Counts against the resolved budget. OS blocks further wakes once the
   budget is exhausted and surfaces the exhaustion to the agent.
-- **Mention** -- explicit `@handle` wakes. Bypass the scheduled budget
-  entirely. Counted separately for Observatory visibility. Capped by
-  `mention_cap` when set; default is uncapped.
 
 ## OS enforcement
 
@@ -57,8 +52,7 @@ automatically by date rollover.
 - **Agent settings UI** -- `/api/taos-agent/config` includes the resolved
   wake budget for the requesting agent.
 - **Observatory** -- `/api/observatory/wake-budget` returns each agent's
-  `budget`, `consumed`, `remaining`, `next_wake_epoch`, and `mention_count`
-  for the current day.
+  `budget`, `consumed`, `remaining`, and `next_wake_epoch` for the current day.
 - **Decision** -- dec-sfdooy closed: the fleet default stays at 2/day until
   this ships; per-agent and per-project overrides are opt-in.
 

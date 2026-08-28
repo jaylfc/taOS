@@ -620,7 +620,6 @@ class TestObservatoryWakeBudget:
             assert "budget" in row
             assert "consumed" in row
             assert "remaining" in row
-            assert "mention_count" in row
             assert "next_wake_epoch" in row
 
     async def test_fleet_wake_budget_agent_token(self, app):

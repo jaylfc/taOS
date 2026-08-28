@@ -35,7 +35,7 @@ DEFAULT_CONFIG = {
     "metrics": {"poll_interval": 30, "retention_days": 30},
     "memory_url": "http://localhost:7900",
     "webhooks": [],
-    "wake_budget": {"global_default": 2, "per_agent": {}, "per_project": {}, "mention_cap": {}},
+    "wake_budget": {"global_default": 2, "per_agent": {}, "per_project": {}},
 }
 
 _config_lock = asyncio.Lock()
@@ -534,19 +534,4 @@ def validate_config(config: AppConfig) -> list[str]:
                 continue
             if n < 0:
                 errors.append(f"wake_budget.{section}[{key!r}] must be >= 0")
-    mention_cap = wb.get("mention_cap")
-    if mention_cap is not None:
-        if not isinstance(mention_cap, dict):
-            errors.append("wake_budget.mention_cap must be a mapping")
-        else:
-            for key, val in mention_cap.items():
-                if val is None:
-                    continue
-                try:
-                    n = int(val)
-                except (TypeError, ValueError):
-                    errors.append(f"wake_budget.mention_cap[{key!r}] must be an integer or null")
-                    continue
-                if n < 0:
-                    errors.append(f"wake_budget.mention_cap[{key!r}] must be >= 0")
     return errors
