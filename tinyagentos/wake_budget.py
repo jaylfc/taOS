@@ -170,7 +170,7 @@ def get_next_scheduled_wake(
     return now + seconds_left_today / remaining
 
 
-def get_fleet_wake_info(data_dir: Path, config: Any, project_store: Any = None) -> list[dict]:
+async def get_fleet_wake_info(data_dir: Path, config: Any, project_task_store: Any = None) -> list[dict]:
     """Return wake info for every running agent in config."""
     rows: list[dict] = []
     agents = getattr(config, "agents", None) or []
@@ -180,7 +180,14 @@ def get_fleet_wake_info(data_dir: Path, config: Any, project_store: Any = None) 
         agent_id = agent.get("id") or agent.get("name") or ""
         if not agent_id:
             continue
-        project_id = agent.get("project_id")
+        project_id = None
+        if project_task_store is not None:
+            try:
+                ready = await project_task_store.list_ready_tasks_for_assignee(agent_id)
+                if ready:
+                    project_id = ready[0].get("project_id")
+            except Exception:
+                pass
         budget = resolve_budget(agent_id, project_id, config)
         consumption = get_consumption(data_dir, agent_id, project_id)
         remaining = max(0, budget - consumption["scheduled"])

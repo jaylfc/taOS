@@ -28,7 +28,8 @@ Resolution order (most specific wins):
 2. `per_agent[agent_id]`
 3. `global_default`
 
-Every resolution is logged so cost is attributable.
+Resolutions are not currently logged; add structured logging to
+`resolve_budget` to make cost attributable.
 
 ## Wake types
 
@@ -39,20 +40,24 @@ Every resolution is logged so cost is attributable.
 ## OS enforcement
 
 The wake-gate lives in `tinyagentos/wake_budget.py`. The heartbeat loop
-(`agent_heartbeat.py`) and the routine runner (`routine_runner.py`) call
-`can_wake()` before firing. An agent cannot exceed its budget by
-misconfiguring itself because the gate reads the OS config, not any
-agent-supplied value.
+(`agent_heartbeat.py`) calls `can_wake()` before firing. An agent cannot
+exceed its budget by misconfiguring itself because the gate reads the OS
+config, not any agent-supplied value.
 
 Daily consumption is persisted in `data_dir/wake_budget.json` and reset
 automatically by date rollover.
 
+Routine fires are not yet gated by `can_wake()`; `routine_runner.py` does
+not consult the wake budget. That is a deliberate follow-up.
+
 ## Surfaces
 
-- **Agent settings UI** -- `/api/taos-agent/config` includes the resolved
-  wake budget for the requesting agent.
+- **Agent settings UI** -- `/api/taos-agent/config` does not yet include the
+  resolved wake budget; that surface is a follow-up.
 - **Observatory** -- `/api/observatory/wake-budget` returns each agent's
   `budget`, `consumed`, `remaining`, and `next_wake_epoch` for the current day.
+  Resolution is not currently logged; add structured logging to
+  `resolve_budget` to make cost attributable.
 - **Decision** -- dec-sfdooy closed: the fleet default stays at 2/day until
   this ships; per-agent and per-project overrides are opt-in.
 

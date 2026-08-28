@@ -132,8 +132,9 @@ class TestNextScheduledWake:
         assert get_next_scheduled_wake(tmp_path, "a1", None, cfg) is None
 
 
+@pytest.mark.asyncio
 class TestFleetWakeInfo:
-    def test_returns_rows_for_running_agents(self, tmp_path):
+    async def test_returns_rows_for_running_agents(self, tmp_path):
         cfg = _FakeConfig(
             wake_budget={"global_default": 2, "per_agent": {}, "per_project": {}},
             agents=[
@@ -141,7 +142,7 @@ class TestFleetWakeInfo:
                 {"id": "a2", "name": "agent-2", "status": "paused"},
             ],
         )
-        rows = get_fleet_wake_info(tmp_path, cfg)
+        rows = await get_fleet_wake_info(tmp_path, cfg)
         assert len(rows) == 1
         assert rows[0]["agent_id"] == "a1"
         assert rows[0]["budget"] == 2

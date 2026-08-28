@@ -467,5 +467,5 @@ async def get_wake_budget(request: Request):
     await _authorize_observatory_read(request)
     from tinyagentos.wake_budget import get_fleet_wake_info
     data_dir = Path(request.app.state.data_dir)
-    info = get_fleet_wake_info(data_dir, request.app.state.config, request.app.state.project_store)
+    info = await get_fleet_wake_info(data_dir, request.app.state.config, request.app.state.project_task_store)
     return {"agents": info}

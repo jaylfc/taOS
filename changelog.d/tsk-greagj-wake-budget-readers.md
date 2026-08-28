@@ -1,0 +1,2 @@
+### Fixed
+- Wake-budget read surfaces (`/api/agents/{name}/wake-budget` and `/api/observatory/wake-budget`) now resolve the agent's `project_id` from its first ready task via `project_task_store.list_ready_tasks_for_assignee`, matching the key the heartbeat writes under `record_scheduled_wake`. Previously they read a never-set `agent.project_id` and reported `consumed: 0` against the global bucket while enforcement throttled on the project bucket.

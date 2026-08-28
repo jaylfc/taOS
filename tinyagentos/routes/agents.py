@@ -1645,7 +1645,15 @@ async def get_agent_wake_budget(request: Request, name: str):
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
     agent_id = agent.get("id") or name
     data_dir = Path(request.app.state.data_dir)
-    project_id = agent.get("project_id")
+    project_task_store = getattr(request.app.state, "project_task_store", None)
+    project_id = None
+    if project_task_store is not None:
+        try:
+            ready = await project_task_store.list_ready_tasks_for_assignee(agent_id)
+            if ready:
+                project_id = ready[0].get("project_id")
+        except Exception:
+            pass
     budget = resolve_budget(agent_id, project_id, config)
     consumption = get_consumption(data_dir, agent_id, project_id)
     next_wake = get_next_scheduled_wake(data_dir, agent_id, project_id, config)
