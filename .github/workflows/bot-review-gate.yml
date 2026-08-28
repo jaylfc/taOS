@@ -98,6 +98,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      checks: write
     steps:
       - uses: actions/checkout@v7
 
@@ -108,6 +109,7 @@ jobs:
       - name: Check for rate-limited CodeRabbit stub
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           # The check exits 1 (FAIL) when the only CodeRabbit output is a
           # rate-limit stub. Exiting non-zero fails the workflow, blocking
@@ -117,7 +119,14 @@ jobs:
           # the script waives the stub verdict to exit 0 with a WAIVED
           # message instead. See scripts/check_bot_review.py for the label
           # contract.
-          python scripts/check_bot_review.py "${{ github.event.pull_request.number }}"
+          #
+          # --head-sha anchors the bot-review-gate check run to the PR head SHA
+          # so a later SUCCESS supersedes a stale FAILURE on the same SHA.
+          # Without this, a self-heal leaves the stale run coexisting with the
+          # new success and mergeStateStatus stays UNSTABLE forever (DEFECT 3 /
+          # #2493). The script reconciles (PATCH stale, POST when absent) when
+          # the verdict is terminal.
+          python scripts/check_bot_review.py "${{ github.event.pull_request.number }}" --head-sha "${PR_HEAD}"
 
   re-run-on-stub-comment:
     # Closes the timing hole (DEFECT 2): issue_comment events run against the
