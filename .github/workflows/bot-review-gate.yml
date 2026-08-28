@@ -43,13 +43,25 @@ name: Bot review gate
 #
 # Recommended direction (hardening): bring dev into parity by adding
 # `bot-review-gate` to dev's required_status_checks contexts so red is caught on
-# dev too; master stays as-is. That edit is Jay's standing configuration and is
-# NOT applied here -- per the task's standing-config rule, the agent does not
-# edit branch protection without his sign-off. To apply once confirmed (the PUT
-# replaces the whole contexts list, so it must include the existing dev contexts
-# plus bot-review-gate):
-#   gh api --method PUT repos/jaylfc/taOS/branches/dev/protection/required_status_checks/contexts \
-#     -f required_status_checks='["test (3.12)","test (3.13)","spa-build","lint","doc-gate","shards (3.12, 1)","shards (3.12, 2)","shards (3.12, 3)","shards (3.12, 4)","shards (3.13, 1)","shards (3.13, 2)","shards (3.13, 3)","shards (3.13, 4)","bot-review-gate"]'
+# dev too; master stays as-is. Branch protection is Jay's standing GitHub-side
+# configuration, so no repo commit can change it -- this header only records the
+# command. Jay signed this direction off on 2026-08-28, with the condition that an
+# override label ship FIRST: `check_bot_review.py` fails on a CodeRabbit rate-limit
+# stub, so requiring the context on dev before there is an escape hatch would block
+# every dev merge for the length of a rate-limit window. Sequence: override label,
+# then this PATCH.
+#   cat > /tmp/dev-contexts.json <<'JSON'
+#   {"contexts":["test (3.12)","test (3.13)","spa-build","lint","doc-gate",
+#                "shards (3.12, 1)","shards (3.12, 2)","shards (3.12, 3)","shards (3.12, 4)",
+#                "shards (3.13, 1)","shards (3.13, 2)","shards (3.13, 3)","shards (3.13, 4)",
+#                "bot-review-gate"]}
+#   JSON
+#   gh api -X PATCH repos/jaylfc/taOS/branches/dev/protection/required_status_checks \
+#     --input /tmp/dev-contexts.json
+# The endpoint takes a top-level `contexts` ARRAY; a `-f required_status_checks='[...]'`
+# string field is silently the wrong shape and the update does not apply. The PATCH
+# replaces the whole list, so it must carry dev's existing contexts plus the new one.
+# Shape verified against the live endpoint with a no-op (dev's own 13 contexts in, 13 out).
 # NOTE: editing `.github/workflows/*.yml` trips the `Gate integrity` gate; this
 # change needs the human-set `gate-integrity-allow` label to merge.
 
