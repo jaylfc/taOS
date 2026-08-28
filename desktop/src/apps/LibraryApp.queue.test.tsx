@@ -161,6 +161,78 @@ describe("LibraryApp queue view", () => {
 
     await waitFor(() => screen.getByText("No active or failed jobs"), { timeout: 5000 });
   });
+
+  it("renders an unavailable state when the jobs endpoint returns 404", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+
+      if (url === "/api/library/jobs" && method === "GET") {
+        return Promise.resolve({
+          ok: false,
+          status: 404,
+          headers: new Map([["content-type", "application/json"]]),
+          json: () => Promise.resolve({}),
+        } as Response);
+      }
+      if (method === "POST" && /^\/api\/library\/jobs\/[^/]+\/retry$/.test(url)) {
+        return Promise.resolve({
+          ok: false,
+          status: 404,
+          headers: new Map([["content-type", "application/json"]]),
+          json: () => Promise.resolve({}),
+        } as Response);
+      }
+
+      if (url.startsWith("/api/knowledge/items")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: new Map([["content-type", "application/json"]]),
+          json: () => Promise.resolve({ items: [], count: 0 }),
+        } as Response);
+      }
+      if (url === "/api/agents") {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: new Map([["content-type", "application/json"]]),
+          json: () => Promise.resolve([]),
+        } as Response);
+      }
+      if (url === "/api/knowledge/subscriptions") {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: new Map([["content-type", "application/json"]]),
+          json: () => Promise.resolve({ subscriptions: [] }),
+        } as Response);
+      }
+      if (url === "/api/knowledge/rules") {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: new Map([["content-type", "application/json"]]),
+          json: () => Promise.resolve({ rules: [] }),
+        } as Response);
+      }
+
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: new Map([["content-type", "application/json"]]),
+        json: () => Promise.resolve({}),
+      } as Response);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    render(<LibraryApp windowId="test-win" />);
+
+    fireEvent.click(screen.getByRole("radio", { name: "queue" }));
+
+    await waitFor(() => screen.getByText("Queue unavailable"), { timeout: 5000 });
+    expect(screen.queryByText("No active or failed jobs")).not.toBeInTheDocument();
+  });
 });
 
 describe("LibraryApp queue polling", () => {

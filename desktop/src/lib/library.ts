@@ -135,8 +135,8 @@ export interface ListLibraryJobsParams {
 }
 
 /** List ingest pipeline jobs (queued, processing, error, done, ...).
- *  The aggregated jobs endpoint lands in #2058; until then this resolves to an
- *  empty list when the route is unavailable.
+ *  Throws when the endpoint is unreachable so the caller can distinguish
+ *  "no jobs" from "route missing".
  */
 export async function listLibraryJobs(
   params?: ListLibraryJobsParams,
@@ -146,11 +146,17 @@ export async function listLibraryJobs(
   if (params?.limit != null) qs.set("limit", String(params.limit));
   const query = qs.toString();
   const url = `/api/library/jobs${query ? `?${query}` : ""}`;
-  const data = await fetchJson<{ jobs: LibraryJob[] }>(url, { jobs: [] });
+  const headers = new Headers();
+  headers.set("Accept", "application/json");
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(`Library jobs endpoint returned ${res.status}`);
+  const ct = res.headers.get("content-type") ?? "";
+  if (!ct.includes("application/json")) throw new Error("Library jobs endpoint returned non-JSON");
+  const data = await res.json();
   return { jobs: Array.isArray(data.jobs) ? data.jobs : [] };
 }
 
-/** Retry a failed job. Mocks the POST until #2058 ships the real endpoint. */
+/** Retry a failed job. */
 export async function retryLibraryJob(jobId: string): Promise<boolean> {
   try {
     const res = await fetch(

@@ -305,6 +305,7 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
   /* ---------- queue (ingest jobs) ---------- */
   const [jobs, setJobs] = useState<LibraryJob[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
+  const [jobsUnavailable, setJobsUnavailable] = useState(false);
   const queuePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const jobsLoadedRef = useRef(false);
 
@@ -423,10 +424,12 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
       const data = await listLibraryJobs();
       const next = Array.isArray(data?.jobs) ? data.jobs : [];
       setJobs(next);
+      setJobsUnavailable(false);
       jobsLoadedRef.current = true;
       return next;
     } catch {
       setJobs([]);
+      setJobsUnavailable(true);
       jobsLoadedRef.current = true;
       return [];
     } finally {
@@ -1448,12 +1451,16 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
       <div className="flex flex-col gap-2 px-4 py-3 border-b border-white/5 shrink-0">
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium">Ingest Queue</span>
-          <span className="text-[11px] text-shell-text-tertiary">(mock the POST until #2058)</span>
         </div>
         <div className="flex items-center gap-1.5 text-[11px] text-shell-text-tertiary">
-          {queuePolling ? (
+          {jobsUnavailable ? (
             <>
-              <span className="w-2 h-2 rounded-full bg-sky-400" aria-hidden="true" />
+              <span className="w-2 h-2 rounded-full bg-red-500" aria-hidden="true" />
+              <span>Unavailable</span>
+            </>
+          ) : queuePolling ? (
+            <>
+              <span className="w-2 h-2 rounded-full bg-accent" aria-hidden="true" />
               <span>Polling every 3s</span>
             </>
           ) : (
@@ -1467,6 +1474,11 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
       <div className="flex-1 overflow-y-auto p-3">
         {jobsLoading ? (
           <p className="text-xs text-shell-text-tertiary">Loading queue...</p>
+        ) : jobsUnavailable ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-shell-text-tertiary">
+            <AlertCircle size={36} className="opacity-30" />
+            <p className="text-sm">Queue unavailable</p>
+          </div>
         ) : displayableJobs.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-shell-text-tertiary">
             <Clock size={36} className="opacity-30" />
@@ -1505,7 +1517,7 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="text-xs gap-1"
+                        className="text-xs gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                         onClick={() => handleRetryJob(job.id)}
                         aria-label={`Retry job ${job.id}`}
                       >
