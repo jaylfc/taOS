@@ -316,12 +316,20 @@ def _is_test_path(path: str) -> bool:
 # `#` so a trailing comment (e.g. `@<sha>  # v2.6.1`) does not poison the match.
 # A `uses:` without an `@<ref>` (a non-pinned or local action) is NOT a pin
 # line and keeps the change substantive.
-_USES_PIN_LINE = re.compile(r"^\s*[-*]?\s*uses:\s+[^@\s]+@[^@\s#]+")
+_USES_PIN_LINE = re.compile(r"^\s*[-*]?\s*uses:\s+(?P<target>[^@\s]+)@[^@\s#]+")
+
+
+def _uses_pin_target(line: str) -> str | None:
+    """Return the action TARGET (the text before `@`) of a `uses:` pin line,
+    or None when the line is not a pin line at all."""
+    m = _USES_PIN_LINE.match(line)
+    return m.group("target") if m else None
 
 
 def _path_diff_is_uses_pin_only(diff_output: str) -> bool:
-    """True iff every content line in `git diff --unified=0` output is a
-    `uses: <action>@<ref>` pin bump.
+    """True iff `git diff --unified=0` output is a pure `uses:` pin bump --
+    every content line is a `uses: <action>@<ref>` pin AND, within each hunk,
+    the removed and added lines name the SAME set of action targets.
 
     A dependency-bot version bump changes nothing but the `@ref` on existing
     `uses:` lines -- e.g. `uses: actions/checkout@v4` -> `@v5`. Such a change
@@ -334,14 +342,36 @@ def _path_diff_is_uses_pin_only(diff_output: str) -> bool:
     rewrite still fails the gate without a trailer. Author is irrelevant: a
     human who also changes only pins is exempt, and a bot that rewrites steps
     is not -- the decision is content-based, not identity-based.
+
+    THE TARGETS MUST BE PAIRED, NOT MERELY CLASSIFIED (#2568 review). Both
+    sides of
+
+        -        uses: actions/checkout@v4
+        +        uses: attacker/checkout@v1
+
+    are syntactically pin lines, so a per-line classifier calls that a version
+    bump and hands an attacker-owned action a gate exemption. Comparing the
+    removed against the added targets is what makes a swapped action, a newly
+    introduced action, or a removed one substantive again. Pairing is per hunk
+    so a genuine bump in one hunk cannot vouch for a swap in another.
     """
+    hunks: list[tuple[list[str], list[str]]] = [([], [])]
     for line in diff_output.splitlines():
+        if line.startswith("@@"):
+            hunks.append(([], []))
+            continue
         if not line or line[0] not in "+-":
             continue
         # Skip the +++ / --- extended file headers; they are not content.
         if line.startswith(("+++", "---")):
             continue
-        if not _USES_PIN_LINE.match(line[1:]):
+        target = _uses_pin_target(line[1:])
+        if target is None:
+            return False
+        hunks[-1][0 if line[0] == "-" else 1].append(target)
+
+    for removed, added in hunks:
+        if sorted(removed) != sorted(added):
             return False
     return True
 

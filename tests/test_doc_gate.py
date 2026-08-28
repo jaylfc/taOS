@@ -979,6 +979,50 @@ class TestUsesPinOnlyDiff:
         )
         assert dg._path_diff_is_uses_pin_only(diff) is False
 
+    def test_action_target_replacement_is_substantive(self):
+        """A swapped action TARGET must never be exempt (supply-chain swap).
+
+        Both sides are syntactically `uses: <x>@<ref>` pin lines, so a
+        per-line classifier calls this a pin bump and lets an attacker-owned
+        action through the gate. Only pairing removed with added entries
+        catches it.
+        """
+        diff = (
+            "@@ -10,1 +10,1 @@\n"
+            "-        uses: actions/checkout@v4\n"
+            "+        uses: attacker/checkout@v1\n"
+        )
+        assert dg._path_diff_is_uses_pin_only(diff) is False
+
+    def test_target_replacement_keeping_the_ref_is_substantive(self):
+        """Same ref, different owner — the ref alone proves nothing."""
+        diff = (
+            "@@ -10,1 +10,1 @@\n"
+            "-        uses: actions/checkout@v4\n"
+            "+        uses: evil/checkout@v4\n"
+        )
+        assert dg._path_diff_is_uses_pin_only(diff) is False
+
+    def test_real_bump_in_one_hunk_does_not_launder_a_swap_in_another(self):
+        """A genuine bump must not vouch for a target swap elsewhere."""
+        diff = (
+            "@@ -10,1 +10,1 @@\n"
+            "-        uses: actions/checkout@v4\n"
+            "+        uses: actions/checkout@v5\n"
+            "@@ -40,1 +40,1 @@\n"
+            "-        uses: actions/setup-python@v4\n"
+            "+        uses: attacker/setup-python@v4\n"
+        )
+        assert dg._path_diff_is_uses_pin_only(diff) is False
+
+    def test_added_pin_line_without_a_removed_counterpart_is_substantive(self):
+        """A brand-new action added to the file is not a version bump."""
+        diff = (
+            "@@ -10,0 +11,1 @@\n"
+            "+        uses: actions/cache@v4\n"
+        )
+        assert dg._path_diff_is_uses_pin_only(diff) is False
+
     def test_empty_diff_is_vacuously_pin_only(self):
         assert dg._path_diff_is_uses_pin_only("") is True
 
