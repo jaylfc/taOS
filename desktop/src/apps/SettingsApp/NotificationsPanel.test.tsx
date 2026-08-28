@@ -59,6 +59,10 @@ describe("NotificationsPanel", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Failed to save (500)",
     );
+    // A save-time error keeps the loaded list: Retry belongs to the
+    // could-not-load branch only, so it must not appear beside the toggles.
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.getByText("Worker joined")).toBeInTheDocument();
   });
 
   it("shows loading state while genuinely pending", async () => {
