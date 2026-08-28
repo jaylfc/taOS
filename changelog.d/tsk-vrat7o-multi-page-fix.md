@@ -1,0 +1,2 @@
+### Fixed
+- `scripts/check_bot_review.py` now correctly reads check_runs from ALL GitHub API pages instead of only page 1. This fixes the bug where stale bot-review-gate failures on pages beyond the first 30 check runs were invisible to the checker. The `list_check_runs` function now aggregates check_runs from all pages using `[r for page in data for r in page.get("check_runs", [])]`.

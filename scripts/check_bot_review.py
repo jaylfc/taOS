@@ -466,11 +466,14 @@ def list_check_runs(
     # as a list. The check-runs endpoint returns a single {"total_count": N,
     # "check_runs": [...]} object, which _api_get thus hands back as a
     # one-element list; a flat list of run dicts is handled too.
+    # Aggregate check_runs across ALL pages instead of reading only page 1
     if isinstance(data, list) and data and isinstance(data[0], dict) and "check_runs" in data[0]:
-        runs = data[0]["check_runs"]
+        # Multiple pages: aggregate check_runs from ALL pages
+        runs = [r for page in data for r in page.get("check_runs", [])]
     elif isinstance(data, dict) and "check_runs" in data:
         runs = data["check_runs"]
     elif isinstance(data, list):
+        # Flat list of runs (edge case)
         runs = data
     else:
         runs = []
