@@ -4,6 +4,14 @@ from tinyagentos.frameworks import FRAMEWORKS
 from tinyagentos.shortcuts.validation import validate_shortcuts
 
 
+# Snapshot of the canonical openclaw shortcut kinds, captured at module import
+# (collection) time -- before any test runs. tsk-yjdeom: test_routes_shortcuts
+# patches FRAMEWORKS['openclaw'] in-process; this snapshot is the reference the
+# guard compares against so the assertion cannot be silently weakened by merely
+# editing a hardcoded count.
+_OPENCLAW_SHORTCUT_KINDS = [s["kind"] for s in FRAMEWORKS["openclaw"]["shortcuts"]]
+
+
 def _shortcuts(name: str) -> list:
     fw = FRAMEWORKS.get(name)
     assert fw is not None, f"Framework '{name}' not in FRAMEWORKS"
@@ -62,3 +70,27 @@ def test_shell_only_frameworks():
 def test_all_framework_shortcuts_validate(fw_name):
     """validate_shortcuts() passes without raising for every beta framework."""
     validate_shortcuts(_shortcuts(fw_name))
+
+
+# ---------------------------------------------------------------------------
+# tsk-yjdeom: order-coupled regression guard.
+#
+# ``tests/test_routes_shortcuts.py::_seed_agent`` rewrites
+# FRAMEWORKS['openclaw']['shortcuts'] in-process. Without teardown the patched
+# 2-entry list leaks across the whole session and silently breaks order-coupled
+# assertions (the symptom: ``test_openclaw_shortcuts_exact`` saw 2 where the real
+# manifest has 4). This test runs AFTER that module (same process, see the repro
+# ``pytest tests/test_routes_shortcuts.py tests/shortcuts``) and asserts the live
+# global still equals the canonical manifest captured at import time above.
+#
+# A run of ``tests/shortcuts`` ALONE cannot go red here -- that is precisely why
+# the defect stayed invisible -- so this guard is order-coupled by design.
+# Fails when the FRAMEWORKS patch is not restored on teardown.
+# ---------------------------------------------------------------------------
+
+
+def test_openclaw_shortcuts_unchanged_after_routes_shortcuts_pollution():
+    assert (
+        [s["kind"] for s in FRAMEWORKS["openclaw"]["shortcuts"]]
+        == _OPENCLAW_SHORTCUT_KINDS
+    )
