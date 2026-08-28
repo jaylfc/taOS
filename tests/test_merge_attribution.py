@@ -1,189 +1,441 @@
 #!/usr/bin/env python3
 """Tests for merge attribution audit and reconciliation.
 
-Three acceptance proofs:
-(a) A merge with no audit line makes reconciliation go RED naming the
-    unmatched sha, rc captured directly.
-(b) CONTROL: a normal fleet merge with an audit line reconciles clean, rc=0.
-(c) Deleting the audit line for a real merge makes reconciliation go RED again,
-    proving the check is load-bearing.
+Acceptance proofs for fix-forward #2579:
+(a) A squash-merged PR after the cutoff with no audit line must exit 1
+    naming that PR/sha.
+(b) The GREEN case must be produced BY gate_merge.sh -- drive the wrapper
+    (stub gh on PATH) and reconcile its real output. A hand-written fixture
+    hides exactly the producer/consumer SHA mismatch this fixes.
+(c) Reconcile on mergeCommit from the GitHub API (`gh pr view <n>
+    --json mergeCommit`), not on `git log --merges`. Enumate from
+    `gh pr list --state merged` so squash merges are visible.
+(d) A cutoff keeps pre-adoption merges out of scope.
 """
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-import check_merge_attribution as cma  # noqa: E402
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
+CHECKER = str(REPO_ROOT / "scripts/check_merge_attribution.py")
+GATE = str(REPO_ROOT / "scripts/gate_merge.sh")
+
+# ---------------------------------------------------------------------------
+# Stub gh CLI
+# ---------------------------------------------------------------------------
+_STUB_GH = r'''#!/usr/bin/env python3
+"""Stub gh CLI for merge-attribution tests.
+
+Reads PR data from the JSON file at $GH_STUB_CONFIG and responds to
+pr list, pr merge, pr view, and repo view commands with --jq filters.
+"""
+import sys, json, os
+
+CONFIG_FILE = os.environ.get("GH_STUB_CONFIG", "/dev/null")
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE) as f:
+            return json.load(f)
+    return {"prs": [], "repo": "test/test", "default_pr": {}}
+
+def apply_jq(obj, filt):
+    """Apply a simple jq filter like '.field.subfield'."""
+    if not filt:
+        return None
+    parts = filt.lstrip(".").split(".")
+    val = obj
+    for p in parts:
+        if p == "":
+            continue
+        if isinstance(val, dict):
+            val = val.get(p)
+        else:
+            return None
+    return val
+
+def find_pr(cfg, pr_num):
+    for pr in cfg.get("prs", []):
+        if str(pr.get("number")) == str(pr_num):
+            return pr
+    return cfg.get("default_pr", {})
+
+def main():
+    args = sys.argv[1:]
+    if len(args) < 1:
+        sys.exit(1)
+    cfg = load_config()
+
+    if len(args) >= 2 and args[0] == "pr":
+        sub = args[1]
+
+        if sub == "list":
+            print(json.dumps(cfg.get("prs", [])))
+            sys.exit(0)
+
+        if sub == "merge":
+            sys.exit(0)
+
+        if sub == "view":
+            # Collect --json fields, --jq filter, and the PR ref.
+            json_fields = []
+            jq_filter = None
+            pr_num = None
+            i = 2
+            while i < len(args):
+                a = args[i]
+                if a == "--json" and i + 1 < len(args):
+                    json_fields = args[i + 1].split(",")
+                    i += 2
+                elif a == "--jq" and i + 1 < len(args):
+                    jq_filter = args[i + 1]
+                    i += 2
+                elif a == "--repo" and i + 1 < len(args):
+                    i += 2
+                elif not a.startswith("-"):
+                    if pr_num is None:
+                        pr_num = a
+                    i += 1
+                else:
+                    i += 1
+
+            pr_data = find_pr(cfg, pr_num)
+
+            if jq_filter:
+                val = apply_jq(pr_data, jq_filter)
+                if val is None:
+                    print("null")
+                elif isinstance(val, bool):
+                    print("true" if val else "false")
+                elif isinstance(val, (dict, list)):
+                    print(json.dumps(val))
+                else:
+                    print(val)
+            else:
+                if json_fields:
+                    resp = {f: pr_data.get(f) for f in json_fields}
+                    print(json.dumps(resp))
+                else:
+                    print(json.dumps(pr_data))
+            sys.exit(0)
+
+    if len(args) >= 2 and args[0] == "repo":
+        if args[1] == "view":
+            if len(args) > 2:
+                # Might have --json and --jq
+                jq_filter = None
+                for i, a in enumerate(args):
+                    if a == "--jq" and i + 1 < len(args):
+                        jq_filter = args[i + 1]
+                if jq_filter:
+                    val = apply_jq({"nameWithOwner": cfg.get("repo", "test/test")}, jq_filter)
+                    if val is None:
+                        print("null")
+                    else:
+                        print(val)
+                else:
+                    print(json.dumps({"nameWithOwner": cfg.get("repo", "test/test")}))
+            else:
+                print(json.dumps({"nameWithOwner": cfg.get("repo", "test/test")}))
+            sys.exit(0)
+
+    sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+'''
 
 
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-
+# ---------------------------------------------------------------------------
+# Repo helpers
+# ---------------------------------------------------------------------------
 
 def _init_repo(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
-    _git(repo, "init")
-    _git(repo, "config", "user.name", "Test")
-    _git(repo, "config", "user.email", "test@test.com")
-    _git(repo, "config", "commit.gpgsign", "false")
-    _git(repo, "branch", "-M", "main")
+    subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "branch", "-M", "main"], cwd=repo, capture_output=True, check=True)
+    # Add a remote so gh can auto-detect; stub ignores it.
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/test-org/test-repo.git"],
+                   cwd=repo, capture_output=True, check=True)
 
 
 def _commit_file(repo: Path, rel_path: str, content: str, message: str) -> str:
+    """Create a file, commit it, and return the commit SHA."""
     full = repo / rel_path
     full.parent.mkdir(parents=True, exist_ok=True)
     full.write_text(content, encoding="utf-8")
-    _git(repo, "add", rel_path)
-    _git(repo, "commit", "-m", message)
+    subprocess.run(["git", "add", rel_path], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", message], cwd=repo, capture_output=True, check=True)
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=True,
+        cwd=repo, capture_output=True, text=True, check=True,
     )
     return result.stdout.strip()
 
 
-def _make_merge(repo: Path, branch: str) -> str:
-    """Merge branch into current HEAD and return the merge commit SHA."""
-    _git(repo, "merge", branch, "--no-edit")
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout.strip()
-
-
-def setup_diverged_repo(repo: Path) -> None:
-    """Set up a repo with diverged main and feature branches."""
-    _init_repo(repo)
-    _commit_file(repo, "README.md", "# Main\n", "initial")
-    _git(repo, "checkout", "-b", "feature")
-    _commit_file(repo, "feat.txt", "feature\n", "add feature")
-    _git(repo, "checkout", "main")
-    _commit_file(repo, "main.txt", "main work\n", "main work")
-
-
-def _write_audit(audit_file: Path, sha: str) -> None:
-    entry = {
-        "actor": "test-agent",
-        "repo": "test-org/test-repo",
-        "pr": 1,
-        "sha": sha,
-        "merged_by": "test-agent",
-        "timestamp": "2026-08-27T11:29:48Z",
-        "script": "gate_merge.sh",
-    }
-    audit_file.parent.mkdir(parents=True, exist_ok=True)
-    with audit_file.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, sort_keys=True) + "\n")
-
+# ---------------------------------------------------------------------------
+# Test class
+# ---------------------------------------------------------------------------
 
 class TestMergeAttributionReconciliation:
-    """Proofs for the merge attribution audit mechanism."""
+    """Acceptance proofs for fix-forward #2579.
 
-    def test_merge_without_audit_line_fails_reconciliation(
-        self, tmp_path: Path,
-    ) -> None:
-        """(a) A merge with NO audit line makes reconciliation RED."""
-        repo = tmp_path / "repo"
-        setup_diverged_repo(repo)
+    (a) A squash-merged PR after the cutoff with no audit line is RED.
+    (b) The green case is produced by gate_merge.sh with a stub gh on PATH.
+    (c) The checker enumerates from `gh pr list` (not `git log --merges`).
+    (d) A cutoff keeps pre-adoption merges out of scope.
+    """
 
-        merge_sha = _make_merge(repo, "feature")
+    # ---- shared helpers (in the same class that calls them) ----
 
-        audit_file = tmp_path / "audit.jsonl"
-        result = subprocess.run(
+    @staticmethod
+    def _write_stub_gh(tmp_path: Path) -> Path:
+        """Write a stub `gh` binary and return its path."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        gh_path = bin_dir / "gh"
+        gh_path.write_text(_STUB_GH, encoding="utf-8")
+        gh_path.chmod(0o755)
+        return gh_path
+
+    @staticmethod
+    def _write_config(tmp_path: Path, prs: list[dict], repo: str = "test-org/test-repo") -> Path:
+        """Write a stub gh config file and return its path."""
+        config_file = tmp_path / "gh_config.json"
+        config = {
+            "repo": repo,
+            "prs": prs,
+            "default_pr": prs[0] if prs else {},
+        }
+        config_file.write_text(json.dumps(config), encoding="utf-8")
+        return config_file
+
+    @staticmethod
+    def _make_env(tmp_path: Path, config_file: Path, extra: dict | None = None) -> dict:
+        """Build an environment with stub gh on PATH and isolated HOME."""
+        env = os.environ.copy()
+        # Prepend stub bin dir so `gh` resolves to our stub.
+        env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+        # Isolate HOME so ~/.taos-team/gate_merge.sh does not exist -> gate
+        # falls through to the bare gh pr merge path we can stub.
+        env["HOME"] = str(tmp_path / "home")
+        # Stub reads PR data from here.
+        env["GH_STUB_CONFIG"] = str(config_file)
+        if extra:
+            env.update(extra)
+        return env
+
+    @staticmethod
+    def _run_checker(tmp_path: Path, env: dict, cutoff: str) -> subprocess.CompletedProcess:
+        """Run check_merge_attribution.py with the given env and cutoff."""
+        return subprocess.run(
             [
-                sys.executable,
-                str(REPO_ROOT / "scripts/check_merge_attribution.py"),
-                "--repo", str(repo),
-                "--audit-file", str(audit_file),
+                sys.executable, CHECKER,
+                "--repo", str(tmp_path / "repo"),
+                "--audit-file", str(tmp_path / "audit.jsonl"),
+                "--cutoff", cutoff,
             ],
             capture_output=True,
             text=True,
+            check=False,
+            env=env,
         )
-        assert result.returncode == cma.EXIT_FAIL
-        assert merge_sha[:12] in result.stdout
 
-    def test_merge_with_audit_line_passes_reconciliation(
-        self, tmp_path: Path,
-    ) -> None:
-        """(b) CONTROL: a normal fleet merge reconciles clean, rc=0."""
+    # ---- acceptance (a): unattributed squash merge goes RED ----
+
+    def test_unattributed_squash_merge_fails_reconciliation(self, tmp_path: Path) -> None:
+        """(a) A squash-merged PR after the cutoff with NO audit line is RED.
+
+        This is the THREAT case: a stolen token doing exactly what the card
+        describes -- a squash merge with no audit entry -- must be caught.
+        On the original code it reconciles clean because the checker reads
+        `git log --merges` (which never sees squash merges) and logs the
+        headRefOid while the checker expects the merge-commit SHA.
+        """
         repo = tmp_path / "repo"
-        setup_diverged_repo(repo)
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
 
-        merge_sha = _make_merge(repo, "feature")
+        # A commit that represents the squash-merge result on the base branch.
+        squash_sha = _commit_file(repo, "feat.txt", "feature\n", "squash merge PR #42")
 
-        audit_file = tmp_path / "audit.jsonl"
-        _write_audit(audit_file, merge_sha)
-
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(REPO_ROOT / "scripts/check_merge_attribution.py"),
-                "--repo", str(repo),
-                "--audit-file", str(audit_file),
+        config = {
+            "prs": [
+                {
+                    "number": 42,
+                    "mergeCommit": {"oid": squash_sha},
+                    "mergedAt": "2026-08-28T12:00:00Z",
+                    "mergedBy": {"login": "stolen-token"},
+                },
             ],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == cma.EXIT_OK
+        }
+        config_file = self._write_config(tmp_path, config["prs"])
+        self._write_stub_gh(tmp_path)
 
-    def test_deleting_audit_line_makes_reconciliation_fail(
-        self, tmp_path: Path,
-    ) -> None:
-        """(c) Deleting the audit line for a real merge makes reconciliation RED."""
-        repo = tmp_path / "repo"
-        setup_diverged_repo(repo)
-
-        merge_sha = _make_merge(repo, "feature")
-
+        env = self._make_env(tmp_path, config_file)
+        # Audit file is empty -- no entry written by gate_merge.sh.
         audit_file = tmp_path / "audit.jsonl"
-        _write_audit(audit_file, merge_sha)
-
-        # Verify it passes first
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(REPO_ROOT / "scripts/check_merge_attribution.py"),
-                "--repo", str(repo),
-                "--audit-file", str(audit_file),
-            ],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == cma.EXIT_OK
-
-        # Now delete the audit line
+        audit_file.parent.mkdir(parents=True, exist_ok=True)
         audit_file.write_text("", encoding="utf-8")
 
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(REPO_ROOT / "scripts/check_merge_attribution.py"),
-                "--repo", str(repo),
-                "--audit-file", str(audit_file),
-            ],
-            capture_output=True,
-            text=True,
-        )
+        result = self._run_checker(tmp_path, env, cutoff="2026-08-28T00:00:00Z")
 
-        assert result.returncode == cma.EXIT_FAIL
-        assert merge_sha[:12] in result.stdout
+        assert result.returncode == 1
+        assert "42" in result.stdout
+        assert squash_sha[:12] in result.stdout
+
+    # ---- acceptance (b): green case produced by gate_merge.sh ----
+
+    def test_attributed_merge_produced_by_gate_passes_reconciliation(self, tmp_path: Path) -> None:
+        """(b) The GREEN case is produced BY gate_merge.sh, not hand-written.
+
+        Drives the wrapper with a stub gh on PATH, captures the audit entry
+        it writes, and reconciles its real output. A hand-written fixture
+        (the old _write_audit) is what hid the SHA mismatch -- this test
+        proves the producer and consumer agree on mergeCommit.
+        """
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
+
+        # A commit that represents the merge result.
+        merge_sha = _commit_file(repo, "feat.txt", "feature\n", "merge PR #42")
+
+        config = {
+            "prs": [
+                {
+                    "number": 42,
+                    "mergeCommit": {"oid": merge_sha},
+                    "mergedAt": "2026-08-28T12:00:00Z",
+                    "mergedBy": {"login": "test-agent"},
+                },
+            ],
+        }
+        config_file = self._write_config(tmp_path, config["prs"])
+        self._write_stub_gh(tmp_path)
+
+        audit_file = tmp_path / "audit.jsonl"
+        audit_file.parent.mkdir(parents=True, exist_ok=True)
+        audit_file.write_text("", encoding="utf-8")
+        env = self._make_env(tmp_path, config_file, extra={"FLEET_AUDIT_LOG": str(audit_file)})
+
+        # Drive the wrapper -- stub gh makes the merge + view calls succeed.
+        gate_result = subprocess.run(
+            ["bash", GATE, "42", "tsk-test", "test note"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        assert gate_result.returncode == 0, gate_result.stderr
+
+        # The audit entry must exist and contain the real mergeCommit OID,
+        # NOT the headRefOid -- proving the producer reads the same key.
+        assert audit_file.exists()
+        lines = audit_file.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["sha"] == merge_sha
+        assert entry["pr"] == 42
+
+        # Reconcile -- should pass.
+        result = self._run_checker(tmp_path, env, cutoff="2026-08-28T00:00:00Z")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    # ---- acceptance (d): cutoff excludes pre-adoption merges ----
+
+    def test_cutoff_excludes_pre_adoption_merges(self, tmp_path: Path) -> None:
+        """(d) A cutoff keeps pre-adoption merges out of scope.
+
+        Two merged PRs: one before the cutoff (no audit, but out of scope)
+        and one after (no audit, in scope -> RED). Only the in-scope PR
+        is reported.
+        """
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
+
+        old_sha = _commit_file(repo, "old.txt", "old\n", "old merge PR #41")
+        new_sha = _commit_file(repo, "new.txt", "new\n", "new merge PR #42")
+
+        config = {
+            "prs": [
+                {
+                    "number": 41,
+                    "mergeCommit": {"oid": old_sha},
+                    "mergedAt": "2026-08-20T12:00:00Z",
+                    "mergedBy": {"login": "bot"},
+                },
+                {
+                    "number": 42,
+                    "mergeCommit": {"oid": new_sha},
+                    "mergedAt": "2026-08-28T12:00:00Z",
+                    "mergedBy": {"login": "bot"},
+                },
+            ],
+        }
+        config_file = self._write_config(tmp_path, config["prs"])
+        self._write_stub_gh(tmp_path)
+
+        env = self._make_env(tmp_path, config_file)
+        audit_file = tmp_path / "audit.jsonl"
+        audit_file.parent.mkdir(parents=True, exist_ok=True)
+        audit_file.write_text("", encoding="utf-8")
+
+        result = self._run_checker(tmp_path, env, cutoff="2026-08-28T00:00:00Z")
+
+        assert result.returncode == 1
+        # Only PR #42 (after cutoff) should be reported.
+        assert "42" in result.stdout
+        assert "41" not in result.stdout
+        assert old_sha[:12] not in result.stdout
+        assert new_sha[:12] in result.stdout
+
+    # ---- acceptance (c): checker enumerates from gh API, not git log ----
+
+    def test_checker_does_not_rely_on_git_log_merges(self, tmp_path: Path) -> None:
+        """(c) The checker enumerates merges from `gh pr list`, not git log.
+
+        A repo where `git log --merges` is empty (squash-style) but the
+        GitHub API reports a merged PR must still be checked. This proves
+        the check is driven by the API, not by git history.
+        """
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
+
+        # Create a two-parent merge commit so `git log --merges` WOULD see it,
+        # then verify the checker does NOT use git log --merges by confirming
+        # that a PR known to the API but absent from git history is caught.
+        # We simulate: API reports PR #42 (mergeCommit = sha), but the commit
+        # is NOT in git log --merges (squash: single parent).
+        squash_sha = _commit_file(repo, "feat.txt", "feature\n", "squash PR #42")
+
+        config = {
+            "prs": [
+                {
+                    "number": 42,
+                    "mergeCommit": {"oid": squash_sha},
+                    "mergedAt": "2026-08-28T12:00:00Z",
+                    "mergedBy": {"login": "actor"},
+                },
+            ],
+        }
+        config_file = self._write_config(tmp_path, config["prs"])
+        self._write_stub_gh(tmp_path)
+
+        env = self._make_env(tmp_path, config_file)
+        audit_file = tmp_path / "audit.jsonl"
+        audit_file.parent.mkdir(parents=True, exist_ok=True)
+        audit_file.write_text("", encoding="utf-8")
+
+        result = self._run_checker(tmp_path, env, cutoff="2026-08-28T00:00:00Z")
+
+        # git log --merges would NOT find the squash (single parent), so if
+        # the checker still flags it, it is reading from the API not git.
+        assert result.returncode == 1
+        assert "42" in result.stdout
