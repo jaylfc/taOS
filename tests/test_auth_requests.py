@@ -316,6 +316,35 @@ class TestAuthRequestRoutes:
         assert "request_id" in data
         assert data["status"] == "pending"
 
+    async def test_create_carries_requested_project_id_in_notification(self, consent_client):
+        """The consent notification must surface the requested project_id so the
+        approve screen is never a blank dropdown: an access request bound to a
+        project must let the approver see and confirm that project before
+        granting (#tsk-flc5sp)."""
+        notif_store = consent_client._transport.app.state.notifications
+        if notif_store._db is None:
+            await notif_store.init()
+        try:
+            transport = ASGITransport(app=consent_client._transport.app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as bare:
+                resp = await bare.post(
+                    "/api/agents/auth-requests",
+                    json={**_CREATE_BODY, "project_id": "prj-btrdrl"},
+                )
+            assert resp.status_code == 200
+            items = await notif_store.list()
+            auth = [i for i in items if i.get("source") == "auth_requests"]
+            assert auth, "creating a request should raise an access-request notification"
+            payload = auth[0]["data"]
+            assert payload["project_id"] == "prj-btrdrl"
+            assert payload["request_id"] == resp.json()["request_id"]
+        finally:
+            if notif_store._db is not None:
+                await notif_store.close()
+
+
     async def test_get_status_pending_no_token(self, consent_client):
         """GET status on a pending request returns status but NOT a token."""
         transport = ASGITransport(app=consent_client._transport.app)

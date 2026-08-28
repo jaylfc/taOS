@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ConsentActions } from "./ConsentActions";
+import { ConsentActions, computeScopeDiff, consentPayload } from "./ConsentActions";
 
 function okFetch() {
   return vi.fn().mockResolvedValue({
@@ -164,6 +164,248 @@ describe("ConsentActions", () => {
     expect(JSON.parse((approve![1] as RequestInit).body as string)).toEqual({
       granted_scopes: ["project_tasks"],
       project_id: "pnew",
+    });
+  });
+
+  it("preselects and labels the requested project when it resolves", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).startsWith("/api/projects")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              items: [
+                { id: "prj-other", name: "Other" },
+                { id: "prj-btrdrl", name: "BTRDRL" },
+              ],
+            }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ status: "ok" }),
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onResolved = vi.fn();
+    render(
+      <ConsentActions
+        requestId="req-real"
+        scopes={["project_tasks"]}
+        requestedProjectId="prj-btrdrl"
+        onResolved={onResolved}
+      />,
+    );
+
+    await screen.findByLabelText(/Grant project access for/i);
+    // The resolved requested project is shown by NAME, not just id.
+    const requestLine = screen.getByText(/Requesting access for/i);
+    expect(requestLine).toHaveTextContent("BTRDRL");
+    expect(requestLine).toHaveTextContent("prj-btrdrl");
+    // The picker is preselected to the requested project.
+    const select = screen.getByLabelText(/Grant project access for/i) as HTMLSelectElement;
+    expect(select.value).toBe("prj-btrdrl");
+    // Allow is enabled because a valid target is resolved.
+    expect(
+      screen.getByRole("button", { name: /allow/i }),
+    ).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /allow/i }));
+    await waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
+    expect(
+      JSON.parse(
+        (
+          fetchMock.mock.calls.find((c) =>
+            String(c[0]).includes("/approve"),
+          )![1] as RequestInit
+        ).body as string,
+      ),
+    ).toEqual({
+      granted_scopes: ["project_tasks"],
+      project_id: "prj-btrdrl",
+    });
+  });
+
+  it("shows an explicit red not-found message and disables Allow when the requested project does not resolve", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).startsWith("/api/projects")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              items: [{ id: "p1", name: "Alpha" }],
+            }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ status: "ok" }),
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <ConsentActions
+        requestId="req-nf"
+        scopes={["project_tasks"]}
+        requestedProjectId="prj-btrdrl"
+      />,
+    );
+
+    await screen.findByLabelText(/Grant project access for/i);
+    // Explicit not-found message naming the unresolved project id.
+    const msg = screen.getByText(/Requested project prj-btrdrl not found/i);
+    expect(msg).toBeInTheDocument();
+    // The message is red (role="alert" + text-red-300).
+    expect(msg).toHaveClass("text-red-300");
+    expect(msg.closest('[role="alert"]')).toBeInTheDocument();
+    // The select is marked invalid.
+    const select = screen.getByLabelText(/Grant project access for/i);
+    expect(select).toHaveAttribute("aria-invalid", "true");
+    // Allow cannot be clicked until a resolved, valid target is chosen.
+    expect(
+      screen.getByRole("button", { name: /allow/i }),
+    ).toBeDisabled();
+
+    // Approving would be blocked even if clicked programmatically.
+    fireEvent.click(screen.getByRole("button", { name: /allow/i }));
+    await waitFor(() =>
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        expect.stringContaining("/approve"),
+        expect.anything(),
+      ),
+    );
+  });
+
+  it("renders Requested vs Granted scopes and highlights a dropped scope in red", () => {
+    render(
+      <ConsentActions
+        requestId="req-diff"
+        scopes={["memory_read", "memory_write"]}
+        grantedScopes={["memory_read"]}
+      />,
+    );
+
+    // Both lists are labelled.
+    expect(screen.getByText("Requested")).toBeInTheDocument();
+    expect(screen.getByText("Granted")).toBeInTheDocument();
+
+    // The dropped scope is flagged.
+    const droppedBadge = screen.getByText("memory_write");
+    expect(droppedBadge).toHaveClass("text-red-200");
+    expect(droppedBadge).toHaveAttribute(
+      "aria-label",
+      "memory_write (dropped from request)",
+    );
+    expect(droppedBadge).toHaveAttribute("data-state", "dropped");
+
+    // A visible alert explains the narrowing.
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /Dropping 1 requested scope/i,
+    );
+  });
+
+  it("renders Granted scopes highlighted yellow when a scope is added beyond the request", () => {
+    render(
+      <ConsentActions
+        requestId="req-widen"
+        scopes={["memory_read"]}
+        grantedScopes={["memory_read", "files_read"]}
+      />,
+    );
+
+    expect(screen.getByText("Granted")).toBeInTheDocument();
+    const addedBadge = screen.getByText("files_read");
+    expect(addedBadge).toHaveClass("text-amber-200");
+    expect(addedBadge).toHaveAttribute(
+      "aria-label",
+      "files_read (granted beyond request)",
+    );
+    expect(addedBadge).toHaveAttribute("data-state", "added");
+  });
+
+  it("renders no scope-diff alert when requested equals granted", () => {
+    const { container } = render(
+      <ConsentActions
+        requestId="req-same"
+        scopes={["memory_read", "a2a_send"]}
+      />,
+    );
+    // Default: granted == requested, so no diff alert.
+    expect(screen.queryByRole("alert")).toBeNull();
+    // No dropped or added badges.
+    expect(container.querySelectorAll('[data-state="dropped"]')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-state="added"]')).toHaveLength(0);
+  });
+});
+
+describe("computeScopeDiff", () => {
+  it("detects dropped scopes (requested but not granted)", () => {
+    expect(computeScopeDiff(["a", "b"], ["a"])).toEqual({
+      dropped: ["b"],
+      added: [],
+    });
+  });
+
+  it("detects added scopes (granted but not requested)", () => {
+    expect(computeScopeDiff(["a"], ["a", "b"])).toEqual({
+      dropped: [],
+      added: ["b"],
+    });
+  });
+
+  it("reports no diff when sets match", () => {
+    expect(computeScopeDiff(["a", "b"], ["a", "b"])).toEqual({
+      dropped: [],
+      added: [],
+    });
+  });
+
+  it("reports all requested as dropped when granted is empty", () => {
+    expect(computeScopeDiff(["a", "b"], [])).toEqual({
+      dropped: ["a", "b"],
+      added: [],
+    });
+  });
+});
+
+describe("consentPayload", () => {
+  it("extracts request_id, scopes, and project_id from notification data", () => {
+    expect(
+      consentPayload({
+        request_id: "req-1",
+        requested_scopes: ["memory_read", "project_tasks"],
+        project_id: "prj-btrdrl",
+      }),
+    ).toEqual({
+      requestId: "req-1",
+      scopes: ["memory_read", "project_tasks"],
+      projectId: "prj-btrdrl",
+    });
+  });
+
+  it("omits project_id when not present", () => {
+    const payload = consentPayload({
+      request_id: "req-2",
+      requested_scopes: ["memory_read"],
+    });
+    expect(payload).toEqual({
+      requestId: "req-2",
+      scopes: ["memory_read"],
+    });
+    expect(payload?.projectId).toBeUndefined();
+  });
+
+  it("returns null when data is missing or malformed", () => {
+    expect(consentPayload(undefined)).toBeNull();
+    expect(consentPayload({})).toBeNull();
+    expect(consentPayload({ request_id: 123 })).toBeNull();
+    expect(consentPayload({ request_id: "x", requested_scopes: "not-a-list" })).toEqual({
+      requestId: "x",
+      scopes: [],
     });
   });
 });

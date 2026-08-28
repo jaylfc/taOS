@@ -294,6 +294,13 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
                     "identity_claim": record["identity_claim"],
                     "framework": record["framework"],
                     "requested_scopes": list(scopes),
+                    # Carry the requested project_id to the consent UI so the
+                    # approve screen can preselect and label it. The id is NOT
+                    # trusted as a binding here -- the operator still picks from
+                    # the projects they can see -- but without it the dropdown is
+                    # blank and the approver cannot tell what they are consenting
+                    # to (#tsk-flc5sp).
+                    "project_id": record.get("project_id"),
                 },
             )
         except Exception:

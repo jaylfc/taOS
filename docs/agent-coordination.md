@@ -433,6 +433,15 @@ identity that reads as a person or as an internal taOS agent. The public
 register route returns 422. The admin-only internal mint/seed path is exempt -
 internal driver agents (`taos-dev`, ...) legitimately live under `taos-`.
 
+The approve surface is the desktop `ConsentActions` component, driven by the
+`auth_requests` notification raised when a request is created. That notification's
+`data` payload carries `request_id`, `requested_scopes`, `identity_claim`,
+`framework`, and the request's `project_id` (when one was named by the
+requester). The id is carried for display only -- the approve screen resolves it
+against the operator's visible project list and lets the operator confirm or
+correct the binding before minting -- so an unapproved or unseen project id is
+never trusted as a grant target.
+
 ## Console-only PIN sign-in (third passthrough, narrowest)
 
 A touchscreen device with no keyboard could not sign in at all, so a PIN is an
