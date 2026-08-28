@@ -100,6 +100,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # writes a terminal conclusion (success/failure) -- it never reports in_progress
 # or neutral, so a check-run conclusion is authoritative for the head SHA.
 CHECK_RUN_NAME = "Bot review gate"
+
+# A single GitHub workflow emits TWO distinct check runs on the same head SHA:
+# one named after the workflow DISPLAY name ("Bot review gate") and one named
+# after the workflow JOB id ("bot-review-gate"), which is the runner-owned run
+# GitHub creates for the Actions job itself. mergeStateStatus keys off ANY
+# failing check run, so the read filter must match both names -- matching only
+# the display name drops the job-id run that is what actually pins a
+# self-healed PR on UNSTABLE (see PR #2573).
+CHECK_RUN_NAMES = frozenset({CHECK_RUN_NAME, "bot-review-gate"})
 VERDICT_TO_CONCLUSION = {
     EXIT_OK: "success",
     EXIT_STUB: "failure",
@@ -383,8 +392,10 @@ def list_check_runs(
 ) -> list[dict] | None:
     """List bot-review-gate check runs for a commit ref (a head SHA).
 
-    Reads GET /repos/{owner}/{repo}/commits/{ref}/check-runs and keeps only the
-    runs named ``CHECK_RUN_NAME``. Returns None on infrastructure failure, [] if
+     Reads GET /repos/{owner}/{repo}/commits/{ref}/check-runs and keeps only the
+     runs named in ``CHECK_RUN_NAMES`` (the workflow display name and the
+     GitHub Actions job id, which is the runner-owned run that actually pins
+     mergeStateStatus). Returns None on infrastructure failure, [] if
     the ref exists but has no bot-review-gate runs (so callers can distinguish
     cannot-see from a legitimately-empty head SHA).
     """
@@ -405,7 +416,7 @@ def list_check_runs(
         runs = data
     else:
         runs = []
-    return [r for r in runs if isinstance(r, dict) and r.get("name") == CHECK_RUN_NAME]
+    return [r for r in runs if isinstance(r, dict) and r.get("name") in CHECK_RUN_NAMES]
 
 
 def filter_head_sha_check_runs(check_runs: list[dict]) -> list[dict]:
@@ -654,6 +665,22 @@ def main(argv: list[str] | None = None) -> int:
         reconcile_head_sha_check_run(
             owner, repo, head_sha, VERDICT_TO_CONCLUSION[exit_code], token,
         )
+        # Read back the reconciled verdict (the read side of the #2493 fix).
+        # If a stale FAILURE survived the reconcile -- e.g. the runner-owned
+        # job check run rejected the PATCH, leaving mergeStateStatus at
+        # UNSTABLE -- the gate must not report green. check_run_verdict is
+        # the production read site for this anchoring; wiring it here closes
+        # the "uncalled function described as load-bearing" gap.
+        verified_code, _ = check_run_verdict(
+            owner, repo, head_sha, token,
+        )
+        if verified_code == EXIT_STUB and exit_code == EXIT_OK:
+            print(
+                f"fail: stale bot-review-gate FAILURE on {head_sha} "
+                f"survived reconcile -- PR stays UNSTABLE "
+                f"(exit {EXIT_STUB})"
+            )
+            return EXIT_STUB
     return exit_code
 
 
