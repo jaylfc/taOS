@@ -159,6 +159,14 @@ async def _heartbeat_tick(app_state) -> None:
     debounce = _debounce_map(app_state)
     now = time.time()
     data_dir = getattr(app_state, "data_dir", None)
+    # Wake-budget enforcement needs a persistent data_dir to read/write
+    # wake_budget.json. Validate here, at the tick entry, rather than inside the
+    # per-agent try below: a missing data_dir is a fatal misconfiguration, not a
+    # per-agent hiccup, so it must surface at the tick/sweep level (propagates to
+    # the loop's sweep-level handler) instead of being silently logged per agent
+    # and leaving the whole fleet silently unwakeable.
+    if data_dir is None:
+        raise RuntimeError("data_dir is required for wake-budget enforcement")
 
     woke_this_tick = 0
     staggered_seconds = 0.0
@@ -177,8 +185,6 @@ async def _heartbeat_tick(app_state) -> None:
             task = ready[0]
             if not _should_wake(debounce, agent_id, task["id"], now):
                 continue
-            if data_dir is None:
-                raise RuntimeError("data_dir is required for wake-budget enforcement")
             project_id = task.get("project_id")
             if not can_wake(
                 data_dir, agent_id, agent.get("name", agent_id), project_id, config

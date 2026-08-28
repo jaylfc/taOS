@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -43,12 +46,21 @@ def _make_state(**overrides) -> SimpleNamespace:
 
     config = overrides.get("config", SimpleNamespace(agents=[], server={"agent_heartbeat_enabled": True}))
 
+    # Wake-budget enforcement reads/writes <data_dir>/wake_budget.json, so a
+    # real writable path is needed whenever the heartbeat is enabled. Default to
+    # a fresh tempdir per state; pass data_dir=None to simulate the misconfigured
+    # (missing) state the new regression tests pin.
+    data_dir = overrides.get(
+        "data_dir", Path(tempfile.mkdtemp(prefix="taos-hb-"))
+    )
+
     state = SimpleNamespace(
         project_task_store=overrides.get("project_task_store", task_store),
         project_store=overrides.get("project_store", project_store),
         chat_channels=overrides.get("chat_channels", chat_channels),
         chat_messages=overrides.get("chat_messages", chat_messages),
         bridge_sessions=overrides.get("bridge_sessions", bridge_sessions),
+        data_dir=data_dir,
         config=config,
     )
     return state
@@ -333,3 +345,53 @@ async def test_agent_heartbeat_loop_ticks_then_sleeps(monkeypatch):
 
     state.bridge_sessions.enqueue_user_message.assert_awaited_once()
     assert sleeps == [60]
+
+
+@pytest.mark.asyncio
+async def test_missing_data_dir_fails_loudly_at_tick_entry():
+    # data_dir is REQUIRED for wake-budget enforcement (it backs
+    # wake_budget.json). A missing data_dir is a fatal misconfiguration, not a
+    # per-agent hiccup: the tick must raise LOUDLY before touching any agent,
+    # so the heartbeat "refuses to start" rather than emitting only a log line.
+    config = SimpleNamespace(agents=[_agent()], server={"agent_heartbeat_enabled": True})
+    state = _make_state(config=config, data_dir=None)
+    state.project_task_store.list_ready_tasks_for_assignee = AsyncMock(return_value=[_task()])
+
+    with pytest.raises(RuntimeError, match="data_dir is required for wake-budget enforcement"):
+        await _heartbeat_tick(state)
+
+    # The failure must occur before any agent is woken -- no agent should have
+    # been enqueued a wake message.
+    state.bridge_sessions.enqueue_user_message.assert_not_awaited()
+    state.project_task_store.list_ready_tasks_for_assignee.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_data_dir_failure_observable_at_sweep_level(monkeypatch, caplog):
+    # The wake-budget guard must NOT live inside the per-agent try/except, because
+    # that handler swallows every exception and logs only a per-agent
+    # "tick failed for agent X" line: with data_dir absent, every agent raised
+    # there, the tick completed "normally" and the whole fleet stayed silently
+    # unwakeable. Instead the failure must surface at the TICK/sweep level --
+    # i.e. _heartbeat_tick propagates to the loop's sweep-level handler.
+    config = SimpleNamespace(agents=[_agent()], server={"agent_heartbeat_enabled": True})
+    state = _make_state(config=config, data_dir=None)
+    state.project_task_store.list_ready_tasks_for_assignee = AsyncMock(return_value=[_task()])
+
+    import asyncio as _asyncio
+
+    async def _stop(seconds):
+        raise _asyncio.CancelledError()
+
+    monkeypatch.setattr(_asyncio, "sleep", _stop)
+    caplog.set_level(logging.ERROR, logger="tinyagentos.agent_heartbeat")
+
+    with pytest.raises(_asyncio.CancelledError):
+        await agent_heartbeat_loop(state)
+
+    messages = [record.message for record in caplog.records]
+    # The misconfiguration is surfaced as a sweep-level crash...
+    assert any("sweep iteration crashed" in m for m in messages)
+    # ...NOT silently absorbed per-agent.
+    assert not any("tick failed for agent" in m for m in messages)
+    state.bridge_sessions.enqueue_user_message.assert_not_awaited()
