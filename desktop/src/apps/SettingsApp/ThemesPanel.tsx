@@ -31,7 +31,12 @@ export function ThemesPanel() {
 
   useEffect(() => {
     fetch("/api/themes", { credentials: "include" })
-      .then((r) => (r.ok ? r.json() : []))
+      .then((r) => {
+        if (!r.ok) {
+          throw new Error(`${r.status} ${r.statusText}`);
+        }
+        return r.json();
+      })
       .then((data: InstalledTheme[]) => {
         const installed = Array.isArray(data) ? data : [];
         const builtinIds = new Set(BUILTIN_THEMES.map((b) => b.theme_id));

@@ -197,6 +197,8 @@ export function UpdatesPanel() {
         const data = (await res.json()) as UpdateInfo;
         setInfo(data);
         setStatus(data.has_updates ? "A new version is available." : "You are up to date.");
+        // Clear any previous error on success
+        setError(null);
       } else {
         setError("Update check not available.");
       }
