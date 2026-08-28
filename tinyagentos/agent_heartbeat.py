@@ -176,6 +176,7 @@ async def _heartbeat_tick(app_state) -> None:
         agent_id = agent.get("id")
         if not agent_id:
             continue
+        woke_with_task = None
         try:
             if await project_task_store.held_task(agent_id) is not None:
                 continue
@@ -203,10 +204,20 @@ async def _heartbeat_tick(app_state) -> None:
             # failed enqueue retries next tick instead of silencing the agent
             # for the whole cooldown.
             if await _wake_agent_with_task(app_state, agent, task):
-                debounce[agent_id] = (task["id"], now)
-                record_scheduled_wake(data_dir, agent_id, task.get("project_id"))
+                woke_with_task = task
         except Exception:
             logger.exception("heartbeat: tick failed for agent %s", agent.get("name"))
+            continue
+
+        if woke_with_task is not None:
+            # Record the scheduled wake BEFORE stamping the debounce, and
+            # outside the per-agent try/except above. A persistence failure
+            # (disk-full, permission error) must propagate to the sweep-level
+            # handler instead of being swallowed per-agent -- otherwise the
+            # wake was sent but never charged and the agent is silenced for
+            # REWAKE_COOLDOWN on a budget that was never consumed.
+            record_scheduled_wake(data_dir, agent_id, woke_with_task.get("project_id"))
+            debounce[agent_id] = (woke_with_task["id"], now)
 
 
 async def agent_heartbeat_loop(app_state, interval: float = HEARTBEAT_INTERVAL) -> None:

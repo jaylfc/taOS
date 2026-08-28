@@ -395,3 +395,45 @@ async def test_missing_data_dir_failure_observable_at_sweep_level(monkeypatch, c
     # ...NOT silently absorbed per-agent.
     assert not any("tick failed for agent" in m for m in messages)
     state.bridge_sessions.enqueue_user_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_record_scheduled_wake_failure_propagates_and_skips_debounce(monkeypatch, caplog):
+    """record_scheduled_wake is called before the debounce stamp and OUTSIDE the
+    per-agent try/except, so a persistence failure (disk-full, permission) must
+    propagate to the sweep-level handler. The debounce entry must NOT be set,
+    or the agent is silenced for REWAKE_COOLDOWN on a wake that was never
+    charged to the budget."""
+    config = SimpleNamespace(agents=[_agent()], server={"agent_heartbeat_enabled": True})
+    state = _make_state(config=config)
+    task = _task()
+    state.project_task_store.list_ready_tasks_for_assignee = AsyncMock(return_value=[task])
+
+    # Force record_scheduled_wake to fail (e.g. disk-full, permission error).
+    monkeypatch.setattr(
+        "tinyagentos.agent_heartbeat.record_scheduled_wake",
+        MagicMock(side_effect=RuntimeError("disk full")),
+    )
+
+    import asyncio as _asyncio
+
+    async def _stop(seconds):
+        raise _asyncio.CancelledError()
+
+    monkeypatch.setattr(_asyncio, "sleep", _stop)
+    caplog.set_level(logging.ERROR, logger="tinyagentos.agent_heartbeat")
+
+    with pytest.raises(_asyncio.CancelledError):
+        await agent_heartbeat_loop(state)
+
+    messages = [record.message for record in caplog.records]
+    # The failure must surface at sweep level...
+    assert any("sweep iteration crashed" in m for m in messages)
+    # ...NOT silently absorbed per-agent (which would also silence the agent).
+    assert not any("tick failed for agent" in m for m in messages)
+
+    # The wake DID reach the agent's queue (enqueue succeeded)...
+    state.bridge_sessions.enqueue_user_message.assert_awaited_once()
+    # ...but the debounce entry was NOT set, so the agent is not silenced
+    # for REWAKE_COOLDOWN on an uncharged wake.
+    assert "agent-hex-1" not in state._heartbeat_last_wake

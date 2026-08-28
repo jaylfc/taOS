@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from tinyagentos.wake_budget import (
     get_next_scheduled_wake,
     record_scheduled_wake,
     resolve_budget,
+    WakeBudgetStateError,
 )
 
 
@@ -74,7 +76,6 @@ class TestRecordAndConsume:
         state_path = data_dir / "wake_budget.json"
         _write_state(state_path, {
             "daily": {"a1:proj-1": {"1999-01-01": 5}},
-            "mentions": {"a1": {"1999-01-01": 3}},
         })
         c = get_consumption(data_dir, "a1", "proj-1")
         assert c["scheduled"] == 0
@@ -87,7 +88,6 @@ class TestRecordAndConsume:
             "daily": {
                 "a1:proj-1": {"1999-01-01": 5, _today(): 1},
             },
-            "mentions": {},
         })
         record_scheduled_wake(data_dir, "a1", "proj-1")
         state = _read_state(state_path)
@@ -147,6 +147,61 @@ class TestFleetWakeInfo:
         assert rows[0]["budget"] == 2
         assert rows[0]["consumed"] == 0
         assert rows[0]["remaining"] == 2
+
+
+class TestDamagedState:
+    def test_absent_file_is_fresh_state(self, tmp_path):
+        """An absent wake_budget.json is a fresh state: _read_state returns an
+        empty daily dict (no 'mentions' key) and can_wake returns True."""
+        cfg = _FakeConfig({"global_default": 2, "per_agent": {}, "per_project": {}})
+        assert can_wake(tmp_path, "a1", "a1", None, cfg) is True
+        state = _read_state(tmp_path / "wake_budget.json")
+        assert state == {"daily": {}}
+
+    def test_damaged_state_fails_closed(self, tmp_path):
+        """A damaged (present but unreadable/unparseable) wake_budget.json must
+        fail closed: can_wake returns False instead of silently restoring a
+        full budget. A healthy file with room still returns True as control."""
+        data_dir = tmp_path
+        cfg = _FakeConfig({"global_default": 2, "per_agent": {}, "per_project": {}})
+        path = data_dir / "wake_budget.json"
+
+        # Control: healthy file with room consumed still returns True.
+        _write_state(path, {"daily": {"a1:global": {_today(): 1}}})
+        assert can_wake(data_dir, "a1", "a1", None, cfg) is True
+
+        # Control: _read_state succeeds on a healthy file.
+        assert _read_state(path) == {"daily": {"a1:global": {_today(): 1}}}
+
+        # Damaged: zeroed file (null bytes) -> UnicodeDecodeError on read_text.
+        path.write_bytes(b"\x00\x01\x02\x00")
+        with pytest.raises(WakeBudgetStateError):
+            _read_state(path)
+        assert can_wake(data_dir, "a1", "a1", None, cfg) is False
+
+        # Damaged: truncated JSON -> JSONDecodeError on json.loads.
+        path.write_text("{")
+        with pytest.raises(WakeBudgetStateError):
+            _read_state(path)
+        assert can_wake(data_dir, "a1", "a1", None, cfg) is False
+
+        # Damaged: non-dict root (valid JSON but wrong shape).
+        path.write_text("[1, 2, 3]")
+        with pytest.raises(WakeBudgetStateError):
+            _read_state(path)
+        assert can_wake(data_dir, "a1", "a1", None, cfg) is False
+
+        # Damaged: unreadable file (chmod 000) -> PermissionError on read_text.
+        # Root bypasses file permissions, so skip that sub-assertion as root.
+        path.write_text("{}")
+        os.chmod(path, 0o000)
+        try:
+            if os.geteuid() != 0:
+                with pytest.raises(WakeBudgetStateError):
+                    _read_state(path)
+                assert can_wake(data_dir, "a1", "a1", None, cfg) is False
+        finally:
+            os.chmod(path, 0o644)
 
 
 def _today() -> str:

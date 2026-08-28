@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os as _os
 import re
@@ -61,7 +62,7 @@ class AppConfig:
     archived_agents: list[dict] = field(default_factory=list)
     archive: dict = field(default_factory=lambda: DEFAULT_ARCHIVE_CONFIG.copy())
     memory_url: str = "http://localhost:7900"
-    wake_budget: dict = field(default_factory=lambda: DEFAULT_CONFIG["wake_budget"].copy())
+    wake_budget: dict = field(default_factory=lambda: copy.deepcopy(DEFAULT_CONFIG["wake_budget"]))
     # Locally-hosted taOSmd deployment hooks for /api/settings/update: the git
     # checkout the running service imports from, and the command that restarts
     # it (e.g. "sudo systemctl restart taosmd"). Both empty on installs where
@@ -206,7 +207,7 @@ def load_config(path: Path) -> AppConfig:
         qmd=data.get("qmd", DEFAULT_CONFIG["qmd"].copy()),
         agents=agents,
         metrics=data.get("metrics", DEFAULT_CONFIG["metrics"].copy()),
-        wake_budget=data.get("wake_budget", DEFAULT_CONFIG["wake_budget"].copy()),
+        wake_budget=copy.deepcopy(data.get("wake_budget", DEFAULT_CONFIG["wake_budget"])),
         webhooks=data.get("webhooks", []),
         archived_agents=data.get("archived_agents", []),
         archive=archive_cfg,

@@ -21,21 +21,40 @@ logger = logging.getLogger(__name__)
 _DEFAULT_GLOBAL = 2
 
 
+class WakeBudgetStateError(Exception):
+    """Raised when ``wake_budget.json`` exists but cannot be read or parsed.
+
+    This is distinct from a *missing* file (which is a fresh state). A
+    damaged file must fail closed -- see :func:`can_wake` -- rather than
+    silently restoring a full budget to every agent.
+    """
+
+
 def _budget_path(data_dir: Path) -> Path:
     return data_dir / "wake_budget.json"
 
 
 def _read_state(path: Path) -> dict:
+    """Read and parse the wake-budget state file.
+
+    A *missing* file is a fresh state: returns ``{"daily": {}}``.
+    A *present-but-damaged* file raises :class:`WakeBudgetStateError` so the
+    caller can fail closed instead of silently reporting zero consumption.
+    """
     if not path.exists():
-        return {"daily": {}, "mentions": {}}
+        return {"daily": {}}
     try:
         text = path.read_text(encoding="utf-8")
         data = json.loads(text)
-        if not isinstance(data, dict):
-            return {"daily": {}, "mentions": {}}
-        return data
-    except (OSError, ValueError, TypeError):
-        return {"daily": {}, "mentions": {}}
+    except (OSError, ValueError, TypeError) as e:
+        raise WakeBudgetStateError(
+            f"wake_budget.json exists but is unreadable/damaged: {e}"
+        ) from e
+    if not isinstance(data, dict):
+        raise WakeBudgetStateError(
+            f"wake_budget.json root is {type(data).__name__}, expected a JSON object"
+        )
+    return data
 
 
 def _write_state(path: Path, state: dict) -> None:
@@ -113,11 +132,22 @@ def can_wake(
     project_id: str | None,
     config: Any,
 ) -> bool:
-    """Return True when the agent may be woken for a scheduled check."""
+    """Return True when the agent may be woken for a scheduled check.
+
+    Fails closed (returns False) when the state file is damaged: a corrupted
+    ``wake_budget.json`` must not silently restore a full budget and let
+    enforcement cease fleet-wide.
+    """
     budget = resolve_budget(agent_id, project_id, config)
     if budget <= 0:
         return False
-    consumption = get_consumption(data_dir, agent_id, project_id)
+    try:
+        consumption = get_consumption(data_dir, agent_id, project_id)
+    except WakeBudgetStateError:
+        logger.exception(
+            "wake budget state damaged, refusing wake for agent %s", agent_id
+        )
+        return False
     return consumption["scheduled"] < budget
 
 
