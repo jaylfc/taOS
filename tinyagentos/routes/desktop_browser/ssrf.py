@@ -126,10 +126,11 @@ def validate_resolved_addr(addr: str, *, allow_private: bool = False) -> None:
 
     Rejects loopback, RFC1918, link-local, multicast, broadcast,
     unspecified (0.0.0.0), and the IPv6 equivalents (incl. IPv4-mapped
-    IPv6 forms like ::ffff:127.0.0.1).
+    IPv6 forms like ::ffff:10.0.0.1).
 
-    Pass ``allow_private=True`` to skip the ``is_private`` and RFC 6598
-    CGNAT checks (useful for self-hosted LAN services).
+    Pass ``allow_private=True`` to skip the ``is_private`` check (useful for
+    self-hosted LAN services). CGNAT (RFC 6598 100.64/10) is always blocked
+    regardless of allow_private to protect our A2A bus which lives in that range.
     """
     try:
         ip = ipaddress.ip_address(addr)
@@ -142,22 +143,21 @@ def validate_resolved_addr(addr: str, *, allow_private: bool = False) -> None:
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
 
-    if (
-        ip.is_loopback
-        or (not allow_private and ip.is_private)
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified
-    ):
+    if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
         raise SsrfBlockedError(f"resolved address {addr!r} is in the blocklist")
 
-    if not allow_private:
-        for net in _BLOCKED_NETWORKS:
-            if ip in net:
-                raise SsrfBlockedError(
-                    f"resolved address {addr!r} is in blocked network {net}"
-                )
+    # Skip the is_private check when allow_private=True, but always block
+    # RFC1918 and CGNAT regardless.
+    if not allow_private and ip.is_private:
+        raise SsrfBlockedError(f"resolved address {addr!r} is in the blocklist")
+
+    # Always block CGNAT (RFC 6598 100.64/10) even when allow_private=True
+    # Our own A2A bus lives in this range, so we must keep it blocked.
+    for net in _BLOCKED_NETWORKS:
+        if ip in net:
+            raise SsrfBlockedError(
+                f"resolved address {addr!r} is in blocked network {net}"
+            )
 
 
 def _try_parse_encoded_ipv4(host: str) -> str | None:
