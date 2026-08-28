@@ -95,11 +95,12 @@ EXIT_ERROR = 2
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# The check-run that this gate publishes / reads back, and the mapping from
-# this gate's exit verdict to the GitHub check-run conclusion. The gate only
-# writes a terminal conclusion (success/failure) -- it never reports in_progress
-# or neutral, so a check-run conclusion is authoritative for the head SHA.
-CHECK_RUN_NAME = "Bot review gate"
+# The check-run names this gate publishes / reads back. GitHub emits two
+# separate check runs for the same workflow run on a SHA: the workflow's
+# DISPLAY NAME ("Bot review gate") and the JOB ID ("bot-review-gate").
+# mergeStateStatus keys off ANY failing check run, so a stale FAILURE on
+# either name pins the PR on UNSTABLE. The filter must catch both.
+CHECK_RUN_NAMES = ("Bot review gate", "bot-review-gate")
 VERDICT_TO_CONCLUSION = {
     EXIT_OK: "success",
     EXIT_STUB: "failure",
@@ -384,9 +385,10 @@ def list_check_runs(
     """List bot-review-gate check runs for a commit ref (a head SHA).
 
     Reads GET /repos/{owner}/{repo}/commits/{ref}/check-runs and keeps only the
-    runs named ``CHECK_RUN_NAME``. Returns None on infrastructure failure, [] if
-    the ref exists but has no bot-review-gate runs (so callers can distinguish
-    cannot-see from a legitimately-empty head SHA).
+    runs named in ``CHECK_RUN_NAMES`` (the workflow display name and the job
+    id). Returns None on infrastructure failure, [] if the ref exists but has
+    no bot-review-gate runs (so callers can distinguish cannot-see from a
+    legitimately-empty head SHA).
     """
     token = token or _get_token()
     url = f"{API}/repos/{owner}/{repo}/commits/{ref}/check-runs"
@@ -405,7 +407,7 @@ def list_check_runs(
         runs = data
     else:
         runs = []
-    return [r for r in runs if isinstance(r, dict) and r.get("name") == CHECK_RUN_NAME]
+    return [r for r in runs if isinstance(r, dict) and r.get("name") in CHECK_RUN_NAMES]
 
 
 def filter_head_sha_check_runs(check_runs: list[dict]) -> list[dict]:
@@ -558,7 +560,7 @@ def reconcile_head_sha_check_run(
     ):
         return None
     payload = {
-        "name": CHECK_RUN_NAME,
+        "name": "Bot review gate",
         "head_sha": head_sha,
         "status": "completed",
         "conclusion": conclusion,
@@ -654,6 +656,8 @@ def main(argv: list[str] | None = None) -> int:
         reconcile_head_sha_check_run(
             owner, repo, head_sha, VERDICT_TO_CONCLUSION[exit_code], token,
         )
+        verdict_exit, verdict_msg = check_run_verdict(owner, repo, head_sha, token)
+        print(verdict_msg)
     return exit_code
 
 
