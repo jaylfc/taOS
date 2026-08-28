@@ -69,19 +69,9 @@ class TestEngineSelection:
 
     async def test_postgres_fails_when_unavailable(self, tmp_path):
         """Test that Postgres startup fails loudly when unavailable."""
-        # This test validates that when a store explicitly selects Postgres
-        # but Postgres is unavailable, startup fails rather than falling back
-        # to SQLite.
-        
-        # Mock the postgres connection to simulate unavailability
-        with patch.object(BaseStore, '_init_postgres', new_callable=AsyncMock) as mock_postgres:
-            mock_postgres.side_effect = RuntimeError("Postgres unavailable")
-            
-            store = TestStorePostgres(tmp_path / "test.pg")
-            
-            # The store should attempt to initialize Postgres and fail
-            with pytest.raises(RuntimeError, match="Postgres unavailable"):
-                await store.init()
+        store = TestStorePostgres(tmp_path / "test.pg")
+        with pytest.raises(NotImplementedError, match="Postgres engine not yet implemented"):
+            await store.init()
 
     async def test_sqlite_fallback_when_no_engine_specified(self, tmp_path):
         """Test that SQLite remains the default and works when no engine is configured."""

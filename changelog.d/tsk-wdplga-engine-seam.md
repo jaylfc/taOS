@@ -2,10 +2,6 @@
 
 - Engine selection support for BaseStore: Added Engine enum (SQLITE, POSTGRES) to allow stores to specify which database engine to use. Stores now have an optional `engine` parameter in their constructor and an `ENGINE` class attribute, defaulting to SQLite for backward compatibility. Added `_init_sqlite()` and `_init_postgres()` methods to BaseStore to handle engine-specific initialization.
 
-### Fixed
-
-- Stale documentation: Marked `docs/design/postgres-bounded-adoption.md` as superseded by the global Postgres migration (tsk-wdplga). The document is now noted as deprecated per Jay's ruling.
-
 ### Changed
 
 - BaseStore API: Modified `BaseStore.__init__()` to accept optional `engine` parameter. Store subclasses can now specify `ENGINE = Engine.POSTGRES` if they intend to use Postgres in future migration slices.

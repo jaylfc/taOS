@@ -45,7 +45,7 @@ class BaseStore:
 
     async def init(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         if self.engine == Engine.POSTGRES:
             await self._init_postgres()
         else:
@@ -54,7 +54,7 @@ class BaseStore:
     async def _init_sqlite(self) -> None:
         import aiosqlite
         from tinyagentos.db_migrations import apply_wal_pragmas_async, run_migrations_async
-        
+
         self._db = await aiosqlite.connect(str(self.db_path))
         await apply_wal_pragmas_async(self._db)
         if self.SCHEMA:
