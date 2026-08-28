@@ -773,10 +773,10 @@ class TestCheckRunVerdict:
     HEAD_SHA = "1baa21a" + "0" * 34
 
     @staticmethod
-    def _run(run_id, conclusion, started_at, /, *, in_progress=False):
+    def _run(run_id, conclusion, started_at, /, *, in_progress=False, name=None):
         return {
             "id": run_id,
-            "name": "Bot review gate",
+            "name": name or "Bot review gate",
             "head_sha": "1baa21a",
             "status": "in_progress" if in_progress else "completed",
             "conclusion": None if in_progress else conclusion,
@@ -871,6 +871,37 @@ class TestCheckRunVerdict:
         # The foreign "CodeRabbit" check run must not decide the verdict; only
         # the stale bot-review-gate failure remains, so it stays red.
         assert exit_code == 1
+
+    def test_stale_failure_matched_by_job_id(self, check_mod) -> None:
+        # Acceptance (b): the run that actually pins a self-healed PR on
+        # UNSTABLE is the GitHub Actions JOB check run, named after the job id
+        # ("bot-review-gate"), not the workflow display name. It must pin red.
+        # On the original line this FAILS: list_check_runs narrowed its filter
+        # to the display name only and dropped the bot-review-gate run, so the
+        # verdict read an empty head SHA and reported pass. It must go red on
+        # today's code and green once both names are matched.
+        # Fixture mirrors the live #2565 evidence (run 98668626832).
+        runs = [
+            self._run(98668626832, "failure", "2026-08-27T20:52:03Z", name="bot-review-gate"),
+        ]
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_list(runs)):
+            exit_code, message = check_mod.check_run_verdict("jaylfc", "taOS", self.HEAD_SHA)
+        assert exit_code == 1
+        assert "failure" in message
+
+    def test_stale_failure_matched_by_display_name(self, check_mod) -> None:
+        # CONTROL for the job-id case above. The display-name run must still
+        # be matched. A fix that SWAPS the filter from the display name to the
+        # job id -- rather than covering BOTH -- is caught here: this case
+        # would go red against such a swap, so the two cases together pin
+        # "cover both names" and neither name alone is sufficient.
+        runs = [
+            self._run(98668626832, "failure", "2026-08-27T20:52:03Z", name="Bot review gate"),
+        ]
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_list(runs)):
+            exit_code, message = check_mod.check_run_verdict("jaylfc", "taOS", self.HEAD_SHA)
+        assert exit_code == 1
+        assert "failure" in message
 
 
 class TestReconcileCheckRun:
