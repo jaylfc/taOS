@@ -7,15 +7,32 @@ case is 'sniffio': anyio calls sniffio.current_async_library on every async
 test; a partial sniffio raises AttributeError instead of ModuleNotFoundError,
 producing 500+ identical tracebacks attributed to whichever PR happened to
 run.
+
+The helpers under test live in ``tests/conftest.py`` and are bound here by
+absolute file path, never by the bare name ``conftest``: ``tests/`` is not a
+package and ``tests/e2e/conftest.py`` exists, so ``from conftest import ...``
+resolves to the e2e shim under ``pytest tests/`` and aborts the whole-suite
+collection -- ``Interrupted: 1 error during collection``, exit 2, zero tests
+run (card ``tsk-xplzqy``).
 """
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import sys
+from pathlib import Path
 
 import pytest
 
-from conftest import _CORE_DEP_CONTRACTS, _check_core_deps, _verify_core_deps
+_SPEC = importlib.util.spec_from_file_location(
+    "tests_tinyagentos_conftest",
+    Path(__file__).resolve().parent / "conftest.py",
+)
+_conftest = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_conftest)  # type: ignore[union-attr]
+
+_CORE_DEP_CONTRACTS = _conftest._CORE_DEP_CONTRACTS
+_check_core_deps = _conftest._check_core_deps
+_verify_core_deps = _conftest._verify_core_deps
 
 
 class TestSniffioContract:
