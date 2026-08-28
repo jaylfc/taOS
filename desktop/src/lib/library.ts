@@ -126,6 +126,44 @@ export async function reprocessLibraryItem(itemId: string): Promise<boolean> {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Jobs                                                               */
+/* ------------------------------------------------------------------ */
+
+export interface ListLibraryJobsParams {
+  state?: string;
+  limit?: number;
+}
+
+/** List ingest pipeline jobs (queued, processing, error, done, ...).
+ *  The aggregated jobs endpoint lands in #2058; until then this resolves to an
+ *  empty list when the route is unavailable.
+ */
+export async function listLibraryJobs(
+  params?: ListLibraryJobsParams,
+): Promise<{ jobs: LibraryJob[] }> {
+  const qs = new URLSearchParams();
+  if (params?.state) qs.set("state", params.state);
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  const query = qs.toString();
+  const url = `/api/library/jobs${query ? `?${query}` : ""}`;
+  const data = await fetchJson<{ jobs: LibraryJob[] }>(url, { jobs: [] });
+  return { jobs: Array.isArray(data.jobs) ? data.jobs : [] };
+}
+
+/** Retry a failed job. Mocks the POST until #2058 ships the real endpoint. */
+export async function retryLibraryJob(jobId: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `/api/library/jobs/${encodeURIComponent(jobId)}/retry`,
+      withCsrf({ method: "POST", headers: { Accept: "application/json" } }),
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Ingest                                                             */
 /* ------------------------------------------------------------------ */
 
