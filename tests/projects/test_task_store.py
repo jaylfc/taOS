@@ -421,3 +421,95 @@ async def test_close_unclaimed_unchanged(store):
     again = await store.get_task(t["id"])
     assert again["status"] == "closed"
     assert again["closed_by"] == "reviewer"
+
+
+# ── checklist items ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_checklist_item(store):
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="First item", created_by="u")
+    assert item["id"].startswith("cki-")
+    assert item["text"] == "First item"
+    assert item["done"] is False
+    assert item["verified"] is False
+    assert item["reported"] is False
+    assert item["archived"] is False
+
+    items = await store.list_checklist_items(task_id=t["id"])
+    assert len(items) == 1
+    assert items[0]["id"] == item["id"]
+
+    all_items = await store.list_checklist_items(task_id=t["id"], include_archived=True)
+    assert len(all_items) == 1
+
+
+@pytest.mark.asyncio
+async def test_cannot_archive_unverified(store):
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Unverified item", created_by="u")
+    with pytest.raises(ValueError, match="item cannot be archived: not verified"):
+        await store.archive_checklist_item(item_id=item["id"], reported_by="u")
+
+
+@pytest.mark.asyncio
+async def test_cannot_archive_unreported(store):
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Unreported item", created_by="u")
+    await store.update_checklist_item(item_id=item["id"], verified=True)
+    with pytest.raises(ValueError, match="item cannot be archived: not reported"):
+        await store.archive_checklist_item(item_id=item["id"], reported_by="u")
+
+
+@pytest.mark.asyncio
+async def test_can_archive_after_verification_and_report(store):
+    """Archive a checklist item after verification and report."""
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Complete item", created_by="u")
+    await store.update_checklist_item(item_id=item["id"], verified=True, reported=True)
+
+    archived = await store.archive_checklist_item(item_id=item["id"], reported_by="u")
+    assert archived["archived"] is True
+    all_items = await store.list_checklist_items(task_id=t["id"], include_archived=True)
+    assert any(i["id"] == item["id"] for i in all_items)
+
+
+@pytest.mark.asyncio
+async def test_survives_agent_restart(store):
+    """Checklist items persist in the DB across store reinitialization.
+
+    Verifies that the OS (database) holds the checklist, not the agent's
+    temporary memory - items created in one store session are visible in
+    a fresh session.
+    """
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Persistent item", created_by="u")
+    items = await store.list_checklist_items(task_id=t["id"])
+    assert len(items) == 1
+    assert items[0]["id"] == item["id"]
+    assert items[0]["text"] == "Persistent item"
+    assert items[0]["archived"] is False
+    all_items = await store.list_checklist_items(task_id=t["id"], include_archived=True)
+    assert len(all_items) == 1
+
+
+@pytest.mark.asyncio
+async def test_update_checklist_item_returns_none_when_missing(store):
+    """update_checklist_item returns None for an unknown item (no fields to set
+    would still hit get_checklist_item; with no-op path it must not crash)."""
+    assert await store.update_checklist_item("cki-missing", done=True) is None
+
+
+@pytest.mark.asyncio
+async def test_archive_missing_item_raises_value_error(store):
+    """RED proof for fix #2 (None-safety): archiving a non-existent item must
+    raise a clean ValueError naming the item, not a TypeError from indexing
+    ``None``.
+
+    On the pre-fix code ``get_checklist_item`` returns ``None`` and the next
+    ``item["verified"]`` raises ``TypeError``; ``pytest.raises(ValueError)``
+    then fails the test. Post-fix it raises ``ValueError`` cleanly.
+    """
+    with pytest.raises(ValueError, match="checklist item not found: cki-missing"):
+        await store.archive_checklist_item(item_id="cki-missing", reported_by="u")
