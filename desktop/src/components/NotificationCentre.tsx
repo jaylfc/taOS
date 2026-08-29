@@ -294,13 +294,13 @@ export function NotificationCentre() {
           )}
           {/* View archive footer */}
           <div className="border-t border-white/10 px-3 py-2">
-              <button
-                onClick={() => {
-                  const size = getApp("notifications")?.defaultSize ?? { w: 900, h: 600 };
-                  openWindow("notifications", size, { section: "archive" });
-                }}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-accent hover:bg-white/5 rounded transition-colors"
-              >
+            <button
+              onClick={() => {
+                const size = getApp("notifications")?.defaultSize ?? { w: 900, h: 600 };
+                openWindow("notifications", size, { section: "archive" });
+              }}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-accent hover:bg-white/5 rounded transition-colors"
+            >
               <Archive size={13} />
               View archive{archived.length > 0 ? ` (${archived.length})` : ""}
             </button>

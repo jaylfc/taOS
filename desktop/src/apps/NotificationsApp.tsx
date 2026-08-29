@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Search, Filter, X, Bell, BellOff, CheckCheck, Trash2, Archive } from "lucide-react";
 import { useNotificationStore, type Notification } from "@/stores/notification-store";
 import { useProcessStore } from "@/stores/process-store";
@@ -13,8 +13,6 @@ import {
 import { SetupChecklist } from "@/components/SetupChecklist";
 import { ConsentActions, consentPayload } from "@/components/ConsentActions";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui";
-
-const INBOX_CAP = 10;
 
 function formatTime(ts: number): string {
   const delta = Date.now() - ts;
@@ -111,11 +109,11 @@ function NotificationItem({
   const consent = (n.source === "auth_requests" || n.source === "agent_scope_requests") ? consentPayload(n.data) : null;
   return (
     <div className={`border-b border-white/5 ${!n.read ? "bg-accent/5" : ""}`}>
-      <button
-        onClick={() => onItemClick(n)}
-        className={`w-full text-left px-4 py-3 hover:bg-white/5 transition-colors ${n.action ? "cursor-pointer" : ""}`}
-      >
-        <div className="flex items-start justify-between gap-2">
+      <div className="flex items-start gap-2">
+        <button
+          onClick={() => onItemClick(n)}
+          className={`flex-1 min-w-0 text-left px-4 py-3 hover:bg-white/5 transition-colors ${n.action ? "cursor-pointer" : ""}`}
+        >
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               {!n.read && <div className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />}
@@ -128,15 +126,15 @@ function NotificationItem({
               <span className="text-[10px] text-shell-text-tertiary">{n.source}</span>
             </div>
           </div>
-          <button
-            onClick={(e) => { e.stopPropagation(); onDismiss(n.id); }}
-            className="p-0.5 rounded hover:bg-white/10 shrink-0"
-            aria-label={`Dismiss: ${n.title}`}
-          >
-            <X size={12} className="text-shell-text-tertiary" />
-          </button>
-        </div>
-      </button>
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); onDismiss(n.id); }}
+          className="p-0.5 rounded hover:bg-white/10 shrink-0"
+          aria-label={`Dismiss: ${n.title}`}
+        >
+          <X size={12} className="text-shell-text-tertiary" />
+        </button>
+      </div>
       {consent && (
         <div className="px-4 pb-3">
           <ConsentActions
@@ -195,18 +193,20 @@ function ArchiveNotificationItem({ n }: { n: Notification }) {
 
 export function NotificationsApp({ windowId: _windowId, section: initialSection }: { windowId: string; section?: string }) {
   const notifications = useNotificationStore((s) => s.notifications);
-  const {
-    markRead,
-    markAllRead,
-    clearAll,
-    dismiss,
-    archiveRead,
-  } = useNotificationStore();
+  const markRead = useNotificationStore((s) => s.markRead);
+  const markAllRead = useNotificationStore((s) => s.markAllRead);
+  const clearAll = useNotificationStore((s) => s.clearAll);
+  const dismiss = useNotificationStore((s) => s.dismiss);
+  const archiveRead = useNotificationStore((s) => s.archiveRead);
   const openWindow = useProcessStore((s) => s.openWindow);
   const [checklistDismissed, setChecklistDismissed] = useState(false);
   const [activeTab, setActiveTab] = useState(() => initialSection === "archive" ? "archive" : "notifications");
 
-  const active = notifications.filter((n) => !n.archived);
+  useEffect(() => {
+    setActiveTab(initialSection === "archive" ? "archive" : "notifications");
+  }, [initialSection]);
+
+  const active = useMemo(() => notifications.filter((n) => !n.archived), [notifications]);
   const archived = useMemo(
     () => notifications.filter((n) => n.archived).sort((a, b) => b.timestamp - a.timestamp),
     [notifications],
@@ -255,7 +255,7 @@ export function NotificationsApp({ windowId: _windowId, section: initialSection 
                 </div>
               ) : (
                 <>
-                  {active.slice(0, INBOX_CAP).map((n) => (
+                  {active.map((n) => (
                     <NotificationItem
                       key={n.id}
                       n={n}
@@ -264,13 +264,6 @@ export function NotificationsApp({ windowId: _windowId, section: initialSection 
                       onItemClick={handleItemClick}
                     />
                   ))}
-                  {active.length > INBOX_CAP && (
-                    <div className="px-3 py-2.5 border-t border-white/5">
-                      <p className="text-[10px] text-shell-text-tertiary text-center">
-                        +{active.length - INBOX_CAP} more in archive
-                      </p>
-                    </div>
-                  )}
                 </>
               )}
             </div>
@@ -312,45 +305,69 @@ export function NotificationsApp({ windowId: _windowId, section: initialSection 
   );
 }
 
-function ArchiveTab({ archived }: { archived: Notification[] }) {
+function ArchiveTab({ archived: initialArchived }: { archived: Notification[] }) {
   const [search, setSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState("");
   const [levelFilter, setLevelFilter] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [localArchived, setLocalArchived] = useState<Notification[]>(initialArchived);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    setLocalArchived(initialArchived);
+  }, [initialArchived]);
 
   const fetchArchived = useCallback(async () => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       setLoading(true);
       setError(null);
       const res = await fetch("/api/notifications/archived", {
         headers: { Accept: "application/json" },
+        signal: controller.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const ct = res.headers.get("content-type") ?? "";
       if (!ct.includes("application/json")) throw new Error("non-JSON response");
       const data = await res.json();
       if (!Array.isArray(data)) throw new Error("unexpected response shape");
-      useNotificationStore.setState({
-        notifications: (data as ServerNotificationRow[]).map((row) => ({ ...mapRow(row), archived: true })),
+      const fetched = (data as ServerNotificationRow[]).map((row) => ({ ...mapRow(row), archived: true }));
+      setLocalArchived((prev) => {
+        const byId = new Map(prev.map((n) => [n.id, n]));
+        for (const n of fetched) {
+          byId.set(n.id, n);
+        }
+        return Array.from(byId.values()).sort((a, b) => b.timestamp - a.timestamp);
       });
     } catch (err) {
+      if ((err as Error).name === "AbortError") return;
       setError(err instanceof Error ? err.message : "Failed to load archive");
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { void fetchArchived(); }, [fetchArchived]);
+  useEffect(() => {
+    void fetchArchived();
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, [fetchArchived]);
 
   const sources = useMemo(() => {
-    const set = new Set(archived.map((n) => n.source));
+    const set = new Set(localArchived.map((n) => n.source));
     return Array.from(set).sort();
-  }, [archived]);
+  }, [localArchived]);
 
   const filtered = useMemo(() => {
-    return archived.filter((n) => {
+    return localArchived.filter((n) => {
       const s = search.toLowerCase();
       if (s && !n.title.toLowerCase().includes(s) && !(n.body && n.body.toLowerCase().includes(s))) {
         return false;
@@ -359,7 +376,7 @@ function ArchiveTab({ archived }: { archived: Notification[] }) {
       if (levelFilter && n.level !== levelFilter) return false;
       return true;
     });
-  }, [archived, search, sourceFilter, levelFilter]);
+  }, [localArchived, search, sourceFilter, levelFilter]);
 
   const clearFilters = () => { setSearch(""); setSourceFilter(""); setLevelFilter(""); };
   const activeFilterCount = [sourceFilter, levelFilter, search].filter(Boolean).length;
@@ -370,7 +387,7 @@ function ArchiveTab({ archived }: { archived: Notification[] }) {
         <div>
           <h2 className="text-sm font-medium">Notification Archive</h2>
           <p className="text-[11px] text-shell-text-tertiary mt-0.5">
-            {archived.length} archived notification{archived.length !== 1 ? "s" : ""}
+            {localArchived.length} archived notification{localArchived.length !== 1 ? "s" : ""}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -453,7 +470,7 @@ function ArchiveTab({ archived }: { archived: Notification[] }) {
         ) : filtered.length === 0 ? (
           <div className="px-4 py-16 text-center">
             <p className="text-xs text-shell-text-tertiary">
-              {archived.length === 0 ? "No archived notifications" : "No matching notifications"}
+              {localArchived.length === 0 ? "No archived notifications" : "No matching notifications"}
             </p>
           </div>
         ) : (
@@ -463,9 +480,9 @@ function ArchiveTab({ archived }: { archived: Notification[] }) {
 
       <div className="px-4 py-2.5 border-t border-white/10 shrink-0 flex items-center justify-between">
         <span className="text-[10px] text-shell-text-tertiary">
-          {filtered.length !== archived.length
-            ? `${filtered.length} of ${archived.length} shown`
-            : `${archived.length} total`}
+          {filtered.length !== localArchived.length
+            ? `${filtered.length} of ${localArchived.length} shown`
+            : `${localArchived.length} total`}
         </span>
       </div>
     </div>

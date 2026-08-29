@@ -29,13 +29,20 @@ vi.mock("@/components/SetupChecklist", () => ({ SetupChecklist: () => null }));
 vi.mock("@/components/ConsentActions", () => ({ ConsentActions: () => null }));
 
 vi.mock("@/components/ui", () => ({
-  Tabs: ({ children, value, onValueChange }: { children: React.ReactNode; value?: string; onValueChange?: (v: string) => void }) => (
-    <div data-testid="tabs" data-value={value}>
-      <button data-testid="tab-notifications" onClick={() => onValueChange?.("notifications")}>Notifications</button>
-      <button data-testid="tab-archive" onClick={() => onValueChange?.("archive")}>Archive</button>
-      {children}
-    </div>
-  ),
+  Tabs: ({ children, value, onValueChange }: { children: React.ReactNode; value?: string; onValueChange?: (v: string) => void }) => {
+    const items = React.Children.toArray(children);
+    const active = items.filter((child: React.ReactNode) => {
+      if (!React.isValidElement(child)) return false;
+      return child.props.value === value;
+    });
+    return (
+      <div data-testid="tabs" data-value={value}>
+        <button data-testid="tab-notifications" onClick={() => onValueChange?.("notifications")}>Notifications</button>
+        <button data-testid="tab-archive" onClick={() => onValueChange?.("archive")}>Archive</button>
+        {active}
+      </div>
+    );
+  },
   TabsContent: ({ children, value }: { children: React.ReactNode; value?: string }) => (
     <div data-testid={`tab-content-${value}`}>{children}</div>
   ),
@@ -165,5 +172,79 @@ describe("NotificationsApp", () => {
     render(<NotificationsApp windowId="w1" />);
     fireEvent.click(screen.getByTitle("Clear all"));
     expect(useNotificationStore.getState().notifications.every((n) => n.archived)).toBe(true);
+  });
+
+  it("preserves active notifications when the archive tab is opened", async () => {
+    const fetchMock = mockFetch(() => ({ ok: true, body: [
+      { id: "srv-2", title: "Old note", body: "", level: "info", read: true, timestamp: Date.now() - 1000, archived: true, source: "system" },
+    ] }));
+    vi.stubGlobal("fetch", fetchMock);
+    useNotificationStore.setState({
+      notifications: [
+        notif({ id: "srv-1", title: "Active note" }),
+        { ...notif({ id: "srv-2", title: "Old note" }), archived: true } as Notification,
+      ],
+    });
+    render(<NotificationsApp windowId="w1" />);
+    fireEvent.click(screen.getByTestId("tab-archive"));
+    await flush();
+    const all = useNotificationStore.getState().notifications;
+    expect(all.map((n) => n.id)).toContain("srv-1");
+    expect(all.map((n) => n.id)).toContain("srv-2");
+    expect(screen.getByText("Old note")).toBeInTheDocument();
+  });
+
+  it("aborts in-flight archive fetches on unmount", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: () => Promise.resolve([]),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<NotificationsApp windowId="w1" />);
+
+    for (let i = 0; i < 3; i++) {
+      fireEvent.click(screen.getByTestId("tab-archive"));
+      await flush();
+      fireEvent.click(screen.getByTestId("tab-notifications"));
+      await flush();
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("dismiss button is not nested inside another button", () => {
+    useNotificationStore.setState({
+      notifications: [notif({ id: "srv-1", title: "Note" })],
+    });
+    render(<NotificationsApp windowId="w1" />);
+    const dismissBtn = screen.getByLabelText(/Dismiss:/i);
+    expect(dismissBtn.closest("button")).toBe(dismissBtn);
+  });
+
+  it("shows all active notifications when there are more than INBOX_CAP", () => {
+    const many = Array.from({ length: 15 }, (_, i) => notif({ id: `srv-${i}`, title: `Note ${i}` }));
+    useNotificationStore.setState({ notifications: many });
+    render(<NotificationsApp windowId="w1" />);
+    for (let i = 0; i < 15; i++) {
+      expect(screen.getByText(`Note ${i}`)).toBeInTheDocument();
+    }
+  });
+
+  it("reacts to initialSection prop changes", () => {
+    const { rerender } = render(<NotificationsApp windowId="w1" />);
+    expect(screen.getByTestId("tabs")).toHaveAttribute("data-value", "notifications");
+    rerender(<NotificationsApp windowId="w1" section="archive" />);
+    expect(screen.getByTestId("tabs")).toHaveAttribute("data-value", "archive");
+  });
+});
+
+describe("APP_REDIRECTS", () => {
+  it("has no unread section field on redirect entries", async () => {
+    const mod = await import("@/registry/app-registry");
+    for (const entry of Object.values(mod.APP_REDIRECTS)) {
+      expect(entry).not.toHaveProperty("section");
+    }
   });
 });

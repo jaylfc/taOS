@@ -160,8 +160,8 @@ export function getOptionalApps(): AppManifest[] {
  * optional apps the user has installed. `installedOptional` is the set of
  * installed optional app ids (from /api/apps/optional/installed).
  */
-export const APP_REDIRECTS: Record<string, { appId: string; section?: string }> = {
-  "notification-archive": { appId: "notifications", section: "archive" },
+export const APP_REDIRECTS: Record<string, { appId: string }> = {
+  "notification-archive": { appId: "notifications" },
 };
 
 export function getLaunchableApps(installedOptional: Set<string>): AppManifest[] {

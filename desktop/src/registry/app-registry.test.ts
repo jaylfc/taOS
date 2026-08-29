@@ -230,8 +230,8 @@ describe("APP_REDIRECTS", () => {
     expect(typeof APP_REDIRECTS).toBe("object");
   });
 
-  it("redirects notification-archive to the notifications app archive section", () => {
-    expect(APP_REDIRECTS["notification-archive"]).toEqual({ appId: "notifications", section: "archive" });
+  it("redirects notification-archive to the notifications app", () => {
+    expect(APP_REDIRECTS["notification-archive"]).toEqual({ appId: "notifications" });
   });
 });
 
