@@ -33,6 +33,18 @@ _DEFAULT_OLLAMA_PORT = 11434
 _DEFAULT_HAILO_OLLAMA_PORT = 7836
 
 
+def _normalize_digest(digest: str) -> str:
+    """Strip the algorithm prefix from an Ollama layer digest.
+
+    Ollama emits digests as ``sha256:<64-hex>``; hailo-ollama (being
+    Ollama-compatible) does the same.  The ``hef_h10h`` field in the catalog
+    manifest is a bare 64-char hex string, so we strip the prefix to compare.
+    """
+    if digest.startswith("sha256:"):
+        return digest[len("sha256:"):]
+    return digest
+
+
 def _default_host() -> str:
     """Resolve daemon URL from OLLAMA_HOST or fallback to localhost:11434."""
     raw = os.environ.get("OLLAMA_HOST", "").strip()
@@ -128,6 +140,7 @@ class OllamaInstaller(AppInstaller):
         # Pull via the streaming /api/pull endpoint. Status events flow as
         # NDJSON; a final {"status": "success"} indicates completion.
         last_status = ""
+        pulled_digests: set[str] = set()
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 async with client.stream(
@@ -149,6 +162,9 @@ class OllamaInstaller(AppInstaller):
                                 "error": f"ollama pull failed: {data['error']}",
                                 "ollama_model": model_name,
                             }
+                        digest = data.get("digest", "")
+                        if digest:
+                            pulled_digests.add(_normalize_digest(digest))
                         last_status = data.get("status", last_status)
         except httpx.HTTPError as exc:
             return {
@@ -166,6 +182,30 @@ class OllamaInstaller(AppInstaller):
                 ),
                 "ollama_model": model_name,
             }
+
+        # Hailo-10H .hef variants carry a ``hef_h10h`` content pin.  Unlike
+        # download_url + sha256 (which the DownloadInstaller enforces at
+        # byte-hash time), the hailo-ollama daemon pulls and stores the .hef
+        # internally, so we cannot hash the file on disk ourselves.  Instead we
+        # verify the content digest reported by the hailo-ollama pull response
+        # -- in Ollama's content-addressable storage that digest IS the SHA256
+        # of the .hef layer.  If the pin does not match any pulled layer
+        # digest, the install is rejected so a tampered or wrong artefact is
+        # never silently accepted.
+        hef_expected = None
+        if isinstance(variant, dict):
+            hef_expected = variant.get("hef_h10h")
+        if hef_expected:
+            if hef_expected not in pulled_digests:
+                got = sorted(pulled_digests)[0] if pulled_digests else "none"
+                return {
+                    "success": False,
+                    "error": (
+                        f"HEF content hash mismatch: expected {hef_expected}, "
+                        f"got {got}"
+                    ),
+                    "ollama_model": model_name,
+                }
 
         return {
             "success": True,
