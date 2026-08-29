@@ -278,7 +278,6 @@ class TestCheckGateIntegrity:
         link_hdr = f'<{next_url}>; rel="next"'
         pr_url = "https://api.github.com/repos/jaylfc/taOS/pulls/42"
 
-        import http.client
         import io
         import urllib.response as _ur
 
