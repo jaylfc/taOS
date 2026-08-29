@@ -114,18 +114,18 @@ export function ThreadPanel({
         // let the chat list behind bleed through (overlapping/garbled text).
         isFullscreen
           ? "fixed inset-0 z-50 bg-shell-bg flex flex-col"
-          : "fixed top-0 right-0 h-full w-[360px] bg-shell-bg border-l border-white/10 flex flex-col z-40"
+          : "fixed top-0 right-0 h-full w-[360px] bg-shell-bg border-l border-shell-border flex flex-col z-40"
       }
       role="complementary"
       aria-label="Thread panel"
       style={isFullscreen ? { paddingTop: "env(safe-area-inset-top, 0px)" } : undefined}
     >
-      <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-shell-border">
         <span className="font-semibold text-sm">Thread</span>
         <button
           aria-label={isFullscreen ? "Back" : "Close thread"}
           onClick={onClose}
-          className="p-1 hover:bg-white/5 rounded"
+          className="p-1 hover:bg-shell-surface rounded"
         >{isFullscreen ? "◀" : "✕"}</button>
       </div>
 
@@ -147,7 +147,7 @@ export function ThreadPanel({
         )}
       </div>
 
-      <div className="px-4 py-3 border-t border-white/10">
+      <div className="px-4 py-3 border-t border-shell-border">
         {sendError && (
           <div role="alert" className="text-xs text-red-300 mb-2">{sendError}</div>
         )}
@@ -160,7 +160,7 @@ export function ThreadPanel({
           aria-label="Thread reply"
           rows={2}
           disabled={sending}
-          className="w-full bg-white/5 rounded px-3 py-2 text-sm resize-none outline-none border border-white/10 focus:border-sky-400 disabled:opacity-50"
+          className="w-full bg-shell-surface rounded px-3 py-2 text-sm resize-none outline-none border border-shell-border focus:border-sky-400 disabled:opacity-50"
         />
       </div>
     </div>

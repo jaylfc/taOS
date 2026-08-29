@@ -226,7 +226,7 @@ describe("MessageList", () => {
       });
       // dayLabel returns "Today", "Yesterday", or a formatted date — verify
       // the separator element exists and contains human-readable text
-      const separator = document.querySelector(".select-none .text-white\\/40");
+      const separator = document.querySelector(".select-none .text-shell-text-tertiary");
       expect(separator).not.toBeNull();
       expect(separator?.textContent?.trim().length).toBeGreaterThan(0);
     });
@@ -241,7 +241,7 @@ describe("MessageList", () => {
         ],
       });
       // Should have two day separator elements
-      const separators = document.querySelectorAll(".select-none .text-white\\/40");
+      const separators = document.querySelectorAll(".select-none .text-shell-text-tertiary");
       expect(separators.length).toBe(2);
     });
   });
@@ -487,7 +487,7 @@ describe("MessageList", () => {
         channel: channel({ type: "group", members: ["user", "alice", "bob"] }),
       });
       // Member count is rendered next to the Users icon
-      const memberDiv = container.querySelector(".text-white\\/30.flex.items-center");
+      const memberDiv = container.querySelector(".text-shell-text-tertiary.flex.items-center");
       expect(memberDiv).not.toBeNull();
       expect(memberDiv?.textContent).toContain("3");
     });

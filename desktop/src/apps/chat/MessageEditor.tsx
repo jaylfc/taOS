@@ -24,7 +24,7 @@ export function MessageEditor({
       }}
       aria-label="Edit message"
       rows={1}
-      className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 text-sm"
+      className="w-full bg-shell-surface border border-shell-border rounded px-2 py-1 text-sm"
     />
   );
 }

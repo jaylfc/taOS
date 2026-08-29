@@ -250,7 +250,7 @@ export function A2aBusMessageView({ channel }: { channel: string }) {
       {/* messages */}
       <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-3">
         {!loaded ? (
-          <div className="h-full flex items-center justify-center text-white/20 text-sm">
+          <div className="h-full flex items-center justify-center text-shell-text-tertiary text-sm">
             Loading…
           </div>
         ) : !available ? (

@@ -70,7 +70,7 @@ export function ChannelSwitcher({
       aria-label="Switch channel"
     >
       <div
-        className="w-full max-w-[420px] mx-4 bg-zinc-900 border border-white/10 rounded-xl shadow-2xl overflow-hidden"
+        className="w-full max-w-[420px] mx-4 bg-zinc-900 border border-shell-border rounded-xl shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onKeyDown}
       >
@@ -83,11 +83,11 @@ export function ChannelSwitcher({
           }}
           placeholder="Jump to channel…"
           aria-label="Search channels"
-          className="w-full bg-transparent px-4 py-3 text-sm text-white outline-none border-b border-white/10 placeholder:text-white/40"
+          className="w-full bg-transparent px-4 py-3 text-sm text-shell-text outline-none border-b border-shell-border placeholder:text-shell-text-tertiary"
         />
         <ul className="max-h-[320px] overflow-y-auto py-1" role="listbox" aria-label="Channels">
           {results.length === 0 ? (
-            <li className="px-4 py-3 text-xs text-white/40">No channels match.</li>
+            <li className="px-4 py-3 text-xs text-shell-text-tertiary">No channels match.</li>
           ) : (
             results.map((c, i) => (
               <li key={c.id} role="option" aria-selected={i === highlightIndex}>
@@ -96,10 +96,10 @@ export function ChannelSwitcher({
                   onClick={() => choose(i)}
                   onMouseEnter={() => setHighlightIndex(i)}
                   className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 ${
-                    i === highlightIndex ? "bg-blue-500/20 text-white" : "text-white/80 hover:bg-white/5"
+                    i === highlightIndex ? "bg-shell-surface text-shell-text" : "text-shell-text hover:bg-shell-surface-hover"
                   }`}
                 >
-                  <span className="text-white/40">#</span>
+                  <span className="text-shell-text-tertiary">#</span>
                   <span className="truncate">{c.name}</span>
                 </button>
               </li>

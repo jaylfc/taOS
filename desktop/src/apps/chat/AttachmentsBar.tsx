@@ -25,10 +25,10 @@ export function AttachmentsBar({
   return (
     <div
       aria-label="Pending attachments"
-      className="px-4 py-2 border-t border-white/10 flex gap-2 flex-wrap"
+      className="px-4 py-2 border-t border-shell-border flex gap-2 flex-wrap"
     >
       {items.map((it) => (
-        <div key={it.id} className="flex items-center gap-2 bg-white/5 rounded px-2 py-1 text-xs max-w-[220px]">
+        <div key={it.id} className="flex items-center gap-2 bg-shell-surface rounded px-2 py-1 text-xs max-w-[220px]">
           <span className="truncate">{it.filename}</span>
           <span className="opacity-50">{Math.max(1, Math.round(it.size / 1024))} KB</span>
           {it.uploading && <span className="opacity-70">…</span>}

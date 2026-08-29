@@ -202,7 +202,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
 
   if (!selectedChannel) {
     return (
-      <div className="flex-1 flex items-center justify-center text-white/20">
+      <div className="flex-1 flex items-center justify-center text-shell-text-tertiary">
         <div className="text-center px-6">
           <MessageCircle size={48} className="mx-auto mb-3 opacity-30" />
           <p className="text-sm mb-3">Pick a channel or start a DM</p>
@@ -214,13 +214,13 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   return (
     <>
       {/* channel header */}
-      <div className="px-4 py-2.5 border-b border-white/[0.06] flex items-center gap-3 shrink-0">
+      <div className="px-4 py-2.5 border-b border-shell-border flex items-center gap-3 shrink-0">
         {channel?.type === "topic" ? (
-          <Hash size={16} className="text-white/40" />
+          <Hash size={16} className="text-shell-text-tertiary" />
         ) : channel?.type === "group" ? (
-          <Users size={16} className="text-white/40" />
+          <Users size={16} className="text-shell-text-tertiary" />
         ) : (
-          <AtSign size={16} className="text-white/40" />
+          <AtSign size={16} className="text-shell-text-tertiary" />
         )}
         {/* DM agent emoji */}
         {channel?.type === "dm" &&
@@ -283,7 +283,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
             <button
               type="button"
               onClick={onToggleAllThreads}
-              className="ml-2 p-1 rounded hover:bg-white/10 text-white/60 hover:text-white"
+              className="ml-2 p-1 rounded hover:bg-shell-surface-hover text-shell-text-secondary hover:text-shell-text"
               aria-label={showAllThreads ? "Hide all threads" : "Show all threads"}
               aria-expanded={showAllThreads}
               aria-controls="all-threads-panel"
@@ -294,7 +294,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
             <button
               type="button"
               onClick={onToggleSearch}
-              className="ml-2 p-1 rounded hover:bg-white/10 text-white/60 hover:text-white"
+              className="ml-2 p-1 rounded hover:bg-shell-surface-hover text-shell-text-secondary hover:text-shell-text"
               aria-label={showSearch ? "Hide search" : "Search messages"}
               aria-expanded={showSearch}
               aria-controls="search-panel"
@@ -304,13 +304,13 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
             </button>
           </div>
           {channel?.description && (
-            <div className="text-[11px] text-white/35 truncate">
+            <div className="text-[11px] text-shell-text-tertiary truncate">
               {channel.description}
             </div>
           )}
         </div>
         {channel?.members && (
-          <div className="text-[11px] text-white/30 flex items-center gap-1">
+          <div className="text-[11px] text-shell-text-tertiary flex items-center gap-1">
             <Users size={12} /> {channel.members.length}
           </div>
         )}
@@ -356,7 +356,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
         )}
 
         {messages.length === 0 && fetchedChannel === selectedChannel && (
-          <div className="flex flex-col items-center justify-center h-full text-white/25 text-center px-6">
+          <div className="flex flex-col items-center justify-center h-full text-shell-text-tertiary text-center px-6">
             <MessageCircle size={40} className="mb-3 opacity-30" />
             <p className="text-sm">
               No messages yet. Say hello to{" "}
@@ -397,11 +397,11 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
             <React.Fragment key={msg.id}>
               {showDaySeparator && (
                 <div className="flex items-center gap-3 my-4 select-none">
-                  <div className="flex-1 h-px bg-white/10" />
-                  <span className="text-[11px] text-white/40 font-medium">
+                  <div className="flex-1 h-px bg-shell-surface" />
+                  <span className="text-[11px] text-shell-text-tertiary font-medium">
                     {dayLabel(msg.created_at)}
                   </span>
-                  <div className="flex-1 h-px bg-white/10" />
+                  <div className="flex-1 h-px bg-shell-surface" />
                 </div>
               )}
               {newDividerAtId === msg.id && (
@@ -530,7 +530,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                         msg.state !== "pending" && (
                           <CopyButton
                             content={msg.content}
-                            className="absolute -top-1 right-0 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 bg-shell-surface border border-white/10 text-shell-text-secondary hover:text-shell-text transition-opacity select-none z-10"
+                            className="absolute -top-1 right-0 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 bg-shell-surface border border-shell-border text-shell-text-secondary hover:text-shell-text transition-opacity select-none z-10"
                           />
                         )}
                       <div
@@ -738,7 +738,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                                   onClick={() =>
                                     onToggleReaction(msg.id, em)
                                   }
-                                  className="text-lg hover:bg-white/10 rounded p-0.5 transition-colors"
+                                  className="text-lg hover:bg-shell-surface rounded p-0.5 transition-colors"
                                 >
                                   {em}
                                 </button>

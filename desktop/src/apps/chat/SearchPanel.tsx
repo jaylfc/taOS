@@ -112,9 +112,9 @@ export function SearchPanel({
       id="search-panel"
       role="complementary"
       aria-label="Search messages"
-      className="fixed top-0 right-0 h-full w-[360px] bg-shell-surface border-l border-white/10 shadow-xl flex flex-col z-40"
+      className="fixed top-0 right-0 h-full w-[360px] bg-shell-surface border-l border-shell-border shadow-xl flex flex-col z-40"
     >
-      <header className="flex items-center justify-between px-4 py-3 border-b border-white/10 gap-2">
+      <header className="flex items-center justify-between px-4 py-3 border-b border-shell-border gap-2">
         <h2 className="text-sm font-semibold">Search</h2>
         <button
           onClick={onClose}
@@ -124,7 +124,7 @@ export function SearchPanel({
           ×
         </button>
       </header>
-      <div className="px-3 py-2 border-b border-white/10">
+      <div className="px-3 py-2 border-b border-shell-border">
         <input
           ref={inputRef}
           type="text"
@@ -132,7 +132,7 @@ export function SearchPanel({
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search messages…"
           aria-label="Search messages"
-          className="w-full bg-shell-bg-deep border border-white/10 rounded px-2 py-1.5 text-sm outline-none focus:border-white/30"
+          className="w-full bg-shell-bg-deep border border-shell-border rounded px-2 py-1.5 text-sm outline-none focus:border-shell-border"
         />
       </div>
       <div className="flex-1 overflow-y-auto px-2 py-2 text-sm">
@@ -155,7 +155,7 @@ export function SearchPanel({
         )}
         {[...grouped.entries()].map(([cid, list]) => (
           <section key={cid} className="mb-2">
-            <h3 className="px-2 py-1 text-[11px] uppercase tracking-wide text-white/40">
+            <h3 className="px-2 py-1 text-[11px] uppercase tracking-wide text-shell-text-tertiary">
               {channelName(cid)}
             </h3>
             <ul>
@@ -163,7 +163,7 @@ export function SearchPanel({
                 <li key={h.id}>
                   <button
                     type="button"
-                    className="w-full text-left px-3 py-2 rounded hover:bg-white/5 flex flex-col gap-0.5"
+                    className="w-full text-left px-3 py-2 rounded hover:bg-shell-surface flex flex-col gap-0.5"
                     onClick={() => {
                       onJump(h.channel_id, h.id);
                     }}

@@ -94,7 +94,7 @@ export function AttachmentLightbox({
         {zoom !== 1 && (
           <button
             onClick={resetZoom}
-            className="bg-white/10 hover:bg-white/20 rounded px-3 py-1 text-sm"
+            className="bg-shell-surface hover:bg-shell-surface-hover rounded px-3 py-1 text-sm"
             aria-label="Reset zoom"
           >
             {Math.round(zoom * 100)}%
@@ -102,22 +102,22 @@ export function AttachmentLightbox({
         )}
         <a href={current.url} download={current.filename}
            onClick={(e) => e.stopPropagation()}
-           className="bg-white/10 hover:bg-white/20 rounded px-3 py-1 text-sm">Download</a>
-        <button onClick={onClose} className="bg-white/10 hover:bg-white/20 rounded px-3 py-1 text-sm">Close</button>
+           className="bg-shell-surface hover:bg-shell-surface-hover rounded px-3 py-1 text-sm">Download</a>
+        <button onClick={onClose} className="bg-shell-surface hover:bg-shell-surface-hover rounded px-3 py-1 text-sm">Close</button>
       </div>
       {images.length > 1 && (
         <>
           <button
             aria-label="Previous image"
             onClick={(e) => { e.stopPropagation(); navigate(-1); }}
-            className="absolute left-4 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 rounded-full w-9 h-9 flex items-center justify-center text-lg"
+            className="absolute left-4 top-1/2 -translate-y-1/2 bg-shell-surface hover:bg-shell-surface-hover rounded-full w-9 h-9 flex items-center justify-center text-lg"
           >‹</button>
           <button
             aria-label="Next image"
             onClick={(e) => { e.stopPropagation(); navigate(1); }}
-            className="absolute right-4 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 rounded-full w-9 h-9 flex items-center justify-center text-lg"
+            className="absolute right-4 top-1/2 -translate-y-1/2 bg-shell-surface hover:bg-shell-surface-hover rounded-full w-9 h-9 flex items-center justify-center text-lg"
           >›</button>
-          <div className="absolute bottom-4 text-white/70 text-xs">{idx + 1} / {images.length}</div>
+          <div className="absolute bottom-4 text-shell-text text-xs">{idx + 1} / {images.length}</div>
         </>
       )}
     </div>

@@ -52,7 +52,7 @@ export function AgentContextMenu({
       ref={ref}
       role="menu"
       aria-label={`Actions for @${slug}`}
-      className="fixed z-50 min-w-[200px] bg-shell-surface border border-white/10 rounded-lg shadow-xl py-1 text-sm"
+      className="fixed z-50 min-w-[200px] bg-shell-surface border border-shell-border rounded-lg shadow-xl py-1 text-sm"
       style={{ top: y, left: x }}
     >
       <MenuItem onClick={() => { onDm?.(slug); onClose(); }}>DM @{slug}</MenuItem>
@@ -64,7 +64,7 @@ export function AgentContextMenu({
       {channelId && !isDm && (
         <MenuItem onClick={doRemove}>Remove from channel</MenuItem>
       )}
-      <div className="my-1 h-px bg-white/10" />
+      <div className="my-1 h-px bg-shell-surface" />
       <MenuItem onClick={() => { onViewInfo?.(slug); onClose(); }}>View agent info</MenuItem>
       <MenuItem onClick={() => { onJumpToSettings?.(slug); onClose(); }}>Jump to agent settings</MenuItem>
     </div>
@@ -76,7 +76,7 @@ function MenuItem({ onClick, children }: { onClick: () => void; children: React.
     <button
       role="menuitem"
       onClick={onClick}
-      className="w-full text-left px-3 py-1.5 hover:bg-white/5 focus:bg-white/5 focus:outline-none"
+      className="w-full text-left px-3 py-1.5 hover:bg-shell-surface focus:bg-shell-surface focus:outline-none"
     >
       {children}
     </button>

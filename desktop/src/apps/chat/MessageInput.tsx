@@ -98,7 +98,7 @@ export function MessageInput({
 
       {/* input area */}
       <div
-        className="px-4 py-3 border-t border-white/[0.06] shrink-0"
+        className="px-4 py-3 border-t border-shell-border shrink-0"
         style={
           isMobile
             ? { paddingBottom: `max(env(safe-area-inset-bottom), ${keyboardInset}px)` }
@@ -120,7 +120,7 @@ export function MessageInput({
             <div
               role="listbox"
               aria-label="Mention a member"
-              className="absolute bottom-full left-0 mb-2 w-full max-w-md bg-shell-surface border border-white/10 rounded-lg shadow-xl max-h-60 overflow-y-auto text-sm"
+              className="absolute bottom-full left-0 mb-2 w-full max-w-md bg-shell-surface border border-shell-border rounded-lg shadow-xl max-h-60 overflow-y-auto text-sm"
             >
               {mentionCandidates.map((slug, i) => (
                 <button
@@ -132,22 +132,22 @@ export function MessageInput({
                     e.preventDefault();
                     onInsertMention(slug);
                   }}
-                  className={`w-full text-left px-3 py-1.5 flex items-center gap-2 ${
-                    i === mentionSel ? "bg-white/10" : "hover:bg-white/5"
-                  }`}
+className={`w-full text-left px-3 py-1.5 flex items-center gap-2 ${
+  i === mentionSel ? "bg-shell-surface" : "hover:bg-shell-surface-hover"
+}`}
                 >
-                  <AtSign size={13} className="text-white/40" aria-hidden="true" />
+                  <AtSign size={13} className="text-shell-text-tertiary" aria-hidden="true" />
                   <span className="font-mono text-[13px]">@{slug}</span>
                 </button>
               ))}
             </div>
           )}
           <div
-            className={`flex items-end gap-2 rounded-2xl border px-2 py-1.5 ${
-              isArchived
-                ? "bg-white/[0.02] border-white/[0.04] opacity-50"
-                : "bg-shell-surface border-shell-border-strong"
-            }`}
+className={`flex items-end gap-2 rounded-2xl border px-2 py-1.5 ${
+  isArchived
+    ? "bg-shell-surface opacity-50"
+    : "bg-shell-surface border-shell-border-strong"
+}`}
           >
             <Button
               variant="ghost"

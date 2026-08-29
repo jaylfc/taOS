@@ -55,28 +55,28 @@ export function MessageOverflowMenu({
       role="menu"
       aria-label="Message overflow menu"
       onKeyDown={handleKeyDown}
-      className="bg-shell-surface border border-white/10 rounded-md shadow-lg py-1 min-w-[160px] text-sm"
+      className="bg-shell-surface border border-shell-border rounded-md shadow-lg py-1 min-w-[160px] text-sm"
     >
       {isOwn && (
         <button role="menuitem" onClick={onEdit}
-          className="block w-full text-left px-3 py-1.5 hover:bg-white/5 focus:bg-white/5 focus:outline-none">Edit</button>
+          className="block w-full text-left px-3 py-1.5 hover:bg-shell-surface-hover focus:bg-shell-surface-hover focus:outline-none">Edit</button>
       )}
       {isOwn && (
         <button role="menuitem" onClick={onDelete}
-          className="block w-full text-left px-3 py-1.5 hover:bg-white/5 focus:bg-white/5 focus:outline-none text-red-300">Delete</button>
+          className="block w-full text-left px-3 py-1.5 hover:bg-shell-surface-hover focus:bg-shell-surface-hover focus:outline-none text-red-300">Delete</button>
       )}
       <button role="menuitem" onClick={onCopyLink}
-        className="block w-full text-left px-3 py-1.5 hover:bg-white/5 focus:bg-white/5 focus:outline-none">Copy link</button>
+        className="block w-full text-left px-3 py-1.5 hover:bg-shell-surface-hover focus:bg-shell-surface-hover focus:outline-none">Copy link</button>
       {onCopyText && <button role="menuitem" onClick={onCopyText}
-        className="block w-full text-left px-3 py-1.5 hover:bg-white/5 focus:bg-white/5 focus:outline-none">Copy text</button>}
+        className="block w-full text-left px-3 py-1.5 hover:bg-shell-surface-hover focus:bg-shell-surface-hover focus:outline-none">Copy text</button>}
       {isHuman && (
         <button role="menuitem" onClick={onPin}
-          className="block w-full text-left px-3 py-1.5 hover:bg-white/5 focus:bg-white/5 focus:outline-none">
+          className="block w-full text-left px-3 py-1.5 hover:bg-shell-surface-hover focus:bg-shell-surface-hover focus:outline-none">
           {isPinned ? "Unpin" : "Pin"}
         </button>
       )}
       <button role="menuitem" onClick={onMarkUnread}
-        className="block w-full text-left px-3 py-1.5 hover:bg-white/5 focus:bg-white/5 focus:outline-none">Mark unread</button>
+        className="block w-full text-left px-3 py-1.5 hover:bg-shell-surface-hover focus:bg-shell-surface-hover focus:outline-none">Mark unread</button>
     </div>
   );
 }

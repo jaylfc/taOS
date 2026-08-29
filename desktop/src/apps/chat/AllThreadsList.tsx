@@ -64,9 +64,9 @@ export function AllThreadsList({
       id="all-threads-panel"
       role="complementary"
       aria-label="All threads"
-      className="fixed top-0 right-0 h-full w-[360px] bg-shell-surface border-l border-white/10 shadow-xl flex flex-col z-40"
+      className="fixed top-0 right-0 h-full w-[360px] bg-shell-surface border-l border-shell-border shadow-xl flex flex-col z-40"
     >
-      <header className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+      <header className="flex items-center justify-between px-4 py-3 border-b border-shell-border">
         <h2 className="text-sm font-semibold">All threads</h2>
         <button onClick={onClose} aria-label="Close" className="text-lg leading-none opacity-60 hover:opacity-100">×</button>
       </header>
@@ -88,7 +88,7 @@ export function AllThreadsList({
             {threads.map((t) => (
               <li key={t.id}>
                 <button
-                  className="w-full text-left px-3 py-2.5 rounded hover:bg-white/5 flex flex-col gap-0.5"
+                  className="w-full text-left px-3 py-2.5 rounded hover:bg-shell-surface-hover flex flex-col gap-0.5"
                   onClick={() => onJumpToThread(t.id)}
                 >
                   <span className="text-xs text-shell-text-secondary line-clamp-2">{t.content}</span>

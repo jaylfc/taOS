@@ -401,11 +401,11 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
       <div className="flex-1 overflow-y-auto py-1">
         {allEmpty ? (
           <div className="flex flex-col items-center justify-center h-full px-4 py-10 text-center gap-2.5">
-            <MessageCircle size={28} className="text-white/15" aria-hidden="true" />
-            <p className="text-[13px] font-medium text-white/60">
+            <MessageCircle size={28} className="text-shell-text-tertiary" aria-hidden="true" />
+            <p className="text-[13px] font-medium text-shell-text-secondary">
               No conversations yet
             </p>
-            <p className="text-[11px] text-white/30">
+            <p className="text-[11px] text-shell-text-tertiary">
               Deploy an agent to start chatting
             </p>
             <Button
@@ -424,7 +424,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
                 type="button"
                 onClick={() => onToggleSection(section.label)}
                 aria-expanded={!collapsedSections[section.label]}
-                className="w-full px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-white/30 hover:text-white/50 flex items-center gap-1.5 transition-colors"
+                className="w-full px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-shell-text-tertiary hover:text-shell-text-tertiary flex items-center gap-1.5 transition-colors"
               >
                 <ChevronRight
                   size={11}
@@ -437,7 +437,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
               </button>
               {!collapsedSections[section.label] &&
                 section.items.length === 0 && (
-                  <div className="px-3 py-1 text-[11px] text-white/20 italic">
+                  <div className="px-3 py-1 text-[11px] text-shell-text-tertiary italic">
                     None yet
                   </div>
                 )}
@@ -501,7 +501,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
                           return presence ? <PresenceDot presence={presence} /> : null;
                         })()}
                       {count > 0 && (
-                        <span className="shrink-0 bg-unread text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1 tabular-nums">
+                        <span className="shrink-0 bg-unread text-shell-text text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1 tabular-nums">
                           {count}
                         </span>
                       )}
@@ -516,12 +516,12 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
         {/* Projects section — desktop */}
         {!scope?.projectId && projectGroups.length > 0 && (
           <details className="px-3 mt-2">
-            <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-white/30 py-1">
+            <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-shell-text-tertiary py-1">
               Projects
             </summary>
             {projectGroups.map((g) => (
               <details key={g.id} className="ml-2 mt-1">
-                <summary className="cursor-pointer text-xs text-white/60 py-1">
+                <summary className="cursor-pointer text-xs text-shell-text-secondary py-1">
                   {g.name}
                 </summary>
                 <div className="ml-2 mt-0.5">
@@ -539,8 +539,8 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
                       }
                       className={`w-full text-left text-xs py-1 px-2 rounded flex items-center gap-1.5 ${
                         selectedChannel === ch.id
-                          ? "bg-white/10 border-l-2 border-accent-line"
-                          : "hover:bg-white/5"
+                          ? "bg-shell-surface border-l-2 border-accent-line"
+                          : "hover:bg-shell-surface-hover"
                       }`}
                     >
                       {ch.settings?.kind === "a2a" && (
@@ -1121,7 +1121,7 @@ function ArchivedSection({
       <button
         type="button"
         onClick={onToggleArchived}
-        className="flex items-center gap-1.5 px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-white/25 hover:text-white/40 transition-colors w-full text-left"
+        className="flex items-center gap-1.5 px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-shell-text-tertiary hover:text-shell-text-tertiary transition-colors w-full text-left"
         aria-expanded={archivedExpanded}
         aria-controls="archived-channels-desktop"
       >
@@ -1161,7 +1161,7 @@ function ArchivedSection({
               >
                 <Archive
                   size={11}
-                  className="shrink-0 mr-1.5 text-white/40"
+                  className="shrink-0 mr-1.5 text-shell-text-tertiary"
                   aria-hidden="true"
                 />
                 <span className="truncate flex-1 text-left">{ch.name}</span>
@@ -1181,8 +1181,8 @@ function ArchivedSection({
                   }
                   className={`p-1 rounded transition-colors ${
                     hasAgent
-                      ? "text-white/30 hover:text-emerald-400 hover:bg-emerald-500/10 cursor-pointer"
-                      : "text-white/15 cursor-not-allowed"
+                      ? "text-shell-text-tertiary hover:text-emerald-400 hover:bg-emerald-500/10 cursor-pointer"
+                      : "text-shell-text-tertiary cursor-not-allowed"
                   }`}
                 >
                   <RotateCcw size={12} aria-hidden="true" />
@@ -1192,7 +1192,7 @@ function ArchivedSection({
                   onClick={() => onDeleteArchivedChannel(ch.id)}
                   aria-label={`Permanently delete archived channel ${ch.name}`}
                   title="Delete permanently"
-                  className="p-1 rounded text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+                  className="p-1 rounded text-shell-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
                 >
                   <Trash2 size={12} aria-hidden="true" />
                 </button>

@@ -63,9 +63,9 @@ export function ChannelSettingsPanel({
     <aside
       role="complementary"
       aria-label="Channel settings"
-      className="absolute top-0 right-0 h-full w-[360px] bg-shell-surface border-l border-white/10 shadow-xl flex flex-col z-40"
+      className="absolute top-0 right-0 h-full w-[360px] bg-shell-surface border-l border-shell-border shadow-xl flex flex-col z-40"
     >
-      <header className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+      <header className="flex items-center justify-between px-4 py-3 border-b border-shell-border">
         <h2 className="text-sm font-semibold">Channel settings</h2>
         <button onClick={onClose} aria-label="Close" className="text-lg leading-none">×</button>
       </header>
@@ -80,7 +80,7 @@ export function ChannelSettingsPanel({
               maxLength={100}
               onChange={(e) => setName(e.target.value)}
               onBlur={() => name !== channel.name && apply({ name }, () => setName(channel.name))}
-              className="bg-white/5 border border-white/10 rounded px-2 py-1.5 text-sm"
+              className="bg-shell-surface border border-shell-border rounded px-2 py-1.5 text-sm"
             />
           </label>
           <label className="flex flex-col gap-1">
@@ -91,7 +91,7 @@ export function ChannelSettingsPanel({
               rows={3}
               onChange={(e) => setTopic(e.target.value)}
               onBlur={() => topic !== (channel.topic || "") && apply({ topic }, () => setTopic(channel.topic || ""))}
-              className="bg-white/5 border border-white/10 rounded px-2 py-1.5 text-sm resize-none"
+              className="bg-shell-surface border border-shell-border rounded px-2 py-1.5 text-sm resize-none"
             />
           </label>
           <div className="text-[11px] text-shell-text-tertiary">
@@ -103,7 +103,7 @@ export function ChannelSettingsPanel({
           <h3 className="text-xs uppercase tracking-wider text-shell-text-tertiary">Members</h3>
           <ul className="flex flex-col gap-1">
             {members.map((m) => (
-              <li key={m} className="flex items-center justify-between px-2 py-1 rounded hover:bg-white/5">
+              <li key={m} className="flex items-center justify-between px-2 py-1 rounded hover:bg-shell-surface">
                 <span>@{m}</span>
                 {m !== "user" && (
                   <button
@@ -136,11 +136,11 @@ export function ChannelSettingsPanel({
           <div className="flex items-center gap-2">
             <span className="text-xs text-shell-text-secondary">Mode:</span>
             <button
-              className={`px-2 py-1 rounded text-xs ${mode === "quiet" ? "bg-sky-500/30 text-sky-200" : "bg-white/5"}`}
+              className={`px-2 py-1 rounded text-xs ${mode === "quiet" ? "bg-sky-500/30 text-sky-200" : "bg-shell-surface"}`}
               onClick={() => apply({ response_mode: "quiet" }, () => setMode(mode))}
             >quiet</button>
             <button
-              className={`px-2 py-1 rounded text-xs ${mode === "lively" ? "bg-emerald-500/30 text-emerald-200" : "bg-white/5"}`}
+              className={`px-2 py-1 rounded text-xs ${mode === "lively" ? "bg-emerald-500/30 text-emerald-200" : "bg-shell-surface"}`}
               onClick={() => apply({ response_mode: "lively" }, () => setMode(mode))}
             >lively</button>
           </div>
@@ -148,7 +148,7 @@ export function ChannelSettingsPanel({
             <span className="text-xs text-shell-text-secondary">Muted</span>
             <div className="flex flex-wrap gap-1">
               {muted.map((m) => (
-                <span key={m} className="inline-flex items-center gap-1 bg-white/5 rounded px-2 py-0.5 text-xs">
+                <span key={m} className="inline-flex items-center gap-1 bg-shell-surface rounded px-2 py-0.5 text-xs">
                   @{m}
                   <button
                     aria-label={`Unmute ${m}`}
@@ -183,7 +183,7 @@ export function ChannelSettingsPanel({
                 setEphemeralTtl(val);
                 apply({ ephemeral_ttl_seconds: val }, () => setEphemeralTtl(ephemeralTtl));
               }}
-              className="bg-white/5 border border-white/10 rounded px-2 py-1.5 text-sm"
+              className="bg-shell-surface border border-shell-border rounded px-2 py-1.5 text-sm"
             >
               <option value="">Off</option>
               <option value={3600}>1 hour</option>
@@ -234,7 +234,7 @@ function AddDropdown({
       aria-label={label}
       defaultValue=""
       onChange={(e) => { if (e.target.value) { onPick(e.target.value); e.target.value = ""; } }}
-      className="bg-white/5 border border-white/10 rounded px-2 py-1 text-xs"
+      className="bg-shell-surface border border-shell-border rounded px-2 py-1 text-xs"
     >
       <option value="" disabled>{label}…</option>
       {options.map((s) => <option key={s} value={s}>@{s}</option>)}

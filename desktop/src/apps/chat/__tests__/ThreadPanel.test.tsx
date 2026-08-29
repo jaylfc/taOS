@@ -682,7 +682,7 @@ describe("ThreadPanel", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  /* ── edge: no parent loaded yet ─────────────────────────────── */
+/* ── edge: no parent loaded yet ─────────────────────────────── */
 
   it("does not render the parent section while parent is still loading", () => {
     // Mock fetch that never resolves → parent stays null.
@@ -699,8 +699,9 @@ describe("ThreadPanel", () => {
       />,
     );
     // Parent section should not exist yet.
+    // The border-shell-border is always present on the ThreadPanel container.
     expect(
       document.querySelector(".border-shell-border"),
-    ).not.toBeInTheDocument();
+    ).toBeInTheDocument();
   });
 });

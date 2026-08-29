@@ -54,7 +54,7 @@ export function SlashMenu({
     <div
       role="listbox"
       aria-label="Slash commands"
-      className="absolute bottom-full left-0 mb-2 w-full max-w-md bg-shell-surface border border-white/10 rounded-lg shadow-xl max-h-60 overflow-y-auto text-sm"
+      className="absolute bottom-full left-0 mb-2 w-full max-w-md bg-shell-surface border border-shell-border rounded-lg shadow-xl max-h-60 overflow-y-auto text-sm"
     >
       {rows.length === 0 ? (
         <div className="px-3 py-2 text-xs text-shell-text-tertiary">(no commands available)</div>
@@ -62,7 +62,7 @@ export function SlashMenu({
         rows.map((row) => {
           if (row.kind === "header") {
             return (
-              <div key={`h-${row.slug}`} className="px-3 py-1 text-[11px] uppercase tracking-wider text-shell-text-tertiary bg-white/5">
+              <div key={`h-${row.slug}`} className="px-3 py-1 text-[11px] uppercase tracking-wider text-shell-text-tertiary bg-shell-surface">
                 @{row.slug}
               </div>
             );
@@ -77,7 +77,7 @@ export function SlashMenu({
               onMouseEnter={() => setSelected(idx)}
               onClick={() => onPick(row.slug, row.cmd.name)}
               className={`w-full text-left px-3 py-1.5 flex items-center justify-between gap-3 ${
-                isSelected ? "bg-white/10" : "hover:bg-white/5"
+                isSelected ? "bg-shell-surface" : "hover:bg-shell-surface"
               }`}
             >
               <span className="font-mono text-[13px]">/{row.cmd.name}</span>
