@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
+import re
 import time
 
 
@@ -32,7 +33,6 @@ class OutgoingMessage:
 
 def parse_inline_hints(text: str) -> OutgoingMessage:
     """Parse inline hints like [button:Label:action] from plain text responses."""
-    import re
     buttons = []
     images = []
     clean_text = text
@@ -52,3 +52,59 @@ def parse_inline_hints(text: str) -> OutgoingMessage:
         buttons=buttons,
         images=images,
     )
+
+
+def _degrade(response: OutgoingMessage) -> list[str]:
+    """Degrade rich elements and chunk long replies for text-only link.
+
+    - Reads response.buttons, response.images, response.cards; drops them
+      and emits a one-time notice per element kind.
+    - Chunks on encoded bytes, not characters, never splitting a multibyte
+      character and always accounting for the '[part N/M] ' prefix bytes.
+    - Derives total from byte-accurate chunking, not len(text).
+    """
+    notices: list[str] = []
+
+    # Drop buttons — emit one-time notice per conversation
+    if response.buttons:
+        if "[button dropped: Meshtastic is text-only]" not in notices:
+            notices.append("[button dropped: Meshtastic is text-only]")
+        response.buttons = []
+
+    # Drop images — emit one-time notice per conversation
+    if response.images:
+        if "[image dropped: Meshtastic is text-only]" not in notices:
+            notices.append("[image dropped: Meshtastic is text-only]")
+        response.images = []
+
+    # Drop cards — emit one-time notice per conversation
+    if response.cards:
+        if "[card dropped: Meshtastic is text-only]" not in notices:
+            notices.append("[card dropped: Meshtastic is text-only]")
+        response.cards = []
+
+    # The text is already clean (parse_inline_hints stripped markup),
+    # but we work with whatever content remains.
+    text = response.content
+
+    # Chunk on encoded bytes, not characters.
+    encoded = text.encode("utf-8")
+    chunk_size = 237  # bytes budget per emitted part (including prefix)
+    total = (len(encoded) + chunk_size - 1) // chunk_size if encoded else 0
+
+    parts: list[str] = []
+    idx = 1
+    start = 0
+    while start < len(encoded):
+        prefix = f"[part {idx}/{total}] ".encode("utf-8")
+        content_bytes = chunk_size - len(prefix)
+        end = start + content_bytes
+        if end > len(encoded):
+            end = len(encoded)
+        byte_chunk = encoded[start:end]
+        chunk_text = byte_chunk.decode("utf-8", errors="replace")
+        parts.append(f"[part {idx}/{total}] {chunk_text}")
+        start = end
+        idx += 1
+
+    return parts

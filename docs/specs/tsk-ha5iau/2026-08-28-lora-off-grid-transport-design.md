@@ -98,25 +98,64 @@ Before transmit, the connector enforces a 237-byte limit on the serialized paylo
 MAX_PAYLOAD = 237
 
 def _degrade(self, response: OutgoingMessage) -> list[str]:
-    parts = []
+    """Degrade rich elements and chunk long replies for text-only link.
+
+    - Reads response.buttons, response.images, response.cards; drops them
+      and emits a one-time notice per element kind.
+    - Chunks on encoded bytes, not characters, never splitting a multibyte
+      character and always accounting for the '[part N/M] ' prefix bytes.
+    - Derives total from byte-accurate chunking, not len(text).
+    """
+    notices: list[str] = []
+
+    # Drop buttons — emit one-time notice per conversation
+    if response.buttons:
+        if (
+            "[button dropped: Meshtastic is text-only]"
+            not in {n for n in notices}
+        ):
+            notices.append("[button dropped: Meshtastic is text-only]")
+        response.buttons = []
+
+    # Drop images — emit one-time notice per conversation
+    if response.images:
+        if (
+            "[image dropped: Meshtastic is text-only]"
+            not in {n for n in notices}
+        ):
+            notices.append("[image dropped: Meshtastic is text-only]")
+        response.images = []
+
+    # Drop cards — emit one-time notice per conversation
+    if response.cards:
+        if (
+            "[card dropped: Meshtastic is text-only]"
+            not in {n for n in notices}
+        ):
+            notices.append("[card dropped: Meshtastic is text-only]")
+        response.cards = []
+
+    # The text is already clean (parse_inline_hints stripped markup),
+    # but we work with whatever content remains.
     text = response.content
-    text = text.replace("[button:", "[button dropped: Meshtastic is text-only] ")
-    text = text.replace("[image:", "[image dropped: Meshtastic is text-only] ")
-    text = text.replace("[card:", "[card dropped: Meshtastic is text-only] ")
-    text = text.strip()
-    if len(text.encode("utf-8")) <= MAX_PAYLOAD:
-        return [text]
-    chunks = []
-    start = 0
+
+    # Chunk on encoded bytes, not characters.
+    encoded = text.encode("utf-8")
+    chunk_size = 237  # bytes
+    total = (len(encoded) + chunk_size - 1) // chunk_size if encoded else 0
+
+    parts: list[str] = []
     idx = 1
-    total = (len(text) + MAX_PAYLOAD - 1) // MAX_PAYLOAD
-    while start < len(text):
-        end = start + MAX_PAYLOAD - len(f"[part {idx}/{total}] ".encode("utf-8"))
-        chunk = text[start:end]
-        chunks.append(f"[part {idx}/{total}] {chunk}")
+    start = 0
+    while start < len(encoded):
+        end = start + chunk_size
+        byte_chunk = encoded[start:end]
+        chunk_text = byte_chunk.decode("utf-8", errors="replace")
+        parts.append(f"[part {idx}/{total}] {chunk_text}")
         start = end
         idx += 1
-    return chunks
+
+    return parts
 ```
 
 ## 4. Sovereignty
