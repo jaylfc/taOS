@@ -83,6 +83,7 @@ def test_model_manifests_are_resolvable_and_integrity_pinned():
             if not backends:
                 errors.append(f"{mid}/{vid}: requires.backends is empty")
                 continue
+            is_hailo_ollama = False
             for backend in backends:
                 targets = backend.get("targets") or []
                 if not targets:
@@ -95,55 +96,68 @@ def test_model_manifests_are_resolvable_and_integrity_pinned():
                         errors.append(
                             f"{mid}/{vid}: backend {backend.get('id')!r} has unknown targets {unknown}"
                         )
-            # Rule 2: single-file variants must pin a content sha256 that is
-            # a 64-char lowercase hex string and not a known-fabricated
-            # placeholder digest (denylist -- this class has recurred twice
-            # and a prompt did not stop it).  multi-file variants must NOT
-            # carry a metadata hash under that key — they use file_set_hash.
-            multi_file = variant.get("multi_file") is True
-            sha256 = variant.get("sha256")
-            if multi_file:
-                if sha256 is not None:
+                if backend.get("id") == "hailo-ollama":
+                    is_hailo_ollama = True
+            # Rule 2: content hash.  hailo-ollama variants reference the .hef
+            # by the content hash field ``hef_h10h`` (pulled via
+            # ``hailo-ollama pull``), not by ``sha256`` + ``download_url``.
+            if is_hailo_ollama:
+                hef_h10h = variant.get("hef_h10h")
+                if not re.fullmatch(r"[0-9a-f]{64}", hef_h10h or ""):
                     errors.append(
-                        f"{mid}/{vid}: multi_file variants must not declare sha256 "
-                        f"(use file_set_hash for metadata pin); got {sha256!r}"
+                        f"{mid}/{vid}: hef_h10h must be a 64-char lowercase hex "
+                        f"string (got {hef_h10h!r})"
                     )
-            elif sha256 in _FABRICATED_SHA256_DENYLIST:
-                errors.append(
-                    f"{mid}/{vid}: sha256 {sha256[:16]}... is a known-fabricated "
-                    f"placeholder (blocked in PR #2425)"
-                )
-            elif not re.fullmatch(r"[0-9a-f]{64}", sha256 or ""):
-                if not allowed_sha256:
+                if variant.get("sha256") is not None:
                     errors.append(
-                        f"{mid}/{vid}: sha256 must be a 64-char lowercase hex string (got {sha256!r})"
+                        f"{mid}/{vid}: hailo-ollama variants must not declare sha256 "
+                        f"(use hef_h10h for the content pin)"
                     )
-            # Rule 2b: multi_file variants must carry a 64-char lowercase
-            # hex file_set_hash (metadata hash, not content SHA256).
-            if multi_file:
-                file_set_hash = variant.get("file_set_hash")
-                if not re.fullmatch(r"[0-9a-f]{64}", file_set_hash or ""):
-                    errors.append(
-                        f"{mid}/{vid}: multi_file variants require a 64-char "
-                        f"lowercase hex file_set_hash (got {file_set_hash!r})"
-                    )
-            # Rule 3: download_url must be a non-empty https URL.
-            url = variant.get("download_url", "")
-            if not url or not url.startswith("https://"):
-                errors.append(
-                    f"{mid}/{vid}: download_url must be a non-empty https URL (got {url!r})"
-                )
             else:
-                for pat in _SHARDED_URL_PATTERNS:
-                    if pat.search(url):
-                        hf_repo = variant.get("hf_repo")
-                        multi_file = variant.get("multi_file") is True
-                        if not hf_repo or not multi_file:
-                            errors.append(
-                                f"{mid}/{vid}: sharded download_url {url!r} requires "
-                                f"hf_repo + multi_file: true"
-                            )
-                        break
+                multi_file = variant.get("multi_file") is True
+                sha256 = variant.get("sha256")
+                if multi_file:
+                    if sha256 is not None:
+                        errors.append(
+                            f"{mid}/{vid}: multi_file variants must not declare sha256 "
+                            f"(use file_set_hash for metadata pin); got {sha256!r}"
+                        )
+                elif sha256 in _FABRICATED_SHA256_DENYLIST:
+                    errors.append(
+                        f"{mid}/{vid}: sha256 {sha256[:16]}... is a known-fabricated "
+                        f"placeholder (blocked in PR #2425)"
+                    )
+                elif not re.fullmatch(r"[0-9a-f]{64}", sha256 or ""):
+                    if not allowed_sha256:
+                        errors.append(
+                            f"{mid}/{vid}: sha256 must be a 64-char lowercase hex string (got {sha256!r})"
+                        )
+                # Rule 2b: multi_file variants must carry a 64-char lowercase
+                # hex file_set_hash (metadata hash, not content SHA256).
+                if multi_file:
+                    file_set_hash = variant.get("file_set_hash")
+                    if not re.fullmatch(r"[0-9a-f]{64}", file_set_hash or ""):
+                        errors.append(
+                            f"{mid}/{vid}: multi_file variants require a 64-char "
+                            f"lowercase hex file_set_hash (got {file_set_hash!r})"
+                        )
+                # Rule 3: download_url must be a non-empty https URL.
+                url = variant.get("download_url", "")
+                if not url or not url.startswith("https://"):
+                    errors.append(
+                        f"{mid}/{vid}: download_url must be a non-empty https URL (got {url!r})"
+                    )
+                else:
+                    for pat in _SHARDED_URL_PATTERNS:
+                        if pat.search(url):
+                            hf_repo = variant.get("hf_repo")
+                            multi_file = variant.get("multi_file") is True
+                            if not hf_repo or not multi_file:
+                                errors.append(
+                                    f"{mid}/{vid}: sharded download_url {url!r} requires "
+                                    f"hf_repo + multi_file: true"
+                                )
+                            break
             # Rule 4: size_mb must be a positive int.
             size_mb = variant.get("size_mb")
             if not isinstance(size_mb, int) or size_mb <= 0:

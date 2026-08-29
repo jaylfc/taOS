@@ -38,9 +38,8 @@ variants:
   format: hef
   size_mb: 3214
   min_ram_mb: 0
-  sha256: 7fc9c7723282482cc3acf08244212668f8b7684deb792b791504ab7f68a83708
-  download_url: https://dev-public.hailo.ai/v5.1.1/blob/Llama-3_2-3B-Instruct.hef
-  context_window: 2048
+  hef_h10h: 7fc9c7723282482cc3acf08244212668f8b7684deb792b791504ab7f68a83708
+  ollama_name: llama3.2:3b
   requires:
     backends:
     - id: hailo-ollama
