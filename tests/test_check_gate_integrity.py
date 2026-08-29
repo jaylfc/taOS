@@ -536,3 +536,88 @@ class TestCoversRealGates:
         # mid-tamper. The PR files for the real repo's HEAD (none) trivially
         # pass; this guards the classify/is_protected invariants together.
         assert cgi.classify([], [], cgi.DEFAULT_ALLOW_LABEL).exit_code == cgi.EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# Workflow_dispatch base-ref step regression (tsk-yg3df5)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkflowDispatchBaseRefStep:
+    """The 'Resolve PR base ref for workflow_dispatch' step must not silently
+    fall back to the default branch when gh fails (e.g. missing GH_TOKEN).
+
+    The defect: without GH_TOKEN, gh exits non-zero; without set -euo pipefail
+    the script continues, base is empty, and checkout falls back to
+    github.base_ref which is EMPTY on workflow_dispatch -> default branch.
+    """
+
+    def test_step_sets_gh_token_env(self) -> None:
+        workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        step = _find_step(spec, "Resolve PR base ref for workflow_dispatch")
+        assert step is not None, "step not found in gate-integrity.yml"
+        assert step.get("env", {}).get("GH_TOKEN") == "${{ secrets.GITHUB_TOKEN }}"
+
+    def test_step_uses_set_euo_pipefail(self) -> None:
+        workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        step = _find_step(spec, "Resolve PR base ref for workflow_dispatch")
+        run = step.get("run", "")
+        assert "set -euo pipefail" in run, "step must fail closed on gh errors"
+
+    def test_step_asserts_base_non_empty(self) -> None:
+        workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        step = _find_step(spec, "Resolve PR base ref for workflow_dispatch")
+        run = step.get("run", "")
+        assert 'if [ -z "$base" ]' in run or '[[ -z "$base" ]]' in run, (
+            "step must assert base is non-empty before exporting BASE_REF"
+        )
+
+    def test_gh_failure_does_not_silently_pass(self, tmp_path: Path) -> None:
+        """Simulate the failure path: gh exits non-zero (no token). The script
+        must exit non-zero rather than emitting an empty BASE_REF."""
+        fake_gh = tmp_path / "gh"
+        fake_gh.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        fake_gh.chmod(0o755)
+
+        script = tmp_path / "resolve_base_ref.sh"
+        script.write_text(
+            "set -euo pipefail\n"
+            "base=$(gh api repos/o/r/pulls/1 --jq .base.ref)\n"
+            'if [ -z "$base" ]; then\n'
+            '  echo "::error::Resolved base ref is empty" >&2\n'
+            "  exit 1\n"
+            "fi\n"
+            'echo "BASE_REF=$base" >> "$GITHUB_ENV"\n',
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+
+        env = {
+            "PATH": str(tmp_path) + ":/usr/bin:/bin",
+            "GITHUB_ENV": str(tmp_path / "github_env"),
+            "HOME": str(tmp_path),
+        }
+
+        result = subprocess.run(
+            ["bash", str(script)],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode != 0, (
+            f"script must fail when gh fails; stdout={result.stdout!r} "
+            f"stderr={result.stderr!r}"
+        )
+
+
+def _find_step(spec: dict, name: str) -> dict | None:
+    jobs = spec.get("jobs", spec.get(True, {}).get("jobs", {}))
+    for job in jobs.values():
+        for step in job.get("steps", []):
+            if step.get("name") == name:
+                return step
+    return None
