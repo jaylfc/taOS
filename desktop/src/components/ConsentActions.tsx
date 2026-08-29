@@ -35,7 +35,17 @@ import { withCsrf } from "@/lib/csrf";
  * the right project at approval time. The chosen project id is passed to the
  * approve endpoint, which mints the token bound to it.
  */
-const PROJECT_SCOPES = new Set(["project_tasks", "canvas_read", "canvas_write"]);
+const PROJECT_SCOPES = new Set([
+  "project_tasks",
+  "canvas_read",
+  "canvas_write",
+  "project_tasks_create",
+  "project_tasks_update",
+  "project_lists",
+  "project_notes",
+  "files_read",
+  "files_write",
+]);
 
 interface ProjectOption {
   id: string;
@@ -310,8 +320,7 @@ export function ConsentActions({
   const allowDisabled =
     busy ||
     (needsProject &&
-      (creating ? !newName.trim() : !selectedProjectId)) ||
-    requestedProjectNotFound;
+      (creating ? !newName.trim() : !selectedProjectId));
 
   return (
     <div className="mt-2" role="group" aria-label="Consent actions">
@@ -395,6 +404,7 @@ export function ConsentActions({
                 onChange={(e) => {
                   e.stopPropagation();
                   setSelectedProjectId(e.target.value);
+                  setRequestedProjectNotFound(false);
                 }}
                 onClick={(e) => e.stopPropagation()}
                 disabled={busy || loadingProjects}
@@ -414,9 +424,10 @@ export function ConsentActions({
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
+                  setRequestedProjectNotFound(false);
                   setCreating(true);
                 }}
-                disabled={busy || requestedProjectNotFound ? true : false}
+                disabled={busy}
                 className="px-2 py-1 rounded-md text-[11px] bg-white/5 hover:bg-white/10 border border-white/10 text-shell-text-secondary disabled:opacity-50"
               >
                 New

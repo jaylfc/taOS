@@ -340,6 +340,97 @@ describe("ConsentActions", () => {
     expect(container.querySelectorAll('[data-state="dropped"]')).toHaveLength(0);
     expect(container.querySelectorAll('[data-state="added"]')).toHaveLength(0);
   });
+
+  const missingProjectScopes = [
+    "project_notes",
+    "files_read",
+    "files_write",
+    "project_lists",
+    "project_tasks_create",
+    "project_tasks_update",
+  ];
+
+  it.each(missingProjectScopes)(
+    "renders the project picker for scope %s and sends project_id on approve",
+    async (scope) => {
+      const fetchMock = vi.fn((url: string) => {
+        if (String(url).startsWith("/api/projects")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () =>
+              Promise.resolve({ items: [{ id: "p1", name: "Alpha" }] }),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ status: "ok" }),
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const onResolved = vi.fn();
+      render(
+        <ConsentActions
+          requestId="req-missing"
+          scopes={[scope]}
+          onResolved={onResolved}
+        />,
+      );
+
+      await screen.findByLabelText(/Grant project access for/i);
+      fireEvent.click(screen.getByRole("button", { name: /allow/i }));
+      await waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
+
+      const approveCall = fetchMock.mock.calls.find((c) =>
+        String(c[0]).includes("/approve"),
+      );
+      expect(approveCall).toBeTruthy();
+      expect(JSON.parse((approveCall![1] as RequestInit).body as string)).toEqual({
+        granted_scopes: [scope],
+        project_id: "p1",
+      });
+    },
+  );
+
+  it("allows recovery when the requested project does not resolve", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).startsWith("/api/projects")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              items: [{ id: "p1", name: "Alpha" }],
+            }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ status: "ok" }),
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <ConsentActions
+        requestId="req-nf"
+        scopes={["project_notes"]}
+        requestedProjectId="prj-btrdrl"
+      />,
+    );
+
+    await screen.findByLabelText(/Grant project access for/i);
+    // Initially, Allow is disabled and the select is marked invalid.
+    expect(screen.getByRole("button", { name: /allow/i })).toBeDisabled();
+    const select = screen.getByLabelText(/Grant project access for/i);
+    expect(select).toHaveAttribute("aria-invalid", "true");
+
+    // Picking a valid project clears the not-found flag and re-enables Allow.
+    fireEvent.change(select, { target: { value: "p1" } });
+    expect(screen.getByRole("button", { name: /allow/i })).not.toBeDisabled();
+    expect(select).not.toHaveAttribute("aria-invalid", "true");
+  });
 });
 
 describe("computeScopeDiff", () => {
