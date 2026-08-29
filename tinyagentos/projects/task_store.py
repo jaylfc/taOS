@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS task_checklist_items (
     verified INTEGER NOT NULL DEFAULT 0,
     reported INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -744,11 +745,16 @@ class ProjectTaskStore(BaseStore):
     ) -> dict:
         cid = new_id("cki")
         now = time.time()
+        # Fix #1: never publish checklist events under task_id.
+        # If get_task returns None, this is a violation of the invariant.
+        task = await self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"task not found: {task_id}")
         await self._db.execute(
             """INSERT INTO task_checklist_items
-               (id, task_id, text, done, verified, reported, archived, created_at, updated_at)
-               VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?)""",
-            (cid, task_id, text, now, now),
+               (id, task_id, text, done, verified, reported, archived, created_by, created_at, updated_at)
+               VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?, ?)""",
+            (cid, task_id, text, created_by, now, now),
         )
         await self._db.commit()
         cur = await self._db.execute(
@@ -757,15 +763,10 @@ class ProjectTaskStore(BaseStore):
         row = await cur.fetchone()
         desc = cur.description
         item = _row_to_checklist_item(row, desc)
-        # Resolve the task's project_id so project-subscribers (who subscribe at
-        # project_id scope) receive the event, mirroring sibling task mutations.
-        # Fix #1: never publish checklist events under task_id.
-        task = await self.get_task(task_id)
-        project_id = task["project_id"] if task is not None else task_id
         await self._publish(
-            project_id,
+            task["project_id"],
             "checklist.item.created",
-            {"id": item["id"], "text": item["text"], "task_id": task_id},
+            {"id": item["id"], "text": item["text"], "task_id": task_id, "created_by": created_by},
         )
         return item
 
