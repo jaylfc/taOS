@@ -316,7 +316,11 @@ function ArchiveTab({ archived: initialArchived }: { archived: Notification[] })
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    setLocalArchived(initialArchived);
+    setLocalArchived((prev) => {
+      const byId = new Map(prev.map((n) => [n.id, n]));
+      for (const n of initialArchived) byId.set(n.id, n);
+      return Array.from(byId.values()).sort((a, b) => b.timestamp - a.timestamp);
+    });
   }, [initialArchived]);
 
   const fetchArchived = useCallback(async () => {
@@ -350,7 +354,9 @@ function ArchiveTab({ archived: initialArchived }: { archived: Notification[] })
       if ((err as Error).name === "AbortError") return;
       setError(err instanceof Error ? err.message : "Failed to load archive");
     } finally {
-      setLoading(false);
+      if (abortRef.current === controller) {
+        setLoading(false);
+      }
     }
   }, []);
 

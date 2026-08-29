@@ -194,6 +194,42 @@ describe("NotificationsApp", () => {
     expect(screen.getByText("Old note")).toBeInTheDocument();
   });
 
+  it("server-only archived rows survive a store mutation after fetch", async () => {
+    const fetchMock = mockFetch(() => ({ ok: true, body: [
+      { id: "srv-2", title: "Server only archived", body: "", level: "info", read: true, timestamp: Date.now() - 1000, archived: true, source: "system" },
+    ] }));
+    vi.stubGlobal("fetch", fetchMock);
+    useNotificationStore.setState({
+      notifications: [notif({ id: "srv-1", title: "Active note" })],
+    });
+    render(<NotificationsApp windowId="w1" />);
+    fireEvent.click(screen.getByTestId("tab-archive"));
+    await flush();
+    expect(screen.getByText("Server only archived")).toBeInTheDocument();
+
+    useNotificationStore.getState().markRead("srv-1");
+    await flush();
+    expect(screen.getByText("Server only archived")).toBeInTheDocument();
+  });
+
+  it("server-only archived rows survive clearAll", async () => {
+    const fetchMock = mockFetch(() => ({ ok: true, body: [
+      { id: "srv-2", title: "Server only archived", body: "", level: "info", read: true, timestamp: Date.now() - 1000, archived: true, source: "system" },
+    ] }));
+    vi.stubGlobal("fetch", fetchMock);
+    useNotificationStore.setState({
+      notifications: [notif({ id: "srv-1", title: "Active note" })],
+    });
+    render(<NotificationsApp windowId="w1" />);
+    fireEvent.click(screen.getByTestId("tab-archive"));
+    await flush();
+    expect(screen.getByText("Server only archived")).toBeInTheDocument();
+
+    useNotificationStore.getState().clearAll();
+    await flush();
+    expect(screen.getByText("Server only archived")).toBeInTheDocument();
+  });
+
   it("aborts in-flight archive fetches on unmount", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
