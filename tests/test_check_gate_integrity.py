@@ -23,6 +23,7 @@ closed).
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -52,15 +53,19 @@ def _pr_payload(label_names: list[str], changed_files: int) -> list[dict]:
     }]
 
 
-def _api_get_routing(files: list[str], labels: list[str]):
-    """Build a side_effect that routes files vs PR-object requests by URL."""
+def _api_get_routing(files: list[str], labels: list[str], changed_files: int | None = None):
+    """Build a side_effect that routes files vs PR-object requests by URL.
+
+    `changed_files` defaults to len(files) because a flat list of N paths
+    corresponds to N /files records. Tests with renames override it explicitly
+    since one rename record expands to two paths.
+    """
+    _changed = changed_files if changed_files is not None else len(files)
 
     def _fake(url: str, token: str | None = None, **_: object) -> list:
-        if url.endswith("/files"):
+        if "/files" in url:
             return _files_payload(files)
-        # single-object /pulls/{n} endpoint; changed_files agrees with the
-        # /files listing unless a test overrides the payload deliberately.
-        return _pr_payload(labels, changed_files=len(files))
+        return _pr_payload(labels, changed_files=_changed)
 
     return _fake
 
@@ -81,6 +86,9 @@ class TestIsProtected:
             ".github/workflows/deleted-symbols-gate.yml",
             ".github/workflows/gate-integrity.yml",
             ".github/scripts/check_all_skip.py",
+            ".github/dependabot.yml",
+            ".github/FUNDING.yml",
+            ".github/actions/build.yml",
             "docs/doc-gate.toml",
             "pyproject.toml",
             "tests/conftest.py",
@@ -103,6 +111,7 @@ class TestIsProtected:
             "scripts/check_retrofit_migrations.py",
             "scripts/check_evil_merge.py",
             "scripts/check_gate_integrity.py",
+            "scripts/platform/check_foo.py",
         ],
     )
     def test_gate_checker_scripts_are_protected(self, path: str) -> None:
@@ -118,15 +127,9 @@ class TestIsProtected:
             "data/hub/identity.json",
             "scripts/audit-forks.py",
             "scripts/audit-manifests.py",
-            # .github config that is not a workflow or gate script is not blocked
-            ".github/dependabot.yml",
-            ".github/FUNDING.yml",
             ".coderabbit.yaml",
             "docs/something.md",
             "changelog.d/foo.md",
-            # a check_*.py nested in a subdir is NOT matched by the single
-            # scripts/check_*.py convention the guard enforces
-            "scripts/platform/check_foo.py",
         ],
     )
     def test_non_gate_paths_are_not_protected(self, path: str) -> None:
@@ -252,7 +255,7 @@ class TestCheckGateIntegrity:
         # stops. A listing shorter than the PR's own changed_files count means
         # the gate cannot see the whole diff -> EXIT_ERROR, never a pass.
         def _fake(url: str, token: str | None = None, **_: object) -> list:
-            if url.endswith("/files"):
+            if "/files" in url:
                 return _files_payload(["README.md", "docs/a.md"])
             return _pr_payload([], changed_files=5)
 
@@ -261,13 +264,58 @@ class TestCheckGateIntegrity:
         assert code == cgi.EXIT_ERROR
         assert "truncated" in message
 
+    def test_150_file_paginates_fully(self) -> None:
+        # With per_page=100 the /files endpoint returns up to 100 records per
+        # page; a 150-file PR needs two pages. The Link header on page 1 points
+        # to page 2; the guard must follow it and collect all 150 before
+        # comparing to changed_files.
+        page1_files = [{"filename": f"src/file_{i:03d}.py"} for i in range(100)]
+        page2_files = [{"filename": f"src/file_{i:03d}.py"} for i in range(100, 150)]
+        next_url = (
+            "https://api.github.com/repos/jaylfc/taOS/pulls/42/files"
+            "?per_page=100&page=2"
+        )
+        link_hdr = f'<{next_url}>; rel="next"'
+        pr_url = "https://api.github.com/repos/jaylfc/taOS/pulls/42"
+
+        import http.client
+        import io
+        import urllib.response as _ur
+
+        def _make_response(body: list[dict], link: str = "") -> _ur.addinfourl:
+            return _ur.addinfourl(
+                io.BytesIO(json.dumps(body).encode()),
+                {"Link": link} if link else {},
+                "https://api.github.com",
+                200,
+            )
+
+        call_count = 0
+
+        def _fake_urlopen(req, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            url = req.full_url if hasattr(req, "full_url") else req
+            if url == pr_url:
+                return _make_response([{
+                    "labels": [],
+                    "changed_files": 150,
+                }])
+            if "page=2" in str(url):
+                return _make_response(page2_files)
+            return _make_response(page1_files, link_hdr)
+
+        with patch("check_gate_integrity.urllib.request.urlopen", side_effect=_fake_urlopen):
+            code, message = cgi.check_gate_integrity("jaylfc", "taOS", 42)
+        assert code == cgi.EXIT_OK, f"expected PASS, got: {message}"
+
     def test_rename_out_of_protected_path_fails_without_label(self) -> None:
         # A rename edits BOTH paths: renaming a workflow out of
         # .github/workflows/ disables it, yet /files reports only the new
         # filename at top level and carries the old one in
         # previous_filename. The protected old side must still be classified.
         def _fake(url: str, token: str | None = None, **_: object) -> list:
-            if url.endswith("/files"):
+            if "/files" in url:
                 return [{
                     "filename": "docs/archived-gate.yml",
                     "previous_filename": ".github/workflows/doc-gate.yml",
@@ -286,7 +334,7 @@ class TestCheckGateIntegrity:
         # renamed record with changed_files=1 is a complete listing, not a
         # truncated one.
         def _fake(url: str, token: str | None = None, **_: object) -> list:
-            if url.endswith("/files"):
+            if "/files" in url:
                 return [{
                     "filename": "docs/b.md",
                     "previous_filename": "docs/a.md",
@@ -302,7 +350,7 @@ class TestCheckGateIntegrity:
         # Without the changed_files field truncation is undetectable; treat
         # the payload as cannot-see rather than assuming the listing is whole.
         def _fake(url: str, token: str | None = None, **_: object) -> list:
-            if url.endswith("/files"):
+            if "/files" in url:
                 return _files_payload(["README.md"])
             return [{"labels": []}]
 
@@ -330,8 +378,8 @@ class TestCheckGateIntegrity:
         with patch("check_gate_integrity._api_get", side_effect=_spy):
             code, _ = cgi.check_gate_integrity("jaylfc", "taOS", 42)
         assert code == cgi.EXIT_OK
-        assert any(u.endswith("/files") for u in captured)
-        assert any(u.endswith("/pulls/42") for u in captured)
+        assert any("/files" in u for u in captured)
+        assert any("/pulls/42" in u for u in captured)
 
 
 class TestMainTokenEnvPropagation:
@@ -343,7 +391,7 @@ class TestMainTokenEnvPropagation:
 
         def fake_api_get(url, token=None, **_):
             captured["token"] = token
-            if url.endswith("/files"):
+            if "/files" in url:
                 return []
             return _pr_payload([], changed_files=0)
 

@@ -162,6 +162,26 @@ helper rather than parsing inline - it follows the module's existing
   edge-case correctness problem) before merging. Style and preference nits can
   be deferred or taken in a follow-up.
 
+### Gate-integrity-allow label for CI/gate changes
+
+The `gate-integrity` required check (`.github/workflows/gate-integrity.yml`) runs
+on `pull_request_target` from the base branch and inspects the PR diff via the
+GitHub API only. It blocks any PR that touches protected paths under `.github/`
+or `scripts/check_*.py` unless the PR carries the `gate-integrity-allow` label.
+
+This label must be set manually by the lead after a human review of the gate
+change. Legitimate changes that touch these paths and need the label include:
+
+- Editing `.github/workflows/*.yml` to fix or extend a required check
+- Editing `scripts/check_*.py` (any gate checker, including nested ones)
+- Editing `.github/actions/**` (composite actions used by workflows)
+- Editing `.github/scripts/**` (gate scripts collocated under `.github`)
+
+The label is the explicit human-set waiver: automation must never apply it, and
+a PR without it that touches a protected path fails the gate. When reviewing a PR
+that legitimately changes these files, apply `gate-integrity-allow` after
+confirming the change is intentional and reviewed.
+
 ## Spend model tokens on judgement, not on waiting
 
 An agent working this repo pays for every turn it takes. Reserve those turns for

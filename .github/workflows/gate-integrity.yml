@@ -38,6 +38,12 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
     branches: [master, dev]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to inspect for gate-integrity violations"
+        required: true
+        type: number
 
 permissions:
   contents: read
@@ -70,7 +76,7 @@ jobs:
         # blip never reads as green -- see check_gate_integrity.EXIT_ERROR.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.pull_request.number }}
         run: |
           set -euo pipefail
           python scripts/check_gate_integrity.py "$PR_NUMBER"
