@@ -127,7 +127,7 @@ describe("NotificationCentre click routing", () => {
     expect(screen.queryByText(/more in archive/)).not.toBeInTheDocument();
   });
 
-  it("renders a View archive button that opens the notification-archive window", () => {
+  it("renders a View archive button that opens the notifications window with section archive", () => {
     notifications = [
       notif({ id: "srv-1", title: "Active note" }),
       { ...notif({ id: "srv-x", title: "Old note" }), archived: true } as Notification,
@@ -141,8 +141,9 @@ describe("NotificationCentre click routing", () => {
     fireEvent.click(viewArchive);
 
     expect(openWindow).toHaveBeenCalledWith(
-      "notification-archive",
-      expect.objectContaining({ w: 800, h: 600 }),
+      "notifications",
+      expect.objectContaining({ w: 900, h: 600 }),
+      { section: "archive" },
     );
   });
 

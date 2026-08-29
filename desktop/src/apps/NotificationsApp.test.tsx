@@ -1,0 +1,169 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import React from "react";
+import { NotificationsApp } from "./NotificationsApp";
+import { useNotificationStore, type Notification } from "@/stores/notification-store";
+
+const openWindow = vi.fn();
+
+vi.mock("@/stores/process-store", () => ({
+  useProcessStore: (sel: (s: { openWindow: typeof openWindow }) => unknown) =>
+    sel({ openWindow }),
+}));
+
+vi.mock("@/lib/server-notifications", () => ({
+  markServerRead: vi.fn(),
+  markAllServerRead: vi.fn(),
+  archiveServerNotification: vi.fn(),
+  fetchServerNotifications: vi.fn().mockResolvedValue([]),
+  mapRow: (row: Record<string, unknown>) => row as Notification,
+}));
+
+vi.mock("@/lib/notifications-push", () => ({
+  getPushState: vi.fn().mockResolvedValue("disabled"),
+  enableNotificationsPush: vi.fn(),
+  disableNotificationsPush: vi.fn(),
+}));
+
+vi.mock("@/components/SetupChecklist", () => ({ SetupChecklist: () => null }));
+vi.mock("@/components/ConsentActions", () => ({ ConsentActions: () => null }));
+
+vi.mock("@/components/ui", () => ({
+  Tabs: ({ children, value, onValueChange }: { children: React.ReactNode; value?: string; onValueChange?: (v: string) => void }) => (
+    <div data-testid="tabs" data-value={value}>
+      <button data-testid="tab-notifications" onClick={() => onValueChange?.("notifications")}>Notifications</button>
+      <button data-testid="tab-archive" onClick={() => onValueChange?.("archive")}>Archive</button>
+      {children}
+    </div>
+  ),
+  TabsContent: ({ children, value }: { children: React.ReactNode; value?: string }) => (
+    <div data-testid={`tab-content-${value}`}>{children}</div>
+  ),
+  TabsList: ({ children }: { children: React.ReactNode }) => <div data-testid="tabs-list">{children}</div>,
+  TabsTrigger: ({ children, value, onClick }: { children: React.ReactNode; value?: string; onClick?: () => void }) => (
+    <button data-testid={`trigger-${value}`} onClick={onClick}>{children}</button>
+  ),
+}));
+
+function mockFetch(
+  resolver: (url: string) => { ok: boolean; body: unknown },
+) {
+  return vi.fn().mockImplementation((input: string) => {
+    const hit = resolver(input);
+    return Promise.resolve({
+      ok: hit.ok,
+      status: hit.ok ? 200 : 500,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: () => Promise.resolve(hit.body),
+    });
+  });
+}
+
+async function flush() {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
+function notif(over: Partial<Notification>): Notification {
+  return {
+    id: "srv-1",
+    source: "system",
+    title: "Title",
+    body: "Body",
+    level: "info",
+    read: false,
+    timestamp: Date.now(),
+    ...over,
+  };
+}
+
+describe("NotificationsApp", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useNotificationStore.setState({ notifications: [], centreOpen: false });
+  });
+
+  it("renders Notifications and Archive tabs", () => {
+    render(<NotificationsApp windowId="w1" />);
+    expect(screen.getByTestId("tab-notifications")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-archive")).toBeInTheDocument();
+  });
+
+  it("defaults to the notifications tab", () => {
+    render(<NotificationsApp windowId="w1" />);
+    expect(screen.getByTestId("tabs")).toHaveAttribute("data-value", "notifications");
+  });
+
+  it("defaults to archive tab when section=archive prop is passed", () => {
+    render(<NotificationsApp windowId="w1" section="archive" />);
+    expect(screen.getByTestId("tabs")).toHaveAttribute("data-value", "archive");
+  });
+
+  it("shows active notifications in the notifications tab", () => {
+    useNotificationStore.setState({
+      notifications: [notif({ id: "srv-1", title: "Active note" })],
+    });
+    render(<NotificationsApp windowId="w1" />);
+    expect(screen.getByText("Active note")).toBeInTheDocument();
+  });
+
+  it("shows an empty state when there are no active notifications", () => {
+    render(<NotificationsApp windowId="w1" />);
+    expect(screen.getByText("No notifications")).toBeInTheDocument();
+  });
+
+  it("shows archived notifications in the archive tab", async () => {
+    const fetchMock = mockFetch(() => ({ ok: true, body: [
+      { id: "srv-2", title: "Old note", body: "", level: "info", read: true, timestamp: Date.now() - 1000, archived: true, source: "system" },
+    ] }));
+    vi.stubGlobal("fetch", fetchMock);
+    useNotificationStore.setState({
+      notifications: [
+        notif({ id: "srv-1", title: "Active note" }),
+        { ...notif({ id: "srv-2", title: "Old note" }), archived: true } as Notification,
+      ],
+    });
+    render(<NotificationsApp windowId="w1" />);
+    fireEvent.click(screen.getByTestId("tab-archive"));
+    await flush();
+    expect(screen.getByText("Old note")).toBeInTheDocument();
+  });
+
+  it("switches to archive tab when View archive button is clicked", () => {
+    useNotificationStore.setState({
+      notifications: [notif({ id: "srv-1", title: "Active note" })],
+    });
+    render(<NotificationsApp windowId="w1" />);
+    fireEvent.click(screen.getByText(/view archive/i));
+    expect(screen.getByTestId("tabs")).toHaveAttribute("data-value", "archive");
+  });
+
+  it("marks read and does not close on notification click when there is no action", () => {
+    useNotificationStore.setState({
+      notifications: [notif({ id: "srv-1", title: "Plain note" })],
+    });
+    render(<NotificationsApp windowId="w1" />);
+    fireEvent.click(screen.getByText("Plain note"));
+    expect(useNotificationStore.getState().notifications[0].read).toBe(true);
+    expect(openWindow).not.toHaveBeenCalled();
+  });
+
+  it("calls markAllRead when the mark-all-read button is clicked", () => {
+    useNotificationStore.setState({
+      notifications: [notif({ id: "srv-1", title: "Note" })],
+    });
+    render(<NotificationsApp windowId="w1" />);
+    fireEvent.click(screen.getByTitle("Mark all read"));
+    expect(useNotificationStore.getState().notifications.every((n) => n.read)).toBe(true);
+  });
+
+  it("calls clearAll when the clear-all button is clicked", () => {
+    useNotificationStore.setState({
+      notifications: [notif({ id: "srv-1", title: "Note" })],
+    });
+    render(<NotificationsApp windowId="w1" />);
+    fireEvent.click(screen.getByTitle("Clear all"));
+    expect(useNotificationStore.getState().notifications.every((n) => n.archived)).toBe(true);
+  });
+});
