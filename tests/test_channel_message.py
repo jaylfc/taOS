@@ -461,20 +461,33 @@ class TestParseInlineHints:
         result = parse_inline_hints("   ")
         assert result.content == ""
 
+    def _assert_denominator_matches_part_count(self, parts):
+        # The [part N/M] denominator (M) must equal the number of emitted parts.
+        for part in parts:
+            denom = part.split("/")[1].split("]")[0]
+            assert denom == str(len(parts)), (
+                f"label denominator {denom} != emitted part count "
+                f"{len(parts)}: {parts}"
+            )
+
     def test_degrade_drops_buttons_and_images(self):
         # Build a real OutgoingMessage using parse_inline_hints
         text = "Reboot the node? [button:Yes:reboot] [image:/tmp/node.png]"
         msg = parse_inline_hints(text)
-        parts = _degrade(msg)
+        parts, notices = _degrade(msg)
         # Buttons and images must be dropped (structured fields cleared)
         assert msg.buttons == [], f"buttons not dropped: {msg.buttons}"
         assert msg.images == [], f"images not dropped: {msg.images}"
+        # Notices must be returned, not discarded -- they reach the transport.
+        assert "[button dropped: Meshtastic is text-only]" in notices
+        assert "[image dropped: Meshtastic is text-only]" in notices
         # Chunk size must be byte-accurate
         for part in parts:
             assert len(part.encode("utf-8")) <= 237, (
                 f"part exceeds 237 bytes: {part!r} len={len(part.encode('utf-8'))}"
             )
-        # There should be at least one part
+        # Denominator equals the emitted part count (not len(text)/237).
+        self._assert_denominator_matches_part_count(parts)
         assert len(parts) >= 1
 
     def test_degrade_drops_cards_and_emits_notices(self):
@@ -484,20 +497,23 @@ class TestParseInlineHints:
             content="Use /help",
             cards=[{"title": "Help", "body": "Show help"}],
         )
-        parts = _degrade(msg)
+        parts, notices = _degrade(msg)
         # Cards must be dropped
         assert msg.cards == [], f"cards not dropped: {msg.cards}"
+        # The one-time notice must be surfaced, not discarded.
+        assert "[card dropped: Meshtastic is text-only]" in notices
         # At least one part produced
         assert len(parts) >= 1
         # Each part respects the byte budget including prefix
         for part in parts:
             assert len(part.encode("utf-8")) <= 237
+        self._assert_denominator_matches_part_count(parts)
 
     def test_degrade_chunks_large_payload(self):
         # Build a real OutgoingMessage with content exceeding 237 bytes
         long_text = "A" * 500  # 500 ASCII chars > 237 bytes
         msg = OutgoingMessage(content=long_text)
-        parts = _degrade(msg)
+        parts, notices = _degrade(msg)
         # Every part must satisfy the byte budget including [part N/M] prefix
         for part in parts:
             assert len(part.encode("utf-8")) <= 237, (
@@ -505,13 +521,29 @@ class TestParseInlineHints:
             )
         # total must be derived from byte-accurate chunking
         assert len(parts) > 1
+        # Denominator equals the emitted part count, not len(text)/237.
+        self._assert_denominator_matches_part_count(parts)
 
-    def test_degrade_with_malay_text_and_em_dash(self):
-        # Non-ASCII text with em-dash to verify byte-accurate chunking.
-        # Use enough text to require chunking (>237 bytes).
-        text = "Selamat pagi! — " * 20 + "selamat petang"
+    def test_degrade_denominator_matches_part_count_at_474_bytes(self):
+        # Regression for #2623: 474 bytes of content. total = ceil(474/237)
+        # = 2 undercounts because the [part N/M] prefix eats into the budget,
+        # so the old code emitted [part 1/2], [part 2/2], [part 3/2]. The
+        # denominator must equal the actual number of parts (3).
+        msg = OutgoingMessage(content="A" * 474)
+        parts, notices = _degrade(msg)
+        assert len(parts) == 3
+        self._assert_denominator_matches_part_count(parts)
+        for part in parts:
+            assert len(part.encode("utf-8")) <= 237
+
+    def test_degrade_with_multibyte_content(self):
+        # Non-ASCII (multibyte UTF-8) text to verify byte-accurate chunking
+        # and that the label denominator equals the emitted part count even as
+        # the [part N/M] prefix width grows across single- and double-digit
+        # part numbers. Enough text to require multiple parts.
+        text = ("héllo wörld " + "日本語 ") * 20
         msg = OutgoingMessage(content=text)
-        parts = _degrade(msg)
+        parts, notices = _degrade(msg)
         # Every part must satisfy the byte budget including [part N/M] prefix
         for part in parts:
             byte_len = len(part.encode("utf-8"))
@@ -520,17 +552,8 @@ class TestParseInlineHints:
             )
         # Must have chunked into multiple parts since text > 237 bytes
         assert len(parts) > 1, f"Expected multiple parts but got {len(parts)}"
-        # Verify total is consistent across all parts (byte-accurate, not char length)
-        # Extract the total (M from [part N/M]) from each part
-        totals = set()
-        for part in parts:
-            # [part 1/2] -> extract 2
-            try:
-                m_val = part.split("/")[1].split("]")[0]
-                totals.add(m_val)
-            except IndexError:
-                pass
-        assert len(totals) == 1, f"Inconsistent total values across parts: {totals}"
+        # Denominator equals the emitted part count (stronger than "consistent").
+        self._assert_denominator_matches_part_count(parts)
 
     def test_hint_with_spaces_in_label(self):
         result = parse_inline_hints("[button:Click Here:action]")
