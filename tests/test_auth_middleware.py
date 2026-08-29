@@ -1,6 +1,7 @@
 """Unit tests for auth_middleware allow/deny logic."""
 from __future__ import annotations
 
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -760,7 +761,10 @@ class TestRegistryJwtUnknownRouteDispatch:
             path=self.UNKNOWN_PATH,
             headers={"authorization": f"Bearer {token}"},
         )
-        req.app.state = self._app_state(public_pem=public_pem)
+        state = self._app_state(public_pem=public_pem)
+        state.agent_registry = MagicMock()
+        state.agent_registry.get = AsyncMock(return_value={"status": "active"})
+        req.app.state = state
         req.app.state.auth = _default_auth_mgr()
         call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
 
@@ -791,12 +795,72 @@ class TestRegistryJwtUnknownRouteDispatch:
         """Control C: a forged/garbage bearer on the same unknown path still
         returns 401.  Verifies the fix keys off a real credential, not merely
         the presence of an Authorization header."""
+        _priv, _pub = _registry_keypair()
         middleware = AuthMiddleware(app=MagicMock())
         req = _request(
             path=self.UNKNOWN_PATH,
             headers={"authorization": "Bearer garbage-not-a-jwt"},
         )
-        req.app.state = self._app_state()
+        req.app.state = self._app_state(public_pem=_pub)
+        req.app.state.auth = _default_auth_mgr()
+        call_next = AsyncMock()
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 401
+        assert resp.body == b'{"error":"Authentication required"}'
+        call_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_revoked_registry_jwt_unknown_path_returns_401(self):
+        """A revoked registry JWT on an unlisted route must return 401, not
+        404.  The auth middleware must distinguish dead credentials from wrong
+        URLs."""
+        private_pem, public_pem = _registry_keypair()
+        token = _signed_registry_token(private_pem)
+
+        middleware = AuthMiddleware(app=MagicMock())
+        req = _request(
+            path=self.UNKNOWN_PATH,
+            headers={"authorization": f"Bearer {token}"},
+        )
+        state = self._app_state(public_pem=public_pem)
+        state.agent_registry = MagicMock()
+        state.agent_registry.get = AsyncMock(
+            return_value={"status": "revoked"}
+        )
+        req.app.state = state
+        req.app.state.auth = _default_auth_mgr()
+        call_next = AsyncMock()
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 401
+        assert resp.body == b'{"error":"Authentication required"}'
+        call_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rotated_registry_jwt_unknown_path_returns_401(self):
+        """A rotated registry JWT (iat < token_min_iat) on an unlisted route
+        must return 401, not 404.  The auth middleware must distinguish dead
+        credentials from wrong URLs."""
+        private_pem, public_pem = _registry_keypair()
+        token = _signed_registry_token(private_pem)
+
+        middleware = AuthMiddleware(app=MagicMock())
+        req = _request(
+            path=self.UNKNOWN_PATH,
+            headers={"authorization": f"Bearer {token}"},
+        )
+        state = self._app_state(public_pem=public_pem)
+        state.agent_registry = MagicMock()
+        state.agent_registry.get = AsyncMock(
+            return_value={
+                "status": "active",
+                "token_min_iat": int(time.time()) + 3600,
+            }
+        )
+        req.app.state = state
         req.app.state.auth = _default_auth_mgr()
         call_next = AsyncMock()
 
@@ -820,7 +884,10 @@ class TestRegistryJwtUnknownRouteDispatch:
             path="/api/system",  # exists but is NOT an _AGENT_TOKEN_PATHS entry
             headers={"authorization": f"Bearer {token}"},
         )
-        req.app.state = self._app_state(public_pem=public_pem)
+        state = self._app_state(public_pem=public_pem)
+        state.agent_registry = MagicMock()
+        state.agent_registry.get = AsyncMock(return_value={"status": "active"})
+        req.app.state = state
         req.app.state.auth = _default_auth_mgr()
         call_next = AsyncMock(return_value=JSONResponse({"system": "ok"}))
 

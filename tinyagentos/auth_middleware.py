@@ -285,18 +285,42 @@ def _is_agent_scope_request_path(method: str, path: str) -> bool:
     return any(m == method and rx.match(path) for m, rx in _AGENT_SCOPE_REQUEST_ROUTES)
 
 
-def _looks_like_registry_jwt(token: str, public_key_pem: bytes) -> bool:
-    """Return True if *token* has a valid EdDSA signature against *public_key_pem*.
+async def _looks_like_registry_jwt(
+    token: str, public_key_pem: bytes, registry
+) -> bool:
+    """Return True if *token* has a valid EdDSA signature against *public_key_pem*
+    AND the credential is alive in the registry (status == "active" and not rotated).
 
-    Verifies SIGNATURE ONLY -- no scope-grant check, no project binding, no
-    registry lookup. The result is used solely to distinguish a real credential
-    (404 for an unlisted route) from an anonymous or forged one (401), so a
-    wrong URL cannot be confused with dead credentials.
+    Verifies SIGNATURE, registry status, and token_min_iat. The result is used
+    solely to distinguish a real live credential (404 for an unlisted route) from
+    a dead one (401), so a wrong URL cannot be confused with revoked or superseded
+    credentials.
     """
     try:
-        verify_registry_token(token, public_key_pem)
-    except (ValueError, Exception):
+        payload = verify_registry_token(token, public_key_pem)
+    except ValueError:
         return False
+
+    canonical_id = payload.get("sub")
+    if not canonical_id:
+        return False
+
+    if registry is None:
+        return False
+
+    try:
+        record = await registry.get(canonical_id)
+    except Exception:
+        return False
+
+    if record is None or record.get("status") != "active":
+        return False
+
+    token_min_iat = record.get("token_min_iat") or 0
+    token_iat = payload.get("iat") or 0
+    if token_iat < token_min_iat:
+        return False
+
     return True
 
 
@@ -671,8 +695,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 keypair = getattr(
                     request.app.state, "agent_registry_keypair", None
                 )
-                if keypair is not None and _looks_like_registry_jwt(
-                    presented_bearer, keypair[1]
+                registry = getattr(
+                    request.app.state, "agent_registry", None
+                )
+                if keypair is not None and await _looks_like_registry_jwt(
+                    presented_bearer, keypair[1], registry
                 ):
                     return JSONResponse(
                         {"error": "Not Found"},
