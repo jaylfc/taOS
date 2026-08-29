@@ -4,6 +4,8 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 from fastapi.responses import JSONResponse
 from starlette.responses import RedirectResponse
 
@@ -703,3 +705,127 @@ class TestDeviceBearerPassthroughBoundary:
         assert _is_device_bearer_path("POST", "/api/decisions/a/b/answer") is False
         assert _is_device_bearer_path("GET", "/api/settings") is False
         assert _is_device_bearer_path("POST", "/api/projects") is False
+
+
+def _registry_keypair() -> tuple[bytes, bytes]:
+    """Return (private_pem, public_pem) for a fresh Ed25519 keypair."""
+    private = Ed25519PrivateKey.generate()
+    private_pem = private.private_bytes(
+        encoding=Encoding.PEM,
+        format=PrivateFormat.PKCS8,
+        encryption_algorithm=NoEncryption(),
+    )
+    public_pem = private.public_key().public_bytes(
+        encoding=Encoding.PEM,
+        format=PublicFormat.SubjectPublicKeyInfo,
+    )
+    return private_pem, public_pem
+
+
+def _signed_registry_token(private_pem: bytes) -> str:
+    """Mint a registry JWT signed by *private_pem*."""
+    from tinyagentos.agent_registry_store import mint_registry_token
+    return mint_registry_token(
+        canonical_id="test-agent",
+        private_key_pem=private_pem,
+        user_id="",
+        framework="test",
+        project_id=None,
+    )
+
+
+class TestRegistryJwtUnknownRouteDispatch:
+    """Four assertions from tsk-vylg2y: valid cred, absent cred, garbage cred,
+    and skeleton-key control on an unlisted route that does exist."""
+
+    UNKNOWN_PATH = "/api/nonexistent/unknown-route"
+
+    def _app_state(self, *, public_pem: bytes | None = None) -> MagicMock:
+        state = MagicMock()
+        if public_pem is not None:
+            state.agent_registry_keypair = (b"private", public_pem)
+        else:
+            state.agent_registry_keypair = None
+        return state
+
+    @pytest.mark.asyncio
+    async def test_valid_registry_jwt_unknown_path_returns_404(self):
+        """RED: a real credential on an unlisted route must return 404 from
+        the middleware directly -- routing must NOT be reached."""
+        private_pem, public_pem = _registry_keypair()
+        token = _signed_registry_token(private_pem)
+
+        middleware = AuthMiddleware(app=MagicMock())
+        req = _request(
+            path=self.UNKNOWN_PATH,
+            headers={"authorization": f"Bearer {token}"},
+        )
+        req.app.state = self._app_state(public_pem=public_pem)
+        req.app.state.auth = _default_auth_mgr()
+        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 404
+        assert resp.body == b'{"error":"Not Found"}'
+        call_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_credential_unknown_path_returns_401(self):
+        """Control B: no credential on the same unknown path still returns
+        401.  A blanket 404 from the middleware would fail this test."""
+        middleware = AuthMiddleware(app=MagicMock())
+        req = _request(path=self.UNKNOWN_PATH)
+        req.app.state = self._app_state()
+        req.app.state.auth = _default_auth_mgr()
+        call_next = AsyncMock()
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 401
+        assert resp.body == b'{"error":"Authentication required"}'
+        call_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_garbage_bearer_unknown_path_returns_401(self):
+        """Control C: a forged/garbage bearer on the same unknown path still
+        returns 401.  Verifies the fix keys off a real credential, not merely
+        the presence of an Authorization header."""
+        middleware = AuthMiddleware(app=MagicMock())
+        req = _request(
+            path=self.UNKNOWN_PATH,
+            headers={"authorization": "Bearer garbage-not-a-jwt"},
+        )
+        req.app.state = self._app_state()
+        req.app.state.auth = _default_auth_mgr()
+        call_next = AsyncMock()
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 401
+        assert resp.body == b'{"error":"Authentication required"}'
+        call_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skeleton_key_registry_jwt_existing_non_allowlisted_route(self):
+        """Skeleton-key control: a valid registry JWT on a route that exists
+        but is NOT in the agent-token allowlist must NOT be routed.  The
+        handler must never run -- call_next must not be awaited.  A fix that
+        calls call_next for the 404 would fail here."""
+        private_pem, public_pem = _registry_keypair()
+        token = _signed_registry_token(private_pem)
+
+        middleware = AuthMiddleware(app=MagicMock())
+        req = _request(
+            path="/api/system",  # exists but is NOT an _AGENT_TOKEN_PATHS entry
+            headers={"authorization": f"Bearer {token}"},
+        )
+        req.app.state = self._app_state(public_pem=public_pem)
+        req.app.state.auth = _default_auth_mgr()
+        call_next = AsyncMock(return_value=JSONResponse({"system": "ok"}))
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 404
+        assert resp.body == b'{"error":"Not Found"}'
+        call_next.assert_not_awaited()

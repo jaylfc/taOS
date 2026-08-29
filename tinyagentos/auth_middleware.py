@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import HTMLResponse, RedirectResponse
 
+from tinyagentos.agent_registry_store import verify_registry_token
 from tinyagentos.auth import AuthStoreCorruptError
 from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
 
@@ -282,6 +283,23 @@ def _is_agent_scope_request_path(method: str, path: str) -> bool:
     route verifies the JWT identity == canonical_id; approve/deny are excluded
     (extra path segments) and stay owner/admin session-only."""
     return any(m == method and rx.match(path) for m, rx in _AGENT_SCOPE_REQUEST_ROUTES)
+
+
+def _looks_like_registry_jwt(token: str, public_key_pem: bytes) -> bool:
+    """Return True if *token* has a valid EdDSA signature against *public_key_pem*.
+
+    Verifies SIGNATURE ONLY -- no scope-grant check, no project binding, no
+    registry lookup. The result is used solely to distinguish a real credential
+    (404 for an unlisted route) from an anonymous or forged one (401), so a
+    wrong URL cannot be confused with dead credentials.
+    """
+    try:
+        verify_registry_token(token, public_key_pem)
+    except (ValueError, Exception):
+        return False
+    return True
+
+
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
 #   1. The browser can install and cache the shell for offline / PWA use.
 #   2. After a backend restart the cached shell loads immediately without
@@ -639,5 +657,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if "text/html" in accept:
             next_param = f"?next={path}" if path != "/" else ""
             return RedirectResponse(f"/auth/login{next_param}", status_code=303)
+
+        # A registry JWT presented for an unlisted route is a real credential
+        # pointing at the wrong URL.  Returning 404 here (without calling
+        # call_next) keeps the agent-token allowlist closed -- routing is never
+        # reached, so a registry JWT cannot authenticate any other route -- and
+        # gives the caller a response that is distinguishable from dead
+        # credentials (which still get 401).  The anonymous caller (no header,
+        # no session cookie) still falls through to 401 below.
+        if auth_header.lower().startswith("bearer "):
+            presented_bearer = auth_header[7:].strip()
+            if presented_bearer:
+                keypair = getattr(
+                    request.app.state, "agent_registry_keypair", None
+                )
+                if keypair is not None and _looks_like_registry_jwt(
+                    presented_bearer, keypair[1]
+                ):
+                    return JSONResponse(
+                        {"error": "Not Found"},
+                        status_code=404,
+                    )
 
         return JSONResponse({"error": "Authentication required"}, status_code=401)
