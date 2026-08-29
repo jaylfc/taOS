@@ -1086,6 +1086,73 @@ class TestLibraryRoutes:
         resp = await client.post(f"/api/library/items/{item_id}/reprocess")
         assert resp.status_code == 409
 
+    # -- Jobs endpoints --
+
+    @pytest.mark.asyncio
+    async def test_list_jobs_empty(self, client):
+        resp = await client.get("/api/library/jobs")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "jobs" in data
+        assert data["jobs"] == []
+
+    @pytest.mark.asyncio
+    async def test_list_jobs_filter_by_state(self, client, app):
+        """?state=error returns only error jobs, not jobs in other states."""
+        resp = await client.get("/api/library/jobs")
+        assert resp.status_code == 200
+        store = app.state.library_store
+        item_id = await store.create_item(kind="text", title="test")
+        error_job_id = await store.create_job(item_id, "ingest")
+        done_job_id = await store.create_job(item_id, "transcript")
+        await store.update_job(error_job_id, state="error", error="boom")
+        await store.update_job(done_job_id, state="done")
+
+        resp = await client.get("/api/library/jobs", params={"state": "error"})
+        assert resp.status_code == 200
+        data = resp.json()
+        returned_ids = {j["id"] for j in data["jobs"]}
+        assert error_job_id in returned_ids
+        assert done_job_id not in returned_ids
+
+    @pytest.mark.asyncio
+    async def test_retry_error_job(self, client, app):
+        """POST /api/library/jobs/{id}/retry re-queues an error job."""
+        resp = await client.get("/api/library/jobs")
+        assert resp.status_code == 200
+        store = app.state.library_store
+        item_id = await store.create_item(kind="text", title="test")
+        job_id = await store.create_job(item_id, "ingest")
+        await store.update_job(job_id, state="error", error="boom")
+
+        resp = await client.post(f"/api/library/jobs/{job_id}/retry")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["job_id"] == job_id
+        assert data["status"] == "queued"
+
+        job = await store.get_job(job_id)
+        assert job["state"] == "queued"
+        assert job["error"] == ""
+
+    @pytest.mark.asyncio
+    async def test_retry_unknown_job_returns_404(self, client):
+        resp = await client.post("/api/library/jobs/nonexistent/retry")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_retry_non_error_job_returns_409(self, client, app):
+        """Retrying a job that is not in error state is rejected."""
+        resp = await client.get("/api/library/jobs")
+        assert resp.status_code == 200
+        store = app.state.library_store
+        item_id = await store.create_item(kind="text", title="test")
+        job_id = await store.create_job(item_id, "ingest")
+        await store.update_job(job_id, state="done")
+
+        resp = await client.post(f"/api/library/jobs/{job_id}/retry")
+        assert resp.status_code == 409
+
 
 # ---------------------------------------------------------------------------
 # P3: LibraryStore — rules + storage accounting
