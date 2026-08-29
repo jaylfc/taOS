@@ -1,0 +1,2 @@
+### Fixed
+- Fixed empty-VMAF branch: moved `saving_pct` computation before the `vmaf_mean` null check, dropped `$vmaf_mean` from printf args, and emit `ERROR` for `saving_pct` in the error branch; also aligned PowerShell script output

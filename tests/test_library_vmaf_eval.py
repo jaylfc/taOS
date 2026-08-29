@@ -154,7 +154,7 @@ def test_bash_script_exits_nonzero_on_ffmpeg_failure(tmp_path: Path):
 
 
 def test_bash_script_exits_nonzero_on_no_vmaf_score(tmp_path: Path):
-    """Fake ffmpeg exits ZERO but no VMAF score: line -> script exits non-zero, emits ERROR."""
+    """Fake ffmpeg exits ZERO but no VMAF score: script exits non-zero, emits ERROR rows."""
     config = tmp_path / "vmaf-eval-config.json"
     config.write_text(json.dumps({
         "pairs": [
@@ -169,11 +169,11 @@ def test_bash_script_exits_nonzero_on_no_vmaf_score(tmp_path: Path):
                 "variant": str(FIXTURE_DIR / "clip2_low.mp4"),
             },
         ],
-    }))
+    }));
 
     fake_ffmpeg = _fake_ffmpeg_dir(tmp_path, exit_code=0, score_output=False)
     env = os.environ.copy()
-    env["PATH"] = str(fake_ffmpeg) + os.pathsep + env.get("PATH", "")
+    env["PATH"] = str(fake_ffmpeg) + os.pathsep + env.get("PATH", "");
 
     result = subprocess.run(
         ["bash", str(BASH_SCRIPT), str(config)],
@@ -181,21 +181,24 @@ def test_bash_script_exits_nonzero_on_no_vmaf_score(tmp_path: Path):
         text=True,
         env=env,
         timeout=30,
-    )
+    );
     assert result.returncode != 0, (
         f"expected non-zero exit, got 0:\nstdout={result.stdout}\nstderr={result.stderr}"
-    )
-    lines = [l for l in result.stdout.strip().splitlines() if l]
-    assert lines[0] == "video,variant,vmaf_mean,bytes_source,bytes_variant,saving_pct"
-    # No numeric score for any pair; vmaf_mean should be ERROR, not 0
-    data_lines = [l for l in lines[1:] if l]
-    assert len(data_lines) == 0, f"expected no data rows, got {data_lines}"
-    # vmaf_mean should never be the string "0" when ffmpeg did not produce a score
+    );
+    lines = [l for l in result.stdout.strip().splitlines() if l];
+    assert lines[0] == "video,variant,vmaf_mean,bytes_source,bytes_variant,saving_pct";
+    # ERROR rows are emitted for pairs with no VMAF score; script exits non-zero
+    data_lines = [l for l in lines[1:] if l];
+    assert len(data_lines) == 2, f"expected 2 data rows, got {data_lines}";
     for line in data_lines:
-        parts = line.split(",")
-        assert len(parts) == 6
-        vmaf_mean = parts[2]
-        assert vmaf_mean != "0", f"vmaf_mean should not be '0', got '{vmaf_mean}'"
+        parts = line.split(",");
+        assert len(parts) == 6, f"expected 6 columns in {line}";
+        video, variant, vmaf_mean, bs, bv, saving = parts;
+        assert vmaf_mean == "ERROR", f"vmaf_mean should be 'ERROR', got '{vmaf_mean}'";
+        assert saving == "ERROR", f"saving_pct should be 'ERROR', got '{saving}'";
+        assert int(bs) > 0, f"bytes_source should be > 0, got {bs}";
+        assert int(bv) > 0, f"bytes_variant should be > 0, got {bv}";
+        assert int(bv) <= int(bs), f"bytes_variant should be <= bytes_source, got {bv} > {bs}";
 
 
 def test_bash_script_partial_run_one_fails_one_succeeds(tmp_path: Path):
@@ -318,7 +321,7 @@ def test_ps1_script_exits_nonzero_on_ffmpeg_failure(tmp_path: Path):
 
 
 def test_ps1_script_exits_nonzero_on_no_vmaf_score(tmp_path: Path):
-    """Fake ffmpeg exits ZERO but no VMAF score: line for PS1 script -> script exits non-zero."""
+    """Fake ffmpeg exits ZERO but no VMAF score: script exits non-zero, emits ERROR rows."""
     import subprocess
     if not PS1_AVAILABLE:
         pytest.skip("PowerShell not available")
@@ -331,23 +334,25 @@ def test_ps1_script_exits_nonzero_on_no_vmaf_score(tmp_path: Path):
                 "variant": str(FIXTURE_DIR / "clip1_low.mp4"),
             },
         ]
-    }))
+    }));
     result = subprocess.run(
         ["pwsh", "-File", str(PS1_SCRIPT), str(config)],
         capture_output=True,
         text=True,
         timeout=30,
-    )
+    );
     assert result.returncode != 0, (
         f"expected non-zero exit, got 0:\nstdout={result.stdout}\nstderr={result.stderr}"
-    )
-    lines = [l for l in result.stdout.strip().splitlines() if l]
-    assert lines[0] == "video,variant,vmaf_mean,bytes_source,bytes_variant,saving_pct"
-    data_lines = [l for l in lines[1:] if l]
-    assert len(data_lines) == 0, f"expected no data rows, got {data_lines}"
-    # vmaf_mean should not be "0" when ffmpeg did not produce a score
-    for line in data_lines:
-        parts = line.split(",")
-        assert len(parts) == 6
-        vmaf_mean = parts[2]
-        assert vmaf_mean != "0", f"vmaf_mean should not be '0', got '{vmaf_mean}'"
+    );
+    lines = [l for l in result.stdout.strip().splitlines() if l];
+    assert lines[0] == "video,variant,vmaf_mean,bytes_source,bytes_variant,saving_pct";
+    # ERROR rows are emitted for pairs with no VMAF score; script exits non-zero
+    data_lines = [l for l in lines[1:] if l];
+    assert len(data_lines) == 1, f"expected 1 data row, got {data_lines}";
+    parts = data_lines[0].split(",");
+    assert len(parts) == 6, f"expected 6 columns in {data_lines[0]}";
+    video, variant, vmaf_mean, bs, bv, saving = parts;
+    assert vmaf_mean == "ERROR", f"vmaf_mean should be 'ERROR', got '{vmaf_mean}'";
+    assert saving == "ERROR", f"saving_pct should be 'ERROR', got '{saving}'";
+    assert int(bs) > 0, f"bytes_source should be > 0, got {bs}";
+    assert int(bv) > 0, f"bytes_variant should be > 0, got {bv}";

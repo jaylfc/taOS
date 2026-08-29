@@ -73,15 +73,16 @@ for pair in data.get('pairs', []):
     fi
 
     vmaf_mean="$(echo "$vmaf_output" | grep 'VMAF score:' | awk '{print $NF}' | tail -1)"
-    if [[ -z "$vmaf_mean" ]]; then
-        echo "1" > "$TMPFLAG"
-        printf '%s,%s,ERROR,%s,%s,%s\n' \
-            "$video" "$(basename "$variant")" "$vmaf_mean" \
-            "$bytes_source" "$bytes_variant" "$saving_pct"
-        continue
-    fi
 
     saving_pct="$(python3 -c "print(f'{(1 - ${bytes_variant} / ${bytes_source}) * 100:.2f}')")"
+
+    if [[ -z "$vmaf_mean" ]]; then
+        echo "1" > "$TMPFLAG"
+        printf '%s,%s,ERROR,%s,%s,ERROR\n' \
+            "$video" "$(basename "$variant")" \
+            "$bytes_source" "$bytes_variant"
+        continue
+    fi
 
     printf '%s,%s,%s,%s,%s,%s\n' \
         "$video" "$(basename "$variant")" "$vmaf_mean" \
