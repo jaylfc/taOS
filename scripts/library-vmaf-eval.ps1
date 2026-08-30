@@ -34,12 +34,12 @@ foreach ($pair in $pairs.pairs) {
     $variantPath = Resolve-Path $pair.variant
 
     if (-not (Test-Path $sourcePath -PathType Leaf)) {
-        Write-Host "source not found: $sourcePath" -ForegroundColor Red
+        [Console]::Error.WriteLine("source not found: $sourcePath")
         $hadFailure = $true
         continue
     }
     if (-not (Test-Path $variantPath -PathType Leaf)) {
-        Write-Host "variant not found: $variantPath" -ForegroundColor Red
+        [Console]::Error.WriteLine("variant not found: $variantPath")
         $hadFailure = $true
         continue
     }
@@ -52,7 +52,7 @@ foreach ($pair in $pairs.pairs) {
     $ffmpegExit = $LASTEXITCODE
 
     if ($ffmpegExit -ne 0) {
-        Write-Host "ffmpeg failure: $sourcePath / $variantPath" -ForegroundColor Red
+        [Console]::Error.WriteLine("ffmpeg failure: $sourcePath / $variantPath")
         $hadFailure = $true
         continue
     }
