@@ -338,11 +338,10 @@ async def send_envelope(
     import httpx
 
     outbound_token = peer_link.get("outbound_token", "")
-    for ep in sorted(
-        peer_link["endpoints"],
-        key=lambda e: e.get("priority", 99),
-    ):
-        inbox_url = f"{ep['url'].rstrip('/')}/api/peer/inbox"
+    # Endpoints are plain URL strings (the canonical shape written by
+    # ``establish_peer_link``), not ``{"url": ..., "priority": ...}`` dicts.
+    for ep in peer_link["endpoints"]:
+        inbox_url = f"{str(ep).rstrip('/')}/api/peer/inbox"
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
