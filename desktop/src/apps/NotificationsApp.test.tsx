@@ -214,6 +214,76 @@ describe("NotificationsApp", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it("preserves server-only archived rows when the store mutates", async () => {
+    const fetchMock = mockFetch(() => ({ ok: true, body: [
+      { id: "srv-3", title: "Server only archived", body: "", level: "info", read: true, timestamp: Date.now() - 1000, archived: true, source: "system" },
+    ] }));
+    vi.stubGlobal("fetch", fetchMock);
+    useNotificationStore.setState({
+      notifications: [notif({ id: "srv-1", title: "Active note" })],
+    });
+    render(<NotificationsApp windowId="w1" />);
+    fireEvent.click(screen.getByTestId("tab-archive"));
+    await flush();
+    expect(screen.getByText("Server only archived")).toBeInTheDocument();
+
+    useNotificationStore.setState({
+      notifications: [notif({ id: "srv-1", title: "Active note" }), notif({ id: "srv-3", title: "New note" })],
+    });
+    await flush();
+    expect(screen.getByText("Server only archived")).toBeInTheDocument();
+  });
+
+  it("includes store-archived items in the archive after clearAll", async () => {
+    const fetchMock = mockFetch(() => ({ ok: true, body: [
+      { id: "srv-2", title: "Server archived", body: "", level: "info", read: true, timestamp: Date.now() - 1000, archived: true, source: "system" },
+    ] }));
+    vi.stubGlobal("fetch", fetchMock);
+    useNotificationStore.setState({
+      notifications: [
+        notif({ id: "srv-1", title: "Active note" }),
+        { ...notif({ id: "srv-2", title: "Server archived" }), archived: true } as Notification,
+      ],
+    });
+    render(<NotificationsApp windowId="w1" />);
+    fireEvent.click(screen.getByTestId("tab-archive"));
+    await flush();
+    expect(screen.getByText("Server archived")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("tab-notifications"));
+    await flush();
+    fireEvent.click(screen.getByTitle("Clear all"));
+    await flush();
+    fireEvent.click(screen.getByTestId("tab-archive"));
+    await flush();
+
+    expect(screen.getByText("Active note")).toBeInTheDocument();
+    expect(screen.getByText("Server archived")).toBeInTheDocument();
+  });
+
+  it("keeps loading spinner during rapid archive tab toggles", async () => {
+    let resolveFetch: (value: { ok: boolean; json: () => Promise<unknown> }) => void;
+    const fetchMock = vi.fn().mockImplementation(() => new Promise((resolve) => {
+      resolveFetch = resolve;
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<NotificationsApp windowId="w1" />);
+    fireEvent.click(screen.getByTestId("tab-archive"));
+    await flush();
+    expect(screen.getByText("Loading archive...")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("tab-notifications"));
+    await flush();
+    fireEvent.click(screen.getByTestId("tab-archive"));
+    await flush();
+
+    expect(screen.getByText("Loading archive...")).toBeInTheDocument();
+    resolveFetch({ ok: true, json: () => Promise.resolve([]) });
+    await flush();
+    expect(screen.queryByText("Loading archive...")).not.toBeInTheDocument();
+  });
+
   it("dismiss button is not nested inside another button", () => {
     useNotificationStore.setState({
       notifications: [notif({ id: "srv-1", title: "Note" })],
