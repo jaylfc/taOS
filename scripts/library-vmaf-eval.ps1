@@ -70,9 +70,10 @@ foreach ($pair in $pairs.pairs) {
     if (-not $scoreParsed) {
         $hadFailure = $true
         $vmafMean = "ERROR"
+        $savingPct = "ERROR"
+    } else {
+        $savingPct = [math]::Round((1 - $bytesVariant / $bytesSource) * 100, 2)
     }
-
-    $savingPct = [math]::Round((1 - $bytesVariant / $bytesSource) * 100, 2)
 
     $variantBase = Split-Path -Leaf $variantPath
     Write-Output "$($pair.video),$variantBase,$vmafMean,$bytesSource,$bytesVariant,$savingPct"

@@ -90,6 +90,7 @@ for pair in data.get('pairs', []):
 done
 
 if [[ "$(cat "$TMPFLAG" 2>/dev/null)" == "1" ]]; then
+    rm -f "$TMPFLAG"
     exit 1
 fi
 
