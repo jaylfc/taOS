@@ -70,6 +70,7 @@ foreach ($pair in $pairs.pairs) {
     if (-not $scoreParsed) {
         $hadFailure = $true
         $vmafMean = "ERROR"
+        continue
     }
 
     $savingPct = [math]::Round((1 - $bytesVariant / $bytesSource) * 100, 2)

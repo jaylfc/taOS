@@ -1,0 +1,2 @@
+### Fixed
+- Empty-VMAF branch: moved `saving_pct` computation before the `-z "$vmaf_mean"` guard, fixed printf format args (removed redundant `$vmaf_mean`), and added `continue` in PowerShell no-score branch to prevent corrupted row emission
