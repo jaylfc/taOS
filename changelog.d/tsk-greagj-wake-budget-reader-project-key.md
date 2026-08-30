@@ -1,0 +1,2 @@
+### Fixed
+- Wake-budget read surfaces (`GET /api/agents/{name}/wake-budget` and `GET /api/observatory/wake-budget`) now aggregate consumption across every per-project key the heartbeat has charged, instead of looking up a single `agent["project_id"]` key that is never set in production. Per-project budget overrides are now reflected in reported values, and throttled agents no longer display a phantom full budget.

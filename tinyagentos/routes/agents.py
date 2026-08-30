@@ -1636,24 +1636,26 @@ async def reset_agent_budget(request: Request, name: str):
 @router.get("/api/agents/{name}/wake-budget")
 async def get_agent_wake_budget(request: Request, name: str):
     """Return an agent's resolved wake budget, today's consumption, and next
-    scheduled wake epoch."""
+    scheduled wake epoch.
+
+    Consumption is aggregated across every per-project key the heartbeat
+    has charged for this agent, since the worker keys wakes by the task's
+    project and the agent dict carries no ``project_id`` in production.
+    """
     from pathlib import Path
-    from tinyagentos.wake_budget import resolve_budget, get_consumption, get_next_scheduled_wake
+    from tinyagentos.wake_budget import get_agent_wake_info
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
     agent_id = agent.get("id") or name
     data_dir = Path(request.app.state.data_dir)
-    project_id = agent.get("project_id")
-    budget = resolve_budget(agent_id, project_id, config)
-    consumption = get_consumption(data_dir, agent_id, project_id)
-    next_wake = get_next_scheduled_wake(data_dir, agent_id, project_id, config)
+    info = get_agent_wake_info(data_dir, agent_id, config)
     return {
         "agent": name,
-        "budget": budget,
-        "consumed": consumption["scheduled"],
-        "remaining": max(0, budget - consumption["scheduled"]),
-        "next_wake_epoch": next_wake,
-        "date": consumption["date"],
+        "budget": info["budget"],
+        "consumed": info["consumed"],
+        "remaining": info["remaining"],
+        "next_wake_epoch": info["next_wake_epoch"],
+        "date": info["date"],
     }

@@ -85,16 +85,32 @@ def resolve_budget(agent_id: str, project_id: str | None, config: Any) -> int:
     """Resolve the scheduled wake budget for an agent.
 
     Cascade: per-project > per-agent > global_default.
+    Every resolution is logged so cost is attributable.
     """
     wb = getattr(config, "wake_budget", None) or {}
     if project_id:
         per_project = wb.get("per_project") or {}
         if project_id in per_project:
-            return _coerce_budget(per_project[project_id])
+            budget = _coerce_budget(per_project[project_id])
+            logger.debug(
+                "wake_budget resolve: agent=%s project=%s -> %d (per_project)",
+                agent_id, project_id, budget,
+            )
+            return budget
     per_agent = wb.get("per_agent") or {}
     if agent_id in per_agent:
-        return _coerce_budget(per_agent[agent_id])
-    return _coerce_budget(wb.get("global_default", _DEFAULT_GLOBAL))
+        budget = _coerce_budget(per_agent[agent_id])
+        logger.debug(
+            "wake_budget resolve: agent=%s project=%s -> %d (per_agent)",
+            agent_id, project_id, budget,
+        )
+        return budget
+    budget = _coerce_budget(wb.get("global_default", _DEFAULT_GLOBAL))
+    logger.debug(
+        "wake_budget resolve: agent=%s project=%s -> %d (global_default)",
+        agent_id, project_id, budget,
+    )
+    return budget
 
 
 def record_scheduled_wake(data_dir: Path, agent_id: str, project_id: str | None) -> None:
@@ -151,6 +167,18 @@ def can_wake(
     return consumption["scheduled"] < budget
 
 
+def _next_wake_epoch(budget: int, consumed: int) -> float | None:
+    """Spread remaining budget evenly over the rest of today; None if exhausted."""
+    if budget <= 0:
+        return None
+    remaining = budget - consumed
+    if remaining <= 0:
+        return None
+    now = time.time()
+    seconds_left_today = max(1, 86400 - (now % 86400))
+    return now + seconds_left_today / remaining
+
+
 def get_next_scheduled_wake(
     data_dir: Path,
     agent_id: str,
@@ -159,19 +187,56 @@ def get_next_scheduled_wake(
 ) -> float | None:
     """Return the epoch of the next scheduled wake, or None if exhausted."""
     budget = resolve_budget(agent_id, project_id, config)
-    if budget <= 0:
-        return None
     consumption = get_consumption(data_dir, agent_id, project_id)
-    remaining = budget - consumption["scheduled"]
-    if remaining <= 0:
-        return None
-    now = time.time()
-    seconds_left_today = max(1, 86400 - (now % 86400))
-    return now + seconds_left_today / remaining
+    return _next_wake_epoch(budget, consumption["scheduled"])
+
+
+def get_agent_wake_info(data_dir: Path, agent_id: str, config: Any) -> dict:
+    """Wake budget summary for a single agent, aggregated across all projects.
+
+    The heartbeat charges per ``(agent, task.project_id)`` and the agent dict
+    never carries a ``project_id`` in production, so a single-project lookup
+    would miss every charge. This sums consumption across every
+    ``f"{agent_id}:*"`` key so the read matches what was written. The budget is
+    resolved to the most restrictive applicable ``per_project`` override across
+    the agent's recorded projects, falling back to the per-agent / global
+    default when no consumption is on record yet.
+    """
+    path = _budget_path(data_dir)
+    state = _read_state(path)
+    today = _today()
+    prefix = f"{agent_id}:"
+    total_consumed = 0
+    projects: set[str] = set()
+    for key, daily in state.get("daily", {}).items():
+        if key.startswith(prefix):
+            proj = key[len(prefix):]
+            if proj != "global":
+                projects.add(proj)
+            total_consumed += int(daily.get(today, 0))
+    if projects:
+        budget = min(resolve_budget(agent_id, p, config) for p in projects)
+    else:
+        budget = resolve_budget(agent_id, None, config)
+    remaining = max(0, budget - total_consumed)
+    next_wake = _next_wake_epoch(budget, total_consumed)
+    return {
+        "budget": budget,
+        "consumed": total_consumed,
+        "remaining": remaining,
+        "next_wake_epoch": next_wake,
+        "date": today,
+    }
 
 
 def get_fleet_wake_info(data_dir: Path, config: Any, project_store: Any = None) -> list[dict]:
-    """Return wake info for every running agent in config."""
+    """Return wake info for every running agent in config.
+
+    Consumption is aggregated across all of an agent's project keys so the
+    reported total matches what the heartbeat actually charged per
+    (agent, task.project_id). Budget is resolved to the most restrictive
+    applicable per-project override across those projects.
+    """
     rows: list[dict] = []
     agents = getattr(config, "agents", None) or []
     for agent in agents:
@@ -180,16 +245,13 @@ def get_fleet_wake_info(data_dir: Path, config: Any, project_store: Any = None) 
         agent_id = agent.get("id") or agent.get("name") or ""
         if not agent_id:
             continue
-        project_id = agent.get("project_id")
-        budget = resolve_budget(agent_id, project_id, config)
-        consumption = get_consumption(data_dir, agent_id, project_id)
-        remaining = max(0, budget - consumption["scheduled"])
+        info = get_agent_wake_info(data_dir, agent_id, config)
         rows.append({
             "agent_id": agent_id,
             "agent_name": agent.get("name", agent_id),
-            "budget": budget,
-            "consumed": consumption["scheduled"],
-            "remaining": remaining,
-            "next_wake_epoch": get_next_scheduled_wake(data_dir, agent_id, project_id, config),
+            "budget": info["budget"],
+            "consumed": info["consumed"],
+            "remaining": info["remaining"],
+            "next_wake_epoch": info["next_wake_epoch"],
         })
     return rows

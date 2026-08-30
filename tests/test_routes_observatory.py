@@ -634,3 +634,44 @@ class TestObservatoryWakeBudget:
         assert resp.status_code == 200
         data = resp.json()
         assert "agents" in data
+
+    async def test_fleet_wake_budget_per_project(self, client, app, monkeypatch):
+        from tinyagentos.agent_heartbeat import _heartbeat_tick
+
+        project = await app.state.project_store.create_project(
+            name="obs-proj", slug="obs-proj", created_by="test",
+        )
+        app.state.config.wake_budget = {
+            "global_default": 2,
+            "per_agent": {},
+            "per_project": {project["id"]: 1},
+        }
+
+        agent = next(a for a in app.state.config.agents if a["name"] == "test-agent")
+        agent["id"] = "test-agent"
+        agent["status"] = "running"
+        app.state.config.server["agent_heartbeat_enabled"] = True
+
+        await app.state.project_task_store.create_task(
+            project_id=project["id"],
+            title="ready task",
+            created_by="test",
+            assignee_id="test-agent",
+        )
+
+        async def fake_wake(*args, **kwargs):
+            return True
+
+        monkeypatch.setattr(
+            "tinyagentos.agent_heartbeat._wake_agent_with_task", fake_wake
+        )
+
+        await _heartbeat_tick(app.state)
+
+        resp = await client.get("/api/observatory/wake-budget")
+        assert resp.status_code == 200
+        rows = resp.json()["agents"]
+        row = next(r for r in rows if r["agent_id"] == "test-agent")
+        assert row["budget"] == 1
+        assert row["consumed"] == 1
+        assert row["remaining"] == 0

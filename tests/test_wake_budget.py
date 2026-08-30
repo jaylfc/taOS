@@ -148,6 +148,46 @@ class TestFleetWakeInfo:
         assert rows[0]["consumed"] == 0
         assert rows[0]["remaining"] == 2
 
+    def test_per_project_override_reflected_in_fleet_read(self, tmp_path):
+        """The reader must surface a per_project override that enforcement
+        consults, not just the global default."""
+        data_dir = tmp_path
+        cfg = _FakeConfig(
+            wake_budget={
+                "global_default": 2,
+                "per_agent": {},
+                "per_project": {"proj-x": 1},
+            },
+            agents=[
+                {"id": "a1", "name": "agent-1", "status": "running"},
+            ],
+        )
+        record_scheduled_wake(data_dir, "a1", "proj-x")
+        rows = get_fleet_wake_info(data_dir, cfg)
+        assert len(rows) == 1
+        assert rows[0]["agent_id"] == "a1"
+        assert rows[0]["budget"] == 1
+        assert rows[0]["consumed"] == 1
+        assert rows[0]["remaining"] == 0
+
+    def test_consumption_matches_writer_key(self, tmp_path):
+        """Reader aggregates every per-project key the writer charges, not just
+        a single (always-global) lookup that misses project-bound charges."""
+        data_dir = tmp_path
+        cfg = _FakeConfig(
+            wake_budget={"global_default": 2, "per_agent": {}, "per_project": {}},
+            agents=[
+                {"id": "a1", "name": "agent-1", "status": "running"},
+            ],
+        )
+        # Writer charges two different projects (as the heartbeat does per
+        # task.project_id). The reader must see both.
+        record_scheduled_wake(data_dir, "a1", "proj-x")
+        record_scheduled_wake(data_dir, "a1", "proj-y")
+        rows = get_fleet_wake_info(data_dir, cfg)
+        assert rows[0]["consumed"] == 2
+        assert rows[0]["remaining"] == 0
+
 
 class TestDamagedState:
     def test_absent_file_is_fresh_state(self, tmp_path):

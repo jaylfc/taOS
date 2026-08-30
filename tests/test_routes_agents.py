@@ -1845,7 +1845,6 @@ class TestAgentWakeBudget:
         project = await app.state.project_store.create_project(
             name="proj-1", slug="proj-1", created_by="test",
         )
-        agent["project_id"] = project["id"]
         await app.state.project_task_store.create_task(
             project_id=project["id"],
             title="ready task",
@@ -1866,6 +1865,48 @@ class TestAgentWakeBudget:
         assert resp.status_code == 200
         data = resp.json()
         assert data["consumed"] == 1
+
+    async def test_wake_budget_per_project_override_reflected_in_read(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        from tinyagentos.agent_heartbeat import _heartbeat_tick
+
+        project = await app.state.project_store.create_project(
+            name="proj-1", slug="proj-1", created_by="test",
+        )
+        app.state.config.wake_budget = {
+            "global_default": 2,
+            "per_agent": {},
+            "per_project": {project["id"]: 1},
+        }
+
+        agent = next(a for a in app.state.config.agents if a["name"] == "test-agent")
+        agent["id"] = "test-agent"
+        agent["status"] = "running"
+        app.state.config.server["agent_heartbeat_enabled"] = True
+
+        await app.state.project_task_store.create_task(
+            project_id=project["id"],
+            title="ready task",
+            created_by="test",
+            assignee_id="test-agent",
+        )
+
+        async def fake_wake(*args, **kwargs):
+            return True
+
+        monkeypatch.setattr(
+            "tinyagentos.agent_heartbeat._wake_agent_with_task", fake_wake
+        )
+
+        await _heartbeat_tick(app.state)
+
+        resp = await client.get("/api/agents/test-agent/wake-budget")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["budget"] == 1
+        assert data["consumed"] == 1
+        assert data["remaining"] == 0
 
     async def test_get_wake_budget_not_found(self, client):
         resp = await client.get("/api/agents/no-such-agent/wake-budget")
