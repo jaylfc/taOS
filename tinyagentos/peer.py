@@ -320,13 +320,21 @@ async def send_envelope(
     This is the reusable outbound half of the peer channel — the inbound half
     is ``POST /api/peer/inbox`` in ``routes/peer.py``.
     """
-    # ``to_contact_id`` is the full ``hub:<username>`` contact id (the key the
-    # contacts store uses).  ``build_envelope`` prefixes ``hub:`` itself, so
-    # strip it here — otherwise the envelope is addressed ``hub:hub:<user>``
-    # and the receiver 403s it.
+    # ``to_contact_id`` must be the full ``hub:<username>`` contact id (the key
+    # the contacts store uses).  ``build_envelope`` prefixes ``hub:`` itself, so
+    # strip it here — otherwise the envelope is addressed ``hub:hub:<user>`` and
+    # the receiver 403s it.  Fail loudly on a wrong shape rather than silently
+    # producing a ``hub:peer:abc`` address that never matches the remote id.
+    if not to_contact_id.startswith("hub:"):
+        raise ValueError(
+            f"to_contact_id must be a 'hub:<username>' id, got {to_contact_id!r}"
+        )
+    to_username = to_contact_id[len("hub:"):]
+    if not to_username:
+        raise ValueError("to_contact_id has an empty hub username")
     envelope = build_envelope(
         from_username=from_username,
-        to_username=to_contact_id.removeprefix("hub:"),
+        to_username=to_username,
         kind=kind,
         body=body,
     )
@@ -338,10 +346,22 @@ async def send_envelope(
     import httpx
 
     outbound_token = peer_link.get("outbound_token", "")
-    # Endpoints are plain URL strings (the canonical shape written by
-    # ``establish_peer_link``), not ``{"url": ..., "priority": ...}`` dicts.
-    for ep in peer_link["endpoints"]:
-        inbox_url = f"{str(ep).rstrip('/')}/api/peer/inbox"
+    # Endpoints are plain URL strings in declaration order (``establish_peer_link``
+    # stores ``list[str]``; JSON preserves insertion order, so the primary
+    # endpoint is first).  For forward/backward compatibility we also accept
+    # ``{"url": ..., "priority": ...}`` dicts and sort those by priority (lowest
+    # first) so a declared-primary endpoint is tried before a fallback.  The
+    # sort is stable, so string endpoints keep their insertion order.
+    endpoints = peer_link["endpoints"]
+
+    def _endpoint_sort_key(ep) -> tuple:
+        if isinstance(ep, dict):
+            return (0, ep.get("priority", 99))
+        return (0, 99)
+
+    for ep in sorted(endpoints, key=_endpoint_sort_key):
+        ep_url = ep.get("url", "") if isinstance(ep, dict) else str(ep)
+        inbox_url = f"{ep_url.rstrip('/')}/api/peer/inbox"
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
