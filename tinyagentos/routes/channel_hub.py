@@ -105,6 +105,25 @@ async def connect_bot(request: Request):
             request.app.state.channel_hub_connectors = connectors
         return {"status": "connected", "platform": "webchat", "agent_name": agent_name}
 
+    # Meshtastic (LoRa) does not need a bot token secret; the transport is
+    # None until hardware lands, _transmit handles the no-transport path.
+    if platform == "meshtastic":
+        if not agent_name:
+            return JSONResponse({"error": "agent_name is required"}, status_code=400)
+        router_obj = request.app.state.channel_hub_router
+        connectors = getattr(request.app.state, "channel_hub_connectors", {})
+        connector_key = f"meshtastic:{agent_name}"
+
+        from tinyagentos.channel_hub.meshtastic_connector import MeshtasticConnector
+        async with _connect_lock(connector_key):
+            await _stop_prior_connector(connectors, connector_key)
+            connector = MeshtasticConnector(
+                agent_name=agent_name, router=router_obj
+            )
+            connectors[connector_key] = connector
+            request.app.state.channel_hub_connectors = connectors
+        return {"status": "connected", "platform": "meshtastic", "agent_name": agent_name}
+
     bot_token_secret = body.get("bot_token_secret", "")
 
     if not platform or not bot_token_secret or not agent_name:

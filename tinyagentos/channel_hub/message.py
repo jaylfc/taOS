@@ -54,57 +54,66 @@ def parse_inline_hints(text: str) -> OutgoingMessage:
     )
 
 
-def _degrade(response: OutgoingMessage) -> list[str]:
-    """Degrade rich elements and chunk long replies for text-only link.
+MAX_PAYLOAD = 237  # bytes budget per emitted part (including the [part N/M] prefix)
+
+
+def _degrade(response: OutgoingMessage) -> tuple[list[str], list[str]]:
+    """Degrade rich elements and chunk long replies for the text-only link.
 
     - Reads response.buttons, response.images, response.cards; drops them
-      and emits a one-time notice per element kind.
-    - Chunks on encoded bytes, not characters, never splitting a multibyte
-      character and always accounting for the '[part N/M] ' prefix bytes.
-    - Derives total from byte-accurate chunking, not len(text).
+      and returns a one-time notice per element kind. The notices are meant to
+      be surfaced to the transport, never silently discarded.
+    - Chunks on encoded bytes, never splitting a multibyte character: the
+      chunk boundary is walked back to the last codepoint boundary before
+      decoding, and the '[part N/M] ' prefix bytes always count against
+      the 237-byte budget.
+    - Derives total from the same chunking the parts use, so the label
+      denominator always equals the number of emitted parts even as the
+      prefix width grows (e.g. [part 9/9] -> [part 10/10]).
     """
     notices: list[str] = []
 
-    # Drop buttons — emit one-time notice per conversation
+    # Drop buttons -- emit one-time notice per conversation
     if response.buttons:
-        if "[button dropped: Meshtastic is text-only]" not in notices:
-            notices.append("[button dropped: Meshtastic is text-only]")
+        notices.append("[button dropped: Meshtastic is text-only]")
         response.buttons = []
 
-    # Drop images — emit one-time notice per conversation
+    # Drop images -- emit one-time notice per conversation
     if response.images:
-        if "[image dropped: Meshtastic is text-only]" not in notices:
-            notices.append("[image dropped: Meshtastic is text-only]")
+        notices.append("[image dropped: Meshtastic is text-only]")
         response.images = []
 
-    # Drop cards — emit one-time notice per conversation
+    # Drop cards -- emit one-time notice per conversation
     if response.cards:
-        if "[card dropped: Meshtastic is text-only]" not in notices:
-            notices.append("[card dropped: Meshtastic is text-only]")
+        notices.append("[card dropped: Meshtastic is text-only]")
         response.cards = []
 
     # The text is already clean (parse_inline_hints stripped markup),
     # but we work with whatever content remains.
-    text = response.content
+    encoded = response.content.encode("utf-8")
+    if not encoded:
+        return [], notices
 
-    # Chunk on encoded bytes, not characters.
-    encoded = text.encode("utf-8")
-    chunk_size = 237  # bytes budget per emitted part (including prefix)
-    total = (len(encoded) + chunk_size - 1) // chunk_size if encoded else 0
-
-    parts: list[str] = []
-    idx = 1
-    start = 0
-    while start < len(encoded):
-        prefix = f"[part {idx}/{total}] ".encode("utf-8")
-        content_bytes = chunk_size - len(prefix)
-        end = start + content_bytes
-        if end > len(encoded):
-            end = len(encoded)
-        byte_chunk = encoded[start:end]
-        chunk_text = byte_chunk.decode("utf-8", errors="replace")
-        parts.append(f"[part {idx}/{total}] {chunk_text}")
-        start = end
-        idx += 1
-
-    return parts
+    # Provisional total ignores the prefix length; refine until the label
+    # denominator equals the actual number of emitted parts. The prefix grows
+    # with both idx and total, so the per-part content budget is smaller than
+    # MAX_PAYLOAD and a naive len/237 overcounts capacity and mislabels the last
+    # part (e.g. [part 3/2]).
+    total = max(1, (len(encoded) + MAX_PAYLOAD - 1) // MAX_PAYLOAD)
+    while True:
+        parts: list[str] = []
+        idx = 1
+        start = 0
+        while start < len(encoded):
+            prefix = f"[part {idx}/{total}] ".encode("utf-8")
+            content_bytes = MAX_PAYLOAD - len(prefix)
+            end = min(start + content_bytes, len(encoded))
+            while end < len(encoded) and (encoded[end] & 0xC0) == 0x80:
+                end -= 1
+            chunk_text = encoded[start:end].decode("utf-8")
+            parts.append(f"[part {idx}/{total}] {chunk_text}")
+            start = end
+            idx += 1
+        if len(parts) == total:
+            return parts, notices
+        total = len(parts)
