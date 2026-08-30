@@ -517,9 +517,9 @@ def validate_config(config: AppConfig) -> list[str]:
         gd = int(wb.get("global_default", 2))
     except (TypeError, ValueError):
         errors.append("wake_budget.global_default must be an integer")
-        gd = -1
-    if gd < 0:
-        errors.append("wake_budget.global_default must be >= 0")
+    else:
+        if gd < 0:
+            errors.append("wake_budget.global_default must be >= 0")
     for section in ("per_agent", "per_project"):
         bucket = wb.get(section)
         if bucket is None:

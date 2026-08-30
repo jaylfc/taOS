@@ -183,11 +183,20 @@ async def get_fleet_wake_info(data_dir: Path, config: Any, project_task_store: A
         project_id = None
         if project_task_store is not None:
             try:
-                ready = await project_task_store.list_ready_tasks_for_assignee(agent_id)
-                if ready:
-                    project_id = ready[0].get("project_id")
+                held = await project_task_store.held_task(agent_id)
+                if held is not None:
+                    task = await project_task_store.get_task(held)
+                    if task is not None:
+                        project_id = task.get("project_id")
+                else:
+                    ready = await project_task_store.list_ready_tasks_for_assignee(agent_id)
+                    if ready:
+                        project_id = ready[0].get("project_id")
             except Exception:
-                pass
+                logger.warning(
+                    "wake budget: project_task_store lookup failed for agent %s",
+                    agent_id, exc_info=True,
+                )
         budget = resolve_budget(agent_id, project_id, config)
         consumption = get_consumption(data_dir, agent_id, project_id)
         remaining = max(0, budget - consumption["scheduled"])

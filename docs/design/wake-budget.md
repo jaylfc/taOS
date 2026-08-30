@@ -24,9 +24,17 @@ wake_budget:
 ```
 
 Resolution order (most specific wins):
-1. `per_project[project_id]` when the agent is bound to that project
+1. `per_project[project_id]` when the agent currently holds a claimed task in
+   that project, or when its next ready task is assigned to that project
 2. `per_agent[agent_id]`
 3. `global_default`
+
+The `project_id` is not a stable agent binding. It is resolved at read time
+from the agent's current state: the project of the task the agent is actively
+holding (`held_task`), falling back to the project of the next ready task
+(`list_ready_tasks_for_assignee`), and finally to `None` (global key). This
+means the per-project budget applies to the work the agent is doing right now,
+not to a configured affiliation.
 
 Resolutions are not currently logged; add structured logging to
 `resolve_budget` to make cost attributable.
