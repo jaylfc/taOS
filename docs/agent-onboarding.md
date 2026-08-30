@@ -2,7 +2,7 @@
 
 **Why this exists.** Work on taOS runs across rate-limit-prone agents on different platforms (Claude Code, Cursor, Codex, web, etc.). When one hits a limit, another picks up. The failure mode to prevent: an incoming agent acting on **stale knowledge**: re-doing finished work, missing in-flight tasks, or clobbering a branch. This playbook + `STATUS.md` + GitHub issues make the project's state **durable and platform-independent** so a handoff never loses work.
 
-The golden rule: **durable state lives in three committed/hosted places, not in any one agent's memory**: (1) GitHub issues, (2) `docs/STATUS.md`, (3) the A2A bus. If it isn't in one of those, the next agent can't see it.
+The golden rule: **durable state lives in six committed/hosted places, not in any one agent's memory**: (1) GitHub issues, (2) `docs/STATUS.md`, (3) the A2A bus, (4) A2A `taos-progress`, (5) A2A bus coordination, (6) @taOS Pi memory. If it isn't in one of those, the next agent can't see it.
 
 ---
 
@@ -14,27 +14,12 @@ The golden rule: **durable state lives in three committed/hosted places, not in 
 > 2. Read the rest of this file (`docs/AGENT_HANDOFF.md`): rules, identity, hop protocol. Follow it exactly.
 > 3. `git fetch origin && git log origin/master..origin/dev --oneline`: what is on dev not yet promoted.
 > 4. `gh issue list --state open --limit 40` (canonical task list) and `gh pr list --state open`.
-> 5. A2A bus, live coordination: tail `taos-progress`, `general`, `observability`, `integration` (Pi is `jay@<pi>`, key auth, bus on :7900).
+> 5. A2A bus, live coordination: tail `taos-progress`, `general`, `observability`, `integration` (Pi is `jay@<pi>`, key auth, bus on).
 > 6. (Claude Code only) read `~/.claude/projects/-*-tinyagentos/memory/MEMORY.md`.
 >
 > Then take the top unblocked GitHub issue or continue what STATUS.md flags as in flight. You ARE @taOS on the bus: post as `@taOS`, and drop a status line in `taos-progress` when you start, finish, or learn something. Follow the Identity rules below to the letter.
 
 ---
-
-## On arrival: orient before you act (5 steps, ~2 min)
-
-Run these before touching anything:
-
-1. **Read `docs/STATUS.md`** (repo root -> docs/). Current branch tips, open PRs, in-flight work, blockers.
-2. **`git fetch origin && git log origin/master..origin/dev --oneline`**: what's on dev not yet promoted.
-3. **`gh issue list --state open --limit 40`**: the canonical task list. `gh pr list --state open`: what's mid-review.
-4. **A2A bus tail** (live coordination): `curl -s "http://<pi>:7900/a2a/messages?thread=general&limit=15"` (also observability, integration). The Pi IP is in your private notes, not committed here.
-5. **(Claude Code only) `~/.claude/.../memory/MEMORY.md`**: durable context index. Other platforms: skip; everything you need is in 1-4.
-
-Only after those: pick the top unblocked GitHub issue, or continue what `STATUS.md` says is in flight.
-
----
-
 ## Identity & non-negotiable rules
 
 - **You are @taOS on the A2A bus.** Adopt that handle for every post (`"from": "@taOS"`). You speak as the taOS controller agent, coordinating with @taOSmd (memory/bench) and @hermes (framework agent).
@@ -91,7 +76,7 @@ The taosmd-hosted bus ingests messages into the project memory store, so posting
 | `docs/STATUS.md` | current snapshot | every platform (in repo) | "where are we right now" |
 | `docs/AGENT_HANDOFF.md` | the rules + protocol | every platform (in repo) | onboarding, identity, hop protocol |
 | A2A `taos-progress` | running progress log | bus agents + project memory | status, lessons, decisions (feeds memory) |
-| A2A bus (:7900) | live coordination | the bus agents | real-time @mentions, decisions |
+| A2A bus | live coordination | the bus agents | real-time @mentions, decisions |
 | @taOS Pi memory | durable context | Claude Code only | per-session continuity for CC |
 
 ---
@@ -140,7 +125,7 @@ Every PR targeting `dev` or `master` must clear the following before merge:
 
 - CI green: `test (3.12/3.13)` and `lint` both passing.
 - Human review: at least one project lead has approved.
-- Bot review considered: CodeRabbit or Kilo output examined, but a bot review is never a blocking requirement on its own.
+- Bot review considered: CodeRabbit output examined, but a bot review is never a blocking requirement on its own.
 
 A lead may apply the `bot-review-allow` label when the only CodeRabbit output is a rate-limit stub and `scripts/check_bot_review.py` confirms the stub classification. This is an explicit waiver, not a pass: the underlying infra condition still exists and should be retried on the next PR if the quota recovers.
 
