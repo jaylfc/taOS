@@ -72,11 +72,9 @@ class MeshtasticConnector:
             await self._transmit(notice)
         for part in parts:
             if len(part.encode("utf-8")) > MAX_PAYLOAD:
-                logger.error(
-                    "Meshtastic part exceeds %d bytes; truncating", MAX_PAYLOAD
-                )
-                part = part.encode("utf-8")[:MAX_PAYLOAD].decode(
-                    "utf-8", errors="replace"
+                raise ValueError(
+                    f"Meshtastic part exceeds {MAX_PAYLOAD} bytes after degradation: "
+                    f"{len(part.encode('utf-8'))} bytes"
                 )
             await self._transmit(part)
 

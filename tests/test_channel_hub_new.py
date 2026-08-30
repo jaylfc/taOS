@@ -456,6 +456,28 @@ class TestChannelHubAPINew:
         assert data["agent_name"] == "chat-agent"
 
     @pytest.mark.asyncio
+    async def test_connect_meshtastic_success(self, client):
+        resp = await client.post("/api/channel-hub/connect", json={
+            "platform": "meshtastic",
+            "agent_name": "lora-agent",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "connected"
+        assert data["platform"] == "meshtastic"
+        assert data["agent_name"] == "lora-agent"
+        # The connector is registered and reachable via the status endpoint.
+        status = await client.get("/api/channel-hub/status")
+        connectors = status.json()["connectors"]
+        assert "meshtastic:lora-agent" in connectors
+        assert connectors["meshtastic:lora-agent"]["platform"] == "meshtastic"
+        from tinyagentos.channel_hub.meshtastic_connector import MeshtasticConnector
+        connector = getattr(
+            client._transport.app.state, "channel_hub_connectors", {}
+        ).get("meshtastic:lora-agent")
+        assert isinstance(connector, MeshtasticConnector)
+
+    @pytest.mark.asyncio
     async def test_disconnect_webchat(self, client):
         # Connect first
         await client.post("/api/channel-hub/connect", json={

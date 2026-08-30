@@ -106,7 +106,9 @@ def _degrade(response: OutgoingMessage) -> tuple[list[str], list[str]]:
             prefix = f"[part {idx}/{total}] ".encode("utf-8")
             content_bytes = MAX_PAYLOAD - len(prefix)
             end = min(start + content_bytes, len(encoded))
-            chunk_text = encoded[start:end].decode("utf-8", errors="replace")
+            while end < len(encoded) and (encoded[end] & 0xC0) == 0x80:
+                end -= 1
+            chunk_text = encoded[start:end].decode("utf-8")
             parts.append(f"[part {idx}/{total}] {chunk_text}")
             start = end
             idx += 1

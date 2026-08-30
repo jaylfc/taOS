@@ -90,72 +90,71 @@ Map one Meshtastic channel (or node) to one agent and addressing costs ZERO byte
 | > 237 bytes | Chunk into 237-byte segments with a `[part N/M]` prefix; reassemble on receive if needed |
 
 ### Hard Size Budget
-Before transmit, the connector enforces a 237-byte limit on the serialized payload. Messages exceeding the budget are chunked or truncated with a `[truncated]` marker. No message exceeds 237 bytes on the wire.
+Before transmit, every frame is verified to be <= 237 bytes on the wire. Long replies are chunked with a `[part N/M]` prefix whose denominator always equals the emitted part count; the connector guard raises (rather than shipping an over-budget frame) if any part still exceeds the limit after degradation.
 
 ### Example Degradation
 ```python
-# In meshtastic_connector.py
+# In channel_hub/message.py
 MAX_PAYLOAD = 237
 
-def _degrade(self, response: OutgoingMessage) -> list[str]:
-    """Degrade rich elements and chunk long replies for text-only link.
+def _degrade(response: OutgoingMessage) -> tuple[list[str], list[str]]:
+    """Degrade rich elements and chunk long replies for the text-only link.
 
     - Reads response.buttons, response.images, response.cards; drops them
-      and emits a one-time notice per element kind.
-    - Chunks on encoded bytes, not characters, never splitting a multibyte
-      character and always accounting for the '[part N/M] ' prefix bytes.
-    - Derives total from byte-accurate chunking, not len(text).
+      and emits a notice per element kind (a fresh notice list per response).
+    - Chunks on encoded bytes, never splitting a multibyte character: the
+      chunk boundary is walked back to the last codepoint boundary before
+      decoding, and the '[part N/M] ' prefix bytes always count against
+      the 237-byte budget.
+    - Derives total from the same chunking the parts use, so the label
+      denominator always equals the number of emitted parts.
     """
     notices: list[str] = []
 
-    # Drop buttons — emit one-time notice per conversation
+    # Drop buttons -- emit a notice per response
     if response.buttons:
-        if (
-            "[button dropped: Meshtastic is text-only]"
-            not in {n for n in notices}
-        ):
-            notices.append("[button dropped: Meshtastic is text-only]")
+        notices.append("[button dropped: Meshtastic is text-only]")
         response.buttons = []
 
-    # Drop images — emit one-time notice per conversation
+    # Drop images -- emit a notice per response
     if response.images:
-        if (
-            "[image dropped: Meshtastic is text-only]"
-            not in {n for n in notices}
-        ):
-            notices.append("[image dropped: Meshtastic is text-only]")
+        notices.append("[image dropped: Meshtastic is text-only]")
         response.images = []
 
-    # Drop cards — emit one-time notice per conversation
+    # Drop cards -- emit a notice per response
     if response.cards:
-        if (
-            "[card dropped: Meshtastic is text-only]"
-            not in {n for n in notices}
-        ):
-            notices.append("[card dropped: Meshtastic is text-only]")
+        notices.append("[card dropped: Meshtastic is text-only]")
         response.cards = []
 
     # The text is already clean (parse_inline_hints stripped markup),
     # but we work with whatever content remains.
-    text = response.content
+    encoded = response.content.encode("utf-8")
+    if not encoded:
+        return [], notices
 
-    # Chunk on encoded bytes, not characters.
-    encoded = text.encode("utf-8")
-    chunk_size = 237  # bytes
-    total = (len(encoded) + chunk_size - 1) // chunk_size if encoded else 0
-
-    parts: list[str] = []
-    idx = 1
-    start = 0
-    while start < len(encoded):
-        end = start + chunk_size
-        byte_chunk = encoded[start:end]
-        chunk_text = byte_chunk.decode("utf-8", errors="replace")
-        parts.append(f"[part {idx}/{total}] {chunk_text}")
-        start = end
-        idx += 1
-
-    return parts
+    # Provisional total ignores the prefix length; refine until the label
+    # denominator equals the actual number of emitted parts.
+    total = max(1, (len(encoded) + MAX_PAYLOAD - 1) // MAX_PAYLOAD)
+    while True:
+        parts: list[str] = []
+        idx = 1
+        start = 0
+        while start < len(encoded):
+            prefix = f"[part {idx}/{total}] ".encode("utf-8")
+            content_bytes = MAX_PAYLOAD - len(prefix)
+            end = min(start + content_bytes, len(encoded))
+            # Walk back to a codepoint boundary so we never slice a
+            # multibyte character (which would corrupt it and inflate the
+            # re-encoded size past the budget).
+            while end < len(encoded) and (encoded[end] & 0xC0) == 0x80:
+                end -= 1
+            chunk_text = encoded[start:end].decode("utf-8")
+            parts.append(f"[part {idx}/{total}] {chunk_text}")
+            start = end
+            idx += 1
+        if len(parts) == total:
+            return parts, notices
+        total = len(parts)
 ```
 
 ## 4. Sovereignty

@@ -6,6 +6,7 @@ import time
 import pytest
 
 from tinyagentos.channel_hub.message import (
+    MAX_PAYLOAD,
     IncomingMessage,
     OutgoingMessage,
     _degrade,
@@ -554,6 +555,51 @@ class TestParseInlineHints:
         assert len(parts) > 1, f"Expected multiple parts but got {len(parts)}"
         # Denominator equals the emitted part count (stronger than "consistent").
         self._assert_denominator_matches_part_count(parts)
+        # Reassembly must be byte-identical to the original content.
+        reencoded = "".join(p.split("] ", 1)[1] for p in parts).encode("utf-8")
+        assert reencoded == text.encode("utf-8")
+
+    def test_degrade_multibyte_frame_boundaries(self):
+        # Regression: '日'*76 (76 * 3 = 228 bytes) and '🌍'*57 (57 * 4 = 228
+        # bytes) each cross the 237-byte boundary and, under the byte-slice
+        # bug, produced a 239-byte part with a U+FFFD injected. Every frame
+        # must be <= 237 bytes and the parts must reassemble byte-identical.
+        for text in ("日" * 76, "🌍" * 57):
+            msg = OutgoingMessage(content=text)
+            parts, _notices = _degrade(msg)
+            for part in parts:
+                byte_len = len(part.encode("utf-8"))
+                assert byte_len <= MAX_PAYLOAD, (
+                    f"{text[:6]!r}...: part over {MAX_PAYLOAD} bytes: "
+                    f"{part!r} ({byte_len} bytes)"
+                )
+            self._assert_denominator_matches_part_count(parts)
+            reencoded = "".join(p.split("] ", 1)[1] for p in parts).encode("utf-8")
+            assert reencoded == text.encode("utf-8"), (
+                f"reassembly not byte-identical for {text[:6]!r}...: "
+                f"U+FFFD injected or data lost"
+            )
+
+    def test_degrade_multibyte_sweep(self):
+        # Sweep across the 237-byte boundary for 3-byte and 4-byte chars.
+        # Zero over-budget or corrupting cases across all lengths.
+        for char, limit in (("日", 399), ("🌍", 299)):
+            for n in range(1, limit + 1):
+                text = char * n
+                msg = OutgoingMessage(content=text)
+                parts, _notices = _degrade(msg)
+                for part in parts:
+                    byte_len = len(part.encode("utf-8"))
+                    assert byte_len <= MAX_PAYLOAD, (
+                        f"char={char!r} n={n}: part over {MAX_PAYLOAD}: "
+                        f"{part!r} ({byte_len} bytes)"
+                    )
+                reencoded = "".join(
+                    p.split("] ", 1)[1] for p in parts
+                ).encode("utf-8")
+                assert reencoded == text.encode("utf-8"), (
+                    f"char={char!r} n={n}: reassembly corrupt"
+                )
 
     def test_hint_with_spaces_in_label(self):
         result = parse_inline_hints("[button:Click Here:action]")

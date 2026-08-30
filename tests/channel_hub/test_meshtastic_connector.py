@@ -8,7 +8,7 @@ count, and the dropped-element notices reach the transport.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -120,3 +120,38 @@ class TestMeshtasticSendPath:
         for part in parts:
             denom = part.split("/")[1].split("]")[0]
             assert denom == str(len(parts))
+
+    @pytest.mark.asyncio
+    async def test_send_response_never_transmits_over_budget(self):
+        # Multibyte content that, under the byte-slice bug, produced a 239-byte
+        # frame. The guard must never transmit an over-budget frame.
+        for text in ("日" * 76, "🌍" * 57):
+            sent: list[str] = []
+            connector, _ = _make_connector(sent)
+            await connector._send_response(OutgoingMessage(content=text))
+            assert sent, f"no frames transmitted for {text[:6]!r}..."
+            for frame in sent:
+                byte_len = len(frame.encode("utf-8"))
+                assert byte_len <= MAX_PAYLOAD, (
+                    f"frame over {MAX_PAYLOAD} bytes: {frame!r} ({byte_len})"
+                )
+            parts = [f for f in sent if f.startswith("[part ")]
+            reencoded = "".join(p.split("] ", 1)[1] for p in parts).encode("utf-8")
+            assert reencoded == text.encode("utf-8"), (
+                f"reassembly not byte-identical for {text[:6]!r}..."
+            )
+
+    @pytest.mark.asyncio
+    async def test_guard_raises_when_part_exceeds_budget(self):
+        # If _degrade ever emits an over-budget part, the send path must
+        # raise rather than narrate-truncate-and-ship an oversized frame.
+        sent: list[str] = []
+        connector, _ = _make_connector(sent)
+        with patch(
+            "tinyagentos.channel_hub.meshtastic_connector._degrade",
+            return_value=(["x" * 300], []),
+        ):
+            with pytest.raises(ValueError, match="exceeds"):
+                await connector._send_response(OutgoingMessage(content="stub"))
+            # _transmit must never be called with the oversize frame.
+            assert sent == []
