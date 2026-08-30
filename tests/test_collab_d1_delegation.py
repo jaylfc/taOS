@@ -987,3 +987,194 @@ class TestPinFreeInviteIdEntropy:
         assert not invite_id.isdigit()
         await store.close()
 
+
+# ---------------------------------------------------------------------------
+# Delivery path (jaylfc 08-28 merge-blocker): the delegation invite must
+# actually reach the requester.  send_envelope / _deliver_delegation_invite
+# had zero coverage, which is why the three delivery bugs (envelope double
+# prefix, endpoint shape mismatch, no durable landing place) survived green.
+# ---------------------------------------------------------------------------
+
+class TestDelegationDeliveryPath:
+    """Exercises the real outbound delivery path: send_envelope and
+    _deliver_delegation_invite against a stub peer inbox."""
+
+    @pytest.mark.asyncio
+    async def test_send_envelope_delivers_to_string_endpoint_without_double_prefix(
+        self, tmp_path
+    ):
+        """send_envelope must (a) accept plain string endpoints (the canonical
+        shape written by establish_peer_link) and (b) address the envelope to
+        ``hub:<user>``, not ``hub:hub:<user>``."""
+        import httpx as _httpx
+        import respx
+        from tinyagentos.contacts_store import ContactsStore, generate_peer_token
+        from tinyagentos.peer import send_envelope
+
+        store = ContactsStore(tmp_path / "contacts.db")
+        await store.init()
+        await store.add_contact(
+            contact_id="hub:hogne", hub_username="hogne", display_name="H",
+            ed25519_pub="pk", x25519_pub="ek",
+        )
+        await store.establish_peer_link(
+            contact_id="hub:hogne",
+            inbound_token=generate_peer_token(),
+            outbound_token=generate_peer_token(),
+            endpoints=["https://hogne.example.com:6969"],
+        )
+
+        with respx.mock as mock:
+            route = mock.post(
+                "https://hogne.example.com:6969/api/peer/inbox"
+            ).mock(return_value=_httpx.Response(200, json={"status": "received"}))
+
+            delivered, err = await send_envelope(
+                store,
+                from_username="jaylfc",
+                to_contact_id="hub:hogne",
+                kind="delegation_status",
+                body={"invite_id": "inv-123", "agent_slug": "grok", "project_id": "prj-1"},
+            )
+
+            assert delivered is True
+            assert err == ""
+            assert route.called
+            assert len(route.calls) == 1
+            envelope = json.loads(route.calls[0].request.content)["envelope"]
+            assert envelope["to"] == "hub:hogne"  # NOT hub:hub:hogne
+            assert envelope["from"] == "hub:jaylfc"
+
+        await store.close()
+
+    @pytest.mark.asyncio
+    async def test_deliver_delegation_invite_reaches_stub_inbox(self, tmp_path, monkeypatch):
+        """_deliver_delegation_invite must build a correctly-addressed envelope
+        and POST it to the requester's peer inbox (assert delivered via a
+        stub inbox, not a mock of send_envelope)."""
+        import httpx as _httpx
+        import respx
+        from unittest.mock import MagicMock
+
+        from tinyagentos.contacts_store import ContactsStore, generate_peer_token
+        from tinyagentos.routes.decisions import _deliver_delegation_invite
+
+        store = ContactsStore(tmp_path / "contacts.db")
+        await store.init()
+        await store.add_contact(
+            contact_id="hub:hogne", hub_username="hogne", display_name="H",
+            ed25519_pub="pk", x25519_pub="ek",
+        )
+        await store.establish_peer_link(
+            contact_id="hub:hogne",
+            inbound_token=generate_peer_token(),
+            outbound_token=generate_peer_token(),
+            endpoints=["https://hogne.example.com:6969"],
+        )
+
+        # Avoid the hub-identity filesystem lookup; the delivery path only
+        # needs a local id to derive from_username.
+        monkeypatch.setattr(
+            "tinyagentos.peer.resolve_local_identity_id",
+            lambda data_dir=None: "hub:testnode",
+        )
+
+        request = MagicMock()
+        request.app.state.contacts_store = store
+        request.app.state.data_dir = str(tmp_path)
+
+        with respx.mock as mock:
+            route = mock.post(
+                "https://hogne.example.com:6969/api/peer/inbox"
+            ).mock(return_value=_httpx.Response(200, json={"status": "received"}))
+
+            # Returns None and never raises (best-effort delivery).
+            await _deliver_delegation_invite(
+                request,
+                {
+                    "contact_id": "hub:hogne",
+                    "agent_slug": "grok-taos",
+                    "project_id": "prj-1",
+                },
+                "inv-abc123",
+            )
+
+            assert route.called
+            envelope = json.loads(route.calls[0].request.content)["envelope"]
+            assert envelope["to"] == "hub:hogne"
+            assert envelope["kind"] == "delegation_status"
+            assert envelope["body"]["invite_id"] == "inv-abc123"
+            assert envelope["body"]["agent_slug"] == "grok-taos"
+
+        await store.close()
+
+
+class TestDelegationStatusLandingPlace:
+    """The receiver of a delegation_status envelope must persist a durable
+    decision record (invite_id in metadata) so the requester's agent runner
+    can poll for and redeem it — not merely log and drop it."""
+
+    @pytest.mark.asyncio
+    async def test_delegation_status_persists_decision_with_invite_id(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from tinyagentos.decisions.decision_store import DecisionStore
+        from tinyagentos.routes.peer import _handle_delegation_status
+
+        decision_store = DecisionStore(tmp_path / "decisions.db")
+        await decision_store.init()
+
+        request = MagicMock()
+        request.app.state.decision_store = decision_store
+
+        result = await _handle_delegation_status(
+            request,
+            contact_id="hub:sponsor",
+            envelope={},
+            body_data={
+                "invite_id": "inv-abc123",
+                "agent_slug": "grok-taos",
+                "project_id": "prj-1",
+            },
+        )
+
+        assert result["status"] == "received"
+        assert result["dispatched"] is True
+        assert result["invite_id"] == "inv-abc123"
+
+        decision_id = result["decision_id"]
+        decision = await decision_store.get(decision_id)
+        assert decision is not None
+        assert decision["metadata"]["invite_id"] == "inv-abc123"
+        assert decision["metadata"]["agent_slug"] == "grok-taos"
+        assert decision["metadata"]["project_id"] == "prj-1"
+        assert decision["metadata"]["envelope_kind"] == "delegation_status"
+
+        await decision_store.close()
+
+    @pytest.mark.asyncio
+    async def test_delegation_status_missing_invite_id_no_record(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from tinyagentos.decisions.decision_store import DecisionStore
+        from tinyagentos.routes.peer import _handle_delegation_status
+
+        decision_store = DecisionStore(tmp_path / "decisions.db")
+        await decision_store.init()
+
+        request = MagicMock()
+        request.app.state.decision_store = decision_store
+
+        result = await _handle_delegation_status(
+            request,
+            contact_id="hub:sponsor",
+            envelope={},
+            body_data={"agent_slug": "grok-taos", "project_id": "prj-1"},
+        )
+
+        assert result["dispatched"] is False
+        decisions = await decision_store.list(limit=500)
+        assert decisions == []
+
+        await decision_store.close()
+
