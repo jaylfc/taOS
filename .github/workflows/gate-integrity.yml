@@ -38,12 +38,6 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
     branches: [master, dev]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: "PR number to inspect for gate-integrity violations"
-        required: true
-        type: number
 
 permissions:
   contents: read
@@ -59,13 +53,12 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - name: Resolve PR base ref for workflow_dispatch
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+      - name: Resolve PR base ref
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          base=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.inputs.pr_number }} --jq .base.ref)
+          base=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }} --jq .base.ref)
           if [ -z "$base" ]; then
             echo "::error::Resolved base ref is empty" >&2
             exit 1
@@ -75,8 +68,8 @@ jobs:
       # On `pull_request_target` checkout defaults to the base branch,
       # not the merge ref. Pinning `ref` to base_ref guarantees
       # the base-ref checker (and this workflow) execute from base.
-      # For workflow_dispatch, the step above sets BASE_REF to the PR's actual
-      # base branch; for pull_request_target, github.base_ref is used below.
+      # The resolve step above sets BASE_REF to the PR's actual base
+      # branch via the GitHub API; github.base_ref is the fallback.
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.BASE_REF || github.base_ref }}
@@ -91,7 +84,7 @@ jobs:
         # blip never reads as green -- see check_gate_integrity.EXIT_ERROR.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           python scripts/check_gate_integrity.py "$PR_NUMBER"

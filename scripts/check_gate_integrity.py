@@ -150,9 +150,12 @@ def is_protected(path: str) -> bool:
     for prefix in PROTECTED_PREFIXES:
         if norm.startswith(prefix):
             return True
-    if norm.startswith("scripts/") and "/check_" in norm and norm.endswith(GATE_SCRIPT_SUFFIX):
-        return True
-    return False
+    basename = norm.rsplit("/", 1)[-1]
+    return (
+        norm.startswith("scripts/")
+        and basename.startswith(GATE_SCRIPT_PREFIX.removeprefix("scripts/"))
+        and basename.endswith(GATE_SCRIPT_SUFFIX)
+    )
 
 
 def collect_pr_files(

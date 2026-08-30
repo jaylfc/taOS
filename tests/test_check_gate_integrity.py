@@ -139,6 +139,14 @@ class TestIsProtected:
         assert cgi.is_protected(".github\\workflows\\gate.yml")
         assert not cgi.is_protected("tinyagentos\\app.py")
 
+    def test_directory_named_check_is_not_protected(self) -> None:
+        """A directory component named check_* must not match; only files
+        whose basename starts with check_ are gate checkers. Regression:
+        scripts/check_helpers/util.py returned True because '/check_' appeared
+        in the full path (the directory name)."""
+        assert not cgi.is_protected("scripts/check_helpers/util.py")
+        assert cgi.is_protected("scripts/check_gate_integrity.py")
+
 
 # ---------------------------------------------------------------------------
 # classify(files, labels, allow_label) -- the RED / GREEN decision (pure)
@@ -531,6 +539,22 @@ class TestCoversRealGates:
             " that can change without a re-run is a bypass"
         )
 
+    def test_workflow_dispatch_absent_from_gate(self) -> None:
+        """workflow_dispatch on the gate workflow is a spoofable required check:
+        any write-access actor can dispatch with ref=<own branch> and publish a
+        green check run named 'Gate integrity' against a chosen head SHA (and
+        pr_number is interpolated raw into the run: block, an injection sink since
+        type: number is not enforced on API dispatch). It must not be present."""
+        workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        trigger = spec.get("on", spec.get(True))
+        trigger_keys = set(trigger.keys()) if isinstance(trigger, dict) else set()
+        assert "workflow_dispatch" not in trigger_keys, (
+            "gate-integrity.yml must not use workflow_dispatch (spoofable"
+            " required check); re-runs use `gh run rerun` on the original"
+            " event or the `labeled` re-fire"
+        )
+
     def test_real_repo_passes_integrity(self) -> None:
         # The committed tree must be itself green: no gate script should be
         # mid-tamper. The PR files for the real repo's HEAD (none) trivially
@@ -544,7 +568,7 @@ class TestCoversRealGates:
 
 
 class TestWorkflowDispatchBaseRefStep:
-    """The 'Resolve PR base ref for workflow_dispatch' step must not silently
+    """The 'Resolve PR base ref' step must not silently
     fall back to the default branch when gh fails (e.g. missing GH_TOKEN).
 
     The defect: without GH_TOKEN, gh exits non-zero; without set -euo pipefail
@@ -555,44 +579,51 @@ class TestWorkflowDispatchBaseRefStep:
     def test_step_sets_gh_token_env(self) -> None:
         workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
         spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
-        step = _find_step(spec, "Resolve PR base ref for workflow_dispatch")
+        step = _find_step(spec, "Resolve PR base ref")
         assert step is not None, "step not found in gate-integrity.yml"
         assert step.get("env", {}).get("GH_TOKEN") == "${{ secrets.GITHUB_TOKEN }}"
 
     def test_step_uses_set_euo_pipefail(self) -> None:
         workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
         spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
-        step = _find_step(spec, "Resolve PR base ref for workflow_dispatch")
+        step = _find_step(spec, "Resolve PR base ref")
         run = step.get("run", "")
         assert "set -euo pipefail" in run, "step must fail closed on gh errors"
 
     def test_step_asserts_base_non_empty(self) -> None:
         workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
         spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
-        step = _find_step(spec, "Resolve PR base ref for workflow_dispatch")
+        step = _find_step(spec, "Resolve PR base ref")
         run = step.get("run", "")
         assert 'if [ -z "$base" ]' in run or '[[ -z "$base" ]]' in run, (
             "step must assert base is non-empty before exporting BASE_REF"
         )
 
     def test_gh_failure_does_not_silently_pass(self, tmp_path: Path) -> None:
-        """Simulate the failure path: gh exits non-zero (no token). The script
-        must exit non-zero rather than emitting an empty BASE_REF."""
+        """Simulate the failure path: gh exits non-zero (no token). The step's
+        actual run: block -- extracted from the YAML, not hand-copied -- must
+        exit non-zero rather than emitting an empty BASE_REF."""
+        workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        step = _find_step(spec, "Resolve PR base ref")
+        assert step is not None, "step not found in gate-integrity.yml"
+        run = step.get("run", "")
+        assert run, "step must have a run block"
+
+        # Substitute GitHub Actions expressions with test values so the
+        # extracted run: block is executable standalone.
+        script_text = run
+        script_text = script_text.replace("${{ github.repository }}", "jaylfc/taOS")
+        script_text = script_text.replace(
+            "${{ github.event.pull_request.number }}", "1"
+        )
+
         fake_gh = tmp_path / "gh"
         fake_gh.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
         fake_gh.chmod(0o755)
 
         script = tmp_path / "resolve_base_ref.sh"
-        script.write_text(
-            "set -euo pipefail\n"
-            "base=$(gh api repos/o/r/pulls/1 --jq .base.ref)\n"
-            'if [ -z "$base" ]; then\n'
-            '  echo "::error::Resolved base ref is empty" >&2\n'
-            "  exit 1\n"
-            "fi\n"
-            'echo "BASE_REF=$base" >> "$GITHUB_ENV"\n',
-            encoding="utf-8",
-        )
+        script.write_text(script_text, encoding="utf-8")
         script.chmod(0o755)
 
         env = {
@@ -606,10 +637,11 @@ class TestWorkflowDispatchBaseRefStep:
             env=env,
             capture_output=True,
             text=True,
+            check=False,
         )
 
         assert result.returncode != 0, (
-            f"script must fail when gh fails; stdout={result.stdout!r} "
+            f"step run block must fail when gh fails; stdout={result.stdout!r} "
             f"stderr={result.stderr!r}"
         )
 
