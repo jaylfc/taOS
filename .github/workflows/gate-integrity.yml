@@ -61,8 +61,15 @@ jobs:
     steps:
       - name: Resolve PR base ref for workflow_dispatch
         if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           base=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.inputs.pr_number }} --jq .base.ref)
+          if [ -z "$base" ]; then
+            echo "::error::Resolve PR base ref: empty base ref for PR ${{ github.event.inputs.pr_number }}" >&2
+            exit 1
+          fi
           echo "BASE_REF=$base" >> $GITHUB_ENV
 
       # On `pull_request_target` checkout defaults to the base branch,

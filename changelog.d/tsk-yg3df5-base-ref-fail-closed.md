@@ -1,0 +1,2 @@
+### Fixed
+- `.github/workflows/gate-integrity.yml` `workflow_dispatch` base-ref resolve step now fails closed when `gh api` cannot authenticate or returns an empty base ref, instead of silently checking out the default branch. The step set no `GH_TOKEN`, had no `set -euo pipefail`, and wrote an empty `BASE_REF` on failure, so `actions/checkout` fell back to `github.base_ref` (empty on `workflow_dispatch`). The step now sets `GH_TOKEN`, runs under `set -euo pipefail`, and asserts the resolved base ref is non-empty before writing it.
