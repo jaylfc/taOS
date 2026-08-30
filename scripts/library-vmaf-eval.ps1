@@ -28,39 +28,57 @@ function Resolve-Path([string]$p) {
 Write-Output 'video,variant,vmaf_mean,bytes_source,bytes_variant,saving_pct'
 
 $pairs = Get-Content -Raw -Path $Config | ConvertFrom-Json
+$hadFailure = $false
 foreach ($pair in $pairs.pairs) {
     $sourcePath = Resolve-Path $pair.source
     $variantPath = Resolve-Path $pair.variant
 
     if (-not (Test-Path $sourcePath -PathType Leaf)) {
-        Write-Host "source not found: $sourcePath" -ForegroundColor Red
+        [Console]::Error.WriteLine("source not found: $sourcePath")
+        $hadFailure = $true
         continue
     }
     if (-not (Test-Path $variantPath -PathType Leaf)) {
-        Write-Host "variant not found: $variantPath" -ForegroundColor Red
+        [Console]::Error.WriteLine("variant not found: $variantPath")
+        $hadFailure = $true
         continue
     }
 
     $bytesSource = (Get-Item $sourcePath).Length
     $bytesVariant = (Get-Item $variantPath).Length
 
-    $vmafOutput = @()
-    try {
-        $vmafOutput = & ffmpeg -hide_banner -i $sourcePath -i $variantPath `
-            -lavfi "[0:v][1:v]libvmaf" -f null - 2>&1
-    } catch {
-        $vmafOutput = @()
+    $vmafOutput = & ffmpeg -hide_banner -i "$sourcePath" -i "$variantPath" `
+        -lavfi "[0:v][1:v]libvmaf" -f null - 2>&1
+    $ffmpegExit = $LASTEXITCODE
+
+    if ($ffmpegExit -ne 0) {
+        [Console]::Error.WriteLine("ffmpeg failure: $sourcePath / $variantPath")
+        $hadFailure = $true
+        continue
     }
 
     $vmafMean = 0
+    $scoreParsed = $false
     foreach ($line in $vmafOutput) {
         if ($line -match 'VMAF score: ([\d.]+)') {
             $vmafMean = [double]$Matches[1]
+            $scoreParsed = $true
+            break
         }
     }
 
-    $savingPct = [math]::Round((1 - $bytesVariant / $bytesSource) * 100, 2)
+    if (-not $scoreParsed) {
+        $hadFailure = $true
+        $vmafMean = "ERROR"
+        $savingPct = "ERROR"
+    } else {
+        $savingPct = [math]::Round((1 - $bytesVariant / $bytesSource) * 100, 2)
+    }
 
     $variantBase = Split-Path -Leaf $variantPath
     Write-Output "$($pair.video),$variantBase,$vmafMean,$bytesSource,$bytesVariant,$savingPct"
+}
+
+if ($hadFailure) {
+    exit 1
 }

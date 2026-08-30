@@ -38,6 +38,8 @@ resolve_path() {
 
 printf 'video,variant,vmaf_mean,bytes_source,bytes_variant,saving_pct\n'
 
+TMPFLAG=$(mktemp)
+
 python3 -c "
 import json, sys
 with open(sys.argv[1]) as f:
@@ -60,17 +62,36 @@ for pair in data.get('pairs', []):
     bytes_source="$(stat -c%s "$source_path")"
     bytes_variant="$(stat -c%s "$variant_path")"
 
+    ffmpeg_exit=0
     vmaf_output="$(ffmpeg -hide_banner -i "$source_path" -i "$variant_path" \
-        -lavfi "[0:v][1:v]libvmaf" -f null - 2>&1)" || true
+        -lavfi "[0:v][1:v]libvmaf" -f null - 2>&1)" || ffmpeg_exit=$?
 
-    vmaf_mean="$(echo "$vmaf_output" | grep 'VMAF score:' | awk '{print $NF}' | tail -1 || true)"
-    if [[ -z "$vmaf_mean" ]]; then
-        vmaf_mean="0"
+    if [[ $ffmpeg_exit -ne 0 ]]; then
+        echo "ffmpeg failure: $source_path / $variant_path" >&2
+        echo "1" > "$TMPFLAG"
+        continue
     fi
 
+    vmaf_mean="$(echo "$vmaf_output" | grep 'VMAF score:' | awk '{print $NF}' | tail -1)"
+
     saving_pct="$(python3 -c "print(f'{(1 - ${bytes_variant} / ${bytes_source}) * 100:.2f}')")"
+
+    if [[ -z "$vmaf_mean" ]]; then
+        echo "1" > "$TMPFLAG"
+        printf '%s,%s,ERROR,%s,%s,ERROR\n' \
+            "$video" "$(basename "$variant")" \
+            "$bytes_source" "$bytes_variant"
+        continue
+    fi
 
     printf '%s,%s,%s,%s,%s,%s\n' \
         "$video" "$(basename "$variant")" "$vmaf_mean" \
         "$bytes_source" "$bytes_variant" "$saving_pct"
 done
+
+if [[ "$(cat "$TMPFLAG" 2>/dev/null)" == "1" ]]; then
+    rm -f "$TMPFLAG"
+    exit 1
+fi
+
+rm -f "$TMPFLAG"
