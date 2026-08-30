@@ -51,6 +51,7 @@ export const apps: AppManifest[] = [
   { id: "store", name: "Store", icon: "shopping-bag", category: "platform", component: () => import("@/apps/StoreApp").then((m) => ({ default: m.StoreApp })), defaultSize: { w: 1000, h: 700 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: true, launchpadOrder: 4 },
   { id: "guides", name: "Guides", icon: "book-open", category: "platform", component: () => import("@/apps/GuidesApp").then((m) => ({ default: m.GuidesApp })), defaultSize: { w: 900, h: 650 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 4.25 },
   { id: "settings", name: "Settings", icon: "settings", category: "platform", component: () => import("@/apps/SettingsApp").then((m) => ({ default: m.SettingsApp })), defaultSize: { w: 800, h: 550 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: true, launchpadOrder: 5 },
+  { id: "notifications", name: "Notifications", icon: "bell", category: "platform", component: () => import("@/apps/NotificationsApp").then((m) => ({ default: m.NotificationsApp })), defaultSize: { w: 900, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: true, launchpadOrder: 5.5 },
   { id: "models", name: "Models", icon: "brain", category: "platform", component: () => import("@/apps/ModelsApp").then((m) => ({ default: m.ModelsApp })), defaultSize: { w: 900, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 6, tier: 2, group: "System" },
   { id: "providers", name: "Providers", icon: "cloud", category: "platform", component: () => import("@/apps/ProvidersApp").then((m) => ({ default: m.ProvidersApp })), defaultSize: { w: 950, h: 640 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: false, launchpadOrder: 6.5, tier: 3 },
   { id: "dashboard", name: "Activity", icon: "activity", category: "platform", component: () => import("@/apps/ActivityApp").then((m) => ({ default: m.ActivityApp })), defaultSize: { w: 1100, h: 720 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: false, launchpadOrder: 7 },
@@ -80,7 +81,7 @@ export const apps: AppManifest[] = [
   { id: "agent-browsers", name: "Browsers", icon: "globe", category: "platform", component: () => import("@/apps/AgentBrowsersApp").then((m) => ({ default: m.AgentBrowsersApp })), defaultSize: { w: 1000, h: 650 }, minSize: { w: 550, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16 },
   { id: "feedback", name: "Feedback", icon: "flag", category: "platform", component: () => import("@/apps/FeedbackApp").then((m) => ({ default: m.FeedbackApp })), defaultSize: { w: 700, h: 560 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.5 },
   { id: "decisions", name: "Decisions", icon: "inbox", category: "platform", component: () => import("@/apps/DecisionsApp").then((m) => ({ default: m.DecisionsApp })), defaultSize: { w: 640, h: 620 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.6 },
-  { id: "notification-archive", name: "Archive", icon: "archive", category: "platform", component: () => import("@/apps/NotificationArchiveApp").then((m) => ({ default: m.NotificationArchiveApp })), defaultSize: { w: 800, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.65 },
+  { id: "notification-archive", name: "Archive", icon: "archive", category: "platform", component: () => import("@/apps/NotificationArchiveApp").then((m) => ({ default: m.NotificationArchiveApp })), defaultSize: { w: 800, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.65, tier: 3 },
   { id: "observatory", name: "Observatory", icon: "radar", category: "platform", component: () => import("@/apps/ObservatoryApp").then((m) => ({ default: m.ObservatoryApp })), defaultSize: { w: 620, h: 600 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.7, tier: 2, group: "System" },
   { id: "notes", name: "Notes", icon: "sticky-note", category: "platform", component: () => import("@/apps/NotesApp").then((m) => ({ default: m.NotesApp })), defaultSize: { w: 860, h: 620 }, minSize: { w: 520, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.8 },
   { id: "todo", name: "Todo", icon: "list-checks", category: "platform", component: () => import("@/apps/TodoApp").then((m) => ({ default: m.TodoApp })), defaultSize: { w: 860, h: 620 }, minSize: { w: 520, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.85 },
@@ -159,7 +160,9 @@ export function getOptionalApps(): AppManifest[] {
  * optional apps the user has installed. `installedOptional` is the set of
  * installed optional app ids (from /api/apps/optional/installed).
  */
-export const APP_REDIRECTS: Record<string, { appId: string; section?: string }> = {};
+export const APP_REDIRECTS: Record<string, { appId: string }> = {
+  "notification-archive": { appId: "notifications" },
+};
 
 export function getLaunchableApps(installedOptional: Set<string>): AppManifest[] {
   return getAllApps().filter(

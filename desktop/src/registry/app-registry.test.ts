@@ -229,6 +229,10 @@ describe("APP_REDIRECTS", () => {
     expect(APP_REDIRECTS).toBeDefined();
     expect(typeof APP_REDIRECTS).toBe("object");
   });
+
+  it("redirects notification-archive to the notifications app", () => {
+    expect(APP_REDIRECTS["notification-archive"]).toEqual({ appId: "notifications" });
+  });
 });
 
 describe("resolvePinnedId", () => {
@@ -250,5 +254,30 @@ describe("resolvePinnedId", () => {
     APP_REDIRECTS["legacy-id"] = { appId: "does-not-exist" };
     expect(resolvePinnedId("legacy-id")).toBeUndefined();
     delete APP_REDIRECTS["legacy-id"];
+  });
+
+  it("resolves notification-archive to notifications via APP_REDIRECTS", () => {
+    expect(resolvePinnedId("notification-archive")).toBe("notifications");
+  });
+});
+
+describe("notification-archive tier and launcher visibility", () => {
+  it("has tier 3 in the manifest", () => {
+    expect(getApp("notification-archive")?.tier).toBe(3);
+  });
+
+  it("is absent from launcher listings", () => {
+    const ids = getLaunchableApps(new Set()).map((a) => a.id);
+    expect(ids).not.toContain("notification-archive");
+  });
+
+  it("is still openable programmatically via getApp", () => {
+    expect(getApp("notification-archive")?.id).toBe("notification-archive");
+  });
+
+  it("notifications app is present and launchable", () => {
+    const ids = getLaunchableApps(new Set()).map((a) => a.id);
+    expect(ids).toContain("notifications");
+    expect(getApp("notifications")?.tier).toBeUndefined();
   });
 });

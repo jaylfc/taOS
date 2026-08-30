@@ -528,24 +528,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.via = "loopback"
             return await call_next(request)
 
-        # Local token (Authorization: Bearer <token>) is accepted as a
-        # substitute for the session cookie. The token lives at
-        # {data_dir}/.auth_local_token, readable only by the user
-        # running taOS, so possession = same-user-on-the-host trust.
-        # Used by scripts and the upcoming CLI; the browser SPA keeps
-        # using cookies.
         auth_header = request.headers.get("authorization", "")
+
+        # --- Credential validation: if a valid credential is presented,
+        # authenticate the user and fall through to routing so unknown
+        # paths resolve to 404 rather than 401.  If the credential is
+        # absent or invalid, we return 401 uniformly (anti-enumeration). ---
+        # 1) Local Bearer token (same-host trust via .auth_local_token)
         if auth_header.lower().startswith("bearer "):
             presented = auth_header[7:].strip()
             if presented and auth_mgr.validate_local_token(presented):
-                # A valid local token IS valid auth (same-host trust: the
-                # token file is 0600, possession = the host user). It maps to
-                # the primary/admin user when one exists. Before onboarding
-                # there is no primary user yet — the token still passes (it is
-                # how scripts/CLI operate pre-setup), but with no user_id, so
-                # current_user-gated routes still 401 while middleware-only
-                # routes proceed as before. (Not failing closed here: the
-                # local token already authenticates, so it is not a bypass.)
                 primary = auth_mgr.get_primary_user()
                 if primary:
                     request.state.user_id = primary["id"]
@@ -557,16 +549,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.state.via = "local_token"
                 return await call_next(request)
 
-        # Agent-token endpoints (registry feeds + A2A bus proxy + project kanban)
-        # accept a registry JWT as an alternative to the admin session.  This
-        # branch sits AFTER the local-token check on purpose: a local token is
-        # admin-equivalent and must keep its admin semantics on these paths
-        # (taOSmd polls the feeds with it today).  Only a Bearer that is NOT the
-        # local token falls through to here; it is PASSED THROUGH and the route
-        # verifies the registry JWT + scope grant (+ project binding for task
-        # routes).  The allowlist -- the exact _AGENT_TOKEN_PATHS plus the
-        # anchored task-route matcher -- is closed so a registry JWT can never
-        # authenticate any other route (no skeleton key).
+        # 2) Registry JWT on allowlisted paths (passthrough; route verifies
+        #    JWT + scope grant (+ project binding for task routes).
         if (
             path in _AGENT_TOKEN_PATHS
             or _is_agent_task_path(request.method, path)
@@ -583,21 +567,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.via = "registry_jwt_candidate"
             return await call_next(request)
 
-        # Device-bearer self-service: a scoped device token may pass the auth
-        # gate on the carded lock-screen routes. The middleware does NOT
-        # resolve the device -- it only lets the Bearer through with
-        # user_id=None (so current_user / request.state consumers stay
-        # session-only, Invariant c). The route dependency
-        # (current_user_or_device) resolves the token and synthesizes a
-        # non-admin CurrentUser (Invariant a).
+        # 3) Device-bearer self-service on carded routes
         if (
             _is_device_bearer_path(request.method, path)
             and auth_header.lower().startswith("bearer ")
-            # Only a DEVICE token may take this passthrough. Matching any
-            # bearer shadowed valid sessions: a logged-in user carrying an
-            # unrelated Authorization header got 401 on every carded route,
-            # because this branch sets user_id=None before the session was
-            # ever consulted.
             and auth_header[7:].strip().startswith(DEVICE_TOKEN_PREFIX)
         ):
             request.state.user_id = None
@@ -605,18 +578,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.via = "device_bearer_candidate"
             return await call_next(request)
 
-        # First boot: no user yet. Browsers go to the setup page; APIs
-        # hard-fail so a stale cached client knows to refresh.
-        if not auth_mgr.is_configured():
-            accept = request.headers.get("accept", "")
-            if "text/html" in accept:
-                return RedirectResponse("/auth/setup", status_code=303)
-            return JSONResponse(
-                {"error": "onboarding_required", "needs_onboarding": True},
-                status_code=401,
-            )
-
-        # Check session cookie
+        # 4) Session cookie
         token = request.cookies.get("taos_session")
         if token:
             user_agent = request.headers.get("user-agent", "")
@@ -630,7 +592,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.state.via = "session"
                 return await call_next(request)
 
-        # Redirect to login for browsers, 401 for API calls
+        # No valid credential was found — return 401 uniformly for
+        # anonymous / unauthenticated callers (anti-enumeration).
+        if not auth_mgr.is_configured():
+            accept = request.headers.get("accept", "")
+            if "text/html" in accept:
+                return RedirectResponse("/auth/setup", status_code=303)
+            return JSONResponse(
+                {"error": "onboarding_required", "needs_onboarding": True},
+                status_code=401,
+            )
+
         accept = request.headers.get("accept", "")
         if "text/html" in accept:
             next_param = f"?next={path}" if path != "/" else ""
