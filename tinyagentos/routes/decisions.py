@@ -837,7 +837,6 @@ async def _deliver_delegation_invite(
             return
 
         from_username = local_id.removeprefix("hub:")
-        to_username = contact_id.removeprefix("hub:")
 
         body: dict = {
             "invite_id": invite_id,

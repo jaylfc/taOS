@@ -243,24 +243,11 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
         }
 
     # Dispatch delegation_status — the remote instance is notifying us that a
-    # delegation request was approved and an invite was minted.  Log and return
-    # the invite_id so it is visible in the node's logs.
+    # delegation request was approved and an invite was minted.  Persist it
+    # durably (invite_id in decision metadata) so the local agent runner can
+    # poll for and redeem the invite, rather than only logging it.
     if kind == "delegation_status":
-        body_data = envelope.get("body", {})
-        invite_id = body_data.get("invite_id", "unknown")
-        agent_slug = body_data.get("agent_slug", "unknown")
-        project_id = body_data.get("project_id", "unknown")
-        logger.info(
-            "peer_inbox: delegation_status contact=%s invite=%s agent=%s project=%s",
-            contact_id, invite_id, agent_slug, project_id,
-        )
-        return {
-            "status": "received",
-            "kind": kind,
-            "invite_id": invite_id,
-            "agent_slug": agent_slug,
-            "project_id": project_id,
-        }
+        return await _handle_delegation_status(request, contact_id, envelope, body_data)
 
     # Log unrecognised kinds for debugging; they are accepted but not dispatched.
     logger.info(
@@ -397,6 +384,92 @@ async def peer_ack(body: PeerAck, request: Request):
     )
 
     return {"status": "acked", "envelope_id": body.envelope_id}
+
+
+# ---------------------------------------------------------------------------
+# Delegation status handler
+# ---------------------------------------------------------------------------
+
+
+async def _handle_delegation_status(
+    request: Request,
+    contact_id: str,
+    envelope: dict,
+    body_data: dict,
+) -> dict:
+    """Handle an incoming delegation_status envelope — the sponsor notifying
+    us that a delegation request was approved and a sponsored invite minted.
+
+    Persists a durable decision record with ``invite_id`` in metadata so the
+    local agent runner can poll for and redeem the invite — the equivalent of
+    how ``collab_invite`` persists into ``decision_store``.  Without a durable
+    landing place the approval result would be dropped on the floor (logged,
+    then gone) and the delegation could never complete cross-instance.
+
+    The envelope body is expected to contain:
+      invite_id, agent_slug, project_id
+    """
+    decision_store = getattr(request.app.state, "decision_store", None)
+    if decision_store is None:
+        logger.warning(
+            "peer_inbox: delegation_status received but decision_store not available"
+        )
+        return {"status": "received", "kind": "delegation_status", "dispatched": False}
+
+    invite_id = body_data.get("invite_id", "")
+    agent_slug = body_data.get("agent_slug", "unknown")
+    project_id = body_data.get("project_id", "")
+
+    if not invite_id:
+        logger.warning(
+            "peer_inbox: delegation_status missing invite_id from contact=%s",
+            contact_id,
+        )
+        return {"status": "received", "kind": "delegation_status", "dispatched": False}
+
+    question = (
+        f"Delegation request approved: agent '{agent_slug}' was granted a "
+        f"sponsored invite for project {project_id}. Invite id: {invite_id}"
+    )
+
+    metadata: dict = {
+        "envelope_kind": "delegation_status",
+        "invite_id": invite_id,
+        "agent_slug": agent_slug,
+        "project_id": project_id,
+        "contact_id": contact_id,
+    }
+
+    try:
+        decision = await decision_store.create(
+            from_agent=f"peer:{contact_id}",
+            question=question,
+            type="free_text",
+            priority="normal",
+            metadata=metadata,
+        )
+        logger.info(
+            "peer_inbox: delegation_status → decision %s created for contact=%s",
+            decision["id"], contact_id,
+        )
+    except Exception as exc:
+        logger.error(
+            "peer_inbox: failed to persist delegation_status decision: %s", exc
+        )
+        return {
+            "status": "received",
+            "kind": "delegation_status",
+            "dispatched": False,
+            "error": str(exc),
+        }
+
+    return {
+        "status": "received",
+        "kind": "delegation_status",
+        "decision_id": decision["id"],
+        "invite_id": invite_id,
+        "dispatched": True,
+    }
 
 
 # ---------------------------------------------------------------------------
