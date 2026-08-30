@@ -498,3 +498,170 @@ class TestPostUpdateStartup:
         assert result["outcome"] == "rollback"
         assert ("rollback", "tag-123") in call_log
         assert ("signal", "rollback") in call_log
+
+    @pytest.mark.asyncio
+    async def test_stale_marker_triggers_rollback_even_when_health_check_passes(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        """A stale marker means the new code never booted — roll back without
+        trusting a health check that can only pass when the process is running.
+
+        Regression guard for BLOCKER 3: the health check asserting "service
+        active + port listening" is tautologically true whenever the hook runs,
+        so it can never catch a failed boot.  The marker's staleness is the
+        signal that the update never completed.
+        """
+        import datetime
+        import tinyagentos.worker.self_update as su
+
+        state_dir = tmp_path / "worker-state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write a marker whose started_at is long in the past — the new code
+        # never came up, and the worker has only now recovered (e.g. after a
+        # systemd start-limit give-up and a later restart).
+        _write_update_marker(state_dir, "tag-123", "from-sha", "to-sha")
+        marker_path = state_dir / "update-in-progress.json"
+        marker = json.loads(marker_path.read_text())
+        marker["started_at"] = (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(seconds=su.STALE_UPDATE_MARKER_SECONDS + 60)
+        ).isoformat()
+        marker_path.write_text(json.dumps(marker))
+
+        agent = MagicMock()
+        agent.name = "test-worker"
+        agent._signing_key = b"fake-key"
+
+        call_log = []
+
+        async def mock_health_check(timeout=30):
+            # Health check PASSES — worker is active and listening.  On the old
+            # code this would have reported "success" and swallowed the failure.
+            call_log.append("health-check")
+            return {"ok": True, "output": "healthy", "exit_code": 0}
+
+        async def mock_rollback(checkpoint_tag=None):
+            call_log.append(("rollback", checkpoint_tag))
+            return {"ok": True, "output": "rolled back", "exit_code": 0}
+
+        async def mock_signal(*args, **kwargs):
+            call_log.append(("signal", kwargs.get("outcome")))
+            return 200
+
+        monkeypatch.setattr(su, "run_health_check", mock_health_check)
+        monkeypatch.setattr(su, "rollback_to_checkpoint", mock_rollback)
+        monkeypatch.setattr(su, "signal_update_outcome", mock_signal)
+        monkeypatch.setattr(su, "POST_RESTART_GRACE_PERIOD", 0)
+        monkeypatch.setattr(su, "clear_update_marker", lambda d: None)
+
+        result = await su.post_update_startup(
+            controller_url="http://controller:9898",
+            agent=agent,
+            state_dir=state_dir,
+        )
+
+        assert result is not None
+        assert result["ok"] is False
+        assert result["outcome"] == "rollback"
+        assert result.get("stale_marker") is True
+        assert ("rollback", "tag-123") in call_log
+        assert ("signal", "rollback") in call_log
+        # The health check was never consulted — staleness alone triggered it.
+        assert "health-check" not in call_log
+
+
+# ── pull_update argument validation ───────────────────────────────────
+
+
+class TestPullUpdateValidation:
+    @pytest.mark.asyncio
+    async def test_rejects_option_like_ref(self, monkeypatch, tmp_path: Path):
+        """A ref that begins with '-' must be rejected before reaching git."""
+        import tinyagentos.worker.self_update as su
+
+        monkeypatch.setattr(su, "_repo_dir", lambda: tmp_path)
+        calls = []
+
+        async def mock_run_git(args, cwd=None, timeout=120):
+            calls.append(list(args))
+            return 0, ""
+
+        monkeypatch.setattr(su, "_run_git", mock_run_git)
+
+        result = await su.pull_update("--upload-pack=evil")
+        assert result["ok"] is False
+        assert "invalid target_ref" in result["output"]
+        assert calls == []  # git was never invoked
+
+    @pytest.mark.asyncio
+    async def test_rejects_remote_protocol_injection(self, monkeypatch, tmp_path: Path):
+        """A remote of the form 'ext::sh -c …' must be rejected (command exec)."""
+        import tinyagentos.worker.self_update as su
+
+        monkeypatch.setattr(su, "_repo_dir", lambda: tmp_path)
+        calls = []
+
+        async def mock_run_git(args, cwd=None, timeout=120):
+            calls.append(list(args))
+            return 0, ""
+
+        monkeypatch.setattr(su, "_run_git", mock_run_git)
+
+        result = await su.pull_update("ext::sh -c evil/branch")
+        assert result["ok"] is False
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_plain_branch_fetch_uses_double_dash(self, monkeypatch, tmp_path: Path):
+        """The no-slash branch must keep the '--' separator before the ref."""
+        import tinyagentos.worker.self_update as su
+
+        monkeypatch.setattr(su, "_repo_dir", lambda: tmp_path)
+        calls = []
+
+        async def mock_run_git(args, cwd=None, timeout=120):
+            calls.append(list(args))
+            if args[0] == "fetch":
+                return 0, ""
+            if args[0] == "checkout":
+                return 0, ""
+            if args[0] == "branch":
+                return 0, ""
+            if args[0] == "rev-parse":
+                return 0, "def5678\n"
+            return 1, "unknown"
+
+        monkeypatch.setattr(su, "_run_git", mock_run_git)
+
+        result = await su.pull_update("mybranch")
+        assert result["ok"] is True
+        fetch = [c for c in calls if c[0] == "fetch"][0]
+        assert fetch == ["fetch", "--quiet", "origin", "--", "mybranch"]
+
+    @pytest.mark.asyncio
+    async def test_slash_branch_fetch_uses_double_dash(self, monkeypatch, tmp_path: Path):
+        """The slash branch must keep the '--' separator before the branch."""
+        import tinyagentos.worker.self_update as su
+
+        monkeypatch.setattr(su, "_repo_dir", lambda: tmp_path)
+        calls = []
+
+        async def mock_run_git(args, cwd=None, timeout=120):
+            calls.append(list(args))
+            if args[0] == "fetch":
+                return 0, ""
+            if args[0] == "checkout":
+                return 0, ""
+            if args[0] == "branch":
+                return 0, ""
+            if args[0] == "rev-parse":
+                return 0, "def5678\n"
+            return 1, "unknown"
+
+        monkeypatch.setattr(su, "_run_git", mock_run_git)
+
+        result = await su.pull_update("origin/master")
+        assert result["ok"] is True
+        fetch = [c for c in calls if c[0] == "fetch"][0]
+        assert fetch == ["fetch", "--quiet", "origin", "--", "master"]

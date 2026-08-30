@@ -1203,25 +1203,14 @@ async def deploy_backend(request: Request, name: str, body: DeployRequest):
     worker runs taos-deploy-helper.sh via passwordless sudo. Only
     commands in the fixed allowlist are accepted.
 
-    HMAC-gated: the worker signs the request with its pairing key, and
-    the authenticated worker name must match the URL path. This prevents
-    worker A from triggering a deploy on worker B (CodeRabbit, PR #1910).
+    Operator action: gated by the operator session in AuthMiddleware (this
+    route is not session-exempt).  A worker holds no session cookie, so it is
+    already refused at the middleware; there is no HMAC gate here because the
+    only legitimate caller is the session-authenticated operator.
 
     Per-worker asyncio.Lock prevents concurrent install/restart calls on
     the same worker from double-installing.
     """
-    # HMAC gate -- only paired workers may trigger deploys, and only on themselves.
-    try:
-        await require_worker_hmac(request)
-    except _HMACError as exc:
-        return exc.response
-    # Verify the HMAC-authenticated worker matches the path name.
-    if getattr(request.state, "hmac_worker_name", None) != name:
-        return JSONResponse(
-            {"error": "Worker name in header does not match path"},
-            status_code=403,
-        )
-
     cluster = request.app.state.cluster_manager
     worker = cluster.get_worker(name)
     if not worker:

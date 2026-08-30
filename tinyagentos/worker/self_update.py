@@ -12,9 +12,11 @@ Flow:
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -30,9 +32,25 @@ POST_RESTART_HEALTH_TIMEOUT = 30
 # Gives backends (Ollama, llama.cpp, etc.) time to stabilise.
 POST_RESTART_GRACE_PERIOD = 15
 
+# If the post-restart hook has not cleared the update marker within this many
+# seconds of the marker being written, the update is presumed to have failed
+# to boot and the worker rolls back to the checkpoint on recovery.  A healthy
+# update clears the marker within ~1-2 minutes (grace period + health check);
+# 5 minutes leaves ample headroom without leaving a dead worker un-rolled-back
+# for long.  This is the trigger that survives "new code does not start": the
+# health check below can only pass when the worker process is already running,
+# so a failed boot would otherwise leave the marker on disk forever.
+STALE_UPDATE_MARKER_SECONDS = 300
+
 # Marker file written by the pre-restart phase so the post-restart
 # startup hook knows an update was in progress.
 _UPDATE_IN_PROGRESS_MARKER = "update-in-progress.json"
+
+# A target ref may only contain characters that can appear in a git ref or
+# remote name.  ``:`` and whitespace are excluded, which blocks ``ext::…``
+# remote-protocol injection; a leading ``-`` is rejected separately (in
+# pull_update) so git never parses the ref as an option.
+_VALID_TARGET_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 
 def _install_dir() -> Path:
@@ -188,6 +206,33 @@ def clear_update_marker(state_dir: Path) -> None:
     marker_path.unlink(missing_ok=True)
 
 
+def _marker_age_seconds(
+    marker: dict,
+    now: datetime.datetime | None = None,
+) -> float | None:
+    """Return the marker's age in seconds, or None if it has no parseable
+    ``started_at`` timestamp.
+
+    Used to detect a stale marker: if the post-restart hook has not cleared
+    the marker within the expected window, the new code most likely never
+    came up (a failed boot) and the worker has only now recovered.
+    """
+    started_at = marker.get("started_at", "")
+    if not started_at:
+        return None
+    try:
+        started = datetime.datetime.fromisoformat(started_at)
+    except (ValueError, TypeError):
+        return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=datetime.timezone.utc)
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone.utc)
+    return (now - started).total_seconds()
+
+
 async def create_checkpoint() -> dict:
     """Create a pre-update checkpoint via the deploy helper.
 
@@ -226,6 +271,20 @@ async def pull_update(target_ref: str) -> dict:
 
     Returns: dict with ok, output, exit_code.
     """
+    # Validate the ref before it reaches git.  A ref beginning with ``-``
+    # would be parsed by git as an option (e.g. ``--upload-pack=…``), and a
+    # ``remote`` of the form ``ext::sh -c …`` in the slash branch would be
+    # straight command execution.  The allowlist permits the characters a
+    # real ref/remote name can contain and rejects everything else,
+    # including ``:`` and whitespace.  Not reachable today (nothing writes
+    # the update trigger yet), but the trigger writer lands next.
+    if not _VALID_TARGET_REF.match(target_ref) or target_ref.startswith("-"):
+        return {
+            "ok": False,
+            "output": f"invalid target_ref: {target_ref!r}",
+            "exit_code": 1,
+        }
+
     repo = _repo_dir()
     branch = target_ref
 
@@ -246,11 +305,11 @@ async def pull_update(target_ref: str) -> dict:
     else:
         # Plain branch name — fetch from origin, then check out
         # origin/<branch> so we get the remote's version, not a stale
-        # local tracking branch.  No ``--`` separator: ``git fetch
-        # origin refspec`` updates origin/refspec; ``git fetch origin
-        # -- refspec`` may not in some git versions.
+        # local tracking branch.  ``--`` separates the ref from any
+        # option-looking tokens (the ref is validated above, but the
+        # separator is cheap defence in depth).
         rc, _ = await _run_git(
-            ["fetch", "--quiet", "origin", target_ref],
+            ["fetch", "--quiet", "origin", "--", target_ref],
             timeout=120,
         )
         if rc != 0:
@@ -698,7 +757,10 @@ async def post_update_startup(
     is found. Returns the outcome dict or None if no update was
     in progress.
 
-    On health-check failure, initiates a rollback.
+    On health-check failure, initiates a rollback.  It also rolls back when
+    the marker is *stale* — i.e. the update was written long enough ago that
+    the new code clearly never came up — regardless of the health check,
+    because the health check can only pass when the worker is already running.
     """
     marker = read_update_marker(state_dir)
     if marker is None:
@@ -713,6 +775,42 @@ async def post_update_startup(
     checkpoint_tag = marker.get("checkpoint_tag", "")
     from_sha = marker.get("from_sha", "")
     to_sha = marker.get("to_sha", "")
+
+    # ── Stale-marker guard ─────────────────────────────────────────
+    # A healthy update clears this marker within ~1-2 minutes of the restart
+    # (grace period + health check).  If the marker is still here long after
+    # that, the new code did not come up in time — the classic "new build
+    # fails to boot" failure — and the worker has only now recovered (e.g.
+    # after a systemd start-limit give-up and a later restart).  In that
+    # state the health check would pass trivially (the process is running
+    # now), so staleness alone must trigger the rollback.
+    marker_age = _marker_age_seconds(marker)
+    if marker_age is not None and marker_age > STALE_UPDATE_MARKER_SECONDS:
+        logger.error(
+            "self-update: update marker is stale (%.0fs old) — new code did "
+            "not come up; rolling back to %s",
+            marker_age, checkpoint_tag,
+        )
+        rollback_result = await rollback_to_checkpoint(checkpoint_tag)
+        await signal_update_outcome(
+            controller_url=controller_url,
+            worker_name=agent.name,
+            outcome="rollback",
+            from_version=from_sha,
+            to_version=to_sha,
+            failure_reason=(
+                f"new code did not start (stale marker, {marker_age:.0f}s)"
+            ),
+            rollback_to=from_sha,
+            signing_key=agent._signing_key,
+        )
+        clear_update_marker(state_dir)
+        return {
+            "ok": False,
+            "outcome": "rollback",
+            "rollback": rollback_result,
+            "stale_marker": True,
+        }
 
     # Wait for grace period to let backends stabilise.
     logger.info(
