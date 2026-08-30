@@ -274,6 +274,54 @@ describe("NotificationsApp", () => {
     rerender(<NotificationsApp windowId="w1" section="archive" />);
     expect(screen.getByTestId("tabs")).toHaveAttribute("data-value", "archive");
   });
+
+  it("aborts the in-flight archive fetch signal on unmount", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn().mockImplementation((_input: string, init?: RequestInit) => {
+      capturedSignal = init?.signal;
+      return new Promise(() => {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { unmount } = render(<NotificationsApp windowId="w1" />);
+    fireEvent.click(screen.getByTestId("tab-archive"));
+    await flush();
+
+    expect(capturedSignal).toBeDefined();
+    expect(capturedSignal!.aborted).toBe(false);
+
+    unmount();
+
+    expect(capturedSignal!.aborted).toBe(true);
+  });
+
+  it("clears loading state when archive fetch rejects and avoids stale state updates on unmount", async () => {
+    let rejectFetch!: (e: Error) => void;
+    const fetchMock = vi.fn().mockImplementation(() => {
+      return new Promise((_, reject) => {
+        rejectFetch = reject;
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { unmount } = render(<NotificationsApp windowId="w1" />);
+    fireEvent.click(screen.getByTestId("tab-archive"));
+    await flush();
+    expect(screen.getByText("Loading archive...")).toBeInTheDocument();
+
+    rejectFetch(new Error("Network failure"));
+    await flush();
+
+    expect(screen.queryByText("Loading archive...")).not.toBeInTheDocument();
+    expect(screen.getByText("Network failure")).toBeInTheDocument();
+
+    unmount();
+    await flush();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
 });
 
 describe("APP_REDIRECTS", () => {

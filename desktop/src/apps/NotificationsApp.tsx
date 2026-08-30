@@ -356,6 +356,7 @@ function ArchiveTab({ archived: initialArchived }: { archived: Notification[] })
     } finally {
       if (abortRef.current === controller) {
         setLoading(false);
+        abortRef.current = null;
       }
     }
   }, []);
