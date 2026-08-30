@@ -401,11 +401,14 @@ async def cascade_sponsor_revoke(
     project_id: str | None = None,
     reason: str = "sponsor revoked",
 ) -> dict:
-    """Revoke all sponsored agent identities for a contact.
+    """Revoke a contact's sponsorships, revoking identities when the last one goes.
 
-    When *project_id* is provided, only revoke agents that are members of
-    that project (membership-revoke).  When None, revoke ALL sponsored
-    identities (contact-revoke).
+    Sponsorship is a per-(identity, project) association (D1 rework).  The
+    cascade removes the contact's association rows — scoped to *project_id*
+    when provided (membership-revoke) or all of them when None
+    (contact-revoke) — and revokes the underlying identity itself only when NO
+    sponsorship rows remain.  An identity sponsored by two contacts in two
+    projects therefore survives one contact's revoke and dies on the second.
 
     Also unassigns in-flight board tasks and posts an A2A system line.
     Returns a summary dict of what was revoked.
@@ -414,24 +417,33 @@ async def cascade_sponsor_revoke(
     if registry is None:
         return {"status": "error", "error": "registry not available"}
 
-    project_store = getattr(request.app.state, "project_store", None)
-
-    # Find all active agents sponsored by this contact.
-    sponsored = await registry.list_by_sponsor(contact_id, status="active")
+    # Find the sponsorship associations for this contact, optionally scoped to
+    # a single project.  Each row names the (identity, project) pair the
+    # contact actually sponsored, so this cascade finds exactly what the
+    # contact sponsored in their own project(s) — never another contact's.
+    sponsorships = await registry.list_sponsorships_by_contact(
+        contact_id, project_id=project_id
+    )
     revoked_ids: list[str] = []
 
-    for agent in sponsored:
-        canonical_id = agent["canonical_id"]
+    for sp in sponsorships:
+        canonical_id = sp["canonical_id"]
+        sp_project_id = sp["project_id"]
 
-        # When scoped to a project, only revoke agents that are members of
-        # that project.  Contact-wide revoke (project_id=None) hits all.
-        if project_id is not None:
-            if project_store is None:
-                return {"status": "error", "error": "project store not available"}
-            if not await project_store.is_project_member(
-                project_id, canonical_id
-            ):
-                continue
+        # Revoke the association first: the contact no longer sponsors this
+        # identity in that project, regardless of the identity's fate.
+        await registry.remove_sponsorship(canonical_id, sp_project_id)
+
+        # Only ACTIVE identities are subject to revocation (a non-active
+        # identity has no live bearer).  An identity that is still sponsored
+        # elsewhere survives — it is revoked only once the last association
+        # row is gone.
+        record = await registry.get(canonical_id)
+        if record is None or record.get("status") != "active":
+            continue
+        remaining = await registry.list_sponsorships_for_identity(canonical_id)
+        if remaining:
+            continue
 
         try:
             await registry.set_status(canonical_id, "revoked", actor=contact_id)

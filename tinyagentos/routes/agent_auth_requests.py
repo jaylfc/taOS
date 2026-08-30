@@ -584,15 +584,14 @@ async def approve_request_record(
                 framework=record["framework"],
                 project_id=project_id,
             )
-            # For sponsored agents (cross-user collab D1), set the sponsor
-            # on the existing identity when reusing it for a new project.
+            # For sponsored agents (cross-user collab D1), record the
+            # sponsorship as a per-(identity, project) association, not a
+            # stamp on the reused identity — so each project's contact finds
+            # exactly what they sponsored.
             if sponsor_contact_id:
-                updated = await registry.set_sponsor(existing_cid, sponsor_contact_id)
-                if updated is None:
-                    logger.warning(
-                        "auth-approve: set_sponsor returned None for %s (identity gone?)",
-                        existing_cid,
-                    )
+                await registry.set_sponsorship(
+                    existing_cid, project_id, sponsor_contact_id
+                )
             await add_agent_to_project(
                 request,
                 canonical_id=existing_cid,
@@ -643,7 +642,6 @@ async def approve_request_record(
             # auth-request record / invite, not the registry origin column.
             origin="external-selfjoin",
             handle=handle,
-            sponsor_contact_id=sponsor_contact_id,
         )
         canonical_id = reg_record["canonical_id"]
 
@@ -652,6 +650,15 @@ async def approve_request_record(
         # them to 'active' so they are NOT in the bus inactive/revocation feed and
         # @taOSmd's identity-AND-grant gate accepts them.
         await registry.set_status(canonical_id, "active", actor=decided_by)
+
+        # Record sponsorship as a per-(identity, project) association (D1
+        # rework): the delegation was for THIS project, so the association is
+        # keyed to it rather than stamped on the identity.  project_id is always
+        # set for a delegated agent (the delegation flow requires it).
+        if sponsor_contact_id and project_id:
+            await registry.set_sponsorship(
+                canonical_id, project_id, sponsor_contact_id
+            )
     except IntegrityError:
         # A concurrent approve already took this active handle (the partial
         # unique index fired). Roll back the failed write and remove the
