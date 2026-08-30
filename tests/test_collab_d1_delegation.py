@@ -1178,3 +1178,142 @@ class TestDelegationStatusLandingPlace:
 
         await decision_store.close()
 
+
+class TestDelegationStatusIdempotency:
+    """Kilo re-review: a retried delegation_status (distinct nonce, same
+    invite_id) must not mint a duplicate decision — the handler is idempotent
+    on invite_id."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_delivery_returns_existing_decision(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from tinyagentos.decisions.decision_store import DecisionStore
+        from tinyagentos.routes.peer import _handle_delegation_status
+
+        decision_store = DecisionStore(tmp_path / "decisions.db")
+        await decision_store.init()
+
+        request = MagicMock()
+        request.app.state.decision_store = decision_store
+
+        body = {"invite_id": "inv-dup", "agent_slug": "grok", "project_id": "prj-1"}
+
+        first = await _handle_delegation_status(request, "hub:sponsor", {}, body)
+        assert first["dispatched"] is True
+        first_id = first["decision_id"]
+
+        second = await _handle_delegation_status(request, "hub:sponsor", {}, body)
+        assert second["dispatched"] is True
+        assert second.get("duplicate") is True
+        assert second["decision_id"] == first_id
+
+        # Exactly one decision row records this invite_id (no duplicate).
+        all_decisions = await decision_store.list(limit=500)
+        assert len(all_decisions) == 1
+        matches = await decision_store.find_by_metadata("invite_id", "inv-dup")
+        assert len(matches) == 1
+
+        await decision_store.close()
+
+    @pytest.mark.asyncio
+    async def test_decision_is_project_scoped_and_system_attributed(self, tmp_path):
+        """The decision must carry project_id + owner user_id and be tagged as a
+        system notification (not a request from the peer)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from tinyagentos.decisions.decision_store import DecisionStore
+        from tinyagentos.routes.peer import _handle_delegation_status
+
+        decision_store = DecisionStore(tmp_path / "decisions.db")
+        await decision_store.init()
+
+        project_store = AsyncMock()
+        project_store.get_project.return_value = {"id": "prj-1", "user_id": "owner-1"}
+
+        request = MagicMock()
+        request.app.state.decision_store = decision_store
+        request.app.state.project_store = project_store
+
+        result = await _handle_delegation_status(
+            request, "hub:sponsor", {},
+            {"invite_id": "inv-p", "agent_slug": "grok", "project_id": "prj-1"},
+        )
+
+        decision = await decision_store.get(result["decision_id"])
+        assert decision["project_id"] == "prj-1"
+        assert decision["user_id"] == "owner-1"
+        assert decision["from_agent"] == "system:delegation"
+        # Originating contact stays in metadata, not the from_agent.
+        assert decision["metadata"]["contact_id"] == "hub:sponsor"
+
+        await decision_store.close()
+
+
+class TestSendEnvelopeGuards:
+    """Kilo re-review: send_envelope must fail loudly on a wrong contact-id
+    shape and keep endpoint ordering deterministic."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_hub_contact_id(self, tmp_path):
+        import pytest
+
+        from tinyagentos.contacts_store import ContactsStore
+        from tinyagentos.peer import send_envelope
+
+        store = ContactsStore(tmp_path / "contacts.db")
+        await store.init()
+
+        # A non-hub id (e.g. peer:abc) must raise, not silently produce a
+        # hub:peer:abc envelope that the receiver 403s.
+        with pytest.raises(ValueError, match="hub:<username>"):
+            await send_envelope(
+                store, from_username="jaylfc", to_contact_id="peer:abc",
+                kind="chat", body={},
+            )
+
+        await store.close()
+
+    @pytest.mark.asyncio
+    async def test_orders_dict_endpoints_by_priority(self, tmp_path):
+        import httpx as _httpx
+        import respx
+
+        from tinyagentos.contacts_store import ContactsStore, generate_peer_token
+        from tinyagentos.peer import send_envelope
+
+        store = ContactsStore(tmp_path / "contacts.db")
+        await store.init()
+        await store.add_contact(
+            contact_id="hub:hogne", hub_username="hogne", display_name="H",
+            ed25519_pub="pk", x25519_pub="ek",
+        )
+        await store.establish_peer_link(
+            contact_id="hub:hogne",
+            inbound_token=generate_peer_token(),
+            outbound_token=generate_peer_token(),
+            endpoints=[
+                {"url": "https://primary.example.com", "priority": 1},
+                {"url": "https://fallback.example.com", "priority": 99},
+            ],
+        )
+
+        with respx.mock as mock:
+            primary = mock.post("https://primary.example.com/api/peer/inbox").mock(
+                return_value=_httpx.Response(200, json={"status": "received"}))
+            fallback = mock.post("https://fallback.example.com/api/peer/inbox").mock(
+                return_value=_httpx.Response(200, json={"status": "received"}))
+
+            delivered, err = await send_envelope(
+                store, from_username="jaylfc", to_contact_id="hub:hogne",
+                kind="delegation_status", body={},
+            )
+
+            assert delivered is True
+            # Priority 1 endpoint was tried first and succeeded, so the
+            # fallback was never reached.
+            assert primary.called
+            assert not fallback.called
+
+        await store.close()
+
