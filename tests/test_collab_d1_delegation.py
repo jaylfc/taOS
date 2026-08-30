@@ -148,20 +148,21 @@ class TestSponsorRegistryMethods:
         store = AgentRegistryStore(db_path)
         await store.init()
 
-        # Register with sponsor
+        # Register, then record a sponsorship association (D1 rework: the
+        # sponsor is a per-(identity, project) association, not a column).
         reg = await store.register(
             framework="test",
             display_name="Sponsored Agent",
             user_id="user-1",
             origin="external-selfjoin",
             handle="sponsored-agent",
-            sponsor_contact_id="hub:hogne",
         )
         canonical_id = reg["canonical_id"]
-        # List by sponsor
+        assert await store.set_sponsorship(canonical_id, "prj-1", "hub:hogne") is True
+
+        # List by sponsor — resolves through the association.
         sponsored = await store.list_by_sponsor("hub:hogne")
-        assert len(sponsored) == 1
-        assert sponsored[0]["sponsor_contact_id"] == "hub:hogne"
+        assert [r["canonical_id"] for r in sponsored] == [canonical_id]
 
         # List by different sponsor — empty
         other = await store.list_by_sponsor("hub:other")
@@ -176,17 +177,17 @@ class TestSponsorRegistryMethods:
         store = AgentRegistryStore(db_path)
         await store.init()
 
-        await store.register(
+        reg = await store.register(
             framework="test",
             display_name="Active Sponsored",
             user_id="user-1",
             origin="external-selfjoin",
             handle="active-sponsor",
-            sponsor_contact_id="hub:hogne",
         )
-        # Only active agents
+        await store.set_sponsorship(reg["canonical_id"], "prj-1", "hub:hogne")
+        # Only active agents (external-selfjoin starts pending)
         active = await store.list_by_sponsor("hub:hogne", status="active")
-        assert len(active) == 0  # external-selfjoin starts pending
+        assert len(active) == 0
 
         # With no status filter, shows all
         all_sponsored = await store.list_by_sponsor("hub:hogne")
@@ -194,7 +195,7 @@ class TestSponsorRegistryMethods:
         await store.close()
 
     @pytest.mark.asyncio
-    async def test_set_sponsor(self, tmp_path):
+    async def test_set_sponsorship(self, tmp_path):
         from tinyagentos.agent_registry_store import AgentRegistryStore
 
         db_path = tmp_path / "test_registry.db"
@@ -210,19 +211,26 @@ class TestSponsorRegistryMethods:
         )
         cid = reg["canonical_id"]
 
-        # Initially NULL
-        agent = await store.get(cid)
-        assert agent["sponsor_contact_id"] is None
+        # Initially no sponsorship association.
+        assert await store.list_sponsorships_for_identity(cid) == []
 
-        # Set sponsor
-        await store.set_sponsor(cid, "hub:hogne")
-        agent = await store.get(cid)
-        assert agent["sponsor_contact_id"] == "hub:hogne"
+        # First write for (identity, project) wins.
+        assert await store.set_sponsorship(cid, "prj-1", "hub:hogne") is True
+        # A second write for the SAME (identity, project) is ignored.
+        assert await store.set_sponsorship(cid, "prj-1", "hub:other") is False
+        rows = await store.list_sponsorships_for_identity(cid)
+        assert len(rows) == 1
+        assert rows[0]["sponsor_contact_id"] == "hub:hogne"
+        assert rows[0]["project_id"] == "prj-1"
 
-        # Clear sponsor
-        await store.set_sponsor(cid, None)
-        agent = await store.get(cid)
-        assert agent["sponsor_contact_id"] is None
+        # A different project is a distinct association.
+        assert await store.set_sponsorship(cid, "prj-2", "hub:other") is True
+        assert len(await store.list_sponsorships_for_identity(cid)) == 2
+
+        # Remove one association.
+        await store.remove_sponsorship(cid, "prj-1")
+        remaining = await store.list_sponsorships_for_identity(cid)
+        assert [r["project_id"] for r in remaining] == ["prj-2"]
         await store.close()
 
     @pytest.mark.asyncio
@@ -265,6 +273,72 @@ class TestSponsorRegistryMethods:
         await _migration_v7_add_sponsor_contact_id(conn)
 
         await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_migration_backfill_reproduces_single_sponsor_cascade(self, tmp_path):
+        """Acceptance #4 — the v8 backfill must reproduce the old single-sponsor
+        cascade for a pre-change identity stamped with a legacy
+        ``sponsor_contact_id`` but no association row.
+
+        The legacy column carried a sponsor but no project binding, so the
+        backfilled association is keyed to the empty project_id sentinel.
+        ``list_by_sponsor`` must find the identity through that association,
+        and a cascade revoke of that one contact must revoke the identity
+        (no rows remain) — exactly the pre-rework behaviour.
+        """
+        from types import SimpleNamespace
+
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            _LEGACY_SPONSORSHIP_PROJECT,
+            _migration_v8_backfill_sponsorship,
+        )
+        from tinyagentos.delegation_handler import cascade_sponsor_revoke
+
+        store = AgentRegistryStore(tmp_path / "registry.db")
+        await store.init()
+
+        # Register an identity and mark it active, then stamp the legacy
+        # sponsor_contact_id column directly — simulating a pre-change DB row
+        # that carries a sponsor but no agent_sponsorship association.
+        reg = await store.register(
+            framework="test",
+            display_name="Legacy Sponsored",
+            user_id="u",
+            origin="external-selfjoin",
+            handle="legacy-sponsored",
+        )
+        cid = reg["canonical_id"]
+        await store.set_status(cid, "active")
+        await store._db.execute(
+            "UPDATE agent_registry SET sponsor_contact_id = ? WHERE canonical_id = ?",
+            ("hub:legacy", cid),
+        )
+        await store._db.commit()
+
+        # Run the backfill.
+        await _migration_v8_backfill_sponsorship(store._db)
+
+        # The association row is keyed to the empty project_id sentinel.
+        rows = await store.list_sponsorships_for_identity(cid)
+        assert len(rows) == 1
+        assert rows[0]["project_id"] == _LEGACY_SPONSORSHIP_PROJECT
+        assert rows[0]["sponsor_contact_id"] == "hub:legacy"
+
+        # list_by_sponsor resolves the identity through the association.
+        assert [r["canonical_id"] for r in await store.list_by_sponsor("hub:legacy")] == [cid]
+
+        # The single-sponsor cascade revokes the identity (last row removed).
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(agent_registry=store))
+        )
+        result = await cascade_sponsor_revoke(request, contact_id="hub:legacy")
+        assert result["status"] == "revoked"
+        assert result["revoked_ids"] == [cid]
+        assert (await store.get(cid))["status"] == "revoked"
+        assert await store.list_sponsorships_for_identity(cid) == []
+
+        await store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -406,32 +480,192 @@ class TestMintReturnShape:
         await store.close()
 
 
-class TestCascadeSponsorRevokeFailClosed:
-    """🟠 MAJOR: project-scoped revoke with missing project_store must fail closed."""
+class TestPerProjectSponsorshipCascade:
+    """Acceptance #1 — two contacts, two projects, one handle.
+
+    The association model must let each contact's cascade find exactly what
+    THEY sponsored in their own project.  Revoking A kills A's sponsorship
+    while the identity survives under B's sponsorship; revoking B then kills
+    the identity outright.  A single-contact test cannot catch this — the
+    whole point is the second contact's sponsorship keeps the identity alive
+    after the first contact's revoke.
+    """
 
     @pytest.mark.asyncio
-    async def test_cascade_with_project_id_and_no_store_fails(self, tmp_path):
-        from unittest.mock import AsyncMock, MagicMock
+    async def test_two_contacts_two_projects_survive_then_die(self, tmp_path):
+        from types import SimpleNamespace
+
+        from tinyagentos.agent_registry_store import AgentRegistryStore
         from tinyagentos.delegation_handler import cascade_sponsor_revoke
 
-        # Mock request with registry but NO project_store
-        request = MagicMock()
-        mock_registry = AsyncMock()
-        mock_registry.list_by_sponsor.return_value = [
-            {"canonical_id": "agent-1", "sponsor_contact_id": "hub:sponsor"}
-        ]
-        request.app.state.agent_registry = mock_registry
-        request.app.state.project_store = None  # missing!
+        store = AgentRegistryStore(tmp_path / "registry.db")
+        await store.init()
 
-        result = await cascade_sponsor_revoke(
-            request,
-            contact_id="hub:sponsor",
-            project_id="prj-1",
+        # One identity, reused by handle across two projects, sponsored by two
+        # different contacts.
+        reg = await store.register(
+            framework="test",
+            display_name="Shared Agent",
+            user_id="u",
+            origin="external-selfjoin",
+            handle="shared-agent",
+        )
+        cid = reg["canonical_id"]
+        await store.set_status(cid, "active")
+        assert await store.set_sponsorship(cid, "prj-1", "hub:A") is True
+        assert await store.set_sponsorship(cid, "prj-2", "hub:B") is True
+
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(agent_registry=store))
         )
 
-        # Must fail closed — project_store absent with project_id set is an error
-        assert result["status"] == "error"
-        assert "project store not available" in result["error"]
+        # A's revoke: A's association is gone, but the identity survives
+        # because B still sponsors it in P2.
+        result_a = await cascade_sponsor_revoke(request, contact_id="hub:A")
+        assert result_a["status"] == "revoked"
+        assert result_a["revoked_ids"] == []  # identity NOT revoked yet
+        assert await store.list_by_sponsor("hub:A") == []
+        assert [r["canonical_id"] for r in await store.list_by_sponsor("hub:B")] == [cid]
+        agent = await store.get(cid)
+        assert agent["status"] == "active"  # survives A's revoke
+
+        # B's revoke: last association gone -> identity revoked outright.
+        result_b = await cascade_sponsor_revoke(request, contact_id="hub:B")
+        assert result_b["status"] == "revoked"
+        assert result_b["revoked_ids"] == [cid]
+        assert await store.list_by_sponsor("hub:B") == []
+        agent = await store.get(cid)
+        assert agent["status"] == "revoked"
+
+        await store.close()
+
+    @pytest.mark.asyncio
+    async def test_project_scoped_revoke_spares_other_projects(self, tmp_path):
+        from types import SimpleNamespace
+
+        from tinyagentos.agent_registry_store import AgentRegistryStore
+        from tinyagentos.delegation_handler import cascade_sponsor_revoke
+
+        store = AgentRegistryStore(tmp_path / "registry.db")
+        await store.init()
+
+        reg = await store.register(
+            framework="test", display_name="A", user_id="u",
+            origin="external-selfjoin", handle="multi-proj",
+        )
+        cid = reg["canonical_id"]
+        await store.set_status(cid, "active")
+        await store.set_sponsorship(cid, "prj-1", "hub:A")
+        await store.set_sponsorship(cid, "prj-2", "hub:A")
+
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(agent_registry=store))
+        )
+
+        # Membership-revoke scoped to prj-1 removes only that association; the
+        # prj-2 association keeps the identity alive.
+        result = await cascade_sponsor_revoke(
+            request, contact_id="hub:A", project_id="prj-1"
+        )
+        assert result["status"] == "revoked"
+        assert result["revoked_ids"] == []
+        rows = await store.list_sponsorships_for_identity(cid)
+        assert [r["project_id"] for r in rows] == ["prj-2"]
+        agent = await store.get(cid)
+        assert agent["status"] == "active"
+
+        # Revoking the remaining association kills the identity.
+        await cascade_sponsor_revoke(request, contact_id="hub:A", project_id="prj-2")
+        assert (await store.get(cid))["status"] == "revoked"
+
+        await store.close()
+
+
+class TestKillSwitchAuthPath:
+    """Acceptance #2 — the per-contact kill-switch must be observable through the
+    AUTH path (a live bearer the registry now refuses), not by counting rows in
+    ``list_by_sponsor``.
+
+    ``kill_switch_per_contact`` revokes the contact's sponsorships; a single
+    sponsored identity therefore becomes 'revoked' in the registry and its
+    still-cryptographically-valid token is rejected by
+    ``agent_token_auth._verify_agent_scope`` with 403.  This is the behaviour a
+    human operator actually depends on when they hit the kill-switch.
+    """
+
+    @pytest.mark.asyncio
+    async def test_kill_switch_revokes_live_bearer(self, tmp_path):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from fastapi import HTTPException
+
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            mint_registry_token,
+        )
+        from tinyagentos.agent_token_auth import _verify_agent_scope
+        from tinyagentos.delegation_handler import kill_switch_per_contact
+        from tinyagentos.store_signing import generate_signing_keypair
+
+        registry = AgentRegistryStore(tmp_path / "registry.db")
+        await registry.init()
+        grants = AgentGrantsStore(tmp_path / "grants.db")
+        await grants.init()
+        priv, _pub = generate_signing_keypair()
+
+        reg = await registry.register(
+            framework="test",
+            display_name="Kill Switch Agent",
+            user_id="u",
+            origin="external-selfjoin",
+            handle="kill-switch-agent",
+        )
+        cid = reg["canonical_id"]
+        await registry.set_status(cid, "active")
+        assert await registry.set_sponsorship(cid, "prj-1", "hub:A") is True
+        await grants.add_grant(cid, "a2a_receive")
+        token = mint_registry_token(cid, priv, user_id="u", framework="test")
+
+        # A contacts_store mock so kill_switch_per_contact does not fail-closed
+        # on a missing store (it tries to revoke the peer link first).
+        contacts = AsyncMock()
+        contacts.revoke_peer_link = AsyncMock()
+
+        def make_request():
+            return SimpleNamespace(
+                headers={"Authorization": f"Bearer {token}"},
+                app=SimpleNamespace(
+                    state=SimpleNamespace(
+                        agent_registry=registry,
+                        agent_grants=grants,
+                        agent_registry_keypair=(priv, _pub),
+                        contacts_store=contacts,
+                    )
+                ),
+            )
+
+        # Before the kill-switch, the bearer is LIVE: the auth path accepts it.
+        live_cid, _payload = await _verify_agent_scope(make_request(), "a2a_receive")
+        assert live_cid == cid
+
+        # Hit the per-contact kill-switch: revokes the sponsorship, which
+        # revokes the (single-sponsored) identity.
+        result = await kill_switch_per_contact(make_request(), contact_id="hub:A")
+        assert result["status"] == "paused"
+        assert (await registry.get(cid))["status"] == "revoked"
+
+        # The bearer is now REFUSED by the auth path (403), even though the
+        # token signature is still valid — the kill-switch is observable as a
+        # dead bearer, not merely an empty list_by_sponsor.
+        with pytest.raises(HTTPException) as exc:
+            await _verify_agent_scope(make_request(), "a2a_receive")
+        assert exc.value.status_code == 403
+        assert "not active" in exc.value.detail
+
+        await registry.close()
+        await grants.close()
 
 
 class TestProjectStoreSettingsGuard:
@@ -460,19 +694,15 @@ class TestProjectStoreSettingsGuard:
         await store.close()
 
 
-class TestSetSponsorGuard:
-    """🟡 MINOR: set_sponsor must not re-parent an existing sponsored identity.
-
-    Tests the guard in AgentRegistryStore.set_sponsor directly — the guard
-    is now IN the production code, so direct calls ARE the real path (N1 fix).
+class TestPerProjectSponsorshipStore:
+    """Sponsorship is now a per-(identity, project) association, not a single
+    column.  Two contacts can sponsor the SAME identity in DIFFERENT projects
+    without one overwriting the other — the exact shape the old single column
+    could not represent.
     """
 
     @pytest.mark.asyncio
-    async def test_set_sponsor_reparents_to_different_sponsor(self, tmp_path):
-        """Re-parenting an identity to a different sponsor (cross-project
-        reuse via handle) must now SUCCEED — the old immutability guard
-        was removed so cascade_sponsor_revoke(B) can find identities
-        sponsored by B even when the handle was first sponsored by A."""
+    async def test_two_contacts_coexist_in_distinct_projects(self, tmp_path):
         from tinyagentos.agent_registry_store import AgentRegistryStore
 
         db_path = tmp_path / "test_registry.db"
@@ -481,28 +711,29 @@ class TestSetSponsorGuard:
 
         reg = await store.register(
             framework="test",
-            display_name="Agent With Sponsor",
+            display_name="Agent With Sponsors",
             user_id="user-1",
             origin="external-selfjoin",
-            handle="sponsored-reparent",
-            sponsor_contact_id="hub:sponsor-a",
+            handle="sponsored-shared",
         )
         cid = reg["canonical_id"]
 
-        # Re-parent to a different sponsor — must succeed now.
-        result = await store.set_sponsor(cid, "hub:sponsor-b")
-        assert result is not None
-        assert result["sponsor_contact_id"] == "hub:sponsor-b"
+        # A sponsors in P1, B sponsors in P2 — both survive independently.
+        assert await store.set_sponsorship(cid, "prj-1", "hub:sponsor-a") is True
+        assert await store.set_sponsorship(cid, "prj-2", "hub:sponsor-b") is True
 
-        # Verify the store agrees.
-        agent = await store.get(cid)
-        assert agent["sponsor_contact_id"] == "hub:sponsor-b"
+        assert [r["canonical_id"] for r in await store.list_by_sponsor("hub:sponsor-a")] == [cid]
+        assert [r["canonical_id"] for r in await store.list_by_sponsor("hub:sponsor-b")] == [cid]
+
+        rows = await store.list_sponsorships_for_identity(cid)
+        assert {(r["project_id"], r["sponsor_contact_id"]) for r in rows} == {
+            ("prj-1", "hub:sponsor-a"),
+            ("prj-2", "hub:sponsor-b"),
+        }
         await store.close()
 
     @pytest.mark.asyncio
-    async def test_set_sponsor_noop_on_same_sponsor(self, tmp_path):
-        """Setting the same sponsor that is already set must be a no-op
-        (returns the current record without a write)."""
+    async def test_same_project_second_writer_ignored(self, tmp_path):
         from tinyagentos.agent_registry_store import AgentRegistryStore
 
         db_path = tmp_path / "test_registry.db"
@@ -510,48 +741,18 @@ class TestSetSponsorGuard:
         await store.init()
 
         reg = await store.register(
-            framework="test",
-            display_name="Agent",
-            user_id="user-1",
-            origin="external-selfjoin",
-            handle="same-sponsor",
-            sponsor_contact_id="hub:sponsor-a",
+            framework="test", display_name="Agent", user_id="u",
+            origin="external-selfjoin", handle="same-proj",
         )
         cid = reg["canonical_id"]
 
-        result = await store.set_sponsor(cid, "hub:sponsor-a")
-        assert result is not None
-        assert result["sponsor_contact_id"] == "hub:sponsor-a"
-        await store.close()
-
-    @pytest.mark.asyncio
-    async def test_set_sponsor_clearing_allowed(self, tmp_path):
-        """Clearing sponsor via set_sponsor(cid, None) must still work
-        (revoke cascades depend on it)."""
-        from tinyagentos.agent_registry_store import AgentRegistryStore
-
-        db_path = tmp_path / "test_registry.db"
-        store = AgentRegistryStore(db_path)
-        await store.init()
-
-        reg = await store.register(
-            framework="test",
-            display_name="Agent",
-            user_id="user-1",
-            origin="external-selfjoin",
-            handle="clear-test",
-            sponsor_contact_id="hub:sponsor",
-        )
-        cid = reg["canonical_id"]
-
-        # Set initial sponsor
-        agent = await store.get(cid)
-        assert agent["sponsor_contact_id"] == "hub:sponsor"
-
-        # Clear with None — must work
-        await store.set_sponsor(cid, None)
-        agent = await store.get(cid)
-        assert agent["sponsor_contact_id"] is None
+        # First writer for (identity, project) wins; a later writer for the
+        # SAME project is a no-op (deterministic first-writer-wins).
+        assert await store.set_sponsorship(cid, "prj-1", "hub:sponsor-a") is True
+        assert await store.set_sponsorship(cid, "prj-1", "hub:sponsor-b") is False
+        rows = await store.list_sponsorships_for_identity(cid)
+        assert len(rows) == 1
+        assert rows[0]["sponsor_contact_id"] == "hub:sponsor-a"
         await store.close()
 
 
@@ -888,12 +1089,19 @@ class TestApprovalMembershipFailClosed:
         await store.close()
 
 
-class TestSetSponsorAtomicGuard:
-    """Blockers #4 — set_sponsor immutability must be enforced in the UPDATE
-    predicate, not a read->check->write race."""
+class TestSetSponsorshipAtomicGuard:
+    """Acceptance #3 — concurrency: two concurrent sponsorship writes for the
+    same (identity, project) leave exactly one row with a deterministic
+    first-writer-wins winner.
+
+    The atomic discipline (formerly the UPDATE predicate on the column) now
+    lives on the association's PRIMARY KEY: ``INSERT OR IGNORE`` makes exactly
+    one writer win and the loser a no-op, deterministically — the surviving
+    row is whichever INSERT actually inserted, never a racing overwrite.
+    """
 
     @pytest.mark.asyncio
-    async def test_concurrent_set_sponsor_reparents_once(self, tmp_path):
+    async def test_concurrent_same_project_writes_leave_one_row(self, tmp_path):
         import asyncio
 
         from tinyagentos.agent_registry_store import AgentRegistryStore
@@ -914,24 +1122,24 @@ class TestSetSponsorAtomicGuard:
         )
         cid = reg["canonical_id"]
 
-        # Concurrent re-parent attempts: whichever wins, the identity ends up
-        # with exactly one sponsor.  Re-parenting to a different sponsor is now
-        # allowed (cross-project identity reuse), so a later set_sponsor to C
-        # must succeed.
-        await asyncio.gather(
-            store_a.set_sponsor(cid, "hub:A"),
-            store_b.set_sponsor(cid, "hub:B"),
+        # Two concurrent writes for the SAME (identity, project). Exactly one
+        # wins (INSERT OR IGNORE); the loser is a no-op.  The winner is
+        # deterministic: it is whichever INSERT actually inserted the row, so
+        # the surviving sponsor must equal the writer whose call returned True.
+        results = await asyncio.gather(
+            store_a.set_sponsorship(cid, "prj-1", "hub:A"),
+            store_b.set_sponsorship(cid, "prj-1", "hub:B"),
         )
 
-        agent = await store_a.get(cid)
-        assert agent["sponsor_contact_id"] in ("hub:A", "hub:B")
+        # Exactly one insert succeeded, the other was ignored.
+        assert sorted(results) == [False, True]
+        winner = "hub:A" if results[0] is True else "hub:B"
 
-        # Re-parent to a third sponsor must now succeed.
-        result = await store_a.set_sponsor(cid, "hub:C")
-        assert result is not None
-        assert result["sponsor_contact_id"] == "hub:C"
-        agent = await store_a.get(cid)
-        assert agent["sponsor_contact_id"] == "hub:C"
+        rows = await store_a.list_sponsorships_for_identity(cid)
+        assert len(rows) == 1
+        assert rows[0]["sponsor_contact_id"] == winner
+        assert rows[0]["project_id"] == "prj-1"
+
         await store_a.close()
         await store_b.close()
 
