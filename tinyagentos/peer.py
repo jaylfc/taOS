@@ -320,9 +320,13 @@ async def send_envelope(
     This is the reusable outbound half of the peer channel — the inbound half
     is ``POST /api/peer/inbox`` in ``routes/peer.py``.
     """
+    # ``to_contact_id`` is the full ``hub:<username>`` contact id (the key the
+    # contacts store uses).  ``build_envelope`` prefixes ``hub:`` itself, so
+    # strip it here — otherwise the envelope is addressed ``hub:hub:<user>``
+    # and the receiver 403s it.
     envelope = build_envelope(
         from_username=from_username,
-        to_username=to_contact_id,
+        to_username=to_contact_id.removeprefix("hub:"),
         kind=kind,
         body=body,
     )
