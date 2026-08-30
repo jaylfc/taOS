@@ -440,12 +440,56 @@ async def _handle_delegation_status(
         "contact_id": contact_id,
     }
 
+    # Idempotency on invite_id: nonces stop exact replays but not a sponsor
+    # retrying the same delegation_status after a 5xx (distinct nonce, same
+    # invite_id).  Look up any decision already recording this invite_id and
+    # return it instead of minting a duplicate that would pollute the feed.
+    try:
+        existing = await decision_store.find_by_metadata("invite_id", invite_id)
+    except Exception as exc:
+        logger.warning(
+            "peer_inbox: metadata lookup failed for invite_id=%s: %s",
+            invite_id, exc,
+        )
+        existing = []
+    if existing:
+        decision_id = existing[0]["id"]
+        logger.info(
+            "peer_inbox: delegation_status for invite_id=%s already recorded "
+            "as decision %s (duplicate delivery)",
+            invite_id, decision_id,
+        )
+        return {
+            "status": "received",
+            "kind": "delegation_status",
+            "decision_id": decision_id,
+            "invite_id": invite_id,
+            "dispatched": True,
+            "duplicate": True,
+        }
+
+    # Resolve the owner (the local project owner) so the decision is not
+    # ownerless and project-scoped queries surface it.  Best-effort: an absent
+    # project store or unknown project leaves user_id empty (still scoped via
+    # project_id).
+    user_id = ""
+    project_store = getattr(request.app.state, "project_store", None)
+    if project_store is not None and project_id:
+        try:
+            project = await project_store.get_project(project_id)
+            if project:
+                user_id = project.get("user_id") or ""
+        except Exception:
+            user_id = ""
+
     try:
         decision = await decision_store.create(
-            from_agent=f"peer:{contact_id}",
+            from_agent="system:delegation",
             question=question,
             type="free_text",
             priority="normal",
+            project_id=project_id or None,
+            user_id=user_id,
             metadata=metadata,
         )
         logger.info(
