@@ -1,28 +1,27 @@
-# Agent Handoff Playbook
+# Agent Onboarding
 
-**Why this exists.** Work on taOS runs across rate-limit-prone agents on different platforms (Claude Code, Cursor, Codex, web, etc.). When one hits a limit, another picks up. The failure mode to prevent: an incoming agent acting on **stale knowledge**: re-doing finished work, missing in-flight tasks, or clobbering a branch. This playbook + `STATUS.md` + GitHub issues make the project's state **durable and platform-independent** so a handoff never loses work.
+**Why this exists.** Work on taOS runs across rate-limit-prone agents on different platforms (Claude Code, Cursor, Codex, web, etc.). When one hits a limit, another picks up. The failure mode to prevent: an incoming agent acting on **stale knowledge**: re-doing finished work, missing in-flight tasks, or clobbering a branch. This playbook + GitHub issues make the project's state **durable and platform-independent** so a handoff never loses work.
 
-The golden rule: **durable state lives in six committed/hosted places, not in any one agent's memory**: (1) GitHub issues, (2) `docs/STATUS.md`, (3) the A2A bus, (4) A2A `taos-progress`, (5) A2A bus coordination, (6) @taOS Pi memory. If it isn't in one of those, the next agent can't see it.
+The golden rule: **durable state lives in five committed/hosted places, not in any one agent's memory**: (1) GitHub issues, (2) `docs/agent-onboarding.md`, (3) the A2A bus, (4) A2A `taos-progress`, (5) @taOS Pi memory. If it isn't in one of those, the next agent can't see it.
 
 ---
 
-## Bootstrap (paste this into a fresh agent, or just tell it "read docs/AGENT_HANDOFF.md")
+## Bootstrap (paste this into a fresh agent, or just tell it "read docs/agent-onboarding.md")
 
 > You are taking over @taOS work on the taOS repo (`~/Development/tinyagentos`, GitHub `jaylfc/taOS`). Another agent was driving and may have hit a rate limit. Orient yourself from the durable state before doing anything; do not trust assumptions:
 >
-> 1. Read `docs/STATUS.md`: current branch tips, open PRs, in-flight work, blockers.
-> 2. Read the rest of this file (`docs/AGENT_HANDOFF.md`): rules, identity, hop protocol. Follow it exactly.
-> 3. `git fetch origin && git log origin/master..origin/dev --oneline`: what is on dev not yet promoted.
-> 4. `gh issue list --state open --limit 40` (canonical task list) and `gh pr list --state open`.
-> 5. A2A bus, live coordination: tail `taos-progress`, `general`, `observability`, `integration` (Pi is `jay@<pi>`, key auth, bus on).
-> 6. (Claude Code only) read `~/.claude/projects/-*-tinyagentos/memory/MEMORY.md`.
+> 1. Read the rest of this file (`docs/agent-onboarding.md`): rules, identity, hop protocol. Follow it exactly.
+> 2. `git fetch origin && git log origin/master..origin/dev --oneline`: what is on dev not yet promoted.
+> 3. Check the board `prj-5y722y` (canonical task list) and `gh pr list --state open`.
+> 4. A2A bus, live coordination: tail `taos-progress`, `general`, `observability`, `integration` (Pi is `jay@<pi>`, key auth, bus on).
+> 5. (Claude Code only) read `~/.claude/projects/-*-tinyagentos/memory/MEMORY.md`.
 >
-> Then take the top unblocked GitHub issue or continue what STATUS.md flags as in flight. You ARE @taOS on the bus: post as `@taOS`, and drop a status line in `taos-progress` when you start, finish, or learn something. Follow the Identity rules below to the letter.
+> Then take the top unblocked card from the board or continue what durable state flags as in flight. Drop a status line in `taos-progress` when you start, finish, or learn something. Follow the Identity rules below to the letter.
 
 ---
 ## Identity & non-negotiable rules
 
-- **You are @taOS on the A2A bus.** Adopt that handle for every post (`"from": "@taOS"`). You speak as the taOS controller agent, coordinating with @taOSmd (memory/bench) and @hermes (framework agent).
+- **You are @taOS on the A2A bus.** Seats post under their own registry identity. The bus enforces `token sub == from` whenever a Bearer token is present, so posting as `@taOS` produces 403s or unattributable posts.
 - **Git identity:** `user.name=jaylfc`, `user.email=jaylfc25@gmail.com`. ALL activity appears as jaylfc.
 - **No AI attribution** anywhere: commits, PR bodies, issue comments, A2A. No "Co-Authored-By: Claude", no "Generated with...". Public repos and the bus must read as fully human-authored.
 - **Voice (anything posted publicly as Jay: commits, PRs, issues, A2A, docs, web copy): NO em dashes, ever.** Use commas, colons, parentheses, or two sentences instead. Strip the usual AI tells (no "it's not just X, it's Y", no "delve", no breathless hedging). For user-facing prose (release notes, web copy, replies), run it through the `content-humanizer` skill before posting. Keep internal terse-but-human.
@@ -36,17 +35,17 @@ The golden rule: **durable state lives in six committed/hosted places, not in an
 ## When YOU get rate-limited: hand off cleanly (do this the moment you see the limit warning, if you still can)
 
 1. **Commit or stash WIP** on a branch (never leave uncommitted work that only your session knows about). Push it.
-2. **Update `docs/STATUS.md`**: move your task to "In flight" with the branch name + exactly where you stopped + the next concrete step.
+2. **Update the board**: move your card to "In flight" with the branch name + exactly where you stopped + the next concrete step.
 3. **Post one A2A note** as your handle: what you finished, what's mid-flight, the branch, the next step.
 4. **(Claude Code) update memory** if a durable fact changed.
 
-If the limit hits before you can do this, the incoming agent recovers from: last pushed commit + open PR + `STATUS.md` + issues. That's why you push early and often.
+If the limit hits before you can do this, the incoming agent recovers from: last pushed commit + open PR + the board + issues. That's why you push early and often.
 
 ---
 
 ## The freshness cron (keeps the durable layer honest)
 
-An hourly sweep (session-scoped on the active agent; the Pi's :00/:30 cron is the durable backstop) re-checks README / docs / memory / `STATUS.md` against merged commits and fixes trivial drift, opens PRs for bigger rewrites. If you are the active driver, keep it armed. Its job is to ensure steps 1-5 above never read stale.
+An hourly sweep (session-scoped on the active agent; the Pi's :00/:30 cron is the durable backstop) re-checks README / docs / memory against merged commits and fixes trivial drift, opens PRs for bigger rewrites. Its job is to ensure steps above never read stale.
 
 ---
 
@@ -54,7 +53,7 @@ An hourly sweep (session-scoped on the active agent; the Pi's :00/:30 cron is th
 
 - **Every feature idea, bug, or TODO -> a GitHub issue immediately.** Ideas in chat or memory evaporate across a handoff; issues don't. Label them (`feature`, `bug`, `security`, `docs`, `infra`).
 - **One issue = one pickup-able unit** with enough context that a cold agent can start it.
-- `STATUS.md` links to issues; it does not duplicate them.
+- The board links to issues; it does not duplicate them.
 
 ---
 
@@ -72,9 +71,8 @@ The taosmd-hosted bus ingests messages into the project memory store, so posting
 
 | Store | Scope | Visible to | Use for |
 |-------|-------|-----------|---------|
-| GitHub issues | canonical task list | every platform | backlog, features, bugs, audit findings |
-| `docs/STATUS.md` | current snapshot | every platform (in repo) | "where are we right now" |
-| `docs/AGENT_HANDOFF.md` | the rules + protocol | every platform (in repo) | onboarding, identity, hop protocol |
+| GitHub project board `prj-5y722y` | canonical task list | every platform | backlog, features, bugs, audit findings |
+| `docs/agent-onboarding.md` | the rules + protocol | every platform (in repo) | onboarding, identity, hop protocol |
 | A2A `taos-progress` | running progress log | bus agents + project memory | status, lessons, decisions (feeds memory) |
 | A2A bus | live coordination | the bus agents | real-time @mentions, decisions |
 | @taOS Pi memory | durable context | Claude Code only | per-session continuity for CC |
@@ -97,7 +95,7 @@ The taosmd-hosted bus ingests messages into the project memory store, so posting
 - User-facing docs live under `docs/` or the component's own README.
 - Run prose through the `content-humanizer` skill before committing if it will be visible to users or contributors.
 - Keep line length under 100 chars for plain text, 80 for code examples.
-- Link to files with relative paths from the repo root (`docs/STATUS.md`, not `/docs/STATUS.md`).
+- Link to files with relative paths from the repo root (`docs/agent-onboarding.md`, not `/docs/agent-onboarding.md`).
 - Do not commit screenshots or large binaries to the repo without checking with a lead first.
 
 ---
@@ -115,7 +113,7 @@ Every PR must include tests for new behaviour. Run them with `uv run --extra dev
 
 ## Changelog fragments
 
-A non-test change under `tinyagentos/` or `desktop/src/` requires a `changelog.d/<pr>-<slug>.md` fragment containing a `### Added` or `### Fixed` heading and one bullet describing the change. Do not edit `CHANGELOG.md` directly.
+A non-test change under `tinyagentos/` or `desktop/src/` requires a `changelog.d/<pr>-<slug>.md` or `changelog.d/tsk-<cardid>-<slug>.md` fragment containing a `### Added` or `### Fixed` heading and one bullet describing the change. Do not edit `CHANGELOG.md` directly.
 
 ---
 
@@ -123,11 +121,11 @@ A non-test change under `tinyagentos/` or `desktop/src/` requires a `changelog.d
 
 Every PR targeting `dev` or `master` must clear the following before merge:
 
-- CI green: `test (3.12/3.13)` and `lint` both passing.
+- CI green: `test (3.12)`, `test (3.13)`, `spa-build`, `lint`, `doc-gate`, `shards (3.12, 1-4)`, `shards (3.13, 1-4)`, `bot-review-gate` all passing.
 - Human review: at least one project lead has approved.
-- Bot review considered: CodeRabbit output examined, but a bot review is never a blocking requirement on its own.
+- `bot-review-gate` is required, so it blocks on its own.
 
-A lead may apply the `bot-review-allow` label when the only CodeRabbit output is a rate-limit stub and `scripts/check_bot_review.py` confirms the stub classification. This is an explicit waiver, not a pass: the underlying infra condition still exists and should be retried on the next PR if the quota recovers.
+`bot-review-allow` is inert on any PR that already has a failed run. The real path is `--admin` with the justification posted first.
 
 Do not merge a PR that is green on CI but has never been read by a human. Bot checks are signals, not substitutes for judgment.
 
@@ -135,7 +133,7 @@ Do not merge a PR that is green on CI but has never been read by a human. Bot ch
 
 ## Kilo review policy
 
-Kilo is the inline coding agent used during development. It does not post PR reviews. Do not wait for Kilo output before merging.
+Kilo is the inline coding agent used during development. It posts a `Kilo Code Review` check run whose output has caught real defects. Read the output, never the `conclusion` field, and treat `Assistant service is unavailable` as an outage rather than a finding. Do not wait for Kilo output before merging.
 
 Kilo output is not a substitute for human review or CI. If Kilo finds a problem, fix it before requesting human review.
 
@@ -154,8 +152,9 @@ CodeRabbit is an external review bot that posts on some PRs. Its behaviour is in
 - Some PRs receive no CodeRabbit output at all.
 
 `scripts/check_bot_review.py` is the arbiter. It fetches the PR's CodeRabbit comments and reviews, distinguishes real review items from rate-limit stubs and auto-generated scaffolding, and exits:
-- `0 PASS` when a real review exists or CodeRabbit is entirely absent.
+- `0 PASS` when a real review exists.
+- `0 PASS (absent, not stubbed)` when CodeRabbit is entirely absent, which is not reviewed and must not read as clean.
 - `1 FAIL` when the only CodeRabbit output is a stub or scaffolding.
 - `2 ERROR` on infrastructure failure.
 
-CodeRabbit is intermittent: some PRs get a genuine multi-item review, others get only a rate-limit stub. `scripts/check_bot_review.py` is the arbiter. Do not block on it, do not retrigger it, and its red is not clearable by retriggering.
+Do not block on CodeRabbit, do not retrigger it, and its red is not clearable by retriggering.
