@@ -1,0 +1,2 @@
+### Fixed
+- Search palette no longer drops installed optional apps (coding-studio, design-studio, music-studio, reddit, youtube-library, etc.) from results. The #2680 `getSearchableApps` predicate excluded every installed optional app because `isDefaultSurfaceApp` is false for optional manifests and none are tier 3; restored the `getLaunchableApps` set UNION tier-3 selection so installed optionals remain both searchable and launchable.

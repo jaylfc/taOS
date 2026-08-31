@@ -25,11 +25,13 @@ export interface AppManifest {
    */
   pwa?: boolean;
   /**
-   * Launcher tiering (issue #2143). Controls which apps the desktop launcher
-   * (launchpad, search) surfaces:
+   * Launcher tiering (issue #2143). Controls which apps the desktop launchpad
+   * (the default surface) surfaces, distinct from the searchable selection.
+   * The search palette uses a separate predicate (see `getSearchableApps`):
+   * default-surface apps plus installed optional apps plus tier-3 apps.
    *   1 - always shown (default for apps without an explicit tier)
    *   2 - shown, grouped under `group` (e.g. "System")
-   *   3 - hidden from launcher (lives in Settings)
+   *   3 - hidden from launcher (lives in Settings) but searchable
    *   4 - file handler (hidden from launcher, openable by id)
    *   5 - Store-optional, off by default
    */
@@ -194,8 +196,9 @@ export function isDefaultSurfaceApp(app: AppManifest): boolean {
 export function getSearchableApps(installedOptional: Set<string>): AppManifest[] {
   return getAllApps().filter(
     (a) =>
-      (isDefaultSurfaceApp(a) || a.tier === 3) &&
-      (a.optional ? installedOptional.has(a.id) : true),
+      a.optional
+        ? installedOptional.has(a.id)
+        : (isDefaultSurfaceApp(a) || a.tier === 3),
   );
 }
 
