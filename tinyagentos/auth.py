@@ -1127,6 +1127,41 @@ class AuthManager:
         stored = path.read_text().strip()
         return secrets.compare_digest(presented, stored)
 
+    def _local_token_agent_path(self) -> Path:
+        return self.data_dir / ".auth_local_token_bindings.json"
+
+    def bind_local_token_agent(self, token: str, agent_name: str) -> None:
+        """Record that *token* is bound to *agent_name* for skill-exec identity.
+
+        The bindings file maps ``sha256(token) -> agent_name`` so the raw token
+        is never written to disk a second time.  Atomic write keeps the file
+        consistent under concurrent deploys.
+        """
+        path = self._local_token_agent_path()
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        data = {}
+        if path.exists():
+            try:
+                data = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                data = {}
+        data[token_hash] = agent_name
+        atomic_write_text(path, json.dumps(data), mode=0o600)
+
+    def get_local_token_agent(self, presented: str) -> str | None:
+        """Return the agent name bound to this local token, or ``None``."""
+        if not presented:
+            return None
+        path = self._local_token_agent_path()
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+        token_hash = hashlib.sha256(presented.encode()).hexdigest()
+        return data.get(token_hash)
+
     def update_last_login(self, user_id: str) -> None:
         data = self._read_users()
         users = data.get("users", [])

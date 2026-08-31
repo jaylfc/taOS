@@ -1086,3 +1086,25 @@ Container provisioning request (P1, agent-container-provisioning spec):
   escalated to a Decisions-app item for Jay. This is an identity-only check
   (no scope grant required), matching the scope-request create flow's use of
   `check_agent_identity`.
+
+## Skill-exec agent identity (credential-bound, not body-supplied)
+
+`POST /api/skill-exec/{skill_id}/call` and `GET /api/skill-exec/tools` now
+derive the agent identity from the PRESENTED CREDENTIAL, not from the request
+body. A deployed agent presenting the host local token (`TAOS_LOCAL_TOKEN`) is
+bound to a single agent name at deploy time (`AuthManager.bind_local_token_agent`
+in `tinyagentos/auth.py`; called from `tinyagentos/deployer.py`). The auth
+middleware sets `request.state.agent_name` from that binding, and the route
+rejects any local-token caller whose body claims a different `agent_name` with
+403. Admin sessions are unaffected: a human-driven call may still supply
+`agent_name` in the body.
+
+Blast radius: `_resolve_agent_workspace`, `_capture_tool_receipt`,
+`_check_execution_policy`, `execute_notes_list_shared_docs`, and the todo tools
+all key off the same `agent_name` string, so binding it at the credential layer
+closes the hole for every downstream consumer in one place. This is option (b)
+from the tsk-2km65o review: per-agent tokens (option a) and registry-JWT
+verification (option c, which slice 8 of #1800 will supply) are both strictly
+stronger but require broader changes; the binding is the minimal fix that
+rejects impersonation today without inventing a parallel scheme, and it reuses
+the existing local-token path so no client changes are required.

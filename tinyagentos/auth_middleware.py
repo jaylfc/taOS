@@ -569,6 +569,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.state.user_id = None
                     request.state.is_admin = False
                     request.state.via = "local_token"
+                bound_agent = auth_mgr.get_local_token_agent(presented)
+                if bound_agent:
+                    request.state.agent_name = bound_agent
                 return await call_next(request)
 
         # Agent-token endpoints (registry feeds + A2A bus proxy + project kanban)

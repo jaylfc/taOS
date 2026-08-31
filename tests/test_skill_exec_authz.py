@@ -226,3 +226,113 @@ class TestIsAdminOrLocalToken:
 
         assert "error" in result
         mock_run.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestSkillExecCredentialAgentName:
+    """Agent identity must come from the credential, not the request body."""
+
+    async def test_local_token_mismatched_agent_name_rejected(self, client, app):
+        """A deployed agent presenting a valid local token but claiming a
+        different agent_name in the body must be rejected."""
+        await _ensure_skills_seeded(app)
+        local_token = app.state.auth.get_local_token()
+        app.state.auth.bind_local_token_agent(local_token, "alice")
+
+        bare_client = AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+        try:
+            resp = await bare_client.post(
+                "/api/skill-exec/code_exec/call",
+                json={"args": {"code": "print('should not run')"},
+                      "agent_name": "victim"},
+                headers={"Authorization": f"Bearer {local_token}"},
+            )
+        finally:
+            await bare_client.aclose()
+
+        assert resp.status_code == 403
+
+    async def test_local_token_matching_agent_name_accepted(self, client, app):
+        """A deployed agent presenting a valid local token and claiming the
+        bound agent_name must be accepted."""
+        await _ensure_skills_seeded(app)
+        await app.state.execution_policies.set_policy("code-exec", "allow")
+        local_token = app.state.auth.get_local_token()
+        app.state.auth.bind_local_token_agent(local_token, "alice")
+
+        bare_client = AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+        try:
+            with patch("subprocess.run", return_value=_fake_subprocess_result()) as mock_run:
+                resp = await bare_client.post(
+                    "/api/skill-exec/code_exec/call",
+                    json={"args": {"code": "print('hello')"},
+                          "agent_name": "alice"},
+                    headers={"Authorization": f"Bearer {local_token}"},
+                )
+        finally:
+            await bare_client.aclose()
+
+        assert resp.status_code == 200
+        assert resp.json()["returncode"] == 0
+        mock_run.assert_called_once()
+
+    async def test_local_token_no_body_agent_name_uses_credential(self, client, app):
+        """When no agent_name is in the body, the credential-bound name is used."""
+        await _ensure_skills_seeded(app)
+        await app.state.execution_policies.set_policy("code-exec", "allow")
+        local_token = app.state.auth.get_local_token()
+        app.state.auth.bind_local_token_agent(local_token, "alice")
+
+        bare_client = AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+        try:
+            with patch("subprocess.run", return_value=_fake_subprocess_result()) as mock_run:
+                resp = await bare_client.post(
+                    "/api/skill-exec/code_exec/call",
+                    json={"args": {"code": "print('hello')"}},
+                    headers={"Authorization": f"Bearer {local_token}"},
+                )
+        finally:
+            await bare_client.aclose()
+
+        assert resp.status_code == 200
+        assert resp.json()["returncode"] == 0
+        mock_run.assert_called_once()
+
+    async def test_admin_session_body_agent_name_still_honoured(self, client, app):
+        """Admin sessions are trusted: body-supplied agent_name is still honoured
+        so the human-driven OS agent keeps working."""
+        await _ensure_skills_seeded(app)
+        resp = await client.post(
+            "/api/skill-exec/code_exec/call",
+            json={"args": {"code": "print('hello')"},
+                  "agent_name": "whatever"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["returncode"] == 0
+
+    async def test_list_tools_mismatched_agent_name_rejected(self, client, app):
+        """GET /api/skill-exec/tools with a mismatched agent_name for a
+        local-token caller is rejected."""
+        local_token = app.state.auth.get_local_token()
+        app.state.auth.bind_local_token_agent(local_token, "alice")
+
+        bare_client = AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+        try:
+            resp = await bare_client.get(
+                "/api/skill-exec/tools",
+                params={"agent_name": "victim"},
+                headers={"Authorization": f"Bearer {local_token}"},
+            )
+        finally:
+            await bare_client.aclose()
+
+        assert resp.status_code == 403

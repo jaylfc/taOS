@@ -332,7 +332,15 @@ async def deploy_agent(req: DeployRequest) -> dict:
     try:
         local_token_path = req.data_dir / ".auth_local_token"
         if local_token_path.exists():
-            env["TAOS_LOCAL_TOKEN"] = local_token_path.read_text().strip()
+            token = local_token_path.read_text().strip()
+            env["TAOS_LOCAL_TOKEN"] = token
+            # Bind this local token to the agent being deployed so skill-exec
+            # derives identity from the credential, not from the body.
+            try:
+                from tinyagentos.auth import AuthManager
+                AuthManager(req.data_dir).bind_local_token_agent(token, req.name)
+            except Exception:
+                pass
     except Exception:
         pass
     env["TAOS_TRACE_URL"] = f"http://{req.taos_host}:{req.taos_port}/api/trace"
