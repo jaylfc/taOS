@@ -170,7 +170,7 @@ export const APP_REDIRECTS: Record<string, { appId: string }> = {
  * of truth for the tier rule that landed in bfc40c1e6 -- reuse it here instead
  * of hand-rolling a second predicate that can drift:
  *   tier 1 (default) / 2 - shown on the default surface
- *   tier 3            - discoverable via Store/search, NOT on the default surface
+ *   tier 3            - hidden from the default surface, searchable
  *   tier 4            - file handler, hidden from the default surface
  *   tier 5            - Store-optional, hidden from the default surface
  * Optional apps and file handlers are excluded here; optional apps only
@@ -181,6 +181,21 @@ export function isDefaultSurfaceApp(app: AppManifest): boolean {
     !app.optional &&
     app.handler !== true &&
     (app.tier === undefined || app.tier <= 2)
+  );
+}
+
+/**
+ * Apps the desktop search should surface: every always-on app, installed
+ * optional apps, and tier-3 registry apps (providers, mcp, channels,
+ * notification-archive). Tier-3 apps remain hidden from the launcher grids
+ * and mobile home default surface; they are reachable here via search and
+ * still openable by direct id.
+ */
+export function getSearchableApps(installedOptional: Set<string>): AppManifest[] {
+  return getAllApps().filter(
+    (a) =>
+      (isDefaultSurfaceApp(a) || a.tier === 3) &&
+      (a.optional ? installedOptional.has(a.id) : true),
   );
 }
 
