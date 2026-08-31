@@ -165,7 +165,7 @@ class TestArchiveFiltering:
 
         store = ctx.app.state.project_task_store
         await store.update_checklist_item(item_id, verified=True, reported=True)
-        await store.archive_checklist_item(item_id, reported_by=ctx.uid)
+        await store.archive_checklist_item(item_id)
 
         resp = await ctx.client.get(_url(pid, tid))
         rows = resp.json()

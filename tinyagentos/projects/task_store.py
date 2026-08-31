@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS task_checklist_items (
     verified INTEGER NOT NULL DEFAULT 0,
     reported INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -198,6 +199,15 @@ class ProjectTaskStore(BaseStore):
             "ON project_tasks(project_id, element_id)"
         )
         await self._db.commit()
+        # Add created_by column for checklist items (defect tsk-6xymzj)
+        try:
+            await self._db.execute(
+                "ALTER TABLE task_checklist_items ADD COLUMN created_by TEXT"
+            )
+            await self._db.commit()
+        except Exception:
+            # Column already exists on fresh installs (created by SCHEMA).
+            pass
 
     async def create_task(
         self,
@@ -746,9 +756,9 @@ class ProjectTaskStore(BaseStore):
         now = time.time()
         await self._db.execute(
             """INSERT INTO task_checklist_items
-               (id, task_id, text, done, verified, reported, archived, created_at, updated_at)
-               VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?)""",
-            (cid, task_id, text, now, now),
+               (id, task_id, text, done, verified, reported, archived, created_by, created_at, updated_at)
+               VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?, ?)""",
+            (cid, task_id, text, created_by, now, now),
         )
         await self._db.commit()
         cur = await self._db.execute(
@@ -810,7 +820,7 @@ class ProjectTaskStore(BaseStore):
         await self._db.commit()
         return await self.get_checklist_item(item_id)
 
-    async def archive_checklist_item(self, item_id: str, reported_by: str) -> dict:
+    async def archive_checklist_item(self, item_id: str) -> dict:
         """Archive a checklist item. Only valid if verified=1 and reported=1.
 
         Raises ValueError if the item cannot be archived because it lacks
