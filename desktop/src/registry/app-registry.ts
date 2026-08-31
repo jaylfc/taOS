@@ -164,12 +164,31 @@ export const APP_REDIRECTS: Record<string, { appId: string }> = {
   "notification-archive": { appId: "notifications" },
 };
 
+/**
+ * Whether an app belongs on the default surface: the desktop launcher's
+ * always-on grid AND the mobile home default grid. This is the single source
+ * of truth for the tier rule that landed in bfc40c1e6 -- reuse it here instead
+ * of hand-rolling a second predicate that can drift:
+ *   tier 1 (default) / 2 - shown on the default surface
+ *   tier 3            - discoverable via Store/search, NOT on the default surface
+ *   tier 4            - file handler, hidden from the default surface
+ *   tier 5            - Store-optional, hidden from the default surface
+ * Optional apps and file handlers are excluded here; optional apps only
+ * surface once installed (see getLaunchableApps).
+ */
+export function isDefaultSurfaceApp(app: AppManifest): boolean {
+  return (
+    !app.optional &&
+    app.handler !== true &&
+    (app.tier === undefined || app.tier <= 2)
+  );
+}
+
 export function getLaunchableApps(installedOptional: Set<string>): AppManifest[] {
   return getAllApps().filter(
     (a) =>
-      (!a.optional || installedOptional.has(a.id)) &&
-      a.handler !== true &&
-      (a.tier === undefined || a.tier <= 2 || (a.tier === 5 && installedOptional.has(a.id))),
+      isDefaultSurfaceApp(a) ||
+      (a.optional && installedOptional.has(a.id)),
   );
 }
 
