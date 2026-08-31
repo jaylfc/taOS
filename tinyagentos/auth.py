@@ -1114,18 +1114,43 @@ class AuthManager:
         return token
 
     def validate_local_token(self, presented: str) -> bool:
-        """Return True if *presented* matches the on-disk local token.
+        """Return True if *presented* matches the on-disk local token or any
+        bound agent token.
 
         Always re-reads the file so rotating the file takes effect on the
         next request. Uses ``secrets.compare_digest`` to avoid timing leaks.
+        Bound agent tokens are accepted too: each per-agent token is minted at
+        deploy time and its hash is stored in the bindings file.
         """
         if not presented:
             return False
         path = self.local_token_path()
-        if not path.exists():
+        if path.exists():
+            stored = path.read_text().strip()
+            if secrets.compare_digest(presented, stored):
+                return True
+        bindings_path = self._local_token_agent_path()
+        if not bindings_path.exists():
             return False
-        stored = path.read_text().strip()
-        return secrets.compare_digest(presented, stored)
+        try:
+            data = json.loads(bindings_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return False
+        presented_hash = hashlib.sha256(presented.encode()).hexdigest()
+        for stored_hash in data:
+            if secrets.compare_digest(presented_hash, stored_hash):
+                return True
+        return False
+
+    def mint_agent_local_token(self, agent_name: str) -> str:
+        """Mint a distinct local token for *agent_name* and bind it.
+
+        Returns the new token. The caller is responsible for delivering it to
+        the agent (e.g. via ``TAOS_LOCAL_TOKEN`` env var at deploy time).
+        """
+        token = secrets.token_urlsafe(32)
+        self.bind_local_token_agent(token, agent_name)
+        return token
 
     def _local_token_agent_path(self) -> Path:
         return self.data_dir / ".auth_local_token_bindings.json"
