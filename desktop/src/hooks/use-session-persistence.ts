@@ -97,8 +97,7 @@ export function useSessionPersistence() {
       .then((data: { pinned?: string[]; iconSize?: string; position?: string }) => {
         if (data.pinned && Array.isArray(data.pinned)) {
           const resolved = data.pinned
-            .map((id) => resolvePinnedId(id))
-            .filter((id): id is string => id !== undefined);
+            .map((id) => resolvePinnedId(id) ?? id);
           useDockStore.getState().reorder(resolved);
         }
         if (data.iconSize === "small" || data.iconSize === "medium" || data.iconSize === "large") {
