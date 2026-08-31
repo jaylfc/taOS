@@ -567,6 +567,10 @@ async def client(app, tmp_data_dir):
     if coding_session_store._db is not None:
         await coding_session_store.close()
     await coding_session_store.init()
+    container_request_store = app.state.container_request_store
+    if container_request_store._db is not None:
+        await container_request_store.close()
+    await container_request_store.init()
     app.state.projects_root.mkdir(parents=True, exist_ok=True)
     canvas_store = app.state.canvas_store
     if canvas_store._db is not None:

@@ -418,6 +418,9 @@ def register_all_routers(app):
     from tinyagentos.routes.agent_images import router as agent_images_router
     app.include_router(agent_images_router, dependencies=_csrf)
 
+    from tinyagentos.routes.container_requests import router as container_requests_router
+    app.include_router(container_requests_router, dependencies=_csrf)
+
     from tinyagentos.routes.notes import router as notes_router
     app.include_router(notes_router, dependencies=_csrf)
 
