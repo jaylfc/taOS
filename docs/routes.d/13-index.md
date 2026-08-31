@@ -20,3 +20,4 @@ Run `python3 scripts/build-routes-doc.py` to compile these into `docs/routes.md`
 | `10-cluster-admin.md` | Cluster node revoke, block and unblock (admin-only) |
 | `11-select-decision.md` | Answering a select decision with free text (`other_value`) |
 | `12-share-routes.md` | User resource sharing (share routes) |
+| `14-agent-desktop.md` | Agent desktop lifecycle (install, start, stop, status) |
