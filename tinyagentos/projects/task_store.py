@@ -80,6 +80,20 @@ WHERE t.status = 'open'
         AND r.kind = 'blocks'
         AND bt.status NOT IN ('closed', 'cancelled')
   );
+
+CREATE TABLE IF NOT EXISTS task_checklist_items (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES project_tasks(id),
+    text TEXT NOT NULL DEFAULT '',
+    done INTEGER NOT NULL DEFAULT 0,
+    verified INTEGER NOT NULL DEFAULT 0,
+    reported INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_checklist_task
+  ON task_checklist_items(task_id, archived, done);
 """
 
 _TASK_JSON_FIELDS = ("labels",)
@@ -92,6 +106,16 @@ def _row_to_task(row, description) -> dict:
         if f in t and t[f] is not None:
             t[f] = json.loads(t[f])
     return t
+
+
+def _row_to_checklist_item(row, description) -> dict:
+    keys = [d[0] for d in description]
+    c = dict(zip(keys, row))
+    c["done"] = bool(c.get("done", 0))
+    c["verified"] = bool(c.get("verified", 0))
+    c["reported"] = bool(c.get("reported", 0))
+    c["archived"] = bool(c.get("archived", 0))
+    return c
 
 
 # Sentinels for update_task's element_id:
@@ -709,3 +733,113 @@ class ProjectTaskStore(BaseStore):
             rows = await cur.fetchall()
             keys = [d[0] for d in cur.description]
         return [dict(zip(keys, r)) for r in rows]
+
+    # ------------------------------------------------------------------ checklist items
+
+    async def create_checklist_item(
+        self,
+        task_id: str,
+        text: str,
+        created_by: str,
+    ) -> dict:
+        cid = new_id("cki")
+        now = time.time()
+        await self._db.execute(
+            """INSERT INTO task_checklist_items
+               (id, task_id, text, done, verified, reported, archived, created_at, updated_at)
+               VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?)""",
+            (cid, task_id, text, now, now),
+        )
+        await self._db.commit()
+        cur = await self._db.execute(
+            "SELECT * FROM task_checklist_items WHERE id = ?", (cid,)
+        )
+        row = await cur.fetchone()
+        desc = cur.description
+        item = _row_to_checklist_item(row, desc)
+        task = await self.get_task(task_id)
+        project_id = task["project_id"] if task is not None else ""
+        await self._publish(project_id, "checklist.item.created", {"id": item["id"], "text": item["text"], "task_id": task_id})
+        return item
+
+    async def list_checklist_items(
+        self,
+        task_id: str,
+        *,
+        include_archived: bool = False,
+    ) -> list[dict]:
+        conds = ["task_id = ?"]
+        params: list = [task_id]
+        if not include_archived:
+            conds.append("archived = 0")
+        sql = f"SELECT * FROM task_checklist_items WHERE {' AND '.join(conds)} ORDER BY created_at ASC"
+        async with self._db.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+            desc = cur.description
+        return [_row_to_checklist_item(r, desc) for r in rows]
+
+    async def update_checklist_item(
+        self,
+        item_id: str,
+        *,
+        done: bool | None = None,
+        verified: bool | None = None,
+        reported: bool | None = None,
+    ) -> dict | None:
+        now = time.time()
+        candidates: list[tuple[str, object]] = []
+        if done is not None:
+            candidates.append(("done", 1 if done else 0))
+        if verified is not None:
+            candidates.append(("verified", 1 if verified else 0))
+        if reported is not None:
+            candidates.append(("reported", 1 if reported else 0))
+        if not candidates:
+            return await self.get_checklist_item(item_id)
+        sets: list[str] = []
+        params: list = []
+        for col, val in candidates:
+            sets.append(f"{col} = ?")
+            params.append(val)
+        sets.append("updated_at = ?")
+        params.append(now)
+        params.append(item_id)
+        await self._db.execute(
+            f"UPDATE task_checklist_items SET {', '.join(sets)} WHERE id = ?", params
+        )
+        await self._db.commit()
+        return await self.get_checklist_item(item_id)
+
+    async def archive_checklist_item(self, item_id: str, reported_by: str) -> dict:
+        """Archive a checklist item. Only valid if verified=1 and reported=1.
+
+        Raises ValueError if the item cannot be archived because it lacks
+        verification or a report.
+        """
+        item = await self.get_checklist_item(item_id)
+        if item is None:
+            raise ValueError(f"checklist item not found: {item_id}")
+        if item["verified"] != 1:
+            raise ValueError("item cannot be archived: not verified")
+        if item["reported"] != 1:
+            raise ValueError("item cannot be archived: not reported")
+        now = time.time()
+        await self._db.execute(
+            "UPDATE task_checklist_items SET archived = 1, updated_at = ? WHERE id = ?",
+            (now, item_id),
+        )
+        await self._db.commit()
+        task = await self.get_task(item["task_id"])
+        project_id = task["project_id"] if task is not None else ""
+        await self._publish(project_id, "checklist.item.archived", {"id": item_id, "task_id": item["task_id"], "archived": True})
+        return await self.get_checklist_item(item_id)
+
+    async def get_checklist_item(self, item_id: str) -> dict | None:
+        async with self._db.execute(
+            "SELECT * FROM task_checklist_items WHERE id = ?", (item_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            desc = cur.description
+            return _row_to_checklist_item(row, desc)

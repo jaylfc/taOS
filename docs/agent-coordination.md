@@ -1065,16 +1065,31 @@ session. When you change the allowlist in `tinyagentos/auth_middleware.py`,
 record the change here so the agent-facing surface stays reviewable in one
 place.
 
-Task checklist items (added with the OS-owned objective checklist, #2415):
+Task checklist items (`/api/projects/{project_id}/tasks/{task_id}/checklist-items`)
 
-- `GET /api/projects/{project_id}/tasks/{task_id}/checklist-items` -- list;
-  Bearer-reachable so the handler's `project_tasks_create` scope check runs
-  instead of the middleware refusing 401 at the gate.
-- `POST /api/projects/{project_id}/tasks/{task_id}/checklist-items` -- create;
-  same scope check.
-- `DELETE` and per-item subpaths (`.../checklist-items/{item_id}`) stay
-  session-only: no agent-reachable handler exists, and the allowlist must not
-  widen past list + create.
+Route module `tinyagentos/routes/projects.py`.
+
+- `POST .../checklist-items` takes a JSON body `{"text": "..."}` and creates one
+  item. A missing `text` is a `422`.
+- `GET .../checklist-items` lists items, newest state included. Takes
+  `?include_archived=true`; the default hides archived items.
+- Both answer `404` when the task is not in the named project, so a task id from
+  another project is existence-hiding rather than merely forbidden.
+- Creating an item logs `checklist.item.created` to the project activity feed
+  with the actor, task id, item id and text.
+- Archiving is store-level only and refuses unless the item is both **verified**
+  and **reported**; there is no archive route.
+
+The handlers call `_authorize_task_actor(...)` and accept EITHER a session
+owner/admin OR a project-bound agent's registry JWT. The Bearer allowlist in
+`tinyagentos/auth_middleware.py` now matches both `GET` and `POST .../checklist-items`
+(see `## Agent-token API surface (Bearer allowlist)` above), so the middleware
+gate no longer refuses agent tokens with `401` and the handler scope check now
+runs: `POST` (create) requires the narrower `project_tasks_create` grant, while
+`GET` (list) takes the default `project_tasks` read grant. A `project_tasks`
+worker lane is therefore refused on `POST` (it lacks the create grant, `403`)
+and authorised on `GET`. `tests/test_routes_task_checklist.py` pins this scope
+split directly, not behind an xfail.
 
 Container provisioning request (P1, agent-container-provisioning spec):
 

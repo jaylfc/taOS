@@ -1009,7 +1009,7 @@ async def close_task(
     # Ownership-guard bypass: a card claimed by one agent may still be closed
     # by the project lead (lead_member_id), the project owner (user_id), or a
     # session admin.  The lead is typically an AGENT registry id, so an
-    # admin/owner session caller (a USER id) can never equal it — widen the
+    # admin/owner session caller (a USER id) can never equal it -- widen the
     # bypass to cover all three (issue #2191).
     force = (
         project.get("lead_member_id") == actor_id
@@ -1205,6 +1205,76 @@ class AddCommentIn(_TaskRequestModelMixin, BaseModel):
     # canonical_id. A session caller must still supply it (route enforces).
     author_id: str | None = None
     replies_to_comment_id: str | None = None
+
+
+class CreateChecklistItemIn(BaseModel):
+    text: str
+
+
+# ---------------------------------------------------------------------------
+# Checklist routes
+# ---------------------------------------------------------------------------
+
+@router.post("/api/projects/{project_id}/tasks/{task_id}/checklist-items")
+async def create_checklist_item(
+    project_id: str,
+    task_id: str,
+    payload: CreateChecklistItemIn,
+    request: Request,
+):
+    """Create a checklist item for a task.
+
+    Authorized as session owner/admin or an agent holding
+    ``project_tasks_create`` on this project.
+    """
+    pstore = request.app.state.project_store
+    auth = await _authorize_task_actor(
+        request, pstore, project_id, scope="project_tasks_create"
+    )
+    if isinstance(auth, JSONResponse):
+        return auth
+    actor_id, _is_agent, _project = auth
+    store = request.app.state.project_task_store
+    t = await _require_task_in_project(store, project_id, task_id)
+    if isinstance(t, JSONResponse):
+        return t
+    item = await store.create_checklist_item(
+        task_id=task_id,
+        text=payload.text,
+        created_by=actor_id,
+    )
+    _beads_mark_dirty(request, project_id)
+    await pstore.log_activity(
+        project_id, actor_id, "checklist.item.created", {"task_id": task_id, "item_id": item["id"], "text": item["text"]}
+    )
+    return item
+
+
+@router.get("/api/projects/{project_id}/tasks/{task_id}/checklist-items")
+async def list_checklist_items(
+    project_id: str,
+    task_id: str,
+    request: Request,
+    include_archived: bool = False,
+):
+    """List checklist items for a task.
+
+    By default shows only non-archived items. Set ``include_archived=true``
+    to see all items including archived ones.
+    """
+    pstore = request.app.state.project_store
+    auth = await _authorize_task_actor(request, pstore, project_id)
+    if isinstance(auth, JSONResponse):
+        return auth
+    store = request.app.state.project_task_store
+    guard = await _require_task_in_project(store, project_id, task_id)
+    if isinstance(guard, JSONResponse):
+        return guard
+    items = await store.list_checklist_items(
+        task_id=task_id,
+        include_archived=include_archived,
+    )
+    return {"items": items}
 
 
 @router.post("/api/projects/{project_id}/tasks/{task_id}/comments")

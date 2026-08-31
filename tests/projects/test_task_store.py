@@ -1,6 +1,7 @@
 import pytest
 import pytest_asyncio
 
+from tinyagentos.projects.events import ProjectEventBroker
 from tinyagentos.projects.task_store import ProjectTaskStore
 
 
@@ -9,6 +10,15 @@ async def store(tmp_path):
     s = ProjectTaskStore(tmp_path / "tasks.db")
     await s.init()
     yield s
+    await s.close()
+
+
+@pytest_asyncio.fixture
+async def store_with_broker(tmp_path):
+    broker = ProjectEventBroker()
+    s = ProjectTaskStore(tmp_path / "tasks.db", broker=broker)
+    await s.init()
+    yield s, broker
     await s.close()
 
 
@@ -371,6 +381,100 @@ async def test_get_task_context_project_falls_back_without_project_store(store):
     t = await store.create_task(project_id="p", title="T", created_by="u")
     ctx = await store.get_task_context(t["id"])
     assert ctx["project"]["id"] == "p"
+
+
+# ---------------------------------------------------------------------------
+# Checklist item tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_create_checklist_item(store):
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="First item", created_by="u")
+    assert item["id"].startswith("cki-")
+    assert item["text"] == "First item"
+    assert item["done"] is False
+    assert item["verified"] is False
+    assert item["reported"] is False
+    assert item["archived"] is False
+
+    items = await store.list_checklist_items(task_id=t["id"])
+    assert len(items) == 1
+    assert items[0]["id"] == item["id"]
+
+    all_items = await store.list_checklist_items(task_id=t["id"], include_archived=True)
+    assert len(all_items) == 1
+
+
+@pytest.mark.asyncio
+async def test_cannot_archive_unverified(store):
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Unverified item", created_by="u")
+    with pytest.raises(ValueError, match="item cannot be archived: not verified"):
+        await store.archive_checklist_item(item_id=item["id"], reported_by="u")
+
+
+@pytest.mark.asyncio
+async def test_cannot_archive_unreported(store):
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Unreported item", created_by="u")
+    await store.update_checklist_item(item_id=item["id"], verified=True)
+    with pytest.raises(ValueError, match="item cannot be archived: not reported"):
+        await store.archive_checklist_item(item_id=item["id"], reported_by="u")
+
+
+@pytest.mark.asyncio
+async def test_can_archive_after_verification_and_report(store):
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Complete item", created_by="u")
+    await store.update_checklist_item(item_id=item["id"], verified=True, reported=True)
+    archived = await store.archive_checklist_item(item_id=item["id"], reported_by="u")
+    assert archived["archived"] is True
+    all_items = await store.list_checklist_items(task_id=t["id"], include_archived=True)
+    assert any(i["id"] == item["id"] for i in all_items)
+
+
+@pytest.mark.asyncio
+async def test_survives_agent_restart(store):
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Persistent item", created_by="u")
+    items = await store.list_checklist_items(task_id=t["id"])
+    assert len(items) == 1
+    assert items[0]["text"] == "Persistent item"
+    assert items[0]["archived"] is False
+    all_items = await store.list_checklist_items(task_id=t["id"], include_archived=True)
+    assert len(all_items) == 1
+
+
+@pytest.mark.asyncio
+async def test_checklist_item_event_delivered_at_project_scope(store_with_broker):
+    """Defect 1: checklist.item.created must be published under the PROJECT id
+    so project-scoped subscribers receive it.
+
+    On the BASE branch the event is published under the task_id, so the project
+    subscription never fires and this test fails.
+    """
+    store, broker = store_with_broker
+    t = await store.create_task(project_id="proj-red", title="Objective", created_by="u")
+    queue = await broker.subscribe("proj-red")
+    await store.create_checklist_item(task_id=t["id"], text="step one", created_by="u")
+    collected = []
+    while not queue.empty():
+        collected.append(queue.get_nowait())
+    checklist_events = [e for e in collected if e.kind == "checklist.item.created"]
+    assert checklist_events, (
+        f"expected checklist.item.created at project scope, got: {[e.kind for e in collected]}"
+    )
+    assert checklist_events[0].payload["task_id"] == t["id"]
+
+
+@pytest.mark.asyncio
+async def test_archive_nonexistent_item_raises_value_error(store):
+    """Defect 2: archiving a missing checklist item should raise a clean
+    ValueError, not a TypeError from indexing None.
+    """
+    with pytest.raises(ValueError, match="not found"):
+        await store.archive_checklist_item(item_id="cki-nonexistent", reported_by="u")
 
 
 # ── close_task ownership guard ──────────────────────────────────────────────
