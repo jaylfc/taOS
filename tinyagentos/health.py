@@ -81,7 +81,7 @@ class HealthMonitor:
                 # Notify on state changes only
                 current = result["status"]
                 prev = self._backend_states.get(backend["name"])
-                if prev is not None and prev != current and self.notifications:
+                if self.notifications is not None and prev is not None and prev != current:
                     if current != "ok":
                         await self.notifications.emit_event(
                             "backend.down",

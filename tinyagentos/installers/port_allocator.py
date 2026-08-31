@@ -61,6 +61,13 @@ _POOL_START = 30_000
 _POOL_END   = 40_000
 
 
+def reset_pool_boundaries() -> None:
+    """Reset *_POOL_START and *_POOL_END to their default values (30_000 / 40_000)."""
+    global _POOL_START, _POOL_END
+    _POOL_START = 30_000
+    _POOL_END = 40_000
+
+
 def _is_port_free(port: int) -> bool:
     """Return True if no process is currently bound to *port* on 0.0.0.0."""
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:

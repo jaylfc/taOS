@@ -9,8 +9,7 @@ import time
 from collections import deque
 
 
-def _now() -> float:
-    return time.monotonic()
+_now = time.monotonic
 
 
 class GroupPolicy:
