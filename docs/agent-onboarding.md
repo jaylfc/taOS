@@ -2,7 +2,7 @@
 
 **Why this exists.** Work on taOS runs across rate-limit-prone agents on different platforms (Claude Code, Cursor, Codex, web, etc.). When one hits a limit, another picks up. The failure mode to prevent: an incoming agent acting on **stale knowledge**: re-doing finished work, missing in-flight tasks, or clobbering a branch. This playbook + GitHub issues make the project's state **durable and platform-independent** so a handoff never loses work.
 
-The golden rule: **durable state lives in five committed/hosted places, not in any one agent's memory**: (1) GitHub issues, (2) `docs/agent-onboarding.md`, (3) the A2A bus, (4) A2A `taos-progress`, (5) @taOS Pi memory. If it isn't in one of those, the next agent can't see it.
+The golden rule: **durable state lives in the project board `prj-5y722y` (canonical task list), with `docs/agent-onboarding.md`, the A2A bus, A2A `taos-progress`, and @taOS Pi memory as auxiliary stores. GitHub issues are secondary and always linked from the board.**
 
 ---
 
@@ -21,7 +21,7 @@ The golden rule: **durable state lives in five committed/hosted places, not in a
 ---
 ## Identity & non-negotiable rules
 
-- **You are @taOS on the A2A bus.** Seats post under their own registry identity. The bus enforces `token sub == from` whenever a Bearer token is present, so posting as `@taOS` produces 403s or unattributable posts.
+- **@taOS is the project identity.** Every post uses the current seat's registry identity. The bus enforces `token sub == from` whenever a Bearer token is present, so posting as `@taOS` from outside a seat context produces 403s or unattributable posts.
 - **Git identity:** `user.name=jaylfc`, `user.email=jaylfc25@gmail.com`. ALL activity appears as jaylfc.
 - **No AI attribution** anywhere: commits, PR bodies, issue comments, A2A. No "Co-Authored-By: Claude", no "Generated with...". Public repos and the bus must read as fully human-authored.
 - **Voice (anything posted publicly as Jay: commits, PRs, issues, A2A, docs, web copy): NO em dashes, ever.** Use commas, colons, parentheses, or two sentences instead. Strip the usual AI tells (no "it's not just X, it's Y", no "delve", no breathless hedging). For user-facing prose (release notes, web copy, replies), run it through the `content-humanizer` skill before posting. Keep internal terse-but-human.
@@ -43,15 +43,15 @@ If the limit hits before you can do this, the incoming agent recovers from: last
 
 ---
 
-## The freshness cron (keeps the durable layer honest)
+## Freshness cron held under fleet HOLD (2026-08-31)
 
-An hourly sweep (session-scoped on the active agent; the Pi's :00/:30 cron is the durable backstop) re-checks README / docs / memory against merged commits and fixes trivial drift, opens PRs for bigger rewrites. Its job is to ensure steps above never read stale.
+The hourly sweep is under fleet HOLD (Jay, 2026-08-24, reaffirmed 2026-08-30). Crons stay stopped; no re‑arm. The durable layer is swept manually when needed. The Pi's :00/:30 cron remains the durable backstop only as a reference point.
 
 ---
 
 ## Task hygiene: so nothing is lost
 
-- **Every feature idea, bug, or TODO -> a GitHub issue immediately.** Ideas in chat or memory evaporate across a handoff; issues don't. Label them (`feature`, `bug`, `security`, `docs`, `infra`).
+- **Every feature idea, bug, or TODO becomes a card on the project board `prj-5y722y` first.** GitHub issues are auxiliary and referenced from the board. Ideas in chat or memory evaporate across a handoff; the board persists. Label board cards (`feature`, `bug`, `security`, `docs`, `infra`).
 - **One issue = one pickup-able unit** with enough context that a cold agent can start it.
 - The board links to issues; it does not duplicate them.
 

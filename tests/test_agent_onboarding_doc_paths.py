@@ -17,8 +17,6 @@ def _extract_doc_paths(text: str) -> set[str]:
             continue
         if "<" in candidate or ">" in candidate:
             continue
-        if "/" not in candidate:
-            continue
         paths.add(candidate)
     return paths
 
@@ -36,3 +34,21 @@ class TestAgentOnboardingDocPaths:
     def test_does_not_reference_itself_as_agent_handoff(self):
         text = ONBOARDING.read_text(encoding="utf-8")
         assert "docs/AGENT_HANDOFF.md" not in text
+
+    def test_phantom_root_level_md_is_caught(self):
+        """Mutation test: a phantom root-level .md reference must FAIL the test.
+
+        After removing the '/' filter, a doc text referencing a phantom
+        root-level .md should extract the path and report it as missing,
+        causing this test to fail if such a reference exists in the doc.
+        """
+        text = "See `PHANTOM-DOES-NOT-EXIST.md` for details."
+        paths = _extract_doc_paths(text)
+        # Without the "/" filter, root-level .md is now extracted
+        assert "PHANTOM-DOES-NOT-EXIST.md" in paths, (
+            f"Root-level .md should be extracted after filter removal, got: {paths}"
+        )
+        missing = [p for p in sorted(paths) if not (REPO_ROOT / p).exists()]
+        assert missing, (
+            f"Phantom root-level .md should be reported as missing, got extracted: {paths}"
+        )
