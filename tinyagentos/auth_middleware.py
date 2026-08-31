@@ -55,10 +55,24 @@ _OBSERVATORY_PATHS = frozenset({
     "/api/observatory/fleet",
     "/api/observatory/wake-budget",
 })
+# Container provisioning request: an agent may POST its own registry JWT
+# (identity verified by check_agent_identity in the route; no scope grant
+# required since any active agent may request its own container). The route
+# resolves the canonical_id from the token and never trusts a body field for
+# identity, so a token cannot bill another agent's quota.
+_CONTAINER_REQUEST_PATHS = frozenset({
+    "/api/containers/requests",
+})
 # Every path that accepts a registry JWT in place of the admin session.  The
 # passthrough is allowlisted to exactly these paths -- a registry JWT must never
 # authenticate any other route (no skeleton key).
-_AGENT_TOKEN_PATHS = _REGISTRY_FEED_PATHS | _A2A_BUS_READ_PATHS | _A2A_BUS_WRITE_PATHS | _OBSERVATORY_PATHS
+_AGENT_TOKEN_PATHS = (
+    _REGISTRY_FEED_PATHS
+    | _A2A_BUS_READ_PATHS
+    | _A2A_BUS_WRITE_PATHS
+    | _OBSERVATORY_PATHS
+    | _CONTAINER_REQUEST_PATHS
+)
 
 # Project kanban routes an agent may reach with its own registry JWT (scope
 # project_tasks, verified + project-bound by the route).  These are DYNAMIC

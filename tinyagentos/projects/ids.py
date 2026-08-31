@@ -1,7 +1,7 @@
 from __future__ import annotations
 import secrets
 
-ID_PREFIXES = ("prj", "tsk", "cmt", "rel", "cve", "dec", "doc", "ent", "lst", "rev", "cs", "rtn", "elm", "note", "str")
+ID_PREFIXES = ("prj", "tsk", "cmt", "rel", "cve", "dec", "doc", "ent", "lst", "rev", "cs", "rtn", "elm", "note", "str", "crq")
 _ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
 
 

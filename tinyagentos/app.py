@@ -456,6 +456,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.coding_sessions.store import CodingSessionStore
     coding_session_store = CodingSessionStore(data_dir / "coding_sessions.db")
     coding_launcher = CodingSessionLauncher()
+
+    from tinyagentos.container_requests_store import ContainerRequestStore
+    container_request_store = ContainerRequestStore(data_dir / "container_requests.db")
     projects_root = data_dir / "projects"
     chat_hub = ChatHub()
     canvas_store = CanvasStore(data_dir / "canvas.db")
@@ -654,6 +657,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.todo_store = todo_store
         await coding_session_store.init()
         app.state.coding_launcher = coding_launcher
+        await container_request_store.init()
         projects_root.mkdir(parents=True, exist_ok=True)
         await canvas_store.init()
         await desktop_settings.init()
@@ -1731,6 +1735,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.shared_docs_store = shared_docs_store
     app.state.todo_store = todo_store
     app.state.coding_session_store = coding_session_store
+    app.state.container_request_store = container_request_store
+    from tinyagentos.containers.provisioning_policy import PolicyConfig, ProvisioningPolicy
+    app.state.provisioning_policy = ProvisioningPolicy(
+        PolicyConfig.from_app_config(config)
+    )
     app.state.beads_bridge = None
     app.state.canvas_snapshotter = None
     projects_root.mkdir(parents=True, exist_ok=True)
