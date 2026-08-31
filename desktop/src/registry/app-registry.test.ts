@@ -230,14 +230,14 @@ describe("APP_REDIRECTS", () => {
     expect(typeof APP_REDIRECTS).toBe("object");
   });
 
-  it("redirects notification-archive to the notifications app", () => {
-    expect(APP_REDIRECTS["notification-archive"]).toEqual({ appId: "notifications" });
+  it("redirects notification-archive to the notifications app with section archive", () => {
+    expect(APP_REDIRECTS["notification-archive"]).toEqual({ appId: "notifications", section: "archive" });
   });
 });
 
 describe("resolvePinnedId", () => {
   it("returns the id for a valid app", () => {
-    expect(resolvePinnedId("messages")).toBe("messages");
+    expect(resolvePinnedId("messages")).toEqual({ id: "messages" });
   });
 
   it("returns undefined for an unknown id", () => {
@@ -246,7 +246,7 @@ describe("resolvePinnedId", () => {
 
   it("resolves a redirect to the target app id", () => {
     APP_REDIRECTS["legacy-id"] = { appId: "agents" };
-    expect(resolvePinnedId("legacy-id")).toBe("agents");
+    expect(resolvePinnedId("legacy-id")).toEqual({ id: "agents" });
     delete APP_REDIRECTS["legacy-id"];
   });
 
@@ -256,8 +256,8 @@ describe("resolvePinnedId", () => {
     delete APP_REDIRECTS["legacy-id"];
   });
 
-  it("resolves notification-archive to notifications via APP_REDIRECTS", () => {
-    expect(resolvePinnedId("notification-archive")).toBe("notifications");
+  it("resolves notification-archive to notifications with section archive via APP_REDIRECTS", () => {
+    expect(resolvePinnedId("notification-archive")).toEqual({ id: "notifications", section: "archive" });
   });
 });
 

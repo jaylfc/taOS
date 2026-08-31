@@ -1,7 +1,7 @@
 import { useDockStore } from "@/stores/dock-store";
 import { useProcessStore } from "@/stores/process-store";
 import { useThemeStore } from "@/stores/theme-store";
-import { getApp } from "@/registry/app-registry";
+import { getApp, resolvePinnedId } from "@/registry/app-registry";
 import { DOCK_VARIANTS, type DockVariantId } from "./dock/DockVariants";
 
 interface Props {
@@ -25,9 +25,12 @@ export function Dock({ onLaunchpadOpen }: Props) {
         focusWindow(existing.id);
       }
     } else {
-      const app = getApp(appId);
+      const resolved = resolvePinnedId(appId);
+      const targetId = resolved?.id ?? appId;
+      const app = getApp(targetId);
       if (app) {
-        openWindow(appId, app.defaultSize);
+        const props = resolved?.section ? { section: resolved.section } : undefined;
+        openWindow(targetId, app.defaultSize, props);
       }
     }
   };
