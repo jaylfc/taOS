@@ -40,14 +40,36 @@ class NullApnsSender:
 
 
 def build_apns_payload(
-    *, title: str, body: str, data: dict | None = None, content_available: bool = False
+    *,
+    title: str,
+    body: str,
+    data: dict | None = None,
+    content_available: bool = False,
+    category: str | None = None,
+    actions: list[dict] | None = None,
+    image: str | None = None,
 ) -> dict:
     aps: dict = {}
     if title or body:
         aps["alert"] = {"title": title, "body": body}
     if content_available:
         aps["content-available"] = 1
+    # Apple does not honour a JSON `actions` array; the native shell (tsk-cf7wzc)
+    # registers a UNNotificationCategory whose identifier matches the `category`
+    # below. Buttons come from the registered category, and tapping one fires a
+    # UNUserNotificationCenterDelegate callback the shell routes back to the
+    # controller's Decisions answer route.
+    if category:
+        aps["category"] = category
+    # Any rich attachment (image) or action set requires the notification service
+    # extension to mutate the payload before display: download the image, attach
+    # UNNotificationAttachment, and surface the action buttons. APNs only allows
+    # that mutation when `mutable-content` is set.
+    if (image or actions) and not content_available:
+        aps["mutable-content"] = 1
     payload = {"aps": aps}
+    if image:
+        payload["image"] = image
     if data:
         payload.update(data)
     return payload

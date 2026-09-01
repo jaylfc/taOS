@@ -107,3 +107,53 @@ async def test_http_sender_does_not_close_injected_client():
 async def test_null_sender_aclose_is_noop():
     # NullApnsSender exposes a no-op aclose so shutdown can call it uniformly.
     assert await NullApnsSender().aclose() is None
+
+
+# ---------------------------------------------------------------------------
+# tsk-cf7wzc: image + actions wiring for the native decision shell
+# ---------------------------------------------------------------------------
+
+
+def test_build_payload_sets_category_and_mutable_content_for_actions():
+    # Approve/reject/add-note decisions must hit the iOS shell's
+    # UNNotificationCategory and let the service extension attach an image, so
+    # aps.category + aps.mutable-content must both be set.
+    payload = build_apns_payload(
+        title="Decide",
+        body="deploy?",
+        actions=[{"id": "approve", "label": "Approve"}],
+        category="DECISION_APPROVE_DENY",
+    )
+    assert payload["aps"]["category"] == "DECISION_APPROVE_DENY"
+    assert payload["aps"]["mutable-content"] == 1
+
+
+def test_build_payload_sets_mutable_content_when_image_present():
+    # Rich attachments need the notification service extension to download the
+    # image and attach it; APNs only allows that mutation when mutable-content
+    # is set, even with no actions.
+    payload = build_apns_payload(
+        title="Deploy",
+        body="queued",
+        image="https://cdn.example.com/run/42.png",
+    )
+    assert payload["aps"]["mutable-content"] == 1
+    assert payload["image"] == "https://cdn.example.com/run/42.png"
+
+
+def test_build_payload_omits_mutable_content_for_plain_alert():
+    # A plain alert with no image and no actions must not set mutable-content
+    # so the system shows the unmodified payload.
+    payload = build_apns_payload(title="Hi", body="there")
+    assert "mutable-content" not in payload["aps"]
+    assert "image" not in payload
+    assert "category" not in payload["aps"]
+
+
+def test_build_payload_does_not_override_content_available_for_mutable_content():
+    # A silent push (content-available) that ALSO carries an image is fine; we
+    # must not clobber content-available by enabling mutable-content on top.
+    payload = build_apns_payload(
+        title="", body="", content_available=True, image="https://x.test/i.png",
+    )
+    assert payload["aps"]["content-available"] == 1

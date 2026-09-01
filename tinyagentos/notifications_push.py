@@ -194,9 +194,12 @@ def _build_payload(row: dict) -> dict:
     JSON data, else the desktop shell. ``tag`` collapses re-notifies for the
     same source+id so a newer push replaces the older banner.
 
-    Routing fields (``source``, ``id``, and ``target`` when present) are copied
-    into the inner ``data`` dict so the service worker can route on them. The
-    SW only reads ``event.notification.data``, not the top-level payload.
+    Routing fields (``source``, ``id``, ``image`` (when present), and ``target``
+    when present) are copied into the inner ``data`` dict so the service worker
+    can route on them. The SW only reads ``event.notification.data``, not the
+    top-level payload. ``image`` is the standard Notification API field for a
+    rich attachment; non-native clients that ignore it still get a valid text
+    notification.
     """
     data = row.get("data") if isinstance(row.get("data"), dict) else {}
     url = _safe_url(data.get("url"))
@@ -205,16 +208,22 @@ def _build_payload(row: dict) -> dict:
         payload_data["source"] = row["source"]
     if "id" in row:
         payload_data["id"] = row["id"]
+    image = data.get("image")
+    if isinstance(image, str) and image:
+        payload_data["image"] = image
     target = data.get("target")
     if isinstance(target, dict):
         payload_data["target"] = target
-    return {
+    payload: dict = {
         "title": row.get("title") or "taOS",
         "body": row.get("message") or "",
         "tag": f"{row.get('source', 'system')}:{row.get('id', '')}",
         "source": row.get("source", "system"),
         "data": payload_data,
     }
+    if isinstance(image, str) and image:
+        payload["image"] = image
+    return payload
 
 
 def _vapid_signing_key(private_pem: str) -> str:
@@ -332,20 +341,37 @@ def _build_device_push_payload(row: dict) -> tuple[dict, list[dict] | None]:
     body = row.get("message") or ""
     data = row.get("data") if isinstance(row.get("data"), dict) else {}
     actions: list[dict] | None = None
+    category: str | None = None
     decision_type = data.get("decision_type")
     if decision_type == "approve_deny":
-        actions = [{"id": "approve", "label": "Approve"}, {"id": "deny", "label": "Deny"}]
+        # The native shell maps a category id to a registered UNNotificationCategory;
+        # tsk-cf7wzc pins the button set to approve / reject / add-note on both
+        # iPhone and Apple Watch.
+        category = "DECISION_APPROVE_DENY"
+        actions = [
+            {"id": "approve", "label": "Approve"},
+            {"id": "reject", "label": "Reject"},
+            {"id": "add_note", "label": "Add note"},
+        ]
     elif decision_type in ("single_select", "multi_select"):
+        category = "DECISION_OPTIONS"
         opts = data.get("options") or []
         actions = [{"id": o.get("value", o.get("label", "")), "label": o.get("label", "")} for o in opts]
     elif decision_type == "free_text":
+        category = "DECISION_FREE_TEXT"
         actions = [{"id": "quick_reply", "label": "Reply"}]
+    payload_data = dict(data)
+    image = data.get("image")
+    if isinstance(image, str) and image:
+        payload_data["image"] = image
     if actions:
-        payload_data = dict(data)
         payload_data["actions"] = actions
-    else:
-        payload_data = data
-    return {"title": title, "body": body, "data": payload_data}, actions
+    payload: dict = {"title": title, "body": body, "data": payload_data}
+    if category:
+        payload["category"] = category
+    if isinstance(image, str) and image:
+        payload["image"] = image
+    return payload, actions
 
 
 async def _send_one_device(
@@ -366,6 +392,9 @@ async def _send_one_device(
                 title=payload["title"],
                 body=payload["body"],
                 data=payload.get("data"),
+                category=payload.get("category"),
+                actions=actions,
+                image=payload.get("image"),
             )
             ok = await apns_sender.send(push_token, apns_payload)
         elif platform == "android":
@@ -375,6 +404,7 @@ async def _send_one_device(
                 body=payload["body"],
                 data=payload.get("data"),
                 actions=actions,
+                image=payload.get("image"),
             )
             ok = await up_sender.send(push_token, up_payload)
         else:
