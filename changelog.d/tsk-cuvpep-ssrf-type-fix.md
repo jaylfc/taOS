@@ -1,0 +1,2 @@
+### Fixed
+- `deliver_handshake` now validates each peer endpoint URL through the shared SSRF guard (`validate_url_or_raise`) before POSTing, blocking loopback, link-local, multicast, CGNAT (100.64/10), and RFC1918 targets. It also accepts the normalized dict endpoint form `{"kind", "url", "priority"}` stored by `establish_peer_link`, fixing the `AttributeError` on `.rstrip` that fires when the first caller reads endpoints via `get_peer_link`.

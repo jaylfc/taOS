@@ -35,7 +35,7 @@ class MeshtasticConnector:
     async def start(self) -> None:
         """No blocking radio I/O on start; the link is driven per-frame.
 
-        A real deployment opens the Meshtatic serial or BLE link here, but that
+        A real deployment opens the Meshtastic serial or BLE link here, but that
         is deferred to the hardware phase (see tsk-ha5iau). start() must not
         block so the channel-hub connect path can stand up the connector in
         tests without hardware.

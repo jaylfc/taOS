@@ -25,11 +25,13 @@ export interface AppManifest {
    */
   pwa?: boolean;
   /**
-   * Launcher tiering (issue #2143). Controls which apps the desktop launcher
-   * (launchpad, search) surfaces:
+   * Launcher tiering (issue #2143). Controls which apps the desktop launchpad
+   * (the default surface) surfaces, distinct from the searchable selection.
+   * The search palette uses a separate predicate (see `getSearchableApps`):
+   * default-surface apps plus installed optional apps plus tier-3 apps.
    *   1 - always shown (default for apps without an explicit tier)
    *   2 - shown, grouped under `group` (e.g. "System")
-   *   3 - hidden from launcher (lives in Settings)
+   *   3 - hidden from launcher (lives in Settings) but searchable
    *   4 - file handler (hidden from launcher, openable by id)
    *   5 - Store-optional, off by default
    */
@@ -164,12 +166,47 @@ export const APP_REDIRECTS: Record<string, { appId: string }> = {
   "notification-archive": { appId: "notifications" },
 };
 
+/**
+ * Whether an app belongs on the default surface: the desktop launcher's
+ * always-on grid AND the mobile home default grid. This is the single source
+ * of truth for the tier rule that landed in bfc40c1e6 -- reuse it here instead
+ * of hand-rolling a second predicate that can drift:
+ *   tier 1 (default) / 2 - shown on the default surface
+ *   tier 3            - hidden from the default surface, searchable
+ *   tier 4            - file handler, hidden from the default surface
+ *   tier 5            - Store-optional, hidden from the default surface
+ * Optional apps and file handlers are excluded here; optional apps only
+ * surface once installed (see getLaunchableApps).
+ */
+export function isDefaultSurfaceApp(app: AppManifest): boolean {
+  return (
+    !app.optional &&
+    app.handler !== true &&
+    (app.tier === undefined || app.tier <= 2)
+  );
+}
+
+/**
+ * Apps the desktop search should surface: every always-on app, installed
+ * optional apps, and tier-3 registry apps (providers, mcp, channels,
+ * notification-archive). Tier-3 apps remain hidden from the launcher grids
+ * and mobile home default surface; they are reachable here via search and
+ * still openable by direct id.
+ */
+export function getSearchableApps(installedOptional: Set<string>): AppManifest[] {
+  return getAllApps().filter(
+    (a) =>
+      a.optional
+        ? installedOptional.has(a.id)
+        : (isDefaultSurfaceApp(a) || a.tier === 3),
+  );
+}
+
 export function getLaunchableApps(installedOptional: Set<string>): AppManifest[] {
   return getAllApps().filter(
     (a) =>
-      (!a.optional || installedOptional.has(a.id)) &&
-      a.handler !== true &&
-      (a.tier === undefined || a.tier <= 2 || (a.tier === 5 && installedOptional.has(a.id))),
+      isDefaultSurfaceApp(a) ||
+      (a.optional && installedOptional.has(a.id)),
   );
 }
 

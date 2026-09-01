@@ -37,6 +37,13 @@ DEFAULT_CONFIG = {
     "memory_url": "http://localhost:7900",
     "webhooks": [],
     "wake_budget": {"global_default": 2, "per_agent": {}, "per_project": {}},
+    "container_provisioning": {
+        "quota": 2,
+        "threshold": 5,
+        "per_agent_quota": {},
+        "per_agent_threshold": {},
+        "default_image": "images:debian/bookworm",
+    },
 }
 
 _config_lock = asyncio.Lock()
@@ -63,6 +70,7 @@ class AppConfig:
     archive: dict = field(default_factory=lambda: DEFAULT_ARCHIVE_CONFIG.copy())
     memory_url: str = "http://localhost:7900"
     wake_budget: dict = field(default_factory=lambda: copy.deepcopy(DEFAULT_CONFIG["wake_budget"]))
+    container_provisioning: dict = field(default_factory=lambda: copy.deepcopy(DEFAULT_CONFIG["container_provisioning"]))
     # Locally-hosted taOSmd deployment hooks for /api/settings/update: the git
     # checkout the running service imports from, and the command that restarts
     # it (e.g. "sudo systemctl restart taosmd"). Both empty on installs where
