@@ -1091,13 +1091,16 @@ Container provisioning request (P1, agent-container-provisioning spec):
 
 `POST /api/skill-exec/{skill_id}/call` and `GET /api/skill-exec/tools` now
 derive the agent identity from the PRESENTED CREDENTIAL, not from the request
-body. A deployed agent presenting the host local token (`TAOS_LOCAL_TOKEN`) is
-issued a distinct per-agent token at deploy time (`AuthManager.mint_agent_local_token`
-in `tinyagentos/auth.py`; called from `tinyagentos/deployer.py`). The auth
-middleware sets `request.state.agent_name` from that binding, and the route
-rejects any local-token caller whose body claims a different `agent_name` with
-403. Admin sessions are unaffected: a human-driven call may still supply
-`agent_name` in the body.
+body. Each agent is issued a distinct per-agent token at deploy time
+(`AuthManager.mint_agent_local_token` in `tinyagentos/auth.py`; called from
+`tinyagentos/deployer.py`), and that minted token -- not the shared host token
+-- is what lands in the agent's `TAOS_LOCAL_TOKEN`. The auth middleware sets
+`request.state.agent_name` from that binding, and the route rejects any
+bound-token caller whose body claims a different `agent_name` with 403.
+The shared host local token stays unbound: admin/system callers presenting it
+(and admin sessions) may still supply `agent_name` in the body, and agents
+deployed before this change keep the host token until their next redeploy,
+which rotates them onto a bound per-agent token.
 
 Blast radius: `_resolve_agent_workspace`, `_capture_tool_receipt`,
 `_check_execution_policy`, `execute_notes_list_shared_docs`, and the todo tools

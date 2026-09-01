@@ -16,7 +16,7 @@ from typing import Any
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
 from fastapi import HTTPException, Request
-from filelock import FileLock, Timeout
+from filelock import FileLock
 
 from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.shortcuts.capabilities import default_caps_for_admin, default_caps_for_new_user
@@ -1176,7 +1176,7 @@ class AuthManager:
         path = self._local_token_agent_path()
         lock_path = self._local_token_agent_lock_path()
         token_hash = hashlib.sha256(token.encode()).hexdigest()
-        lock = FileLock(str(lock_path))
+        lock = FileLock(str(lock_path), timeout=10)
         with lock:
             if path.exists():
                 try:

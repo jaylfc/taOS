@@ -7,5 +7,6 @@
   remains valid for admin/system callers but is no longer bound to any agent
   name, so an unbound local-token caller falls back to the body-asserted
   behaviour (or is denied where the credential mismatch check applies).
-  `request.state.agent_name` set by the auth middleware is now reliable for all
-  local-token callers, not just skill-exec.
+  `request.state.agent_name` set by the auth middleware is reliable for callers
+  presenting a minted per-agent token; the shared host token and agents
+  deployed before this change (until their next redeploy) remain unbound.
