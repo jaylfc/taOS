@@ -96,7 +96,9 @@ follow-up, not part of this contract.
 | Fits one frame | Transmit as a single `[part 1/1] `-prefixed frame (prefix bytes count against the budget, so the content cutover sits at 237 minus the prefix length, not at 237) |
 | Larger | Chunk into `[part N/M] `-prefixed frames, each <= 237 payload bytes |
 
-Every emitted frame carries the `[part N/M] ` prefix, including single-part replies.
+Every emitted CONTENT frame carries the `[part N/M] ` prefix, including single-part
+replies; notice frames (dropped buttons/images/cards) are transmitted before the content
+parts and carry no prefix.
 Receive-side reassembly is NOT implemented: `handle_incoming` routes each packet as its
 own message. Parts arrive as separate messages; reassembly is a hardware-phase follow-up
 (see section 5), not a promise of this connector.
