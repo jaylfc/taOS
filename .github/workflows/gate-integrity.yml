@@ -12,7 +12,7 @@ name: Gate integrity
 #     script are resolved from the BASE branch, never from the PR head. A PR
 #     editing this workflow or its checker is inert here.
 #   * It does NOT check out or execute PR code. `actions/checkout` is pinned
-#     to `ref: ${{ github.base_ref }}` (the base branch) -- the PR merge ref is
+#     to `ref: ${{ env.BASE_REF }}` (the base branch) -- the PR merge ref is
 #     deliberately never fetched. The base-ref checker then inspects the PR diff
 #     via the GitHub REST API only.
 #   * It fails any PR whose diff touches a protected gate file -- the
@@ -38,6 +38,12 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
     branches: [master, dev]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to inspect for gate-integrity violations"
+        required: true
+        type: number
 
 permissions:
   contents: read
@@ -58,7 +64,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          base=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }} --jq .base.ref)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            pr_number="${{ github.event.inputs.pr_number }}"
+          else
+            pr_number="${{ github.event.pull_request.number }}"
+          fi
+          base=$(gh api repos/${{ github.repository }}/pulls/$pr_number --jq .base.ref)
           if [ -z "$base" ]; then
             echo "::error::Resolved base ref is empty" >&2
             exit 1
@@ -69,10 +80,12 @@ jobs:
       # not the merge ref. Pinning `ref` to base_ref guarantees
       # the base-ref checker (and this workflow) execute from base.
       # The resolve step above sets BASE_REF to the PR's actual base
-      # branch via the GitHub API; github.base_ref is the fallback.
+      # branch via the GitHub API; on `workflow_dispatch` the PR number
+      # comes from the required input and the same gh api call resolves
+      # the real base ref.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ env.BASE_REF || github.base_ref }}
+          ref: ${{ env.BASE_REF }}
           fetch-depth: 1
 
       - uses: actions/setup-python@v7
@@ -84,7 +97,7 @@ jobs:
         # blip never reads as green -- see check_gate_integrity.EXIT_ERROR.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.pull_request.number }}
         run: |
           set -euo pipefail
           python scripts/check_gate_integrity.py "$PR_NUMBER"

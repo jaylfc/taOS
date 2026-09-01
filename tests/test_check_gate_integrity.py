@@ -539,20 +539,26 @@ class TestCoversRealGates:
             " that can change without a re-run is a bypass"
         )
 
-    def test_workflow_dispatch_absent_from_gate(self) -> None:
-        """workflow_dispatch on the gate workflow is a spoofable required check:
-        any write-access actor can dispatch with ref=<own branch> and publish a
-        green check run named 'Gate integrity' against a chosen head SHA (and
-        pr_number is interpolated raw into the run: block, an injection sink since
-        type: number is not enforced on API dispatch). It must not be present."""
+    def test_workflow_dispatch_present_with_required_pr_number(self) -> None:
+        """workflow_dispatch is safe when the checkout ref is resolved from the
+        PR number via `gh api` rather than from the dispatch ref: the base
+        branch is looked up from GitHub, so a dispatcher cannot point the
+        checkout at an arbitrary branch. The required `pr_number` input lets a
+        lead re-run the gate against a specific PR before merge."""
         workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
         spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
         trigger = spec.get("on", spec.get(True))
-        trigger_keys = set(trigger.keys()) if isinstance(trigger, dict) else set()
-        assert "workflow_dispatch" not in trigger_keys, (
-            "gate-integrity.yml must not use workflow_dispatch (spoofable"
-            " required check); re-runs use `gh run rerun` on the original"
-            " event or the `labeled` re-fire"
+        assert "workflow_dispatch" in trigger, (
+            "gate-integrity.yml must include workflow_dispatch so leads can"
+            " re-run the gate manually before merge"
+        )
+        wf_dispatch = trigger["workflow_dispatch"]
+        assert isinstance(wf_dispatch, dict)
+        inputs = wf_dispatch.get("inputs", {})
+        assert "pr_number" in inputs, "workflow_dispatch must accept pr_number input"
+        assert inputs["pr_number"].get("required") is True, (
+            "pr_number input must be required so the resolve step always"
+            " has a value to query"
         )
 
     def test_real_repo_passes_integrity(self) -> None:
@@ -610,12 +616,14 @@ class TestWorkflowDispatchBaseRefStep:
         run = step.get("run", "")
         assert run, "step must have a run block"
 
-        # Substitute GitHub Actions expressions with test values so the
-        # extracted run: block is executable standalone.
         script_text = run
         script_text = script_text.replace("${{ github.repository }}", "jaylfc/taOS")
+        script_text = script_text.replace("${{ github.event_name }}", "pull_request_target")
         script_text = script_text.replace(
             "${{ github.event.pull_request.number }}", "1"
+        )
+        script_text = script_text.replace(
+            "${{ github.event.inputs.pr_number }}", "1"
         )
 
         fake_gh = tmp_path / "gh"
@@ -643,6 +651,60 @@ class TestWorkflowDispatchBaseRefStep:
         assert result.returncode != 0, (
             f"step run block must fail when gh fails; stdout={result.stdout!r} "
             f"stderr={result.stderr!r}"
+        )
+
+    def test_resolve_step_uses_event_appropriate_pr_number(self) -> None:
+        """Mutation guard: the resolve step must read the PR number from
+        github.event.inputs.pr_number on workflow_dispatch and from
+        github.event.pull_request.number on pull_request_target. Reverting
+        to bare github.base_ref (empty on dispatch) would make this fail."""
+        workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        step = _find_step(spec, "Resolve PR base ref")
+        assert step is not None, "step not found in gate-integrity.yml"
+        run = step.get("run", "")
+        assert "github.event.inputs.pr_number" in run, (
+            "resolve step must read pr_number from workflow_dispatch input"
+        )
+        assert "github.event.pull_request.number" in run, (
+            "resolve step must still read pr_number from pull_request_target event"
+        )
+
+    def test_checkout_ref_uses_env_base_ref(self) -> None:
+        """Mutation guard: checkout ref must resolve via env.BASE_REF, not bare
+        github.base_ref. On workflow_dispatch github.base_ref is empty, so
+        reverting to `ref: ${{ github.base_ref }}` would checkout the default
+        branch instead of the PR's actual base."""
+        workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        jobs = spec.get("jobs", spec.get(True, {}).get("jobs", {}))
+        for job in jobs.values():
+            for step in job.get("steps", []):
+                if step.get("uses") == "actions/checkout@v7":
+                    ref = step.get("with", {}).get("ref", "")
+                    assert "env.BASE_REF" in ref, (
+                        f"checkout ref must use env.BASE_REF, got: {ref!r}"
+                    )
+                    return
+        assert False, "actions/checkout@v7 step not found in gate-integrity.yml"
+
+    def test_inspect_step_pr_number_expr_covers_both_events(self) -> None:
+        """The inspect step's PR_NUMBER env var must resolve from the
+        workflow_dispatch input on dispatch and from the pull_request payload
+        on pull_request_target."""
+        workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        step = _find_step(
+            spec, "Inspect PR diff via API for self-editing gates"
+        )
+        assert step is not None, "inspect step not found in gate-integrity.yml"
+        env = step.get("env", {})
+        pr_expr = env.get("PR_NUMBER", "")
+        assert "github.event.inputs.pr_number" in pr_expr, (
+            "PR_NUMBER must read from workflow_dispatch input"
+        )
+        assert "github.event.pull_request.number" in pr_expr, (
+            "PR_NUMBER must still read from pull_request_target payload"
         )
 
 
