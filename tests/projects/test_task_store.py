@@ -431,6 +431,113 @@ async def test_can_archive_after_verification_and_report(store):
 
 
 @pytest.mark.asyncio
+async def test_survives_agent_restart(store):
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Persistent item", created_by="u")
+    items = await store.list_checklist_items(task_id=t["id"])
+    assert len(items) == 1
+    assert items[0]["text"] == "Persistent item"
+    assert items[0]["archived"] is False
+    all_items = await store.list_checklist_items(task_id=t["id"], include_archived=True)
+    assert len(all_items) == 1
+
+
+@pytest.mark.asyncio
+async def test_checklist_item_event_delivered_at_project_scope(store_with_broker):
+    """Defect 1: checklist.item.created must be published under the PROJECT id
+    so project-scoped subscribers receive it.
+
+    On the BASE branch the event is published under the task_id, so the project
+    subscription never fires and this test fails.
+    """
+    store, broker = store_with_broker
+    t = await store.create_task(project_id="proj-red", title="Objective", created_by="u")
+    queue = await broker.subscribe("proj-red")
+    await store.create_checklist_item(task_id=t["id"], text="step one", created_by="u")
+    collected = []
+    while not queue.empty():
+        collected.append(queue.get_nowait())
+    checklist_events = [e for e in collected if e.kind == "checklist.item.created"]
+    assert checklist_events, (
+        f"expected checklist.item.created at project scope, got: {[e.kind for e in collected]}"
+    )
+    assert checklist_events[0].payload["task_id"] == t["id"]
+
+
+@pytest.mark.asyncio
+async def test_checklist_item_created_by_persists(store):
+    """Acceptance 1: Round-trip test: create_checklist_item(created_by="u") -> list_checklist_items returns created_by == "u". RED on origin/dev (column absent), green on the fix."""
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Test item", created_by="user-123")
+    assert item["created_by"] == "user-123"
+
+    items = await store.list_checklist_items(task_id=t["id"])
+    assert len(items) == 1
+    assert items[0]["created_by"] == "user-123"
+    assert items[0]["text"] == "Test item"
+
+
+@pytest.mark.asyncio
+async def test_checklist_item_created_by_upgrade_from_pre_schema(tmp_path):
+    """Acceptance 2: Existing-DB upgrade test: build a db with the PRE-change schema (no created_by), run store init, then create_checklist_item succeeds and persists created_by."""
+    db_path = tmp_path / "old_schema.db"
+    await _create_old_schema_db(db_path)
+
+    s = ProjectTaskStore(db_path)
+    await s.init()
+
+    try:
+        t = await s.create_task(project_id="p", title="Objective", created_by="u")
+        item = await s.create_checklist_item(task_id=t["id"], text="Test item", created_by="upgraded-user")
+        assert item["created_by"] == "upgraded-user"
+
+        items = await s.list_checklist_items(task_id=t["id"])
+        assert len(items) == 1
+        assert items[0]["created_by"] == "upgraded-user"
+    finally:
+        await s.close()
+
+
+@pytest.mark.asyncio
+async def test_checklist_item_created_by_migration_failure(tmp_path):
+    """Acceptance 3: Migration-failure path: a non-duplicate ALTER failure surfaces (raises), it is NOT read as already-migrated."""
+    import sqlite3
+
+    db_path = tmp_path / "locked.db"
+    await _create_old_schema_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("BEGIN EXCLUSIVE")
+    try:
+        s = ProjectTaskStore(db_path)
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await s.init()
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+async def _create_old_schema_db(db_path):
+    """Helper to create a database with the pre-change schema (without created_by column)."""
+    import aiosqlite
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute("""
+            CREATE TABLE task_checklist_items (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                text TEXT NOT NULL DEFAULT '',
+                done INTEGER NOT NULL DEFAULT 0,
+                verified INTEGER NOT NULL DEFAULT 0,
+                reported INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        await db.commit()
+
+
+@pytest.mark.asyncio
 async def test_archive_nonexistent_item_raises_value_error(store):
     """Defect 2: archiving a missing checklist item should raise a clean
     ValueError, not a TypeError from indexing None.

@@ -199,15 +199,23 @@ class ProjectTaskStore(BaseStore):
             "ON project_tasks(project_id, element_id)"
         )
         await self._db.commit()
-        # Add created_by column for checklist items (defect tsk-6xymzj)
-        try:
-            await self._db.execute(
-                "ALTER TABLE task_checklist_items ADD COLUMN created_by TEXT"
-            )
-            await self._db.commit()
-        except Exception:
-            # Column already exists on fresh installs (created by SCHEMA).
-            pass
+        # Add created_by column for checklist items (defect tsk-6xymzj).
+        # Fresh installs already have it from SCHEMA. SQLite cannot ADD COLUMN NOT
+        # NULL without a default, so migrated databases get a NULLABLE column
+        # here; legacy rows stay NULL -- intended.
+        import sqlite3
+        async with self._db.execute("PRAGMA table_info(task_checklist_items)") as cur:
+            columns = await cur.fetchall()
+            column_names = [col[1] for col in columns]
+            if "created_by" not in column_names:
+                try:
+                    await self._db.execute(
+                        "ALTER TABLE task_checklist_items ADD COLUMN created_by TEXT"
+                    )
+                    await self._db.commit()
+                except sqlite3.OperationalError as e:
+                    if "duplicate column" not in str(e):
+                        raise
 
     async def create_task(
         self,
