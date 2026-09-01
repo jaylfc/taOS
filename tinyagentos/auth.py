@@ -16,6 +16,7 @@ from typing import Any
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
 from fastapi import HTTPException, Request
+from filelock import FileLock, Timeout
 
 from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.shortcuts.capabilities import default_caps_for_admin, default_caps_for_new_user
@@ -1136,6 +1137,8 @@ class AuthManager:
             data = json.loads(bindings_path.read_text())
         except (json.JSONDecodeError, OSError):
             return False
+        if not isinstance(data, dict):
+            return False
         presented_hash = hashlib.sha256(presented.encode()).hexdigest()
         for stored_hash in data:
             if secrets.compare_digest(presented_hash, stored_hash):
@@ -1155,23 +1158,48 @@ class AuthManager:
     def _local_token_agent_path(self) -> Path:
         return self.data_dir / ".auth_local_token_bindings.json"
 
+    def _local_token_agent_lock_path(self) -> Path:
+        return self._local_token_agent_path().with_name(
+            self._local_token_agent_path().name + ".lock"
+        )
+
     def bind_local_token_agent(self, token: str, agent_name: str) -> None:
         """Record that *token* is bound to *agent_name* for skill-exec identity.
 
         The bindings file maps ``sha256(token) -> agent_name`` so the raw token
-        is never written to disk a second time.  Atomic write keeps the file
-        consistent under concurrent deploys.
+        is never written to disk a second time. A process-shared file lock
+        serialises the read-modify-write cycle so concurrent deploys cannot
+        lose one another's binding. The bindings file must be readable and
+        a valid JSON object; a corrupt or mis-shaped file raises rather than
+        being silently replaced.
         """
         path = self._local_token_agent_path()
+        lock_path = self._local_token_agent_lock_path()
         token_hash = hashlib.sha256(token.encode()).hexdigest()
-        data = {}
-        if path.exists():
-            try:
-                data = json.loads(path.read_text())
-            except (json.JSONDecodeError, OSError):
+        lock = FileLock(str(lock_path))
+        with lock:
+            if path.exists():
+                try:
+                    raw = path.read_text()
+                except OSError as exc:
+                    raise AuthStoreCorruptError(
+                        f"cannot read bindings file {path}: {exc}"
+                    ) from exc
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    raise AuthStoreCorruptError(
+                        f"bindings file {path} is not valid JSON: {exc}"
+                    ) from exc
+                if not isinstance(data, dict):
+                    raise AuthStoreCorruptError(
+                        f"bindings file {path} is a "
+                        f"{type(data).__name__}, expected an object"
+                    )
+            else:
                 data = {}
-        data[token_hash] = agent_name
-        atomic_write_text(path, json.dumps(data), mode=0o600)
+            data[token_hash] = agent_name
+            atomic_write_text(path, json.dumps(data), mode=0o600)
 
     def get_local_token_agent(self, presented: str) -> str | None:
         """Return the agent name bound to this local token, or ``None``."""
@@ -1183,6 +1211,8 @@ class AuthManager:
         try:
             data = json.loads(path.read_text())
         except (json.JSONDecodeError, OSError):
+            return None
+        if not isinstance(data, dict):
             return None
         token_hash = hashlib.sha256(presented.encode()).hexdigest()
         return data.get(token_hash)
