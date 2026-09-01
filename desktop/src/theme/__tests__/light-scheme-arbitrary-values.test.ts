@@ -3,8 +3,8 @@
 // Regression guard for the light-scheme gap in tokens.css. The compatibility
 // layer inverted the *plain-fraction* overlay utilities (bg-white/5, …) but
 // NOT the arbitrary-value form (bg-white/[0.04]) used by the shared primitives
-// (card, button, tabs) and ~126 app surfaces. This test proves the arbitrary
-// values now invert too.
+// (card, button, tabs) and ~126 app surfaces. This test proves both forms
+// now invert.
 //
 // Two traps this test is built to avoid:
 //   1. It asserts on COMPUTED colour, never on the class name — the class is
@@ -42,6 +42,8 @@ const TAILWIND_BASE = `
 [class~="border-white/[0.18]"] { border-color: rgba(255, 255, 255, 0.18); }
 [class~="data-[state=active]:bg-white/[0.08]"][data-state="active"] { background-color: rgba(255, 255, 255, 0.08); }
 [class~="divide-white/[0.04]"] > :not([hidden]) ~ :not([hidden]) { border-color: rgba(255, 255, 255, 0.04); }
+[class~="divide-white/5"] > :not([hidden]) ~ :not([hidden]) { border-color: rgba(255, 255, 255, 0.05); }
+[class~="data-[state=unchecked]:bg-white/10"][data-state="unchecked"] { background-color: rgba(255, 255, 255, 0.1); }
 `;
 
 // Walk desktop/src collecting every source module that can carry a class token,
@@ -147,11 +149,13 @@ describe("light-scheme arbitrary-value overlay inversion", () => {
     expect(COVERED_OVERLAYS.has("bg-white/[0.04]")).toBe(true);
   });
 
-  it("declares inversion rules for every arbitrary-value white overlay used in desktop/src", () => {
+  it("declares inversion rules for every white overlay used in desktop/src", () => {
     // Scope to white overlays only: black overlays (e.g. bg-black/[0.18])
     // already read on the light background and are deliberately not inverted.
-    const ARB_WHITE_RE =
-      /(?:^|:)(bg|text|border|ring|outline|shadow|divide|from|via|to)-white\/\[[^\]]*\]/;
+    // Matches both arbitrary-value (bg-white/[0.04]) and plain-fraction
+    // (bg-white/5, hover:bg-white/20, divide-white/5) forms.
+    const WHITE_OVERLAY_RE =
+      /(?:^|:)(bg|text|border|ring|outline|shadow|divide|from|via|to)-white\/(?:\d+|\[[^\]]*\])/;
 
     const srcFiles = collectSourceFiles(resolve(process.cwd(), "src"));
     expect(srcFiles.length).toBeGreaterThan(100);
@@ -168,7 +172,7 @@ describe("light-scheme arbitrary-value overlay inversion", () => {
       // added anywhere in the markup — including under a variant prefix like
       // `data-[state=active]:` — is seen.
       for (const tok of code.split(/[\s"'`{}()]+/)) {
-        if (ARB_WHITE_RE.test(tok) && !COVERED_OVERLAYS.has(tok)) {
+        if (WHITE_OVERLAY_RE.test(tok) && !COVERED_OVERLAYS.has(tok)) {
           offenders.add(tok);
         }
       }
@@ -176,7 +180,7 @@ describe("light-scheme arbitrary-value overlay inversion", () => {
     expect(Array.from(offenders)).toEqual([]);
   });
 
-  it("maps each arbitrary-value hover token to its inverted colour on :hover", () => {
+  it("maps each hover token to its inverted colour on :hover", () => {
     // jsdom cannot apply :hover for getComputedStyle, so assert the exact
     // declaration value inside the :hover rule — selector AND mapped colour —
     // rather than only that the token's selector appears somewhere in the css.
@@ -191,6 +195,14 @@ describe("light-scheme arbitrary-value overlay inversion", () => {
       ["hover:bg-white/[0.08]", "background-color", "rgba(0, 0, 0, 0.08)"],
       ["hover:bg-white/[0.1]", "background-color", "rgba(0, 0, 0, 0.1)"],
       ["hover:border-white/[0.06]", "border-color", "rgba(0, 0, 0, 0.06)"],
+      ["hover:bg-white/3", "background-color", "rgba(0, 0, 0, 0.03)"],
+      ["hover:bg-white/8", "background-color", "rgba(0, 0, 0, 0.08)"],
+      ["hover:bg-white/15", "background-color", "rgba(0, 0, 0, 0.08)"],
+      ["hover:bg-white/20", "background-color", "rgba(0, 0, 0, 0.10)"],
+      ["hover:border-white/15", "border-color", "rgba(0, 0, 0, 0.14)"],
+      ["hover:border-white/20", "border-color", "rgba(0, 0, 0, 0.16)"],
+      ["hover:text-white/40", "color", "rgba(0, 0, 0, 0.45)"],
+      ["hover:text-white/50", "color", "rgba(0, 0, 0, 0.50)"],
     ];
     for (const [token, property, value] of hoverRules) {
       const rule = `[class~="${token}"]:hover { ${property}: ${value}; }`;
@@ -240,12 +252,42 @@ describe("light-scheme arbitrary-value overlay inversion", () => {
     }
   });
 
+  it("inverts every plain-fraction background value 1:1", () => {
+    const cases: Array<[string, string]> = [
+      ["bg-white/3", "rgba(0, 0, 0, 0.03)"],
+      ["bg-white/5", "rgba(0, 0, 0, 0.04)"],
+      ["bg-white/8", "rgba(0, 0, 0, 0.08)"],
+      ["bg-white/10", "rgba(0, 0, 0, 0.06)"],
+      ["bg-white/15", "rgba(0, 0, 0, 0.08)"],
+      ["bg-white/20", "rgba(0, 0, 0, 0.1)"],
+    ];
+    setScheme("light");
+    for (const [className, expected] of cases) {
+      expect(bgColor(className), className).toBe(expected);
+    }
+  });
+
   it("inverts every arbitrary border value 1:1", () => {
     const cases: Array<[string, string]> = [
       ["border-white/[0.04]", "rgba(0, 0, 0, 0.04)"],
       ["border-white/[0.06]", "rgba(0, 0, 0, 0.06)"],
       ["border-white/[0.08]", "rgba(0, 0, 0, 0.08)"],
       ["border-white/[0.18]", "rgba(0, 0, 0, 0.18)"],
+    ];
+    setScheme("light");
+    for (const [className, expected] of cases) {
+      expect(borderColor(className), className).toBe(expected);
+    }
+  });
+
+  it("inverts every plain-fraction border value 1:1", () => {
+    const cases: Array<[string, string]> = [
+      ["border-white/5", "rgba(0, 0, 0, 0.08)"],
+      ["border-white/8", "rgba(0, 0, 0, 0.1)"],
+      ["border-white/10", "rgba(0, 0, 0, 0.12)"],
+      ["border-white/15", "rgba(0, 0, 0, 0.14)"],
+      ["border-white/20", "rgba(0, 0, 0, 0.16)"],
+      ["border-white/25", "rgba(0, 0, 0, 0.18)"],
     ];
     setScheme("light");
     for (const [className, expected] of cases) {
@@ -281,5 +323,32 @@ describe("light-scheme arbitrary-value overlay inversion", () => {
     expect(dark).toBe("rgba(255, 255, 255, 0.04)");
     expect(light).toBe("rgba(0, 0, 0, 0.04)");
     expect(light).not.toBe(dark);
+  });
+
+  it("inverts the computed divide row separators across schemes (divide-white/5)", () => {
+    setScheme("dark");
+    const dark = divideColor("divide-white/5");
+    setScheme("light");
+    const light = divideColor("divide-white/5");
+    expect(dark).toBe("rgba(255, 255, 255, 0.05)");
+    expect(light).toBe("rgba(0, 0, 0, 0.08)");
+    expect(light).not.toBe(dark);
+  });
+
+  it("inverts the unchecked state only when data-state=unchecked, and only in light scheme", () => {
+    setScheme("dark");
+    const darkUnchecked = bgColor("data-[state=unchecked]:bg-white/10", {
+      "data-state": "unchecked",
+    });
+    setScheme("light");
+    const lightUnchecked = bgColor("data-[state=unchecked]:bg-white/10", {
+      "data-state": "unchecked",
+    });
+    const lightChecked = bgColor("data-[state=unchecked]:bg-white/10", {
+      "data-state": "checked",
+    });
+    expect(darkUnchecked).toBe("rgba(255, 255, 255, 0.1)");
+    expect(lightUnchecked).toBe("rgba(0, 0, 0, 0.06)");
+    expect(lightChecked).toBe("rgba(0, 0, 0, 0)");
   });
 });
