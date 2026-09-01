@@ -123,6 +123,10 @@ VERDICT_TO_CONCLUSION = {
     EXIT_STUB: "failure",
 }
 
+# Track whether reconcile encountered a 403 Forbidden during PATCH,
+# to distinguish it from genuine infrastructure failure in main().
+RECONCILE_403_OCCURRED = False
+
 
 @dataclass
 class CRItem:
@@ -572,7 +576,16 @@ def _api_mutate(
         with urlopen(req, timeout=30) as r:
             return 200 <= r.status < 300
     except Exception as e:
-        print(f"error: {method} {url} failed: {e}", file=sys.stderr)
+        if getattr(e, "code", None) == 403:
+            print(
+                f"error: {method} {url} failed: {e}",
+                file=sys.stderr,
+            )
+            return False
+        print(
+            f"error: {method} {url} failed: {e}",
+            file=sys.stderr,
+        )
         return None
 
 
@@ -611,6 +624,7 @@ def reconcile_head_sha_check_run(
     # the stale FAILURE still pins the SHA on UNSTABLE -- while reconcile
     # returns a dict that reads as a successful write. Fail closed instead.
     mutate_failed = False
+    any_403 = False
     for run in runs:
         status = run.get("status")
         existing = run.get("conclusion")
@@ -635,15 +649,25 @@ def reconcile_head_sha_check_run(
             patched_any = True
         else:
             mutate_failed = True
+            if result is False:
+                any_403 = True
     if mutate_failed:
         # Do NOT fall through to the POST below: publishing a fresh run while a
         # stale FAILURE survives is strictly worse than writing nothing, because
         # it leaves the SHA pinned on UNSTABLE and looks reconciled.
-        print(
-            f"error: could not PATCH one or more stale bot-review-gate runs on "
-            f"{head_sha}; refusing to publish a new run that would coexist with "
-            f"them", file=sys.stderr,
-        )
+        if any_403:
+            RECONCILE_403_OCCURRED = True
+            print(
+                f"error: override could not be applied on {head_sha}; "
+                f"the bot-review-allow label waiver could not be applied due "
+                f"to insufficient permissions", file=sys.stderr,
+            )
+        else:
+            print(
+                f"error: could not PATCH one or more stale bot-review-gate runs on "
+                f"{head_sha}; refusing to publish a new run that would coexist with "
+                f"them", file=sys.stderr,
+            )
         return None
     if patched_any:
         return {"reconciled": True, "action": "patched", "head_sha": head_sha}
@@ -765,13 +789,14 @@ def main(argv: list[str] | None = None) -> int:
         verified_code, _ = check_run_verdict(
             owner, repo, head_sha, token,
         )
-        if verified_code == EXIT_STUB and exit_code == EXIT_OK:
+        if verified_code == EXIT_STUB and exit_code == EXIT_OK and not RECONCILE_403_OCCURRED:
             print(
                 f"fail: stale bot-review-gate FAILURE on {head_sha} "
                 f"survived reconcile -- PR stays UNSTABLE "
                 f"(exit {EXIT_STUB})"
             )
             return EXIT_STUB
+    RECONCILE_403_OCCURRED = False  # reset for next run
     return exit_code
 
 
