@@ -73,7 +73,7 @@ def _atomic_write(p: Path, state: dict) -> None:
         with os.fdopen(fd, "w") as f:
             f.write(json.dumps(state))
         os.replace(tmp, p)
-    except Exception:
+    except (OSError, ValueError):
         try:
             os.unlink(tmp)
         except OSError:
@@ -412,7 +412,7 @@ async def get_fleet(request: Request):
                 registered = await registry.list_all(status="active")
             else:
                 registered = await registry.list_for_user(user_id, status="active") if user_id else []
-        except Exception:
+        except RuntimeError:
             registered = []
         for rec in registered:
             handle = (rec.get("handle") or "").strip()
