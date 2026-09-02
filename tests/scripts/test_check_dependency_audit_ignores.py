@@ -79,7 +79,7 @@ class TestCheckUpgradeResolves:
     def test_failure_when_uv_lock_exits_nonzero(self, check_mod, tmp_path: Path) -> None:
         lock = tmp_path / "uv.lock"
         lock.write_text("dummy")
-        fake = _fake_completed(returncode=1, stderr="conflict with litellm pin <49.0")
+        fake = _fake_completed(returncode=1, stderr="conflict with cryptography pin <50.0")
         with patch.object(check_mod.subprocess, "run", return_value=fake):
             resolves, detail = check_mod.check_upgrade_resolves("cryptography", tmp_path)
         assert resolves is False
