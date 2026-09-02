@@ -412,4 +412,18 @@ Run `python3 scripts/build-routes-doc.py` to compile these into `docs/routes.md`
 
 ---
 
-# Agent desktop lifecycle\n\n## Routes\n\n| Method | Path | Purpose |\n|---|---|---|\n| `POST` | `/api/agents/{agent_name}/desktop/install` | Install XFCE + x11vnc |\n| `POST` | `/api/agents/{agent_name}/desktop/start` | Start desktop + VNC |\n| `POST` | `/api/agents/{agent_name}/desktop/stop` | Stop desktop |\n| `GET` | `/api/agents/{agent_name}/desktop/status` | Report runtime state |\n\n## Key points\n\n- Install is **on demand** and **opt-in per agent**.\n- Start is idempotent.
+# Agent desktop lifecycle
+
+## Routes
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/agents/{agent_name}/desktop/install` | Install XFCE + x11vnc |
+| `POST` | `/api/agents/{agent_name}/desktop/start` | Start desktop + VNC |
+| `POST` | `/api/agents/{agent_name}/desktop/stop` | Stop desktop |
+| `GET` | `/api/agents/{agent_name}/desktop/status` | Report runtime state |
+
+## Key points
+
+- Install is **on demand** and **opt-in per agent**.
+- Start is idempotent.

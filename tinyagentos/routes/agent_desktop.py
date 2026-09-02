@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from tinyagentos.auth_context import CurrentUser, current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -30,7 +32,7 @@ def _container_name(agent_name: str) -> str:
 
 
 @router.post("/api/agents/{agent_name}/desktop/install")
-async def install_desktop(request: Request, agent_name: str):
+async def install_desktop(request: Request, agent_name: str, user: CurrentUser = Depends(current_user)):
     """Install XFCE + x11vnc into the agent container on demand.
 
     This mutates the container rootfs by installing packages. It is idempotent:
@@ -65,7 +67,7 @@ async def install_desktop(request: Request, agent_name: str):
 
 
 @router.post("/api/agents/{agent_name}/desktop/start")
-async def start_desktop(request: Request, agent_name: str):
+async def start_desktop(request: Request, agent_name: str, user: CurrentUser = Depends(current_user)):
     """Start the XFCE desktop session inside the agent container."""
     from tinyagentos.containers import exec_in_container
 
@@ -80,9 +82,12 @@ async def start_desktop(request: Request, agent_name: str):
     container = _container_name(agent_name)
     state["state"] = "starting"
 
+    # Generate a random VNC password per start call (no hardcoded 'testpass')
+    password = secrets.token_urlsafe(12)
+
     setup_rc, setup_out = await exec_in_container(
         container,
-        ["bash", "-c", "mkdir -p ~/.vnc && printf 'testpass' | vncpasswd -f > ~/.vnc/passwd && chmod 600 ~/.vnc/passwd"],
+        ["bash", "-c", f"mkdir -p ~/.vnc && printf '{password}' | vncpasswd -f > ~/.vnc/passwd && chmod 600 ~/.vnc/passwd"],
         timeout=30,
     )
     if setup_rc != 0:
@@ -90,29 +95,35 @@ async def start_desktop(request: Request, agent_name: str):
         state["last_error"] = setup_out
         return JSONResponse({"error": f"vnc setup failed: {setup_out}"}, status_code=500)
 
+    # Background Xvfb, dbus, and x11vnc, then poll until x11vnc is alive listening on :1
     start_rc, start_out = await exec_in_container(
         container,
-        [
-            "bash", "-c",
-            "Xvfb :1 -screen 0 1024x768x16 & sleep 1 && "
-            "dbus-launch --exit-with-session startxfce4 & sleep 2 && "
-            "x11vnc -display :1 -rfbport 5900 -forever -shared -passwdfile ~/.vnc/passwd & sleep 1 && "
-            "echo OK",
-        ],
-        timeout=30,
+        ["bash", "-c",
+         "Xvfb :1 -screen 0 1024x768x16 & "
+         "dbus-launch --exit-with-session startxfce4 & "
+         "x11vnc -display :1 -rfbport 5900 -forever -shared -passwdfile ~/.vnc/passwd & "
+         "for i in $(seq 1 30); do "
+         "   if pgrep -f x11vnc > /dev/null; then "
+         "       echo READY; exit 0; "
+         "   fi; "
+         "   sleep 1; "
+         "done; "
+         "echo TIMEOUT; exit 1"],
+        timeout=60,
     )
-    if start_rc != 0:
+
+    if "TIMEOUT" in start_out or start_rc != 0:
         state["state"] = "error"
         state["last_error"] = start_out
         return JSONResponse({"error": f"desktop start failed: {start_out}"}, status_code=500)
 
     state["state"] = "running"
     state.pop("last_error", None)
-    return JSONResponse({"agent_name": agent_name, "state": "running"})
+    return JSONResponse({"agent_name": agent_name, "state": "running", "vnc_password": password})
 
 
 @router.post("/api/agents/{agent_name}/desktop/stop")
-async def stop_desktop(request: Request, agent_name: str):
+async def stop_desktop(request: Request, agent_name: str, user: CurrentUser = Depends(current_user)):
     """Stop the running XFCE desktop session inside the agent container."""
     from tinyagentos.containers import exec_in_container
 
@@ -136,7 +147,7 @@ async def stop_desktop(request: Request, agent_name: str):
 
 
 @router.get("/api/agents/{agent_name}/desktop/status")
-async def desktop_status(request: Request, agent_name: str):
+async def desktop_status(request: Request, agent_name: str, user: CurrentUser = Depends(current_user)):
     """Report whether a desktop is installed and running for the agent."""
     from tinyagentos.containers import exec_in_container
 
