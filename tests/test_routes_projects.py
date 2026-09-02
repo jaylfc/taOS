@@ -885,3 +885,160 @@ async def test_create_claimable_with_empty_body_returns_422(client):
     )
     assert resp.status_code == 200
 
+
+# ---------------------------------------------------------------------------
+# tsk-wkah3z: ready view honour blocked-on:<id> labels and the limit param
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ready_excludes_open_blocked_on_label(client):
+    """Arm A: a task labelled blocked-on:<id> with <id> OPEN is excluded.
+
+    Hits the real HTTP route with the real auth dependency (the shared
+    ``client`` fixture signs in as the test admin via the session cookie
+    path), not a fixture that bypasses the router.
+    """
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "bo"})).json()["id"]
+    blocker = (await client.post(
+        f"/api/projects/{pid}/tasks", json={"title": "Blocker"}
+    )).json()
+    blocked = (await client.post(
+        f"/api/projects/{pid}/tasks", json={"title": "Blocked"}
+    )).json()
+
+    patch_resp = await client.patch(
+        f"/api/projects/{pid}/tasks/{blocked['id']}",
+        json={"labels": [f"blocked-on:{blocker['id']}"]},
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    assert f"blocked-on:{blocker['id']}" in patch_resp.json()["labels"]
+
+    resp = await client.get(f"/api/projects/{pid}/tasks/ready")
+    ids = [t["id"] for t in resp.json()["items"]]
+    assert blocked["id"] not in ids, (
+        f"ready returned {blocked['id']} carrying an open blocked-on:{blocker['id']} label"
+    )
+    assert blocker["id"] in ids
+
+    close_resp = await client.post(
+        f"/api/projects/{pid}/tasks/{blocker['id']}/close",
+        json={"closed_by": "admin", "reason": "done"},
+    )
+    assert close_resp.status_code == 200, close_resp.text
+
+    resp_after = await client.get(f"/api/projects/{pid}/tasks/ready")
+    ids_after = [t["id"] for t in resp_after.json()["items"]]
+    assert blocked["id"] in ids_after, (
+        "un-blocking direction: closing the blocker must re-surface the blocked task"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ready_stale_blocked_on_label_is_ready(client):
+    """Arm B: a blocked-on:<id> label pointing at a CLOSED task is stale -> ready."""
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "stale"})).json()["id"]
+    gone = (await client.post(
+        f"/api/projects/{pid}/tasks", json={"title": "AlreadyClosed"}
+    )).json()
+    close_resp = await client.post(
+        f"/api/projects/{pid}/tasks/{gone['id']}/close",
+        json={"closed_by": "admin"},
+    )
+    assert close_resp.status_code == 200, close_resp.text
+
+    stale = (await client.post(
+        f"/api/projects/{pid}/tasks",
+        json={"title": "Stale", "labels": [f"blocked-on:{gone['id']}"]},
+    )).json()
+    assert f"blocked-on:{gone['id']}" in stale["labels"]
+
+    resp = await client.get(f"/api/projects/{pid}/tasks/ready")
+    ids = [t["id"] for t in resp.json()["items"]]
+    assert stale["id"] in ids, (
+        f"stale blocked-on label (target {gone['id']} is closed) must not exclude {stale['id']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ready_limit_param_honoured_and_clamped(client):
+    """Arm C: ?limit is honoured, 0/-1 clamp to the floor, >500 clamps to 500."""
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "lim"})).json()["id"]
+    for i in range(10):
+        r = await client.post(
+            f"/api/projects/{pid}/tasks", json={"title": f"T{i}"}
+        )
+        assert r.status_code == 200
+
+    five = await client.get(f"/api/projects/{pid}/tasks/ready", params={"limit": 5})
+    assert five.status_code == 200
+    assert len(five.json()["items"]) == 5
+
+    zero = await client.get(f"/api/projects/{pid}/tasks/ready", params={"limit": 0})
+    assert zero.status_code == 200
+    assert len(zero.json()["items"]) >= 1, "?limit=0 must NOT return unbounded / 0 items"
+
+    neg = await client.get(f"/api/projects/{pid}/tasks/ready", params={"limit": -1})
+    assert neg.status_code == 200
+    assert len(neg.json()["items"]) >= 1, "?limit=-1 must NOT return unbounded"
+
+    huge = await client.get(
+        f"/api/projects/{pid}/tasks/ready", params={"limit": 99999}
+    )
+    assert huge.status_code == 200
+    assert len(huge.json()["items"]) <= 500
+
+
+@pytest.mark.asyncio
+async def test_ready_limit_clamp_500_enforced_with_501_tasks(client):
+    """tsk-cifqsh finding 1: with 501+ ready tasks, ?limit=99999 must clamp to 500.
+
+    Previous test only created 10 tasks, so an unclamped limit also returned
+    10 and the assertion passed without enforcing the cap. Seed 501 ready
+    tasks and assert the upper cap returns exactly 500.
+    """
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "cap"})).json()["id"]
+    for i in range(501):
+        r = await client.post(
+            f"/api/projects/{pid}/tasks", json={"title": f"T{i}"}
+        )
+        assert r.status_code == 200, r.text
+
+    huge = await client.get(
+        f"/api/projects/{pid}/tasks/ready", params={"limit": 99999}
+    )
+    assert huge.status_code == 200
+    assert len(huge.json()["items"]) == 500, (
+        f"?limit=99999 must clamp to 500 even when more than 500 ready tasks exist, "
+        f"got {len(huge.json()['items'])}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ready_blocked_on_label_does_not_match_across_projects(client):
+    """tsk-cifqsh finding 2: a blocked-on:<id> label must only match same-project tasks.
+
+    A task in project A labelled blocked-on:<blocker-in-project-B> must remain
+    ready; the label is meaningless across project boundaries. The schema view
+    join (and its migration twin) must constrain on ``bt.project_id = t.project_id``.
+    """
+    pid_a = (await client.post("/api/projects", json={"name": "A", "slug": "xpa"})).json()["id"]
+    pid_b = (await client.post("/api/projects", json={"name": "B", "slug": "xpb"})).json()["id"]
+
+    blocker_b = (await client.post(
+        f"/api/projects/{pid_b}/tasks", json={"title": "BlockerInB"}
+    )).json()
+
+    foreign_labeled = (await client.post(
+        f"/api/projects/{pid_a}/tasks",
+        json={"title": "ForeignLabeled", "labels": [f"blocked-on:{blocker_b['id']}"]},
+    )).json()
+    assert f"blocked-on:{blocker_b['id']}" in foreign_labeled["labels"]
+
+    resp = await client.get(f"/api/projects/{pid_a}/tasks/ready")
+    ids = [t["id"] for t in resp.json()["items"]]
+    assert foreign_labeled["id"] in ids, (
+        f"cross-project blocked-on:{blocker_b['id']} label must not exclude "
+        f"{foreign_labeled['id']} in project {pid_a}"
+    )
+

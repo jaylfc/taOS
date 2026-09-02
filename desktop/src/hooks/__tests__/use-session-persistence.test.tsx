@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, waitFor, act } from "@testing-library/react";
+import { render, waitFor, act } from "@testing-library/react";
 import { useSessionPersistence } from "../use-session-persistence";
 import { useDockStore } from "@/stores/dock-store";
 import { useThemeStore } from "@/stores/theme-store";
@@ -7,14 +7,21 @@ import { useAuthReadyStore } from "@/stores/auth-ready-store";
 import { APP_REDIRECTS } from "@/registry/app-registry";
 
 vi.mock("@/registry/app-registry", () => {
-  const apps = new Map<string, { id: string }>([
-    ["messages", { id: "messages" }],
-    ["files", { id: "files" }],
-    ["agents", { id: "agents" }],
-    ["store", { id: "store" }],
-    ["settings", { id: "settings" }],
-  ]);
-  const redirects: Record<string, { appId: string; section?: string }> = {};
+  const g = globalThis as Record<string, unknown>;
+  if (!g.__mockApps) {
+    g.__mockApps = new Map<string, { id: string }>([
+      ["messages", { id: "messages" }],
+      ["files", { id: "files" }],
+      ["agents", { id: "agents" }],
+      ["store", { id: "store" }],
+      ["settings", { id: "settings" }],
+    ]);
+  }
+  if (!g.__mockRedirects) {
+    g.__mockRedirects = {} as Record<string, { appId: string }>;
+  }
+  const apps = g.__mockApps as Map<string, { id: string }>;
+  const redirects = g.__mockRedirects as Record<string, { appId: string }>;
 
   return {
     getApp: (id: string) => apps.get(id),
@@ -45,16 +52,26 @@ function mockFetchWith(responses: Record<string, unknown>) {
   });
 }
 
+function resetMockRegistry() {
+  const apps = (globalThis as Record<string, Map<string, { id: string }>>).__mockApps;
+  apps.clear();
+  apps.set("messages", { id: "messages" });
+  apps.set("files", { id: "files" });
+  apps.set("agents", { id: "agents" });
+  apps.set("store", { id: "store" });
+  apps.set("settings", { id: "settings" });
+  const redirects = (globalThis as Record<string, Record<string, { appId: string }>>).__mockRedirects;
+  Object.keys(redirects).forEach((k) => delete redirects[k]);
+}
+
 beforeEach(() => {
+  resetMockRegistry();
   useDockStore.setState({
     pinned: ["messages", "agents", "files", "store", "settings"],
     iconSize: "medium",
     position: "bottom",
   });
   useThemeStore.setState({ wallpaperId: "graphite" } as never);
-  // Baseline: already authenticated, matching the pre-existing tests below
-  // which exercise restore-on-mount in isolation. The auth-gating tests
-  // further down explicitly manipulate this.
   useAuthReadyStore.setState({ ready: true });
 });
 
@@ -64,12 +81,9 @@ afterEach(() => {
 
 describe("useSessionPersistence — wallpaper restore (#1601)", () => {
   it("restores a saved wallpaper on mount, including one whose id is literally 'default'", async () => {
-    // Regression test: the "Classic" wallpaper's catalog id is the string
-    // "default", which collided with the old "nothing saved" sentinel check
-    // (`data.wallpaper !== "default"`) and was silently skipped on restore.
     mockFetchWith({ "/api/desktop/settings": { wallpaper: "default" } });
 
-    renderHook(() => useSessionPersistence());
+    render(<TestPersistence />);
 
     await waitFor(() => {
       expect(useThemeStore.getState().wallpaperId).toBe("default");
@@ -79,7 +93,7 @@ describe("useSessionPersistence — wallpaper restore (#1601)", () => {
   it("restores an ordinary saved wallpaper choice on mount", async () => {
     mockFetchWith({ "/api/desktop/settings": { wallpaper: "midnight" } });
 
-    renderHook(() => useSessionPersistence());
+    render(<TestPersistence />);
 
     await waitFor(() => {
       expect(useThemeStore.getState().wallpaperId).toBe("midnight");
@@ -97,7 +111,7 @@ describe("useSessionPersistence — dock settings restore (#1603)", () => {
       },
     });
 
-    renderHook(() => useSessionPersistence());
+    render(<TestPersistence />);
 
     await waitFor(() => {
       expect(useDockStore.getState().iconSize).toBe("large");
@@ -111,15 +125,14 @@ describe("useSessionPersistence — dock settings restore (#1603)", () => {
       "/api/desktop/dock": { iconSize: "huge", position: "top" },
     });
 
-    renderHook(() => useSessionPersistence());
+    render(<TestPersistence />);
 
-    // Give the restore effect's promise chain a tick to resolve.
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
     expect(useDockStore.getState().iconSize).toBe("medium");
     expect(useDockStore.getState().position).toBe("bottom");
   });
 
-  it("resolves pinned ids through APP_REDIRECTS and drops unresolvable ids", async () => {
+  it("resolves pinned ids through APP_REDIRECTS and keeps unresolvable ids", async () => {
     APP_REDIRECTS["legacy-pin"] = { appId: "agents" };
 
     mockFetchWith({
@@ -130,34 +143,76 @@ describe("useSessionPersistence — dock settings restore (#1603)", () => {
       },
     });
 
-    renderHook(() => useSessionPersistence());
+    render(<TestPersistence />);
 
     await waitFor(() => {
       const pinned = useDockStore.getState().pinned;
       expect(pinned).toContain("agents");
       expect(pinned).toContain("messages");
-      expect(pinned).not.toContain("nonexistent-app");
+      expect(pinned).toContain("nonexistent-app");
       expect(pinned).not.toContain("legacy-pin");
     });
 
     delete APP_REDIRECTS["legacy-pin"];
   });
+
+  it("preserves pins for userspace apps that sync after dock restore (race condition)", async () => {
+    const userspaceAppId = "userspace:test-app";
+
+    mockFetchWith({
+      "/api/desktop/dock": {
+        pinned: ["messages", userspaceAppId],
+        iconSize: "medium",
+        position: "bottom",
+      },
+    });
+
+    render(<TestPersistence />);
+
+    await waitFor(() => {
+      const pinned = useDockStore.getState().pinned;
+      expect(pinned).toContain(userspaceAppId);
+    });
+
+    act(() => {
+      (globalThis as Record<string, Map<string, { id: string }>>).__mockApps.set(userspaceAppId, { id: userspaceAppId });
+    });
+
+    expect(useDockStore.getState().pinned).toContain(userspaceAppId);
+
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+
+    act(() => {
+      useDockStore.getState().setIconSize("large");
+    });
+
+    await waitFor(
+      () => {
+        const putCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
+          ([input, init]) =>
+            (typeof input === "string" ? input : input.toString()).includes("/api/desktop/dock") &&
+            (init as RequestInit | undefined)?.method === "PUT",
+        );
+        expect(setTimeoutSpy).toHaveBeenCalled();
+        expect(putCalls.length).toBeGreaterThan(0);
+        const lastBody = JSON.parse((putCalls[putCalls.length - 1]![1] as RequestInit).body as string);
+        expect(lastBody.pinned).toContain(userspaceAppId);
+      },
+      { timeout: 2000 },
+    );
+  });
 });
 
 describe("useSessionPersistence — persistence survives a logout/login cycle (#1601, #1603)", () => {
   it("does not fetch per-user settings before the session is authenticated", async () => {
-    // SystemShortcuts (which owns this hook) mounts before LoginGate confirms
-    // auth. A mount-gated restore used to fire here regardless, 401 while
-    // logged out, and — having already "run" — never retry after login.
     useAuthReadyStore.setState({ ready: false });
     mockFetchWith({
       "/api/desktop/settings": { wallpaper: "midnight" },
       "/api/desktop/dock": { iconSize: "large", position: "left" },
     });
 
-    renderHook(() => useSessionPersistence());
+    render(<TestPersistence />);
 
-    // Give any (wrongly) in-flight effect a tick, then assert nothing fired.
     await new Promise((r) => setTimeout(r, 0));
     expect(globalThis.fetch).not.toHaveBeenCalledWith(
       expect.stringContaining("/api/desktop/settings"),
@@ -170,20 +225,16 @@ describe("useSessionPersistence — persistence survives a logout/login cycle (#
   });
 
   it("restores the saved theme, wallpaper and dock settings once auth flips ready, and re-restores on a later re-login", async () => {
-    // Simulate a full app boot: SystemShortcuts mounts first (pre-auth), then
-    // LoginGate resolves /auth/status and the user logs in.
     useAuthReadyStore.setState({ ready: false });
     mockFetchWith({
       "/api/desktop/settings": { wallpaper: "midnight" },
       "/api/desktop/dock": { iconSize: "large", position: "left" },
     });
 
-    renderHook(() => useSessionPersistence());
+    render(<TestPersistence />);
 
-    // Still logged out: the store must stay at its defaults, not midnight/large.
     expect(useThemeStore.getState().wallpaperId).toBe("graphite");
 
-    // Login completes.
     act(() => {
       useAuthReadyStore.setState({ ready: true });
     });
@@ -194,8 +245,6 @@ describe("useSessionPersistence — persistence survives a logout/login cycle (#
       expect(useDockStore.getState().position).toBe("left");
     });
 
-    // Logout, then a second login as a user with different saved settings —
-    // the restore must run again, not stay stuck on the first session's values.
     act(() => {
       useAuthReadyStore.setState({ ready: false });
     });
@@ -217,12 +266,6 @@ describe("useSessionPersistence — persistence survives a logout/login cycle (#
   });
 
   it("does not let a debounced auto-save clobber the backend with default values while restore is still in flight", async () => {
-    // Regression for the residual race: the old code gated every auto-save
-    // effect on the same flag the restore effect flipped the instant it
-    // *started* (not once its fetch resolved), so a slow restore GET could
-    // lose to a faster debounced auto-save PUT carrying the pre-restore
-    // default value. Here the wallpaper GET is deliberately slower than the
-    // 500ms auto-save debounce.
     useAuthReadyStore.setState({ ready: false });
     let resolveSettings: (body: unknown) => void = () => {};
     const slowSettings = new Promise<unknown>((resolve) => {
@@ -236,13 +279,11 @@ describe("useSessionPersistence — persistence survives a logout/login cycle (#
       return Promise.resolve(new Response(JSON.stringify({})));
     });
 
-    renderHook(() => useSessionPersistence());
+    render(<TestPersistence />);
     act(() => {
       useAuthReadyStore.setState({ ready: true });
     });
 
-    // Let time pass well beyond the 500ms wallpaper auto-save debounce while
-    // the settings GET is still unresolved.
     await new Promise((r) => setTimeout(r, 700));
     const putCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
       ([input, init]) =>
@@ -251,7 +292,6 @@ describe("useSessionPersistence — persistence survives a logout/login cycle (#
     );
     expect(putCalls).toHaveLength(0);
 
-    // Restore finally resolves with the real saved wallpaper.
     resolveSettings({ wallpaper: "ocean" });
     await waitFor(() => {
       expect(useThemeStore.getState().wallpaperId).toBe("ocean");
@@ -260,10 +300,6 @@ describe("useSessionPersistence — persistence survives a logout/login cycle (#
 });
 
 describe("useSessionPersistence — Dock and wallpaper auto-save write to separate endpoints (#1603, #1601)", () => {
-  // Regression: a Dock-only change (position/icon size) was reported to reset
-  // the saved wallpaper back to default on the next login. The auto-save
-  // effects below must PUT to their own endpoint with only their own field(s)
-  // — never touching the other setting — so one can never clobber the other.
   function putCallsTo(path: string) {
     return (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
       ([input, init]) =>
@@ -278,7 +314,7 @@ describe("useSessionPersistence — Dock and wallpaper auto-save write to separa
       "/api/desktop/settings": { wallpaper: "ocean" },
     });
 
-    renderHook(() => useSessionPersistence());
+    render(<TestPersistence />);
 
     await waitFor(() => {
       expect(useThemeStore.getState().wallpaperId).toBe("ocean");
@@ -289,7 +325,6 @@ describe("useSessionPersistence — Dock and wallpaper auto-save write to separa
       useDockStore.getState().setPosition("left");
     });
 
-    // Past the 1s dock auto-save debounce.
     await waitFor(() => expect(putCallsTo("/api/desktop/dock")).not.toHaveLength(0), {
       timeout: 2000,
     });
@@ -307,7 +342,7 @@ describe("useSessionPersistence — Dock and wallpaper auto-save write to separa
       "/api/desktop/settings": { wallpaper: "midnight" },
     });
 
-    renderHook(() => useSessionPersistence());
+    render(<TestPersistence />);
 
     await waitFor(() => {
       expect(useDockStore.getState().iconSize).toBe("large");
@@ -317,7 +352,6 @@ describe("useSessionPersistence — Dock and wallpaper auto-save write to separa
       useThemeStore.getState().setWallpaper("aurora");
     });
 
-    // Past the 500ms wallpaper auto-save debounce.
     await waitFor(() => expect(putCallsTo("/api/desktop/settings")).not.toHaveLength(0), {
       timeout: 2000,
     });
@@ -331,3 +365,8 @@ describe("useSessionPersistence — Dock and wallpaper auto-save write to separa
     expect(lastBody).toEqual({ wallpaper: "aurora" });
   });
 });
+
+function TestPersistence() {
+  useSessionPersistence();
+  return null;
+}

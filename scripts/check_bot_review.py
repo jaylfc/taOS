@@ -260,6 +260,22 @@ def _is_coderabbit(user: dict | None) -> bool:
     return (user.get("login") or "").lower() in CODERABBIT_LOGINS
 
 
+def _is_job_owned_run(run: dict) -> bool:
+    """Return True if a check run is runner-owned and cannot be PATCHed.
+
+    GitHub Actions creates a runner-owned check run for each job (app.slug
+    = github-actions, external_id set to the job GUID). The Actions API
+    token cannot update these runs, so they must be skipped during
+    reconcile and ignored when reading the head-SHA verdict.
+    """
+    if run.get("external_id"):
+        return True
+    details_url = run.get("details_url") or ""
+    if "/actions/runs/" in details_url:
+        return True
+    return False
+
+
 def collect_coderabbit_items(
     owner: str, repo: str, pr_number: int, token: str | None = None,
 ) -> list[CRItem] | None:
@@ -481,16 +497,19 @@ def list_check_runs(
 
 
 def filter_head_sha_check_runs(check_runs: list[dict]) -> list[dict]:
-    """Drop non-terminal runs; keep only completed bot-review-gate check runs,
-    sorted most-recent-first by (started_at, id).
+    """Drop non-terminal and job-owned runs; keep only completed bot-review-gate
+    check runs the script can actually write, sorted most-recent-first by
+    (started_at, id).
 
-    An in_progress run is never authoritative for the head-SHA verdict: the job
-    may still be writing it, so ``latest_check_run_conclusion`` must not read a
-    half-written conclusion as the verdict.
+    Runner-owned job check runs (app.slug=github-actions) cannot be PATCHed
+    via the Actions API token, so they are irrelevant to the verdict: the
+    merge box keys off the latest check run per name, and the script's own
+    runs are the only ones it can correct.
     """
     completed = [
         r for r in check_runs
         if r.get("status") == "completed" and r.get("conclusion") is not None
+        and not _is_job_owned_run(r)
     ]
     return sorted(
         completed,
@@ -620,6 +639,12 @@ def reconcile_head_sha_check_run(
             continue
         if existing == conclusion:
             continue
+        # Runner-owned job check runs (app.slug=github-actions) cannot be
+        # PATCHed via the Actions API token; skip them. Their staleness is
+        # irrelevant because mergeStateStatus keys off the latest check run
+        # per name, not any coexisting run.
+        if _is_job_owned_run(run):
+            continue
         url = f"{API}/repos/{owner}/{repo}/check-runs/{run['id']}"
         result = _api_mutate(
             url,
@@ -648,10 +673,13 @@ def reconcile_head_sha_check_run(
     if patched_any:
         return {"reconciled": True, "action": "patched", "head_sha": head_sha}
 
-    # No stale run to update. If a matching conclusion already exists, nothing
-    # to do; if none exists at all, publish a fresh terminal check run.
+    # No stale run to update. If a matching conclusion already exists on a
+    # writable run, nothing to do; if none exists at all, publish a fresh
+    # terminal check run. Job-owned runs are not writable, so they do not
+    # suppress a fresh POST.
     if any(
         r.get("status") == "completed" and r.get("conclusion") == conclusion
+        and not _is_job_owned_run(r)
         for r in runs
     ):
         return None

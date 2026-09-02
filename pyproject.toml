@@ -48,6 +48,10 @@ dependencies = [
     "diff-match-patch>=20230430",
     # Cron expression parsing for project routines (schedule -> next_fire).
     "croniter>=6.2.4",
+    # Process-shared lock serialising the local-token bindings RMW
+    # (tinyagentos/auth.py bind_local_token_agent). Previously only present
+    # transitively; declare it directly so the import is guaranteed.
+    "filelock>=3.12",
     # ES256 signing for APNs JWTs (tinyagentos/push/apns.py), imported at
     # startup via app.py. Previously only pulled in transitively through
     # pywebpush; declare it directly so the import is guaranteed.

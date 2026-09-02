@@ -87,12 +87,14 @@
 :root[data-scheme="light"] [class~="bg-white/10"] { background-color: rgba(0, 0, 0, 0.06); }
 :root[data-scheme="light"] [class~="bg-white/15"] { background-color: rgba(0, 0, 0, 0.08); }
 :root[data-scheme="light"] [class~="bg-white/20"] { background-color: rgba(0, 0, 0, 0.10); }
+:root[data-scheme="light"] [class~="bg-white/8"]  { background-color: rgba(0, 0, 0, 0.08); }
 
 :root[data-scheme="light"] [class~="border-white/5"]  { border-color: rgba(0, 0, 0, 0.08); }
 :root[data-scheme="light"] [class~="border-white/8"]  { border-color: rgba(0, 0, 0, 0.10); }
 :root[data-scheme="light"] [class~="border-white/10"] { border-color: rgba(0, 0, 0, 0.12); }
 :root[data-scheme="light"] [class~="border-white/15"] { border-color: rgba(0, 0, 0, 0.14); }
 :root[data-scheme="light"] [class~="border-white/20"] { border-color: rgba(0, 0, 0, 0.16); }
+:root[data-scheme="light"] [class~="border-white/25"] { border-color: rgba(0, 0, 0, 0.18); }
 
 :root[data-scheme="light"] [class~="text-white"]    { color: rgba(0, 0, 0, 0.88); }
 :root[data-scheme="light"] [class~="text-white/90"] { color: rgba(0, 0, 0, 0.84); }
@@ -107,6 +109,54 @@
 :root[data-scheme="light"] [class~="text-white/25"] { color: rgba(0, 0, 0, 0.40); }
 :root[data-scheme="light"] [class~="text-white/20"] { color: rgba(0, 0, 0, 0.40); }
 :root[data-scheme="light"] [class~="text-white/15"] { color: rgba(0, 0, 0, 0.38); }
+
+/* text-white/85 is intentionally NOT blanket-inverted: several usages sit on
+   dark translucent backgrounds (bg-black/40, bg-[#1a1b2e]) and dark gradients
+   that stay dark in light mode and need white text for legibility. The
+   WallpaperPicker tile is the one context where the background can go light,
+   so it gets a scoped rule keyed on the dialog's aria-label. */
+:root[data-scheme="light"] [aria-label="Change Wallpaper"] [class~="text-white/85"] { color: rgba(0, 0, 0, 0.81); }
+
+/* Arbitrary-value overlays (bg-white/[0.04], border-white/[0.06], …).
+   The plain-fraction rules above cover `bg-white/5` & friends, but Tailwind's
+   arbitrary-value form produces a distinct class token that matches none of
+   those selectors — and the shared primitives (card, button, tabs) plus ~126
+   app surfaces use exactly this form. Invert 1:1: an additive white overlay at
+   alpha a becomes a subtractive black overlay at the same alpha, so it reads on
+   the light graphite background instead of vanishing. */
+:root[data-scheme="light"] [class~="bg-white/[0.01]"] { background-color: rgba(0, 0, 0, 0.01); }
+:root[data-scheme="light"] [class~="bg-white/[0.02]"] { background-color: rgba(0, 0, 0, 0.02); }
+:root[data-scheme="light"] [class~="bg-white/[0.03]"] { background-color: rgba(0, 0, 0, 0.03); }
+:root[data-scheme="light"] [class~="bg-white/[0.04]"] { background-color: rgba(0, 0, 0, 0.04); }
+:root[data-scheme="light"] [class~="bg-white/[0.05]"] { background-color: rgba(0, 0, 0, 0.05); }
+:root[data-scheme="light"] [class~="bg-white/[0.06]"] { background-color: rgba(0, 0, 0, 0.06); }
+:root[data-scheme="light"] [class~="bg-white/[0.07]"] { background-color: rgba(0, 0, 0, 0.07); }
+:root[data-scheme="light"] [class~="bg-white/[0.08]"] { background-color: rgba(0, 0, 0, 0.08); }
+:root[data-scheme="light"] [class~="bg-white/[0.1]"]  { background-color: rgba(0, 0, 0, 0.1); }
+
+/* Variant-prefixed arbitrary overlay: TabsTrigger's active state uses
+   `data-[state=active]:bg-white/[0.08]`, a distinct class token that the bare
+   `[class~="bg-white/[0.08]"]` rule above does NOT match (the prefix is part
+   of the token). Without this the active tab keeps its white tint and vanishes
+   on the light background. Guard with [data-state] so only the *active* trigger
+   inverts — every trigger carries the class token, but only the active one sets
+   data-state="active". */
+:root[data-scheme="light"] [data-state="active"][class~="data-[state=active]:bg-white/[0.08]"] { background-color: rgba(0, 0, 0, 0.08); }
+:root[data-scheme="light"] [data-state="unchecked"][class~="data-[state=unchecked]:bg-white/10"] { background-color: rgba(0, 0, 0, 0.06); }
+
+:root[data-scheme="light"] [class~="border-white/[0.04]"] { border-color: rgba(0, 0, 0, 0.04); }
+:root[data-scheme="light"] [class~="border-white/[0.06]"] { border-color: rgba(0, 0, 0, 0.06); }
+:root[data-scheme="light"] [class~="border-white/[0.08]"] { border-color: rgba(0, 0, 0, 0.08); }
+:root[data-scheme="light"] [class~="border-white/[0.18]"] { border-color: rgba(0, 0, 0, 0.18); }
+
+/* Divide overlay: `divide-white/[0.04]` colours the row separators, which
+   Tailwind targets with `> :not([hidden]) ~ :not([hidden])` on the *children*
+   of the element carrying the class — not the element itself. The inversion
+   must re-target those same children, or the file/archive row dividers render
+   white-on-light and vanish. No plain-fraction `divide-white/N` rule exists, so
+   there is no arbitrary counterpart yet either; add it here. */
+:root[data-scheme="light"] [class~="divide-white/[0.04]"] > :not([hidden]) ~ :not([hidden]) { border-color: rgba(0, 0, 0, 0.04); }
+:root[data-scheme="light"] [class~="divide-white/5"] > :not([hidden]) ~ :not([hidden]) { border-color: rgba(0, 0, 0, 0.08); }
 
 /* Slate accent fills — light-scheme values (mirror the approved Messages
    mockup): a touch cooler/darker so tinted surfaces and the unread badge
@@ -124,7 +174,34 @@
    does not flatten under the base-state override. */
 :root[data-scheme="light"] [class~="hover:bg-white/5"]:hover  { background-color: rgba(0, 0, 0, 0.05); }
 :root[data-scheme="light"] [class~="hover:bg-white/10"]:hover { background-color: rgba(0, 0, 0, 0.07); }
-:root[data-scheme="light"] [class~="hover:bg-white/[0.06]"]:hover { background-color: rgba(0, 0, 0, 0.05); }
+:root[data-scheme="light"] [class~="hover:bg-white/3"]:hover  { background-color: rgba(0, 0, 0, 0.03); }
+:root[data-scheme="light"] [class~="hover:bg-white/8"]:hover  { background-color: rgba(0, 0, 0, 0.08); }
+:root[data-scheme="light"] [class~="hover:bg-white/15"]:hover { background-color: rgba(0, 0, 0, 0.08); }
+:root[data-scheme="light"] [class~="hover:bg-white/20"]:hover { background-color: rgba(0, 0, 0, 0.10); }
+/* Arbitrary-value hover overlays — same 1:1 inversion as the base rules above,
+   so the hover affordance survives the light-scheme flip. */
+:root[data-scheme="light"] [class~="hover:bg-white/[0.03]"]:hover { background-color: rgba(0, 0, 0, 0.03); }
+:root[data-scheme="light"] [class~="hover:bg-white/[0.04]"]:hover { background-color: rgba(0, 0, 0, 0.04); }
+:root[data-scheme="light"] [class~="hover:bg-white/[0.05]"]:hover { background-color: rgba(0, 0, 0, 0.05); }
+:root[data-scheme="light"] [class~="hover:bg-white/[0.06]"]:hover { background-color: rgba(0, 0, 0, 0.06); }
+:root[data-scheme="light"] [class~="hover:bg-white/[0.08]"]:hover { background-color: rgba(0, 0, 0, 0.08); }
+:root[data-scheme="light"] [class~="hover:bg-white/[0.1]"]:hover  { background-color: rgba(0, 0, 0, 0.1); }
+:root[data-scheme="light"] [class~="hover:border-white/[0.06]"]:hover { border-color: rgba(0, 0, 0, 0.06); }
+:root[data-scheme="light"] [class~="hover:border-white/15"]:hover { border-color: rgba(0, 0, 0, 0.14); }
+:root[data-scheme="light"] [class~="hover:border-white/20"]:hover { border-color: rgba(0, 0, 0, 0.16); }
+:root[data-scheme="light"] [class~="hover:text-white/40"]:hover { color: rgba(0, 0, 0, 0.45); }
+:root[data-scheme="light"] [class~="hover:text-white/50"]:hover { color: rgba(0, 0, 0, 0.50); }
+
+/* Focus and active overlays: re-assert the inverted fill on :focus/:active so
+   the affordance survives the light-scheme flip. */
+:root[data-scheme="light"] [class~="focus:bg-white/5"]:focus { background-color: rgba(0, 0, 0, 0.04); }
+:root[data-scheme="light"] [class~="focus:bg-white/8"]:focus { background-color: rgba(0, 0, 0, 0.08); }
+:root[data-scheme="light"] [class~="focus:border-white/25"]:focus { border-color: rgba(0, 0, 0, 0.16); }
+:root[data-scheme="light"] [class~="focus:border-white/30"]:focus { border-color: rgba(0, 0, 0, 0.18); }
+:root[data-scheme="light"] [class~="focus:ring-white/20"]:focus { --tw-ring-color: rgba(0, 0, 0, 0.2); }
+:root[data-scheme="light"] [class~="active:bg-white/10"]:active { background-color: rgba(0, 0, 0, 0.06); }
+:root[data-scheme="light"] [class~="active:bg-white/20"]:active { background-color: rgba(0, 0, 0, 0.10); }
+:root[data-scheme="light"] [class~="placeholder:text-white/40"]::placeholder { color: rgba(0, 0, 0, 0.45); }
 
 /* Safari backdrop-filter repaint guard
    ====================================
@@ -307,6 +384,7 @@
   --board-status-ready: #64d2ff;
   --board-status-claimed: #ffb340;
   --board-status-closed: #30d158;
+  --board-status-quarantined: #ff453a;
 }
 
 /* ==================================================================

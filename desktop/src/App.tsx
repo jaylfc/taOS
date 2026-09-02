@@ -15,7 +15,7 @@ import { useOnAuthReady } from "@/hooks/use-on-auth-ready";
 import { usePushClickHandler } from "@/hooks/use-push-click";
 import { useProcessStore } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
-import { getApp, resolvePinnedRedirect } from "@/registry/app-registry";
+import { getApp } from "@/registry/app-registry";
 import { MobileDock } from "@/components/mobile/MobileDock";
 import { CardSwitcher } from "@/components/mobile/CardSwitcher";
 import { MobileTopBar } from "@/components/mobile/MobileTopBar";
@@ -99,11 +99,7 @@ function SystemShortcuts({ toggleSearch, toggleLaunchpad, toggleAssistant }: Sys
     const appId = pinned[n];
     if (!appId) return;
     const app = getApp(appId);
-    if (app) {
-      const redirect = resolvePinnedRedirect(appId);
-      const props = redirect?.section ? { section: redirect.section } : undefined;
-      openWindow(appId, app.defaultSize, props);
-    }
+    if (app) openWindow(appId, app.defaultSize);
   }, [pinned, openWindow]);
 
   useShortcut("Ctrl+1", useCallback(() => openPinned(0), [openPinned]), "Open pinned app 1", "system");

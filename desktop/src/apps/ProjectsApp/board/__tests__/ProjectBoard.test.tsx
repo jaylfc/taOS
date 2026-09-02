@@ -25,4 +25,29 @@ describe("ProjectBoard", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /Kanban/ }));
     expect(screen.getByRole("tab", { name: /Kanban/ })).toHaveAttribute("aria-selected", "true");
   });
+
+  it("renders a Quarantined column with quarantined tasks in Kanban mode", async () => {
+    vi.spyOn(projectsApi.tasks, "list").mockImplementation((_pid: string, status?: string) => {
+      if (status === "quarantined") return Promise.resolve([{ id: "tq1", title: "Q task", status: "quarantined", labels: [], priority: 1, strike_count: 2, latest_strike: { step: "bad" } } as any]);
+      return Promise.resolve([]);
+    });
+    render(<ProjectBoard projectId="p1" currentUserId="u1" isLead />);
+    fireEvent.click(await screen.findByRole("tab", { name: /Kanban/ }));
+    await waitFor(() => {
+      expect(screen.getByRole("region", { name: /Quarantined/ })).toBeInTheDocument();
+      expect(screen.getByText("Q task")).toBeInTheDocument();
+    });
+  });
+
+  it("shows unquarantine button on quarantined cards for leads", async () => {
+    vi.spyOn(projectsApi.tasks, "list").mockImplementation((_pid: string, status?: string) => {
+      if (status === "quarantined") return Promise.resolve([{ id: "tq1", title: "Q task", status: "quarantined", labels: [], priority: 1, strike_count: 1, latest_strike: { step: "boom" } } as any]);
+      return Promise.resolve([]);
+    });
+    render(<ProjectBoard projectId="p1" currentUserId="u1" isLead />);
+    fireEvent.click(await screen.findByRole("tab", { name: /Kanban/ }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Unquarantine task tq1/i })).toBeInTheDocument();
+    });
+  });
 });

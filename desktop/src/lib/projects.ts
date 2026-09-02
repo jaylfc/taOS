@@ -31,7 +31,7 @@ export type ProjectTask = {
   parent_task_id: string | null;
   title: string;
   body: string;
-  status: "open" | "claimed" | "closed" | "cancelled";
+  status: "open" | "claimed" | "closed" | "cancelled" | "quarantined";
   priority: number;
   labels: string[];
   assignee_id: string | null;
@@ -44,6 +44,8 @@ export type ProjectTask = {
   created_by: string;
   created_at: number;
   updated_at: number;
+  strike_count?: number;
+  latest_strike?: { id: string; task_id: string; step: string; log_tail: string; actor: string; created_at: number } | null;
 };
 
 export type ElementType =
@@ -269,6 +271,10 @@ export const projectsApi = {
       http<ProjectTask>(`/api/projects/${pid}/tasks/${tid}`, {
         method: "PATCH",
         body: JSON.stringify(patch),
+      }),
+    unquarantine: (pid: string, tid: string) =>
+      http<ProjectTask>(`/api/projects/${pid}/tasks/${tid}/unquarantine`, {
+        method: "POST",
       }),
     listComments: (pid: string, tid: string) =>
       http<{ items: ProjectComment[] }>(`/api/projects/${pid}/tasks/${tid}/comments`).then((r) => r.items),

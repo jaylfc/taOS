@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from tinyagentos.channel_hub.meshtastic_connector import MeshtasticConnector
-from tinyagentos.channel_hub.message import MAX_PAYLOAD, OutgoingMessage
+from tinyagentos.channel_hub.message import MAX_PAYLOAD, OutgoingMessage, _degrade, parse_inline_hints
 
 
 def _make_connector(sink: list[str] | None = None):
@@ -155,3 +155,65 @@ class TestMeshtasticSendPath:
                 await connector._send_response(OutgoingMessage(content="stub"))
             # _transmit must never be called with the oversize frame.
             assert sent == []
+
+
+class TestDegradeWithParsedHints:
+    """Regression tests: _degrade must operate on the structured fields that
+    parse_inline_hints populates, not on markup left in .content.
+
+    These tests use a real parse_inline_hints-built OutgoingMessage so the
+    fixture reflects the actual connector input and would catch both the
+    string-replace bug (buttons/images survive, no notice emitted) and the
+    character-slice bug (over-budget chunk on non-ASCII input).
+    """
+
+    def test_degrade_drops_rich_elements_from_parsed_message(self):
+        response = parse_inline_hints(
+            "[button:Yes:yes] Reboot the node? [image:/tmp/node.png]"
+        )
+        parts, notices = _degrade(response)
+
+        # Structured fields must be cleared.
+        assert response.buttons == [], f"buttons not dropped: {response.buttons}"
+        assert response.images == [], f"images not dropped: {response.images}"
+
+        # One-time notices must be emitted, not discarded.
+        assert "[button dropped: Meshtastic is text-only]" in notices
+        assert "[image dropped: Meshtastic is text-only]" in notices
+
+        # No markup may survive into emitted parts.
+        assert len(parts) >= 1
+        for part in parts:
+            assert "[button:" not in part
+            assert "[image:" not in part
+            assert len(part.encode("utf-8")) <= MAX_PAYLOAD
+
+    def test_degrade_chunks_non_ascii_within_byte_budget(self):
+        # 79 '日' characters = 237 raw bytes. Under character-based slicing
+        # the prefix "[part 1/1] " (12 bytes) pushes a single part to 249
+        # bytes, breaching the 237-byte wire budget. The correct byte-aware
+        # chunker splits this into two parts, each <= 237 bytes.
+        text = "日" * 79
+        response = parse_inline_hints(text + " [button:OK:ok]")
+        parts, notices = _degrade(response)
+
+        for part in parts:
+            byte_len = len(part.encode("utf-8"))
+            assert byte_len <= MAX_PAYLOAD, (
+                f"part over {MAX_PAYLOAD} bytes: {part!r} ({byte_len})"
+            )
+
+        # Reassembly must be byte-identical to the original text.
+        reencoded = "".join(p.split("] ", 1)[1] for p in parts).encode("utf-8")
+        assert reencoded == text.encode("utf-8")
+
+        # Button must be dropped and noticed even when the content is long.
+        assert "[button dropped: Meshtastic is text-only]" in notices
+        assert response.buttons == []
+
+    def test_degrade_parsed_hints_emits_no_notices_when_no_rich_elements(self):
+        response = parse_inline_hints("Just plain text")
+        parts, notices = _degrade(response)
+        assert notices == []
+        assert len(parts) == 1
+        assert parts[0] == "[part 1/1] Just plain text"

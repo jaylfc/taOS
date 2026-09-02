@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from tinyagentos.agent_token_auth import (
     PROJECT_SCOPE_MISMATCH_DETAIL,
+    check_agent_project_grants,
     check_agent_scope_for_project,
 )
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
@@ -29,6 +30,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+
+# The documented task status enum surfaced by the kanban read endpoints.  The
+# store itself is more permissive internally (it also tracks ``cancelled`` and
+# ``quarantined``), but the READ/aggregate API surface only advertises these
+# three and must reject anything else rather than silently filter to an empty
+# list (which would hide a caller's typo).
+_TASK_STATUS_ENUM = ("open", "claimed", "closed")
 
 
 async def _is_field_free(store, field: str, value: str) -> bool:
@@ -551,7 +559,12 @@ async def _require_task_in_project(
 
 
 async def _authorize_task_actor(
-    request: Request, pstore, project_id: str, scope: str = "project_tasks"
+    request: Request,
+    pstore,
+    project_id: str,
+    scope: str = "project_tasks",
+    agent_grants: "dict[str, dict] | None" = None,
+    agent_canonical_id: "str | None" = None,
 ) -> "tuple[str, bool, dict] | JSONResponse":
     """Resolve the actor for a task route that accepts EITHER a session
     owner/admin OR an approved external agent's registry JWT holding ``scope``
@@ -560,6 +573,16 @@ async def _authorize_task_actor(
     ``scope`` is a parameter because authoring uses a SEPARATE, narrower grant
     (``project_tasks_create``): project_tasks is documented and tested as read
     plus lifecycle plus comments, so creation must not ride on it.
+
+    ``agent_grants`` / ``agent_canonical_id`` are an optional fast path for the
+    cross-project aggregate: the caller resolves the agent's identity + grant
+    map ONCE (via ``check_agent_project_grants``) and passes the ``{project_id:
+    grant}`` lookup here so the per-project authorization is an O(1) dict
+    membership instead of re-verifying the token and re-fetching
+    ``list_grants`` for every project (an O(K) grant-store N+1).  The security
+    invariants are unchanged -- membership in the pre-built map is exactly the
+    same active-grant-bound-to-project predicate ``check_agent_scope_for_project``
+    enforces, and the identity/active/rotation checks already ran once upstream.
 
     Returns ``(actor_id, is_agent, project)`` on success, or a JSONResponse to
     return directly.  These routes take ``request: Request`` and auth INSIDE the
@@ -582,6 +605,21 @@ async def _authorize_task_actor(
         if isinstance(project_or_err, JSONResponse):
             return project_or_err
         return (user.user_id, False, project_or_err)
+
+    if agent_grants is not None:
+        # Grant-aware fast path (aggregate): the caller already verified the
+        # agent and built the active project_tasks -> grant map once.  A missing
+        # entry means "no active grant bound to this project" -> same
+        # existence-hiding 404 as the slow path, so it never confirms a
+        # project the agent is not entitled to.
+        if agent_canonical_id is None:
+            raise ValueError("canonical_id required with agent_grants")
+        if project_id not in agent_grants:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        project = await pstore.get_project(project_id)
+        if project is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return (agent_canonical_id, True, project)
 
     try:
         caller = await check_agent_scope_for_project(
@@ -750,18 +788,154 @@ async def list_tasks(
     return {"items": await store.list_tasks(project_id=project_id, status=status, element_id=element_id)}
 
 
+async def _caller_project_candidates(
+    request: Request, pstore
+) -> "tuple[list[dict], dict[str, dict] | None, str | None]":
+    """Candidate projects for the cross-project kanban aggregate.
+
+    This is scoped ENUMERATION, not authorization: it returns only projects the
+    caller could already name for itself, and the per-project
+    ``_authorize_task_actor`` gate applied by the aggregate route remains the
+    authoritative check (defence in depth).  It must never surface a project the
+    caller is not entitled to:
+
+      * session owner/admin -> own projects (``list_for_user``) or all (admin);
+      * registry-JWT agent   -> only projects it holds an active
+        ``project_tasks`` grant for (grant-gated, taOS #1862).
+
+    A caller with neither a session nor a Bearer never reaches this helper (the
+    auth middleware 401s first), so the empty fallbacks below are belt-and-braces
+    rather than the primary gate.
+
+    Returns ``(projects, agent_grants, canonical_id)``: for a session
+    owner/admin the last two are ``(None, None)``; for a registry-JWT agent
+    ``agent_grants`` is the active ``project_tasks`` -> grant map resolved by a
+    SINGLE ``check_agent_project_grants`` call (so the aggregate's per-project
+    re-check is O(1) rather than an O(K) grant-store N+1), and ``canonical_id``
+    is the verified agent identity.
+    """
+    uid = getattr(request.state, "user_id", None)
+    if uid:
+        user = CurrentUser(
+            user_id=uid, is_admin=bool(getattr(request.state, "is_admin", False))
+        )
+        if user.is_admin:
+            return await pstore.list_projects(status="active"), None, None
+        return await pstore.list_for_user(uid, status="active"), None, None
+
+    # No session: a registry-JWT agent (the middleware only passes a Bearer
+    # through on the allowlist and leaves user_id=None).  Resolve WHO the agent
+    # is AND its active project_tasks grants in one grant-store read.
+    canonical_id, grants_by_project = await check_agent_project_grants(
+        request, "project_tasks"
+    )
+    if not canonical_id:
+        return [], None, None
+    projects: list[dict] = []
+    for pid in grants_by_project:
+        p = await pstore.get_project(pid)
+        if p is not None:
+            projects.append(p)
+    return projects, grants_by_project, canonical_id
+
+
+@router.get("/api/projects/tasks/aggregate")
+async def list_tasks_aggregate(
+    request: Request,
+    status: str | None = None,
+):
+    """Cross-project aggregate of the caller's kanban boards (READ ONLY).
+
+    Returns every project the caller is authorized to see -- its own boards for
+    a session owner, or the boards it holds a ``project_tasks`` grant for as an
+    agent -- each with that project's tasks.  The per-project
+    ``_authorize_task_actor`` gate is applied to EVERY candidate, so a caller
+    entitled to project A can never receive project B in the aggregate (the
+    whole point of this endpoint).  ``status`` filters tasks to
+    ``open`` / ``claimed`` / ``closed`` and is validated up front (400 on
+    anything else), so a typo is surfaced rather than silently returning an
+    empty board.
+    """
+    if status is not None and status not in _TASK_STATUS_ENUM:
+        return JSONResponse(
+            {"error": f"invalid status {status!r}; must be one of open|claimed|closed"},
+            status_code=400,
+        )
+    pstore = request.app.state.project_store
+    store = request.app.state.project_task_store
+    candidates, agent_grants, agent_canonical_id = await _caller_project_candidates(
+        request, pstore
+    )
+    items: list[dict] = []
+    for project in candidates:
+        # The agent's grant map (and canonical_id) is resolved ONCE upstream and
+        # reused here so the per-project check is O(1); for a session caller
+        # agent_grants is None and _authorize_task_actor takes its normal path.
+        try:
+            auth = await _authorize_task_actor(
+                request,
+                pstore,
+                project["id"],
+                scope="project_tasks",
+                agent_grants=agent_grants,
+                agent_canonical_id=agent_canonical_id,
+            )
+        except HTTPException:
+            # Any per-project authorization failure (agent not active, token
+            # superseded, grant revoked mid-iteration, ...) is swallowed: a
+            # project the caller is not entitled to is simply omitted rather
+            # than aborting the whole aggregate with an unhandled 403/500 after
+            # some boards were already collected.
+            continue
+        if isinstance(auth, JSONResponse):
+            # Not authorized for THIS project -> excluded from the aggregate, so
+            # it cannot leak another project's board to the caller.
+            continue
+        # Re-check status inside the loop (TOCTOU defence): a project archived
+        # between the candidate listing and this per-project check must NOT leak
+        # into the response -- the aggregate contract is "active projects only".
+        # Read the FRESH object returned by _authorize_task_actor (auth[2]) rather
+        # than the stale `project` loop variable from the candidates snapshot,
+        # which may still report "active" after the project was archived.
+        fresh_project = auth[2]
+        if (fresh_project or {}).get("status") != "active":
+            continue
+        tasks = await store.list_tasks(project_id=project["id"], status=status)
+        items.append(
+            {
+                "project_id": project["id"],
+                "name": project.get("name"),
+                "slug": project.get("slug"),
+                "tasks": tasks,
+            }
+        )
+    return {"items": items}
+
+
 @router.get("/api/projects/{project_id}/tasks/ready")
 async def ready_tasks(
     project_id: str,
     request: Request,
     element_id: str | None = None,
+    limit: int = 50,
 ):
+    """List ready (open, unclaimed, unblocked) tasks for the project.
+
+    ``limit`` is clamped to ``[1, 500]`` in the store: a floor of 1 stops
+    ``?limit=0`` / negative inputs from being silently widened to unbounded
+    or the default 50 (the LIMIT -1 SQLite trap, see taosmd #415), and the
+    500 cap keeps the route from streaming an unreasonable window back to a
+    caller.  The view honours the ``blocked-on:<id>`` label convention
+    alongside ``task_relationships`` edges (defect tsk-wkah3z).
+    """
     pstore = request.app.state.project_store
     auth = await _authorize_task_actor(request, pstore, project_id)
     if isinstance(auth, JSONResponse):
         return auth
     store = request.app.state.project_task_store
-    return {"items": await store.list_ready_tasks(project_id=project_id, element_id=element_id)}
+    return {"items": await store.list_ready_tasks(
+        project_id=project_id, element_id=element_id, limit=limit
+    )}
 
 
 @router.get("/api/projects/{project_id}/tasks/{task_id}")
@@ -1009,7 +1183,7 @@ async def close_task(
     # Ownership-guard bypass: a card claimed by one agent may still be closed
     # by the project lead (lead_member_id), the project owner (user_id), or a
     # session admin.  The lead is typically an AGENT registry id, so an
-    # admin/owner session caller (a USER id) can never equal it — widen the
+    # admin/owner session caller (a USER id) can never equal it -- widen the
     # bypass to cover all three (issue #2191).
     force = (
         project.get("lead_member_id") == actor_id
@@ -1205,6 +1379,76 @@ class AddCommentIn(_TaskRequestModelMixin, BaseModel):
     # canonical_id. A session caller must still supply it (route enforces).
     author_id: str | None = None
     replies_to_comment_id: str | None = None
+
+
+class CreateChecklistItemIn(BaseModel):
+    text: str
+
+
+# ---------------------------------------------------------------------------
+# Checklist routes
+# ---------------------------------------------------------------------------
+
+@router.post("/api/projects/{project_id}/tasks/{task_id}/checklist-items")
+async def create_checklist_item(
+    project_id: str,
+    task_id: str,
+    payload: CreateChecklistItemIn,
+    request: Request,
+):
+    """Create a checklist item for a task.
+
+    Authorized as session owner/admin or an agent holding
+    ``project_tasks_create`` on this project.
+    """
+    pstore = request.app.state.project_store
+    auth = await _authorize_task_actor(
+        request, pstore, project_id, scope="project_tasks_create"
+    )
+    if isinstance(auth, JSONResponse):
+        return auth
+    actor_id, _is_agent, _project = auth
+    store = request.app.state.project_task_store
+    t = await _require_task_in_project(store, project_id, task_id)
+    if isinstance(t, JSONResponse):
+        return t
+    item = await store.create_checklist_item(
+        task_id=task_id,
+        text=payload.text,
+        created_by=actor_id,
+    )
+    _beads_mark_dirty(request, project_id)
+    await pstore.log_activity(
+        project_id, actor_id, "checklist.item.created", {"task_id": task_id, "item_id": item["id"], "text": item["text"]}
+    )
+    return item
+
+
+@router.get("/api/projects/{project_id}/tasks/{task_id}/checklist-items")
+async def list_checklist_items(
+    project_id: str,
+    task_id: str,
+    request: Request,
+    include_archived: bool = False,
+):
+    """List checklist items for a task.
+
+    By default shows only non-archived items. Set ``include_archived=true``
+    to see all items including archived ones.
+    """
+    pstore = request.app.state.project_store
+    auth = await _authorize_task_actor(request, pstore, project_id)
+    if isinstance(auth, JSONResponse):
+        return auth
+    store = request.app.state.project_task_store
+    guard = await _require_task_in_project(store, project_id, task_id)
+    if isinstance(guard, JSONResponse):
+        return guard
+    items = await store.list_checklist_items(
+        task_id=task_id,
+        include_archived=include_archived,
+    )
+    return {"items": items}
 
 
 @router.post("/api/projects/{project_id}/tasks/{task_id}/comments")

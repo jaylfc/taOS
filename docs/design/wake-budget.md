@@ -74,4 +74,4 @@ not consult the wake budget. That is a deliberate follow-up.
 Rule 6 (2 scheduled checks/day, acked by website-dev + taosmd-dev on the
 bus, msgs 2029/2030) remains the fleet default. Existing configs without a
 `wake_budget` block inherit the 2/day default automatically via
-`normalize_agent`.
+`load_config()` and `AppConfig`.

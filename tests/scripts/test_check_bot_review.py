@@ -1314,3 +1314,123 @@ class TestReconcileFailsClosedOnMutateFailure:
                 "jaylfc", "taOS", self.HEAD_SHA, "success")
         methods = [c.kwargs.get("method", "POST") for c in mutate.call_args_list]
         assert "POST" in methods
+
+
+class TestJobOwnedRunsSkipped:
+    """Runner-owned job check runs are not writable and must not pin the
+    gate red or trigger a PATCH error."""
+
+    HEAD_SHA = "1baa21a" + "0" * 34
+
+    @staticmethod
+    def _job_run(run_id, conclusion, started_at):
+        return {
+            "id": run_id,
+            "name": "bot-review-gate",
+            "head_sha": "1baa21a",
+            "status": "completed",
+            "conclusion": conclusion,
+            "started_at": started_at,
+            "completed_at": started_at,
+            "external_id": "job-guid-" + str(run_id),
+        }
+
+    @staticmethod
+    def _script_run(run_id, conclusion, started_at):
+        return {
+            "id": run_id,
+            "name": "Bot review gate",
+            "head_sha": "1baa21a",
+            "status": "completed",
+            "conclusion": conclusion,
+            "started_at": started_at,
+            "completed_at": started_at,
+        }
+
+    @staticmethod
+    def _mock_list(check_runs):
+        def side_effect(url, token=None):
+            return [{"total_count": len(check_runs), "check_runs": check_runs}]
+        return side_effect
+
+    def test_job_owned_failure_older_than_job_owned_success_exits_0(
+        self, check_mod, capsys
+    ) -> None:
+        """Acceptance #1: job-owned stale FAILURE with newer job-owned SUCCESS
+        must not pin the gate red. The script makes zero PATCH calls."""
+        items = [
+            check_mod.CRItem(
+                id=1, body="## Review\n\nFound an issue.", is_review=True,
+                review_state="COMMENTED",
+            ),
+        ]
+        runs = [
+            self._job_run(1001, "failure", "2026-08-17T21:30:58Z"),
+            self._job_run(1002, "success", "2026-08-27T12:08:17Z"),
+        ]
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "_api_get",
+                          side_effect=self._mock_list(runs)), \
+             patch.object(check_mod, "_api_mutate") as mutate:
+            rc = check_mod.main([
+                "2692", "--owner", "jaylfc", "--repo", "taOS",
+                "--head-sha", self.HEAD_SHA,
+            ])
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "PASS" in captured.out
+        methods = [c.kwargs.get("method", "POST") for c in mutate.call_args_list]
+        assert "PATCH" not in methods
+
+    def test_job_owned_stale_failure_no_patch_error(
+        self, check_mod, capsys
+    ) -> None:
+        """Acceptance #2: job-owned stale FAILURE must not produce a PATCH
+        error, and the exit follows the fresh verdict."""
+        items = [
+            check_mod.CRItem(
+                id=1, body="## Review\n\nFound an issue.", is_review=True,
+                review_state="COMMENTED",
+            ),
+        ]
+        runs = [self._job_run(1001, "failure", "2026-08-17T21:30:58Z")]
+        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+             patch.object(check_mod, "_api_get",
+                          side_effect=self._mock_list(runs)), \
+             patch.object(check_mod, "_api_mutate", return_value=False) as mutate:
+            rc = check_mod.main([
+                "2692", "--owner", "jaylfc", "--repo", "taOS",
+                "--head-sha", self.HEAD_SHA,
+            ])
+        captured = capsys.readouterr()
+        assert "could not PATCH" not in captured.out
+        assert "could not PATCH" not in captured.err
+        assert rc == 0
+        methods = [c.kwargs.get("method", "POST") for c in mutate.call_args_list]
+        assert "PATCH" not in methods
+
+    def test_latest_non_job_owned_failure_still_exits_1(
+        self, check_mod, capsys
+    ) -> None:
+        """Acceptance #3: a genuine writable FAILURE is still red -- fail-closed
+        is retained for the script's own runs."""
+        items = [
+            check_mod.CRItem(
+                id=1, body="## Review\n\nFound an issue.", is_review=True,
+                review_state="COMMENTED",
+            ),
+        ]
+        runs = [
+            self._job_run(1001, "failure", "2026-08-17T21:30:58Z"),
+            self._script_run(1002, "failure", "2026-08-27T12:08:17Z"),
+        ]
+        with patch.object(check_mod, "_api_get",
+                          side_effect=self._mock_list(runs)), \
+             patch.object(check_mod, "_api_mutate", return_value=False) as mutate:
+            rc = check_mod.main([
+                "2692", "--owner", "jaylfc", "--repo", "taOS",
+                "--head-sha", self.HEAD_SHA,
+            ])
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "FAIL" in captured.out or "stale" in captured.out

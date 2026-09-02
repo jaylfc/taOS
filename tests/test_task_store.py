@@ -691,3 +691,40 @@ async def test_quarantine_after_reopen_records_from_status_open(tmp_path):
     finally:
         await s.close()
         await audit.close()
+
+
+@pytest.mark.asyncio
+async def test_quarantine_event_payload_carries_strike_metadata(tmp_path):
+    """The task.quarantined SSE payload must carry strike_count and latest_strike.
+
+    The board's frontend relies on these fields to render the quarantine badge
+    without a refetch; without them the badge reports 0 strikes until reload
+    (regression tsk-dxqu7g / PR #2599 defect 2). The neighbouring
+    unquarantine payload carries them too, so the producer must surface both.
+    """
+    from tinyagentos.projects.strike_store import StrikeStore
+
+    mock_broker = AsyncMock()
+    s = ProjectTaskStore(tmp_path / "tasks.db", broker=mock_broker)
+    await s.init()
+    strikes = StrikeStore(tmp_path / "strikes.db")
+    await strikes.init()
+    s._strikes = strikes
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        await strikes.record_strike(task["id"], "verify", log_tail="boom")
+        await strikes.record_strike(task["id"], "verify", log_tail="boom 2")
+        mock_broker.reset_mock()
+        ok = await s.quarantine_task(task["id"], "system")
+        assert ok is True
+        mock_broker.publish.assert_called_once()
+        event = mock_broker.publish.call_args[0][1]
+        assert event.kind == "task.quarantined"
+        payload = event.payload
+        assert payload["id"] == task["id"]
+        assert payload["strike_count"] == 2
+        assert payload["latest_strike"] is not None
+        assert payload["latest_strike"]["log_tail"] == "boom 2"
+    finally:
+        await s.close()
+        await strikes.close()

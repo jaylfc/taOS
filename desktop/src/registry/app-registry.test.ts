@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { AppManifest } from "./app-registry";
-import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, prefetchApp, resolveApp, apps, APP_REDIRECTS, resolvePinnedId, resolvePinnedRedirect, getPinnedRedirectByAppId } from "./app-registry";
+import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, isDefaultSurfaceApp, prefetchApp, resolveApp, apps, APP_REDIRECTS, resolvePinnedId } from "./app-registry";
 
 describe("resolveApp (deep-navigation token resolver)", () => {
   it("resolves an exact app id", () => {
@@ -103,6 +103,35 @@ describe("file handler tiering", () => {
       const app = getApp(id);
       expect(app?.tier).toBe(4);
       expect(app?.handler).toBe(true);
+    }
+  });
+});
+
+describe("isDefaultSurfaceApp (shared default-surface tier rule)", () => {
+  it("includes tier 1 and tier 2 apps", () => {
+    for (const id of ["messages", "models", "cluster", "secrets"]) {
+      expect(isDefaultSurfaceApp(getApp(id)!), `app "${id}" should be a default-surface app`).toBe(true);
+    }
+  });
+
+  it("excludes tier 3 apps (discoverable via Store/search)", () => {
+    for (const id of ["providers", "mcp", "channels", "notification-archive"]) {
+      expect(isDefaultSurfaceApp(getApp(id)!), `tier-3 app "${id}" should NOT be a default-surface app`).toBe(false);
+    }
+  });
+
+  it("excludes tier 4 file handlers", () => {
+    for (const id of ["media-player", "text-editor", "image-viewer"]) {
+      const app = getApp(id)!;
+      expect(app.tier).toBe(4);
+      expect(app.handler).toBe(true);
+      expect(isDefaultSurfaceApp(app), `tier-4 handler "${id}" should NOT be a default-surface app`).toBe(false);
+    }
+  });
+
+  it("excludes optional (Store-installable) apps", () => {
+    for (const id of ["reddit", "coding-studio"]) {
+      expect(isDefaultSurfaceApp(getApp(id)!), `optional app "${id}" should NOT be a default-surface app`).toBe(false);
     }
   });
 });
@@ -230,8 +259,8 @@ describe("APP_REDIRECTS", () => {
     expect(typeof APP_REDIRECTS).toBe("object");
   });
 
-  it("redirects notification-archive to the notifications app with archive section", () => {
-    expect(APP_REDIRECTS["notification-archive"]).toEqual({ appId: "notifications", section: "archive" });
+  it("redirects notification-archive to the notifications app", () => {
+    expect(APP_REDIRECTS["notification-archive"]).toEqual({ appId: "notifications" });
   });
 });
 
@@ -258,45 +287,6 @@ describe("resolvePinnedId", () => {
 
   it("resolves notification-archive to notifications via APP_REDIRECTS", () => {
     expect(resolvePinnedId("notification-archive")).toBe("notifications");
-  });
-});
-
-describe("resolvePinnedRedirect", () => {
-  it("returns the full redirect object for a pinned redirect", () => {
-    expect(resolvePinnedRedirect("notification-archive")).toEqual({
-      appId: "notifications",
-      section: "archive",
-    });
-  });
-
-  it("returns undefined for an id with no redirect", () => {
-    expect(resolvePinnedRedirect("messages")).toBeUndefined();
-  });
-
-  it("returns undefined for a native notifications pin", () => {
-    // Regression for tsk-3hei4g CodeRabbit finding #2: the dock's source-pin
-    // lookup must NOT carry the archive section onto a native "notifications"
-    // pin; only the migrated "notification-archive" source id is a redirect.
-    expect(resolvePinnedRedirect("notifications")).toBeUndefined();
-  });
-
-  it("returns undefined for a redirect to a non-existent app", () => {
-    APP_REDIRECTS["legacy-redirect"] = { appId: "does-not-exist", section: "archive" };
-    expect(resolvePinnedRedirect("legacy-redirect")).toBeUndefined();
-    delete APP_REDIRECTS["legacy-redirect"];
-  });
-});
-
-describe("getPinnedRedirectByAppId", () => {
-  it("returns the redirect info for an appId that is a redirect target", () => {
-    expect(getPinnedRedirectByAppId("notifications")).toEqual({
-      id: "notification-archive",
-      section: "archive",
-    });
-  });
-
-  it("returns undefined for an appId with no redirect", () => {
-    expect(getPinnedRedirectByAppId("messages")).toBeUndefined();
   });
 });
 

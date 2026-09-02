@@ -56,10 +56,24 @@ _OBSERVATORY_PATHS = frozenset({
     "/api/observatory/fleet",
     "/api/observatory/wake-budget",
 })
+# Container provisioning request: an agent may POST its own registry JWT
+# (identity verified by check_agent_identity in the route; no scope grant
+# required since any active agent may request its own container). The route
+# resolves the canonical_id from the token and never trusts a body field for
+# identity, so a token cannot bill another agent's quota.
+_CONTAINER_REQUEST_PATHS = frozenset({
+    "/api/containers/requests",
+})
 # Every path that accepts a registry JWT in place of the admin session.  The
 # passthrough is allowlisted to exactly these paths -- a registry JWT must never
 # authenticate any other route (no skeleton key).
-_AGENT_TOKEN_PATHS = _REGISTRY_FEED_PATHS | _A2A_BUS_READ_PATHS | _A2A_BUS_WRITE_PATHS | _OBSERVATORY_PATHS
+_AGENT_TOKEN_PATHS = (
+    _REGISTRY_FEED_PATHS
+    | _A2A_BUS_READ_PATHS
+    | _A2A_BUS_WRITE_PATHS
+    | _OBSERVATORY_PATHS
+    | _CONTAINER_REQUEST_PATHS
+)
 
 # Project kanban routes an agent may reach with its own registry JWT (scope
 # project_tasks, verified + project-bound by the route).  These are DYNAMIC
@@ -75,6 +89,11 @@ _AGENT_TOKEN_PATHS = _REGISTRY_FEED_PATHS | _A2A_BUS_READ_PATHS | _A2A_BUS_WRITE
 _SEG = r"[^/]+"
 _AGENT_TASK_ROUTES = (
     ("GET", re.compile(rf"^/api/projects/{_SEG}/tasks$")),
+    # Cross-project kanban aggregate (READ ONLY): a static path (no project
+    # segment) that returns every board the token holds a project_tasks grant
+    # for. Reaching the handler is not authorization -- it verifies the JWT +
+    # per-project grant via _authorize_task_actor for every candidate project.
+    ("GET", re.compile(r"^/api/projects/tasks/aggregate$")),
     # Task CREATION, gated by the SEPARATE project_tasks_create scope (not
     # project_tasks, which stays read + lifecycle + comments per Invariant 2+5).
     # Reaching the handler is not authorisation: it then verifies the JWT, the
@@ -85,9 +104,10 @@ _AGENT_TASK_ROUTES = (
     ("GET", re.compile(rf"^/api/projects/tasks/{_SEG}/context$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/comments$")),
     ("POST", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/comments$")),
-    # Task checklist items (list + create), gated by project_tasks_create in the
-    # handler (_authorize_task_actor). Reaching the handler is not
-    # authorisation: it then verifies the JWT, the project binding, and that
+    # Task checklist items (list + create), gated in the handler
+    # (_authorize_task_actor): POST (create) requires project_tasks_create,
+    # GET (list) takes the default project_tasks grant. Reaching the handler is
+    # not authorisation: it then verifies the JWT, the project binding, and the
     # scope. There is no archive route, so nothing beyond list + create is
     # listed here.
     ("GET", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/checklist-items$")),
@@ -588,6 +608,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.state.user_id = None
                     request.state.is_admin = False
                     request.state.via = "local_token"
+                bound_agent = auth_mgr.get_local_token_agent(presented)
+                if bound_agent:
+                    request.state.agent_name = bound_agent
                 return await call_next(request)
 
         # 2) Registry JWT on allowlisted paths (passthrough; route verifies

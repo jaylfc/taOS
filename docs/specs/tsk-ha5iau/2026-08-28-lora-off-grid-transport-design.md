@@ -3,7 +3,7 @@
 ## Executive Summary
 This design note addresses the requirement to add Meshtastic as a first-class platform in the taOS channel hub, routing messages to the correct agent via the existing `MessageRouter`. The solution adds a `meshtastic_connector.py` alongside the seven existing connectors and a Talk app surface, inheriting routing, archive and the existing app for free. The hard work is degradation policy for the 237-byte text-only link, not transport plumbing.
 
-## 1. Enforced Security Model for the Bridge
+## 1. Enforced Security Model for the Connector
 
 ### Core Principles
 - **Zero Trust Extension**: The connector does NOT inherit channel hub trust. Messages must be authenticated at the connector ingress before reaching the router.
@@ -12,23 +12,23 @@ This design note addresses the requirement to add Meshtastic as a first-class pl
 - **Payload Integrity**: AES-256-GCM encryption with per-frame nonces for message integrity.
 
 ### Security Architecture
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │  Source (LoRa)                                              │
 │  • Signed payload (device key)                              │
 │  • Sequence number + timestamp                             │
 │  • AES-256-GCM encrypted                                        │
 └─────────────────┬-------------------------------------------┘
-                   │ Verify signature & decrypt
+                    │ Verify signature & decrypt
 ┌─────────────────▼-------------------------------------------─┐
 │  meshtastic_connector.py                                    │
 │  • Device key registry                                       │
 │  • Sequence number validation                                 │
 │  • Timestamp freshness check                                  │
 │  • If verification fails: drop & log                        │
-└─────────────────┬-------------------------------------------─┘
-                   │ Emits IncomingMessage with platform="meshtastic"
-                   │ Routes via MessageRouter.get_agent_for_channel
+└─────────────────┬-------------------------------------------┘
+                    │ Emits IncomingMessage with platform="meshtastic"
+                    │ Routes via MessageRouter.get_agent_for_channel
 ┌─────────────────▼-------------------------------------------─┐
 │  channel_hub/router.py MessageRouter                        │
 │  • assign_channel(platform="meshtastic", bot_id, agent_name) │
@@ -42,13 +42,13 @@ This design note addresses the requirement to add Meshtastic as a first-class pl
 **Unsigned Frames:**
 - Dropped immediately at connector ingress
 - Logged with device identifier and geolocation (if available)
-- Alert generation: `"LoRa security breach: unsigned frame from <MAC>"
+- Alert generation: `"LoRa security breach: unsigned frame from <MAC>"`
 
 **Replayed Frames:**
 - Detected via sequence number gap analysis
 - Old frames (timestamp > 5 minutes or sequence number < last_seen) rejected
 - Connector maintains sliding window per device
-- Alert generation: `"LoRa replay detected from <MAC> (seq <n>)"
+- Alert generation: `"LoRa replay detected from <MAC> (seq <n>)"`
 
 **Corrupted Frames:**
 - MAC validation failure (AES-GCM tag mismatch)
@@ -77,20 +77,34 @@ Map one Meshtastic channel (or node) to one agent and addressing costs ZERO byte
 `OutgoingMessage` carries buttons, images and cards, and `message.py:parse_inline_hints` parses `[button:Label:action]` and `[image:path]` out of agent replies. NONE of that survives a text-only ~237 byte link. The connector needs an explicit policy for rich elements, long replies, and a hard per-message size budget enforced BEFORE transmit. An agent that answers in 2KB of prose must not silently become a 12-packet flood.
 
 ### Rich Element Policy
+
 | Element | Policy |
 |---------|--------|
-| Buttons | Drop. Log a one-time notice per conversation: `"[button dropped: Meshtastic is text-only]"` |
-| Images | Drop. Log a one-time notice per conversation: `"[image dropped: Meshtastic is text-only]"` |
-| Cards | Drop. Log a one-time notice per conversation: `"[card dropped: Meshtastic is text-only]"` |
+| Buttons | Drop. Emit one notice per response: `"[button dropped: Meshtastic is text-only]"` |
+| Images | Drop. Emit one notice per response: `"[image dropped: Meshtastic is text-only]"` |
+| Cards | Drop. Emit one notice per response: `"[card dropped: Meshtastic is text-only]"` |
+
+Notices are per RESPONSE, not per conversation: `_degrade` builds a fresh notice list for
+each `OutgoingMessage` and the connector transmits each notice as its own frame. There is
+no conversation-scoped suppression; if repeats prove noisy in the field, suppression is a
+follow-up, not part of this contract.
 
 ### Long Reply Policy
+
 | Length | Policy |
 |--------|--------|
-| <= 237 bytes | Transmit as-is |
-| > 237 bytes | Chunk into 237-byte segments with a `[part N/M]` prefix; reassemble on receive if needed |
+| Fits one frame | Transmit as a single `[part 1/1] `-prefixed frame (prefix bytes count against the budget, so the content cutover sits at 237 minus the prefix length, not at 237) |
+| Larger | Chunk into `[part N/M] `-prefixed frames, each <= 237 payload bytes |
+
+Every emitted CONTENT frame carries the `[part N/M] ` prefix, including single-part
+replies; notice frames (dropped buttons/images/cards) are transmitted before the content
+parts and carry no prefix.
+Receive-side reassembly is NOT implemented: `handle_incoming` routes each packet as its
+own message. Parts arrive as separate messages; reassembly is a hardware-phase follow-up
+(see section 5), not a promise of this connector.
 
 ### Hard Size Budget
-Before transmit, every frame is verified to be <= 237 bytes on the wire. Long replies are chunked with a `[part N/M]` prefix whose denominator always equals the emitted part count; the connector guard raises (rather than shipping an over-budget frame) if any part still exceeds the limit after degradation.
+Before transmit, every frame's text payload is verified to be <= 237 bytes — 237 is the Meshtastic application `Data.payload` limit, not the full on-wire frame (the 16-byte packet header rides outside it; the total LoRa frame caps at 255 bytes). The connector validates the UTF-8 text bytes only; the injected transport owns the serialized-frame limit at its own boundary. Long replies are chunked with a `[part N/M]` prefix whose denominator always equals the emitted part count; the connector guard raises (rather than shipping an over-budget frame) if any part still exceeds the limit after degradation.
 
 ### Example Degradation
 ```python
@@ -181,8 +195,13 @@ Every other connector except webchat/webhook puts a company in the path. The sha
 - [ ] Logging and monitoring for security events and degradation decisions
 - [ ] Test suite for connector functionality, security properties, and degradation policy
 
+Both modules run ONE shared operating configuration — same region/frequency slot, same
+modem preset (spreading factor/bandwidth), same channel name and PSK — pinned in the radio
+parameter configuration above. Two radios on different frequency slots cannot hear each
+other; the prototype defines exactly one config and both modules load it.
+
 #### Deployment Architecture
-```
+```text
 ┌─────────────────────────────────────────────────────────┐
 │  TAOS Controller                                        │
 │                                                         │
@@ -205,11 +224,11 @@ Every other connector except webchat/webhook puts a company in the path. The sha
 │  │                                                 │   │
 │  │  +----------------------+                    │   │
 │  │  │  Module 1 (Radio 1) │                    │   │
-│  │  │  - 919-923 MHz      │                    │   │
+│  │  │  - shared config    │                    │   │
 │  │  │  - 28 dBm TX        │                    │   │
 │  │  +----------------------+                    │   │
 │  │  │  Module 2 (Radio 2) │                    │   │
-│  │  │  - 923-924 MHz      │                    │   │
+│  │  │  - shared config    │                    │   │
 │  │  │  - 28 dBm TX        │                    │   │
 │  │  +----------------------+                    │   │
 │  └─────────────────────────────────────────────────┘   │
@@ -220,8 +239,8 @@ Every other connector except webchat/webhook puts a company in the path. The sha
 - [ ] Message round-trip testing: Radio -> connector -> router -> agent -> connector -> Radio
 - [ ] Security validation: Verify unsigned frames are rejected
 - [ ] Degradation validation: Verify buttons and images are dropped with logged notices
-- [ ] Size budget validation: Verify long replies are chunked or truncated to 237 bytes
-- [ ] Performance testing: 1kbps sustained throughput with <1s latency
+- [ ] Size budget validation: Verify long replies are chunked into <=237-byte parts. Truncation is NEVER a success path — the guard raises rather than shipping or silently trimming an over-budget frame
+- [ ] Performance testing: 1 kbps sustained application throughput; latency scoped per payload — a full 237-byte part is ~1.9 s of serialization alone at 1 kbps, so the target is <1 s connector overhead (ingest -> route -> transmit handoff) on top of airtime, not <1 s end-to-end for maximum-size messages
 
 #### Success Criteria
 1. **Functional**: Both radio modules connect and exchange messages
@@ -237,12 +256,12 @@ Every other connector except webchat/webhook puts a company in the path. The sha
 - All security decisions must be made before hardware deployment
 
 ## References
-- [Heltec WiFi LoRa 32 V4 Datasheet](https://docs.heltec.org/en/latest/wifi_lora_32/tty/v4.html)
+- [Heltec WiFi LoRa 32 (V4)](https://heltec.org/project/wifi-lora-32-v4/)
 - [Meshtastic Documentation](https://meshtastic.org/)
 - [taOS channel_hub Architecture](/tinyagentos/channel_hub/)
 - [channel_hub/message.py](/tinyagentos/channel_hub/message.py)
 - [channel_hub/router.py](/tinyagentos/channel_hub/router.py)
-- [Jay's Note 2026-08-28](note-260828-f0fa88.md - reference implementation)
+- [Jay's Note 2026-08-28](note-260828-f0fa88.md) — reference implementation
 
 ---
 *Document created: 2026-08-28*

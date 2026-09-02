@@ -325,14 +325,10 @@ describe("NotificationsApp", () => {
 });
 
 describe("APP_REDIRECTS", () => {
-  it("carries an optional section field on redirect entries", async () => {
+  it("has no unread section field on redirect entries", async () => {
     const mod = await import("@/registry/app-registry");
-    for (const [key, entry] of Object.entries(mod.APP_REDIRECTS)) {
-      if (key === "notification-archive") {
-        expect(entry).toHaveProperty("section", "archive");
-      } else {
-        expect(entry).not.toHaveProperty("section");
-      }
+    for (const entry of Object.values(mod.APP_REDIRECTS)) {
+      expect(entry).not.toHaveProperty("section");
     }
   });
 });
