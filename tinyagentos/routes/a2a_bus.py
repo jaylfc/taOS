@@ -114,6 +114,8 @@ _MESSAGES_PARAMS = frozenset({"channel", "thread", "limit", "since"})
 # the thread param", which is how the bus itself spells all-threads.
 _ALL_CHANNELS = frozenset({"all", "*"})
 
+_STREAM_PARAMS = frozenset({"channel", "since"})
+
 
 @router.get("/api/a2a/bus/messages")
 async def bus_messages(request: Request):
@@ -284,6 +286,17 @@ async def bus_stream(
     """
     await _authorize_bus_read(request)
 
+    unknown = sorted(set(request.query_params.keys()) - _STREAM_PARAMS)
+    if unknown:
+        return JSONResponse(
+            {
+                "error": f"unknown query parameter(s): {', '.join(unknown)}",
+                "accepted": sorted(_STREAM_PARAMS),
+                "hint": "the cursor is 'since' and takes a message ts (float), not an id",
+            },
+            status_code=400,
+        )
+
     # An empty channel or "*" means "all threads": omit the thread param
     # upstream so the bus streams every thread. NOTE: when per-channel bus ACLs
     # land (card tsk-dp6fyv), an all-threads subscriber must receive ONLY the
@@ -294,6 +307,11 @@ async def bus_stream(
     if not all_threads:
         params["thread"] = channel
     if since is not None:
+        if not math.isfinite(since):
+            return JSONResponse(
+                {"error": "since must be a finite message ts (float), not an id"},
+                status_code=400,
+            )
         params["since"] = since
 
     bus = _bus_url()
