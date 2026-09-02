@@ -1,0 +1,2 @@
+### Fixed
+- Changelog fragments prevent every concurrent PR from conflicting on the same `[Unreleased]` anchor by using distinct filenames in `changelog.d/`, eliminating O(N^2) rebases that touch no real code.
