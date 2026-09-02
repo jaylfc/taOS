@@ -31,15 +31,12 @@ def _is_dirty() -> bool:
 
 
 def _changed_summary() -> str:
-    rc, out, _ = _git("diff", "--cached", "--stat")
+    rc, out, _ = _git("diff", "--cached", "--name-only")
     if rc != 0 or not out.strip():
-        rc, out, _ = _git("diff", "--stat")
+        rc, out, _ = _git("diff", "--name-only")
     lines = [l.strip() for l in out.strip().splitlines() if l.strip()]
     if not lines:
         return "auto-commit"
-    # Exclude the Git stat footer (e.g., "2 files changed")
-    if lines and "files changed" in lines[-1]:
-        lines = lines[:-1]
     if len(lines) == 1:
         return lines[0]
     return f"{len(lines)} files changed"
@@ -51,16 +48,21 @@ def _commit() -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     summary = _changed_summary()
     message = f"auto: {ts} | {summary}"
-    _git("add", "-A")
-    _git("commit", "-m", message)
+    rc, out, err = _git("add", "-A")
+    if rc != 0:
+        raise RuntimeError(f"git add failed: {err or out}")
+    rc, out, err = _git("commit", "-m", message)
+    if rc != 0:
+        raise RuntimeError(f"git commit failed: {err or out}")
 
 
 def main() -> None:
     while True:
         try:
             _commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            import sys
+            print(f"committer error: {exc}", file=sys.stderr)
         time.sleep(INTERVAL)
 
 

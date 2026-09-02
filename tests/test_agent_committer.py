@@ -81,3 +81,20 @@ class TestAgentCommitter:
         lines = out.strip().splitlines()
         assert len(lines) == 1
         assert lines[0].endswith("initial")
+
+    def test_gitignored_ssh_key_not_committed(self, tmp_path):
+        _init_repo(tmp_path)
+        (tmp_path / ".gitignore").write_text("*.secret\n.env\n*token*\n.ssh/\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True
+        )
+
+        committer = _load_committer(str(tmp_path))
+        (tmp_path / ".ssh").mkdir()
+        (tmp_path / ".ssh" / "id_rsa").write_text("fake-key")
+        committer._commit()
+
+        _, log_out, _ = committer._git("log", "--all", "--stat")
+        assert ".ssh" not in log_out
+        assert "id_rsa" not in log_out

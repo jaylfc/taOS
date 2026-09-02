@@ -24,6 +24,7 @@ _GITIGNORE_CONTENTS = """\
 *.p12
 *.key
 *.secret
+.ssh/
 caches/
 venv/
 node_modules/
@@ -78,14 +79,26 @@ async def git_is_dirty(container: str) -> bool:
     return rc == 0 and bool(out.strip())
 
 
+async def git_rev_parse(container: str, sha: str) -> str:
+    rc, out = await _git(container, ["rev-parse", "--verify", f"{sha}^{{commit}}"])
+    if rc != 0:
+        raise RuntimeError(f"unknown revision {sha}")
+    return out.strip()
+
+
+async def git_merge_base_is_ancestor(container: str, sha: str) -> bool:
+    rc, out = await _git(container, ["merge-base", "--is-ancestor", sha, "HEAD"])
+    return rc == 0
+
+
 async def git_log(container: str) -> List[dict]:
-    fmt = "%H|%s|%an|%ae|%ai"
-    rc, out = await _git(container, ["log", f"--format={fmt}", "--reverse"])
+    fmt = "%H%x1f%s%x1f%an%x1f%ae%x1f%ai"
+    rc, out = await _git(container, ["log", f"--format={fmt}", "--reverse", "-z"])
     if rc != 0:
         raise RuntimeError(f"git log failed: {out}")
     commits: List[dict] = []
     for line in out.strip().splitlines():
-        parts = line.split("|", 4)
+        parts = line.split("\x1f", 4)
         if len(parts) == 5:
             commits.append({
                 "sha": parts[0],
@@ -104,7 +117,16 @@ async def git_diff(container: str, sha: str) -> str:
     return out
 
 
-async def git_revert(container: str, sha: str) -> None:
+async def git_revert(container: str, sha: str) -> str:
+    head_sha = (await _git(container, ["rev-parse", "HEAD"]))[1].strip()
+    if sha == head_sha:
+        return "noop"
+    await git_rev_parse(container, sha)
+    if not await git_merge_base_is_ancestor(container, sha):
+        raise RuntimeError(f"{sha} is not an ancestor of HEAD")
+    if await git_is_dirty(container):
+        raise RuntimeError("dirty_tree: working tree has uncommitted changes")
     rc, out = await _git(container, ["revert", "--no-edit", f"{sha}..HEAD"])
     if rc != 0:
         raise RuntimeError(f"git revert failed for {sha}: {out}")
+    return "reverted"

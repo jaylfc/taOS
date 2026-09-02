@@ -66,14 +66,14 @@ class TestAgentVersionsRoutes:
     async def test_list_versions_returns_commits(self, client):
         with patch(
             "tinyagentos.agent_git.exec_in_container",
-            new=AsyncMock(return_value=(0, "abc123|initial|agent|agent@taos.local|2026-01-01 00:00:00 +0000\ndef456|add notes|agent|agent@taos.local|2026-01-01 01:00:00 +0000\n")),
+            new=AsyncMock(return_value=(0, "abc12345\x1finitial\x1fagent\x1fagent@taos.local\x1f2026-01-01 00:00:00 +0000\ndef456789\x1fadd notes\x1fagent\x1fagent@taos.local\x1f2026-01-01 01:00:00 +0000\n")),
         ):
             resp = await client.get("/api/agents/test-agent/versions")
         assert resp.status_code == 200
         data = resp.json()
         assert data["agent"] == "test-agent"
         assert len(data["versions"]) == 2
-        assert data["versions"][0]["sha"] == "abc123"
+        assert data["versions"][0]["sha"] == "abc12345"
 
     async def test_list_versions_unknown_agent_returns_404(self, client):
         resp = await client.get("/api/agents/ghost-agent/versions")
@@ -84,10 +84,10 @@ class TestAgentVersionsRoutes:
             "tinyagentos.agent_git.exec_in_container",
             new=AsyncMock(return_value=(0, "diff --git a/README.md b/README.md\n")),
         ):
-            resp = await client.get("/api/agents/test-agent/versions/abc123/diff")
+            resp = await client.get("/api/agents/test-agent/versions/abc12345/diff")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["sha"] == "abc123"
+        assert data["sha"] == "abc12345"
         assert "diff --git" in data["diff"]
 
     async def test_diff_unknown_sha_returns_404(self, client):
@@ -95,7 +95,7 @@ class TestAgentVersionsRoutes:
             "tinyagentos.agent_git.exec_in_container",
             new=AsyncMock(side_effect=RuntimeError("unknown revision")),
         ):
-            resp = await client.get("/api/agents/test-agent/versions/abcd1234/diff")
+            resp = await client.get("/api/agents/test-agent/versions/abcd12345/diff")
         assert resp.status_code == 404
 
     async def test_diff_injection_sha_returns_400(self, client):
@@ -147,7 +147,7 @@ class TestAgentVersionsRoutes:
         ) as c:
             with patch(
                 "tinyagentos.agent_git.exec_in_container",
-                new=AsyncMock(return_value=(0, "abc123|initial|agent|agent@taos.local|2026-01-01 00:00:00 +0000\n")),
+                new=AsyncMock(return_value=(0, "abc12345\x1finitial\x1fagent\x1fagent@taos.local\x1f2026-01-01 00:00:00 +0000\n")),
             ) as m:
                 resp = await c.get("/api/agents/test-agent/versions")
                 m.assert_called_once()
@@ -162,3 +162,70 @@ class TestAgentVersionsRoutes:
         ) as c:
             resp = await c.get("/api/agents/test-agent/versions")
         assert resp.status_code in (401, 403)
+
+    async def test_list_versions_with_pipe_in_subject_parses_all_fields(self, client):
+        subject = "auto: 2026-01-01 00:00:00 | added new feature"
+        with patch(
+            "tinyagentos.agent_git.exec_in_container",
+            new=AsyncMock(return_value=(0, f"abc12345\x1f{subject}\x1fagent\x1fagent@taos.local\x1f2026-01-01 00:00:00 +0000\n")),
+        ):
+            resp = await client.get("/api/agents/test-agent/versions")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["versions"]) == 1
+        assert data["versions"][0]["sha"] == "abc12345"
+        assert data["versions"][0]["message"] == subject
+        assert data["versions"][0]["author_name"] == "agent"
+        assert data["versions"][0]["author_email"] == "agent@taos.local"
+        assert data["versions"][0]["date"] == "2026-01-01 00:00:00 +0000"
+
+    async def test_revert_to_head_returns_noop(self, tmp_path, client):
+        fixture = tmp_path / "repo"
+        fixture.mkdir()
+        _init_fixture_repo(fixture)
+        head_sha = subprocess.run(
+            ["git", "-C", str(fixture), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        with patch(
+            "tinyagentos.agent_git.exec_in_container",
+            new=_fake_exec_for_repo(fixture),
+        ):
+            resp = await client.post(f"/api/agents/test-agent/versions/{head_sha}/revert")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "noop"
+
+    async def test_revert_non_ancestor_returns_409(self, tmp_path, client):
+        fixture = tmp_path / "repo"
+        fixture.mkdir()
+        _init_fixture_repo(fixture)
+        orphan = subprocess.run(
+            ["git", "-C", str(fixture), "commit-tree", "HEAD^{tree}", "-m", "orphan"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        with patch(
+            "tinyagentos.agent_git.exec_in_container",
+            new=_fake_exec_for_repo(fixture),
+        ):
+            resp = await client.post(f"/api/agents/test-agent/versions/{orphan}/revert")
+        assert resp.status_code == 409
+
+    async def test_revert_dirty_tree_returns_409(self, tmp_path, client):
+        fixture = tmp_path / "repo"
+        fixture.mkdir()
+        _init_fixture_repo(fixture)
+        first_sha = subprocess.run(
+            ["git", "-C", str(fixture), "rev-parse", "HEAD~1"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        (fixture / "dirty.txt").write_text("uncommitted")
+        with patch(
+            "tinyagentos.agent_git.exec_in_container",
+            new=_fake_exec_for_repo(fixture),
+        ):
+            resp = await client.post(f"/api/agents/test-agent/versions/{first_sha}/revert")
+        assert resp.status_code == 409
+
+    async def test_short_sha_rejected_by_versions_route(self, client):
+        resp = await client.get("/api/agents/test-agent/versions/abc1/diff")
+        assert resp.status_code == 400
