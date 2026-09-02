@@ -1,0 +1,3 @@
+### Added
+- Agent state versioning: a git repo is initialised inside each agent container at deploy time, with a `.gitignore` that excludes secrets and bulk artefacts, and commit identity set to the agent's own slug. An auto-committer script runs as a background loop inside the container, committing dirty trees on a fixed interval with a timestamp + changed-file-summary message (#tsk-fjmxzo).
+- Controller API for agent state history: `GET /api/agents/{name}/versions` lists commits, `GET /api/agents/{name}/versions/{sha}/diff` returns the patch for a commit, and `POST /api/agents/{name}/versions/{sha}/revert` reverts the state repo to a prior commit (#tsk-fjmxzo).

@@ -716,6 +716,52 @@ async def deploy_agent(req: DeployRequest) -> dict:
             except Exception:
                 logger.exception("%s: AGENTS.md injection failed", req.framework)
 
+        # Step 4b: Initialise a git repo inside the container for agent state
+        # versioning. The repo lives at /root and covers the agent's text
+        # state (workspace, memory, framework config). A .gitignore excludes
+        # secrets and bulk artefacts so they never enter history.
+        try:
+            from tinyagentos.agent_git import (
+                git_init,
+                write_gitignore,
+                git_config_user,
+                git_add_commit,
+            )
+            await git_init(container_name)
+            await write_gitignore(container_name)
+            await git_config_user(container_name, req.name, f"{req.name}@taos.local")
+            await git_add_commit(container_name, f"chore: initial state for {req.name}")
+            steps.append("git_init")
+        except Exception as exc:
+            logger.warning("Deploy %s: git init failed: %s", req.name, exc)
+
+        # Step 4c: Install the auto-committer script and start it as a
+        # background loop inside the container. No LLM involvement.
+        try:
+            from pathlib import Path as _P
+            _committer = _P(__file__).parent / "scripts" / "agent_committer.py"
+            if _committer.exists():
+                _push_rc, _push_out = await push_file(
+                    container_name,
+                    str(_committer),
+                    "/root/.taos/agent_committer.py",
+                )
+                if _push_rc == 0:
+                    await exec_in_container(
+                        container_name, ["chmod", "+x", "/root/.taos/agent_committer.py"]
+                    )
+                    await exec_in_container(
+                        container_name,
+                        [
+                            "bash", "-c",
+                            "nohup python3 /root/.taos/agent_committer.py "
+                            "> /root/.taos/committer.log 2>&1 &",
+                        ],
+                    )
+                    steps.append("committer_installed")
+        except Exception as exc:
+            logger.warning("Deploy %s: committer install failed: %s", req.name, exc)
+
         # Step 5: Get container IP
         code, output = await exec_in_container(container_name, ["hostname", "-I"])
         container_ip = output.strip().split()[0] if code == 0 and output.strip() else None
