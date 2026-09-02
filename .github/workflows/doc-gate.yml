@@ -37,6 +37,9 @@ jobs:
       - name: Retrofit-migration guard (#2188)
         run: python scripts/check_retrofit_migrations.py
 
+      - name: Schema-column guard (tsk-hrzgip)
+        run: python scripts/check_schema_column_migrations.py
+
       - name: Diff gate (Layer B)
         env:
           BASE_REF: ${{ github.base_ref }}
