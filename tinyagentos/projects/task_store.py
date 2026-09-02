@@ -4,16 +4,16 @@ import json
 import logging
 import time
 
-from typing import TYPE_CHECKING
-
 from tinyagentos.base_store import BaseStore
 from tinyagentos.projects.ids import new_id
+from tinyagentos.projects.strike_store import StrikeStore
+
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from tinyagentos.board_audit import BoardAuditLog
     from tinyagentos.projects.events import ProjectEventBroker
     from tinyagentos.projects.project_store import ProjectStore
-    from tinyagentos.projects.strike_store import StrikeStore
 
 logger = logging.getLogger(__name__)
 
@@ -439,6 +439,48 @@ class ProjectTaskStore(BaseStore):
                 )
             await self._record_audit(
                 task_id, "task.released", releaser_id, "claimed", "open",
+                project_id=existing["project_id"] if existing else "",
+            )
+            if self._strikes is not None:
+                try:
+                    count = await self._strikes.record_strike(
+                        task_id, "dispatch_failed", actor=releaser_id
+                    )
+                    if count >= StrikeStore.STRIKE_THRESHOLD:
+                        await self.park_task(task_id, "system")
+                except Exception:
+                    logger.warning(
+                        "strike recording failed for task %s on release", task_id, exc_info=True
+                    )
+        return changed
+
+    async def park_task(self, task_id: str, actor: str) -> bool:
+        """Permanently park a task.
+
+        A parked task is removed from the ready pool permanently.  Unlike
+        quarantine there is no un-park operation.  Only acts on a task that is
+        not already closed, cancelled, or parked; returns False otherwise.
+        """
+        now = time.time()
+        cursor = await self._db.execute(
+            """UPDATE project_tasks
+               SET status = 'parked', updated_at = ?
+               WHERE id = ? AND status NOT IN ('closed', 'cancelled', 'parked')""",
+            (now, task_id),
+        )
+        await self._db.commit()
+        changed = cursor.rowcount == 1
+        if changed:
+            existing = await self.get_task(task_id)
+            if existing is not None:
+                await self._publish(
+                    existing["project_id"],
+                    "task.parked",
+                    {"id": task_id, "actor": actor},
+                )
+            from_status = "claimed" if existing and existing.get("claimed_by") else "open"
+            await self._record_audit(
+                task_id, "task.parked", actor, from_status, "parked",
                 project_id=existing["project_id"] if existing else "",
             )
         return changed

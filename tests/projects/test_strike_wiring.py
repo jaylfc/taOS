@@ -131,3 +131,27 @@ async def test_unquarantine_route_lead_success_and_noauth_failure(app):
             assert body["status"] == "open"
 
             assert await strikes.count_strikes(task_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_release_parks_after_threshold_strikes(app):
+    """Releasing a claimed task records a strike; after STRIKE_THRESHOLD
+    cumulative releases the task is permanently parked."""
+    async with app.router.lifespan_context(app):
+        async with _auth_client(app) as c:
+            project_id, task_id = await _make_project_and_task(c, "strike-park")
+
+            task_store = app.state.project_task_store
+            strikes = app.state.task_strikes
+
+            for i in range(strikes.STRIKE_THRESHOLD):
+                await task_store.claim_task(task_id, "worker-1")
+                ok = await task_store.release_task(task_id, "worker-1")
+                assert ok is True
+                count = await strikes.count_strikes(task_id)
+                if i < strikes.STRIKE_THRESHOLD - 1:
+                    assert count == i + 1
+
+            fetched = await task_store.get_task(task_id)
+            assert fetched["status"] == "parked"
+            assert await strikes.count_strikes(task_id) == strikes.STRIKE_THRESHOLD

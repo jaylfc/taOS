@@ -728,3 +728,91 @@ async def test_quarantine_event_payload_carries_strike_metadata(tmp_path):
     finally:
         await s.close()
         await strikes.close()
+
+
+@pytest.mark.asyncio
+async def test_park_open_task(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    ok = await s.park_task(task["id"], "system")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_park_claimed_task_records_from_status_claimed(tmp_path):
+    audit = BoardAuditLog(tmp_path / "audit.db")
+    await audit.init()
+    s = ProjectTaskStore(tmp_path / "tasks.db", audit=audit)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        await s.claim_task(task["id"], "worker-1")
+        ok = await s.park_task(task["id"], "system")
+        assert ok is True
+        history = await audit.history(task["id"])
+        parked = [h for h in history if h["event"] == "task.parked"]
+        assert len(parked) == 1
+        assert parked[0]["from_status"] == "claimed"
+    finally:
+        await s.close()
+        await audit.close()
+
+
+@pytest.mark.asyncio
+async def test_park_is_permanent(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    ok = await s.park_task(task["id"], "system")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_parked_task_cannot_be_claimed(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.park_task(task["id"], "system")
+    ok = await s.claim_task(task["id"], "agent-1")
+    assert ok is False
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_release_records_strike_and_parks_after_threshold(tmp_path):
+    from tinyagentos.projects.strike_store import StrikeStore
+
+    strikes = StrikeStore(tmp_path / "strikes.db")
+    await strikes.init()
+    s = ProjectTaskStore(tmp_path / "tasks.db", strikes=strikes)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        for _ in range(StrikeStore.STRIKE_THRESHOLD):
+            await s.claim_task(task["id"], "worker-1")
+            ok = await s.release_task(task["id"], "worker-1")
+            assert ok is True
+        fetched = await s.get_task(task["id"])
+        assert fetched["status"] == "parked"
+        assert await strikes.count_strikes(task["id"]) == StrikeStore.STRIKE_THRESHOLD
+    finally:
+        await s.close()
+        await strikes.close()
+
+
+@pytest.mark.asyncio
+async def test_release_without_strikes_store_does_not_record(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.claim_task(task["id"], "worker-1")
+    ok = await s.release_task(task["id"], "worker-1")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "open"
+    await s.close()
