@@ -224,7 +224,8 @@ def _any_route_matches(method: str, path: str, routes) -> bool:
     """Return True if any registered route matches the given method + path.
 
     FastAPI path parameters (``{pid}``) are treated as ``[^/]+`` for the
-    purpose of existence checking; the route handler is never executed.
+    purpose of existence checking; ``:path`` parameters (``{name:path}``)
+    are treated as ``.+`` so slash-bearing values match.
     """
     for route in routes:
         route_methods = getattr(route, "methods", None)
@@ -234,7 +235,12 @@ def _any_route_matches(method: str, path: str, routes) -> bool:
         if route_methods is not None and method.upper() not in {m.upper() for m in route_methods}:
             continue
         parts = route_path.split("/")
-        pattern = "^" + "/".join(re.escape(p) if not (p.startswith("{") and p.endswith("}")) else "[^/]+" for p in parts) + "$"
+        pattern = "^" + "/".join(
+            re.escape(p) if not (p.startswith("{") and p.endswith("}"))
+            else ".+" if p.endswith(":path}")
+            else "[^/]+"
+            for p in parts
+        ) + "$"
         if re.match(pattern, path):
             return True
     return False

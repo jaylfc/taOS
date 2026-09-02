@@ -85,6 +85,12 @@ vi.mock("@/registry/app-registry", () => ({
     pinned: true,
     launchpadOrder: 1,
   }),
+  getPinnedRedirectByAppId: (appId: string) => {
+    if (appId === "notifications") {
+      return { id: "notification-archive", section: "archive" };
+    }
+    return undefined;
+  },
 }));
 
 vi.mock("@/hooks/use-is-mobile", () => ({
@@ -164,5 +170,18 @@ describe("Dock", () => {
     expect(
       screen.getByRole("button", { name: /open agents/i })
     ).toBeInTheDocument();
+  });
+
+  it("passes section to openWindow when clicking a pinned redirect target", () => {
+    mockPinned = ["notifications"];
+    mockWindows = [];
+    render(<Dock onLaunchpadOpen={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open test app/i }));
+    expect(mockOpenWindow).toHaveBeenCalledWith(
+      "notifications",
+      { w: 900, h: 600 },
+      { section: "archive" },
+    );
   });
 });

@@ -160,8 +160,8 @@ export function getOptionalApps(): AppManifest[] {
  * optional apps the user has installed. `installedOptional` is the set of
  * installed optional app ids (from /api/apps/optional/installed).
  */
-export const APP_REDIRECTS: Record<string, { appId: string }> = {
-  "notification-archive": { appId: "notifications" },
+export const APP_REDIRECTS: Record<string, { appId: string; section?: string }> = {
+  "notification-archive": { appId: "notifications", section: "archive" },
 };
 
 export function getLaunchableApps(installedOptional: Set<string>): AppManifest[] {
@@ -177,6 +177,22 @@ export function resolvePinnedId(id: string): string | undefined {
   const redirect = APP_REDIRECTS[id];
   const targetId = redirect?.appId ?? id;
   return getApp(targetId) ? targetId : undefined;
+}
+
+export function resolvePinnedRedirect(id: string): { appId: string; section?: string } | undefined {
+  const redirect = APP_REDIRECTS[id];
+  if (!redirect) return undefined;
+  const targetId = redirect.appId;
+  return getApp(targetId) ? redirect : undefined;
+}
+
+export function getPinnedRedirectByAppId(appId: string): { id: string; section?: string } | undefined {
+  for (const [id, redirect] of Object.entries(APP_REDIRECTS)) {
+    if (redirect.appId === appId) {
+      return { id, section: redirect.section };
+    }
+  }
+  return undefined;
 }
 
 const prefetched = new Set<string>();

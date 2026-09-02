@@ -823,6 +823,42 @@ class TestRegistryJwtRouteResolution:
         call_next.assert_not_awaited()
 
 
+class TestAnyRouteMatchesPathConverter:
+    def test_path_converter_matches_slash_bearing_value(self):
+        from tinyagentos.auth_middleware import _any_route_matches
+
+        route = _fake_route("/api/secrets/{name:path}", {"GET"})
+        assert _any_route_matches("GET", "/api/secrets/a2a/pi-token", [route]) is True
+
+    def test_plain_param_still_slash_free(self):
+        from tinyagentos.auth_middleware import _any_route_matches
+
+        route = _fake_route("/api/projects/{pid}/tasks/{tid}", {"GET"})
+        assert _any_route_matches("GET", "/api/projects/proj-1/tasks/tsk-1", [route]) is True
+        assert _any_route_matches("GET", "/api/projects/proj-1/tasks/tsk-1/extra", [route]) is False
+
+    @pytest.mark.asyncio
+    async def test_path_converter_route_returns_401_not_404_for_valid_jwt(self):
+        middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
+        auth_mgr.validate_local_token.return_value = False
+        req = _request(
+            method="GET",
+            path="/api/secrets/a2a/pi-token",
+            headers={"authorization": "Bearer valid-jwt"},
+            auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/secrets/{name:path}", {"GET"})],
+        )
+        call_next = AsyncMock()
+
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 401
+        assert resp.body == b'{"error":"Authentication required"}'
+        call_next.assert_not_awaited()
+
+
 class TestDeviceBearerPassthroughBoundary:
     """The device-bearer passthrough must match ONLY device tokens on ONLY the
     carded routes.

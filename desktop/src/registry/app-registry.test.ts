@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { AppManifest } from "./app-registry";
-import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, prefetchApp, resolveApp, apps, APP_REDIRECTS, resolvePinnedId } from "./app-registry";
+import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, prefetchApp, resolveApp, apps, APP_REDIRECTS, resolvePinnedId, resolvePinnedRedirect, getPinnedRedirectByAppId } from "./app-registry";
 
 describe("resolveApp (deep-navigation token resolver)", () => {
   it("resolves an exact app id", () => {
@@ -230,8 +230,8 @@ describe("APP_REDIRECTS", () => {
     expect(typeof APP_REDIRECTS).toBe("object");
   });
 
-  it("redirects notification-archive to the notifications app", () => {
-    expect(APP_REDIRECTS["notification-archive"]).toEqual({ appId: "notifications" });
+  it("redirects notification-archive to the notifications app with archive section", () => {
+    expect(APP_REDIRECTS["notification-archive"]).toEqual({ appId: "notifications", section: "archive" });
   });
 });
 
@@ -258,6 +258,38 @@ describe("resolvePinnedId", () => {
 
   it("resolves notification-archive to notifications via APP_REDIRECTS", () => {
     expect(resolvePinnedId("notification-archive")).toBe("notifications");
+  });
+});
+
+describe("resolvePinnedRedirect", () => {
+  it("returns the full redirect object for a pinned redirect", () => {
+    expect(resolvePinnedRedirect("notification-archive")).toEqual({
+      appId: "notifications",
+      section: "archive",
+    });
+  });
+
+  it("returns undefined for an id with no redirect", () => {
+    expect(resolvePinnedRedirect("messages")).toBeUndefined();
+  });
+
+  it("returns undefined for a redirect to a non-existent app", () => {
+    APP_REDIRECTS["legacy-redirect"] = { appId: "does-not-exist", section: "archive" };
+    expect(resolvePinnedRedirect("legacy-redirect")).toBeUndefined();
+    delete APP_REDIRECTS["legacy-redirect"];
+  });
+});
+
+describe("getPinnedRedirectByAppId", () => {
+  it("returns the redirect info for an appId that is a redirect target", () => {
+    expect(getPinnedRedirectByAppId("notifications")).toEqual({
+      id: "notification-archive",
+      section: "archive",
+    });
+  });
+
+  it("returns undefined for an appId with no redirect", () => {
+    expect(getPinnedRedirectByAppId("messages")).toBeUndefined();
   });
 });
 

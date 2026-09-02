@@ -1,7 +1,7 @@
 import { useDockStore } from "@/stores/dock-store";
 import { useProcessStore } from "@/stores/process-store";
 import { useThemeStore } from "@/stores/theme-store";
-import { getApp } from "@/registry/app-registry";
+import { getApp, getPinnedRedirectByAppId } from "@/registry/app-registry";
 import { DOCK_VARIANTS, type DockVariantId } from "./dock/DockVariants";
 
 interface Props {
@@ -27,7 +27,9 @@ export function Dock({ onLaunchpadOpen }: Props) {
     } else {
       const app = getApp(appId);
       if (app) {
-        openWindow(appId, app.defaultSize);
+        const redirect = getPinnedRedirectByAppId(appId);
+        const props = redirect?.section ? { section: redirect.section } : undefined;
+        openWindow(appId, app.defaultSize, props);
       }
     }
   };
