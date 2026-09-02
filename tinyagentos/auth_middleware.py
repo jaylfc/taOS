@@ -616,14 +616,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.state.via = "registry_jwt_candidate"
                     return await call_next(request)
 
-                if _any_route_matches(request.method, path, request.app.routes):
-                    return JSONResponse({"error": "Authentication required"}, status_code=401)
-
-                try:
-                    await check_agent_identity(request)
-                    return JSONResponse({"error": "Not Found"}, status_code=404)
-                except HTTPException:
-                    return JSONResponse({"error": "Authentication required"}, status_code=401)
+                # Defer the 401 until after the session-cookie check below: a
+                # stale non-device Bearer header on a known route must not
+                # shadow a valid taos_session (tsk-3hei4g CodeRabbit finding
+                # #3). The final 401 in section 4 still fires when neither
+                # credential authenticates the request. Unknown-route handling
+                # (the 404/401 split for valid registry JWT) is handled
+                # immediately below so it does not interact with session.
+                if not _any_route_matches(request.method, path, request.app.routes):
+                    try:
+                        await check_agent_identity(request)
+                        return JSONResponse({"error": "Not Found"}, status_code=404)
+                    except HTTPException:
+                        return JSONResponse({"error": "Authentication required"}, status_code=401)
 
         # 3) Device-bearer self-service on carded routes
         # Device-bearer self-service: a scoped device token may pass the auth

@@ -15,7 +15,7 @@ import { useOnAuthReady } from "@/hooks/use-on-auth-ready";
 import { usePushClickHandler } from "@/hooks/use-push-click";
 import { useProcessStore } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
-import { getApp, getPinnedRedirectByAppId } from "@/registry/app-registry";
+import { getApp, resolvePinnedRedirect } from "@/registry/app-registry";
 import { MobileDock } from "@/components/mobile/MobileDock";
 import { CardSwitcher } from "@/components/mobile/CardSwitcher";
 import { MobileTopBar } from "@/components/mobile/MobileTopBar";
@@ -100,7 +100,7 @@ function SystemShortcuts({ toggleSearch, toggleLaunchpad, toggleAssistant }: Sys
     if (!appId) return;
     const app = getApp(appId);
     if (app) {
-      const redirect = getPinnedRedirectByAppId(appId);
+      const redirect = resolvePinnedRedirect(appId);
       const props = redirect?.section ? { section: redirect.section } : undefined;
       openWindow(appId, app.defaultSize, props);
     }

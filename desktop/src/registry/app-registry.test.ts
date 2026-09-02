@@ -273,6 +273,13 @@ describe("resolvePinnedRedirect", () => {
     expect(resolvePinnedRedirect("messages")).toBeUndefined();
   });
 
+  it("returns undefined for a native notifications pin", () => {
+    // Regression for tsk-3hei4g CodeRabbit finding #2: the dock's source-pin
+    // lookup must NOT carry the archive section onto a native "notifications"
+    // pin; only the migrated "notification-archive" source id is a redirect.
+    expect(resolvePinnedRedirect("notifications")).toBeUndefined();
+  });
+
   it("returns undefined for a redirect to a non-existent app", () => {
     APP_REDIRECTS["legacy-redirect"] = { appId: "does-not-exist", section: "archive" };
     expect(resolvePinnedRedirect("legacy-redirect")).toBeUndefined();

@@ -822,6 +822,34 @@ class TestRegistryJwtRouteResolution:
         assert resp.body == b'{"error":"Authentication required"}'
         call_next.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_stale_non_device_bearer_does_not_shadow_valid_session(self):
+        """Regression for tsk-3hei4g CodeRabbit finding #3: a logged-in user
+        carrying a stale non-device Bearer header on a known non-allowlisted
+        route must keep their session instead of getting 401 before the
+        session cookie is even consulted."""
+        middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
+        auth_mgr.validate_session.return_value = "user-1"
+        auth_mgr.get_user_by_id.return_value = {"id": "user-1", "is_admin": False}
+        req = _request(
+            method="GET",
+            path="/api/system",
+            headers={"authorization": "Bearer stale-registry-jwt"},
+            cookies={"taos_session": "valid-session"},
+            auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/system", {"GET"})],
+        )
+        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 200
+        assert req.state.via == "session"
+        assert req.state.user_id == "user-1"
+        call_next.assert_awaited_once()
+
 
 class TestAnyRouteMatchesPathConverter:
     def test_path_converter_matches_slash_bearing_value(self):
