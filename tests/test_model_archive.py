@@ -399,6 +399,42 @@ class TestPromoteModel:
         # Manifest remains
         assert (archive_dir / "orphan-model.json").exists()
 
+    def test_promote_rejects_path_traversal_model_id(self, tmp_path: Path, monkeypatch):
+        archive_dir = tmp_path / "archive"
+        active_dir = tmp_path / "active"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        active_dir.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(
+            "tinyagentos.cluster.model_archive._archive_root",
+            lambda: archive_dir,
+        )
+        monkeypatch.setattr(
+            "tinyagentos.cluster.model_archive._active_models_root",
+            lambda: active_dir,
+        )
+
+        # Write a normal manifest but with a malicious model_id that escapes
+        # the active models root via ".." components.
+        manifest = {
+            "model_id": "../../../etc/passwd",
+            "backend": "llama-cpp",
+            "family": "qwen3",
+            "files": ["model.gguf"],
+            "requirements": {},
+            "archived_at": 1700000000.0,
+        }
+        manifest_path = archive_dir / "evil.json"
+        manifest_path.write_text(json.dumps(manifest))
+        files_dir = archive_dir / "evil"
+        files_dir.mkdir(parents=True, exist_ok=True)
+        (files_dir / "model.gguf").write_text("fake")
+
+        models = list_archived_models(archive_dir)
+        assert len(models) == 1
+        ok = promote_model(models[0])
+        assert ok is False
+
 
 # ---------------------------------------------------------------------------
 # Archive root env var override

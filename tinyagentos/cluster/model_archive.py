@@ -188,6 +188,19 @@ def promote_model(model: dict) -> bool:
     family = model.get("family", model_id.split("-", 1)[0] if "-" in model_id else model_id)
     target_dir = _active_models_root() / backend / family / model_id
 
+    # Path traversal guard: ensure the resolved target stays within the
+    # active models root so a crafted model_id (e.g. "../../etc/passwd")
+    # cannot escape the intended tree.
+    active_root = _active_models_root().resolve()
+    try:
+        target_dir.resolve().relative_to(active_root)
+    except ValueError:
+        logger.warning(
+            "model_archive: refusing to promote %s outside active models root (%s)",
+            model_id, target_dir,
+        )
+        return False
+
     if not model_files_dir.is_dir():
         logger.warning(
             "model_archive: model files directory %s not found — "

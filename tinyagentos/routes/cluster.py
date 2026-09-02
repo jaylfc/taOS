@@ -429,8 +429,9 @@ async def _record_worker_capability(app, name: str, host_lan_ip: str, hardware: 
         prev = current or {}
 
         def _keep(key, default):
-            val = hw.get(key)
-            return val if val else prev.get(key, default)
+            if key in hw:
+                return hw[key]
+            return prev.get(key, default)
 
         await store.upsert(
             {
