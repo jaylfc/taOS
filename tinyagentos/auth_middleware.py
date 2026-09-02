@@ -63,7 +63,15 @@ _OBSERVATORY_PATHS = frozenset({
 # identity, so a token cannot bill another agent's quota.
 _CONTAINER_REQUEST_PATHS = frozenset({
     "/api/containers/requests",
+    "/api/container-requests",
 })
+# Agent provisioning actions on a specific request: provision or destroy.
+_CONTAINER_REQUEST_ACTION_ROUTES = (
+    ("POST", re.compile(r"^/api/containers/requests/[^/]+/provision$")),
+    ("POST", re.compile(r"^/api/containers/requests/[^/]+/destroy$")),
+)
+# Agent self-serve quota lookup.
+_AGENT_CONTAINER_QUOTA_ROUTE = ("GET", re.compile(r"^/api/agents/containers/quota$"))
 # Every path that accepts a registry JWT in place of the admin session.  The
 # passthrough is allowlisted to exactly these paths -- a registry JWT must never
 # authenticate any other route (no skeleton key).
@@ -330,6 +338,17 @@ def _is_agent_scope_request_path(method: str, path: str) -> bool:
     route verifies the JWT identity == canonical_id; approve/deny are excluded
     (extra path segments) and stay owner/admin session-only."""
     return any(m == method and rx.match(path) for m, rx in _AGENT_SCOPE_REQUEST_ROUTES)
+
+
+def _is_container_request_action_path(method: str, path: str) -> bool:
+    """True only for POST /api/containers/requests/{id}/provision|destroy."""
+    return any(m == method and rx.match(path) for m, rx in _CONTAINER_REQUEST_ACTION_ROUTES)
+
+
+def _is_agent_container_quota_path(method: str, path: str) -> bool:
+    """True only for GET /api/agents/containers/quota."""
+    m, rx = _AGENT_CONTAINER_QUOTA_ROUTE
+    return m == method and rx.match(path)
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
 #   1. The browser can install and cache the shell for offline / PWA use.
 #   2. After a backend restart the cached shell loads immediately without
@@ -631,6 +650,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     or _is_agent_decisions_path(request.method, path)
                     or _is_agent_files_path(request.method, path)
                     or _is_agent_scope_request_path(request.method, path)
+                    or _is_container_request_action_path(request.method, path)
+                    or _is_agent_container_quota_path(request.method, path)
                 )
 
                 if is_allowlisted:

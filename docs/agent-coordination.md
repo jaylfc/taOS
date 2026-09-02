@@ -1102,16 +1102,12 @@ worker lane is therefore refused on `POST` (it lacks the create grant, `403`)
 and authorised on `GET`. `tests/test_routes_task_checklist.py` pins this scope
 split directly, not behind an xfail.
 
-Container provisioning request (P1, agent-container-provisioning spec):
+Container provisioning request (P1 + P2, agent-container-provisioning spec):
 
-- `POST /api/containers/requests` -- an active agent submits a container
-  provisioning request with its own registry JWT. The route resolves the
-  canonical_id from the token (never from the request body) and applies the
-  provisioning policy (per-agent quota + threshold). Under quota the request is
-  auto-approved; over quota it lands in `pending-approval`; over threshold it is
-  escalated to a Decisions-app item for Jay. This is an identity-only check
-  (no scope grant required), matching the scope-request create flow's use of
-  `check_agent_identity`.
+- `POST /api/containers/requests` and `POST /api/container-requests` -- an active agent submits a container provisioning request with its own registry JWT. The route resolves the canonical_id from the token (never from the request body) and applies the provisioning policy (per-agent quota + threshold). Under quota the request is auto-approved; over quota it lands in `pending-approval`; over threshold it is escalated to a Decisions-app item for Jay. This is an identity-only check (no scope grant required), matching the scope-request create flow's use of `check_agent_identity`.
+- `POST /api/containers/requests/{id}/provision` -- provisions an incus/LXC container for an `approved` request. Only the requesting agent may call this, and only when the request is in the `approved` state. On success the request transitions to `provisioned` and the container name is recorded. The container is bound to the agent + project via environment variables (`TAOS_AGENT_CANONICAL_ID`, `TAOS_PROJECT_ID`).
+- `POST /api/containers/requests/{id}/destroy` -- deletes the request row and, if the request was already `provisioned`, destroys the underlying incus container. Quota is returned to the agent on deletion.
+- `GET /api/agents/containers/quota` -- returns the calling agent's quota, threshold, current active (non-terminal) request count, and remaining slots.
 
 ## Skill-exec agent identity (credential-bound, not body-supplied)
 

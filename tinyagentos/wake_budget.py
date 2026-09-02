@@ -54,6 +54,22 @@ def _read_state(path: Path) -> dict:
         raise WakeBudgetStateError(
             f"wake_budget.json root is {type(data).__name__}, expected a JSON object"
         )
+    # A well-formed root with a mis-shaped ``daily`` (e.g. ``{"daily": []}``)
+    # would otherwise pass here and raise AttributeError in the readers, which
+    # only catch WakeBudgetStateError -- the fleet report would then fail
+    # instead of degrading the row. Validate the nested shape here so every
+    # reader fails closed the same way.
+    daily = data.get("daily", {})
+    if not isinstance(daily, dict):
+        raise WakeBudgetStateError(
+            f"wake_budget.json 'daily' is {type(daily).__name__}, expected a JSON object"
+        )
+    for key, dates in daily.items():
+        if not isinstance(dates, dict):
+            raise WakeBudgetStateError(
+                f"wake_budget.json 'daily[{key!r}]' is {type(dates).__name__}, "
+                "expected a JSON object"
+            )
     return data
 
 
@@ -125,6 +141,29 @@ def get_consumption(data_dir: Path, agent_id: str, project_id: str | None) -> di
     return {"scheduled": scheduled, "date": today}
 
 
+def _agent_daily_keys(data_dir: Path, agent_id: str, today: str) -> list[str]:
+    """Return all ``{agent_id}:*`` keys that have an entry for ``today``."""
+    state = _read_state(_budget_path(data_dir))
+    prefix = f"{agent_id}:"
+    return [
+        key for key, dates in state.get("daily", {}).items()
+        if key.startswith(prefix) and today in dates
+    ]
+
+
+def get_agent_consumption(data_dir: Path, agent_id: str) -> dict:
+    """Return the agent's total scheduled wake count across all projects today."""
+    today = _today()
+    path = _budget_path(data_dir)
+    state = _read_state(path)
+    scheduled = 0
+    prefix = f"{agent_id}:"
+    for key, dates in state.get("daily", {}).items():
+        if key.startswith(prefix):
+            scheduled += int(dates.get(today, 0))
+    return {"scheduled": scheduled, "date": today}
+
+
 def can_wake(
     data_dir: Path,
     agent_id: str,
@@ -137,12 +176,16 @@ def can_wake(
     Fails closed (returns False) when the state file is damaged: a corrupted
     ``wake_budget.json`` must not silently restore a full budget and let
     enforcement cease fleet-wide.
+
+    Consumption is summed across all of the agent's project keys (per-agent
+    semantics): ``global_default`` and ``per_agent`` caps apply to the total
+    number of scheduled wakes for the agent, not per-project.
     """
-    budget = resolve_budget(agent_id, project_id, config)
+    budget = resolve_budget(agent_id, None, config)
     if budget <= 0:
         return False
     try:
-        consumption = get_consumption(data_dir, agent_id, project_id)
+        consumption = get_agent_consumption(data_dir, agent_id)
     except WakeBudgetStateError:
         logger.exception(
             "wake budget state damaged, refusing wake for agent %s", agent_id
@@ -157,11 +200,15 @@ def get_next_scheduled_wake(
     project_id: str | None,
     config: Any,
 ) -> float | None:
-    """Return the epoch of the next scheduled wake, or None if exhausted."""
-    budget = resolve_budget(agent_id, project_id, config)
+    """Return the epoch of the next scheduled wake, or None if exhausted.
+
+    Consumption is summed across all of the agent's project keys (per-agent
+    semantics).
+    """
+    budget = resolve_budget(agent_id, None, config)
     if budget <= 0:
         return None
-    consumption = get_consumption(data_dir, agent_id, project_id)
+    consumption = get_agent_consumption(data_dir, agent_id)
     remaining = budget - consumption["scheduled"]
     if remaining <= 0:
         return None
@@ -171,7 +218,12 @@ def get_next_scheduled_wake(
 
 
 async def get_fleet_wake_info(data_dir: Path, config: Any, project_task_store: Any = None) -> list[dict]:
-    """Return wake info for every running agent in config."""
+    """Return wake info for every running agent in config.
+
+    Consumption is summed across all of each agent's project keys (per-agent
+    semantics), so the reported consumed/remaining figures reflect the agent's
+    total daily usage regardless of which project the current task belongs to.
+    """
     rows: list[dict] = []
     agents = getattr(config, "agents", None) or []
     for agent in agents:
@@ -180,26 +232,9 @@ async def get_fleet_wake_info(data_dir: Path, config: Any, project_task_store: A
         agent_id = agent.get("id") or agent.get("name") or ""
         if not agent_id:
             continue
-        project_id = None
-        if project_task_store is not None:
-            try:
-                held = await project_task_store.held_task(agent_id)
-                if held is not None:
-                    task = await project_task_store.get_task(held)
-                    if task is not None:
-                        project_id = task.get("project_id")
-                else:
-                    ready = await project_task_store.list_ready_tasks_for_assignee(agent_id)
-                    if ready:
-                        project_id = ready[0].get("project_id")
-            except Exception:
-                logger.warning(
-                    "wake budget: project_task_store lookup failed for agent %s",
-                    agent_id, exc_info=True,
-                )
-        budget = resolve_budget(agent_id, project_id, config)
+        budget = resolve_budget(agent_id, None, config)
         try:
-            consumption = get_consumption(data_dir, agent_id, project_id)
+            consumption = get_agent_consumption(data_dir, agent_id)
         except WakeBudgetStateError as exc:
             logger.warning(
                 "wake budget: skipping fleet row for %s due to damaged state: %s",
@@ -216,7 +251,7 @@ async def get_fleet_wake_info(data_dir: Path, config: Any, project_task_store: A
             })
             continue
         try:
-            next_wake_epoch = get_next_scheduled_wake(data_dir, agent_id, project_id, config)
+            next_wake_epoch = get_next_scheduled_wake(data_dir, agent_id, None, config)
         except WakeBudgetStateError as exc:
             logger.warning(
                 "wake budget: skipping fleet row for %s due to damaged state: %s",

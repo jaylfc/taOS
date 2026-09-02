@@ -4,11 +4,13 @@ from pathlib import Path
 import pytest
 
 from tinyagentos.wake_budget import (
+    _agent_daily_keys,
     _coerce_budget,
     _read_state,
     _write_state,
     _today,
     can_wake,
+    get_agent_consumption,
     get_consumption,
     get_fleet_wake_info,
     get_next_scheduled_wake,
@@ -99,37 +101,37 @@ class TestRecordAndConsume:
 class TestCanWake:
     def test_allowed_when_under_budget(self, tmp_path):
         cfg = _FakeConfig({"global_default": 2, "per_agent": {}, "per_project": {}})
-        assert can_wake(tmp_path, "a1", "a1", None, cfg) is True
+        assert can_wake(tmp_path, "a1", "a1", "proj-1", cfg) is True
 
     def test_blocked_when_exhausted(self, tmp_path):
         data_dir = tmp_path
-        record_scheduled_wake(data_dir, "a1", None)
-        record_scheduled_wake(data_dir, "a1", None)
+        record_scheduled_wake(data_dir, "a1", "proj-1")
+        record_scheduled_wake(data_dir, "a1", "proj-1")
         cfg = _FakeConfig({"global_default": 2, "per_agent": {}, "per_project": {}})
-        assert can_wake(data_dir, "a1", "a1", None, cfg) is False
+        assert can_wake(data_dir, "a1", "a1", "proj-1", cfg) is False
 
     def test_zero_budget_blocks(self, tmp_path):
         cfg = _FakeConfig({"global_default": 0, "per_agent": {}, "per_project": {}})
-        assert can_wake(tmp_path, "a1", "a1", None, cfg) is False
+        assert can_wake(tmp_path, "a1", "a1", "proj-1", cfg) is False
 
 
 class TestNextScheduledWake:
     def test_returns_epoch_when_available(self, tmp_path):
         cfg = _FakeConfig({"global_default": 2, "per_agent": {}, "per_project": {}})
-        nxt = get_next_scheduled_wake(tmp_path, "a1", None, cfg)
+        nxt = get_next_scheduled_wake(tmp_path, "a1", "proj-1", cfg)
         assert nxt is not None
         assert nxt > 0
 
     def test_none_when_exhausted(self, tmp_path):
         data_dir = tmp_path
-        record_scheduled_wake(data_dir, "a1", None)
-        record_scheduled_wake(data_dir, "a1", None)
+        record_scheduled_wake(data_dir, "a1", "proj-1")
+        record_scheduled_wake(data_dir, "a1", "proj-1")
         cfg = _FakeConfig({"global_default": 2, "per_agent": {}, "per_project": {}})
-        assert get_next_scheduled_wake(data_dir, "a1", None, cfg) is None
+        assert get_next_scheduled_wake(data_dir, "a1", "proj-1", cfg) is None
 
     def test_none_when_zero_budget(self, tmp_path):
         cfg = _FakeConfig({"global_default": 0, "per_agent": {}, "per_project": {}})
-        assert get_next_scheduled_wake(tmp_path, "a1", None, cfg) is None
+        assert get_next_scheduled_wake(tmp_path, "a1", "proj-1", cfg) is None
 
 
 @pytest.mark.asyncio
@@ -168,6 +170,29 @@ class TestFleetWakeInfo:
             assert row["remaining"] == 0
             assert row["consumed"] == 0
             assert row["state"] == "damaged"
+
+    @pytest.mark.parametrize(
+        "text",
+        ['{"daily": []}', '{"daily": {"a1:global": [1, 2]}}', '{"daily": {"a1:global": 3}}'],
+    )
+    async def test_misshaped_daily_degrades_row_not_fleet(self, tmp_path, text):
+        """Valid JSON whose nested ``daily`` shape is wrong must be a damaged row,
+        not an AttributeError escaping get_fleet_wake_info. Before _read_state
+        validated the nested shape, ``{"daily": []}`` passed the root check and
+        ``.items()`` raised in get_agent_consumption -- the fleet handler only
+        catches WakeBudgetStateError, so the whole report failed."""
+        (tmp_path / "wake_budget.json").write_text(text)
+        cfg = _FakeConfig(
+            wake_budget={"global_default": 2, "per_agent": {}, "per_project": {}},
+            agents=[{"id": "a1", "name": "agent-1", "status": "running"}],
+        )
+        rows = await get_fleet_wake_info(tmp_path, cfg)
+        assert len(rows) == 1
+        assert rows[0]["state"] == "damaged"
+        assert rows[0]["consumed"] == 0
+        assert rows[0]["remaining"] == 0
+        with pytest.raises(WakeBudgetStateError):
+            _read_state(tmp_path / "wake_budget.json")
 
     async def test_partial_read_preserves_consumption_marks_damaged(self, tmp_path, monkeypatch):
         """Defect 3 (tsk-oenmo2 mutating test): the grandparent #2669 code put
@@ -210,6 +235,98 @@ class TestFleetWakeInfo:
         assert row["remaining"] == 1
         assert row["next_wake_epoch"] is None
         assert row["state"] == "damaged"
+
+
+class TestPerAgentConsumption:
+    def test_sums_all_project_keys_for_agent(self, tmp_path):
+        _write_state(tmp_path / "wake_budget.json", {
+            "daily": {
+                "a1:proj-x": {_today(): 1},
+                "a1:proj-y": {_today(): 2},
+                "a2:proj-x": {_today(): 3},
+            }
+        })
+        c = get_agent_consumption(tmp_path, "a1")
+        assert c["scheduled"] == 3
+        assert c["date"] == _today()
+
+    def test_zero_when_no_project_keys(self, tmp_path):
+        _write_state(tmp_path / "wake_budget.json", {
+            "daily": {
+                "a1:proj-x": {"1999-01-01": 5},
+            }
+        })
+        c = get_agent_consumption(tmp_path, "a1")
+        assert c["scheduled"] == 0
+        assert c["date"] == _today()
+
+    def test_missing_file_is_zero(self, tmp_path):
+        c = get_agent_consumption(tmp_path, "a1")
+        assert c["scheduled"] == 0
+        assert c["date"] == _today()
+
+
+class TestPerAgentCanWake:
+    def test_sums_across_projects(self, tmp_path):
+        data_dir = tmp_path
+        record_scheduled_wake(data_dir, "a1", "proj-x")
+        record_scheduled_wake(data_dir, "a1", "proj-y")
+        cfg = _FakeConfig({"global_default": 3, "per_agent": {}, "per_project": {}})
+        assert can_wake(data_dir, "a1", "a1", "proj-x", cfg) is True
+
+    def test_blocks_when_agent_total_exhausted_across_projects(self, tmp_path):
+        data_dir = tmp_path
+        record_scheduled_wake(data_dir, "a1", "proj-x")
+        record_scheduled_wake(data_dir, "a1", "proj-y")
+        cfg = _FakeConfig({"global_default": 2, "per_agent": {}, "per_project": {}})
+        assert can_wake(data_dir, "a1", "a1", "proj-x", cfg) is False
+
+    def test_per_agent_override_applies_to_total(self, tmp_path):
+        data_dir = tmp_path
+        record_scheduled_wake(data_dir, "a1", "proj-x")
+        record_scheduled_wake(data_dir, "a1", "proj-y")
+        cfg = _FakeConfig({
+            "global_default": 10,
+            "per_agent": {"a1": 2},
+            "per_project": {},
+        })
+        assert can_wake(data_dir, "a1", "a1", "proj-x", cfg) is False
+
+
+class TestPerAgentNextScheduledWake:
+    def test_uses_agent_total_consumption(self, tmp_path):
+        data_dir = tmp_path
+        record_scheduled_wake(data_dir, "a1", "proj-x")
+        cfg = _FakeConfig({"global_default": 3, "per_agent": {}, "per_project": {}})
+        nxt = get_next_scheduled_wake(data_dir, "a1", "proj-x", cfg)
+        assert nxt is not None
+
+    def test_none_when_agent_total_exhausted(self, tmp_path):
+        data_dir = tmp_path
+        record_scheduled_wake(data_dir, "a1", "proj-x")
+        record_scheduled_wake(data_dir, "a1", "proj-y")
+        cfg = _FakeConfig({"global_default": 2, "per_agent": {}, "per_project": {}})
+        assert get_next_scheduled_wake(data_dir, "a1", "proj-x", cfg) is None
+
+
+@pytest.mark.asyncio
+class TestPerAgentFleetInfo:
+    async def test_sums_across_projects(self, tmp_path):
+        _write_state(tmp_path / "wake_budget.json", {
+            "daily": {
+                "a1:proj-x": {_today(): 1},
+                "a1:proj-y": {_today(): 2},
+            }
+        })
+        cfg = _FakeConfig(
+            wake_budget={"global_default": 5, "per_agent": {}, "per_project": {}},
+            agents=[{"id": "a1", "name": "agent-1", "status": "running"}],
+        )
+        rows = await get_fleet_wake_info(tmp_path, cfg)
+        assert len(rows) == 1
+        assert rows[0]["agent_id"] == "a1"
+        assert rows[0]["consumed"] == 3
+        assert rows[0]["remaining"] == 2
 
 
 class TestDamagedState:
