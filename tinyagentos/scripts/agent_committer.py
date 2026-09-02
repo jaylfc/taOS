@@ -37,6 +37,9 @@ def _changed_summary() -> str:
     lines = [l.strip() for l in out.strip().splitlines() if l.strip()]
     if not lines:
         return "auto-commit"
+    # Exclude the Git stat footer (e.g., "2 files changed")
+    if lines and "files changed" in lines[-1]:
+        lines = lines[:-1]
     if len(lines) == 1:
         return lines[0]
     return f"{len(lines)} files changed"

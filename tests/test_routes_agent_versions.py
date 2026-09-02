@@ -100,7 +100,7 @@ class TestAgentVersionsRoutes:
             text=True,
             check=True,
         ).stdout
-        assert "revert:" in stat
+        assert "Revert" in stat
 
     async def test_revert_unknown_sha_returns_404(self, client):
         with patch(

@@ -81,7 +81,7 @@ async def git_log(container: str) -> List[dict]:
     fmt = "%H|%s|%an|%ae|%ai"
     rc, out = await _git(container, ["log", f"--format={fmt}", "--reverse"])
     if rc != 0:
-        return []
+        raise RuntimeError(f"git log failed: {out}")
     commits: List[dict] = []
     for line in out.strip().splitlines():
         parts = line.split("|", 4)
@@ -104,9 +104,6 @@ async def git_diff(container: str, sha: str) -> str:
 
 
 async def git_revert(container: str, sha: str) -> None:
-    rc, out = await _git(container, ["revert", "--no-commit", sha])
+    rc, out = await _git(container, ["revert", "--no-edit", sha])
     if rc != 0:
         raise RuntimeError(f"git revert failed for {sha}: {out}")
-    rc, out = await _git(container, ["commit", "-m", f"revert: {sha[:8]}"])
-    if rc != 0:
-        raise RuntimeError(f"git revert commit failed: {out}")
