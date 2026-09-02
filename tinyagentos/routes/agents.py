@@ -758,6 +758,8 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                 if result.get("success"):
                     if agent is not None:
                         agent["host"] = result.get("ip", "")
+                        if deploy_remote:
+                            agent["remote"] = deploy_remote
                         agent["status"] = "running"
                         agent["llm_key"] = result.get("llm_key")
                         # Save config now so the bootstrap endpoint can return

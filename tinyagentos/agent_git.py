@@ -30,6 +30,7 @@ node_modules/
 .browser_profiles/
 __pycache__/
 *.pyc
+.taos/trace/
 """
 
 
@@ -104,6 +105,6 @@ async def git_diff(container: str, sha: str) -> str:
 
 
 async def git_revert(container: str, sha: str) -> None:
-    rc, out = await _git(container, ["revert", "--no-edit", sha])
+    rc, out = await _git(container, ["revert", "--no-edit", f"{sha}..HEAD"])
     if rc != 0:
         raise RuntimeError(f"git revert failed for {sha}: {out}")

@@ -5,7 +5,7 @@ repo at /root. Container interactions go via ``agent_git`` helpers so the
 same code works for both LXC and Docker backends.
 
 Routes
-------
+-----
 GET  /api/agents/{name}/versions            — list commits
 GET  /api/agents/{name}/versions/{sha}/diff — show patch for a commit
 POST /api/agents/{name}/versions/{sha}/revert — revert to a prior commit
@@ -13,6 +13,7 @@ POST /api/agents/{name}/versions/{sha}/revert — revert to a prior commit
 from __future__ import annotations
 
 import logging
+import re
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -24,9 +25,20 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+_SHA_RE = re.compile(r"^[0-9a-f]{4,40}$")
 
-def _container_name(name: str) -> str:
-    return f"taos-agent-{name}"
+
+def _container_name(agent: dict) -> str:
+    remote = agent.get("remote")
+    name = agent["name"]
+    container = f"taos-agent-{name}"
+    return f"{remote}:{container}" if remote else container
+
+
+def _validate_sha(sha: str) -> JSONResponse | None:
+    if not _SHA_RE.match(sha):
+        return JSONResponse({"error": "invalid sha"}, status_code=400)
+    return None
 
 
 @router.get("/api/agents/{name}/versions")
@@ -37,7 +49,7 @@ async def list_versions(request: Request, name: str):
     if not agent:
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
 
-    container = _container_name(name)
+    container = _container_name(agent)
     try:
         commits = await git_log(container)
     except Exception as exc:
@@ -54,7 +66,11 @@ async def version_diff(request: Request, name: str, sha: str):
     if not agent:
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
 
-    container = _container_name(name)
+    bad = _validate_sha(sha)
+    if bad is not None:
+        return bad
+
+    container = _container_name(agent)
     try:
         patch = await git_diff(container, sha)
     except RuntimeError as exc:
@@ -73,7 +89,11 @@ async def revert_version(request: Request, name: str, sha: str):
     if not agent:
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
 
-    container = _container_name(name)
+    bad = _validate_sha(sha)
+    if bad is not None:
+        return bad
+
+    container = _container_name(agent)
     try:
         await git_revert(container, sha)
     except RuntimeError as exc:
