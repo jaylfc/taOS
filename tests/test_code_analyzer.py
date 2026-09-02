@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from tinyagentos.code_analyzer import (
     Finding,
+    adversarial_verify,
     analyze_app_source,
     detect_dangerous_url_scheme,
     detect_dom_xss_sink,
@@ -290,3 +291,62 @@ class TestAnalyzeAppSource:
             "line": 3,
             "message": "msg",
         }
+
+
+# --------------------------------------------------------------------------- #
+# adversarial_verify
+# --------------------------------------------------------------------------- #
+
+
+class TestAdversarialVerify:
+    def test_comment_line_is_refuted(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": "// eval(userInput);"})
+        assert result == []
+
+    def test_block_comment_start_is_refuted(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": "/* eval(userInput); */"})
+        assert result == []
+
+    def test_string_literal_is_refuted(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": 'const msg = "eval() is bad";'})
+        assert result == []
+
+    def test_real_code_is_kept(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": "eval(userInput);"})
+        assert len(result) == 1
+
+    def test_known_example_key_is_refuted(self):
+        findings = [Finding("critical", "hardcoded-secret", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": 'const key = "AKIAIOSFODNN7EXAMPLE";'})
+        assert result == []
+
+    def test_multiple_findings_mixed(self):
+        findings = [
+            Finding("critical", "eval-like-execution", "app.js", 1, "msg"),
+            Finding("critical", "hardcoded-secret", "app.js", 2, "msg"),
+            Finding("critical", "eval-like-execution", "app.js", 3, "msg"),
+        ]
+        files = {
+            "app.js": (
+                "// eval(userInput);\n"
+                'const key = "AKIAIOSFODNN7EXAMPLE";\n'
+                "eval(userInput);\n"
+            ),
+        }
+        result = adversarial_verify(findings, files)
+        assert len(result) == 1
+        assert result[0].line == 3
+
+    def test_unknown_rule_id_is_kept(self):
+        findings = [Finding("critical", "unknown-rule", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": "some code here"})
+        assert len(result) == 1
+
+    def test_missing_file_line_drops_finding(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 99, "msg")]
+        result = adversarial_verify(findings, {"app.js": "eval(userInput);"})
+        assert result == []

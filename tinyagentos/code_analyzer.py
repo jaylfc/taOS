@@ -462,6 +462,11 @@ def analyze_app_source(files: dict[str, str]) -> list[Finding]:
     content. Findings are returned in a stable order: file (as given in the
     dict), then line number, then detector registration order -- so repeat
     calls against the same input are deterministic and diffable.
+
+    After the initial detector pass, findings are run through an
+    adversarial-verify stage that refutes false positives by checking
+    whether the detected pattern appears inside a string literal, comment,
+    or known example value.
     """
     findings: list[Finding] = []
     for filename, content in files.items():
@@ -469,9 +474,90 @@ def analyze_app_source(files: dict[str, str]) -> list[Finding]:
             findings.extend(detector(filename, content))
     file_order = {name: idx for idx, name in enumerate(files)}
     findings.sort(key=lambda f: (file_order[f.file], f.line))
-    return findings
+    return adversarial_verify(findings, files)
 
 
 def has_critical(findings: list[Finding]) -> bool:
     """Return True if any finding is severity "critical"."""
     return any(f.severity == "critical" for f in findings)
+
+
+# --------------------------------------------------------------------------- #
+# Adversarial verification
+# --------------------------------------------------------------------------- #
+
+# Trigger tokens used to decide whether a finding's pattern sits inside a
+# string literal.  The token is the shortest unique substring the detector
+# matches on that line.
+_TRIGGER_TOKENS: dict[str, str] = {
+    "eval-like-execution": "eval(",
+    "network-exfil": "fetch(",
+    "dom-xss-sink": ".innerHTML",
+    "dangerous-url-scheme": "javascript:",
+    "inline-event-handler-injection": "setAttribute(",
+    "hardcoded-secret": "AKIA",
+    "sandbox-escape-attempt": "window.parent",
+    "postmessage-no-origin-check": "postMessage(",
+    "storage-exfil": "localStorage.",
+}
+
+# Known example/placeholder values that should never trigger a real finding.
+_KNOWN_EXAMPLES: tuple[str, ...] = (
+    "AKIAIOSFODNN7EXAMPLE",
+)
+
+
+def adversarial_verify(findings: list[Finding], files: dict[str, str]) -> list[Finding]:
+    """Second-pass adversarial check that refutes false-positive findings.
+
+    Each finding is re-examined against its source line.  A finding is
+    dropped when the line context clearly shows the detected pattern is
+    inert -- e.g. it lives inside a string literal, a comment, or matches
+    a known example/placeholder value.
+    """
+    verified: list[Finding] = []
+    for f in findings:
+        content = files.get(f.file, "")
+        if not content:
+            verified.append(f)
+            continue
+        lines = content.splitlines()
+        if f.line < 1 or f.line > len(lines):
+            continue
+        line = lines[f.line - 1]
+        if _is_clearly_false_positive(f, line):
+            continue
+        verified.append(f)
+    return verified
+
+
+def _is_clearly_false_positive(finding: Finding, line: str) -> bool:
+    stripped = line.lstrip()
+
+    if stripped.startswith("//"):
+        return True
+    if stripped.startswith("/*"):
+        return True
+    if stripped.startswith("*") and not stripped.startswith("*/"):
+        return True
+
+    if _trigger_is_inside_string(finding, line):
+        return True
+
+    if finding.rule_id == "hardcoded-secret":
+        for example in _KNOWN_EXAMPLES:
+            if example in line:
+                return True
+
+    return False
+
+
+def _trigger_is_inside_string(finding: Finding, line: str) -> bool:
+    token = _TRIGGER_TOKENS.get(finding.rule_id)
+    if not token:
+        return False
+    idx = line.find(token)
+    if idx == -1:
+        return False
+    before = line[:idx]
+    return before.count('"') % 2 == 1 or before.count("'") % 2 == 1
