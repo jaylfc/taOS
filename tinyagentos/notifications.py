@@ -211,47 +211,86 @@ class NotificationStore(BaseStore):
             except Exception:
                 logger.warning("NotificationStore: could not schedule web-push", exc_info=True)
 
-    async def list(self, limit: int = 20, unread_only: bool = False) -> list[dict]:
+    async def list(
+        self,
+        limit: int = 20,
+        unread_only: bool = False,
+        user_id: str | None = None,
+    ) -> list[dict]:
         # Active feed: archived (dismissed) notifications are excluded.
         conds = ["archived = 0"]
+        if user_id is not None:
+            conds.append("(user_id IS NULL OR user_id = ?)")
         if unread_only:
             conds.append("read = 0")
+        params: tuple = (user_id, limit) if user_id is not None else (limit,)
         sql = (
             "SELECT id, timestamp, level, title, message, read, source, data, user_id FROM notifications"
             f" WHERE {' AND '.join(conds)} ORDER BY timestamp DESC LIMIT ?"
         )
-        async with self._db.execute(sql, (limit,)) as cursor:
+        async with self._db.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
         return [_serialize_row(r) for r in rows]
 
-    async def list_archived(self, limit: int = 50) -> list[dict]:
+    async def list_archived(
+        self,
+        limit: int = 50,
+        user_id: str | None = None,
+    ) -> list[dict]:
         # History view: the dismissed notifications, newest first. Nothing is
         # deleted, so this is the durable record (#62 / append-only #103).
+        conds = ["archived = 1"]
+        if user_id is not None:
+            conds.append("(user_id IS NULL OR user_id = ?)")
+        params: tuple = (user_id, limit) if user_id is not None else (limit,)
         async with self._db.execute(
             "SELECT id, timestamp, level, title, message, read, source, data, user_id FROM notifications"
-            " WHERE archived = 1 ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
+            f" WHERE {' AND '.join(conds)} ORDER BY timestamp DESC LIMIT ?",
+            params,
         ) as cursor:
             rows = await cursor.fetchall()
         return [_serialize_row(r) for r in rows]
 
-    async def unread_count(self) -> int:
+    async def unread_count(self, user_id: str | None = None) -> int:
+        conds = ["read = 0", "archived = 0"]
+        if user_id is not None:
+            conds.append("(user_id IS NULL OR user_id = ?)")
+        params: tuple = (user_id,) if user_id is not None else ()
         async with self._db.execute(
-            "SELECT COUNT(*) FROM notifications WHERE read = 0 AND archived = 0"
+            f"SELECT COUNT(*) FROM notifications WHERE {' AND '.join(conds)}",
+            params,
         ) as cursor:
             row = await cursor.fetchone()
         return row[0] if row else 0
 
-    async def mark_read(self, notif_id: int) -> None:
-        await self._db.execute("UPDATE notifications SET read = 1 WHERE id = ?", (notif_id,))
+    async def mark_read(self, notif_id: int, user_id: str | None = None) -> int:
+        if user_id is not None:
+            cursor = await self._db.execute(
+                "UPDATE notifications SET read = 1 WHERE id = ? AND (user_id IS NULL OR user_id = ?)",
+                (notif_id, user_id),
+            )
+        else:
+            # Internal/system caller: unfiltered update.
+            cursor = await self._db.execute(
+                "UPDATE notifications SET read = 1 WHERE id = ?", (notif_id,)
+            )
         await self._db.commit()
+        return cursor.rowcount
 
-    async def archive(self, notif_id: int) -> None:
+    async def archive(self, notif_id: int, user_id: str | None = None) -> int:
         # Dismiss = archive. The row stays; the History view still shows it.
-        await self._db.execute(
-            "UPDATE notifications SET archived = 1 WHERE id = ?", (notif_id,)
-        )
+        if user_id is not None:
+            cursor = await self._db.execute(
+                "UPDATE notifications SET archived = 1 WHERE id = ? AND (user_id IS NULL OR user_id = ?)",
+                (notif_id, user_id),
+            )
+        else:
+            # Internal/system caller: unfiltered update.
+            cursor = await self._db.execute(
+                "UPDATE notifications SET archived = 1 WHERE id = ?", (notif_id,)
+            )
         await self._db.commit()
+        return cursor.rowcount
 
     async def archive_by_source_ref(self, source: str, request_id) -> int:
         """Archive active notifications whose JSON `data.request_id` matches.
@@ -262,6 +301,7 @@ class NotificationStore(BaseStore):
         (#62: nothing is deleted). Idempotent: rows already archived are
         skipped; returns the number newly archived.
         """
+        # Intentionally global: resolves by source + request_id, not by user.
         async with self._db.execute(
             "SELECT id, data FROM notifications WHERE source = ? AND archived = 0",
             (source,),
@@ -279,6 +319,8 @@ class NotificationStore(BaseStore):
             if str(payload.get("request_id")) == target:
                 ids.append(nid)
         if ids:
+            # Intentionally global: source-ref resolution applies to the row,
+            # not to a specific user.
             placeholders = ",".join("?" * len(ids))
             await self._db.execute(
                 f"UPDATE notifications SET archived = 1, read = 1 WHERE id IN ({placeholders})",
@@ -287,8 +329,15 @@ class NotificationStore(BaseStore):
             await self._db.commit()
         return len(ids)
 
-    async def mark_all_read(self) -> int:
-        cursor = await self._db.execute("UPDATE notifications SET read = 1 WHERE read = 0")
+    async def mark_all_read(self, user_id: str | None = None) -> int:
+        if user_id is not None:
+            cursor = await self._db.execute(
+                "UPDATE notifications SET read = 1 WHERE read = 0 AND (user_id IS NULL OR user_id = ?)",
+                (user_id,),
+            )
+        else:
+            # Internal/system caller: unfiltered update.
+            cursor = await self._db.execute("UPDATE notifications SET read = 1 WHERE read = 0")
         await self._db.commit()
         return cursor.rowcount
 
@@ -296,6 +345,7 @@ class NotificationStore(BaseStore):
         # Age out only old UNdismissed notifications. Archived rows are the
         # durable history a user explicitly dismissed (#62 / append-only #103),
         # so they are never GC'd here.
+        # Intentionally global: retention/prune is a system-wide operation.
         cutoff = int(time.time()) - (max_age_days * 86400)
         cursor = await self._db.execute(
             "DELETE FROM notifications WHERE timestamp < ? AND archived = 0", (cutoff,)
