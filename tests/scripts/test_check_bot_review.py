@@ -539,6 +539,79 @@ class TestMain:
         with pytest.raises(SystemExit):
             check_mod.main([])
 
+    def test_main_head_sha_does_not_raise_unbound_local_error(
+        self, check_mod, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Acceptance: main() with --head-sha and a terminal exit code must
+        complete without raising UnboundLocalError.
+
+        Repro from tsk-ks6i3c: `RECONCILE_403_OCCURRED` was a module-level
+        flag that `main()` both read (at the verified-stub check) and
+        assigned (at the reset for next run). Because `main()` assigned it
+        with no `global` statement, Python treated the name as local to
+        `main()` for the whole function, so the earlier read raised
+        UnboundLocalError before the assignment ran -- the reconcile path was
+        dead on every --head-sha run.
+        """
+        items = [
+            check_mod.CRItem(
+                id=1, body="## Review\n\nFound an issue.", is_review=True,
+                review_state="COMMENTED",
+            ),
+        ]
+        # Drive the terminal-exit-code branch with all network calls stubbed:
+        # check_bot_review -> EXIT_OK, reconcile_head_sha_check_run -> None,
+        # check_run_verdict -> EXIT_OK. The reconciled-verdict read happens
+        # before any 403-flag reset, which is the line that previously
+        # raised.
+        with patch.object(check_mod, "collect_coderabbit_items",
+                          return_value=items), \
+             patch.object(check_mod, "reconcile_head_sha_check_run",
+                          return_value=None), \
+             patch.object(check_mod, "check_run_verdict",
+                          return_value=(check_mod.EXIT_OK, "stub ok")):
+            rc = check_mod.main(
+                ["2366", "--owner", "jaylfc", "--repo", "taOS",
+                 "--head-sha", "abcdef0123456789" + "0" * 24],
+            )
+        assert rc == check_mod.EXIT_OK
+
+    def test_main_patch_403_refusal_blocks_false_clean_verdict(
+        self, check_mod, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Acceptance: an infra-403-during-PATCH must STILL block a false
+        clean verdict, not waive it.
+
+        When the reconcile PATCH is refused with 403 Forbidden the stale
+        FAILURE survives; the gate must report EXIT_STUB even if the latest
+        check run on the SHA happens to read green. The pre-fix inverted
+        condition (`... and not RECONCILE_403_OCCURRED`) let the 403 path
+        WAIVE the gate; the post-fix return-value signal flips that.
+        """
+        items = [
+            check_mod.CRItem(
+                id=1, body="## Review\n\nFound an issue.", is_review=True,
+                review_state="COMMENTED",
+            ),
+        ]
+        refused = {"reconciled": False, "reason": "patch_refused_403",
+                   "head_sha": "abcdef0123456789" + "0" * 24}
+        with patch.object(check_mod, "collect_coderabbit_items",
+                          return_value=items), \
+             patch.object(check_mod, "reconcile_head_sha_check_run",
+                          return_value=refused), \
+             patch.object(check_mod, "check_run_verdict",
+                          return_value=(check_mod.EXIT_OK, "stub ok")):
+            rc = check_mod.main(
+                ["2366", "--owner", "jaylfc", "--repo", "taOS",
+                 "--head-sha", "abcdef0123456789" + "0" * 24],
+            )
+        captured = capsys.readouterr()
+        assert rc == check_mod.EXIT_STUB, (
+            "a 403-during-PATCH must keep the gate red, not waive it to OK"
+        )
+        assert "403" in captured.out
+
 
 # ---------------------------------------------------------------------------
 # collect_pr_labels(owner, repo, pr) -- API-fetched label set (mocked at _api_get)

@@ -123,10 +123,6 @@ VERDICT_TO_CONCLUSION = {
     EXIT_STUB: "failure",
 }
 
-# Track whether reconcile encountered a 403 Forbidden during PATCH,
-# to distinguish it from genuine infrastructure failure in main().
-RECONCILE_403_OCCURRED = False
-
 
 @dataclass
 class CRItem:
@@ -608,7 +604,11 @@ def reconcile_head_sha_check_run(
 
     Returns the GitHub response dict on a successful write, or None if there
     was no write to make (all runs already matched) or on infrastructure
-    failure.
+    failure. A 403 Forbidden refusal on the PATCH returns
+    ``{"reconciled": False, "reason": "patch_refused_403", "head_sha": ...}``
+    so the caller can block a false-clean verdict without relying on a
+    module-level flag (which previously shadowed as a local inside main()
+    and broke with UnboundLocalError on every --head-sha run).
     """
     runs = list_check_runs(owner, repo, head_sha, token)
     if runs is None:
@@ -656,18 +656,23 @@ def reconcile_head_sha_check_run(
         # stale FAILURE survives is strictly worse than writing nothing, because
         # it leaves the SHA pinned on UNSTABLE and looks reconciled.
         if any_403:
-            RECONCILE_403_OCCURRED = True
             print(
                 f"error: override could not be applied on {head_sha}; "
                 f"the bot-review-allow label waiver could not be applied due "
                 f"to insufficient permissions", file=sys.stderr,
             )
-        else:
-            print(
-                f"error: could not PATCH one or more stale bot-review-gate runs on "
-                f"{head_sha}; refusing to publish a new run that would coexist with "
-                f"them", file=sys.stderr,
-            )
+            # Signal a 403 refusal to main() so it can keep the gate red
+            # instead of reporting a false-clean verdict. A 403 from the
+            # PATCH means a stale FAILURE survived, so the gate must not
+            # waive it; the dict return shape is distinct from the
+            # success/no-op `None` so callers can branch on it.
+            return {"reconciled": False, "reason": "patch_refused_403",
+                    "head_sha": head_sha}
+        print(
+            f"error: could not PATCH one or more stale bot-review-gate runs on "
+            f"{head_sha}; refusing to publish a new run that would coexist with "
+            f"them", file=sys.stderr,
+        )
         return None
     if patched_any:
         return {"reconciled": True, "action": "patched", "head_sha": head_sha}
@@ -777,7 +782,7 @@ def main(argv: list[str] | None = None) -> int:
     # written as a check-run conclusion: it is reported by the job failure and
     # must not self-clear a stale run, so the write is skipped.
     if head_sha and exit_code in VERDICT_TO_CONCLUSION:
-        reconcile_head_sha_check_run(
+        reconcile_result = reconcile_head_sha_check_run(
             owner, repo, head_sha, VERDICT_TO_CONCLUSION[exit_code], token,
         )
         # Read back the reconciled verdict (the read side of the #2493 fix).
@@ -789,14 +794,27 @@ def main(argv: list[str] | None = None) -> int:
         verified_code, _ = check_run_verdict(
             owner, repo, head_sha, token,
         )
-        if verified_code == EXIT_STUB and exit_code == EXIT_OK and not RECONCILE_403_OCCURRED:
+        if verified_code == EXIT_STUB and exit_code == EXIT_OK:
             print(
                 f"fail: stale bot-review-gate FAILURE on {head_sha} "
                 f"survived reconcile -- PR stays UNSTABLE "
                 f"(exit {EXIT_STUB})"
             )
             return EXIT_STUB
-    RECONCILE_403_OCCURRED = False  # reset for next run
+        # A 403 refusal on the PATCH means a stale FAILURE survived because
+        # we could not patch it; even when the latest check run now reads
+        # clean, the gate must not waive it. The reconcile_result carries the
+        # refusal signal so main() does not need a module-level flag (which
+        # previously shadowed as a local in this function and broke the read
+        # of its own reset with an UnboundLocalError on every --head-sha run).
+        if (isinstance(reconcile_result, dict)
+                and reconcile_result.get("reason") == "patch_refused_403"):
+            print(
+                f"fail: could not PATCH stale bot-review-gate run on "
+                f"{head_sha} (403 Forbidden); PR stays UNSTABLE "
+                f"(exit {EXIT_STUB})"
+            )
+            return EXIT_STUB
     return exit_code
 
 
