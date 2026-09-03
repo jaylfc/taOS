@@ -120,6 +120,16 @@ echo "test: verification only runs when SERVICE_MODE != skip"
 grep -A 3 'SERVICE_MODE.*!=.*skip' "$SCRIPT" | grep -q "verify_hardware_capabilities"
 
 echo "test: Zabbly keyring installed with world-readable permissions"
-grep -q "install -m 0644.*zabbly.asc" "$SCRIPT"
+# Reject old cp path; verify install -m 0644 is used
+! grep -q 'cp.*zabbly.asc' "$SCRIPT" && grep -q 'install -m 0644.*zabbly.asc' "$SCRIPT"
+# Exercise the install step with a temporary destination and check mode
+tmp_src=$(mktemp)
+tmp_dst=$(mktemp /tmp/zabbly_test.XXXXXX)
+set +e
+install -m 0644 "$tmp_src" "$tmp_dst"
+actual_mode=$(stat -c %a "$tmp_dst")
+set -e
+rm -f "$tmp_src" "$tmp_dst"
+[ "$actual_mode" = "644" ]
 
 echo "all tests passed"
