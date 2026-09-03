@@ -14,6 +14,7 @@ import json
 import os
 import tempfile
 import time
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,6 +29,8 @@ from tinyagentos.agent_token_auth import (
 )
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_STATE: dict = {"global": False, "lanes": {}}
 
@@ -69,17 +72,12 @@ def _atomic_write(p: Path, state: dict) -> None:
     # mid-write or a concurrent writer can never leave a truncated/corrupt file
     # (a reader always sees either the old or the new complete state).
     fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix="." + p.stem + ".", suffix=".tmp")
-    tmp_path = Path(tmp)
     try:
         with os.fdopen(fd, "w") as f:
             f.write(json.dumps(state))
         os.replace(tmp, p)
         tmp = None
     except (OSError, ValueError, TypeError):
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
         raise
     finally:
         if tmp is not None:
@@ -411,7 +409,8 @@ async def get_fleet(request: Request):
 
     # Registered agents holding no card are idle; surface them so the fleet
     # shows the full active roster, not just the busy lanes. Best-effort: a
-    # missing or erroring registry must not break the working view.
+    # missing or erroring registry must not break the working view. Any
+    # registry exception is caught and logged; the working view still renders.
     registry = getattr(request.app.state, "agent_registry", None)
     registered: list[dict] = []
     if registry is not None:
@@ -420,7 +419,8 @@ async def get_fleet(request: Request):
                 registered = await registry.list_all(status="active")
             else:
                 registered = await registry.list_for_user(user_id, status="active") if user_id else []
-        except RuntimeError:
+        except Exception:
+            logger.exception("registry lookup failed for fleet view")
             registered = []
         for rec in registered:
             handle = (rec.get("handle") or "").strip()
