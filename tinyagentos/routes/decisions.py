@@ -299,7 +299,7 @@ async def create_decision(
     # tsk-mul5pa: an API caller cannot stamp server provenance.  Strip the
     # marker before persisting so the _apply_*_grant handlers refuse any gate
     # decision whose metadata was supplied over the wire.
-    metadata = dict(body.metadata or {})
+    metadata = dict(body.metadata) if isinstance(body.metadata, dict) else {}
     metadata.pop(SERVER_RAISED_KEY, None)
     decision = await store.create(
         from_agent=from_agent,
@@ -621,6 +621,10 @@ async def _apply_execution_grant(request: Request, decision: dict, value) -> boo
     store hiccup must not fail the answer."""
     meta = decision.get("metadata") or {}
     if meta.get(SERVER_RAISED_KEY) is not True:
+        logger.warning(
+            "gate decision %s refused: missing server provenance (kind=%r)",
+            decision.get("id"), meta.get("kind"),
+        )
         return False
     if meta.get("kind") != "execution_gate":
         return False
@@ -678,6 +682,10 @@ async def _apply_device_pairing_grant(request: Request, decision: dict, value) -
     minted device is revoked rather than left dangling."""
     meta = decision.get("metadata") or {}
     if meta.get(SERVER_RAISED_KEY) is not True:
+        logger.warning(
+            "gate decision %s refused: missing server provenance (kind=%r)",
+            decision.get("id"), meta.get("kind"),
+        )
         return False
     if meta.get("kind") != "device_pairing":
         return False
@@ -739,6 +747,10 @@ async def _apply_delegation_grant(request: Request, decision: dict, value) -> bo
     grant-store or delegation-completion hiccup must not fail the answer."""
     meta = decision.get("metadata") or {}
     if meta.get(SERVER_RAISED_KEY) is not True:
+        logger.warning(
+            "gate decision %s refused: missing server provenance (kind=%r)",
+            decision.get("id"), meta.get("kind"),
+        )
         return False
     if meta.get("kind") != "delegation_gate":
         return False
@@ -936,6 +948,10 @@ async def _apply_app_grant(request: Request, decision: dict, value) -> bool:
     so the caller sends the generic answer."""
     meta = decision.get("metadata") or {}
     if meta.get(SERVER_RAISED_KEY) is not True:
+        logger.warning(
+            "gate decision %s refused: missing server provenance (kind=%r)",
+            decision.get("id"), meta.get("kind"),
+        )
         return False
     if meta.get("kind") != "app_grant":
         return False
