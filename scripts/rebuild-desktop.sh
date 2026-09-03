@@ -30,6 +30,18 @@ fi
 #
 # Using -print -quit so find stops at the first hit (no need to scan everything).
 if [ -f static/desktop/index.html ]; then
+    # Provenance check: if a fetched bundle matches current source, skip
+    # regardless of filesystem mtimes (which can be misleading after a fetch).
+    _provenance_file="static/desktop/.taos-bundle-provenance"
+    if [ -f "$_provenance_file" ]; then
+        _current_tree="$(git rev-parse HEAD:desktop 2>/dev/null || echo "")"
+        _recorded_tree="$(cat "$_provenance_file" 2>/dev/null || echo "")"
+        if [ -n "$_current_tree" ] && [ "$_current_tree" = "$_recorded_tree" ]; then
+            echo "[taos-rebuild-desktop] desktop bundle provenance is current — skipping rebuild"
+            exit 0
+        fi
+    fi
+
     _stale_src="$(find desktop/src -type f -not -path '*/node_modules/*' -newer static/desktop/index.html -print -quit 2>/dev/null)"
     _stale_cfg="$(find desktop \( -name 'package.json' -o -name '*-lock.*' -o -name 'vite.config.*' -o -name 'tsconfig*.json' \) -type f -newer static/desktop/index.html -print -quit 2>/dev/null)"
     if [ -z "$_stale_src" ] && [ -z "$_stale_cfg" ]; then
@@ -50,6 +62,10 @@ fi
 
 if (cd desktop && npm install && npm run build); then
     echo "[taos-rebuild-desktop] desktop rebuild succeeded"
+    _current_tree="$(git rev-parse HEAD:desktop 2>/dev/null || echo "")"
+    if [ -n "$_current_tree" ]; then
+        echo "$_current_tree" > static/desktop/.taos-bundle-provenance
+    fi
 elif [ -f static/desktop/index.html ]; then
     echo "[taos-rebuild-desktop] desktop rebuild FAILED -- keeping the existing bundle (see journalctl -u tinyagentos-rebuild-desktop)"
 else

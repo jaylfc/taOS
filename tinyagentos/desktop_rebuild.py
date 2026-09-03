@@ -95,6 +95,55 @@ def _record_deps_install(desktop_dir: Path) -> None:
         logger.warning("Could not write deps marker (%s) — next update reinstalls.", exc)
 
 
+async def _get_desktop_tree_sha(project_root: Path) -> str | None:
+    """Return the git tree SHA of desktop/, or None if git is unavailable."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "-C",
+            str(project_root),
+            "rev-parse",
+            "HEAD:desktop",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        if proc.returncode == 0:
+            return out.decode(errors="replace").strip()
+    except FileNotFoundError:
+        pass
+    return None
+
+
+async def _is_bundle_provenance_current(project_root: Path) -> bool:
+    """Return True if the bundle provenance marker matches the current desktop tree.
+
+    A marker written by a successful prebuilt-bundle install or local build
+    records the ``git rev-parse HEAD:desktop`` SHA at build time.  If the
+    current tree SHA matches, the bundle is known-good regardless of
+    filesystem mtimes (which can be misleading after a fetch or on hosts
+    with clock skew).
+    """
+    marker = project_root / "static" / "desktop" / ".taos-bundle-provenance"
+    if not marker.is_file():
+        return False
+    try:
+        recorded = marker.read_text().strip()
+    except OSError:
+        return False
+    current = await _get_desktop_tree_sha(project_root)
+    return bool(current and current == recorded)
+
+
+def _record_bundle_provenance(project_root: Path, tree_sha: str) -> None:
+    """Record the desktop tree SHA that the current bundle was built from."""
+    marker = project_root / "static" / "desktop" / ".taos-bundle-provenance"
+    try:
+        marker.write_text(tree_sha)
+    except OSError:
+        pass
+
+
 _BUNDLE_BASE = "https://github.com/jaylfc/taOS/releases/download/bundle-latest"
 
 
@@ -182,8 +231,13 @@ async def _try_prebuilt_desktop_bundle(project_root: Path) -> bool:
         staged.rename(target)  # atomic rename (same filesystem)
         # The tarball preserves the CI build mtime, which can predate the local
         # source and make _is_bundle_stale treat the bundle as perpetually stale
-        # (re-downloading on every check). Stamp index.html fresh.
+        # (re-downloading on every check). Stamp index.html fresh and record
+        # provenance so the rebuild trigger can compare content hashes instead.
         (target / "index.html").touch()
+        try:
+            (target / ".taos-bundle-provenance").write_text(local_tree)
+        except OSError:
+            pass
         logger.info("Prebuilt desktop bundle installed into static/desktop/.")
         return True
     except Exception as exc:
@@ -213,12 +267,22 @@ async def rebuild_desktop_bundle_if_stale(
     staleness heuristic isn't trustworthy — committed bundles can lie about
     their freshness when a PR landed source-only.
     """
-    if not force and not _is_bundle_stale(project_root):
-        return RebuildResult(
-            rebuilt=False,
-            success=True,
-            message="Desktop bundle is current — skipping rebuild.",
-        )
+    if not force:
+        # Provenance check first: a fetched (or locally built) bundle whose
+        # recorded tree SHA matches the current desktop/ source is always
+        # current, regardless of filesystem mtimes.
+        if await _is_bundle_provenance_current(project_root):
+            return RebuildResult(
+                rebuilt=False,
+                success=True,
+                message="Desktop bundle provenance is current — skipping rebuild.",
+            )
+        if not _is_bundle_stale(project_root):
+            return RebuildResult(
+                rebuilt=False,
+                success=True,
+                message="Desktop bundle is current — skipping rebuild.",
+            )
 
     desktop_dir = project_root / "desktop"
     if not (desktop_dir / "package.json").is_file():
@@ -312,6 +376,13 @@ async def rebuild_desktop_bundle_if_stale(
             return RebuildResult(rebuilt=True, success=False, message=msg)
 
         logger.info("Desktop bundle rebuilt successfully.")
+        # Record provenance so future checks use content hash, not mtime.
+        try:
+            tree_sha = await _get_desktop_tree_sha(project_root)
+            if tree_sha:
+                _record_bundle_provenance(project_root, tree_sha)
+        except Exception:
+            pass
         return RebuildResult(rebuilt=True, success=True, message="Desktop bundle rebuilt successfully.")
 
     except asyncio.TimeoutError:

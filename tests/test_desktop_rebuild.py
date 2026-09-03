@@ -61,6 +61,25 @@ def test_is_bundle_stale_returns_false_when_no_src_dir(tmp_path):
     assert _is_bundle_stale(tmp_path) is False
 
 
+def test_is_bundle_stale_returns_true_despite_fresh_bundle_with_future_mtime(tmp_path):
+    """Mtime check can falsely report stale when source files carry future mtimes
+    (e.g., from clock-skewed CI commits) even though the bundle was just fetched
+    and index.html was touched fresh.  The provenance check below rescues this."""
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    bundle = static_dir / "index.html"
+    bundle.write_text("<html />")
+    src_file = src_dir / "App.tsx"
+    src_file.write_text("// app")
+    # Simulate: bundle was just installed (touched 10 s ago), but source has a
+    # future mtime (clock skew during the original commit).
+    os.utime(bundle, (time.time() - 10, time.time() - 10))
+    os.utime(src_file, (time.time() + 3600, time.time() + 3600))
+    assert _is_bundle_stale(tmp_path) is True
+
+
 # ---------------------------------------------------------------------------
 # rebuild_desktop_bundle_if_stale
 # ---------------------------------------------------------------------------
@@ -238,6 +257,47 @@ async def test_rebuild_falls_back_to_npm_install_when_ci_fails(tmp_path, monkeyp
     assert ("git", "checkout") in cmds  # lockfile restored after install
 
 
+@pytest.mark.asyncio
+async def test_rebuild_skips_when_provenance_matches_despite_mtime(tmp_path, monkeypatch):
+    """A provenance marker matching current tree SHA should skip rebuild
+    even when the mtime check would falsely report stale (e.g. future-mtime
+    source files from clock-skewed commits after a fresh bundle fetch)."""
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    bundle = static_dir / "index.html"
+    bundle.write_text("<html />")
+    src_file = src_dir / "App.tsx"
+    src_file.write_text("// app")
+    # False-positive mtime scenario: source file is 1 h in the future.
+    os.utime(bundle, (time.time() - 10, time.time() - 10))
+    os.utime(src_file, (time.time() + 3600, time.time() + 3600))
+    # Provenance marker says the bundle matches current source.
+    (static_dir / ".taos-bundle-provenance").write_text("MATCHING_SHA")
+
+    called = []
+
+    async def fake_exec(*args, **kwargs):
+        called.append(args)
+        if args[0] == "git":
+            class Proc:
+                returncode = 0
+                async def communicate(self):
+                    return b"MATCHING_SHA\n", b""
+            return Proc()
+        raise AssertionError("subprocess should NOT be called when provenance matches")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+    assert result.rebuilt is False
+    assert result.success is True
+    assert "provenance" in result.message.lower()
+    # Only the provenance-check git call is expected; no npm/build subprocesses.
+    assert all(c[0] == "git" for c in called)
+
+
 # ---------------------------------------------------------------------------
 # npm-install gate: only reinstall when package-lock.json changes
 # ---------------------------------------------------------------------------
@@ -345,6 +405,7 @@ async def test_prebuilt_bundle_installed_on_tree_match(tmp_path, monkeypatch):
 
     assert await _try_prebuilt_desktop_bundle(tmp_path) is True
     assert (tmp_path / "static" / "desktop" / "index.html").read_text() == "<html>ok</html>"
+    assert (tmp_path / "static" / "desktop" / ".taos-bundle-provenance").read_text() == "SHA123"
 
 
 @pytest.mark.asyncio
