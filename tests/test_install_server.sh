@@ -119,4 +119,7 @@ grep -q "verified_ok=" "$SCRIPT" && grep -q "verified_warn=" "$SCRIPT"
 echo "test: verification only runs when SERVICE_MODE != skip"
 grep -A 3 'SERVICE_MODE.*!=.*skip' "$SCRIPT" | grep -q "verify_hardware_capabilities"
 
+echo "test: Zabbly keyring installed with world-readable permissions"
+grep -q "install -m 0644.*zabbly.asc" "$SCRIPT"
+
 echo "all tests passed"

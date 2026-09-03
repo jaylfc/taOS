@@ -892,7 +892,7 @@ ensure_container_runtime() {
                     return 0
                 fi
                 log "Zabbly key fingerprint ok (${_zabbly_actual_fp:0:16}…)"
-                sudo cp "$_zabbly_key_tmp" /etc/apt/keyrings/zabbly.asc
+                sudo install -m 0644 "$_zabbly_key_tmp" /etc/apt/keyrings/zabbly.asc
                 echo "deb [signed-by=/etc/apt/keyrings/zabbly.asc] https://pkgs.zabbly.com/incus/stable $codename main" \
                     | sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.list > /dev/null
                 sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
