@@ -268,7 +268,6 @@ async def _channel_exists(bus: str, channel: str) -> bool:
 async def bus_stream(
     request: Request,
     channel: str = "",
-    since: float | None = None,
 ):
     """Authenticated SSE proxy to the raw bus stream.
 
@@ -281,8 +280,8 @@ async def bus_stream(
 
     ``channel`` maps to the bus ``thread`` query param. Omitting it (or passing
     ``channel=*``) subscribes to ALL threads: no ``thread`` param is forwarded
-    upstream, so the bus streams events from every thread. ``since`` maps to the
-    bus cursor.
+    upstream, so the bus streams events from every thread. ``since`` is the cursor
+    and is a message ``ts`` (a float), NOT an id -- any other query param is a 400.
     """
     await _authorize_bus_read(request)
 
@@ -297,23 +296,38 @@ async def bus_stream(
             status_code=400,
         )
 
+    params: dict = {}
+    # Manual since parsing: FastAPI's `since: float | None = None` annotation
+    # causes non-numeric values like `?since=abc` to trigger a 422 instead of
+    # the project-consistent 400 seen on /messages. Parse from query params first.
+    since_raw = request.query_params.get("since")
+    if since_raw is not None:
+        try:
+            since_val = float(since_raw)
+        except ValueError:
+            return JSONResponse(
+                {"error": "since must be a message ts (float), not an id"},
+                status_code=400,
+            )
+        # float() happily accepts "nan", "inf" and "-inf".  A NaN cursor makes
+        # every comparison on the bus side false, so the reader gets a silent
+        # empty window forever and a 200 confirming it -- the exact failure this
+        # endpoint is being fixed for, reintroduced through the validator.
+        if not math.isfinite(since_val):
+            return JSONResponse(
+                {"error": "since must be a finite message ts (float), not an id"},
+                status_code=400,
+            )
+        params["since"] = since_val
+
     # An empty channel or "*" means "all threads": omit the thread param
     # upstream so the bus streams every thread. NOTE: when per-channel bus ACLs
     # land (card tsk-dp6fyv), an all-threads subscriber must receive ONLY the
     # threads it is allowed to read, not everything -- filter here, not at the
     # bus. This is the line a future change will get wrong.
     all_threads = channel == "" or channel == "*"
-    params: dict = {}
     if not all_threads:
         params["thread"] = channel
-    if since is not None:
-        if not math.isfinite(since):
-            return JSONResponse(
-                {"error": "since must be a finite message ts (float), not an id"},
-                status_code=400,
-            )
-        params["since"] = since
-
     bus = _bus_url()
 
     async def event_stream():
