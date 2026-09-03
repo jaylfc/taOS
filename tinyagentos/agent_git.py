@@ -97,7 +97,10 @@ async def git_log(container: str) -> List[dict]:
     if rc != 0:
         raise RuntimeError(f"git log failed: {out}")
     commits: List[dict] = []
-    for line in out.strip().splitlines():
+    for line in out.strip().split("\x00"):
+        line = line.strip()
+        if not line:
+            continue
         parts = line.split("\x1f", 4)
         if len(parts) == 5:
             commits.append({
@@ -126,7 +129,7 @@ async def git_revert(container: str, sha: str) -> str:
         raise RuntimeError(f"{sha} is not an ancestor of HEAD")
     if await git_is_dirty(container):
         raise RuntimeError("dirty_tree: working tree has uncommitted changes")
-    rc, out = await _git(container, ["revert", "--no-edit", f"{sha}..HEAD"])
+    rc, out = await _git(container, ["reset", "--hard", sha])
     if rc != 0:
-        raise RuntimeError(f"git revert failed for {sha}: {out}")
+        raise RuntimeError(f"git reset failed for {sha}: {out}")
     return "reverted"

@@ -37,14 +37,17 @@ _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 _REMOTE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
+class InvalidRemoteError(Exception):
+    pass
+
+
 def _container_name(agent: dict) -> str:
     remote = agent.get("remote")
     name = agent["name"]
     container = f"taos-agent-{name}"
     if remote:
         if not _REMOTE_RE.match(remote):
-            logger.warning("_container_name: skipping invalid remote %r for agent %s", remote, name)
-            return container
+            raise InvalidRemoteError(f"invalid remote {remote} in agent {name}")
         return f"{remote}:{container}"
     return container
 
@@ -66,6 +69,8 @@ async def list_versions(request: Request, name: str):
     container = _container_name(agent)
     try:
         commits = await git_log(container)
+    except InvalidRemoteError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:
         logger.warning("versions list failed for %s: %s", name, exc)
         return JSONResponse({"error": "container_unreachable"}, status_code=409)
@@ -110,23 +115,18 @@ async def revert_version(request: Request, name: str, sha: str):
     container = _container_name(agent)
     try:
         head_sha = (await git_rev_parse(container, "HEAD")).strip()
-        if sha == head_sha:
-            return {"agent": name, "sha": sha, "status": "noop"}
-        await git_rev_parse(container, sha)
-        if not await git_merge_base_is_ancestor(container, sha):
-            return JSONResponse(
-                {"error": f"{sha} is not an ancestor of HEAD"},
-                status_code=409,
-            )
-        if await git_is_dirty(container):
-            return JSONResponse(
-                {"error": "dirty_tree: working tree has uncommitted changes"},
-                status_code=409,
-            )
-        status = await git_revert(container, sha)
+        resolved_sha = await git_rev_parse(container, sha)
+        if resolved_sha != head_sha:
+            status = await git_revert(container, resolved_sha)
+            return {"agent": name, "sha": resolved_sha, "status": status}
+        return {"agent": name, "sha": sha, "status": "noop"}
     except RuntimeError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=404)
+        error_msg = str(exc)
+        if "dirty_tree" in error_msg:
+            return JSONResponse({"error": error_msg}, status_code=409)
+        if "not an ancestor" in error_msg:
+            return JSONResponse({"error": error_msg}, status_code=409)
+        return JSONResponse({"error": error_msg}, status_code=404)
     except Exception as exc:
         logger.warning("version revert failed for %s/%s: %s", name, sha, exc)
         return JSONResponse({"error": "container_unreachable"}, status_code=409)
-    return {"agent": name, "sha": sha, "status": status}
