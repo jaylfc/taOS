@@ -2189,11 +2189,16 @@ if [[ "$SERVICE_MODE" != "skip" ]]; then
     _port_tries=0
     _port_open=0
     _port_start=$(( SECONDS ))
-    while [[ $_port_tries -lt $_PORT_WAIT && $(( SECONDS - _port_start )) -lt $_PORT_WAIT ]]; do
-        if curl -sf --max-time 5 "http://localhost:$TAOS_PORT/api/health" >/dev/null 2>&1; then
+    while [[ $_port_tries -lt $_PORT_WAIT ]]; do
+        [[ $(( SECONDS - _port_start )) -ge $_PORT_WAIT ]] && break
+        _remaining=$(( _PORT_WAIT - (SECONDS - _port_start) ))
+        if curl -sf --max-time "$_remaining" "http://localhost:$TAOS_PORT/api/health" >/dev/null 2>&1; then
             _port_open=1
             break
         fi
+        [[ $(( SECONDS - _port_start )) -ge $_PORT_WAIT ]] && break
+        _remaining=$(( _PORT_WAIT - (SECONDS - _port_start) ))
+        [[ $_remaining -le 1 ]] && break
         sleep 1
         _port_tries=$((_port_tries + 1))
     done
@@ -2211,11 +2216,16 @@ if [[ "$SERVICE_MODE" != "skip" ]]; then
     _ready_tries=0
     _ready_ok=0
     _ready_start=$(( SECONDS ))
-    while [[ $_ready_tries -lt $_READY_WAIT && $(( SECONDS - _ready_start )) -lt $_READY_WAIT ]]; do
-        if curl -sf --max-time 5 "http://localhost:$TAOS_PORT/api/cluster/workers" >/dev/null 2>&1; then
+    while [[ $_ready_tries -lt $_READY_WAIT ]]; do
+        [[ $(( SECONDS - _ready_start )) -ge $_READY_WAIT ]] && break
+        _remaining=$(( _READY_WAIT - (SECONDS - _ready_start) ))
+        if curl -sf --max-time "$_remaining" "http://localhost:$TAOS_PORT/api/cluster/workers" >/dev/null 2>&1; then
             _ready_ok=1
             break
         fi
+        [[ $(( SECONDS - _ready_start )) -ge $_READY_WAIT ]] && break
+        _remaining=$(( _READY_WAIT - (SECONDS - _ready_start) ))
+        [[ $_remaining -le 1 ]] && break
         sleep 1
         _ready_tries=$((_ready_tries + 1))
     done

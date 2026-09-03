@@ -136,4 +136,16 @@ grep -q "curl.*localhost:\$TAOS_PORT/api/cluster/workers" "$SCRIPT"
 echo "test: controller wait names first-boot init in the timeout message"
 grep -q "first-boot init may still be running" "$SCRIPT"
 
+echo "test: port-open loop caps curl probe by remaining phase time"
+grep -q '_remaining=$(( _PORT_WAIT - (SECONDS - _port_start) ))' "$SCRIPT"
+
+echo "test: port-open loop breaks before sleep when remaining <= 1"
+grep -q '\[\[ $_remaining -le 1 \]\] && break' "$SCRIPT"
+
+echo "test: ready loop caps curl probe by remaining phase time"
+grep -q '_remaining=$(( _READY_WAIT - (SECONDS - _ready_start) ))' "$SCRIPT"
+
+echo "test: ready loop breaks before sleep when remaining <= 1"
+grep -q '\[\[ $_remaining -le 1 \]\] && break' "$SCRIPT"
+
 echo "all tests passed"
