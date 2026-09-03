@@ -23,11 +23,12 @@ from __future__ import annotations
 import logging
 import re
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.agent_db import find_agent
 from tinyagentos.agent_git import (
+    ContainerUnreachableError,
     DirtyTreeError,
     NotAncestorError,
     git_diff,
@@ -77,6 +78,7 @@ async def list_versions(request: Request, name: str):
 
     user = current_user(request)
     registry = getattr(request.app.state, "agent_registry", None)
+    owner_user_id = agent.get("user_id")
     if registry is not None:
         try:
             registry_agent = await registry.get_by_handle(name)
@@ -84,9 +86,11 @@ async def list_versions(request: Request, name: str):
             registry_agent = None
         if registry_agent is not None:
             require_owner_or_admin(user, registry_agent["user_id"])
-    owner_user_id = agent.get("user_id")
+            owner_user_id = None
     if owner_user_id:
         require_owner_or_admin(user, owner_user_id)
+    elif not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
 
     try:
         container = _container_name(agent)
@@ -113,6 +117,7 @@ async def version_diff(request: Request, name: str, sha: str):
 
     user = current_user(request)
     registry = getattr(request.app.state, "agent_registry", None)
+    owner_user_id = agent.get("user_id")
     if registry is not None:
         try:
             registry_agent = await registry.get_by_handle(name)
@@ -120,9 +125,11 @@ async def version_diff(request: Request, name: str, sha: str):
             registry_agent = None
         if registry_agent is not None:
             require_owner_or_admin(user, registry_agent["user_id"])
-    owner_user_id = agent.get("user_id")
+            owner_user_id = None
     if owner_user_id:
         require_owner_or_admin(user, owner_user_id)
+    elif not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
 
     try:
         container = _container_name(agent)
@@ -133,6 +140,8 @@ async def version_diff(request: Request, name: str, sha: str):
         return JSONResponse({"error": str(exc)}, status_code=409)
     except NotAncestorError as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
+    except ContainerUnreachableError:
+        return JSONResponse({"error": "container_unreachable"}, status_code=409)
     except RuntimeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
     except Exception as exc:
@@ -155,6 +164,7 @@ async def revert_version(request: Request, name: str, sha: str):
 
     user = current_user(request)
     registry = getattr(request.app.state, "agent_registry", None)
+    owner_user_id = agent.get("user_id")
     if registry is not None:
         try:
             registry_agent = await registry.get_by_handle(name)
@@ -162,9 +172,11 @@ async def revert_version(request: Request, name: str, sha: str):
             registry_agent = None
         if registry_agent is not None:
             require_owner_or_admin(user, registry_agent["user_id"])
-    owner_user_id = agent.get("user_id")
+            owner_user_id = None
     if owner_user_id:
         require_owner_or_admin(user, owner_user_id)
+    elif not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
 
     try:
         container = _container_name(agent)
@@ -180,6 +192,8 @@ async def revert_version(request: Request, name: str, sha: str):
         return JSONResponse({"error": str(exc)}, status_code=409)
     except NotAncestorError as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
+    except ContainerUnreachableError:
+        return JSONResponse({"error": "container_unreachable"}, status_code=409)
     except RuntimeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
     except Exception as exc:

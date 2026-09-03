@@ -747,6 +747,13 @@ async def deploy_agent(req: DeployRequest) -> dict:
                 from pathlib import Path as _P
                 _committer = _P(__file__).parent / "scripts" / "agent_committer.py"
                 if _committer.exists():
+                    _mkdir_rc, _mkdir_out = await exec_in_container(
+                        container_name, ["mkdir", "-p", "/root/.taos"],
+                    )
+                    if _mkdir_rc != 0:
+                        raise RuntimeError(
+                            f"failed to create /root/.taos (rc={_mkdir_rc}): {_mkdir_out[-300:]}"
+                        )
                     _push_rc, _push_out = await push_file(
                         container_name,
                         str(_committer),
@@ -836,6 +843,8 @@ WantedBy=multi-user.target
                         steps.append("committer_failed")
             except Exception as exc:
                 logger.warning("Deploy %s: committer install failed: %s", req.name, exc)
+                versioning = False
+                versioning_error = str(exc)
                 steps.append("committer_failed")
 
         # Step 5: Get container IP

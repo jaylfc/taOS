@@ -26,6 +26,10 @@ class DirtyTreeError(RuntimeError):
 class NotAncestorError(RuntimeError):
     pass
 
+
+class ContainerUnreachableError(RuntimeError):
+    pass
+
 _GITIGNORE_CONTENTS = """\
 .env
 *.cred
@@ -95,7 +99,9 @@ async def git_is_dirty(container: str) -> bool:
 async def git_rev_parse(container: str, sha: str) -> str:
     rc, out = await _git(container, ["rev-parse", "--verify", f"{sha}^{{commit}}"])
     if rc != 0:
-        raise RuntimeError(f"unknown revision {sha}")
+        if "bad revision" in out.lower():
+            raise RuntimeError(f"unknown revision {sha}")
+        raise ContainerUnreachableError(out.strip() or "container unreachable")
     return out.strip()
 
 
@@ -105,7 +111,7 @@ async def git_merge_base_is_ancestor(container: str, sha: str) -> bool:
 
 
 async def git_log(container: str) -> List[dict]:
-    fmt = "%H%x1f%s%x1f%an%x1f%ae%x1f%ai"
+    fmt = "%H%x1f%an%x1f%ae%x1f%ai%x1f%s"
     rc, out = await _git(container, ["log", f"--format={fmt}", "--reverse", "-z"])
     if rc != 0:
         raise RuntimeError(f"git log failed: {out}")
@@ -118,10 +124,10 @@ async def git_log(container: str) -> List[dict]:
         if len(parts) == 5:
             commits.append({
                 "sha": parts[0],
-                "message": parts[1],
-                "author_name": parts[2],
-                "author_email": parts[3],
-                "date": parts[4],
+                "author_name": parts[1],
+                "author_email": parts[2],
+                "date": parts[3],
+                "message": parts[4],
             })
     return commits
 
@@ -129,7 +135,9 @@ async def git_log(container: str) -> List[dict]:
 async def git_diff(container: str, sha: str) -> str:
     rc, out = await _git(container, ["show", "--format=", "--patch", sha])
     if rc != 0:
-        raise RuntimeError(f"git diff failed for {sha}: {out}")
+        if "bad revision" in out.lower():
+            raise RuntimeError(f"unknown revision {sha}")
+        raise ContainerUnreachableError(out.strip() or "container unreachable")
     return out
 
 

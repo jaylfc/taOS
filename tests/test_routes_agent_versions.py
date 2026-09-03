@@ -7,7 +7,7 @@ import subprocess
 import pytest
 from httpx import ASGITransport, AsyncClient
 from taos_test_csrf import csrf_event_hooks
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import importlib.util
 import yaml
@@ -74,7 +74,7 @@ class TestAgentVersionsRoutes:
     async def test_list_versions_returns_commits(self, client):
         with patch(
             "tinyagentos.agent_git.exec_in_container",
-            new=AsyncMock(return_value=(0, "abc12345\x1finitial\x1fagent\x1fagent@taos.local\x1f2026-01-01 00:00:00 +0000\x00def456789\x1fadd notes\x1fagent\x1fagent@taos.local\x1f2026-01-01 01:00:00 +0000\x00")),
+            new=AsyncMock(return_value=(0, "abc12345\x1fagent\x1fagent@taos.local\x1f2026-01-01 00:00:00 +0000\x1finitial\x00def456789\x1fagent\x1fagent@taos.local\x1f2026-01-01 01:00:00 +0000\x1fadd notes\x00")),
         ):
             resp = await client.get("/api/agents/test-agent/versions")
         assert resp.status_code == 200
@@ -155,7 +155,7 @@ class TestAgentVersionsRoutes:
         ) as c:
             with patch(
                 "tinyagentos.agent_git.exec_in_container",
-                new=AsyncMock(return_value=(0, "abc12345\x1finitial\x1fagent\x1fagent@taos.local\x1f2026-01-01 00:00:00 +0000\n")),
+                new=AsyncMock(return_value=(0, "abc12345\x1fagent\x1fagent@taos.local\x1f2026-01-01 00:00:00 +0000\x1finitial\n")),
             ) as m:
                 resp = await c.get("/api/agents/test-agent/versions")
                 m.assert_called_once()
@@ -175,7 +175,23 @@ class TestAgentVersionsRoutes:
         subject = "auto: 2026-01-01 00:00:00 | added new feature"
         with patch(
             "tinyagentos.agent_git.exec_in_container",
-            new=AsyncMock(return_value=(0, f"abc12345\x1f{subject}\x1fagent\x1fagent@taos.local\x1f2026-01-01 00:00:00 +0000\n")),
+            new=AsyncMock(return_value=(0, f"abc12345\x1fagent\x1fagent@taos.local\x1f2026-01-01 00:00:00 +0000\x1f{subject}\n")),
+        ):
+            resp = await client.get("/api/agents/test-agent/versions")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["versions"]) == 1
+        assert data["versions"][0]["sha"] == "abc12345"
+        assert data["versions"][0]["message"] == subject
+        assert data["versions"][0]["author_name"] == "agent"
+        assert data["versions"][0]["author_email"] == "agent@taos.local"
+        assert data["versions"][0]["date"] == "2026-01-01 00:00:00 +0000"
+
+    async def test_list_versions_message_with_separator_parses_correctly(self, client):
+        subject = "fix: handle files with \x1f separator in name"
+        with patch(
+            "tinyagentos.agent_git.exec_in_container",
+            new=AsyncMock(return_value=(0, f"abc12345\x1fagent\x1fagent@taos.local\x1f2026-01-01 00:00:00 +0000\x1f{subject}\n")),
         ):
             resp = await client.get("/api/agents/test-agent/versions")
         assert resp.status_code == 200
@@ -299,3 +315,123 @@ class TestAgentVersionsRoutes:
         ) as c:
             resp = await c.post("/api/agents/test-agent/versions/abc12345/revert")
         assert resp.status_code == 403
+
+    async def test_list_versions_403_when_ownership_unresolved(self, tmp_path):
+        config = {
+            "server": {"host": "0.0.0.0", "port": 6969},
+            "backends": [],
+            "qmd": {"url": "http://localhost:7832"},
+            "agents": [
+                {"name": "test-agent", "host": "192.168.1.100", "qmd_index": "test", "color": "#98fb98"}
+            ],
+            "metrics": {"poll_interval": 30, "retention_days": 30},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(config))
+        (tmp_path / ".setup_complete").touch()
+        from tinyagentos.app import create_app
+        app = create_app(data_dir=tmp_path)
+        app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+        admin_record = app.state.auth.find_user("admin")
+        invite_code = app.state.auth.add_user_invite("bob", "admin")
+        app.state.auth.complete_invite("bob", invite_code, "Bob User", "bob@test.com", "bobpass123")
+        bob_record = app.state.auth.find_user("bob")
+        bob_token = app.state.auth.create_session(user_id=bob_record["id"], long_lived=True)
+        app.state._startup_complete = True
+        mock_registry = MagicMock()
+        mock_registry.get_by_handle = AsyncMock(return_value=None)
+        app.state.agent_registry = mock_registry
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": bob_token},
+            event_hooks=csrf_event_hooks(),
+        ) as c:
+            resp = await c.get("/api/agents/test-agent/versions")
+        assert resp.status_code == 403
+
+    async def test_diff_403_when_ownership_unresolved(self, tmp_path):
+        config = {
+            "server": {"host": "0.0.0.0", "port": 6969},
+            "backends": [],
+            "qmd": {"url": "http://localhost:7832"},
+            "agents": [
+                {"name": "test-agent", "host": "192.168.1.100", "qmd_index": "test", "color": "#98fb98"}
+            ],
+            "metrics": {"poll_interval": 30, "retention_days": 30},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(config))
+        (tmp_path / ".setup_complete").touch()
+        from tinyagentos.app import create_app
+        app = create_app(data_dir=tmp_path)
+        app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+        admin_record = app.state.auth.find_user("admin")
+        invite_code = app.state.auth.add_user_invite("bob", "admin")
+        app.state.auth.complete_invite("bob", invite_code, "Bob User", "bob@test.com", "bobpass123")
+        bob_record = app.state.auth.find_user("bob")
+        bob_token = app.state.auth.create_session(user_id=bob_record["id"], long_lived=True)
+        app.state._startup_complete = True
+        mock_registry = MagicMock()
+        mock_registry.get_by_handle = AsyncMock(return_value=None)
+        app.state.agent_registry = mock_registry
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": bob_token},
+            event_hooks=csrf_event_hooks(),
+        ) as c:
+            resp = await c.get("/api/agents/test-agent/versions/abc12345/diff")
+        assert resp.status_code == 403
+
+    async def test_revert_403_when_ownership_unresolved(self, tmp_path):
+        config = {
+            "server": {"host": "0.0.0.0", "port": 6969},
+            "backends": [],
+            "qmd": {"url": "http://localhost:7832"},
+            "agents": [
+                {"name": "test-agent", "host": "192.168.1.100", "qmd_index": "test", "color": "#98fb98"}
+            ],
+            "metrics": {"poll_interval": 30, "retention_days": 30},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(config))
+        (tmp_path / ".setup_complete").touch()
+        from tinyagentos.app import create_app
+        app = create_app(data_dir=tmp_path)
+        app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+        admin_record = app.state.auth.find_user("admin")
+        invite_code = app.state.auth.add_user_invite("bob", "admin")
+        app.state.auth.complete_invite("bob", invite_code, "Bob User", "bob@test.com", "bobpass123")
+        bob_record = app.state.auth.find_user("bob")
+        bob_token = app.state.auth.create_session(user_id=bob_record["id"], long_lived=True)
+        app.state._startup_complete = True
+        mock_registry = MagicMock()
+        mock_registry.get_by_handle = AsyncMock(return_value=None)
+        app.state.agent_registry = mock_registry
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": bob_token},
+            event_hooks=csrf_event_hooks(),
+        ) as c:
+            resp = await c.post("/api/agents/test-agent/versions/abc12345/revert")
+        assert resp.status_code == 403
+
+    async def test_diff_container_unreachable_returns_409(self, client):
+        with patch(
+            "tinyagentos.agent_git.exec_in_container",
+            new=AsyncMock(return_value=(1, "incus: instance not found")),
+        ):
+            resp = await client.get("/api/agents/test-agent/versions/abc12345/diff")
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "container_unreachable"
+
+    async def test_revert_container_unreachable_returns_409(self, client):
+        with patch(
+            "tinyagentos.agent_git.exec_in_container",
+            new=AsyncMock(return_value=(1, "incus: instance not found")),
+        ):
+            resp = await client.post("/api/agents/test-agent/versions/abc12345/revert")
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "container_unreachable"
