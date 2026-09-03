@@ -128,9 +128,9 @@ echo "test: _apt_install_compose probes both docker-compose-plugin and docker-co
 grep -q "apt-cache madison docker-compose-plugin" "$SCRIPT"
 grep -q "apt-cache madison docker-compose-v2" "$SCRIPT"
 
-echo "test: _apt_install_compose returns non-zero when neither name is in apt"
-grep -A12 'apt-cache madison docker-compose-plugin' "$SCRIPT" \
-    | grep -q "return 1"
+echo "test: _apt_install_compose returns a distinct code (2) for missing-package case"
+grep -A20 'apt-cache madison docker-compose-plugin' "$SCRIPT" \
+    | grep -q "return 2"
 
 echo "test: trixie fallback uses Docker's official apt repo (download.docker.com)"
 grep -q "download.docker.com/linux" "$SCRIPT"
@@ -142,13 +142,40 @@ grep -q "Docker apt key fingerprint mismatch" "$SCRIPT"
 echo "test: trixie fallback installs docker-ce + plugin from Docker's repo"
 grep -q "docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin" "$SCRIPT"
 
-echo "test: trixie fallback is gated on _apt_install_compose failing, not on docker.io"
-grep -A10 "if ! _apt_install_compose" "$SCRIPT" \
-    | grep -q "_apt_install_docker_official_repo"
+echo "test: trixie fallback is gated on the missing-package rc==2, not on a generic failure"
+grep -A 6 "_apt_install_compose" "$SCRIPT" \
+    | grep -q "_apt_compose_rc == 2"
 
-echo "test: trixie fallback degrades gracefully (warn, no abort) when the repo is unreachable"
-grep -B1 -A2 "_apt_install_docker_official_repo" "$SCRIPT" \
-    | grep -q "Docker Engine + Compose plugin are unavailable"
+echo "test: trixie fallback does NOT trigger on a generic install failure"
+# When _apt_install_compose returns 1 (install failure), the script must
+# surface the apt error and skip _apt_install_docker_official_repo. The
+# elif arm is named _apt_compose_rc != 0 and sits between the rc==2
+# branch and the next package manager (dnf).
+sed -n '/_apt_compose_rc == 2/,/elif command -v dnf/p' "$SCRIPT" \
+    | grep -q "_apt_compose_rc != 0"
+
+echo "test: Docker keyring is written with mode 0644 (not destination umask)"
+grep -q "install -m 0644.*docker.asc" "$SCRIPT"
+
+echo "test: Docker curl download has bounded timeouts"
+grep -q "curl -fsSL --connect-timeout 15 --max-time 60" "$SCRIPT"
+
+echo "test: trixie fallback removes distro docker.io/containerd/runc before installing docker-ce"
+grep -q "apt-get remove -y -qq docker.io containerd runc" "$SCRIPT"
+
+echo "test: trixie fallback cleans up docker.list + docker.asc on apt-get update failure"
+grep -q 'apt-get update failed after adding Docker' "$SCRIPT" \
+    && grep -A3 'apt-get update failed after adding Docker' "$SCRIPT" \
+        | grep -q "rm -f /etc/apt/sources.list.d/docker.list"
+
+echo "test: trixie fallback cleans up docker.list + docker.asc on apt-get install failure"
+grep -q 'apt install from Docker' "$SCRIPT" \
+    && grep -A3 'apt install from Docker' "$SCRIPT" \
+        | grep -q "rm -f /etc/apt/sources.list.d/docker.list"
+
+echo "test: fingerprint mismatch warning points operators at the docker.com gpg URL"
+grep -A4 'Docker apt key fingerprint mismatch' "$SCRIPT" \
+    | grep -q "download.docker.com/linux/.*gpg"
 
 echo "test: ensure_docker_for_apps call site tolerates fallback failure (no set -e abort)"
 ensure_docker_call_line=$(grep -n "ensure_docker_for_apps || warn" "$SCRIPT" | head -1 | cut -d: -f1)
