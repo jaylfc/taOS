@@ -26,6 +26,7 @@ async def test_disabled_backend_excluded_from_routing():
     ]
     catalog = BackendCatalog(backends=backends, probe_fn=probe, interval_seconds=3600)
     await catalog.start()
+    await catalog.wait_initial_probe()
     try:
         results = catalog.backends_with_capability("llm-chat")
         assert len(results) == 1
@@ -48,6 +49,7 @@ async def test_lifecycle_state_in_to_dict():
     ]
     catalog = BackendCatalog(backends=backends, probe_fn=probe, interval_seconds=3600)
     await catalog.start()
+    await catalog.wait_initial_probe()
     try:
         entries = catalog.backends()
         assert len(entries) == 1
@@ -75,6 +77,7 @@ async def test_stopped_backend_in_backends_startable():
     catalog = BackendCatalog(backends=backends, probe_fn=probe, interval_seconds=3600)
     catalog._lifecycle_states["b1"] = "stopped"
     await catalog.start()
+    await catalog.wait_initial_probe()
     try:
         startable = catalog.backends_startable_for_capability("image-generation")
         assert len(startable) == 1
@@ -105,6 +108,7 @@ async def test_backends_startable_cold_start():
     # Mark stopped BEFORE start so the poll sees the state but the probe fails
     catalog._lifecycle_states["cold-sd"] = "stopped"
     await catalog.start()
+    await catalog.wait_initial_probe()
     try:
         startable = catalog.backends_startable_for_capability("image-generation")
         assert len(startable) == 1
@@ -126,9 +130,56 @@ async def test_set_and_get_lifecycle_state():
     backends = [{"name": "b1", "type": "rkllama", "url": "http://b1", "priority": 1}]
     catalog = BackendCatalog(backends=backends, probe_fn=probe, interval_seconds=3600)
     await catalog.start()
+    await catalog.wait_initial_probe()
     try:
         assert catalog.get_lifecycle_state("b1") == "running"
         catalog.set_lifecycle_state("b1", "stopped")
         assert catalog.get_lifecycle_state("b1") == "stopped"
     finally:
         await catalog.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_does_not_block_on_unreachable_backends():
+    """tsk-xjwolt: BackendCatalog.start() must return promptly even when
+    every configured backend's probe is slow/unreachable. The previous
+    implementation awaited the first probe pass with a 15s cap, which
+    meant a single :6969 boot could take the full per-backend connect
+    timeout (measured at 100s+ on a Pi 4 with three unreachable local
+    model-backend URLs). After the fix, the main app serves requests
+    while the catalog reconciles in the background.
+    """
+    import time
+
+    # Each probe sleeps for a very long time. If start() blocked on the
+    # initial probe, this would take the same wall-clock to return. The
+    # bound is generous on purpose (1.0s) to avoid flakiness while still
+    # being a few orders of magnitude smaller than the old 100s+ boot.
+    SLOW_PROBE_SECONDS = 30.0
+    TIGHT_BOUND_SECONDS = 1.0
+
+    async def slow_probe(backend: dict) -> dict:
+        await asyncio.sleep(SLOW_PROBE_SECONDS)
+        return {"status": "ok", "response_ms": int(SLOW_PROBE_SECONDS * 1000), "models": []}
+
+    backends = [
+        {"name": f"slow-{i}", "type": "ollama", "url": f"http://10.255.255.{i+1}:11434",
+         "priority": i + 1, "enabled": True}
+        for i in range(3)
+    ]
+    catalog = BackendCatalog(
+        backends=backends, probe_fn=slow_probe, interval_seconds=3600,
+    )
+
+    t0 = time.monotonic()
+    await catalog.start()
+    elapsed = time.monotonic() - t0
+    assert elapsed < TIGHT_BOUND_SECONDS, (
+        f"start() took {elapsed:.2f}s with 3 unreachable backends; "
+        f"expected < {TIGHT_BOUND_SECONDS}s (tsk-xjwolt)"
+    )
+    # First probe hasn't completed yet, so backends() is empty.
+    assert catalog.backends() == []
+    # The poll task is still running in the background.
+    assert catalog._task is not None
+    await catalog.stop()

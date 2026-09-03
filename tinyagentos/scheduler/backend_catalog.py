@@ -177,11 +177,33 @@ class BackendCatalog:
         return repr(parts)
 
     async def start(self) -> None:
-        """Kick off the background polling task and wait for the first pass."""
+        """Kick off the background polling task and return immediately.
+
+        The first probe pass runs concurrently in the background so the
+        main app starts serving requests without waiting for backends to
+        be reachable. Misconfigured or unreachable backends would
+        otherwise block the lifespan for the full connect timeout per
+        backend (tsk-xjwolt). Subscribers and ``backends()`` consumers
+        are guaranteed to see a consistent post-probe view once
+        ``wait_initial_probe()`` resolves.
+        """
         if self._task is not None:
             return
         self._task = asyncio.create_task(self._poll_loop(), name="backend-catalog-poll")
-        await asyncio.wait_for(self._initial_probe_done.wait(), timeout=15.0)
+
+    async def wait_initial_probe(self, timeout: float | None = None) -> None:
+        """Await the first probe pass, used by tests and by callers that
+        genuinely need the post-probe view before proceeding. The main
+        server boot path should NOT call this — it is the fix for
+        tsk-xjwolt that probing backends sequentially with long timeouts
+        delayed :6969 from accepting traffic.
+        """
+        if self._initial_probe_done.is_set():
+            return
+        if timeout is None:
+            await self._initial_probe_done.wait()
+        else:
+            await asyncio.wait_for(self._initial_probe_done.wait(), timeout=timeout)
 
     async def stop(self) -> None:
         if self._task is not None:
