@@ -844,10 +844,10 @@ that also happened there; setting up in the handler leaked a subscription per
 client that disconnected before the stream started.
 
 The desktop side is `desktop/src/hooks/use-os-events.ts`:
-`useOsEvents(kinds, onEvent)` holds one connection, returns `connected` /
-`stale`, dedupes by event id, reconnects with exponential backoff, and reopens
-the stream when `kinds` changes (the URL is fixed for the life of a
-connection, so a widened list needs a new one).
+`useOsEvents(kinds, onEvent)` multiplexes one EventSource across all callers
+in the same window, returns `connected` / `stale`, dedupes by event id,
+reconnects with exponential backoff, and filters by `kinds` client-side so
+the connection does not need to reopen when a subscriber widens its list.
 
 ## LoRA Studio routes (session-only, no agent scope)
 

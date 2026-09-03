@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useOsEvents, OsEvent } from "./use-os-events";
-
-// ---------------------------------------------------------------------------
-// Mock EventSource -- must use a regular function (not arrow) so `new` works
-// ---------------------------------------------------------------------------
+import {
+  useOsEvents,
+  OsEvent,
+  resetOsEventsState,
+} from "./use-os-events";
 
 type MessageListener = (e: MessageEvent) => void;
 
@@ -21,15 +21,13 @@ interface MockEventSource {
 
 let lastEs: MockEventSource | null = null;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const MockEventSourceCtor = vi.fn().mockImplementation(function (this: any, url: string) {
   this.url = url;
   this.onopen = null;
   this.onmessage = null;
   this.onerror = null;
   this.close = vi.fn();
-  this.readyState = 0; // CONNECTING
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  this.readyState = 0;
   this._fire = (data: unknown) => {
     (this as MockEventSource).onmessage?.({ data: JSON.stringify(data) } as MessageEvent);
   };
@@ -39,13 +37,10 @@ const MockEventSourceCtor = vi.fn().mockImplementation(function (this: any, url:
   lastEs = this as MockEventSource;
 });
 
-// The real EventSource carries these as static members, and the hook compares
-// readyState against them. Without them both sides of `es.readyState ===
-// EventSource.CLOSED` are undefined, so every disconnect assertion below
-// passes no matter what the hook does.
 Object.assign(MockEventSourceCtor, { CONNECTING: 0, OPEN: 1, CLOSED: 2 });
 
 beforeEach(() => {
+  resetOsEventsState();
   vi.stubGlobal("EventSource", MockEventSourceCtor);
   MockEventSourceCtor.mockClear();
   lastEs = null;
@@ -56,11 +51,9 @@ afterEach(() => {
 });
 
 describe("useOsEvents", () => {
-  it("opens an EventSource to /api/os/events with kinds on mount", () => {
+  it("opens an EventSource to /api/os/events on mount", () => {
     renderHook(() => useOsEvents(["projects.task.changed"], () => {}));
-    expect(MockEventSourceCtor).toHaveBeenCalledWith(
-      "/api/os/events?kinds=projects.task.changed",
-    );
+    expect(MockEventSourceCtor).toHaveBeenCalledWith("/api/os/events");
   });
 
   it("opens an EventSource without kinds when kinds is empty", () => {
@@ -232,32 +225,15 @@ describe("useOsEvents", () => {
     expect(onEvent).not.toHaveBeenCalled();
   });
 
-  it("reopens the stream with the new kinds when kinds changes", () => {
-    const { rerender } = renderHook(
-      ({ kinds }: { kinds: string[] }) => useOsEvents(kinds, () => {}),
-      { initialProps: { kinds: ["projects.task.changed"] } },
-    );
-    expect(MockEventSourceCtor).toHaveBeenLastCalledWith(
-      "/api/os/events?kinds=projects.task.changed",
-    );
-    const first = lastEs;
-
-    rerender({ kinds: ["projects.task.changed", "notifications.new"] });
-
-    expect(first?.close).toHaveBeenCalled();
-    expect(MockEventSourceCtor).toHaveBeenLastCalledWith(
-      "/api/os/events?kinds=projects.task.changed%2Cnotifications.new",
-    );
-  });
-
-  it("does not reopen the stream when kinds is a new array with the same contents", () => {
+  it("does not reopen the stream when kinds changes", () => {
     const { rerender } = renderHook(
       ({ kinds }: { kinds: string[] }) => useOsEvents(kinds, () => {}),
       { initialProps: { kinds: ["projects.task.changed"] } },
     );
     expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
+    expect(MockEventSourceCtor).toHaveBeenCalledWith("/api/os/events");
 
-    rerender({ kinds: ["projects.task.changed"] });
+    rerender({ kinds: ["projects.task.changed", "notifications.new"] });
 
     expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
   });
@@ -282,6 +258,7 @@ describe("useOsEvents", () => {
     expect(result.current.connected).toBe(false);
     expect(result.current.stale).toBe(true);
   });
+
   it("delivers events.lagged even when it is not in the caller's kinds", () => {
     const onEvent = vi.fn();
     renderHook(() => useOsEvents(["projects.task.changed"], onEvent));
@@ -305,5 +282,95 @@ describe("useOsEvents", () => {
     });
 
     expect(onEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it("two hook instances share one EventSource", () => {
+    const onEvent1 = vi.fn();
+    const onEvent2 = vi.fn();
+
+    renderHook(() => useOsEvents(["projects.task.changed"], onEvent1));
+    renderHook(() => useOsEvents(["agents.status.changed"], onEvent2));
+
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
+  });
+
+  it("filters events client-side per subscriber", () => {
+    const onEvent1 = vi.fn();
+    const onEvent2 = vi.fn();
+
+    renderHook(() => useOsEvents(["projects.task.changed"], onEvent1));
+    renderHook(() => useOsEvents(["agents.status.changed"], onEvent2));
+
+    act(() => {
+      lastEs?._fire({
+        kind: "projects.task.changed",
+        id: "evt-1",
+        ts: 1234567890.0,
+      });
+    });
+
+    expect(onEvent1).toHaveBeenCalledTimes(1);
+    expect(onEvent2).not.toHaveBeenCalled();
+  });
+
+  it("keeps the connection open while at least one instance remains", () => {
+    const { unmount: unmount1 } = renderHook(() =>
+      useOsEvents(["projects.task.changed"], () => {}),
+    );
+    renderHook(() =>
+      useOsEvents(["agents.status.changed"], () => {}),
+    );
+
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
+
+    unmount1();
+    expect(lastEs?.close).not.toHaveBeenCalled();
+  });
+
+  it("closes the EventSource when the last instance unmounts", () => {
+    const { unmount: unmount1 } = renderHook(() =>
+      useOsEvents(["projects.task.changed"], () => {}),
+    );
+    const { unmount: unmount2 } = renderHook(() =>
+      useOsEvents(["agents.status.changed"], () => {}),
+    );
+
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
+
+    unmount2();
+    expect(lastEs?.close).not.toHaveBeenCalled();
+
+    unmount1();
+    expect(lastEs?.close).toHaveBeenCalled();
+  });
+
+  it("deduplicates events across subscribers", () => {
+    const onEvent1 = vi.fn();
+    const onEvent2 = vi.fn();
+
+    renderHook(() => useOsEvents(["projects.task.changed"], onEvent1));
+    renderHook(() => useOsEvents(["projects.task.changed"], onEvent2));
+
+    act(() => {
+      lastEs?._fire({
+        kind: "projects.task.changed",
+        id: "evt-shared",
+        ts: 1234567890.0,
+      });
+    });
+
+    expect(onEvent1).toHaveBeenCalledTimes(1);
+    expect(onEvent2).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      lastEs?._fire({
+        kind: "projects.task.changed",
+        id: "evt-shared",
+        ts: 1234567890.0,
+      });
+    });
+
+    expect(onEvent1).toHaveBeenCalledTimes(1);
+    expect(onEvent2).toHaveBeenCalledTimes(1);
   });
 });
