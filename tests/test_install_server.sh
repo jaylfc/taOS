@@ -119,4 +119,21 @@ grep -q "verified_ok=" "$SCRIPT" && grep -q "verified_warn=" "$SCRIPT"
 echo "test: verification only runs when SERVICE_MODE != skip"
 grep -A 3 'SERVICE_MODE.*!=.*skip' "$SCRIPT" | grep -q "verify_hardware_capabilities"
 
+# ── Controller readiness wait (taOS#2) ─────────────────────────────────
+
+echo "test: controller wait uses a 240 s ready timeout"
+grep -q "_READY_WAIT=240" "$SCRIPT"
+
+echo "test: controller wait uses a 30 s port-open timeout"
+grep -q "_PORT_WAIT=30" "$SCRIPT"
+
+echo "test: controller wait checks /api/health for port-open phase"
+grep -q "curl.*localhost:\$TAOS_PORT/api/health" "$SCRIPT"
+
+echo "test: controller wait checks /api/cluster/workers for ready phase"
+grep -q "curl.*localhost:\$TAOS_PORT/api/cluster/workers" "$SCRIPT"
+
+echo "test: controller wait names first-boot init in the timeout message"
+grep -q "first-boot init may still be running" "$SCRIPT"
+
 echo "all tests passed"

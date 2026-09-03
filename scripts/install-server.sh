@@ -2172,33 +2172,62 @@ fi
 # --- wait for controller to come up -------------------------------------
 
 if [[ "$SERVICE_MODE" != "skip" ]]; then
-    # 120s ceiling: cold-boot on a Pi 5 / Orange Pi 5 lands around 55-65s
-    # (issue #337) so 60s was racing the actual ready state and printing
-    # a false "controller did not respond" warning even on successful
-    # installs. Doubling the cap keeps the safety net while removing the
-    # false alarm. Loop continues to early-exit the moment /api/cluster/workers
-    # answers, so this is just a higher ceiling, not slower steady state.
-    log "waiting for controller to be ready on port $TAOS_PORT (up to 120 s)..."
-    ctrl_tries=0
-    ctrl_up=0
-    while [[ $ctrl_tries -lt 120 ]]; do
-        if curl -sf "http://localhost:$TAOS_PORT/api/cluster/workers" >/dev/null 2>&1; then
-            ctrl_up=1
+    # Cold-boot on a fresh install runs a lot of first-run init (litellm
+    # prisma migration, store creation, backend catalog probing) that can
+    # exceed the old 120 s cap and make the installer print "controller did
+    # not respond" when the app was actually still starting. A re-run then
+    # succeeds because everything is already initialised (taOS#2).
+    #
+    # We wait in two phases so the message names exactly what is happening:
+    #   1. port open  -- the process is alive and uvicorn is listening.
+    #   2. ready      -- /api/cluster/workers answers, meaning the lifespan
+    #                    init chain has completed.
+    _PORT_WAIT=30
+    _READY_WAIT=240
+
+    log "waiting for controller port $TAOS_PORT to open (up to $_PORT_WAIT s)..."
+    _port_tries=0
+    _port_open=0
+    while [[ $_port_tries -lt $_PORT_WAIT ]]; do
+        if curl -sf "http://localhost:$TAOS_PORT/api/health" >/dev/null 2>&1; then
+            _port_open=1
             break
         fi
         sleep 1
-        ctrl_tries=$((ctrl_tries + 1))
+        _port_tries=$((_port_tries + 1))
     done
 
-    if [[ $ctrl_up -eq 0 ]]; then
-        warn "controller did not respond within 120 seconds"
+    if [[ $_port_open -eq 0 ]]; then
+        warn "controller did not open port $TAOS_PORT within $_PORT_WAIT seconds"
         if command -v journalctl >/dev/null 2>&1; then
             warn "latest journal output:"
             journalctl -u tinyagentos --no-pager -n 30 2>/dev/null || true
         fi
-        die "controller failed to start — check the journal above and fix before continuing"
+        die "controller process did not start — check the journal above and fix before continuing"
     fi
-    log "controller is up"
+    log "controller port $TAOS_PORT is open, waiting for first-boot init to finish..."
+
+    _ready_tries=0
+    _ready_ok=0
+    while [[ $_ready_tries -lt $_READY_WAIT ]]; do
+        if curl -sf "http://localhost:$TAOS_PORT/api/cluster/workers" >/dev/null 2>&1; then
+            _ready_ok=1
+            break
+        fi
+        sleep 1
+        _ready_tries=$((_ready_tries + 1))
+    done
+
+    if [[ $_ready_ok -eq 0 ]]; then
+        warn "controller did not become ready within $_READY_WAIT seconds"
+        warn "first-boot init may still be running (litellm migration, store creation, backend catalog probing)"
+        if command -v journalctl >/dev/null 2>&1; then
+            warn "latest journal output:"
+            journalctl -u tinyagentos --no-pager -n 30 2>/dev/null || true
+        fi
+        die "controller cluster/workers endpoint did not respond — check the journal above and fix before continuing"
+    fi
+    log "controller is ready"
 fi
 
 # --- post-install hardware capability verification -----------------------
