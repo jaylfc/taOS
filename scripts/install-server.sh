@@ -2182,14 +2182,15 @@ if [[ "$SERVICE_MODE" != "skip" ]]; then
     #   1. port open  -- the process is alive and uvicorn is listening.
     #   2. ready      -- /api/cluster/workers answers, meaning the lifespan
     #                    init chain has completed.
-    _PORT_WAIT=30
+    _PORT_WAIT=60
     _READY_WAIT=240
 
     log "waiting for controller port $TAOS_PORT to open (up to $_PORT_WAIT s)..."
     _port_tries=0
     _port_open=0
-    while [[ $_port_tries -lt $_PORT_WAIT ]]; do
-        if curl -sf "http://localhost:$TAOS_PORT/api/health" >/dev/null 2>&1; then
+    _port_start=$(( SECONDS ))
+    while [[ $_port_tries -lt $_PORT_WAIT && $(( SECONDS - _port_start )) -lt $_PORT_WAIT ]]; do
+        if curl -sf --max-time 5 "http://localhost:$TAOS_PORT/api/health" >/dev/null 2>&1; then
             _port_open=1
             break
         fi
@@ -2209,8 +2210,9 @@ if [[ "$SERVICE_MODE" != "skip" ]]; then
 
     _ready_tries=0
     _ready_ok=0
-    while [[ $_ready_tries -lt $_READY_WAIT ]]; do
-        if curl -sf "http://localhost:$TAOS_PORT/api/cluster/workers" >/dev/null 2>&1; then
+    _ready_start=$(( SECONDS ))
+    while [[ $_ready_tries -lt $_READY_WAIT && $(( SECONDS - _ready_start )) -lt $_READY_WAIT ]]; do
+        if curl -sf --max-time 5 "http://localhost:$TAOS_PORT/api/cluster/workers" >/dev/null 2>&1; then
             _ready_ok=1
             break
         fi

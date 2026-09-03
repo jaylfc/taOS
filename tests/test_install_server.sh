@@ -124,8 +124,8 @@ grep -A 3 'SERVICE_MODE.*!=.*skip' "$SCRIPT" | grep -q "verify_hardware_capabili
 echo "test: controller wait uses a 240 s ready timeout"
 grep -q "_READY_WAIT=240" "$SCRIPT"
 
-echo "test: controller wait uses a 30 s port-open timeout"
-grep -q "_PORT_WAIT=30" "$SCRIPT"
+echo "test: controller wait uses a 60 s port-open timeout"
+grep -q "_PORT_WAIT=60" "$SCRIPT"
 
 echo "test: controller wait checks /api/health for port-open phase"
 grep -q "curl.*localhost:\$TAOS_PORT/api/health" "$SCRIPT"
