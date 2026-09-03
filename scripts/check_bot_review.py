@@ -89,6 +89,25 @@ CODERABBIT_SCAFFOLDING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A CodeRabbit auto-summary comment that reports a completed review with zero
+# findings carries BOTH of the following markers:
+#   (a) "No actionable comments were generated in the recent review"
+#   (b) an "Included review availability:" line that says N remain after this
+#       review (quota was consumed, so a review actually ran).
+# Together these identify a real completed review that found nothing, not a stub.
+CODERABBIT_ZERO_FINDING_PHRASE_RE = re.compile(
+    r"No actionable comments were generated in the recent review",
+    re.IGNORECASE,
+)
+CODERABBIT_QUOTA_RE = re.compile(
+    r"Included review availability:.*?remain after this review",
+    re.DOTALL | re.IGNORECASE,
+)
+CODERABBIT_RUN_ID_RE = re.compile(
+    r"\*\*Run ID\*\*:\s*(\S+)",
+    re.IGNORECASE,
+)
+
 EXIT_OK = 0
 EXIT_STUB = 1
 EXIT_ERROR = 2
@@ -223,6 +242,28 @@ def is_coderabbit_auto_summary(body: str | None) -> bool:
     if not body:
         return False
     return bool(CODERABBIT_AUTO_SUMMARY_RE.search(body))
+
+
+def is_coderabbit_zero_finding_review(body: str | None) -> tuple[bool, str | None]:
+    """Return (True, run_id) if a body is a CodeRabbit auto-summary comment
+    reporting a completed review with zero findings, else (False, None).
+
+    A completed zero-finding review is an auto-summary comment whose body
+    contains BOTH the "no actionable comments" marker and the quota-consumed
+    marker ("Included review availability:" ... "remain after this review"),
+    plus a Run ID. This distinguishes a real completed review from a merge/
+    close stub that carries no review metadata at all.
+    """
+    if not body:
+        return False, None
+    if not is_coderabbit_auto_summary(body):
+        return False, None
+    if not CODERABBIT_ZERO_FINDING_PHRASE_RE.search(body):
+        return False, None
+    if not CODERABBIT_QUOTA_RE.search(body):
+        return False, None
+    run_id_match = CODERABBIT_RUN_ID_RE.search(body)
+    return True, (run_id_match.group(1) if run_id_match else None)
 
 
 def is_real_item(item: CRItem) -> bool:
@@ -370,12 +411,15 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
     Returns (exit_code, message):
     - (0, "PASS ...")            -- a real CodeRabbit review exists.
     - (0, "PASS (absent, ...)")  -- CodeRabbit is entirely absent.
+    - (0, "PASS ...")            -- a completed zero-finding CodeRabbit review
+                                   exists (auto-summary with both no-findings
+                                   marker and quota-consumed marker).
     - (1, "FAIL ...")            -- only stubs exist, i.e. rate-limit stubs
-                                  or CodeRabbit auto-generated scaffolding
-                                  (acknowledgement / auto-summary), neither
-                                  of which is review content.
+                                   or CodeRabbit auto-generated scaffolding
+                                   (acknowledgement / auto-summary), neither
+                                   of which is review content.
     - (0, "PASS ...")            -- CR output exists but is neither a stub
-                                  nor substantive (edge case, not fake-green).
+                                   nor substantive (edge case, not fake-green).
     """
     if not items:
         return EXIT_OK, "PASS (absent, not stubbed): no CodeRabbit output on this PR"
@@ -386,6 +430,19 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
             f"PASS: {len(real_items)} real CodeRabbit review item(s) "
             f"(exit {EXIT_OK})"
         )
+
+    # Check for a completed zero-finding review before falling through to the
+    # stub verdict. An auto-summary comment carrying both the "no actionable
+    # comments" marker and the quota-consumed marker means CodeRabbit ran and
+    # found nothing -- that is a real review outcome, not fake-green.
+    for item in items:
+        is_zf, run_id = is_coderabbit_zero_finding_review(item.body)
+        if is_zf:
+            run_id_str = f" (run {run_id})" if run_id else ""
+            return EXIT_OK, (
+                f"PASS: real CodeRabbit review, 0 findings{run_id_str} "
+                f"(exit {EXIT_OK})"
+            )
 
     # No real review threads. A trigger was accepted but produced no review
     # content: that is the fake-green condition. This covers both the

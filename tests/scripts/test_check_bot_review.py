@@ -1113,6 +1113,126 @@ class TestDetectorIsolation:
             assert check_mod.is_real_item(summary) is True
 
 
+class TestIsCoderabbitZeroFindingReview:
+    """The zero-finding detector: an auto-summary comment carrying both the
+    no-findings marker and the quota-consumed marker is a completed review
+    that found nothing, not a stub."""
+
+    ZERO_FINDING_BODY = (
+        "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+        "**Run ID**: abc123-def456\n"
+        "📒 Files selected for processing (3)\n"
+        "No actionable comments were generated in the recent review.\n"
+        "**Included review availability:** Your plan provides up to 4 included reviews per hour; 2 remain after this review."
+    )
+
+    def test_both_markers_returns_true_and_run_id(self, check_mod) -> None:
+        is_zf, run_id = check_mod.is_coderabbit_zero_finding_review(self.ZERO_FINDING_BODY)
+        assert is_zf is True
+        assert run_id == "abc123-def456"
+
+    def test_without_auto_summary_marker_returns_false(self, check_mod) -> None:
+        body = "No actionable comments were generated in the recent review.\n" \
+               "**Included review availability:** Your plan provides up to 4 included reviews per hour; 2 remain after this review."
+        is_zf, run_id = check_mod.is_coderabbit_zero_finding_review(body)
+        assert is_zf is False
+        assert run_id is None
+
+    def test_without_phrase_a_returns_false(self, check_mod) -> None:
+        body = (
+            "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+            "**Run ID**: abc123-def456\n"
+            "**Included review availability:** Your plan provides up to 4 included reviews per hour; 2 remain after this review."
+        )
+        is_zf, run_id = check_mod.is_coderabbit_zero_finding_review(body)
+        assert is_zf is False
+        assert run_id is None
+
+    def test_without_phrase_b_returns_false(self, check_mod) -> None:
+        body = (
+            "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+            "**Run ID**: abc123-def456\n"
+            "No actionable comments were generated in the recent review."
+        )
+        is_zf, run_id = check_mod.is_coderabbit_zero_finding_review(body)
+        assert is_zf is False
+        assert run_id is None
+
+    def test_empty_body_returns_false(self, check_mod) -> None:
+        assert check_mod.is_coderabbit_zero_finding_review("") == (False, None)
+        assert check_mod.is_coderabbit_zero_finding_review(None) == (False, None)
+
+    def test_run_id_missing_returns_true_without_run_id(self, check_mod) -> None:
+        body = (
+            "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+            "No actionable comments were generated in the recent review.\n"
+            "**Included review availability:** Your plan provides up to 4 included reviews per hour; 2 remain after this review."
+        )
+        is_zf, run_id = check_mod.is_coderabbit_zero_finding_review(body)
+        assert is_zf is True
+        assert run_id is None
+
+
+class TestClassifyZeroFinding:
+    """classify() treats a completed zero-finding review as PASS, not FAIL."""
+
+    ZERO_FINDING_BODY = TestIsCoderabbitZeroFindingReview.ZERO_FINDING_BODY
+
+    def test_zero_finding_only_passes(self, check_mod) -> None:
+        items = [
+            check_mod.CRItem(id=1, body=self.ZERO_FINDING_BODY, is_review=False),
+        ]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 0
+        assert "0 findings" in message
+        assert "run abc123-def456" in message
+
+    def test_zero_finding_with_run_id_in_message(self, check_mod) -> None:
+        items = [
+            check_mod.CRItem(id=1, body=self.ZERO_FINDING_BODY, is_review=False),
+        ]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 0
+        assert "abc123-def456" in message
+
+
+RATE_LIMIT_ACK_BODY = (
+    "⚠️ Action not completed\n"
+    "Review rate limited.\n"
+    "Your included review limit is currently reached…"
+)
+A_ONLY_BODY = (
+    "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+    "No actionable comments were generated in the recent review."
+)
+B_ONLY_BODY = (
+    "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+    "📒 Files selected for processing (3)\n"
+    "**Included review availability:** Your plan provides up to 4 included reviews per hour; 2 remain after this review."
+)
+MERGE_CLOSE_BODY = "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"
+
+
+class TestClassifyZeroFindingControls:
+    """Parametrised per-field controls: each bullet from the task plus the
+    positive case. Deleting one half of the predicate must make the corresponding
+    case go RED."""
+
+    @pytest.mark.parametrize("body,expected_exit,expected_substring", [
+        (TestIsCoderabbitZeroFindingReview.ZERO_FINDING_BODY, 0, "0 findings"),
+        (RATE_LIMIT_ACK_BODY, 1, "FAIL"),
+        (A_ONLY_BODY, 1, "FAIL"),
+        (B_ONLY_BODY, 1, "FAIL"),
+        (MERGE_CLOSE_BODY, 1, "FAIL"),
+        (ACK_BODY, 1, "FAIL"),
+    ])
+    def test_control_cases(self, check_mod, body, expected_exit, expected_substring) -> None:
+        items = [check_mod.CRItem(id=1, body=body, is_review=False)]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == expected_exit, f"body={body!r}: expected exit {expected_exit}, got {exit_code}: {message}"
+        assert expected_substring in message, f"body={body!r}: expected {expected_substring!r} in {message!r}"
+
+
 class TestTrueGateFailure:
     """Acceptance #3: a TRUE gate failure (#2554 -- CodeRabbit scaffolding only,
     no review content) must STILL be reported red. The fix clears stale red by
