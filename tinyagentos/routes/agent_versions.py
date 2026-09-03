@@ -27,7 +27,16 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.agent_db import find_agent
-from tinyagentos.agent_git import git_diff, git_is_dirty, git_log, git_merge_base_is_ancestor, git_rev_parse, git_revert
+from tinyagentos.agent_git import (
+    DirtyTreeError,
+    NotAncestorError,
+    git_diff,
+    git_log,
+    git_merge_base_is_ancestor,
+    git_rev_parse,
+    git_revert,
+)
+from tinyagentos.auth_context import current_user, require_owner_or_admin
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +75,21 @@ async def list_versions(request: Request, name: str):
     if not agent:
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
 
-    container = _container_name(agent)
+    user = current_user(request)
+    registry = getattr(request.app.state, "agent_registry", None)
+    if registry is not None:
+        try:
+            registry_agent = await registry.get_by_handle(name)
+        except RuntimeError:
+            registry_agent = None
+        if registry_agent is not None:
+            require_owner_or_admin(user, registry_agent["user_id"])
+    owner_user_id = agent.get("user_id")
+    if owner_user_id:
+        require_owner_or_admin(user, owner_user_id)
+
     try:
+        container = _container_name(agent)
         commits = await git_log(container)
     except InvalidRemoteError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
@@ -89,9 +111,28 @@ async def version_diff(request: Request, name: str, sha: str):
     if bad is not None:
         return bad
 
-    container = _container_name(agent)
+    user = current_user(request)
+    registry = getattr(request.app.state, "agent_registry", None)
+    if registry is not None:
+        try:
+            registry_agent = await registry.get_by_handle(name)
+        except RuntimeError:
+            registry_agent = None
+        if registry_agent is not None:
+            require_owner_or_admin(user, registry_agent["user_id"])
+    owner_user_id = agent.get("user_id")
+    if owner_user_id:
+        require_owner_or_admin(user, owner_user_id)
+
     try:
+        container = _container_name(agent)
         patch = await git_diff(container, sha)
+    except InvalidRemoteError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except DirtyTreeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    except NotAncestorError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
     except RuntimeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
     except Exception as exc:
@@ -112,21 +153,35 @@ async def revert_version(request: Request, name: str, sha: str):
     if bad is not None:
         return bad
 
-    container = _container_name(agent)
+    user = current_user(request)
+    registry = getattr(request.app.state, "agent_registry", None)
+    if registry is not None:
+        try:
+            registry_agent = await registry.get_by_handle(name)
+        except RuntimeError:
+            registry_agent = None
+        if registry_agent is not None:
+            require_owner_or_admin(user, registry_agent["user_id"])
+    owner_user_id = agent.get("user_id")
+    if owner_user_id:
+        require_owner_or_admin(user, owner_user_id)
+
     try:
+        container = _container_name(agent)
         head_sha = (await git_rev_parse(container, "HEAD")).strip()
         resolved_sha = await git_rev_parse(container, sha)
         if resolved_sha != head_sha:
             status = await git_revert(container, resolved_sha)
             return {"agent": name, "sha": resolved_sha, "status": status}
         return {"agent": name, "sha": sha, "status": "noop"}
+    except InvalidRemoteError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except DirtyTreeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    except NotAncestorError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
     except RuntimeError as exc:
-        error_msg = str(exc)
-        if "dirty_tree" in error_msg:
-            return JSONResponse({"error": error_msg}, status_code=409)
-        if "not an ancestor" in error_msg:
-            return JSONResponse({"error": error_msg}, status_code=409)
-        return JSONResponse({"error": error_msg}, status_code=404)
+        return JSONResponse({"error": str(exc)}, status_code=404)
     except Exception as exc:
         logger.warning("version revert failed for %s/%s: %s", name, sha, exc)
         return JSONResponse({"error": "container_unreachable"}, status_code=409)

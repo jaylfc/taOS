@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 
 _REPO_PATH = "/root"
 
+_STATE_LOCK_PATH = "/tmp/agent_state.lock"
+
+
+class DirtyTreeError(RuntimeError):
+    pass
+
+
+class NotAncestorError(RuntimeError):
+    pass
+
 _GITIGNORE_CONTENTS = """\
 .env
 *.cred
@@ -32,6 +42,9 @@ node_modules/
 __pycache__/
 *.pyc
 .taos/trace/
+.aws/
+credentials
+*.credentials
 """
 
 
@@ -121,15 +134,23 @@ async def git_diff(container: str, sha: str) -> str:
 
 
 async def git_revert(container: str, sha: str) -> str:
-    head_sha = (await _git(container, ["rev-parse", "HEAD"]))[1].strip()
+    head_rc, head_out = await _git(container, ["rev-parse", "HEAD"])
+    if head_rc != 0:
+        raise RuntimeError(f"git rev-parse HEAD failed: {head_out}")
+    head_sha = head_out.strip()
     if sha == head_sha:
         return "noop"
     await git_rev_parse(container, sha)
     if not await git_merge_base_is_ancestor(container, sha):
-        raise RuntimeError(f"{sha} is not an ancestor of HEAD")
-    if await git_is_dirty(container):
-        raise RuntimeError("dirty_tree: working tree has uncommitted changes")
-    rc, out = await _git(container, ["reset", "--hard", sha])
+        raise NotAncestorError(f"{sha} is not an ancestor of HEAD")
+    script = (
+        "dirty=$(git -C /root status --porcelain); "
+        'test -z "$dirty" && git -C /root reset --hard ' + sha
+    )
+    rc, out = await exec_in_container(
+        container,
+        ["bash", "-c", f"flock {_STATE_LOCK_PATH} -c {script!r}"],
+    )
     if rc != 0:
-        raise RuntimeError(f"git reset failed for {sha}: {out}")
+        raise DirtyTreeError("dirty_tree: working tree has uncommitted changes")
     return "reverted"

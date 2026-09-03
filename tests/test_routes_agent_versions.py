@@ -35,6 +35,14 @@ def _fake_exec_for_repo(fixture_repo):
                 text=True,
             )
             return result.returncode, result.stdout
+        if cmd[0] == "bash" and cmd[1] == "-c":
+            script = cmd[2].replace("/root", str(fixture_repo))
+            result = subprocess.run(
+                [cmd[0], cmd[1], script],
+                capture_output=True,
+                text=True,
+            )
+            return result.returncode, result.stdout
         return 0, ""
     return _fake
 
@@ -66,7 +74,7 @@ class TestAgentVersionsRoutes:
     async def test_list_versions_returns_commits(self, client):
         with patch(
             "tinyagentos.agent_git.exec_in_container",
-            new=AsyncMock(return_value=(0, "abc12345\x1finitial\x1fagent\x1fagent@taos.local\x1f2026-01-01 00:00:00 +0000\ndef456789\x1fadd notes\x1fagent\x1fagent@taos.local\x1f2026-01-01 01:00:00 +0000\n")),
+            new=AsyncMock(return_value=(0, "abc12345\x1finitial\x1fagent\x1fagent@taos.local\x1f2026-01-01 00:00:00 +0000\x00def456789\x1fadd notes\x1fagent\x1fagent@taos.local\x1f2026-01-01 01:00:00 +0000\x00")),
         ):
             resp = await client.get("/api/agents/test-agent/versions")
         assert resp.status_code == 200
@@ -229,3 +237,65 @@ class TestAgentVersionsRoutes:
     async def test_short_sha_rejected_by_versions_route(self, client):
         resp = await client.get("/api/agents/test-agent/versions/abc1/diff")
         assert resp.status_code == 400
+
+    async def test_list_versions_403_for_unauthorized_user(self, tmp_path):
+        config = {
+            "server": {"host": "0.0.0.0", "port": 6969},
+            "backends": [],
+            "qmd": {"url": "http://localhost:7832"},
+            "agents": [
+                {"name": "test-agent", "host": "192.168.1.100", "user_id": "owner-user", "qmd_index": "test", "color": "#98fb98"}
+            ],
+            "metrics": {"poll_interval": 30, "retention_days": 30},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(config))
+        (tmp_path / ".setup_complete").touch()
+        from tinyagentos.app import create_app
+        app = create_app(data_dir=tmp_path)
+        app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+        admin_record = app.state.auth.find_user("admin")
+        invite_code = app.state.auth.add_user_invite("bob", "admin")
+        app.state.auth.complete_invite("bob", invite_code, "Bob User", "bob@test.com", "bobpass123")
+        bob_record = app.state.auth.find_user("bob")
+        bob_token = app.state.auth.create_session(user_id=bob_record["id"], long_lived=True)
+        app.state._startup_complete = True
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": bob_token},
+            event_hooks=csrf_event_hooks(),
+        ) as c:
+            resp = await c.get("/api/agents/test-agent/versions")
+        assert resp.status_code == 403
+
+    async def test_revert_403_for_unauthorized_user(self, tmp_path):
+        config = {
+            "server": {"host": "0.0.0.0", "port": 6969},
+            "backends": [],
+            "qmd": {"url": "http://localhost:7832"},
+            "agents": [
+                {"name": "test-agent", "host": "192.168.1.100", "user_id": "owner-user", "qmd_index": "test", "color": "#98fb98"}
+            ],
+            "metrics": {"poll_interval": 30, "retention_days": 30},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(config))
+        (tmp_path / ".setup_complete").touch()
+        from tinyagentos.app import create_app
+        app = create_app(data_dir=tmp_path)
+        app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+        admin_record = app.state.auth.find_user("admin")
+        invite_code = app.state.auth.add_user_invite("bob", "admin")
+        app.state.auth.complete_invite("bob", invite_code, "Bob User", "bob@test.com", "bobpass123")
+        bob_record = app.state.auth.find_user("bob")
+        bob_token = app.state.auth.create_session(user_id=bob_record["id"], long_lived=True)
+        app.state._startup_complete = True
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": bob_token},
+            event_hooks=csrf_event_hooks(),
+        ) as c:
+            resp = await c.post("/api/agents/test-agent/versions/abc12345/revert")
+        assert resp.status_code == 403

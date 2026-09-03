@@ -812,7 +812,7 @@ WantedBy=multi-user.target
                                     req.name, _unit_out[-200:],
                                 )
                         if not _installed:
-                            await exec_in_container(
+                            _nohup_rc, _nohup_out = await exec_in_container(
                                 container_name,
                                 [
                                     "bash", "-c",
@@ -820,7 +820,20 @@ WantedBy=multi-user.target
                                     "> /root/.taos/committer.log 2>&1 &",
                                 ],
                             )
-                            steps.append("committer_installed_nohup")
+                            if _nohup_rc == 0:
+                                steps.append("committer_installed_nohup")
+                            else:
+                                logger.warning(
+                                    "Deploy %s: nohup committer failed (rc=%s): %s",
+                                    req.name, _nohup_rc, _nohup_out[-200:],
+                                )
+                                steps.append("committer_failed")
+                    else:
+                        logger.warning(
+                            "Deploy %s: failed to push committer script (rc=%s): %s",
+                            req.name, _push_rc, _push_out[-200:],
+                        )
+                        steps.append("committer_failed")
             except Exception as exc:
                 logger.warning("Deploy %s: committer install failed: %s", req.name, exc)
                 steps.append("committer_failed")

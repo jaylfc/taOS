@@ -7,6 +7,7 @@ message. No LLM involvement.
 """
 from __future__ import annotations
 
+import fcntl
 import os
 import subprocess
 import time
@@ -14,6 +15,7 @@ import time
 
 REPO_PATH = os.environ.get("AGENT_STATE_REPO", "/root")
 INTERVAL = int(os.environ.get("COMMIT_INTERVAL", "300"))
+_STATE_LOCK_PATH = os.environ.get("AGENT_STATE_LOCK", "/tmp/agent_state.lock")
 
 
 def _git(*args: str) -> tuple[int, str, str]:
@@ -43,17 +45,22 @@ def _changed_summary() -> str:
 
 
 def _commit() -> None:
-    if not _is_dirty():
-        return
-    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    summary = _changed_summary()
-    message = f"auto: {ts} | {summary}"
-    rc, out, err = _git("add", "-A")
-    if rc != 0:
-        raise RuntimeError(f"git add failed: {err or out}")
-    rc, out, err = _git("commit", "-m", message)
-    if rc != 0:
-        raise RuntimeError(f"git commit failed: {err or out}")
+    fd = os.open(_STATE_LOCK_PATH, os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if not _is_dirty():
+            return
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        summary = _changed_summary()
+        message = f"auto: {ts} | {summary}"
+        rc, out, err = _git("add", "-A")
+        if rc != 0:
+            raise RuntimeError(f"git add failed: {err or out}")
+        rc, out, err = _git("commit", "-m", message)
+        if rc != 0:
+            raise RuntimeError(f"git commit failed: {err or out}")
+    finally:
+        os.close(fd)
 
 
 def main() -> None:
