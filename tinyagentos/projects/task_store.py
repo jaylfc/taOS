@@ -345,6 +345,13 @@ class ProjectTaskStore(BaseStore):
             ("assignee_id", assignee_id, assignee_id),
             ("parent_task_id", parent_task_id, parent_task_id),
         ]
+        # Reject generic status transitions from parked: parked is permanent
+        # and such a transition would clear claim fields and return the task
+        # to the ready pool.
+        if status is not None:
+            existing = await self.get_task(task_id)
+            if existing is not None and existing.get("status") == "parked":
+                status = None  # skip the status candidate; allow other fields
         sets: list[str] = []
         params: list = []
         patch: dict = {}
@@ -447,10 +454,21 @@ class ProjectTaskStore(BaseStore):
                         task_id, "dispatch_failed", actor=releaser_id
                     )
                     if count >= StrikeStore.STRIKE_THRESHOLD:
-                        await self.park_task(task_id, "system")
+                        # After recording the strike, verify the task is still
+                        # in a state where parking is appropriate. If another
+                        # worker claimed it between the release and the strike
+                        # recording, we should not park it (it is now claimed
+                        # by someone else).
+                        existing = await self.get_task(task_id)
+                        if existing is not None and existing.get(
+                            "status"
+                        ) == "open" and existing.get("claimed_by") is None:
+                            await self.park_task(task_id, "system")
                 except Exception:
                     logger.warning(
-                        "strike recording failed for task %s on release", task_id, exc_info=True
+                        "strike recording failed for task %s on release",
+                        task_id,
+                        exc_info=True,
                     )
         return changed
 
@@ -498,14 +516,14 @@ class ProjectTaskStore(BaseStore):
             cursor = await self._db.execute(
                 """UPDATE project_tasks
                    SET status = 'closed', closed_by = ?, closed_at = ?, close_reason = ?, updated_at = ?
-                   WHERE id = ? AND status NOT IN ('closed', 'cancelled')""",
+                   WHERE id = ? AND status NOT IN ('closed', 'cancelled', 'parked')""",
                 (closed_by, now, reason, now, task_id),
             )
         else:
             cursor = await self._db.execute(
                 """UPDATE project_tasks
                    SET status = 'closed', closed_by = ?, closed_at = ?, close_reason = ?, updated_at = ?
-                   WHERE id = ? AND status NOT IN ('closed', 'cancelled')
+                   WHERE id = ? AND status NOT IN ('closed', 'cancelled', 'parked')
                      AND (claimed_by IS NULL OR claimed_by = ?)""",
                 (closed_by, now, reason, now, task_id, closed_by),
             )
@@ -537,13 +555,13 @@ class ProjectTaskStore(BaseStore):
     async def reopen_task(self, task_id: str, reopened_by: str) -> bool:
         """Undo a close: a closed task returns to the open pool (claimer stays
         cleared, so a free agent can pick it up again). Only acts on a closed
-        task; returns False otherwise."""
+        task that is not parked; returns False otherwise."""
         now = time.time()
         cursor = await self._db.execute(
             """UPDATE project_tasks
                SET status = 'open', closed_by = NULL, closed_at = NULL, close_reason = NULL,
                    claimed_by = NULL, claimed_at = NULL, updated_at = ?
-               WHERE id = ? AND status = 'closed'""",
+               WHERE id = ? AND status = 'closed' AND status != 'parked'""",
             (now, task_id),
         )
         await self._db.commit()

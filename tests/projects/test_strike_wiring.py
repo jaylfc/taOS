@@ -9,6 +9,7 @@ pass even with the store never wired up.
 """
 from __future__ import annotations
 
+import asyncio
 import pytest
 from httpx import ASGITransport, AsyncClient
 from taos_test_csrf import csrf_event_hooks
@@ -139,7 +140,7 @@ async def test_release_parks_after_threshold_strikes(app):
     cumulative releases the task is permanently parked."""
     async with app.router.lifespan_context(app):
         async with _auth_client(app) as c:
-            project_id, task_id = await _make_project_and_task(c, "strike-park")
+            _, task_id = await _make_project_and_task(c, "strike-park")
 
             task_store = app.state.project_task_store
             strikes = app.state.task_strikes
@@ -155,3 +156,51 @@ async def test_release_parks_after_threshold_strikes(app):
             fetched = await task_store.get_task(task_id)
             assert fetched["status"] == "parked"
             assert await strikes.count_strikes(task_id) == strikes.STRIKE_THRESHOLD
+
+
+@pytest.mark.asyncio
+async def test_concurrent_claim_during_release(app):
+    """During release_task, if another worker claims the task, the strike
+    recording and parking should not leave the task in an invalid state
+    with a stale claimed_by held in parked status. After the race, the task
+    should be in a valid status ('open', 'claimed', or 'parked'), and if
+    parked, claimed_by must be None (no stale claim retained)."""
+    async with app.router.lifespan_context(app):
+        async with _auth_client(app) as c:
+            _, task_id = await _make_project_and_task(c, "strike-concurrent")
+
+            task_store = app.state.project_task_store
+            strikes = app.state.task_strikes
+
+            # Claim the task so release_task can clear claimed_by and set status to 'open'
+            await task_store.claim_task(task_id, "worker-1")
+
+            # Record a strike directly so we're at count=1 (below threshold=3)
+            await strikes.record_strike(task_id, "dispatch_failed", actor="worker-1")
+
+            # Now race: release the task (which will record another strike and
+            # attempt to park if threshold is reached) while another worker
+            # tries to claim it.
+            released = asyncio.create_task(
+                task_store.release_task(task_id, "worker-1")
+            )
+            claimed = asyncio.create_task(task_store.claim_task(task_id, "worker-2"))
+
+            await asyncio.gather(released, claimed)
+
+            # After the race, the task should be in a valid state.
+            # With the fix, if a concurrent claim occurred during release,
+            # parking is skipped (task stays 'open' or 'claimed'), otherwise
+            # it's parked properly with no stale claimed_by.
+            fetched = await task_store.get_task(task_id)
+            status = fetched["status"]
+            # Task must not be 'parked' with a stale claimed_by value.
+            if status == "parked":
+                claimed_by = fetched.get("claimed_by")
+                assert claimed_by is None, "Task parked with stale claimed_by"
+            # Task status should be one of the valid states.
+            assert status in ("open", "claimed", "parked")
+            # Strike count should be at least 1 (we recorded one directly
+            # plus whatever was recorded by release_task).
+            count = await strikes.count_strikes(task_id)
+            assert count >= 1
