@@ -119,4 +119,39 @@ grep -q "verified_ok=" "$SCRIPT" && grep -q "verified_warn=" "$SCRIPT"
 echo "test: verification only runs when SERVICE_MODE != skip"
 grep -A 3 'SERVICE_MODE.*!=.*skip' "$SCRIPT" | grep -q "verify_hardware_capabilities"
 
+# ── Docker install fallback for Debian trixie / Armbian trixie (taOS#2) ──
+
+echo "test: trixie fallback defines _apt_install_docker_official_repo"
+grep -q "_apt_install_docker_official_repo()" "$SCRIPT"
+
+echo "test: _apt_install_compose probes both docker-compose-plugin and docker-compose-v2"
+grep -q "apt-cache madison docker-compose-plugin" "$SCRIPT"
+grep -q "apt-cache madison docker-compose-v2" "$SCRIPT"
+
+echo "test: _apt_install_compose returns non-zero when neither name is in apt"
+grep -A12 'apt-cache madison docker-compose-plugin' "$SCRIPT" \
+    | grep -q "return 1"
+
+echo "test: trixie fallback uses Docker's official apt repo (download.docker.com)"
+grep -q "download.docker.com/linux" "$SCRIPT"
+
+echo "test: trixie fallback verifies Docker apt key fingerprint before importing"
+grep -q "9DC858229FC7DD38854AE2D88D81803C0EBFCD88" "$SCRIPT"
+grep -q "Docker apt key fingerprint mismatch" "$SCRIPT"
+
+echo "test: trixie fallback installs docker-ce + plugin from Docker's repo"
+grep -q "docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin" "$SCRIPT"
+
+echo "test: trixie fallback is gated on _apt_install_compose failing, not on docker.io"
+grep -A10 "if ! _apt_install_compose" "$SCRIPT" \
+    | grep -q "_apt_install_docker_official_repo"
+
+echo "test: trixie fallback degrades gracefully (warn, no abort) when the repo is unreachable"
+grep -B1 -A2 "_apt_install_docker_official_repo" "$SCRIPT" \
+    | grep -q "Docker Engine + Compose plugin are unavailable"
+
+echo "test: ensure_docker_for_apps call site tolerates fallback failure (no set -e abort)"
+ensure_docker_call_line=$(grep -n "ensure_docker_for_apps || warn" "$SCRIPT" | head -1 | cut -d: -f1)
+(( ensure_docker_call_line > 0 ))
+
 echo "all tests passed"

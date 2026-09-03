@@ -1002,6 +1002,10 @@ PY
 # it docker-compose-plugin; Ubuntu's universe archive calls it
 # docker-compose-v2. Trying only the Ubuntu name broke Debian Bookworm
 # (vendor Pi images included) with "Unable to locate package" (#1541).
+# Debian trixie (and Armbian trixie, reported in taOS#2) ships NEITHER
+# name in the distro archive, so both madison lookups come back empty. The
+# caller detects that "both miss" case and falls back to Docker's official
+# apt repo via _apt_install_docker_official_repo below.
 _apt_install_compose() {
     # Probe availability with apt-cache madison instead of grepping apt's
     # stderr: the error text is locale-dependent (so string matching broke
@@ -1011,9 +1015,102 @@ _apt_install_compose() {
     # from the single install attempt itself.
     if [[ -n "$(apt-cache madison docker-compose-plugin 2>/dev/null)" ]]; then
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin
-    else
+    elif [[ -n "$(apt-cache madison docker-compose-v2 2>/dev/null)" ]]; then
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-v2
+    else
+        # Neither name is in this distro's apt archive (trixie, some
+        # armbian releases, vendor-stripped images). Leave Docker Engine
+        # un-installed so the caller's fallback path can try Docker's
+        # official repo; if that also fails the install still exits 0
+        # with a "Store Docker apps will be unavailable" warning.
+        return 1
     fi
+}
+
+# Docker Engine + Compose v2 plugin from Docker's official apt repo
+# (download.docker.com). Used as a fallback when neither
+# docker-compose-plugin nor docker-compose-v2 are present in the distro
+# archive (taOS#2 — Debian trixie / Armbian trixie). Mirrors the
+# GPG-verify pattern used by the Zabbly Incus fallback above so a
+# rotated docker.com signing key fails closed instead of silently
+# trusting whatever a MITM serves. Returns 0 on success, 1 on any
+# failure (network blocked, missing codename, fingerprint mismatch,
+# install error). Air-gapped hosts must still let the installer
+# finish, so every caller treats 1 as "give up gracefully".
+_apt_install_docker_official_repo() {
+    local codename=""
+    if command -v lsb_release >/dev/null 2>&1; then
+        codename=$(lsb_release -cs 2>/dev/null)
+    elif [[ -f /etc/os-release ]]; then
+        codename=$(. /etc/os-release && echo "${VERSION_CODENAME:-}")
+    fi
+    if [[ -z "$codename" ]]; then
+        warn "couldn't detect distro codename — skipping Docker official-repo fallback"
+        return 1
+    fi
+
+    # Docker publishes the Debian archive at /linux/debian and the
+    # Ubuntu archive at /linux/ubuntu — the same codename is used as
+    # the suite (bookworm, trixie, jammy, noble, ...). Match on
+    # ID_LIKE so derivatives (raspbian, armbian) route to the right
+    # archive: armbian trixie reports ID=armbian / ID_LIKE=debian.
+    local docker_os="debian"
+    if [[ -f /etc/os-release ]]; then
+        local os_id
+        os_id=$(. /etc/os-release && echo "${ID:-}")
+        case "$os_id" in
+            ubuntu) docker_os="ubuntu" ;;
+            raspbian) docker_os="debian" ;;
+        esac
+        if [[ "$docker_os" == "debian" ]]; then
+            local id_like
+            id_like=$(. /etc/os-release && echo "${ID_LIKE:-}")
+            case ",$id_like," in
+                *,ubuntu,*) docker_os="ubuntu" ;;
+            esac
+        fi
+    fi
+
+    sudo install -d -m 0755 /etc/apt/keyrings
+
+    local _docker_key_tmp
+    _docker_key_tmp="$(mktemp /tmp/docker-key.XXXXXX.asc)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$_docker_key_tmp'" RETURN
+    if ! curl -fsSL "https://download.docker.com/linux/$docker_os/gpg" -o "$_docker_key_tmp"; then
+        warn "failed to fetch Docker apt key — skipping Docker official-repo fallback"
+        return 1
+    fi
+    # Expected key fingerprint (verified against https://download.docker.com/linux/debian/gpg
+    # — "Docker Release (CE deb) <docker@docker.com>", primary key
+    # 9DC8 5822 9FC7 DD38 854A  E2D8 8D81 803C 0EBF CD88). Update here
+    # if Docker rotates the signing key.
+    local _docker_expected_fp="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
+    local _docker_actual_fp
+    _docker_actual_fp="$(gpg --with-colons --import-options show-only \
+        --import "$_docker_key_tmp" 2>/dev/null \
+        | awk -F: '/^fpr:/{gsub(/ /,"",$10); print $10}' | head -1)"
+    _docker_actual_fp="${_docker_actual_fp//[[:space:]]/}"
+    if [[ "$_docker_actual_fp" != "$_docker_expected_fp" ]]; then
+        warn "Docker apt key fingerprint mismatch: expected $_docker_expected_fp, got '$_docker_actual_fp'"
+        warn "  Refusing to add Docker's repo — skipping Docker official-repo fallback"
+        return 1
+    fi
+    log "Docker apt key fingerprint ok (${_docker_actual_fp:0:16}…)"
+    sudo cp "$_docker_key_tmp" /etc/apt/keyrings/docker.asc
+    echo "deb [signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$docker_os $codename stable" \
+        | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    if ! sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq; then
+        warn "apt-get update failed after adding Docker's repo — skipping Docker official-repo fallback"
+        return 1
+    fi
+    if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+        warn "apt install from Docker's repo failed — see /var/log/apt/term.log"
+        return 1
+    fi
+    log "Docker Engine + Compose v2 plugin installed via Docker's official repo"
+    return 0
 }
 
 ensure_docker_for_apps() {
@@ -1060,8 +1157,20 @@ ensure_docker_for_apps() {
             # left the box without Docker at all (#1541).
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io \
                 || warn "apt install docker.io failed — Store Docker apps will be unavailable"
-            _apt_install_compose \
-                || warn "apt install of the compose plugin failed — Store Docker apps will be unavailable"
+            if ! _apt_install_compose; then
+                # Neither docker-compose-plugin nor docker-compose-v2 is in
+                # this distro's apt archive — Debian trixie / Armbian
+                # trixie (taOS#2) are the known case. Fall back to Docker's
+                # official apt repo, which ships docker-ce +
+                # docker-compose-plugin. If `docker` still isn't on PATH
+                # after that (e.g. the host is air-gapped), warn and let
+                # the rest of the installer continue — Store Docker apps
+                # will simply be unavailable.
+                log "compose plugin not in distro apt — trying Docker's official apt repo"
+                if ! _apt_install_docker_official_repo; then
+                    warn "Docker Engine + Compose plugin are unavailable on this host (Store Docker apps will be unavailable)"
+                fi
+            fi
         elif command -v dnf >/dev/null 2>&1; then
             sudo dnf install -y -q moby-engine docker-compose \
                 || warn "dnf install moby-engine/docker-compose failed — Store Docker apps will be unavailable"
