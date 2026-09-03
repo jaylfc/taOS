@@ -435,6 +435,49 @@ class TestPromoteModel:
         ok = promote_model(models[0])
         assert ok is False
 
+    def test_promote_rejects_path_traversal_model_files_dir(self, tmp_path: Path, monkeypatch):
+        """A crafted model_id that escapes the archive root for model_files_dir
+        must be rejected even if target_dir still resolves inside active_root."""
+        archive_dir = tmp_path / "archive"
+        active_dir = tmp_path / "active"
+        sibling_dir = tmp_path / "sibling"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        active_dir.mkdir(parents=True, exist_ok=True)
+        sibling_dir.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(
+            "tinyagentos.cluster.model_archive._archive_root",
+            lambda: archive_dir,
+        )
+        monkeypatch.setattr(
+            "tinyagentos.cluster.model_archive._active_models_root",
+            lambda: active_dir,
+        )
+
+        # model_id="../victim" makes target_dir resolve inside active_root
+        # (active/llama-cpp/qwen3/../victim -> active/llama-cpp/victim),
+        # but model_files_dir = archive/../victim = sibling/victim escapes archive.
+        manifest = {
+            "model_id": "../victim",
+            "backend": "llama-cpp",
+            "family": "qwen3",
+            "files": ["model.gguf"],
+            "requirements": {},
+            "archived_at": 1700000000.0,
+        }
+        manifest_path = archive_dir / "evil.json"
+        manifest_path.write_text(json.dumps(manifest))
+        files_dir = sibling_dir / "victim"
+        files_dir.mkdir(parents=True, exist_ok=True)
+        (files_dir / "model.gguf").write_text("fake")
+
+        models = list_archived_models(archive_dir)
+        assert len(models) == 1
+        ok = promote_model(models[0])
+        assert ok is False
+        # Sibling files must NOT be moved
+        assert (sibling_dir / "victim" / "model.gguf").exists()
+
 
 # ---------------------------------------------------------------------------
 # Archive root env var override
