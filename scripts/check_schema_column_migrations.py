@@ -17,8 +17,9 @@ This script statically inspects every Python file under ``tinyagentos/`` and
 flags, for every CREATE TABLE in a SCHEMA string: a column that
 
   (a) is declared in that CREATE TABLE in the CURRENT file, AND
-  (b) has NO matching ``ALTER TABLE <t> ADD [COLUMN] <c>`` anywhere in the
-      SAME file (no _post_init migration runs it), AND
+  (b) has NO matching ``ALTER TABLE <t> ADD [COLUMN] <c>`` inside a
+      ``_post_init`` body in the SAME file (no _post_init migration runs it),
+      AND
   (c) was NOT in the CREATE TABLE column list on ``origin/dev`` (it is newly
       added by this change -- so existing columns that have always lived in
       SCHEMA do not trip the guard).
@@ -38,10 +39,11 @@ Invoked by the ``schema-column-guard`` step in
 Prints ``schema-column-guard: clean`` and exits 0 when no violations, or
 prints each violation and exits 1.
 
-Dependency-light: stdlib only (ast + re + pathlib + subprocess).
+Dependency-light: stdlib only (re + pathlib + subprocess).
 """
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import sys
@@ -68,6 +70,10 @@ _ADD_COLUMN_RE = re.compile(
     r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+(?:COLUMN\s+)?(\w+)",
     re.IGNORECASE,
 )
+
+
+class RefError(Exception):
+    """Raised when the origin/dev baseline cannot be read."""
 
 
 @dataclass
@@ -98,6 +104,10 @@ def _split_columns(body: str) -> set[str]:
     whitespace-delimited token of each segment as the column name (unless
     that segment is an inline table-level constraint, which does not add
     a column).
+
+    NOTE: This scanner does not handle a DEFAULT expression that contains a
+    top-level comma, or a quoted column name that collides with one of the
+    non-column keywords. Neither is fatal for the current store schemas.
     """
     _INLINE_CONSTRAINT_RE = re.compile(
         r"^\s*(?:CONSTRAINT\s+\w+\s+)?(?:PRIMARY\s+KEY|UNIQUE|CHECK|FOREIGN\s+KEY|REFERENCES)\b",
@@ -140,10 +150,25 @@ def _split_columns(body: str) -> set[str]:
     return columns
 
 
+def _check_origin_dev_ref() -> bool:
+    """Return True if origin/dev is a valid ref the local repo can read."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "origin/dev"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0
+    except OSError:
+        return False
+
+
 def _origin_dev_columns(path: Path) -> dict[str, set[str]] | None:
     """Return {table: columns} for CREATE TABLE bodies in the file on
-    ``origin/dev``. Returns None if the file is missing on origin/dev (new
-    file -- treat every column as new so violations surface naturally)."""
+    ``origin/dev``. Returns ``{}`` when the file is new on origin/dev.
+    Returns ``None`` when the ref or file cannot be read (caller should
+    treat as a hard error)."""
     rel = path.relative_to(REPO_ROOT)
     try:
         result = subprocess.run(
@@ -153,9 +178,22 @@ def _origin_dev_columns(path: Path) -> dict[str, set[str]] | None:
             text=True,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError as exc:
+        print(
+            f"schema-column-guard: ERROR reading origin/dev baseline for "
+            f"{rel}: {exc}",
+            file=sys.stderr,
+        )
         return None
     if result.returncode != 0:
+        stderr = result.stderr.lower()
+        if "pathspec" in stderr and "did not match" in stderr:
+            return {}
+        print(
+            f"schema-column-guard: ERROR reading origin/dev baseline for "
+            f"{rel}: {result.stderr.strip()}",
+            file=sys.stderr,
+        )
         return None
     out: dict[str, set[str]] = {}
     for tm in _CREATE_TABLE_RE.finditer(result.stdout):
@@ -163,24 +201,98 @@ def _origin_dev_columns(path: Path) -> dict[str, set[str]] | None:
     return out
 
 
-def _extract_schemas(source: str) -> list[str]:
-    """Find SCHEMA string constants in a Python source.
+def _strip_comments_and_docstrings(source: str) -> str:
+    """Remove # comments and triple-quoted strings from source."""
+    source = re.sub(r'""".*?"""', "", source, flags=re.DOTALL)
+    source = re.sub(r"'''.*?'''", "", source, flags=re.DOTALL)
+    source = "\n".join(line.split("#")[0] for line in source.splitlines())
+    return source
 
-    Only triple-quoted strings are scanned: the existing migration guards
-    already require multi-line SQL blocks (CREATE TABLE + CREATE INDEX),
-    so single-line string literals in source code (which would otherwise
-    double-count a block already captured by the triple-quoted regex) are
-    ignored. Files that don't define a SCHEMA contribute nothing.
-    """
+
+def _get_post_init_sources(source: str, tree: ast.AST) -> list[str]:
+    """Extract source text of _post_init function/method bodies."""
+    sources: list[str] = []
+    lines = source.splitlines()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "_post_init":
+            start = node.lineno - 1
+            end = node.end_lineno
+            sources.append("\n".join(lines[start:end]))
+    return sources
+
+
+def _extract_schemas(tree: ast.AST) -> list[str]:
+    """Find SCHEMA string constants using AST."""
     out: list[str] = []
-    seen: set[int] = set()
-    for m in re.finditer(r'"""(.*?)"""', source, re.DOTALL):
-        if "CREATE TABLE" in m.group(1):
-            out.append(m.group(1))
-            seen.add(m.start())
-    for m in re.finditer(r"'''(.*?)'''", source, re.DOTALL):
-        if "CREATE TABLE" in m.group(1) and m.start() not in seen:
-            out.append(m.group(1))
+    seen: set[str] = set()
+    string_constants: dict[str, str] = {}
+
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                        string_constants[target.id] = node.value.value
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.value is not None:
+                if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                    string_constants[node.target.id] = node.value.value
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                    if target.id not in string_constants:
+                        string_constants[target.id] = node.value.value
+        elif isinstance(node, ast.AnnAssign):
+            if (
+                isinstance(node.target, ast.Name)
+                and node.value is not None
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                if node.target.id not in string_constants:
+                    string_constants[node.target.id] = node.value.value
+
+    def _resolve(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name) and node.id in string_constants:
+            return string_constants[node.id]
+        return None
+
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "SCHEMA":
+                    value = _resolve(node.value)
+                    if value is not None and value not in seen:
+                        seen.add(value)
+                        out.append(value)
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.target.id == "SCHEMA":
+                value = _resolve(node.value)
+                if value is not None and value not in seen:
+                    seen.add(value)
+                    out.append(value)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if isinstance(item, ast.Assign):
+                    for target in item.targets:
+                        if isinstance(target, ast.Name) and target.id == "SCHEMA":
+                            value = _resolve(item.value)
+                            if value is not None and value not in seen:
+                                seen.add(value)
+                                out.append(value)
+                elif isinstance(item, ast.AnnAssign):
+                    if isinstance(item.target, ast.Name) and item.target.id == "SCHEMA":
+                        value = _resolve(item.value)
+                        if value is not None and value not in seen:
+                            seen.add(value)
+                            out.append(value)
+
     return out
 
 
@@ -188,18 +300,25 @@ def find_violations(path: Path) -> list[Violation]:
     """Run the static check against a single Python file. Returns violations."""
     try:
         source = path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
+        tree = ast.parse(source)
+    except (OSError, SyntaxError):
         return []
 
-    schemas = _extract_schemas(source)
+    schemas = _extract_schemas(tree)
     if not schemas:
         return []
 
     origin_cols = _origin_dev_columns(path)
+    if origin_cols is None:
+        raise RefError(
+            f"failed to read origin/dev baseline for {path}"
+        )
 
     added_columns: set[tuple[str, str]] = set()
-    for m in _ADD_COLUMN_RE.finditer(source):
-        added_columns.add((m.group(1), m.group(2)))
+    for sql_source in _get_post_init_sources(source, tree):
+        clean = _strip_comments_and_docstrings(sql_source)
+        for m in _ADD_COLUMN_RE.finditer(clean):
+            added_columns.add((m.group(1), m.group(2)))
 
     violations: list[Violation] = []
     for schema in schemas:
@@ -208,9 +327,7 @@ def find_violations(path: Path) -> list[Violation]:
             if table in _EXCLUDED_TABLES:
                 continue
             current_cols = _split_columns(tm.group(2))
-            baseline_cols = (
-                origin_cols.get(table, set()) if origin_cols is not None else set()
-            )
+            baseline_cols = origin_cols.get(table, set())
             new_cols = current_cols - baseline_cols
             for col in sorted(new_cols):
                 if (table, col) not in added_columns:
@@ -223,20 +340,37 @@ def find_violations(path: Path) -> list[Violation]:
     return violations
 
 
-def find_all_violations(root: Path = STORES_ROOT) -> list[Violation]:
-    """Walk every Python file under the stores root and collect violations."""
+def find_all_violations(root: Path = STORES_ROOT) -> tuple[list[Violation], bool]:
+    """Walk every Python file under the stores root and collect violations.
+    Returns (violations, had_error) where had_error is True if a baseline
+    read failed."""
     violations: list[Violation] = []
+    had_error = False
     if not root.is_dir():
-        return violations
+        return violations, had_error
     for py_file in sorted(root.rglob("*.py")):
-        violations.extend(find_violations(py_file))
-    return violations
+        try:
+            violations.extend(find_violations(py_file))
+        except RefError as exc:
+            print(str(exc), file=sys.stderr)
+            had_error = True
+    return violations, had_error
 
 
 def main(argv: list[str] | None = None) -> int:
+    if not _check_origin_dev_ref():
+        print(
+            "schema-column-guard: ERROR: origin/dev ref is missing; "
+            "this guard requires it to compare new columns. "
+            "Ensure origin/dev is fetched and accessible.",
+            file=sys.stderr,
+        )
+        return 2
     args = argv if argv is not None else sys.argv[1:]
     root = Path(args[0]) if args else STORES_ROOT
-    violations = find_all_violations(root)
+    violations, had_error = find_all_violations(root)
+    if had_error:
+        return 2
     if not violations:
         print("schema-column-guard: clean")
         return 0

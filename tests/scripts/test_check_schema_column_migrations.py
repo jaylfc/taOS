@@ -1,6 +1,7 @@
 """Tests for scripts/check_schema_column_migrations.py."""
 from __future__ import annotations
 
+import ast
 import importlib.util
 from pathlib import Path
 
@@ -110,17 +111,47 @@ class TestSplitColumns:
 class TestExtractSchemas:
     def test_finds_triple_double_quoted_block(self, guard_mod) -> None:
         src = 'SCHEMA = """\nCREATE TABLE foo (id TEXT);\n"""'
-        schemas = guard_mod._extract_schemas(src)
+        schemas = guard_mod._extract_schemas(ast.parse(src))
         assert any("CREATE TABLE foo" in s for s in schemas)
 
     def test_finds_triple_single_quoted_block(self, guard_mod) -> None:
         src = "SCHEMA = '''\nCREATE TABLE foo (id TEXT);\n'''"
-        schemas = guard_mod._extract_schemas(src)
+        schemas = guard_mod._extract_schemas(ast.parse(src))
         assert any("CREATE TABLE foo" in s for s in schemas)
 
     def test_ignores_non_schema_strings(self, guard_mod) -> None:
         src = 'NAME = "CREATE TABLE nope (id TEXT);"'
-        assert guard_mod._extract_schemas(src) == []
+        schemas = guard_mod._extract_schemas(ast.parse(src))
+        assert schemas == []
+
+    def test_ignores_docstring_with_create_table(self, guard_mod) -> None:
+        src = '"""Module docstring with CREATE TABLE foo (id TEXT); example."""\nSCHEMA = """\nCREATE TABLE bar (id TEXT);\n"""'
+        schemas = guard_mod._extract_schemas(ast.parse(src))
+        assert len(schemas) == 1
+        assert "CREATE TABLE bar" in schemas[0]
+
+    def test_resolves_module_level_constant(self, guard_mod) -> None:
+        src = '''
+MY_SCHEMA = """
+CREATE TABLE baz (id TEXT);
+"""
+SCHEMA = MY_SCHEMA
+'''
+        schemas = guard_mod._extract_schemas(ast.parse(src))
+        assert len(schemas) == 1
+        assert "CREATE TABLE baz" in schemas[0]
+
+    def test_deduplicates_schema_values(self, guard_mod) -> None:
+        src = '''
+SCHEMA = """
+CREATE TABLE qux (id TEXT);
+"""
+class Foo:
+    SCHEMA = SCHEMA
+'''
+        schemas = guard_mod._extract_schemas(ast.parse(src))
+        assert len(schemas) == 1
+        assert "CREATE TABLE qux" in schemas[0]
 
 
 class TestFindViolations:
@@ -200,12 +231,68 @@ CREATE TABLE IF NOT EXISTS widgets (
         )
         assert guard_mod.find_violations(path) == []
 
+    def test_comment_with_alter_table_does_not_silence(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        body = '''
+"""Module docstring."""
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS gadgets (
+    id      TEXT PRIMARY KEY,
+    kind    TEXT NOT NULL DEFAULT ''
+);
+"""
+# See ALTER TABLE gadgets ADD COLUMN kind in PR #2416
+'''
+        path = _write_store(tmp_path, "comment_trick.py", body)
+        self._patched_baselines(guard_mod, monkeypatch, {"comment_trick.py": {"gadgets": {"id"}}})
+        violations = guard_mod.find_violations(path)
+        assert len(violations) == 1
+        assert violations[0].column == "kind"
+
+    def test_docstring_with_alter_table_does_not_silence(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        body = '''
+"""Example: ALTER TABLE gadgets ADD COLUMN kind TEXT NOT NULL DEFAULT ''"""
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS gadgets (
+    id      TEXT PRIMARY KEY,
+    kind    TEXT NOT NULL DEFAULT ''
+);
+"""
+'''
+        path = _write_store(tmp_path, "docstring_trick.py", body)
+        self._patched_baselines(guard_mod, monkeypatch, {"docstring_trick.py": {"gadgets": {"id"}}})
+        violations = guard_mod.find_violations(path)
+        assert len(violations) == 1
+        assert violations[0].column == "kind"
+
+    def test_origin_dev_baseline_error_exits_two(
+        self, guard_mod, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        body = '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS widgets (
+    id    TEXT PRIMARY KEY,
+    name  TEXT NOT NULL DEFAULT ''
+);
+"""
+'''
+        path = _write_store(tmp_path, "error.py", body)
+        monkeypatch.setattr(guard_mod, "_origin_dev_columns", lambda p: None)
+        rc = guard_mod.main([str(tmp_path)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "origin/dev" in err
+
 
 class TestMain:
     def test_passing_fixture_exits_zero(
         self, guard_mod, passing_root: Path, monkeypatch, capsys: pytest.CaptureFixture
     ) -> None:
         monkeypatch.setattr(guard_mod, "_origin_dev_columns", lambda p: _BASELINES.get(p.name, {}))
+        monkeypatch.setattr(guard_mod, "_check_origin_dev_ref", lambda: True)
         rc = guard_mod.main([str(passing_root)])
         out = capsys.readouterr().out
         assert rc == 0
@@ -217,9 +304,20 @@ class TestMain:
         """The failing fixture is the red-side of the contract: a store that
         adds SCHEMA columns with no ALTER must drive main() to exit 1."""
         monkeypatch.setattr(guard_mod, "_origin_dev_columns", lambda p: _BASELINES.get(p.name, {}))
+        monkeypatch.setattr(guard_mod, "_check_origin_dev_ref", lambda: True)
         rc = guard_mod.main([str(failing_root)])
         out = capsys.readouterr().out
         assert rc == 1
         assert "SCHEMA-COLUMN VIOLATION" in out
         assert "kind" in out
         assert "purpose" in out
+
+    def test_missing_origin_dev_ref_exits_two(
+        self, guard_mod, passing_root: Path, monkeypatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setattr(guard_mod, "_origin_dev_columns", lambda p: _BASELINES.get(p.name, {}))
+        monkeypatch.setattr(guard_mod, "_check_origin_dev_ref", lambda: False)
+        rc = guard_mod.main([str(passing_root)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "origin/dev" in err
