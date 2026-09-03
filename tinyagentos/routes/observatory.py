@@ -69,16 +69,24 @@ def _atomic_write(p: Path, state: dict) -> None:
     # mid-write or a concurrent writer can never leave a truncated/corrupt file
     # (a reader always sees either the old or the new complete state).
     fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix="." + p.stem + ".", suffix=".tmp")
+    tmp_path = Path(tmp)
     try:
         with os.fdopen(fd, "w") as f:
             f.write(json.dumps(state))
         os.replace(tmp, p)
-    except (OSError, ValueError):
+        tmp = None
+    except (OSError, ValueError, TypeError):
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _write_state(request: Request, state: dict) -> None:
