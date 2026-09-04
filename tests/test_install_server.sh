@@ -119,6 +119,107 @@ grep -q "verified_ok=" "$SCRIPT" && grep -q "verified_warn=" "$SCRIPT"
 echo "test: verification only runs when SERVICE_MODE != skip"
 grep -A 3 'SERVICE_MODE.*!=.*skip' "$SCRIPT" | grep -q "verify_hardware_capabilities"
 
+# ── Docker install fallback for Debian trixie / Armbian trixie (taOS#2) ──
+
+echo "test: trixie fallback defines _apt_install_docker_official_repo"
+grep -q "_apt_install_docker_official_repo()" "$SCRIPT"
+
+echo "test: _apt_install_compose probes both docker-compose-plugin and docker-compose-v2"
+grep -q "apt-cache madison docker-compose-plugin" "$SCRIPT"
+grep -q "apt-cache madison docker-compose-v2" "$SCRIPT"
+
+echo "test: _apt_install_compose returns a distinct code (2) for missing-package case"
+grep -A20 'apt-cache madison docker-compose-plugin' "$SCRIPT" \
+    | grep -q "return 2"
+
+echo "test: trixie fallback uses Docker's official apt repo (download.docker.com)"
+grep -q "download.docker.com/linux" "$SCRIPT"
+
+echo "test: trixie fallback verifies Docker apt key fingerprint before importing"
+grep -q "9DC858229FC7DD38854AE2D88D81803C0EBFCD88" "$SCRIPT"
+grep -q "Docker apt key fingerprint mismatch" "$SCRIPT"
+
+echo "test: trixie fallback installs docker-ce + plugin from Docker's repo"
+grep -q "docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin" "$SCRIPT"
+
+echo "test: trixie fallback is gated on the missing-package rc==2, not on a generic failure"
+grep -A 6 "_apt_install_compose" "$SCRIPT" \
+    | grep -q "_apt_compose_rc == 2"
+
+echo "test: trixie fallback does NOT trigger on a generic install failure"
+# When _apt_install_compose returns 1 (install failure), the script must
+# surface the apt error and skip _apt_install_docker_official_repo. The
+# elif arm is named _apt_compose_rc != 0 and sits between the rc==2
+# branch and the next package manager (dnf).
+sed -n '/_apt_compose_rc == 2/,/elif command -v dnf/p' "$SCRIPT" \
+    | grep -q "_apt_compose_rc != 0"
+
+echo "test: Docker keyring is written with mode 0644 (not destination umask)"
+grep -q '_docker_keyring=/etc/apt/keyrings/docker.asc' "$SCRIPT"
+grep -q 'install -m 0644 "\$_docker_key_tmp" "\$_docker_keyring"' "$SCRIPT"
+
+echo "test: Docker curl download has bounded timeouts"
+grep -q "curl -fsSL --connect-timeout 15 --max-time 60" "$SCRIPT"
+
+echo "test: trixie fallback removes distro docker.io/containerd/runc before installing docker-ce"
+grep -q 'apt-get remove -y -qq \$_docker_removed_pkgs' "$SCRIPT"
+
+echo "test: removed distro packages are reinstalled on every post-removal failure"
+# The caller installs docker.io immediately before entering the fallback, so a
+# failure AFTER the removal used to leave the host with no Docker at all.
+# Behaviour is covered end to end by tests/test_install_server_docker_repo.py.
+grep -q "^_docker_restore_distro_pkgs()" "$SCRIPT"
+grep -A4 'apt-get update failed after adding Docker' "$SCRIPT" \
+    | grep -q '_docker_restore_distro_pkgs "\$_docker_removed_pkgs"'
+grep -A4 'apt install from Docker' "$SCRIPT" \
+    | grep -q '_docker_restore_distro_pkgs "\$_docker_removed_pkgs"'
+
+echo "test: the package rollback reinstalls exactly what was removed, not a fixed list"
+grep -A12 '^_docker_restore_distro_pkgs()' "$SCRIPT" | grep -q 'local pkgs="\$1"'
+grep -A12 '^_docker_restore_distro_pkgs()' "$SCRIPT" | grep -q '\[\[ -n "\$pkgs" \]\] || return 0'
+
+echo "test: a failed reinstall warns loudly instead of narrating success"
+grep -A22 '^_docker_restore_distro_pkgs()' "$SCRIPT" \
+    | grep -q "this host has NO Docker now"
+
+echo "test: trixie fallback rolls back docker.list + docker.asc on apt-get update failure"
+# Rollback goes through _docker_apt_restore, which restores a pre-existing
+# file from its backup and deletes ONLY a file this invocation created. An
+# unconditional `rm -f` here is the bug this replaced: it destroyed a host's
+# own customised Docker repo config. Behaviour is covered end to end by
+# tests/test_install_server_docker_repo.py.
+grep -q 'apt-get update failed after adding Docker' "$SCRIPT" \
+    && grep -A3 'apt-get update failed after adding Docker' "$SCRIPT" \
+        | grep -q '_docker_apt_restore "\$_docker_list"'
+
+echo "test: trixie fallback rolls back docker.list + docker.asc on apt-get install failure"
+grep -q 'apt install from Docker' "$SCRIPT" \
+    && grep -A3 'apt install from Docker' "$SCRIPT" \
+        | grep -q '_docker_apt_restore "\$_docker_keyring"'
+
+echo "test: rollback never rm's an apt file it did not create"
+# Every rm inside _docker_apt_restore must sit behind the created flag.
+grep -A20 '^_docker_apt_restore()' "$SCRIPT" | grep -q 'elif (( created )); then'
+grep -A20 '^_docker_apt_restore()' "$SCRIPT" | grep -q 'sudo cp -a "\$backup" "\$path"'
+
+echo "test: pre-existing Docker apt files are backed up before being overwritten"
+grep -q 'could not back up the existing \$_docker_keyring' "$SCRIPT"
+grep -q 'could not back up the existing \$_docker_list' "$SCRIPT"
+backup_line=$(grep -n 'cp -a "\$_docker_keyring" "\$_docker_keyring_backup"' "$SCRIPT" | head -1 | cut -d: -f1)
+overwrite_line=$(grep -n 'install -m 0644 "\$_docker_key_tmp" "\$_docker_keyring"' "$SCRIPT" | head -1 | cut -d: -f1)
+(( backup_line < overwrite_line ))
+
+echo "test: backups land outside /etc/apt so apt never sees a stray file"
+grep -q 'mktemp -d /tmp/taos-docker-apt' "$SCRIPT"
+grep -A2 'mktemp -d /tmp/taos-docker-apt' "$SCRIPT" | grep -q "rm -rf .*_docker_bak_dir"
+
+echo "test: fingerprint mismatch warning points operators at the docker.com gpg URL"
+grep -A4 'Docker apt key fingerprint mismatch' "$SCRIPT" \
+    | grep -q "download.docker.com/linux/.*gpg"
+
+echo "test: ensure_docker_for_apps call site tolerates fallback failure (no set -e abort)"
+ensure_docker_call_line=$(grep -n "ensure_docker_for_apps || warn" "$SCRIPT" | head -1 | cut -d: -f1)
+(( ensure_docker_call_line > 0 ))
 # ── Controller readiness wait (taOS#2) ─────────────────────────────────
 
 echo "test: controller wait uses a 240 s ready timeout"
