@@ -86,7 +86,53 @@ if [ "$rc" -eq 0 ]; then
     REPO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "unknown")"
     TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-    echo "{\"actor\":\"${ACTOR}\",\"repo\":\"${REPO}\",\"pr\":${PR_NUM},\"sha\":\"${MERGE_COMMIT}\",\"merged_by\":\"${MERGED_BY}\",\"timestamp\":\"${TIMESTAMP}\",\"script\":\"${SCRIPT_NAME}\"}" >> "$AUDIT_LOG"
+    # Encode with a real JSON encoder. ACTOR comes from the caller
+    # (FLEET_ACTOR/USER) and MERGED_BY/REPO come from the API, so
+    # interpolating them into a hand-written `{...}` lets a single quote or
+    # backslash emit a line the checker's JSON parser cannot read -- and an
+    # unreadable audit line is an unattributed merge.
+    if command -v jq >/dev/null 2>&1; then
+        AUDIT_LINE="$(jq -cn \
+            --arg actor "$ACTOR" \
+            --arg repo "$REPO" \
+            --arg pr "$PR_NUM" \
+            --arg sha "$MERGE_COMMIT" \
+            --arg merged_by "$MERGED_BY" \
+            --arg timestamp "$TIMESTAMP" \
+            --arg script "$SCRIPT_NAME" \
+            '{actor:$actor,repo:$repo,pr:(($pr|tonumber?) // $pr),sha:$sha,merged_by:$merged_by,timestamp:$timestamp,script:$script}')"
+    else
+        AUDIT_LINE="$(
+            AUDIT_ACTOR="$ACTOR" AUDIT_REPO="$REPO" AUDIT_PR="$PR_NUM" \
+            AUDIT_SHA="$MERGE_COMMIT" AUDIT_MERGED_BY="$MERGED_BY" \
+            AUDIT_TIMESTAMP="$TIMESTAMP" AUDIT_SCRIPT="$SCRIPT_NAME" \
+            python3 -c 'import json, os
+pr = os.environ["AUDIT_PR"]
+try:
+    pr = int(pr)
+except ValueError:
+    pass
+print(json.dumps({
+    "actor": os.environ["AUDIT_ACTOR"],
+    "repo": os.environ["AUDIT_REPO"],
+    "pr": pr,
+    "sha": os.environ["AUDIT_SHA"],
+    "merged_by": os.environ["AUDIT_MERGED_BY"],
+    "timestamp": os.environ["AUDIT_TIMESTAMP"],
+    "script": os.environ["AUDIT_SCRIPT"],
+}, separators=(",", ":")))'
+        )"
+    fi
+
+    if [ -n "$AUDIT_LINE" ]; then
+        printf '%s\n' "$AUDIT_LINE" >> "$AUDIT_LOG"
+    else
+        # Fail loud and closed: with no audit line the checker reports this
+        # merge as unattributed, which is the correct outcome, but the
+        # operator needs to know why.
+        echo "ERROR: could not encode the audit entry (neither jq nor python3 is available)." >&2
+        echo "       PR #${PR_NUMBER} merged but is UNATTRIBUTED in ${AUDIT_LOG}." >&2
+    fi
 fi
 
 exit "$rc"

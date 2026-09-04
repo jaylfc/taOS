@@ -11,6 +11,12 @@ Acceptance proofs for fix-forward #2579:
     --json mergeCommit`), not on `git log --merges`. Enumate from
     `gh pr list --state merged` so squash merges are visible.
 (d) A cutoff keeps pre-adoption merges out of scope.
+
+Acceptance proof for fix-forward #2586:
+(e) A cutoff given as a git SHA whose committer offset is east of UTC must
+    still keep an in-scope merge in scope. The cutoff and `mergedAt` arrive in
+    different formats, so they have to be compared as instants; every other
+    test here passes a UTC literal, which never reaches that branch.
 """
 from __future__ import annotations
 
@@ -166,13 +172,31 @@ def _init_repo(repo: Path) -> None:
                    cwd=repo, capture_output=True, check=True)
 
 
-def _commit_file(repo: Path, rel_path: str, content: str, message: str) -> str:
-    """Create a file, commit it, and return the commit SHA."""
+def _commit_file(
+    repo: Path,
+    rel_path: str,
+    content: str,
+    message: str,
+    committer_date: str | None = None,
+) -> str:
+    """Create a file, commit it, and return the commit SHA.
+
+    *committer_date* (any value git accepts in ``GIT_COMMITTER_DATE``) pins the
+    committer timestamp, including its UTC offset -- that offset is what
+    ``git log --format=%cI`` reports back for a SHA cutoff.
+    """
     full = repo / rel_path
     full.parent.mkdir(parents=True, exist_ok=True)
     full.write_text(content, encoding="utf-8")
+    env = os.environ.copy()
+    if committer_date is not None:
+        env["GIT_COMMITTER_DATE"] = committer_date
+        env["GIT_AUTHOR_DATE"] = committer_date
     subprocess.run(["git", "add", rel_path], cwd=repo, capture_output=True, check=True)
-    subprocess.run(["git", "commit", "-m", message], cwd=repo, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=repo, capture_output=True, check=True, env=env,
+    )
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=repo, capture_output=True, text=True, check=True,
@@ -191,6 +215,8 @@ class TestMergeAttributionReconciliation:
     (b) The green case is produced by gate_merge.sh with a stub gh on PATH.
     (c) The checker enumerates from `gh pr list` (not `git log --merges`).
     (d) A cutoff keeps pre-adoption merges out of scope.
+    (e) A SHA cutoff with a non-UTC committer offset keeps in-scope merges in
+        scope (fix-forward #2586).
     """
 
     # ---- shared helpers (in the same class that calls them) ----
@@ -233,7 +259,12 @@ class TestMergeAttributionReconciliation:
         return env
 
     @staticmethod
-    def _run_checker(tmp_path: Path, env: dict, cutoff: str) -> subprocess.CompletedProcess:
+    def _run_checker(
+        tmp_path: Path,
+        env: dict,
+        cutoff: str,
+        extra_args: list[str] | None = None,
+    ) -> subprocess.CompletedProcess:
         """Run check_merge_attribution.py with the given env and cutoff."""
         return subprocess.run(
             [
@@ -241,6 +272,7 @@ class TestMergeAttributionReconciliation:
                 "--repo", str(tmp_path / "repo"),
                 "--audit-file", str(tmp_path / "audit.jsonl"),
                 "--cutoff", cutoff,
+                *(extra_args or []),
             ],
             capture_output=True,
             text=True,
@@ -439,3 +471,182 @@ class TestMergeAttributionReconciliation:
         # the checker still flags it, it is reading from the API not git.
         assert result.returncode == 1
         assert "42" in result.stdout
+
+    # ---- acceptance (e): SHA cutoff carrying a non-UTC offset ----
+
+    def test_sha_cutoff_with_east_offset_keeps_in_scope_merge(self, tmp_path: Path) -> None:
+        """(e) A git-SHA cutoff committed east of UTC must not drop merges.
+
+        `_resolve_cutoff` resolves a SHA with `git log --format=%cI`, which
+        carries the COMMITTER'S LOCAL OFFSET, while `mergedAt` from the API is
+        always UTC with a trailing `Z`. Comparing those two as strings orders
+        `2026-08-28T13:00:00Z` BEFORE `2026-08-28T14:00:00+02:00` even though
+        both name the same day and the merge is an hour AFTER the 12:00Z
+        cutoff -- so an in-scope merge is silently dropped from the audit and
+        its missing audit line is never reported. The window opened is the
+        size of the offset. Every other test here passes a UTC literal, which
+        never reaches the `%cI` branch.
+
+        PR #41 (11:00Z, genuinely before the cutoff) is the control: the fix
+        must narrow the comparison, not delete it.
+        """
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
+
+        # The cutoff commit: 14:00 in +02:00 == 12:00Z.
+        cutoff_sha = _commit_file(
+            repo, "cutoff.txt", "cutoff\n", "adopt merge attribution",
+            committer_date="2026-08-28T14:00:00+0200",
+        )
+        # Sanity: the committer offset really did survive into %cI, otherwise
+        # this test would silently stop exercising the branch it exists for.
+        cutoff_iso = subprocess.run(
+            ["git", "log", "-1", "--format=%cI", cutoff_sha],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert cutoff_iso == "2026-08-28T14:00:00+02:00", cutoff_iso
+
+        old_sha = _commit_file(repo, "old.txt", "old\n", "squash PR #41")
+        new_sha = _commit_file(repo, "new.txt", "new\n", "squash PR #42")
+
+        prs = [
+            {
+                # 11:00Z -- genuinely BEFORE the 12:00Z cutoff, out of scope.
+                "number": 41,
+                "mergeCommit": {"oid": old_sha},
+                "mergedAt": "2026-08-28T11:00:00Z",
+                "mergedBy": {"login": "bot"},
+            },
+            {
+                # 13:00Z -- genuinely AFTER the 12:00Z cutoff, in scope, and
+                # carrying no audit line, so it must be reported.
+                "number": 42,
+                "mergeCommit": {"oid": new_sha},
+                "mergedAt": "2026-08-28T13:00:00Z",
+                "mergedBy": {"login": "stolen-token"},
+            },
+        ]
+        config_file = self._write_config(tmp_path, prs)
+        self._write_stub_gh(tmp_path)
+
+        env = self._make_env(tmp_path, config_file)
+        audit_file = tmp_path / "audit.jsonl"
+        audit_file.parent.mkdir(parents=True, exist_ok=True)
+        audit_file.write_text("", encoding="utf-8")
+
+        result = self._run_checker(tmp_path, env, cutoff=cutoff_sha)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "42" in result.stdout
+        assert new_sha[:12] in result.stdout
+        # The control stays out of scope.
+        assert "41" not in result.stdout
+        assert old_sha[:12] not in result.stdout
+
+    def test_unparseable_cutoff_is_an_error_not_an_empty_scope(self, tmp_path: Path) -> None:
+        """A cutoff that is neither a git ref nor a timestamp must fail closed.
+
+        Passing it through to a comparison it cannot satisfy would put every
+        merge out of scope and report a clean audit, which is the fail-open
+        this gate exists to prevent.
+        """
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
+        squash_sha = _commit_file(repo, "feat.txt", "feature\n", "squash PR #42")
+
+        prs = [
+            {
+                "number": 42,
+                "mergeCommit": {"oid": squash_sha},
+                "mergedAt": "2026-08-28T13:00:00Z",
+                "mergedBy": {"login": "bot"},
+            },
+        ]
+        config_file = self._write_config(tmp_path, prs)
+        self._write_stub_gh(tmp_path)
+
+        env = self._make_env(tmp_path, config_file)
+        (tmp_path / "audit.jsonl").write_text("", encoding="utf-8")
+
+        result = self._run_checker(tmp_path, env, cutoff="last-tuesday")
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "last-tuesday" in result.stderr
+
+    def test_hung_gh_maps_to_exit_error(self, tmp_path: Path) -> None:
+        """A `gh` that never returns must map to EXIT_ERROR, not hang CI."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        gh_path = bin_dir / "gh"
+        gh_path.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+        gh_path.chmod(0o755)
+
+        config_file = self._write_config(tmp_path, [])
+        env = self._make_env(tmp_path, config_file)
+        (tmp_path / "audit.jsonl").write_text("", encoding="utf-8")
+
+        result = self._run_checker(
+            tmp_path, env,
+            cutoff="2026-08-28T00:00:00Z",
+            extra_args=["--gh-timeout", "2"],
+        )
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "timed out" in result.stderr
+
+    def test_audit_line_survives_quotes_in_actor(self, tmp_path: Path) -> None:
+        """gate_merge.sh must emit real JSON, not an interpolated string.
+
+        `FLEET_ACTOR` is caller-supplied. Building the audit line by
+        interpolating it into a hand-written `{...}` means one double quote
+        emits a line the checker's JSON parser cannot read, and an unreadable
+        audit line is an unattributed merge.
+        """
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
+        merge_sha = _commit_file(repo, "feat.txt", "feature\n", "merge PR #42")
+
+        prs = [
+            {
+                "number": 42,
+                "mergeCommit": {"oid": merge_sha},
+                "mergedAt": "2026-08-28T12:00:00Z",
+                "mergedBy": {"login": 'we"ird'},
+            },
+        ]
+        config_file = self._write_config(tmp_path, prs)
+        self._write_stub_gh(tmp_path)
+
+        audit_file = tmp_path / "audit.jsonl"
+        audit_file.write_text("", encoding="utf-8")
+        hostile_actor = 'agent"-\\x'
+        env = self._make_env(tmp_path, config_file, extra={
+            "FLEET_AUDIT_LOG": str(audit_file),
+            "FLEET_ACTOR": hostile_actor,
+        })
+
+        gate_result = subprocess.run(
+            ["bash", GATE, "42", "tsk-test", "test note"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        assert gate_result.returncode == 0, gate_result.stderr
+
+        lines = audit_file.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["actor"] == hostile_actor
+        assert entry["sha"] == merge_sha
+        assert entry["pr"] == 42
+        assert entry["merged_by"] == 'we"ird'
+
+        # And the entry still reconciles -- a mangled line would leave the
+        # merge unmatched.
+        result = self._run_checker(tmp_path, env, cutoff="2026-08-28T00:00:00Z")
+        assert result.returncode == 0, result.stdout + result.stderr
