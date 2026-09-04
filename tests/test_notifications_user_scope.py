@@ -212,7 +212,7 @@ class TestNotificationRoutesUserScope:
         async with await self._alice_client(app, alice_token) as c:
             resp = await c.post(f"/api/notifications/{bob_notif_id}/read")
             assert resp.status_code == 404
-            assert (await store.list(user_id=bob_id))[0]["read"] is False
+        assert _row_by_title(await store.list(), "bob-notif")["read"] is False
 
     async def test_archive_other_user_returns_404(self, two_user_app):
         app, alice_id, alice_token, bob_id, bob_token = two_user_app
@@ -222,7 +222,9 @@ class TestNotificationRoutesUserScope:
         async with await self._alice_client(app, alice_token) as c:
             resp = await c.post(f"/api/notifications/{bob_notif_id}/archive")
             assert resp.status_code == 404
-            assert len(await store.list_archived(user_id=bob_id)) == 0
+        # list() filters archived = 0, so finding the row proves it stayed active.
+        assert _row_by_title(await store.list(), "bob-notif")
+        assert not [i for i in await store.list_archived() if i["title"] == "bob-notif"]
 
     async def test_mark_own_notification_succeeds(self, two_user_app):
         app, alice_id, alice_token, bob_id, bob_token = two_user_app
@@ -232,7 +234,7 @@ class TestNotificationRoutesUserScope:
         async with await self._alice_client(app, alice_token) as c:
             resp = await c.post(f"/api/notifications/{alice_notif_id}/read")
             assert resp.status_code == 200
-            assert (await store.list(user_id=alice_id))[0]["read"] is True
+        assert _row_by_title(await store.list(), "alice-notif")["read"] is True
 
 
 @pytest.mark.asyncio
