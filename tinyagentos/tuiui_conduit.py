@@ -190,16 +190,25 @@ def _verify_connected_peer(sock: socket.socket, path: str) -> None:
     nothing left to swap: it is the identity of the process actually on the
     other end, which is what the ownership check was trying to establish.
 
-    Skipped where the platform does not expose SO_PEERCRED; the pathname
-    checks still apply there.
+    Fails closed. Without peer credentials the pathname checks are all
+    that is left, and a pathname is exactly what an attacker can swap
+    between the check and the connect, so "could not verify" has to mean
+    "do not connect" rather than "connect anyway": the apphost runs on the
+    same host as this client, so a platform that cannot answer the question
+    is not one where the answer may be assumed.
     """
     peercred = getattr(socket, "SO_PEERCRED", None)
     if peercred is None:
-        return
+        raise TuiuiConduitError(
+            f"refusing apphost at {path}: peer credentials are unavailable on "
+            "this platform, so the socket cannot be bound to its owner"
+        )
     try:
         raw = sock.getsockopt(socket.SOL_SOCKET, peercred, struct.calcsize(_UCRED))
-    except OSError:
-        return
+    except OSError as exc:
+        raise TuiuiConduitError(
+            f"refusing apphost at {path}: cannot read peer credentials: {exc}"
+        ) from exc
     _pid, uid, _gid = struct.unpack(_UCRED, raw)
     euid = os.geteuid()
     if uid != euid:
@@ -219,6 +228,10 @@ class TuiuiConduit:
     every event into a frame backlog and a reply backlog. That is what lets
     :meth:`iter_frames` run concurrently with :meth:`spawn` / :meth:`list_apps`
     without either side consuming the other's events.
+
+    Lock order, never the reverse: ``_lock`` (one request at a time, held
+    across its send-and-wait cycle) then ``_conn_lock`` (the socket itself)
+    then ``_cv`` (the backlogs).
 
     Use as a context manager or call :meth:`close` explicitly.
     """
@@ -247,6 +260,7 @@ class TuiuiConduit:
         self._reader: threading.Thread | None = None
         self._reader_error: BaseException | None = None
         self._closed = False
+        self._desynced = False
         self._stopping = threading.Event()
 
     def __enter__(self) -> "TuiuiConduit":
@@ -293,6 +307,7 @@ class TuiuiConduit:
                 self._replies.clear()
                 self._reader_error = None
                 self._closed = False
+                self._desynced = False
             self._sock = sock
             self._reader = threading.Thread(
                 target=self._read_loop,
@@ -327,20 +342,23 @@ class TuiuiConduit:
     def _send(self, payload: dict[str, Any]) -> None:
         """Encode ``payload`` as one JSON line and write it.
 
-        ``_conn_lock`` is held across the write so a concurrent
-        :meth:`close` cannot pull the fd out from under ``sendall`` and turn
-        a shutdown into what looks like an apphost write failure.
+        ``_conn_lock`` alone guards the write: it serialises concurrent
+        writers and stops a concurrent :meth:`close` pulling the fd out from
+        under ``sendall``. It must not nest ``_lock`` inside it -- a request
+        holds ``_lock`` across its whole send-and-wait cycle and reaches
+        ``_conn_lock`` from inside it, so taking the two in the other order
+        here would be an AB-BA deadlock with any fire-and-forget caller.
+        The one lock order in this class is ``_lock`` then ``_conn_lock``.
         """
         line = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
         with self._conn_lock:
             sock = self._sock
             if sock is None:
                 raise TuiuiConduitError("not connected")
-            with self._lock:
-                try:
-                    sock.sendall(line)
-                except OSError as exc:
-                    raise TuiuiConduitError(f"apphost write failed: {exc}") from exc
+            try:
+                sock.sendall(line)
+            except OSError as exc:
+                raise TuiuiConduitError(f"apphost write failed: {exc}") from exc
 
     def _read_loop(self, sock: socket.socket) -> None:
         """Own the socket and sort every event into its consumer's backlog.
@@ -471,11 +489,26 @@ class TuiuiConduit:
         Replies that do not match stay in the backlog for the waiter that
         does want them, and Frame events never reach this queue at all, so
         waiting for a reply can no longer destroy either.
+
+        A timeout desynchronises the conduit. The apphost does not echo the
+        request's ``req_id`` back on the reply (``Spawned`` carries only
+        ``app`` and ``pid``), so once a reply is late there is no way to
+        tell it apart from the next request's reply, and accepting it would
+        hand the caller a stale AppId to send input to or kill. Rather than
+        guess, every later request refuses until the caller reconnects.
+        Frames are unsolicited and uncorrelated, so :meth:`iter_frames`
+        keeps working.
         """
         if timeout is None:
             timeout = self.timeout
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._cv:
+            if self._desynced:
+                raise TuiuiConduitError(
+                    "conduit desynchronised by an earlier request timeout: a late "
+                    "reply cannot be told from this one, so close() and connect() "
+                    "before issuing further requests"
+                )
             while True:
                 for index, evt in enumerate(self._replies):
                     if predicate(evt):
@@ -484,6 +517,7 @@ class TuiuiConduit:
                 self._fail_if_reader_stopped()
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if remaining is not None and remaining <= 0:
+                    self._desynced = True
                     raise TuiuiConduitError("timed out waiting for an apphost reply")
                 self._cv.wait(remaining)
 

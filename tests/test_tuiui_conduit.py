@@ -734,3 +734,161 @@ class TestConnectIsAtomic:
         finally:
             monkeypatched.undo()
             conduit.close()
+
+
+class _RecordingLock:
+    """An RLock that records the order a thread takes the conduit's locks.
+
+    Wrapping both locks lets a test assert the class's one lock order
+    directly, rather than hoping a deadlock's narrow window happens to be
+    hit while the suite is running.
+    """
+
+    def __init__(self, name: str, state: dict) -> None:
+        self._name = name
+        self._lock = threading.RLock()
+        self._state = state
+
+    def __enter__(self) -> "_RecordingLock":
+        held = self._state["held"].setdefault(threading.get_ident(), [])
+        if self._name == "_lock" and "_conn_lock" in held:
+            self._state["violations"].append((*held, "_lock"))
+        self._lock.acquire()
+        held.append(self._name)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._state["held"][threading.get_ident()].pop()
+        self._lock.release()
+
+
+class TestLockOrder:
+    """One lock order, or the conduit wedges with no timeout to rescue it."""
+
+    def test_send_never_takes_the_request_lock_inside_the_connection_lock(
+        self, apphost_sock
+    ):
+        """`_lock` then `_conn_lock`, never the reverse.
+
+        `spawn()` holds `_lock` across its whole cycle and reaches
+        `_conn_lock` from inside it, so a fire-and-forget caller taking
+        `_conn_lock` first and then wanting `_lock` is an AB-BA deadlock:
+        neither side can give way and neither acquisition has a timeout.
+        """
+        _, sock_path = apphost_sock
+        state: dict = {"held": {}, "violations": []}
+        with TuiuiConduit(sock_path, timeout=2.0) as conduit:
+            conduit._lock = _RecordingLock("_lock", state)
+            conduit._conn_lock = _RecordingLock("_conn_lock", state)
+            conduit.spawn("sh", [], cols=6, rows=2)  # request path
+            conduit.kill(1)  # fire-and-forget path
+            conduit.send_input(1, b"x")
+            conduit.list_apps()
+        assert state["violations"] == [], (
+            "a thread held _conn_lock while acquiring _lock, inverting the "
+            f"class's lock order: {state['violations']}"
+        )
+
+    def test_a_fire_and_forget_call_is_not_blocked_by_a_waiting_request(
+        self, paired_conduit
+    ):
+        """A request parked waiting for its reply must not wedge `kill()`."""
+        conduit, peer = paired_conduit
+        conduit.connect()
+
+        spawn_error: list[BaseException] = []
+
+        def request() -> None:
+            try:
+                conduit.spawn("sh", [], cols=6, rows=2, timeout=5.0)
+            except BaseException as exc:  # noqa: BLE001 - reported to the test
+                spawn_error.append(exc)
+
+        requester = threading.Thread(target=request, daemon=True)
+        requester.start()
+        _read_line(peer)  # spawn() has written and is now waiting for its reply
+
+        killer = threading.Thread(target=conduit.kill, args=(1,), daemon=True)
+        killer.start()
+        killer.join(timeout=5.0)
+        assert not killer.is_alive(), "kill() deadlocked behind a waiting spawn()"
+
+        peer.sendall(_line({"Spawned": {"app": 1, "pid": 2}}))
+        requester.join(timeout=5.0)
+        assert not spawn_error, f"spawn() failed: {spawn_error!r}"
+
+
+class TestPeerCredentialsFailClosed:
+    """"Cannot verify" must mean "do not connect"."""
+
+    def test_connect_refuses_when_peer_credentials_are_unsupported(
+        self, apphost_sock, monkeypatch
+    ):
+        _, sock_path = apphost_sock
+        monkeypatch.delattr(socket, "SO_PEERCRED", raising=False)
+        with pytest.raises(TuiuiConduitError, match="peer credentials are unavailable"):
+            TuiuiConduit(sock_path, timeout=2.0).connect()
+
+    def test_connect_refuses_when_peer_credentials_cannot_be_read(
+        self, apphost_sock, monkeypatch
+    ):
+        _, sock_path = apphost_sock
+
+        def _refuse(self, *args, **kwargs):
+            raise OSError("getsockopt unavailable")
+
+        monkeypatch.setattr(socket.socket, "getsockopt", _refuse)
+        with pytest.raises(TuiuiConduitError, match="cannot read peer credentials"):
+            TuiuiConduit(sock_path, timeout=2.0).connect()
+
+
+class TestRequestTimeoutDesync:
+    """A late reply must never be handed to the request that follows it."""
+
+    def test_a_late_reply_cannot_satisfy_the_next_request(self, paired_conduit):
+        """The wire has no req_id on replies, so a stale one is unattributable.
+
+        `Spawned` carries only `app` and `pid`. Accepting a reply that
+        arrived after its own request gave up would hand the caller an AppId
+        belonging to some other spawn, which they would then send input to
+        or kill.
+        """
+        conduit, peer = paired_conduit
+        conduit.connect()
+
+        with pytest.raises(TuiuiConduitError, match="timed out"):
+            conduit.spawn("sh", [], cols=6, rows=2, timeout=0.3)
+        _read_line(peer)  # the request the apphost was slow to answer
+
+        # The apphost answers, far too late.
+        peer.sendall(_line({"Spawned": {"app": 11, "pid": 111}}))
+        deadline = time.monotonic() + 5.0
+        while not conduit._replies and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert conduit._replies, "the late reply never arrived"
+
+        with pytest.raises(TuiuiConduitError, match="desynchronised"):
+            conduit.spawn("sh", [], cols=6, rows=2, timeout=1.0)
+
+    def test_frames_still_flow_after_a_desync(self, paired_conduit):
+        """Frames are unsolicited, so they are never mis-attributed."""
+        conduit, peer = paired_conduit
+        conduit.connect()
+        with pytest.raises(TuiuiConduitError, match="timed out"):
+            conduit.spawn("sh", [], cols=6, rows=2, timeout=0.3)
+        peer.sendall(_line(_flat_frame("live", cols=6, rows=2)))
+        assert TuiuiConduit.frame_lines(next(conduit.iter_frames()))[0] == "live"
+
+    def test_reconnecting_clears_the_desync(self, apphost_sock):
+        _, sock_path = apphost_sock
+        conduit = TuiuiConduit(sock_path, timeout=2.0)
+        conduit.connect()
+        try:
+            conduit._desynced = True
+            with pytest.raises(TuiuiConduitError, match="desynchronised"):
+                conduit.list_apps()
+            conduit.close()
+            conduit.connect()
+            assert conduit.list_apps() == []
+        finally:
+            conduit.close()
