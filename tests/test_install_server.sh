@@ -151,8 +151,14 @@ awk '/_port_deadline - SECONDS/{port=1} port && /--max-time/{print; exit}' "$SCR
     | grep -q -- '--max-time "[^"]*"'
 
 echo "test: port-open loop breaks before sleep when remaining <= 1"
-awk '/while.*_port_tries.*do/{port=1; next} port && /curl.*api.health/{health=1; next} port && health && /_remaining -le 1/{print; exit}' "$SCRIPT" \
-    | grep -q '_remaining -le 1'
+# Ordering matters: whichever of the guard or the sleep comes first ends the
+# scan, so a future edit that moves `_remaining -le 1` below `sleep 1` fails
+# here instead of matching it further down the loop.
+awk '/while.*_port_tries.*do/{p=1; next}
+     p && /curl.*api.health/{c=1; next}
+     p && c && /_remaining -le 1/{found=1; exit}
+     p && c && /sleep 1/{exit}
+     END{exit !found}' "$SCRIPT"
 
 echo "test: port-open loop re-reads the clock after the probe, before sleeping"
 # A slow curl can consume the whole remaining budget, so reusing the
@@ -167,8 +173,14 @@ awk '/while.*_port_tries.*do/{p=1; next}
 
 echo "test: port-open loop floors curl --max-time at 1 s"
 # Ensures a future edit cannot weaken the deadline guard and silently
-# disable curl's per-attempt timeout (finding #3 / #4 invariant).
-grep -q '_curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))' "$SCRIPT"
+# disable curl's per-attempt timeout (finding #3 / #4 invariant). Scoped to
+# the port-open loop and stopped at its curl so the ready loop's copy of the
+# floor cannot satisfy this assertion, and so the floor must be set before
+# the probe that uses it.
+awk '/while.*_port_tries.*do/{p=1; next}
+     p && index($0, "_curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))"){found=1}
+     p && /curl.*api.health/{exit}
+     END{exit !found}' "$SCRIPT"
 
 echo "test: ready loop caps curl probe by remaining phase time"
 grep -q '_remaining=$(( _ready_deadline - SECONDS ))' "$SCRIPT"
@@ -181,8 +193,12 @@ awk '/_ready_deadline - SECONDS/{ready=1} ready && /--max-time/{print; exit}' "$
     | grep -q -- '--max-time "[^"]*"'
 
 echo "test: ready loop breaks before sleep when remaining <= 1"
-awk '/while.*_ready_tries.*do/{ready=1; next} ready && /curl.*cluster.workers/{workers=1; next} ready && workers && /_remaining -le 1/{print; exit}' "$SCRIPT" \
-    | grep -q '_remaining -le 1'
+# Same ordering enforcement as the port-open loop.
+awk '/while.*_ready_tries.*do/{r=1; next}
+     r && /curl.*cluster.workers/{c=1; next}
+     r && c && /_remaining -le 1/{found=1; exit}
+     r && c && /sleep 1/{exit}
+     END{exit !found}' "$SCRIPT"
 
 echo "test: ready loop re-reads the clock after the probe, before sleeping"
 # Same stale-value regression as the port-open loop.
@@ -190,6 +206,14 @@ awk '/while.*_ready_tries.*do/{r=1; next}
      r && /curl.*cluster.workers/{c=1; next}
      r && c && index($0, "_remaining=$(( _ready_deadline - SECONDS ))"){found=1}
      r && c && /sleep 1/{exit}
+     END{exit !found}' "$SCRIPT"
+
+echo "test: ready loop floors curl --max-time at 1 s"
+# Same invariant, asserted independently inside the ready loop so a
+# regression that drops the floor from one loop cannot hide behind the other.
+awk '/while.*_ready_tries.*do/{r=1; next}
+     r && index($0, "_curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))"){found=1}
+     r && /curl.*cluster.workers/{exit}
      END{exit !found}' "$SCRIPT"
 
 echo "all tests passed"
