@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, act, render } from "@testing-library/react";
+import { createElement, Fragment, type ReactNode } from "react";
 import {
   useOsEvents,
   OsEvent,
@@ -372,5 +373,83 @@ describe("useOsEvents", () => {
 
     expect(onEvent1).toHaveBeenCalledTimes(1);
     expect(onEvent2).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the shared stream when one subscriber unmounts in the same commit as another widens its kinds", () => {
+    function Widening({ kinds }: { kinds: string[] }) {
+      useOsEvents(kinds, () => {});
+      return null;
+    }
+
+    function Leaving() {
+      useOsEvents(["agents.status.changed"], () => {});
+      return null;
+    }
+
+    function Slot({ children }: { children: ReactNode }) {
+      return createElement(Fragment, null, children);
+    }
+
+    // React runs EVERY effect cleanup in a commit before any setup, and the
+    // order it walks them in is its own business. Nesting `Leaving` one level
+    // down puts its teardown after `Widening`'s, so for a moment the map holds
+    // neither subscriber even though a subscriber is very much still mounted.
+    // Deciding "close the stream" from the unmounting component's own mounted
+    // flag mistakes that moment for "nobody is listening any more".
+    const harness = (kinds: string[], showLeaving: boolean) =>
+      createElement(
+        Fragment,
+        null,
+        createElement(Widening, { kinds, key: "widening" }),
+        createElement(Slot, {
+          key: "slot",
+          children: showLeaving ? createElement(Leaving) : null,
+        }),
+      );
+
+    const { rerender } = render(harness(["projects.task.changed"], true));
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
+    const opened = lastEs;
+
+    rerender(harness(["projects.task.changed", "notifications.new"], false));
+
+    expect(opened?.close).not.toHaveBeenCalled();
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-render subscribers for an error that does not change the status", () => {
+    let renders = 0;
+    renderHook(() => {
+      renders += 1;
+      return useOsEvents([], () => {});
+    });
+
+    act(() => {
+      lastEs?.onopen?.();
+    });
+    const afterOpen = renders;
+
+    act(() => {
+      if (lastEs) {
+        lastEs.readyState = EventSource.CONNECTING;
+        lastEs._fireError();
+      }
+    });
+    // The first error is a real transition (connected -> stale): one re-render.
+    expect(renders).toBe(afterOpen + 1);
+    const afterFirstError = renders;
+
+    // The browser fires `error` again on every failed retry. Republishing the
+    // status nobody's UI can tell apart must not re-render every subscriber.
+    for (let i = 0; i < 5; i += 1) {
+      act(() => {
+        if (lastEs) {
+          lastEs.readyState = EventSource.CONNECTING;
+          lastEs._fireError();
+        }
+      });
+    }
+
+    expect(renders).toBe(afterFirstError);
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 
 export type OsEvent = {
   kind: string;
@@ -20,19 +20,45 @@ type Subscriber = {
   onEvent: OsEventHandler;
 };
 
+export type OsEventsStatus = {
+  connected: boolean;
+  stale: boolean;
+};
+
 const subscribers = new Map<number, Subscriber>();
 let nextId = 0;
 
 let sharedEs: EventSource | null = null;
-let sharedConnected = false;
-let sharedStale = true;
 let reconnectAttempts = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const seenIdsRef = { current: new Set<string>() };
 const seenIdsListRef = { current: [] as string[] };
 const listeners = new Set<() => void>();
 
-function notify() {
+const DISCONNECTED: OsEventsStatus = { connected: false, stale: true };
+
+// The snapshot every subscriber renders from. It is replaced, never mutated,
+// so useSyncExternalStore can compare it by identity.
+let status: OsEventsStatus = DISCONNECTED;
+
+function getStatus(): OsEventsStatus {
+  return status;
+}
+
+function subscribeToStatus(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+// A transition that lands on the status we already publish must not notify.
+// The browser fires `error` again on every failed retry while it reconnects,
+// and re-publishing an identical snapshot would re-render every subscriber for
+// a change none of their UIs can tell apart.
+function setStatus(connected: boolean, stale: boolean) {
+  if (status.connected === connected && status.stale === stale) return;
+  status = { connected, stale };
   listeners.forEach((fn) => fn());
 }
 
@@ -49,9 +75,7 @@ function startConnection() {
 
   es.onopen = () => {
     reconnectAttempts = 0;
-    sharedConnected = true;
-    sharedStale = false;
-    notify();
+    setStatus(true, false);
   };
 
   es.onmessage = (msg) => {
@@ -89,9 +113,13 @@ function startConnection() {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-    sharedConnected = false;
-    sharedStale = true;
-    notify();
+    // An `error` means the stream is down RIGHT NOW, whether or not the browser
+    // means to retry it. Nothing resumes the gap -- the endpoint sends no SSE
+    // `id:` line and ignores `Last-Event-ID` -- so a subscriber told it is
+    // still live would silently miss every change until the retry lands.
+    // Report it; the no-op guard in setStatus is what keeps a long retry storm
+    // from thrashing anyone's UI.
+    setStatus(false, true);
 
     if (es.readyState === EventSource.CLOSED) {
       sharedEs = null;
@@ -114,12 +142,10 @@ function stopConnection() {
   }
   sharedEs?.close();
   sharedEs = null;
-  sharedConnected = false;
-  sharedStale = true;
   reconnectAttempts = 0;
   seenIdsRef.current.clear();
   seenIdsListRef.current = [];
-  notify();
+  setStatus(false, true);
 }
 
 export function resetOsEventsState() {
@@ -127,61 +153,58 @@ export function resetOsEventsState() {
   subscribers.clear();
   listeners.clear();
   nextId = 0;
+  status = DISCONNECTED;
 }
 
-export function useOsEvents(kinds: string[], onEvent: OsEventHandler): {
-  connected: boolean;
-  stale: boolean;
-} {
-  const [, setTick] = useState(0);
-  const idRef = useRef(0);
+export function useOsEvents(
+  kinds: string[],
+  onEvent: OsEventHandler,
+): OsEventsStatus {
   const onEventRef = useRef(onEvent);
-  const mountedRef = useRef(false);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+  const kindsRef = useRef(kinds);
+  const idRef = useRef<number | null>(null);
 
   useEffect(() => {
     onEventRef.current = onEvent;
   }, [onEvent]);
 
-  if (idRef.current === 0) {
-    idRef.current = ++nextId;
-  }
-
+  // Registration happens in an effect, never in the render body. Allocating the
+  // id while rendering is a side effect inside a function React may call
+  // speculatively and throw away, which burns an id no subscriber owns.
+  //
+  // The dependency list is empty on purpose: the subscriber's LIFETIME is the
+  // component's, and only its `kinds` change. That leaves exactly one rule for
+  // the stream -- open while the map is non-empty -- read from the map itself
+  // rather than from the unmounting component's own mounted flag, which cannot
+  // see that a different component is mid-update in the same commit.
   useEffect(() => {
-    const id = idRef.current;
-    subscribers.set(id, { kinds, onEvent: (e) => onEventRef.current(e) });
-    const listener = () => setTick((t) => t + 1);
-    listeners.add(listener);
-
-    if (!sharedEs) {
-      startConnection();
-    }
+    const id = ++nextId;
+    idRef.current = id;
+    subscribers.set(id, {
+      kinds: kindsRef.current,
+      onEvent: (e) => onEventRef.current(e),
+    });
+    startConnection();
 
     return () => {
+      idRef.current = null;
       subscribers.delete(id);
-      listeners.delete(listener);
-      if (subscribers.size === 0 && !mountedRef.current) {
-        stopConnection();
-      }
-    };
-  }, [kinds.join(",")]);
-
-  useEffect(() => {
-    return () => {
       if (subscribers.size === 0) {
         stopConnection();
       }
     };
   }, []);
 
-  return {
-    connected: sharedConnected,
-    stale: sharedStale,
-  };
+  // `kindsKey` is the value identity of `kinds`: a fresh array holding the same
+  // entries must not churn the registration.
+  const kindsKey = kinds.join(",");
+  useEffect(() => {
+    kindsRef.current = kinds;
+    const id = idRef.current;
+    if (id === null) return;
+    const sub = subscribers.get(id);
+    if (sub) sub.kinds = kinds;
+  }, [kindsKey]);
+
+  return useSyncExternalStore(subscribeToStatus, getStatus, getStatus);
 }

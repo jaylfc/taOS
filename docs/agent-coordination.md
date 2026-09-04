@@ -848,6 +848,18 @@ The desktop side is `desktop/src/hooks/use-os-events.ts`:
 in the same window, returns `connected` / `stale`, dedupes by event id,
 reconnects with exponential backoff, and filters by `kinds` client-side so
 the connection does not need to reopen when a subscriber widens its list.
+The desktop client therefore never sends `?kinds=`; the server-side filter
+above is unchanged and stays available to other clients.
+
+The stream is open exactly while the subscriber map is non-empty -- that map
+is the only thing consulted on teardown, so a commit that unmounts one
+subscriber while another changes its `kinds` cannot close a stream someone is
+still listening to. `connected` / `stale` come from a shared snapshot through
+`useSyncExternalStore`, replaced only on a real transition, so the repeated
+`error` events a browser fires while it retries do not re-render every
+subscriber. An `error` does mark the stream stale even while the browser is
+still retrying: the endpoint has no resume, so the gap is real and a
+subscriber must refetch once it reconnects.
 
 ## LoRA Studio routes (session-only, no agent scope)
 
