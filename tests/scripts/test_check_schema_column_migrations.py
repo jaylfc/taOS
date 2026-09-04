@@ -748,3 +748,166 @@ CREATE TABLE IF NOT EXISTS contacts (
         )
         violations = guard_mod.find_violations(path, "origin/dev")
         assert [(v.table, v.column) for v in violations] == [("contacts", "trust_level")]
+
+
+class TestReservedWordColumns:
+    """A column NAMED after a SQL word was dropped from both sides of the diff.
+
+    `_NON_COLUMN_KEYWORDS` exists to skip clause segments, but it matched the
+    column name alone, so `key TEXT` and `text TEXT` -- both live in this repo
+    (desktop_settings, todo_store, task_store, job_queue and others) -- were
+    invisible to the guard no matter how they were added. A reserved word
+    followed by a type is a column declaration, not a clause.
+    """
+
+    def test_reserved_word_followed_by_a_type_is_a_column(self, guard_mod) -> None:
+        body = (
+            "id   TEXT PRIMARY KEY,\n"
+            "key  TEXT NOT NULL,\n"
+            "text TEXT NOT NULL DEFAULT '',\n"
+            "check INTEGER NOT NULL DEFAULT 0\n"
+        )
+        assert guard_mod._split_columns(body) == {"id", "key", "text", "check"}
+
+    def test_clause_segments_are_still_skipped(self, guard_mod) -> None:
+        body = (
+            "id INTEGER PRIMARY KEY,\n"
+            "name TEXT,\n"
+            "PRIMARY KEY (id, name),\n"
+            "UNIQUE (name),\n"
+            "CHECK (id > 0),\n"
+            "FOREIGN KEY (name) REFERENCES other (name)\n"
+        )
+        assert guard_mod._split_columns(body) == {"id", "name"}
+
+    def test_reserved_word_column_add_is_reported(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        body = '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS settings (
+    id  TEXT PRIMARY KEY,
+    key TEXT NOT NULL DEFAULT ''
+);
+"""
+'''
+        path = _write_store(tmp_path, "settings.py", body)
+        monkeypatch.setattr(
+            guard_mod, "_baseline_columns", lambda p, ref: {"settings": {"id"}}
+        )
+        violations = guard_mod.find_violations(path, "origin/dev")
+        assert [(v.table, v.column) for v in violations] == [("settings", "key")]
+
+
+class TestPostInitLexicalScope:
+    """An ALTER may only silence a column from `_post_init`'s OWN body."""
+
+    def test_nested_helper_does_not_silence(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        body = '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS gadgets (
+    id   TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT ''
+);
+"""
+
+
+class GadgetStore:
+    async def _post_init(self) -> None:
+        def _unused():
+            return "ALTER TABLE gadgets ADD COLUMN kind TEXT"
+
+        return None
+'''
+        path = _write_store(tmp_path, "nested_helper.py", body)
+        monkeypatch.setattr(
+            guard_mod, "_baseline_columns", lambda p, ref: {"gadgets": {"id"}}
+        )
+        violations = guard_mod.find_violations(path, "origin/dev")
+        assert [(v.table, v.column) for v in violations] == [("gadgets", "kind")]
+
+    def test_nested_class_docstring_does_not_silence(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        body = '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS gadgets (
+    id   TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT ''
+);
+"""
+
+
+class GadgetStore:
+    async def _post_init(self) -> None:
+        class _Doc:
+            """ALTER TABLE gadgets ADD COLUMN kind TEXT"""
+
+        return None
+'''
+        path = _write_store(tmp_path, "nested_class.py", body)
+        monkeypatch.setattr(
+            guard_mod, "_baseline_columns", lambda p, ref: {"gadgets": {"id"}}
+        )
+        violations = guard_mod.find_violations(path, "origin/dev")
+        assert [(v.table, v.column) for v in violations] == [("gadgets", "kind")]
+
+    def test_real_alter_in_the_method_body_still_silences(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The control: tightening the scope must not break the real pattern."""
+        body = '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS gadgets (
+    id   TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT ''
+);
+"""
+
+
+class GadgetStore:
+    async def _post_init(self) -> None:
+        """Guarded migration."""
+        if not await self._has_column("gadgets", "kind"):
+            await self._db.execute("ALTER TABLE gadgets ADD COLUMN kind TEXT")
+'''
+        path = _write_store(tmp_path, "real_migration.py", body)
+        monkeypatch.setattr(
+            guard_mod, "_baseline_columns", lambda p, ref: {"gadgets": {"id"}}
+        )
+        assert guard_mod.find_violations(path, "origin/dev") == []
+
+
+class TestQuoteEscapes:
+    """Refutation cover: the doubled-quote SQL escape already works.
+
+    A doubled `''` toggles the quote state twice and lands back inside the
+    literal, so the comment stripper never loses the closing quote or the comma
+    that ends the column.
+    """
+
+    def test_doubled_quote_escape_does_not_break_the_split(self, guard_mod) -> None:
+        body = (
+            "id TEXT PRIMARY KEY,\n"
+            "label TEXT NOT NULL DEFAULT 'it''s ok',\n"
+            "tail TEXT NOT NULL\n"
+        )
+        assert guard_mod._split_columns(body) == {"id", "label", "tail"}
+
+    def test_doubled_quote_escape_protects_a_following_comment(
+        self, guard_mod
+    ) -> None:
+        body = (
+            "id TEXT PRIMARY KEY,\n"
+            "label TEXT NOT NULL DEFAULT 'it''s ok',  -- documented\n"
+            "tail TEXT NOT NULL\n"
+        )
+        assert guard_mod._split_columns(body) == {"id", "label", "tail"}
+
+    def test_dash_dash_inside_an_escaped_literal_is_not_a_comment(
+        self, guard_mod
+    ) -> None:
+        body = "id TEXT, label TEXT DEFAULT 'a''b -- still literal', tail TEXT"
+        assert guard_mod._split_columns(body) == {"id", "label", "tail"}

@@ -28,9 +28,21 @@ Only tables that ALREADY EXIST on the baseline are diffed. A table absent
 there is built in full by its own ``CREATE TABLE IF NOT EXISTS`` on every
 install, columns and all, so no ALTER applies and there is no upgrade path to
 brick; diffing it would emit one violation per column on every new store.
-(Known limitation: a store file RENAMED in the same change gets an empty
-baseline at its new path, so a column added in that same change is not seen.
-Move the file and add the column in separate commits, or check the old path.)
+Known limitations, all of them per-file consequences of a static check and
+all deliberate rather than silent:
+
+  * A store file RENAMED in the same change gets an empty baseline at its new
+    path, so a column added in that same change is not seen. Move the file and
+    add the column in separate commits.
+  * A TABLE renamed inside SCHEMA is skipped as new, and the old table is left
+    behind on existing installs. That is a different brick from the one this
+    guard defines (an existing table gaining a column) and it wants its own
+    check; refusing to skip new tables is NOT the fix, because that is exactly
+    the one-violation-per-column noise on legitimately new tables.
+  * A ``_post_init`` INHERITED from a base class in another module is not seen,
+    so its ALTERs cannot silence a column. Every ``_post_init`` in the tree
+    today is defined in the same file as the store it serves; if that changes,
+    keep the migration next to the SCHEMA it migrates.
 
 The third condition is what keeps it from flagging every column in the
 repo: comparison is done against ``git show <baseline-ref>:<path>`` for the
@@ -195,7 +207,15 @@ def _split_columns(body: str) -> set[str]:
         r"^\s*(?:CONSTRAINT\s+\w+\s+)?(?:PRIMARY\s+KEY|UNIQUE|CHECK|FOREIGN\s+KEY|REFERENCES)\b",
         re.IGNORECASE,
     )
-    _COLUMN_NAME_RE = re.compile(r"^\s*(\w+)\s+", re.IGNORECASE)
+    # Second token captured so a column whose NAME collides with a SQL word
+    # ("key TEXT", "text TEXT" -- both live in this repo) is still recognised:
+    # a reserved word followed by a type is a column declaration, not a clause.
+    _COLUMN_NAME_RE = re.compile(r"^\s*(\w+)\s+(\w+)?", re.IGNORECASE)
+    _SQL_TYPES = {
+        "text", "integer", "int", "bigint", "smallint", "real", "blob",
+        "numeric", "decimal", "boolean", "bool", "varchar", "char", "json",
+        "datetime", "timestamp", "date", "float", "double",
+    }
     _NON_COLUMN_KEYWORDS = {
         "create", "table", "primary", "key", "unique", "check", "foreign",
         "references", "constraint", "default", "not", "null", "integer",
@@ -221,13 +241,19 @@ def _split_columns(body: str) -> set[str]:
     segments.append("".join(current))
 
     for seg in segments:
-        if _INLINE_CONSTRAINT_RE.match(seg):
-            continue
         m = _COLUMN_NAME_RE.match(seg)
+        type_token = (m.group(2) or "").lower() if m else ""
+        # "<word> <TYPE>" is a column declaration whatever the word is; a
+        # table-level constraint is always followed by "(" or a name, never by
+        # a type. This is what lets a column called "check" or "key" through
+        # while PRIMARY KEY (...) / CHECK (...) are still skipped.
+        is_column_decl = type_token in _SQL_TYPES
+        if not is_column_decl and _INLINE_CONSTRAINT_RE.match(seg):
+            continue
         if not m:
             continue
         name = m.group(1)
-        if name.lower() in _NON_COLUMN_KEYWORDS:
+        if not is_column_decl and name.lower() in _NON_COLUMN_KEYWORDS:
             continue
         columns.add(name)
     return columns
@@ -347,27 +373,42 @@ def _baseline_columns(path: Path, ref: str) -> dict[str, set[str]] | None:
     return out
 
 
-def _docstring_constant_ids(tree: ast.AST) -> set[int]:
-    """Node ids of every docstring Constant in ``tree``.
+def _method_sql_literals(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """String literals written directly in ``fn``'s own body.
 
-    A docstring is prose, not executable SQL, so an ``ALTER TABLE`` written
-    inside one must never silence a violation.
+    Nested ``def``/``class``/``lambda`` bodies are not descended into and the
+    method's own docstring is skipped: a never-called helper defined inside
+    ``_post_init``, or a nested class's docstring, must not be able to silence
+    a violation with an ALTER it never executes. This is the same lexical rule
+    ``_extract_schemas`` applies to ``SCHEMA``.
     """
-    ids: set[int] = set()
-    for node in ast.walk(tree):
-        if not isinstance(
-            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-        ):
-            continue
-        body = node.body
-        if (
-            body
-            and isinstance(body[0], ast.Expr)
-            and isinstance(body[0].value, ast.Constant)
-            and isinstance(body[0].value.value, str)
-        ):
-            ids.add(id(body[0].value))
-    return ids
+    out: list[str] = []
+    docstring_id: int | None = None
+    if (
+        fn.body
+        and isinstance(fn.body[0], ast.Expr)
+        and isinstance(fn.body[0].value, ast.Constant)
+        and isinstance(fn.body[0].value.value, str)
+    ):
+        docstring_id = id(fn.body[0].value)
+
+    def _descend(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(
+                child,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+            ):
+                continue
+            if (
+                isinstance(child, ast.Constant)
+                and isinstance(child.value, str)
+                and id(child) != docstring_id
+            ):
+                out.append(child.value)
+            _descend(child)
+
+    _descend(fn)
+    return out
 
 
 def _post_init_added_columns(tree: ast.AST) -> set[tuple[str, str]]:
@@ -381,7 +422,6 @@ def _post_init_added_columns(tree: ast.AST) -> set[tuple[str, str]]:
     source text, so ``#`` inside a SQL literal cannot chop the statement and a
     triple-quoted SQL literal is not mistaken for a docstring.
     """
-    doc_ids = _docstring_constant_ids(tree)
     added: set[tuple[str, str]] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
@@ -391,14 +431,9 @@ def _post_init_added_columns(tree: ast.AST) -> set[tuple[str, str]]:
                 continue
             if item.name != "_post_init":
                 continue
-            for sub in ast.walk(item):
-                if (
-                    isinstance(sub, ast.Constant)
-                    and isinstance(sub.value, str)
-                    and id(sub) not in doc_ids
-                ):
-                    for m in _ADD_COLUMN_RE.finditer(sub.value):
-                        added.add((m.group(1), m.group(2)))
+            for literal in _method_sql_literals(item):
+                for m in _ADD_COLUMN_RE.finditer(literal):
+                    added.add((m.group(1), m.group(2)))
     return added
 
 
