@@ -32,12 +32,16 @@ fi
 if [ -f static/desktop/index.html ]; then
     # Provenance check: if a fetched bundle matches current source, skip
     # regardless of filesystem mtimes (which can be misleading after a fetch).
+    # Only trust provenance when the desktop/ working tree is clean (matches
+    # the committed HEAD:desktop) -- otherwise local edits or untracked build
+    # inputs could be skipped by a stale-but-matching marker.
     _provenance_file="static/desktop/.taos-bundle-provenance"
-    if [ -f "$_provenance_file" ]; then
+    _working_tree_status="$(git status --porcelain --untracked-files=all -- desktop 2>/dev/null || echo "")"
+    if [ -f "$_provenance_file" ] && [ -z "$_working_tree_status" ]; then
         _current_tree="$(git rev-parse HEAD:desktop 2>/dev/null || echo "")"
         _recorded_tree="$(cat "$_provenance_file" 2>/dev/null || echo "")"
         if [ -n "$_current_tree" ] && [ "$_current_tree" = "$_recorded_tree" ]; then
-            echo "[taos-rebuild-desktop] desktop bundle provenance is current — skipping rebuild"
+            echo "[taos-rebuild-desktop] desktop bundle provenance is current, skipping rebuild"
             exit 0
         fi
     fi
@@ -64,7 +68,13 @@ if (cd desktop && npm install && npm run build); then
     echo "[taos-rebuild-desktop] desktop rebuild succeeded"
     _current_tree="$(git rev-parse HEAD:desktop 2>/dev/null || echo "")"
     if [ -n "$_current_tree" ]; then
-        echo "$_current_tree" > static/desktop/.taos-bundle-provenance
+        mkdir -p static/desktop || { echo "[taos-rebuild-desktop] could not create static/desktop -- bundle provenance marker NOT written; next update may fall through to the mtime path" >&2; exit 0; }
+        if ! echo "$_current_tree" > static/desktop/.taos-bundle-provenance 2>/tmp/.taos-rebuild-desktop-marker.err; then
+            echo "[taos-rebuild-desktop] could not write bundle provenance marker: $(cat /tmp/.taos-rebuild-desktop-marker.err)" >&2
+            rm -f /tmp/.taos-rebuild-desktop-marker.err
+            exit 0
+        fi
+        rm -f /tmp/.taos-rebuild-desktop-marker.err
     fi
 elif [ -f static/desktop/index.html ]; then
     echo "[taos-rebuild-desktop] desktop rebuild FAILED -- keeping the existing bundle (see journalctl -u tinyagentos-rebuild-desktop)"

@@ -115,6 +115,38 @@ async def _get_desktop_tree_sha(project_root: Path) -> str | None:
     return None
 
 
+async def _is_desktop_working_tree_clean(project_root: Path) -> bool:
+    """Return True if the desktop/ tree has no tracked edits or untracked build inputs.
+
+    Provenance is only a reliable proof of freshness when the working tree
+    matches the committed HEAD:desktop. A dirty tree (tracked modifications or
+    new build inputs the user has not committed) means the recorded marker
+    could predate local edits and would skip a needed rebuild.
+    """
+    desktop_dir = project_root / "desktop"
+    if not desktop_dir.is_dir():
+        return False
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "-C",
+            str(project_root),
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--",
+            "desktop",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return False
+        return out.strip() == b""
+    except FileNotFoundError:
+        return False
+
+
 async def _is_bundle_provenance_current(project_root: Path) -> bool:
     """Return True if the bundle provenance marker matches the current desktop tree.
 
@@ -123,7 +155,16 @@ async def _is_bundle_provenance_current(project_root: Path) -> bool:
     current tree SHA matches, the bundle is known-good regardless of
     filesystem mtimes (which can be misleading after a fetch or on hosts
     with clock skew).
+
+    Also requires a clean desktop working tree and a present bundle
+    (``static/desktop/index.html``): provenance can only prove freshness
+    against the committed tree, so a matching marker with local edits or
+    untracked build inputs must fall through to the mtime check, and a
+    matching marker with no bundle must not report success.
     """
+    index_html = project_root / "static" / "desktop" / "index.html"
+    if not index_html.is_file():
+        return False  # marker surviving but bundle missing -> rebuild
     marker = project_root / "static" / "desktop" / ".taos-bundle-provenance"
     if not marker.is_file():
         return False
@@ -132,16 +173,27 @@ async def _is_bundle_provenance_current(project_root: Path) -> bool:
     except OSError:
         return False
     current = await _get_desktop_tree_sha(project_root)
-    return bool(current and current == recorded)
+    if not (current and current == recorded):
+        return False
+    return await _is_desktop_working_tree_clean(project_root)
 
 
 def _record_bundle_provenance(project_root: Path, tree_sha: str) -> None:
-    """Record the desktop tree SHA that the current bundle was built from."""
+    """Record the desktop tree SHA that the current bundle was built from.
+
+    The SHA is normalized (no trailing whitespace) so the read path's
+    ``.strip()`` is symmetric and tolerant of future git wrappers that
+    might not emit a trailing newline.
+    """
     marker = project_root / "static" / "desktop" / ".taos-bundle-provenance"
+    marker.parent.mkdir(parents=True, exist_ok=True)
     try:
-        marker.write_text(tree_sha)
-    except OSError:
-        pass
+        marker.write_text(tree_sha.strip() + "\n")
+    except OSError as exc:
+        logger.warning(
+            "Could not write bundle provenance marker (%s); next update may "
+            "fall through to the mtime path.", exc,
+        )
 
 
 _BUNDLE_BASE = "https://github.com/jaylfc/taOS/releases/download/bundle-latest"
@@ -234,10 +286,7 @@ async def _try_prebuilt_desktop_bundle(project_root: Path) -> bool:
         # (re-downloading on every check). Stamp index.html fresh and record
         # provenance so the rebuild trigger can compare content hashes instead.
         (target / "index.html").touch()
-        try:
-            (target / ".taos-bundle-provenance").write_text(local_tree)
-        except OSError:
-            pass
+        _record_bundle_provenance(project_root, local_tree)
         logger.info("Prebuilt desktop bundle installed into static/desktop/.")
         return True
     except Exception as exc:
@@ -377,12 +426,9 @@ async def rebuild_desktop_bundle_if_stale(
 
         logger.info("Desktop bundle rebuilt successfully.")
         # Record provenance so future checks use content hash, not mtime.
-        try:
-            tree_sha = await _get_desktop_tree_sha(project_root)
-            if tree_sha:
-                _record_bundle_provenance(project_root, tree_sha)
-        except Exception:
-            pass
+        tree_sha = await _get_desktop_tree_sha(project_root)
+        if tree_sha:
+            _record_bundle_provenance(project_root, tree_sha)
         return RebuildResult(rebuilt=True, success=True, message="Desktop bundle rebuilt successfully.")
 
     except asyncio.TimeoutError:

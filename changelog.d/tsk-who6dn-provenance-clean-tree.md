@@ -1,0 +1,2 @@
+### Fixed
+- Desktop rebuild provenance early-return now requires a clean desktop working tree and a present bundle (`static/desktop/index.html`), so local edits, untracked build inputs, or a missing bundle never get served from a stale-but-matching marker. Failures to record the provenance marker after a successful local build are now logged so operators can spot a regression that would re-introduce the original false-positive rebuild.

@@ -281,10 +281,18 @@ async def test_rebuild_skips_when_provenance_matches_despite_mtime(tmp_path, mon
     async def fake_exec(*args, **kwargs):
         called.append(args)
         if args[0] == "git":
+            cmd = args[1] if isinstance(args[1], str) else ""
+            sub = args[3] if len(args) > 3 else ""
+
             class Proc:
                 returncode = 0
+
                 async def communicate(self):
-                    return b"MATCHING_SHA\n", b""
+                    if sub == "rev-parse":
+                        return b"MATCHING_SHA\n", b""
+                    if sub == "status":
+                        return b"", b""  # clean working tree
+                    return b"", b""
             return Proc()
         raise AssertionError("subprocess should NOT be called when provenance matches")
 
@@ -294,8 +302,153 @@ async def test_rebuild_skips_when_provenance_matches_despite_mtime(tmp_path, mon
     assert result.rebuilt is False
     assert result.success is True
     assert "provenance" in result.message.lower()
-    # Only the provenance-check git call is expected; no npm/build subprocesses.
+    # Only provenance-check git calls are expected; no npm/build subprocesses.
     assert all(c[0] == "git" for c in called)
+
+
+@pytest.mark.asyncio
+async def test_rebuild_falls_through_when_provenance_matches_but_tree_dirty(tmp_path, monkeypatch):
+    """Provenance must not skip the rebuild when the desktop working tree is dirty
+    (local edits or untracked build inputs).  Without this guard a matching marker
+    could serve an outdated bundle after a tracked or untracked edit."""
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"x"}')
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    bundle = static_dir / "index.html"
+    bundle.write_text("<html />")
+    src_file = src_dir / "App.tsx"
+    src_file.write_text("// app")
+    # Bundle is older than source so the mtime fallback would consider it stale.
+    os.utime(bundle, (time.time() - 60, time.time() - 60))
+    os.utime(src_file, (time.time(), time.time()))
+    # Marker says bundle is current; working tree says otherwise.
+    (static_dir / ".taos-bundle-provenance").write_text("MATCHING_SHA")
+
+    calls = []
+
+    class _Proc:
+        def __init__(self, rc, out=b"", err=b""):
+            self.returncode = rc
+            self._out = out
+            self._err = err
+
+        async def communicate(self):
+            return self._out, self._err
+
+    async def fake_exec(*args, **kwargs):
+        calls.append(args)
+        if args[0] == "git":
+            sub = args[3] if len(args) > 3 else ""
+            if sub == "rev-parse":
+                return _Proc(0, b"MATCHING_SHA\n")
+            if sub == "status":
+                # Dirty: one tracked modification under desktop/.
+                return _Proc(0, b" M desktop/src/App.tsx\n")
+            return _Proc(0)
+        return _Proc(0)  # npm ci / install / build all succeed
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+    # Dirty tree means we must NOT short-circuit; fall through to the rebuild path.
+    assert result.rebuilt is True
+    assert result.success is True
+    assert any(c[0] == "npm" and c[1] == "run" for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_rebuild_falls_through_when_provenance_matches_but_index_html_missing(tmp_path, monkeypatch):
+    """Provenance must not return success=True when index.html is gone
+    (operator cleanup, partial checkout, antivirus, truncated fs) -- the UI is
+    actually missing and the caller would otherwise treat the bundle as healthy."""
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"x"}')
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    # Bundle is older than source so the mtime fallback would consider it stale.
+    os.utime(static_dir, (time.time() - 120, time.time() - 120))
+    os.utime(src_dir / "App.tsx", (time.time(), time.time()))
+    # Marker says bundle is current, but index.html was wiped.
+    (static_dir / ".taos-bundle-provenance").write_text("MATCHING_SHA")
+
+    calls = []
+
+    class _Proc:
+        def __init__(self, rc, out=b"", err=b""):
+            self.returncode = rc
+            self._out = out
+            self._err = err
+
+        async def communicate(self):
+            return self._out, self._err
+
+    async def fake_exec(*args, **kwargs):
+        calls.append(args)
+        if args[0] == "git":
+            sub = args[3] if len(args) > 3 else ""
+            if sub == "rev-parse":
+                return _Proc(0, b"MATCHING_SHA\n")
+            return _Proc(0)
+        return _Proc(0)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+    assert result.rebuilt is True
+    assert result.success is True
+    # Marker write must not have happened for a stale-but-missing bundle, but
+    # a fresh build should have been triggered to restore index.html.
+    assert any(c[0] == "npm" and c[1] == "run" for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_local_build_records_provenance_marker(tmp_path, monkeypatch):
+    """Happy path for the local-build provenance recording -- the very path that
+    fixes the reported bug on hosts without prebuilt bundles (Pi 4 in the
+    description).  After a successful npm run build, .taos-bundle-provenance
+    must be written with the current HEAD:desktop SHA so the next service
+    invocation can short-circuit on a content match."""
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"x"}')
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    bundle = static_dir / "index.html"
+    bundle.write_text("<html />")
+    # Source is newer than bundle so the rebuild path is entered.
+    os.utime(bundle, (time.time() - 60, time.time() - 60))
+    os.utime(src_dir / "App.tsx", (time.time(), time.time()))
+
+    class Proc:
+        def __init__(self, rc, out=b"", err=b""):
+            self.returncode = rc
+            self._out = out
+            self._err = err
+
+        async def communicate(self):
+            return self._out, self._err
+
+    async def fake_exec(*args, **kwargs):
+        if args[0] == "git":
+            sub = args[3] if len(args) > 3 else ""
+            if sub == "rev-parse":
+                return Proc(0, b"LOCAL_TREE_SHA\n")
+            return Proc(0)
+        return Proc(0)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+    assert result.rebuilt is True
+    assert result.success is True
+    marker = static_dir / ".taos-bundle-provenance"
+    assert marker.is_file()
+    assert marker.read_text().strip() == "LOCAL_TREE_SHA"
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +558,7 @@ async def test_prebuilt_bundle_installed_on_tree_match(tmp_path, monkeypatch):
 
     assert await _try_prebuilt_desktop_bundle(tmp_path) is True
     assert (tmp_path / "static" / "desktop" / "index.html").read_text() == "<html>ok</html>"
-    assert (tmp_path / "static" / "desktop" / ".taos-bundle-provenance").read_text() == "SHA123"
+    assert (tmp_path / "static" / "desktop" / ".taos-bundle-provenance").read_text().strip() == "SHA123"
 
 
 @pytest.mark.asyncio
