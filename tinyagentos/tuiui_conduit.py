@@ -233,6 +233,12 @@ class TuiuiConduit:
     across its send-and-wait cycle) then ``_conn_lock`` (the socket itself)
     then ``_cv`` (the backlogs).
 
+    A request that times out desynchronises the conduit: replies carry no
+    request id, so nothing arriving afterwards can be attributed and the
+    AppIds already in hand may be stale. Every command is then refused
+    until the caller reconnects; only :meth:`iter_frames`, :meth:`close`
+    and :meth:`connect` stay available.
+
     Use as a context manager or call :meth:`close` explicitly.
     """
 
@@ -342,6 +348,13 @@ class TuiuiConduit:
     def _send(self, payload: dict[str, Any]) -> None:
         """Encode ``payload`` as one JSON line and write it.
 
+        Every apphost command goes through here, so this is where a
+        desynchronised conduit is refused -- before the write, not after it.
+        Raising further down would still have put the command on the wire:
+        a ``Spawn`` would have created an app the caller then has no id for,
+        and a ``Kill`` would have acted on an id that is exactly what the
+        desync makes untrustworthy.
+
         ``_conn_lock`` alone guards the write: it serialises concurrent
         writers and stops a concurrent :meth:`close` pulling the fd out from
         under ``sendall``. It must not nest ``_lock`` inside it -- a request
@@ -350,6 +363,7 @@ class TuiuiConduit:
         here would be an AB-BA deadlock with any fire-and-forget caller.
         The one lock order in this class is ``_lock`` then ``_conn_lock``.
         """
+        self._fail_if_desynced()
         line = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
         with self._conn_lock:
             sock = self._sock
@@ -424,6 +438,17 @@ class TuiuiConduit:
                 raise TuiuiConduitError("apphost closed connection")
             self._read_buf += chunk
 
+    def _fail_if_desynced(self) -> None:
+        """Refuse to talk to the apphost once replies stopped being attributable."""
+        with self._cv:
+            if self._desynced:
+                raise TuiuiConduitError(
+                    "conduit desynchronised by an earlier request timeout: a late "
+                    "reply cannot be told from a fresh one and the AppIds already "
+                    "in hand may be stale, so close() and connect() before issuing "
+                    "further commands"
+                )
+
     def _fail_if_reader_stopped(self) -> None:
         """Raise the reader's failure (or a clean close) for a waiter. Caller holds ``_cv``."""
         if self._reader_error is not None:
@@ -495,20 +520,14 @@ class TuiuiConduit:
         ``app`` and ``pid``), so once a reply is late there is no way to
         tell it apart from the next request's reply, and accepting it would
         hand the caller a stale AppId to send input to or kill. Rather than
-        guess, every later request refuses until the caller reconnects.
-        Frames are unsolicited and uncorrelated, so :meth:`iter_frames`
-        keeps working.
+        guess, :meth:`_send` refuses every later command until the caller
+        reconnects. Frames are unsolicited and uncorrelated, so
+        :meth:`iter_frames` keeps working.
         """
         if timeout is None:
             timeout = self.timeout
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._cv:
-            if self._desynced:
-                raise TuiuiConduitError(
-                    "conduit desynchronised by an earlier request timeout: a late "
-                    "reply cannot be told from this one, so close() and connect() "
-                    "before issuing further requests"
-                )
             while True:
                 for index, evt in enumerate(self._replies):
                     if predicate(evt):

@@ -892,3 +892,54 @@ class TestRequestTimeoutDesync:
             assert conduit.list_apps() == []
         finally:
             conduit.close()
+
+
+def _peer_is_quiet(peer: socket.socket) -> bool:
+    """True when the client wrote nothing more to ``peer``."""
+    peer.setblocking(False)
+    try:
+        return not peer.recv(65536)
+    except BlockingIOError:
+        return True
+    finally:
+        peer.setblocking(True)
+
+
+class TestDesyncRefusesEveryCommand:
+    """A desynced conduit must not put anything else on the wire."""
+
+    def _desync(self, conduit, peer) -> None:
+        with pytest.raises(TuiuiConduitError, match="timed out"):
+            conduit.spawn("sh", [], cols=6, rows=2, timeout=0.3)
+        _read_line(peer)  # the request the apphost never answered
+
+    def test_a_refused_spawn_never_reaches_the_apphost(self, paired_conduit):
+        """Raising after the write would leave an app the caller has no id for."""
+        conduit, peer = paired_conduit
+        conduit.connect()
+        self._desync(conduit, peer)
+
+        with pytest.raises(TuiuiConduitError, match="desynchronised"):
+            conduit.spawn("sh", [], cols=6, rows=2, timeout=1.0)
+        assert _peer_is_quiet(peer), "the refused Spawn was still sent to the apphost"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            lambda c: c.kill(11),
+            lambda c: c.send_input(11, b"x"),
+            lambda c: c.set_meta(11, [{"title": "t"}]),
+            lambda c: c.shutdown(),
+            lambda c: c.list_apps(timeout=1.0),
+        ],
+        ids=["kill", "send_input", "set_meta", "shutdown", "list_apps"],
+    )
+    def test_fire_and_forget_commands_are_refused_too(self, paired_conduit, command):
+        """An AppId held across a desync may be stale; acting on it is the hazard."""
+        conduit, peer = paired_conduit
+        conduit.connect()
+        self._desync(conduit, peer)
+
+        with pytest.raises(TuiuiConduitError, match="desynchronised"):
+            command(conduit)
+        assert _peer_is_quiet(peer), "a refused command was still sent to the apphost"
