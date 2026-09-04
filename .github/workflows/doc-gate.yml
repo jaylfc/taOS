@@ -38,7 +38,9 @@ jobs:
         run: python scripts/check_retrofit_migrations.py
 
       - name: Schema-column guard (tsk-hrzgip)
-        run: python scripts/check_schema_column_migrations.py
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_schema_column_migrations.py --base "origin/$BASE_REF"
 
       - name: Diff gate (Layer B)
         env:

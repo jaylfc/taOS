@@ -3,5 +3,10 @@
 
 ### Fixed
 - `schema-column-guard` now resolves `SCHEMA` constants via AST so that docstrings and unrelated triple-quoted strings containing `CREATE TABLE` do not produce false positives.
-- `schema-column-guard` now only matches `ALTER TABLE ... ADD COLUMN` inside `_post_init` bodies (with comments and docstrings stripped), preventing false negatives from mentions in comments or module docstrings.
-- `schema-column-guard` now exits non-zero with a loud warning when the `origin/dev` baseline ref is missing, instead of silently treating every column as a violation.
+- `schema-column-guard` now only matches `ALTER TABLE ... ADD COLUMN` inside the string literals of a `_post_init` **method**, read out of the AST; comments and docstrings can no longer silence a column, a `#` inside an SQL literal can no longer swallow one, and a module-level helper named `_post_init` no longer speaks for every store in the file.
+- `schema-column-guard` now exits non-zero with a loud warning when the baseline ref is missing, instead of silently treating every column as a violation.
+- `schema-column-guard` compares against the PR's own base branch (`--base`, `BASE_REF`, default `origin/dev`), so a `master`-targeted PR is no longer blocked by a ref its checkout never fetched.
+- `schema-column-guard` parses the baseline snapshot with AST too, so a `CREATE TABLE` in a docstring on the base branch can no longer invent a baseline column and mask a real violation.
+- `schema-column-guard` resolves each `SCHEMA` in its own lexical scope, so two classes that both alias a same-named constant no longer collapse onto the first value; f-strings and `+`-concatenated literals resolve, and a `SCHEMA` it cannot resolve is reported on stderr as unchecked rather than skipped in silence.
+- `schema-column-guard` treats a file it cannot read or parse as a hard failure (exit 2) instead of reporting the run clean, and prints accumulated violations before that exit so one CI run shows the full picture.
+- `schema-column-guard` decides whether a file exists on the baseline from `git cat-file -e`'s exit status rather than by matching git's stderr wording, which is version-dependent and localized.

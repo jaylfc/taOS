@@ -156,10 +156,10 @@ class Foo:
 
 class TestFindViolations:
     def _patched_baselines(self, guard_mod, monkeypatch, baselines: dict) -> None:
-        """Force _origin_dev_columns to return a fixed baseline per file."""
-        def fake(path: Path):
+        """Force _baseline_columns to return a fixed baseline per file."""
+        def fake(path: Path, ref: str):
             return baselines.get(path.name, {})
-        monkeypatch.setattr(guard_mod, "_origin_dev_columns", fake)
+        monkeypatch.setattr(guard_mod, "_baseline_columns", fake)
 
     def test_passing_fixture_no_violations(
         self, guard_mod, tmp_path: Path, monkeypatch
@@ -205,9 +205,10 @@ CREATE TABLE IF NOT EXISTS gadgets (
 );
 """
 
-async def _post_init(self):
-    if not await self._has_column("gadgets", "kind"):
-        await self._db.execute("ALTER TABLE gadgets ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
+class GadgetStore:
+    async def _post_init(self):
+        if not await self._has_column("gadgets", "kind"):
+            await self._db.execute("ALTER TABLE gadgets ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
 '''
         path = _write_store(tmp_path, "migrated.py", body)
         self._patched_baselines(guard_mod, monkeypatch, {"migrated.py": {"gadgets": {"id"}}})
@@ -280,7 +281,7 @@ CREATE TABLE IF NOT EXISTS widgets (
 """
 '''
         path = _write_store(tmp_path, "error.py", body)
-        monkeypatch.setattr(guard_mod, "_origin_dev_columns", lambda p: None)
+        monkeypatch.setattr(guard_mod, "_baseline_columns", lambda p, ref: None)
         rc = guard_mod.main([str(tmp_path)])
         assert rc == 2
         err = capsys.readouterr().err
@@ -291,8 +292,8 @@ class TestMain:
     def test_passing_fixture_exits_zero(
         self, guard_mod, passing_root: Path, monkeypatch, capsys: pytest.CaptureFixture
     ) -> None:
-        monkeypatch.setattr(guard_mod, "_origin_dev_columns", lambda p: _BASELINES.get(p.name, {}))
-        monkeypatch.setattr(guard_mod, "_check_origin_dev_ref", lambda: True)
+        monkeypatch.setattr(guard_mod, "_baseline_columns", lambda p, ref: _BASELINES.get(p.name, {}))
+        monkeypatch.setattr(guard_mod, "_check_base_ref", lambda ref: True)
         rc = guard_mod.main([str(passing_root)])
         out = capsys.readouterr().out
         assert rc == 0
@@ -303,8 +304,8 @@ class TestMain:
     ) -> None:
         """The failing fixture is the red-side of the contract: a store that
         adds SCHEMA columns with no ALTER must drive main() to exit 1."""
-        monkeypatch.setattr(guard_mod, "_origin_dev_columns", lambda p: _BASELINES.get(p.name, {}))
-        monkeypatch.setattr(guard_mod, "_check_origin_dev_ref", lambda: True)
+        monkeypatch.setattr(guard_mod, "_baseline_columns", lambda p, ref: _BASELINES.get(p.name, {}))
+        monkeypatch.setattr(guard_mod, "_check_base_ref", lambda ref: True)
         rc = guard_mod.main([str(failing_root)])
         out = capsys.readouterr().out
         assert rc == 1
@@ -315,9 +316,286 @@ class TestMain:
     def test_missing_origin_dev_ref_exits_two(
         self, guard_mod, passing_root: Path, monkeypatch, capsys: pytest.CaptureFixture
     ) -> None:
-        monkeypatch.setattr(guard_mod, "_origin_dev_columns", lambda p: _BASELINES.get(p.name, {}))
-        monkeypatch.setattr(guard_mod, "_check_origin_dev_ref", lambda: False)
+        monkeypatch.setattr(guard_mod, "_baseline_columns", lambda p, ref: _BASELINES.get(p.name, {}))
+        monkeypatch.setattr(guard_mod, "_check_base_ref", lambda ref: False)
         rc = guard_mod.main([str(passing_root)])
         assert rc == 2
         err = capsys.readouterr().err
         assert "origin/dev" in err
+
+
+# ---------------------------------------------------------------------------
+# Review fold (tsk-kvarzs): regressions for the nine findings on PR #2741.
+# ---------------------------------------------------------------------------
+
+
+class TestBaselineRef:
+    """Finding 1: the baseline ref must follow the PR's base branch."""
+
+    def test_base_flag_selects_ref(self, guard_mod, tmp_path: Path, monkeypatch) -> None:
+        root = tmp_path / "stores"
+        root.mkdir()
+        _write_store(root, "s.py", 'SCHEMA = """\nCREATE TABLE t (id TEXT);\n"""\n')
+        seen: list[str] = []
+
+        def fake_check(ref: str) -> bool:
+            seen.append(ref)
+            return True
+
+        monkeypatch.setattr(guard_mod, "_check_base_ref", fake_check)
+        monkeypatch.setattr(guard_mod, "_baseline_columns", lambda p, ref: {"t": {"id"}})
+        rc = guard_mod.main(["--base", "origin/master", str(root)])
+        assert rc == 0
+        assert seen == ["origin/master"]
+
+    def test_bare_branch_name_is_qualified(self, guard_mod, monkeypatch) -> None:
+        monkeypatch.delenv("BASE_REF", raising=False)
+        monkeypatch.delenv("SCHEMA_COLUMN_BASE_REF", raising=False)
+        assert guard_mod._baseline_ref("master") == "origin/master"
+        assert guard_mod._baseline_ref("origin/master") == "origin/master"
+        assert guard_mod._baseline_ref(None) == "origin/dev"
+
+    def test_base_ref_env_var_is_honoured(self, guard_mod, monkeypatch) -> None:
+        monkeypatch.delenv("SCHEMA_COLUMN_BASE_REF", raising=False)
+        monkeypatch.setenv("BASE_REF", "master")
+        assert guard_mod._baseline_ref(None) == "origin/master"
+
+
+class TestBaselineLookup:
+    """Findings 2 and 8: baseline existence and baseline parsing."""
+
+    def _fake_git(self, guard_mod, monkeypatch, *, exists: bool, show_stdout: str = "") -> None:
+        import subprocess as _sp
+
+        def fake_run(cmd, **kwargs):
+            if cmd[1] == "cat-file":
+                return _sp.CompletedProcess(cmd, 0 if exists else 1, "", "")
+            if cmd[1] == "rev-parse":
+                return _sp.CompletedProcess(cmd, 0, "deadbeef\n", "")
+            if cmd[1] == "show":
+                # Deliberately reworded/localized git error text: the guard must
+                # not depend on the wording of git's stderr.
+                if not exists:
+                    return _sp.CompletedProcess(
+                        cmd, 128, "", "fatal: Ungueltiges Objekt origin/dev:x.py\n"
+                    )
+                return _sp.CompletedProcess(cmd, 0, show_stdout, "")
+            raise AssertionError(f"unexpected git call: {cmd}")
+
+        monkeypatch.setattr(guard_mod.subprocess, "run", fake_run)
+
+    def test_missing_file_is_new_regardless_of_git_wording(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        path = _write_store(tmp_path, "new_store.py", "SCHEMA = 'CREATE TABLE t (id TEXT);'\n")
+        self._fake_git(guard_mod, monkeypatch, exists=False)
+        assert guard_mod._baseline_columns(path, "origin/dev") == {}
+
+    def test_baseline_docstring_does_not_add_a_false_column(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        baseline = '''"""Docs: CREATE TABLE gadgets (id TEXT, kind TEXT);"""
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS gadgets (
+    id TEXT PRIMARY KEY
+);
+"""
+'''
+        path = _write_store(
+            tmp_path,
+            "gadgets.py",
+            '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS gadgets (
+    id   TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT ''
+);
+"""
+''',
+        )
+        self._fake_git(guard_mod, monkeypatch, exists=True, show_stdout=baseline)
+        assert guard_mod._baseline_columns(path, "origin/dev") == {"gadgets": {"id"}}
+        violations = guard_mod.find_violations(path, "origin/dev")
+        assert [v.column for v in violations] == ["kind"]
+
+
+class TestPostInitDetection:
+    """Findings 3 and 4: which ALTER statements may silence a violation."""
+
+    def _baseline(self, guard_mod, monkeypatch, baselines: dict) -> None:
+        monkeypatch.setattr(
+            guard_mod, "_baseline_columns", lambda p, ref: baselines.get(p.name, {})
+        )
+
+    def test_triple_quoted_sql_alter_is_seen(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        body = '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS gadgets (
+    id   TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT ''
+);
+"""
+
+
+class GadgetStore:
+    async def _post_init(self) -> None:
+        if not await self._has_column("gadgets", "kind"):
+            await self._db.execute(
+                """
+                ALTER TABLE gadgets ADD COLUMN kind TEXT NOT NULL DEFAULT ''
+                """
+            )
+'''
+        path = _write_store(tmp_path, "triple.py", body)
+        self._baseline(guard_mod, monkeypatch, {"triple.py": {"gadgets": {"id"}}})
+        assert guard_mod.find_violations(path, "origin/dev") == []
+
+    def test_hash_inside_sql_literal_does_not_hide_alter(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        body = '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS gadgets (
+    id   TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT ''
+);
+"""
+
+
+class GadgetStore:
+    async def _post_init(self) -> None:
+        await self._db.execute("-- see issue #2416\\nALTER TABLE gadgets ADD COLUMN kind TEXT")
+'''
+        path = _write_store(tmp_path, "hashy.py", body)
+        self._baseline(guard_mod, monkeypatch, {"hashy.py": {"gadgets": {"id"}}})
+        assert guard_mod.find_violations(path, "origin/dev") == []
+
+    def test_module_level_post_init_does_not_silence(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        body = '''
+async def _post_init(store) -> None:
+    """Shared helper, not a store method."""
+    await store._db.execute("ALTER TABLE gadgets ADD COLUMN kind TEXT")
+
+
+class GadgetStore:
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS gadgets (
+        id   TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT ''
+    );
+    """
+'''
+        path = _write_store(tmp_path, "modlevel.py", body)
+        self._baseline(guard_mod, monkeypatch, {"modlevel.py": {"gadgets": {"id"}}})
+        violations = guard_mod.find_violations(path, "origin/dev")
+        assert [v.column for v in violations] == ["kind"]
+
+
+class TestSchemaResolution:
+    """Findings 5 and 9: resolving SCHEMA values and their aliases."""
+
+    def test_fstring_schema_is_resolved(self, guard_mod) -> None:
+        src = 'SCHEMA = f"""\nCREATE TABLE foo (id TEXT);\n"""'
+        schemas = guard_mod._extract_schemas(ast.parse(src))
+        assert len(schemas) == 1
+        assert "CREATE TABLE foo" in schemas[0]
+
+    def test_unresolvable_schema_warns_on_stderr(
+        self, guard_mod, capsys: pytest.CaptureFixture
+    ) -> None:
+        src = "SCHEMA = build_schema()"
+        schemas = guard_mod._extract_schemas(ast.parse(src), label="weird.py")
+        assert schemas == []
+        err = capsys.readouterr().err
+        assert "weird.py" in err
+        assert "SCHEMA" in err
+
+    def test_class_local_aliases_do_not_collide(self, guard_mod) -> None:
+        src = '''
+class A:
+    SQL = """
+    CREATE TABLE alpha (id TEXT);
+    """
+    SCHEMA = SQL
+
+
+class B:
+    SQL = """
+    CREATE TABLE beta (id TEXT);
+    """
+    SCHEMA = SQL
+'''
+        schemas = guard_mod._extract_schemas(ast.parse(src))
+        joined = "\n".join(schemas)
+        assert "CREATE TABLE alpha" in joined
+        assert "CREATE TABLE beta" in joined
+
+    def test_function_local_constant_does_not_resolve_class_schema(
+        self, guard_mod, capsys: pytest.CaptureFixture
+    ) -> None:
+        src = '''
+def make():
+    SQL = """
+    CREATE TABLE sneaky (id TEXT);
+    """
+    return SQL
+
+
+class Store:
+    SCHEMA = SQL
+'''
+        schemas = guard_mod._extract_schemas(ast.parse(src), label="scoped.py")
+        assert schemas == []
+        assert "scoped.py" in capsys.readouterr().err
+
+
+class TestErrorReporting:
+    """Findings 6 and 7: broken files fail loudly, violations always print."""
+
+    def test_syntax_error_file_fails_the_gate(
+        self, guard_mod, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        root = tmp_path / "stores"
+        root.mkdir()
+        _write_store(root, "broken.py", 'SCHEMA = """\nCREATE TABLE t (id TEXT);\n')
+        monkeypatch.setattr(guard_mod, "_check_base_ref", lambda ref: True)
+        monkeypatch.setattr(guard_mod, "_baseline_columns", lambda p, ref: {})
+        rc = guard_mod.main([str(root)])
+        assert rc == 2
+        assert "broken.py" in capsys.readouterr().err
+
+    def test_violations_are_printed_even_when_an_error_occurred(
+        self, guard_mod, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        root = tmp_path / "stores"
+        root.mkdir()
+        _write_store(
+            root,
+            "bad.py",
+            '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS gadgets (
+    id   TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT ''
+);
+"""
+''',
+        )
+        _write_store(root, "unreadable.py", 'SCHEMA = "CREATE TABLE other (id TEXT);"\n')
+
+        def fake_baseline(path: Path, ref: str):
+            if path.name == "unreadable.py":
+                return None
+            return {"gadgets": {"id"}}
+
+        monkeypatch.setattr(guard_mod, "_check_base_ref", lambda ref: True)
+        monkeypatch.setattr(guard_mod, "_baseline_columns", fake_baseline)
+        rc = guard_mod.main([str(root)])
+        captured = capsys.readouterr()
+        assert rc == 2
+        assert "SCHEMA-COLUMN VIOLATION" in captured.out
+        assert "kind" in captured.out

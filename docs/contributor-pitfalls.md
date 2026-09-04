@@ -128,6 +128,14 @@ entry to inspect (both clean by vacuity), and CI cannot see it because tests
 build fresh databases. The fix is the same guarded `_post_init` pattern as
 pitfall 18; the check is `scripts/check_schema_column_migrations.py` (added
 tsk-hrzgip after PR #2416 proved both old guards passed on this exact brick).
+It compares the working tree against the PR's own base branch (`--base`,
+defaulting to `origin/dev`), and only a `_post_init` defined as a METHOD of
+the store class silences a column - a module-level helper of that name is not
+the hook `BaseStore.init()` calls. A `SCHEMA` the guard cannot resolve to a
+static string in its own file (an f-string with a runtime value, or a constant
+imported from another module) is reported on stderr as NOT checked rather than
+skipped silently; keep the SQL literal in the same file if you want the guard
+to cover your store.
 
 ## Process
 
