@@ -15,6 +15,7 @@ import {
   Loader2,
   Check,
   Clock,
+  Sparkles,
 } from "lucide-react";
 import {
   Button,
@@ -460,7 +461,7 @@ interface DecisionData {
   from_agent: string;
   question: string;
   type: string;
-  options?: Array<{ label: string; value: string; rationale?: string }>;
+  options?: Array<{ label: string; value: string; rationale?: string; recommended?: boolean }>;
   context?: string | null;
   priority?: string;
   status: DecisionBlockStatus;
@@ -476,6 +477,15 @@ function decisionTypeLabel(t: string): string {
     case "free_text": return "Free text";
     default: return t;
   }
+}
+
+function RecommendedTag() {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-accent">
+      <Sparkles size={10} className="shrink-0" />
+      Recommended
+    </span>
+  );
 }
 
 function resolveAnswerLabel(d: DecisionData): string | null {
@@ -663,6 +673,7 @@ export function DecisionBlock({ block }: { block: DecisionContentBlock }): React
       {showOptions && (
         <div className="mt-2 flex flex-col gap-1.5 px-3">
           {decision.options!.map((opt) => {
+            const isRecommended = Boolean(opt.recommended);
             return (
               <button
                 key={opt.value}
@@ -678,12 +689,17 @@ export function DecisionBlock({ block }: { block: DecisionContentBlock }): React
                   "flex w-full flex-col gap-0.5 rounded-lg border px-3 py-1.5 text-left transition-colors",
                   "disabled:cursor-not-allowed disabled:opacity-60",
                   isOpen
-                    ? "border-shell-border bg-shell-surface hover:border-shell-border-strong"
+                    ? isRecommended
+                      ? "border-accent/40 bg-shell-surface hover:border-accent"
+                      : "border-shell-border bg-shell-surface hover:border-shell-border-strong"
                     : "border-shell-border bg-shell-bg-deep text-shell-text-secondary",
                   "cursor-pointer",
                 ].join(" ")}
               >
-                <span className="text-sm">{opt.label}</span>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm">{opt.label}</span>
+                  {isRecommended && <RecommendedTag />}
+                </div>
                 {opt.rationale && (
                   <span className="text-[10px] text-shell-text-tertiary">{opt.rationale}</span>
                 )}

@@ -115,6 +115,15 @@ def _get_symbols_at_ref(ref: str, repo_root: Path = REPO_ROOT) -> dict[str, str]
         for member in tar.getmembers():
             if not member.name.endswith(".py"):
                 continue
+            if member.issym() or member.islnk():
+                # A .py -> symlink typechange means this path is no longer a
+                # real source file: its symbols live at the link target. Skip
+                # it here (so the target's symbols are not attributed to the
+                # symlink path) and never call extractfile -- on a dangling
+                # symlink git archive emits no link target member and
+                # tarfile.extractfile raises KeyError (py3.12+), which is the
+                # "rc != 0, empty output" failure mode of this gate.
+                continue
             f = tar.extractfile(member)
             if f is None:
                 continue
@@ -169,6 +178,33 @@ def _resolve_symbol(merge_result_dir: Path, file_path: str, name: str) -> bool:
             abs_file = package_init
         else:
             return False
+
+    # Resolve symlinks so a .py -> symlink typechange loads the real target,
+    # and pin the resolved path inside the extracted merge tree. A symlink
+    # that escapes the tree (absolute target, or a relative target climbing
+    # out with `..`) would otherwise re-enter the working tree / installed
+    # package -- the exact editable-install path hook this loader exists to
+    # bypass -- producing wrong findings or a hard crash with no message.
+    # strict=False leaves a dangling target resolvable so the containment and
+    # is_file checks below classify it as not-importable instead of raising.
+    merge_root_resolved = merge_result_dir.resolve()
+    real_file = abs_file.resolve(strict=False)
+    try:
+        real_file.relative_to(merge_root_resolved)
+    except ValueError:
+        return False
+    if not real_file.is_file():
+        return False
+    # Preserve the logical path for a package initializer. Passing the
+    # resolved symlink target (e.g. _impl.py) to spec_from_file_location()
+    # loses the __init__.py name and disables package semantics, so a
+    # relative re-export inside the target raises ImportError and
+    # _resolve_symbol reports a false deletion. The logical path is already
+    # validated above (real_file is contained in the merge tree and is a
+    # regular file), so keeping it here is safe. Other files keep the
+    # resolved target so the loader reads the real content.
+    if abs_file.name != "__init__.py":
+        abs_file = real_file
 
     name_parts = name.split(".")
     attr_name = name_parts[-1]

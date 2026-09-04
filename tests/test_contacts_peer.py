@@ -5,6 +5,7 @@ import json
 import time
 from pathlib import Path
 
+import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -12,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from tinyagentos.contacts_store import ContactsStore, generate_peer_token, _hash_token
 from tinyagentos.peer import (
     build_envelope,
+    deliver_handshake,
     resolve_local_identity_id,
     verify_envelope,
     verify_envelope_signature,
@@ -914,3 +916,137 @@ class TestPeerRoutes:
             statuses.append(resp.status_code)
 
         assert 429 in statuses, f"expected 429 in statuses, got: {set(statuses)}"
+
+
+# ---------------------------------------------------------------------------
+# deliver_handshake tests (SSRF guard + dict endpoint handling)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestDeliverHandshake:
+    """Tests for peer.deliver_handshake: SSRF guard + dict endpoint handling."""
+
+    @staticmethod
+    def _mock_client(seen: dict) -> httpx.AsyncClient:
+        """Build an httpx client with a MockTransport that records POSTs."""
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            seen["called"] = True
+            seen["url"] = str(req.url)
+            return httpx.Response(200)
+
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def test_ssrf_blocks_cgnat_tailnet_endpoint(self):
+        """deliver_handshake must not POST to a literal CGNAT (100.64/10) address.
+
+        The A2A bus lives in this range; a CGNAT-blind guard would let it
+        through.  Uses a literal IP (NOT a rebinding test) to probe the real
+        gap proven on #2556.
+        """
+        seen = {}
+        client = self._mock_client(seen)
+        try:
+            result = await deliver_handshake(
+                {"envelope": "test"}, ["http://100.64.0.1/"],
+                http_client=client,
+            )
+            assert result is False
+            assert "called" not in seen
+        finally:
+            await client.aclose()
+
+    async def test_ssrf_blocks_rfc1918_lan_endpoint(self):
+        """deliver_handshake must not POST to a literal RFC1918 LAN address."""
+        seen = {}
+        client = self._mock_client(seen)
+        try:
+            result = await deliver_handshake(
+                {"envelope": "test"}, ["http://192.168.1.1/"],
+                http_client=client,
+            )
+            assert result is False
+            assert "called" not in seen
+        finally:
+            await client.aclose()
+
+    async def test_ssrf_blocks_loopback_endpoint(self):
+        """Baseline: loopback (127.0.0.1) is also blocked."""
+        seen = {}
+        client = self._mock_client(seen)
+        try:
+            result = await deliver_handshake(
+                {"envelope": "test"}, ["http://127.0.0.1/"],
+                http_client=client,
+            )
+            assert result is False
+            assert "called" not in seen
+        finally:
+            await client.aclose()
+
+    async def test_delivers_to_public_endpoint(self):
+        """A public endpoint must succeed (guard does not block legit delivery)."""
+        seen = {}
+        client = self._mock_client(seen)
+        try:
+            result = await deliver_handshake(
+                {"envelope": "test"}, ["http://93.184.216.34/"],
+                http_client=client,
+            )
+            assert result is True
+            assert seen["url"] == "http://93.184.216.34/api/peer/inbox"
+        finally:
+            await client.aclose()
+
+    async def test_delivers_to_dict_endpoints_from_stored_link(self, store):
+        """deliver_handshake handles dict-format endpoints from get_peer_link.
+
+        Drives the REAL stored-link path: establish_peer_link -> get_peer_link
+        -> deliver_handshake.  Before the fix this raised AttributeError
+        because deliver_handshake called .rstrip on dicts.
+        """
+        await store.add_contact(
+            contact_id="hub:dict-ep",
+            hub_username="dict-ep",
+            display_name="D",
+            ed25519_pub="pk",
+            x25519_pub="ek",
+        )
+        # Dict endpoints, exactly as _try_handshake normalizes them.
+        await store.establish_peer_link(
+            contact_id="hub:dict-ep",
+            inbound_token=generate_peer_token(),
+            outbound_token=generate_peer_token(),
+            endpoints=[{"kind": "hub", "url": "http://93.184.216.34/", "priority": 0}],
+        )
+        link = await store.get_peer_link("hub:dict-ep")
+        assert isinstance(link["endpoints"][0], dict)  # real dict form
+
+        seen = {}
+        client = self._mock_client(seen)
+        try:
+            envelope = {"from": "hub:local", "to": "hub:dict-ep", "kind": "handshake"}
+            # Must NOT raise AttributeError.
+            result = await deliver_handshake(
+                envelope, link["endpoints"], http_client=client,
+            )
+            assert result is True
+            assert seen["url"] == "http://93.184.216.34/api/peer/inbox"
+        finally:
+            await client.aclose()
+
+    async def test_skips_blocked_then_delivers_next(self):
+        """A blocked endpoint is skipped; delivery proceeds to the next."""
+        seen = {}
+        client = self._mock_client(seen)
+        try:
+            result = await deliver_handshake(
+                {"envelope": "test"},
+                ["http://100.64.0.1/", "http://93.184.216.34/"],
+                http_client=client,
+            )
+            assert result is True
+            assert seen["url"] == "http://93.184.216.34/api/peer/inbox"
+        finally:
+            await client.aclose()

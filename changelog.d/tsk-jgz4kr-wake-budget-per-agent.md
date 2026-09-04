@@ -1,0 +1,3 @@
+### Fixed
+- Wake-budget reader (`get_agent_wake_budget`, `get_fleet_wake_info`) no longer goes blind when an agent holds no task: consumption is now summed across all of the agent's project keys, so closing all tasks cannot make `consumed` report 0 while the enforcer charged under project keys.
+- Enforcer (`can_wake`, `get_next_scheduled_wake`) now applies the daily budget as a per-agent ceiling: `global_default: 2` and `per_agent` overrides limit the total number of scheduled wakes for the agent across all projects, matching TOKEN-DISCIPLINE rule 6. Reader and enforcer now use the same per-agent semantics.

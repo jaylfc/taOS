@@ -330,11 +330,17 @@ async def deploy_agent(req: DeployRequest) -> dict:
 
     # Trace capture — local auth token + trace API URL.
     try:
-        local_token_path = req.data_dir / ".auth_local_token"
-        if local_token_path.exists():
-            env["TAOS_LOCAL_TOKEN"] = local_token_path.read_text().strip()
-    except Exception:
-        pass
+        from tinyagentos.auth import AuthManager
+        auth_mgr = AuthManager(req.data_dir)
+        agent_token = auth_mgr.mint_agent_local_token(req.name)
+        env["TAOS_LOCAL_TOKEN"] = agent_token
+    except Exception as exc:
+        logger.error("deploy %s: failed to mint agent local token: %s", req.name, exc)
+        return {
+            "success": False,
+            "error": f"failed to mint agent local token: {exc}",
+            "steps": steps,
+        }
     env["TAOS_TRACE_URL"] = f"http://{req.taos_host}:{req.taos_port}/api/trace"
 
     # Agent-bridge shared token (issue #672 — defense-in-depth auth guard).

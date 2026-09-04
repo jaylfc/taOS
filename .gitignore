@@ -114,7 +114,6 @@ desktop/node_modules
 /package-lock.json
 /vitest.config.ts
 /vitest.config.js
-
 # Local-only operational playbook (contains LAN IP + ops detail; agents read it from the working tree)
 docs/AGENT_HANDOFF.md
 docs/audit/

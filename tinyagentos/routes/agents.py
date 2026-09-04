@@ -1636,36 +1636,23 @@ async def reset_agent_budget(request: Request, name: str):
 @router.get("/api/agents/{name}/wake-budget")
 async def get_agent_wake_budget(request: Request, name: str):
     """Return an agent's resolved wake budget, today's consumption, and next
-    scheduled wake epoch."""
+    scheduled wake epoch.
+
+    Consumption is summed across all of the agent's project keys (per-agent
+    semantics) so the reported figures are accurate even when the agent holds
+    no current task.
+    """
     from pathlib import Path
-    from tinyagentos.wake_budget import resolve_budget, get_consumption, get_next_scheduled_wake
+    from tinyagentos.wake_budget import get_agent_consumption, get_next_scheduled_wake, resolve_budget
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
     agent_id = agent.get("id") or name
     data_dir = Path(request.app.state.data_dir)
-    project_task_store = getattr(request.app.state, "project_task_store", None)
-    project_id = None
-    if project_task_store is not None:
-        try:
-            held = await project_task_store.held_task(agent_id)
-            if held is not None:
-                task = await project_task_store.get_task(held)
-                if task is not None:
-                    project_id = task.get("project_id")
-            else:
-                ready = await project_task_store.list_ready_tasks_for_assignee(agent_id)
-                if ready:
-                    project_id = ready[0].get("project_id")
-        except Exception:
-            logger.warning(
-                "wake budget: project_task_store lookup failed for agent %s",
-                agent_id, exc_info=True,
-            )
-    budget = resolve_budget(agent_id, project_id, config)
-    consumption = get_consumption(data_dir, agent_id, project_id)
-    next_wake = get_next_scheduled_wake(data_dir, agent_id, project_id, config)
+    budget = resolve_budget(agent_id, None, config)
+    consumption = get_agent_consumption(data_dir, agent_id)
+    next_wake = get_next_scheduled_wake(data_dir, agent_id, None, config)
     return {
         "agent": name,
         "budget": budget,

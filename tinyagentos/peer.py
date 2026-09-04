@@ -169,12 +169,14 @@ def mint_peer_token(sub: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Handshake delivery
 # ---------------------------------------------------------------------------
-# WARNING: send_handshake / deliver_handshake currently have zero callers
-# repo-wide.  deliver_handshake POSTs to peer-supplied URLs with no SSRF
-# guard — wire a validating transport (e.g. an ssrf-safe httpx wrapper that
-# blocks internal/loopback/cloud-metadata targets) before either function
-# gets a caller.  Without it, a malicious peer endpoint could probe or
-# traverse the local network.
+# deliver_handshake POSTs to peer-supplied URLs.  Each target URL is passed
+# through the shared SSRF guard (tinyagentos.routes.desktop_browser.ssrf)
+# before the POST, so a peer endpoint can never reach loopback, link-local,
+# multicast, CGNAT (100.64/10, where our own A2A bus lives), or other private
+# ranges.  Endpoints may arrive as bare strings (send_handshake output) or as
+# normalized dicts {"kind", "url", "priority"} (from _try_handshake in
+# routes/hub.py, persisted via establish_peer_link); _endpoint_url handles
+# both.  The first caller is A2's friend-accept flow in routes/hub.py.
 
 
 def send_handshake(
@@ -216,13 +218,37 @@ def send_handshake(
     )
 
 
+def _endpoint_url(ep: str | dict) -> str | None:
+    """Extract a URL string from a peer endpoint.
+
+    Accepts both bare strings (legacy / send_handshake output) and the
+    normalized dict form ``{"kind", "url", "priority"}`` produced by
+    ``_try_handshake`` in routes/hub.py and persisted by
+    ``establish_peer_link``.  Returns None for anything that is neither.
+    """
+    if isinstance(ep, dict):
+        return ep.get("url")
+    if isinstance(ep, str):
+        return ep
+    return None
+
+
 async def deliver_handshake(
     envelope: dict,
-    peer_endpoints: list[str],
+    peer_endpoints: list[str | dict],
     *,
     http_client=None,
 ) -> bool:
     """Deliver a handshake envelope to the peer's endpoints (best-effort).
+
+    Handles both bare-string endpoints and the normalized dict form
+    ``{"kind", "url", "priority"}`` used by peer links (see
+    ``_try_handshake`` in routes/hub.py and ``establish_peer_link``).
+
+    Each target URL is validated against the shared SSRF guard before the
+    POST so a peer-supplied pointer can never reach loopback, link-local,
+    multicast, CGNAT (100.64/10, where our own A2A bus lives), or other
+    private ranges.
 
     Tries each endpoint in order; stops on the first 2xx response.  Returns
     True if at least one endpoint accepted the envelope, False otherwise.
@@ -232,13 +258,25 @@ async def deliver_handshake(
     """
     import httpx
 
+    from tinyagentos.routes.desktop_browser.ssrf import (
+        SsrfBlockedError,
+        validate_url_or_raise,
+    )
+
     own_client = http_client is None
     if own_client:
         http_client = httpx.AsyncClient(timeout=15.0)
 
     try:
         for ep in peer_endpoints:
-            url = ep.rstrip("/") + "/api/peer/inbox"
+            ep_url = _endpoint_url(ep)
+            if not ep_url:
+                continue
+            url = ep_url.rstrip("/") + "/api/peer/inbox"
+            try:
+                validate_url_or_raise(url)
+            except SsrfBlockedError:
+                continue
             try:
                 resp = await http_client.post(
                     url, json={"envelope": envelope},

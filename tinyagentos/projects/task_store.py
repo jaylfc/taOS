@@ -79,7 +79,29 @@ WHERE t.status = 'open'
       WHERE r.from_task_id = t.id
         AND r.kind = 'blocks'
         AND bt.status NOT IN ('closed', 'cancelled')
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM json_each(t.labels) je
+      JOIN project_tasks bt
+        ON 'blocked-on:' || bt.id = je.value
+       AND bt.project_id = t.project_id
+      WHERE bt.status NOT IN ('closed', 'cancelled')
   );
+
+CREATE TABLE IF NOT EXISTS task_checklist_items (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES project_tasks(id),
+    text TEXT NOT NULL DEFAULT '',
+    done INTEGER NOT NULL DEFAULT 0,
+    verified INTEGER NOT NULL DEFAULT 0,
+    reported INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_checklist_task
+  ON task_checklist_items(task_id, archived, done);
 """
 
 _TASK_JSON_FIELDS = ("labels",)
@@ -92,6 +114,16 @@ def _row_to_task(row, description) -> dict:
         if f in t and t[f] is not None:
             t[f] = json.loads(t[f])
     return t
+
+
+def _row_to_checklist_item(row, description) -> dict:
+    keys = [d[0] for d in description]
+    c = dict(zip(keys, row))
+    c["done"] = bool(c.get("done", 0))
+    c["verified"] = bool(c.get("verified", 0))
+    c["reported"] = bool(c.get("reported", 0))
+    c["archived"] = bool(c.get("archived", 0))
+    return c
 
 
 # Sentinels for update_task's element_id:
@@ -174,6 +206,52 @@ class ProjectTaskStore(BaseStore):
             "ON project_tasks(project_id, element_id)"
         )
         await self._db.commit()
+        # Ready-view migration: re-create ready_tasks so it honours the
+        # ``blocked-on:<id>`` label mechanism (defect tsk-wkah3z). SQLite's
+        # ``CREATE VIEW IF NOT EXISTS`` is a no-op when the view already
+        # exists, so databases created before this change keep the old view
+        # body and silently keep returning tasks whose blocker is still
+        # open. Drop + recreate is safe here: the view is a derived
+        # projection of project_tasks, so a rebuild after the drop picks up
+        # the new WHERE clause with no data movement.
+        await self._db.execute("DROP VIEW IF EXISTS ready_tasks")
+        await self._db.execute(
+            "CREATE VIEW ready_tasks AS "
+            "SELECT t.* FROM project_tasks t "
+            "WHERE t.status = 'open' "
+            "AND t.claimed_by IS NULL "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM task_relationships r "
+            "JOIN project_tasks bt ON bt.id = r.to_task_id "
+            "WHERE r.from_task_id = t.id "
+            "AND r.kind = 'blocks' "
+            "AND bt.status NOT IN ('closed', 'cancelled')"
+            ") "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM json_each(t.labels) je "
+            "JOIN project_tasks bt ON 'blocked-on:' || bt.id = je.value "
+            "AND bt.project_id = t.project_id "
+            "WHERE bt.status NOT IN ('closed', 'cancelled')"
+            ")"
+        )
+        await self._db.commit()
+        # Add created_by column for checklist items (defect tsk-6xymzj).
+        # Fresh installs already have it from SCHEMA. SQLite cannot ADD COLUMN NOT
+        # NULL without a default, so migrated databases get a NULLABLE column
+        # here; legacy rows stay NULL -- intended.
+        import sqlite3
+        async with self._db.execute("PRAGMA table_info(task_checklist_items)") as cur:
+            columns = await cur.fetchall()
+            column_names = [col[1] for col in columns]
+            if "created_by" not in column_names:
+                try:
+                    await self._db.execute(
+                        "ALTER TABLE task_checklist_items ADD COLUMN created_by TEXT"
+                    )
+                    await self._db.commit()
+                except sqlite3.OperationalError as e:
+                    if "duplicate column" not in str(e):
+                        raise
 
     async def create_task(
         self,
@@ -458,10 +536,25 @@ class ProjectTaskStore(BaseStore):
         if changed:
             existing = await self.get_task(task_id)
             if existing is not None:
+                strike_count = (
+                    await self._strikes.count_strikes(task_id)
+                    if self._strikes is not None
+                    else 0
+                )
+                latest_strike = (
+                    await self._strikes.latest(task_id)
+                    if self._strikes is not None
+                    else None
+                )
                 await self._publish(
                     existing["project_id"],
                     "task.quarantined",
-                    {"id": task_id, "actor": actor},
+                    {
+                        "id": task_id,
+                        "actor": actor,
+                        "strike_count": strike_count,
+                        "latest_strike": latest_strike,
+                    },
                 )
             # Derive the pre-quarantine status race-free from the committed row
             # rather than a separate pre-read (which would have a TOCTOU gap).
@@ -566,7 +659,11 @@ class ProjectTaskStore(BaseStore):
     async def list_ready_tasks(
         self, project_id: str, limit: int = 50, element_id: str | None = None
     ) -> list[dict]:
-        limit = max(1, min(limit, 200))
+        # Clamp to [1, 500]. The floor stops ``limit=0`` / negative inputs from
+        # being silently widened to ``unbounded`` or the default 50, and the
+        # cap protects the route from a caller asking for an unreasonable
+        # window (defect tsk-wkah3z).
+        limit = max(1, min(limit, 500))
         conds = ["project_id = ?"]
         params: list = [project_id]
         if element_id is not None:
@@ -709,3 +806,113 @@ class ProjectTaskStore(BaseStore):
             rows = await cur.fetchall()
             keys = [d[0] for d in cur.description]
         return [dict(zip(keys, r)) for r in rows]
+
+    # ------------------------------------------------------------------ checklist items
+
+    async def create_checklist_item(
+        self,
+        task_id: str,
+        text: str,
+        created_by: str,
+    ) -> dict:
+        cid = new_id("cki")
+        now = time.time()
+        await self._db.execute(
+            """INSERT INTO task_checklist_items
+               (id, task_id, text, done, verified, reported, archived, created_by, created_at, updated_at)
+               VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?, ?)""",
+            (cid, task_id, text, created_by, now, now),
+        )
+        await self._db.commit()
+        cur = await self._db.execute(
+            "SELECT * FROM task_checklist_items WHERE id = ?", (cid,)
+        )
+        row = await cur.fetchone()
+        desc = cur.description
+        item = _row_to_checklist_item(row, desc)
+        task = await self.get_task(task_id)
+        project_id = task["project_id"] if task is not None else ""
+        await self._publish(project_id, "checklist.item.created", {"id": item["id"], "text": item["text"], "task_id": task_id})
+        return item
+
+    async def list_checklist_items(
+        self,
+        task_id: str,
+        *,
+        include_archived: bool = False,
+    ) -> list[dict]:
+        conds = ["task_id = ?"]
+        params: list = [task_id]
+        if not include_archived:
+            conds.append("archived = 0")
+        sql = f"SELECT * FROM task_checklist_items WHERE {' AND '.join(conds)} ORDER BY created_at ASC"
+        async with self._db.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+            desc = cur.description
+        return [_row_to_checklist_item(r, desc) for r in rows]
+
+    async def update_checklist_item(
+        self,
+        item_id: str,
+        *,
+        done: bool | None = None,
+        verified: bool | None = None,
+        reported: bool | None = None,
+    ) -> dict | None:
+        now = time.time()
+        candidates: list[tuple[str, object]] = []
+        if done is not None:
+            candidates.append(("done", 1 if done else 0))
+        if verified is not None:
+            candidates.append(("verified", 1 if verified else 0))
+        if reported is not None:
+            candidates.append(("reported", 1 if reported else 0))
+        if not candidates:
+            return await self.get_checklist_item(item_id)
+        sets: list[str] = []
+        params: list = []
+        for col, val in candidates:
+            sets.append(f"{col} = ?")
+            params.append(val)
+        sets.append("updated_at = ?")
+        params.append(now)
+        params.append(item_id)
+        await self._db.execute(
+            f"UPDATE task_checklist_items SET {', '.join(sets)} WHERE id = ?", params
+        )
+        await self._db.commit()
+        return await self.get_checklist_item(item_id)
+
+    async def archive_checklist_item(self, item_id: str) -> dict:
+        """Archive a checklist item. Only valid if verified=1 and reported=1.
+
+        Raises ValueError if the item cannot be archived because it lacks
+        verification or a report.
+        """
+        item = await self.get_checklist_item(item_id)
+        if item is None:
+            raise ValueError(f"checklist item not found: {item_id}")
+        if item["verified"] != 1:
+            raise ValueError("item cannot be archived: not verified")
+        if item["reported"] != 1:
+            raise ValueError("item cannot be archived: not reported")
+        now = time.time()
+        await self._db.execute(
+            "UPDATE task_checklist_items SET archived = 1, updated_at = ? WHERE id = ?",
+            (now, item_id),
+        )
+        await self._db.commit()
+        task = await self.get_task(item["task_id"])
+        project_id = task["project_id"] if task is not None else ""
+        await self._publish(project_id, "checklist.item.archived", {"id": item_id, "task_id": item["task_id"], "archived": True})
+        return await self.get_checklist_item(item_id)
+
+    async def get_checklist_item(self, item_id: str) -> dict | None:
+        async with self._db.execute(
+            "SELECT * FROM task_checklist_items WHERE id = ?", (item_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            desc = cur.description
+            return _row_to_checklist_item(row, desc)

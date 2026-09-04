@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { AppManifest } from "./app-registry";
-import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, prefetchApp, resolveApp, apps, APP_REDIRECTS, resolvePinnedId } from "./app-registry";
+import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, isDefaultSurfaceApp, prefetchApp, resolveApp, apps, APP_REDIRECTS, resolvePinnedId } from "./app-registry";
 
 describe("resolveApp (deep-navigation token resolver)", () => {
   it("resolves an exact app id", () => {
@@ -103,6 +103,35 @@ describe("file handler tiering", () => {
       const app = getApp(id);
       expect(app?.tier).toBe(4);
       expect(app?.handler).toBe(true);
+    }
+  });
+});
+
+describe("isDefaultSurfaceApp (shared default-surface tier rule)", () => {
+  it("includes tier 1 and tier 2 apps", () => {
+    for (const id of ["messages", "models", "cluster", "secrets"]) {
+      expect(isDefaultSurfaceApp(getApp(id)!), `app "${id}" should be a default-surface app`).toBe(true);
+    }
+  });
+
+  it("excludes tier 3 apps (discoverable via Store/search)", () => {
+    for (const id of ["providers", "mcp", "channels", "notification-archive"]) {
+      expect(isDefaultSurfaceApp(getApp(id)!), `tier-3 app "${id}" should NOT be a default-surface app`).toBe(false);
+    }
+  });
+
+  it("excludes tier 4 file handlers", () => {
+    for (const id of ["media-player", "text-editor", "image-viewer"]) {
+      const app = getApp(id)!;
+      expect(app.tier).toBe(4);
+      expect(app.handler).toBe(true);
+      expect(isDefaultSurfaceApp(app), `tier-4 handler "${id}" should NOT be a default-surface app`).toBe(false);
+    }
+  });
+
+  it("excludes optional (Store-installable) apps", () => {
+    for (const id of ["reddit", "coding-studio"]) {
+      expect(isDefaultSurfaceApp(getApp(id)!), `optional app "${id}" should NOT be a default-surface app`).toBe(false);
     }
   });
 });

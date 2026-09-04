@@ -365,6 +365,14 @@ The registry-JWT surface, by scope:
   `POST .../tasks/{id}/unquarantine` is also reachable, but LEAD-only: the
   route (`_authorize_project_lead`) refuses a plain project_tasks worker.
   It returns a quarantined card to the open pool and clears its strikes.
+  The cross-project aggregate `GET /api/projects/tasks/aggregate` (Kanban
+  Viewer S1) is also `project_tasks`: it returns EVERY project the caller may
+  see -- its own boards for a session owner/admin, or only the projects it
+  holds an active `project_tasks` grant for as an agent -- each with that
+  project's tasks. The grant (not the token's advisory `project_id` claim) is
+  the sole per-project gate, so an agent granted board A can never receive
+  board B in the aggregate. Optional `?status=open|claimed|closed` filters
+  tasks and is validated up front (400 on anything else).
 - **project_tasks_create**: `POST /api/projects/{pid}/tasks` (author new cards).
   This is a SEPARATE scope from project_tasks and is off by default; grant it
   explicitly when an agent needs to create cards.
@@ -445,6 +453,20 @@ an active handle the approve returns **409** and names
 not resolve that 409 by minting a second identity: canonical ids are issued once
 per agent (`{slug}-{YYYYMMDD}-{HHMMSS}`), and a duplicate splits the agent's
 memory and grants across two ids that never reconcile.
+
+The collision guard is not blind to internal handles. Internal driver agents are
+seeded with their raw sigilled handle (`@taOSmd-dev`, `@Hermes`, ...) while the
+consent-approve path registers the slugified claim (`taosmd-dev`, `hermes`), so
+an exact lookup on the slug misses an active internal row that holds the same
+logical handle. The guard therefore chains an exact-then-normalised handle lookup;
+an external-selfjoin approval that collides (via the normalised handle) with an
+identity owned by a foreign origin (`taos-internal` or `taos-deployed`) fails
+closed with **409** instead of reusing that identity's `canonical_id`. A token
+minted for an internal driver id from an unauthenticated consent claim would be a
+straight impersonation of that driver, so the requester must pick a different
+`identity_claim`. A genuine same-origin re-approval (an already-active
+external-selfjoin handle) still reuses the identity per the multi-project rule
+above.
 
 Reserved name prefixes: registration rejects any name whose slug is or starts
 with `user-`, `human-`, `admin-` or `taos-` (including casing, spacing and
@@ -1065,13 +1087,62 @@ session. When you change the allowlist in `tinyagentos/auth_middleware.py`,
 record the change here so the agent-facing surface stays reviewable in one
 place.
 
-Task checklist items (added with the OS-owned objective checklist, #2415):
+Task checklist items (`/api/projects/{project_id}/tasks/{task_id}/checklist-items`)
 
-- `GET /api/projects/{project_id}/tasks/{task_id}/checklist-items` -- list;
-  Bearer-reachable so the handler's `project_tasks_create` scope check runs
-  instead of the middleware refusing 401 at the gate.
-- `POST /api/projects/{project_id}/tasks/{task_id}/checklist-items` -- create;
-  same scope check.
+Route module `tinyagentos/routes/projects.py`.
+
+- `POST .../checklist-items` takes a JSON body `{"text": "..."}` and creates one
+  item. A missing `text` is a `422`.
+- `GET .../checklist-items` lists items, newest state included. Takes
+  `?include_archived=true`; the default hides archived items.
+- Both answer `404` when the task is not in the named project, so a task id from
+  another project is existence-hiding rather than merely forbidden.
+- Creating an item logs `checklist.item.created` to the project activity feed
+  with the actor, task id, item id and text.
+- Archiving is store-level only and refuses unless the item is both **verified**
+  and **reported**; there is no archive route.
 - `DELETE` and per-item subpaths (`.../checklist-items/{item_id}`) stay
   session-only: no agent-reachable handler exists, and the allowlist must not
   widen past list + create.
+
+The handlers call `_authorize_task_actor(...)` and accept EITHER a session
+owner/admin OR a project-bound agent's registry JWT. The Bearer allowlist in
+`tinyagentos/auth_middleware.py` now matches both `GET` and `POST .../checklist-items`
+(see `## Agent-token API surface (Bearer allowlist)` above), so the middleware
+gate no longer refuses agent tokens with `401` and the handler scope check now
+runs: `POST` (create) requires the narrower `project_tasks_create` grant, while
+`GET` (list) takes the default `project_tasks` read grant. A `project_tasks`
+worker lane is therefore refused on `POST` (it lacks the create grant, `403`)
+and authorised on `GET`. `tests/test_routes_task_checklist.py` pins this scope
+split directly, not behind an xfail.
+
+Container provisioning request (P1 + P2, agent-container-provisioning spec):
+
+- `POST /api/containers/requests` and `POST /api/container-requests` -- an active agent submits a container provisioning request with its own registry JWT. The route resolves the canonical_id from the token (never from the request body) and applies the provisioning policy (per-agent quota + threshold). Under quota the request is auto-approved; over quota it lands in `pending-approval`; over threshold it is escalated to a Decisions-app item for Jay. This is an identity-only check (no scope grant required), matching the scope-request create flow's use of `check_agent_identity`.
+- `POST /api/containers/requests/{id}/provision` -- provisions an incus/LXC container for an `approved` request. Only the requesting agent may call this, and only when the request is in the `approved` state. On success the request transitions to `provisioned` and the container name is recorded. The container is bound to the agent + project via environment variables (`TAOS_AGENT_CANONICAL_ID`, `TAOS_PROJECT_ID`).
+- `POST /api/containers/requests/{id}/destroy` -- deletes the request row and, if the request was already `provisioned`, destroys the underlying incus container. Quota is returned to the agent on deletion.
+- `GET /api/agents/containers/quota` -- returns the calling agent's quota, threshold, current active (non-terminal) request count, and remaining slots.
+
+## Skill-exec agent identity (credential-bound, not body-supplied)
+
+`POST /api/skill-exec/{skill_id}/call` and `GET /api/skill-exec/tools` now
+derive the agent identity from the PRESENTED CREDENTIAL, not from the request
+body. Each agent is issued a distinct per-agent token at deploy time
+(`AuthManager.mint_agent_local_token` in `tinyagentos/auth.py`; called from
+`tinyagentos/deployer.py`), and that minted token -- not the shared host token
+-- is what lands in the agent's `TAOS_LOCAL_TOKEN`. The auth middleware sets
+`request.state.agent_name` from that binding, and the route rejects any
+bound-token caller whose body claims a different `agent_name` with 403.
+The shared host local token stays unbound: admin/system callers presenting it
+(and admin sessions) may still supply `agent_name` in the body, and agents
+deployed before this change keep the host token until their next redeploy,
+which rotates them onto a bound per-agent token.
+
+Blast radius: `_resolve_agent_workspace`, `_capture_tool_receipt`,
+`_check_execution_policy`, `execute_notes_list_shared_docs`, and the todo tools
+all key off the same `agent_name` string, so binding it at the credential layer
+closes the hole for every downstream consumer in one place. Per-agent tokens
+replace the earlier shared-token binding: each deploy mints a fresh token,
+eliminating the last-deploy-wins collision where two agents bound to the same
+host token would overwrite each other's identity. The shared host token remains
+valid for admin/system callers but is no longer bound to any agent name.
