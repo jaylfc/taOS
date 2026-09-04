@@ -507,13 +507,20 @@ class ProjectTaskStore(ProjectsDBStore):
             if only_if_unclaimed
             else "status NOT IN ('closed', 'cancelled', 'parked')"
         )
-        existing = None
-        from_status = "open"
         # Park and disown in ONE transaction: parked is terminal, so an owner
         # left on a parked row makes the card look held by an agent that can
         # never release it, and a failure or cancellation between two separate
         # transactions would leave exactly that.
         async with self._tx():
+            # Read the row INSIDE the transaction, before the park: that is the
+            # real pre-park status for the audit row.  The guard admits any row
+            # that is not closed, cancelled or parked -- 'quarantined' included,
+            # and quarantine keeps claimed_by -- so inferring the status from
+            # the claimer would log a quarantined card as 'claimed'.  Under
+            # BEGIN IMMEDIATE this read is not a racy pre-read: no other writer
+            # can change the row between it and the UPDATE below.
+            existing = await self.get_task(task_id)
+            from_status = existing["status"] if existing is not None else None
             cursor = await self._db.execute(
                 f"""UPDATE project_tasks
                     SET status = 'parked', updated_at = ?
@@ -522,14 +529,6 @@ class ProjectTaskStore(ProjectsDBStore):
             )
             changed = cursor.rowcount == 1
             if changed:
-                # Read inside the transaction, before the claimer is cleared:
-                # the park above does not touch claimed_by, so a set claimer
-                # means the task was 'claimed'.  Deriving it from the row rather
-                # than a pre-read keeps it race-free.
-                existing = await self.get_task(task_id)
-                from_status = (
-                    "claimed" if existing and existing.get("claimed_by") else "open"
-                )
                 await self._db.execute(
                     """UPDATE project_tasks
                        SET claimed_by = NULL, claimed_at = NULL
