@@ -852,9 +852,11 @@ The desktop client therefore never sends `?kinds=`; the server-side filter
 above is unchanged and stays available to other clients.
 
 The stream is open exactly while the subscriber map is non-empty -- that map
-is the only thing consulted on teardown, so a commit that unmounts one
-subscriber while another changes its `kinds` cannot close a stream someone is
-still listening to. `connected` / `stale` come from a shared snapshot through
+is the only thing consulted on teardown, and it is consulted a microtask after
+the last subscriber leaves, once the React commit has settled. React runs every
+effect cleanup in a commit before any setup, so the map is briefly empty in any
+commit that swaps one subscriber for another; reading it mid-teardown would
+close a stream someone is still listening to and immediately reopen it. `connected` / `stale` come from a shared snapshot through
 `useSyncExternalStore`, replaced only on a real transition, so the repeated
 `error` events a browser fires while it retries do not re-render every
 subscriber. An `error` does mark the stream stale even while the browser is

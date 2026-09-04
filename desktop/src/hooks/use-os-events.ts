@@ -34,6 +34,7 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const seenIdsRef = { current: new Set<string>() };
 const seenIdsListRef = { current: [] as string[] };
 const listeners = new Set<() => void>();
+let stopScheduled = false;
 
 const DISCONNECTED: OsEventsStatus = { connected: false, stale: true };
 
@@ -148,7 +149,26 @@ function stopConnection() {
   setStatus(false, true);
 }
 
+// The map goes empty for a moment in any commit that swaps one subscriber for
+// another, because React runs every cleanup in a commit before any setup.
+// Deferring the decision to a microtask -- which cannot run until that whole
+// flush has unwound -- means "the map is empty" is read once the commit has
+// settled, not mid-teardown.
+function stopConnectionIfIdle() {
+  if (stopScheduled) return;
+  stopScheduled = true;
+  queueMicrotask(() => {
+    // A reset cancels a pending check by clearing the flag.
+    if (!stopScheduled) return;
+    stopScheduled = false;
+    if (subscribers.size === 0) {
+      stopConnection();
+    }
+  });
+}
+
 export function resetOsEventsState() {
+  stopScheduled = false;
   stopConnection();
   subscribers.clear();
   listeners.clear();
@@ -174,9 +194,10 @@ export function useOsEvents(
   //
   // The dependency list is empty on purpose: the subscriber's LIFETIME is the
   // component's, and only its `kinds` change. That leaves exactly one rule for
-  // the stream -- open while the map is non-empty -- read from the map itself
-  // rather than from the unmounting component's own mounted flag, which cannot
-  // see that a different component is mid-update in the same commit.
+  // the stream -- open while the map is non-empty, read from the map itself
+  // once the commit has settled -- instead of the unmounting component's own
+  // mounted flag, which cannot see that another component is mid-update in the
+  // same commit.
   useEffect(() => {
     const id = ++nextId;
     idRef.current = id;
@@ -189,9 +210,7 @@ export function useOsEvents(
     return () => {
       idRef.current = null;
       subscribers.delete(id);
-      if (subscribers.size === 0) {
-        stopConnection();
-      }
+      stopConnectionIfIdle();
     };
   }, []);
 

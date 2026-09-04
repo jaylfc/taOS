@@ -134,11 +134,14 @@ describe("useOsEvents", () => {
     vi.useRealTimers();
   });
 
-  it("closes the EventSource on unmount", () => {
+  it("closes the EventSource on unmount", async () => {
     const { unmount } = renderHook(() =>
       useOsEvents(["projects.task.changed"], () => {}),
     );
     unmount();
+    // The teardown decision is deferred by a microtask so it reads the
+    // subscriber map once the commit has settled rather than mid-teardown.
+    await act(async () => {});
     expect(lastEs?.close).toHaveBeenCalled();
   });
 
@@ -314,7 +317,7 @@ describe("useOsEvents", () => {
     expect(onEvent2).not.toHaveBeenCalled();
   });
 
-  it("keeps the connection open while at least one instance remains", () => {
+  it("keeps the connection open while at least one instance remains", async () => {
     const { unmount: unmount1 } = renderHook(() =>
       useOsEvents(["projects.task.changed"], () => {}),
     );
@@ -325,10 +328,11 @@ describe("useOsEvents", () => {
     expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
 
     unmount1();
+    await act(async () => {});
     expect(lastEs?.close).not.toHaveBeenCalled();
   });
 
-  it("closes the EventSource when the last instance unmounts", () => {
+  it("closes the EventSource when the last instance unmounts", async () => {
     const { unmount: unmount1 } = renderHook(() =>
       useOsEvents(["projects.task.changed"], () => {}),
     );
@@ -339,9 +343,11 @@ describe("useOsEvents", () => {
     expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
 
     unmount2();
+    await act(async () => {});
     expect(lastEs?.close).not.toHaveBeenCalled();
 
     unmount1();
+    await act(async () => {});
     expect(lastEs?.close).toHaveBeenCalled();
   });
 
@@ -451,5 +457,32 @@ describe("useOsEvents", () => {
     }
 
     expect(renders).toBe(afterFirstError);
+  });
+
+  it("keeps the shared stream when the last subscriber unmounts in the same commit as a new one mounts", async () => {
+    function Leaving() {
+      useOsEvents(["projects.task.changed"], () => {});
+      return null;
+    }
+
+    function Arriving() {
+      useOsEvents(["agents.status.changed"], () => {});
+      return null;
+    }
+
+    // Swapping the component at a position unmounts one and mounts the other
+    // in a single commit. React runs every cleanup in that commit before any
+    // setup, so the map is empty for a moment even though the window never
+    // stops listening. Closing on that moment drops in-flight events and the
+    // dedup window for nothing.
+    const { rerender } = render(createElement(Leaving));
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
+    const opened = lastEs;
+
+    rerender(createElement(Arriving));
+    await act(async () => {});
+
+    expect(opened?.close).not.toHaveBeenCalled();
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
   });
 });
