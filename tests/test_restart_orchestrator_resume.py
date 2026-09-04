@@ -208,6 +208,45 @@ class TestCapContextSnapshot:
         assert capped_size <= ro._MAX_CONTEXT_SNAPSHOT_BYTES
         assert "agent_id" in capped
 
+    def test_required_fields_survive_long_name_fields(self):
+        """The required fields must be preserved because they are required,
+        not because they happen to be small. A snapshot whose agent_id and
+        session_id carry MODERATE values beside many long-NAME fields with
+        short values sorts the required fields FIRST under value-size
+        ordering, so a cap that only sorts by size drops exactly the fields
+        the contract promises to keep."""
+        snapshot = {"agent_id": "a" * 500, "session_id": "b" * 500}
+        for i in range(300):
+            snapshot[f"{'x' * 400}{i}"] = "y" * 10
+        note = {"context_snapshot": snapshot}
+        original_size = len(json.dumps(snapshot, separators=(",", ":")))
+        assert original_size > ro._MAX_CONTEXT_SNAPSHOT_BYTES
+        ro._cap_context_snapshot(note)
+        capped = note["context_snapshot"]
+        assert "agent_id" in capped
+        assert "session_id" in capped
+        assert capped["agent_id"] == "a" * 500
+        assert capped["session_id"] == "b" * 500
+        # A fix that keeps the fields by abandoning the cap is not a fix.
+        assert len(json.dumps(capped, separators=(",", ":"))) <= ro._MAX_CONTEXT_SNAPSHOT_BYTES
+
+    def test_required_field_larger_than_cap_still_respects_cap(self):
+        """Preservation is bounded by the cap: an agent_id that alone exceeds
+        the limit must still be dropped, or the note re-triggers the very
+        overflow the cap exists to prevent."""
+        snapshot = {
+            "agent_id": "a" * (ro._MAX_CONTEXT_SNAPSHOT_BYTES + 1000),
+            "session_id": "b" * 100,
+            "memory": "y" * 1000,
+        }
+        note = {"context_snapshot": snapshot}
+        ro._cap_context_snapshot(note)
+        capped = note["context_snapshot"]
+        assert len(json.dumps(capped, separators=(",", ":"))) <= ro._MAX_CONTEXT_SNAPSHOT_BYTES
+        assert "agent_id" not in capped
+        # The smaller required field still fits, so it is still kept.
+        assert capped["session_id"] == "b" * 100
+
     def test_empty_snapshot_is_noop(self):
         for val in [{}, None, "", "str"]:
             note = {"context_snapshot": val}

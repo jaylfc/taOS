@@ -119,9 +119,19 @@ into the same overflow every time and the recovery note is never consumed.
 
 `_cap_context_snapshot()` in `tinyagentos/restart_orchestrator.py` caps the
 snapshot by dropping the largest fields first until the serialized form fits
-within 32768 bytes, then records the dropped field names in a `_truncated`
-marker. Do not bypass it: any code that writes a resume note by hand must still
-route it through that guard, lest a 32 KB transcript become a 32 KB failure.
+within 32768 bytes. `agent_id` and `session_id` are never candidates while any
+other field remains - a note that cannot say which agent or session it belongs
+to is not worth resuming - and they are dropped only if they alone still breach
+the cap, because an over-limit note re-triggers the overflow the cap exists to
+prevent. Preservation is by name, not by size: ordering the drop by value size
+(or by serialized entry size) keeps a required field only while its value
+happens to be the smaller one.
+
+The dropped field names are recorded in a `_truncated` marker, which is itself
+size-budgeted: the name list is trimmed to fit, and if even an empty marker will
+not fit, the marker is dropped and no dropped names are recorded at all. Do not
+bypass the guard: any code that writes a resume note by hand must still route it
+through it, lest a 32 KB transcript become a 32 KB failure.
 
 ## Credentials, grants and the things that bite
 

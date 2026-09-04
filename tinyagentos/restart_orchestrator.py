@@ -258,6 +258,19 @@ _RESUME_RETRY_WINDOW_S = 600
 
 _MAX_CONTEXT_SNAPSHOT_BYTES = 32768
 
+# A resume note without these is not worth resuming: the framework cannot tell
+# which agent or session it is waking. Preserving them was documented and
+# asserted but never implemented - both drop loops ordered purely by value size,
+# so the fields survived only while their values happened to be small. A large
+# agent_id beside many long-NAME fields sorts FIRST and is dropped first, and
+# ordering by serialized entry size instead does not help: the long names move
+# the entries, not the ordering. Exclude them by name.
+_REQUIRED_SNAPSHOT_FIELDS = ("agent_id", "session_id")
+_TRUNCATION_REASON = (
+    "snapshot exceeded context window; largest fields dropped first, "
+    "agent_id and session_id kept where the cap allows"
+)
+
 
 def _cap_context_snapshot(note: dict) -> None:
     snapshot = note.get("context_snapshot")
@@ -275,7 +288,7 @@ def _cap_context_snapshot(note: dict) -> None:
     snapshot = dict(snapshot)
     note["context_snapshot"] = snapshot
     fields = sorted(
-        snapshot.items(),
+        (kv for kv in snapshot.items() if kv[0] not in _REQUIRED_SNAPSHOT_FIELDS),
         key=lambda kv: len(json.dumps(kv[1], separators=(",", ":"))),
         reverse=True,
     )
@@ -292,13 +305,29 @@ def _cap_context_snapshot(note: dict) -> None:
 
     while len(json.dumps(snapshot, separators=(",", ":"))) > _MAX_CONTEXT_SNAPSHOT_BYTES:
         remaining = sorted(
-            (kv for kv in snapshot.items() if kv[0] != "_truncated"),
+            (
+                kv
+                for kv in snapshot.items()
+                if kv[0] != "_truncated" and kv[0] not in _REQUIRED_SNAPSHOT_FIELDS
+            ),
             key=lambda kv: len(json.dumps(kv[1], separators=(",", ":"))),
             reverse=True,
         )
         if not remaining:
-            snapshot.pop("_truncated", None)
-            break
+            # Nothing droppable left and the snapshot still overflows. The cap
+            # is the harder invariant - an over-limit note re-triggers the very
+            # overflow the cap exists to prevent - so give up the marker first
+            # and then the required fields themselves, largest first.
+            if "_truncated" in snapshot:
+                snapshot.pop("_truncated")
+                continue
+            remaining = sorted(
+                snapshot.items(),
+                key=lambda kv: len(json.dumps(kv[1], separators=(",", ":"))),
+                reverse=True,
+            )
+            if not remaining:
+                break
         key, _value = remaining[0]
         snapshot.pop(key)
         dropped.append(key)
@@ -319,13 +348,13 @@ def _build_truncated_marker(
         marker = {
             "dropped_fields": reported
             + ([f"...and {extra} more"] if extra > 0 else []),
-            "reason": "snapshot exceeded context window; largest fields dropped first",
+            "reason": _TRUNCATION_REASON,
         }
         candidate = dict(snapshot)
         candidate["_truncated"] = marker
         if len(json.dumps(candidate, separators=(",", ":"))) <= max_bytes:
             return marker
-    return {"dropped_fields": [], "reason": "snapshot exceeded context window; largest fields dropped first"}
+    return {"dropped_fields": [], "reason": _TRUNCATION_REASON}
 
 
 def _load_or_synthesize_note(note_path: Path) -> dict:
