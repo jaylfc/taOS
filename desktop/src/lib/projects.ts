@@ -31,7 +31,7 @@ export type ProjectTask = {
   parent_task_id: string | null;
   title: string;
   body: string;
-  status: "open" | "claimed" | "closed" | "cancelled" | "quarantined";
+  status: "open" | "claimed" | "closed" | "cancelled" | "quarantined" | "parked";
   priority: number;
   labels: string[];
   assignee_id: string | null;

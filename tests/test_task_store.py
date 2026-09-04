@@ -728,3 +728,206 @@ async def test_quarantine_event_payload_carries_strike_metadata(tmp_path):
     finally:
         await s.close()
         await strikes.close()
+
+
+@pytest.mark.asyncio
+async def test_park_open_task(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    ok = await s.park_task(task["id"], "system")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_park_claimed_task_records_from_status_claimed(tmp_path):
+    audit = BoardAuditLog(tmp_path / "audit.db")
+    await audit.init()
+    s = ProjectTaskStore(tmp_path / "tasks.db", audit=audit)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        await s.claim_task(task["id"], "worker-1")
+        ok = await s.park_task(task["id"], "system")
+        assert ok is True
+        history = await audit.history(task["id"])
+        parked = [h for h in history if h["event"] == "task.parked"]
+        assert len(parked) == 1
+        assert parked[0]["from_status"] == "claimed"
+        # Parked is terminal, so the claim must not survive it: a parked row
+        # that still names a claimer reads as held by an agent that can never
+        # release it, and that is exactly the stale ownership the release-path
+        # parking fix exists to keep out of the board.
+        fetched = await s.get_task(task["id"])
+        assert fetched["status"] == "parked"
+        assert fetched["claimed_by"] is None
+        assert fetched["claimed_at"] is None
+    finally:
+        await s.close()
+        await audit.close()
+
+
+@pytest.mark.asyncio
+async def test_park_is_permanent(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    ok = await s.park_task(task["id"], "system")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_parked_task_cannot_be_claimed(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.park_task(task["id"], "system")
+    ok = await s.claim_task(task["id"], "agent-1")
+    assert ok is False
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_parked_task_cannot_be_closed_or_reopened(tmp_path):
+    """The two remaining routes back into the pool stay shut.
+
+    ``reopen_task`` guards on ``status = 'closed'`` alone; that is only
+    sufficient because ``close_task`` refuses a parked task, keeping 'parked'
+    and 'closed' mutually exclusive.  Assert both halves so the pair cannot
+    drift apart -- if a future edit lets a parked card be closed, reopen would
+    silently become a way to un-park it.
+    """
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.park_task(task["id"], "system")
+    assert await s.close_task(task["id"], "alice") is False
+    assert await s.close_task(task["id"], "alice", force=True) is False
+    assert await s.reopen_task(task["id"], "alice") is False
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_update_task_cannot_unpark(tmp_path):
+    """A generic edit must not resurrect a parked card.
+
+    `update_task(status="open")` is the board's ordinary field editor, so if it
+    can move a parked task back to 'open' the card re-enters ready_tasks and
+    the dispatch lanes pick it up again -- the exact loop parking exists to
+    break.
+    """
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.park_task(task["id"], "system")
+    await s.update_task(task["id"], status="open")
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    ready = await s.list_tasks("prj-1", status="open")
+    assert [t["id"] for t in ready] == []
+    # Other fields still edit fine on a parked card.
+    await s.update_task(task["id"], title="Renamed", status="open")
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    assert fetched["title"] == "Renamed"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_release_parking_does_not_steal_a_concurrent_claim(tmp_path):
+    """Parking on release must not swallow a claim made after the pre-check.
+
+    The release path records the threshold strike and then parks.  If it
+    decides on a separate read, another worker can claim the task in the gap
+    between that read and the park, and the park lands on a live claim.
+    """
+    from tinyagentos.projects.strike_store import StrikeStore
+
+    strikes = StrikeStore(tmp_path / "strikes.db")
+    await strikes.init()
+    s = ProjectTaskStore(tmp_path / "tasks.db", strikes=strikes)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        for _ in range(StrikeStore.STRIKE_THRESHOLD - 1):
+            await strikes.record_strike(task["id"], "dispatch_failed", actor="worker-1")
+        await s.claim_task(task["id"], "worker-1")
+
+        # Drive the interleaving deterministically: worker-2 claims the task in
+        # the last moment before the parking UPDATE runs -- exactly the window a
+        # separate pre-read leaves open.  Both the pre-read design and the
+        # conditional-update design reach this point, so the hook is fair to
+        # either implementation.
+        real_execute = s._db.execute
+        state = {"raced": False}
+
+        def racing_execute(sql, *args, **kwargs):
+            # Stay a plain function so non-matching statements hand back
+            # aiosqlite's cursor object unchanged (callers use it both with
+            # `await` and with `async with`). Parking statements are only ever
+            # awaited, so returning a coroutine for those is safe.
+            if (
+                not state["raced"]
+                and sql.lstrip().upper().startswith("UPDATE")
+                and "'parked'" in sql
+            ):
+                state["raced"] = True
+
+                async def _claim_then_execute():
+                    assert await s.claim_task(task["id"], "worker-2") is True
+                    return await real_execute(sql, *args, **kwargs)
+
+                return _claim_then_execute()
+            return real_execute(sql, *args, **kwargs)
+
+        s._db.execute = racing_execute
+        ok = await s.release_task(task["id"], "worker-1")
+        s._db.execute = real_execute
+        assert ok is True
+        assert state["raced"] is True
+
+        fetched = await s.get_task(task["id"])
+        assert fetched["status"] == "claimed"
+        assert fetched["claimed_by"] == "worker-2"
+    finally:
+        await s.close()
+        await strikes.close()
+
+
+@pytest.mark.asyncio
+async def test_release_records_strike_and_parks_after_threshold(tmp_path):
+    from tinyagentos.projects.strike_store import StrikeStore
+
+    strikes = StrikeStore(tmp_path / "strikes.db")
+    await strikes.init()
+    s = ProjectTaskStore(tmp_path / "tasks.db", strikes=strikes)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        for _ in range(StrikeStore.STRIKE_THRESHOLD):
+            await s.claim_task(task["id"], "worker-1")
+            ok = await s.release_task(task["id"], "worker-1")
+            assert ok is True
+        fetched = await s.get_task(task["id"])
+        assert fetched["status"] == "parked"
+        assert await strikes.count_strikes(task["id"]) == StrikeStore.STRIKE_THRESHOLD
+    finally:
+        await s.close()
+        await strikes.close()
+
+
+@pytest.mark.asyncio
+async def test_release_without_strikes_store_does_not_record(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.claim_task(task["id"], "worker-1")
+    ok = await s.release_task(task["id"], "worker-1")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "open"
+    await s.close()
