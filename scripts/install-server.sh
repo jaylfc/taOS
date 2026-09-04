@@ -892,7 +892,7 @@ ensure_container_runtime() {
                     return 0
                 fi
                 log "Zabbly key fingerprint ok (${_zabbly_actual_fp:0:16}…)"
-                sudo cp "$_zabbly_key_tmp" /etc/apt/keyrings/zabbly.asc
+                sudo install -m 0644 "$_zabbly_key_tmp" /etc/apt/keyrings/zabbly.asc
                 echo "deb [signed-by=/etc/apt/keyrings/zabbly.asc] https://pkgs.zabbly.com/incus/stable $codename main" \
                     | sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.list > /dev/null
                 sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
@@ -2429,33 +2429,88 @@ fi
 # --- wait for controller to come up -------------------------------------
 
 if [[ "$SERVICE_MODE" != "skip" ]]; then
-    # 120s ceiling: cold-boot on a Pi 5 / Orange Pi 5 lands around 55-65s
-    # (issue #337) so 60s was racing the actual ready state and printing
-    # a false "controller did not respond" warning even on successful
-    # installs. Doubling the cap keeps the safety net while removing the
-    # false alarm. Loop continues to early-exit the moment /api/cluster/workers
-    # answers, so this is just a higher ceiling, not slower steady state.
-    log "waiting for controller to be ready on port $TAOS_PORT (up to 120 s)..."
-    ctrl_tries=0
-    ctrl_up=0
-    while [[ $ctrl_tries -lt 120 ]]; do
-        if curl -sf "http://localhost:$TAOS_PORT/api/cluster/workers" >/dev/null 2>&1; then
-            ctrl_up=1
+    # Cold-boot on a fresh install runs a lot of first-run init (litellm
+    # prisma migration, store creation, backend catalog probing) that can
+    # exceed the old 120 s cap and make the installer print "controller did
+    # not respond" when the app was actually still starting. A re-run then
+    # succeeds because everything is already initialised (taOS#2).
+    #
+    # We wait in two phases so the message names exactly what is happening:
+    #   1. port open  -- the process is alive and uvicorn is listening.
+    #   2. ready      -- /api/cluster/workers answers, meaning the lifespan
+    #                    init chain has completed.
+    _PORT_WAIT=60
+    _READY_WAIT=240
+
+    log "waiting for controller port $TAOS_PORT to open (up to $_PORT_WAIT s)..."
+    _port_tries=0
+    _port_open=0
+    _port_deadline=$(( SECONDS + _PORT_WAIT ))
+    while [[ $_port_tries -lt $_PORT_WAIT ]]; do
+        # `_port_deadline` is an absolute wall-clock deadline, so every guard
+        # below reads the clock at the moment it runs instead of a value
+        # captured earlier in the iteration. The `max(1, ...)` floor keeps
+        # curl's --max-time strictly positive even if a future edit weakens
+        # the deadline guard above; curl --max-time 0 means "no timeout" and
+        # would hang the installer forever.
+        _remaining=$(( _port_deadline - SECONDS ))
+        [[ $_remaining -le 0 ]] && break
+        _curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))
+        if curl -sf --max-time "$_curl_timeout" "http://localhost:$TAOS_PORT/api/health" >/dev/null 2>&1; then
+            _port_open=1
             break
         fi
+        # Re-read the clock after the probe: curl may have burned the whole
+        # remaining budget, so the pre-probe `_remaining` is stale here and
+        # would let the follow-up sleep run past the phase deadline.
+        _remaining=$(( _port_deadline - SECONDS ))
+        [[ $_remaining -le 1 ]] && break
         sleep 1
-        ctrl_tries=$((ctrl_tries + 1))
+        _port_tries=$((_port_tries + 1))
     done
 
-    if [[ $ctrl_up -eq 0 ]]; then
-        warn "controller did not respond within 120 seconds"
+    if [[ $_port_open -eq 0 ]]; then
+        warn "controller did not open port $TAOS_PORT within $_PORT_WAIT seconds"
         if command -v journalctl >/dev/null 2>&1; then
             warn "latest journal output:"
             journalctl -u tinyagentos --no-pager -n 30 2>/dev/null || true
         fi
-        die "controller failed to start — check the journal above and fix before continuing"
+        die "controller process did not start — check the journal above and fix before continuing"
     fi
-    log "controller is up"
+    log "controller port $TAOS_PORT is open, waiting for first-boot init to finish..."
+
+    _ready_tries=0
+    _ready_ok=0
+    _ready_deadline=$(( SECONDS + _READY_WAIT ))
+    while [[ $_ready_tries -lt $_READY_WAIT ]]; do
+        # Same timeout invariant as the port-open loop above: cap curl's
+        # --max-time by remaining phase time, floor it at 1 s so it can
+        # never silently disable curl's per-attempt timeout, and re-read
+        # the clock after the probe so a slow probe cannot push the sleep
+        # past the phase deadline.
+        _remaining=$(( _ready_deadline - SECONDS ))
+        [[ $_remaining -le 0 ]] && break
+        _curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))
+        if curl -sf --max-time "$_curl_timeout" "http://localhost:$TAOS_PORT/api/cluster/workers" >/dev/null 2>&1; then
+            _ready_ok=1
+            break
+        fi
+        _remaining=$(( _ready_deadline - SECONDS ))
+        [[ $_remaining -le 1 ]] && break
+        sleep 1
+        _ready_tries=$((_ready_tries + 1))
+    done
+
+    if [[ $_ready_ok -eq 0 ]]; then
+        warn "controller did not become ready within $_READY_WAIT seconds"
+        warn "first-boot init may still be running (litellm migration, store creation, backend catalog probing)"
+        if command -v journalctl >/dev/null 2>&1; then
+            warn "latest journal output:"
+            journalctl -u tinyagentos --no-pager -n 30 2>/dev/null || true
+        fi
+        die "controller cluster/workers endpoint did not respond — check the journal above and fix before continuing"
+    fi
+    log "controller is ready"
 fi
 
 # --- post-install hardware capability verification -----------------------

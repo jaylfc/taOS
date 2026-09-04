@@ -220,5 +220,114 @@ grep -A4 'Docker apt key fingerprint mismatch' "$SCRIPT" \
 echo "test: ensure_docker_for_apps call site tolerates fallback failure (no set -e abort)"
 ensure_docker_call_line=$(grep -n "ensure_docker_for_apps || warn" "$SCRIPT" | head -1 | cut -d: -f1)
 (( ensure_docker_call_line > 0 ))
+# ── Controller readiness wait (taOS#2) ─────────────────────────────────
+
+echo "test: controller wait uses a 240 s ready timeout"
+grep -q "_READY_WAIT=240" "$SCRIPT"
+
+echo "test: controller wait uses a 60 s port-open timeout"
+grep -q "_PORT_WAIT=60" "$SCRIPT"
+
+echo "test: controller wait checks /api/health for port-open phase"
+grep -q "curl.*localhost:\$TAOS_PORT/api/health" "$SCRIPT"
+
+echo "test: controller wait checks /api/cluster/workers for ready phase"
+grep -q "curl.*localhost:\$TAOS_PORT/api/cluster/workers" "$SCRIPT"
+
+echo "test: controller wait names first-boot init in the timeout message"
+grep -q "first-boot init may still be running" "$SCRIPT"
+
+echo "test: port-open loop caps curl probe by remaining phase time"
+grep -q '_remaining=$(( _port_deadline - SECONDS ))' "$SCRIPT"
+
+echo "test: port-open phase deadline is anchored once, before the loop"
+# One absolute deadline per phase; every guard inside the loop reads the
+# clock against it rather than re-deriving the phase budget.
+[[ $(grep -c '_port_deadline=$(( SECONDS + _PORT_WAIT ))' "$SCRIPT") -eq 1 ]]
+
+echo "test: port-open loop passes a positive timeout to curl --max-time"
+# Scoped to the /api/health curl so a regression on the ready loop cannot
+# satisfy this assertion (and vice versa).
+awk '/_port_deadline - SECONDS/{port=1} port && /--max-time/{print; exit}' "$SCRIPT" \
+    | grep -q -- '--max-time "[^"]*"'
+
+echo "test: port-open loop breaks before sleep when remaining <= 1"
+# Ordering matters: whichever of the guard or the sleep comes first ends the
+# scan, so a future edit that moves `_remaining -le 1` below `sleep 1` fails
+# here instead of matching it further down the loop.
+awk '/while.*_port_tries.*do/{p=1; next}
+     p && /curl.*api.health/{c=1; next}
+     p && c && /_remaining -le 1/{found=1; exit}
+     p && c && /sleep 1/{exit}
+     END{exit !found}' "$SCRIPT"
+
+echo "test: port-open loop re-reads the clock after the probe, before sleeping"
+# A slow curl can consume the whole remaining budget, so reusing the
+# pre-probe `_remaining` for the post-probe guard lets the follow-up
+# sleep run past _PORT_WAIT. Assert the recompute sits between the curl
+# and the sleep.
+awk '/while.*_port_tries.*do/{p=1; next}
+     p && /curl.*api.health/{c=1; next}
+     p && c && index($0, "_remaining=$(( _port_deadline - SECONDS ))"){found=1}
+     p && c && /sleep 1/{exit}
+     END{exit !found}' "$SCRIPT"
+
+echo "test: port-open loop floors curl --max-time at 1 s"
+# Ensures a future edit cannot weaken the deadline guard and silently
+# disable curl's per-attempt timeout (finding #3 / #4 invariant). Scoped to
+# the port-open loop and stopped at its curl so the ready loop's copy of the
+# floor cannot satisfy this assertion, and so the floor must be set before
+# the probe that uses it.
+awk '/while.*_port_tries.*do/{p=1; next}
+     p && index($0, "_curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))"){found=1}
+     p && /curl.*api.health/{exit}
+     END{exit !found}' "$SCRIPT"
+
+echo "test: ready loop caps curl probe by remaining phase time"
+grep -q '_remaining=$(( _ready_deadline - SECONDS ))' "$SCRIPT"
+
+echo "test: ready phase deadline is anchored once, before the loop"
+[[ $(grep -c '_ready_deadline=$(( SECONDS + _READY_WAIT ))' "$SCRIPT") -eq 1 ]]
+
+echo "test: ready loop passes a positive timeout to curl --max-time"
+awk '/_ready_deadline - SECONDS/{ready=1} ready && /--max-time/{print; exit}' "$SCRIPT" \
+    | grep -q -- '--max-time "[^"]*"'
+
+echo "test: ready loop breaks before sleep when remaining <= 1"
+# Same ordering enforcement as the port-open loop.
+awk '/while.*_ready_tries.*do/{r=1; next}
+     r && /curl.*cluster.workers/{c=1; next}
+     r && c && /_remaining -le 1/{found=1; exit}
+     r && c && /sleep 1/{exit}
+     END{exit !found}' "$SCRIPT"
+
+echo "test: ready loop re-reads the clock after the probe, before sleeping"
+# Same stale-value regression as the port-open loop.
+awk '/while.*_ready_tries.*do/{r=1; next}
+     r && /curl.*cluster.workers/{c=1; next}
+     r && c && index($0, "_remaining=$(( _ready_deadline - SECONDS ))"){found=1}
+     r && c && /sleep 1/{exit}
+     END{exit !found}' "$SCRIPT"
+
+echo "test: ready loop floors curl --max-time at 1 s"
+# Same invariant, asserted independently inside the ready loop so a
+# regression that drops the floor from one loop cannot hide behind the other.
+awk '/while.*_ready_tries.*do/{r=1; next}
+     r && index($0, "_curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))"){found=1}
+     r && /curl.*cluster.workers/{exit}
+     END{exit !found}' "$SCRIPT"
+
+echo "test: Zabbly keyring installed with world-readable permissions"
+# Reject old cp path; verify install -m 0644 is used
+! grep -q 'cp.*zabbly.asc' "$SCRIPT" && grep -q 'install -m 0644.*zabbly.asc' "$SCRIPT"
+# Exercise the install step with a temporary destination and check mode
+tmp_src=$(mktemp)
+tmp_dst=$(mktemp /tmp/zabbly_test.XXXXXX)
+set +e
+install -m 0644 "$tmp_src" "$tmp_dst"
+actual_mode=$(stat -c %a "$tmp_dst")
+set -e
+rm -f "$tmp_src" "$tmp_dst"
+[ "$actual_mode" = "644" ]
 
 echo "all tests passed"
