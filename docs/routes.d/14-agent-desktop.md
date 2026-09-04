@@ -11,5 +11,5 @@
 
 ## Key points
 
-- Install is **on demand** and **opt-in per agent**.
-- Start is idempotent.
+- Install is on demand, per agent, and retryable.
+- Owner or admin only. Start returns a one-shot VNC password.
