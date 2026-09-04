@@ -89,6 +89,14 @@ The `taos-graceful-stop` script:
 curl -fsS -X POST --max-time 320 http://localhost:6969/api/system/prepare-shutdown || true
 ```
 
+As shipped it also honours `TAOS_PORT` and dedupes the two calls a reboot makes (unit `ExecStop`
+plus `taos-pre-shutdown.service`): a successful drain writes `prepare-shutdown.stamp`, and a second
+invocation within 60 s is a no-op. The stamp lives in the unit's `RuntimeDirectory=taos`
+(`/run/taos`, mode 0750; `$XDG_RUNTIME_DIR/taos` for the user unit, `$INSTALL_DIR/data` when there
+is no systemd) and **never** falls back to a world-writable directory — a stamp any local user
+could create is a silent, permanent kill switch for the drain. If no private directory qualifies,
+the script drops the dedupe and drains twice rather than trust the stamp.
+
 ### Auto-update restart path
 
 `AutoUpdateService._run_once` change:

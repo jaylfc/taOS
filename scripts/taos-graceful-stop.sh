@@ -15,15 +15,59 @@
 # Dedupe: both the unit ExecStop and taos-pre-shutdown.service call this script
 # on a reboot. Write a stamp on success so a second invocation within 60s is
 # a no-op, avoiding a double agent prepare-shutdown pass.
-STAMP_FILE=/run/taos-prepare-shutdown.stamp
-# Fall back to /tmp if /run is not writable (e.g. non-root installs).
-if [ ! -w /run ] 2>/dev/null; then
-    STAMP_FILE=/tmp/taos-prepare-shutdown.stamp
-fi
+#
+# The stamp is a kill switch, so it has to live where only this service can
+# write it. It used to fall back to /tmp whenever /run was unwritable (that is,
+# on every non-root install), and /tmp is world-writable: the sticky bit blocks
+# deleting another user's file, not creating one. Any local user could plant the
+# stamp, keep it fresh from cron, and permanently suppress the drain — silently,
+# because the script believes a sibling invocation already stamped. On hardware
+# with this filesystem's writeback history, skipping the drain is the worst
+# available failure. Candidate directories, best first:
+#   1. $RUNTIME_DIRECTORY — set by systemd from RuntimeDirectory=taos (0750):
+#      /run/taos for the system unit, $XDG_RUNTIME_DIR/taos for the user unit.
+#   2. /run/taos — the same directory when the reboot hook runs outside the
+#      unit; RuntimeDirectoryPreserve=yes keeps it across a restart.
+#   3. $TAOS_INSTALL_DIR/data — the no-systemd nohup install; already 0700.
+#   4. the checkout's data/ — when the script is run straight out of a source tree.
+# If none of them qualifies we drop the dedupe and drain twice rather than trust
+# a stamp anyone could have written.
 
-if [ -f "$STAMP_FILE" ]; then
-    stamp_age=$(( $(date +%s) - $(stat -c %Y "$STAMP_FILE" 2>/dev/null || echo 0) ))
-    if [ "$stamp_age" -lt 60 ]; then
+# Portable (no GNU-only `stat`): a directory we can write into that neither the
+# group nor other users can write to.
+stamp_dir_is_private() {
+    [ -d "$1" ] && [ -w "$1" ] || return 1
+    # drwxr-x---: chars 5-7 are the group bits, 8-10 the other bits.
+    case "$(ls -ld "$1" 2>/dev/null | awk '{print $1}')" in
+        ?????w*|????????w*) return 1 ;;
+    esac
+    return 0
+}
+
+# systemd hands over a colon-separated list when several RuntimeDirectory= are
+# declared; ours is a single entry, but take the first defensively.
+STAMP_FILE=""
+for stamp_dir in \
+    "${RUNTIME_DIRECTORY%%:*}" \
+    /run/taos \
+    "${TAOS_INSTALL_DIR:-$HOME/tinyagentos}/data" \
+    "$(dirname "$0")/../data"
+do
+    if [ -n "$stamp_dir" ] && stamp_dir_is_private "$stamp_dir"; then
+        STAMP_FILE="$stamp_dir/prepare-shutdown.stamp"
+        break
+    fi
+done
+
+if [ -n "$STAMP_FILE" ] && [ -r "$STAMP_FILE" ]; then
+    # The stamp carries its own epoch. `stat -c %Y` is GNU-only: on macOS/BSD it
+    # errors out, the `|| echo 0` then made every stamp look ancient, and the
+    # dedupe never fired at all.
+    stamp_epoch=$(head -n 1 "$STAMP_FILE" 2>/dev/null)
+    case "$stamp_epoch" in
+        '' | *[!0-9]*) stamp_epoch=0 ;;
+    esac
+    if [ "$(( $(date +%s) - stamp_epoch ))" -lt 60 ]; then
         exit 0
     fi
 fi
@@ -31,6 +75,8 @@ fi
 if curl -fsS -X POST --max-time 25 "http://localhost:${TAOS_PORT:-6969}/api/system/prepare-shutdown"; then
     # Only a successful prepare earns the dedupe stamp; a failed attempt must
     # not let the next invocation skip draining.
-    touch "$STAMP_FILE" 2>/dev/null || true
+    if [ -n "$STAMP_FILE" ]; then
+        (umask 077; date +%s > "$STAMP_FILE") 2>/dev/null || true
+    fi
 fi
 exit 0
