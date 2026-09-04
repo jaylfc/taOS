@@ -136,6 +136,9 @@ static string in its own file (an f-string with a runtime value, or a constant
 imported from another module) is reported on stderr as NOT checked rather than
 skipped silently; keep the SQL literal in the same file if you want the guard
 to cover your store.
+A brand-new table is not diffed at all - `CREATE TABLE IF NOT
+EXISTS` builds it in full on every install, so only columns added to a table
+that already exists on the base branch can brick an upgrade.
 
 ## Process
 

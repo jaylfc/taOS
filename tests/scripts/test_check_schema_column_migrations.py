@@ -599,3 +599,152 @@ CREATE TABLE IF NOT EXISTS gadgets (
         assert rc == 2
         assert "SCHEMA-COLUMN VIOLATION" in captured.out
         assert "kind" in captured.out
+
+
+class TestNewTables:
+    """A table absent from the baseline is created in full on every install.
+
+    ``CREATE TABLE IF NOT EXISTS`` builds a brand-new table with all its
+    columns, so no ALTER applies and there is nothing to brick. Diffing such a
+    table against an empty baseline made every column look newly added and
+    produced one violation per column.
+    """
+
+    def _baseline(self, guard_mod, monkeypatch, baselines: dict) -> None:
+        monkeypatch.setattr(
+            guard_mod, "_baseline_columns", lambda p, ref: baselines.get(p.name, {})
+        )
+
+    def test_new_store_file_with_empty_baseline_is_clean(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        body = '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS widgets (
+    id      TEXT PRIMARY KEY,
+    name    TEXT NOT NULL DEFAULT '',
+    created INTEGER NOT NULL DEFAULT 0
+);
+"""
+'''
+        path = _write_store(tmp_path, "brand_new_store.py", body)
+        # A file that does not exist on the baseline yields {}.
+        self._baseline(guard_mod, monkeypatch, {"brand_new_store.py": {}})
+        assert guard_mod.find_violations(path, "origin/dev") == []
+
+    def test_second_table_added_to_existing_file_is_clean(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        body = '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS gadgets (
+    id   TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS gadget_tags (
+    gadget_id TEXT NOT NULL,
+    tag       TEXT NOT NULL
+);
+"""
+'''
+        path = _write_store(tmp_path, "two_tables.py", body)
+        self._baseline(
+            guard_mod, monkeypatch, {"two_tables.py": {"gadgets": {"id", "kind"}}}
+        )
+        assert guard_mod.find_violations(path, "origin/dev") == []
+
+    def test_new_table_does_not_mask_a_new_column_on_an_existing_table(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Skipping new tables must not weaken the check on the old ones."""
+        body = '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS gadgets (
+    id   TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS gadget_tags (
+    gadget_id TEXT NOT NULL,
+    tag       TEXT NOT NULL
+);
+"""
+'''
+        path = _write_store(tmp_path, "mixed.py", body)
+        self._baseline(guard_mod, monkeypatch, {"mixed.py": {"gadgets": {"id"}}})
+        violations = guard_mod.find_violations(path, "origin/dev")
+        assert [(v.table, v.column) for v in violations] == [("gadgets", "kind")]
+
+    def test_new_store_file_exits_zero_end_to_end(
+        self, guard_mod, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        root = tmp_path / "stores"
+        root.mkdir()
+        _write_store(
+            root,
+            "fresh.py",
+            '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS fresh_rows (
+    id    TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
+"""
+''',
+        )
+        monkeypatch.setattr(guard_mod, "_check_base_ref", lambda ref: True)
+        monkeypatch.setattr(guard_mod, "_baseline_columns", lambda p, ref: {})
+        rc = guard_mod.main([str(root)])
+        assert rc == 0
+        assert "schema-column-guard: clean" in capsys.readouterr().out
+
+
+class TestSqlComments:
+    """An inline ``--`` comment used to hide every column after the first.
+
+    The comment runs to the end of the line, including the comma that ends the
+    column it documents, so the next segment started with ``--`` and failed the
+    column-name match. Any store that documents its columns inline -- the house
+    style in `contacts_store.py` -- was almost entirely invisible to the guard.
+    """
+
+    def test_line_comments_do_not_hide_following_columns(self, guard_mod) -> None:
+        body = (
+            "contact_id   TEXT PRIMARY KEY,  -- canonical key\n"
+            "hub_username TEXT NOT NULL,     -- display column\n"
+            "status       TEXT NOT NULL DEFAULT 'pending',  -- pending|active\n"
+            "local_crm_id TEXT,              -- optional link\n"
+            "note         TEXT\n"
+        )
+        assert guard_mod._split_columns(body) == {
+            "contact_id", "hub_username", "status", "local_crm_id", "note",
+        }
+
+    def test_double_dash_inside_a_literal_is_not_a_comment(self, guard_mod) -> None:
+        body = "id TEXT, sep TEXT NOT NULL DEFAULT '-- not a comment', tail TEXT"
+        assert guard_mod._split_columns(body) == {"id", "sep", "tail"}
+
+    def test_block_comment_is_removed(self, guard_mod) -> None:
+        body = "id TEXT, /* note, with a comma */ tail TEXT"
+        assert guard_mod._split_columns(body) == {"id", "tail"}
+
+    def test_commented_column_add_is_still_caught(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The end-to-end shape: a documented store gaining a documented column."""
+        body = '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS contacts (
+    contact_id   TEXT PRIMARY KEY,  -- canonical key
+    hub_username TEXT NOT NULL,     -- display column
+    trust_level  TEXT NOT NULL DEFAULT 'none'  -- added by this change
+);
+"""
+'''
+        path = _write_store(tmp_path, "documented.py", body)
+        monkeypatch.setattr(
+            guard_mod,
+            "_baseline_columns",
+            lambda p, ref: {"contacts": {"contact_id", "hub_username"}},
+        )
+        violations = guard_mod.find_violations(path, "origin/dev")
+        assert [(v.table, v.column) for v in violations] == [("contacts", "trust_level")]

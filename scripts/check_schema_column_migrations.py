@@ -24,6 +24,14 @@ flags, for every CREATE TABLE in a SCHEMA string: a column that
       newly added by this change -- so existing columns that have always
       lived in SCHEMA do not trip the guard).
 
+Only tables that ALREADY EXIST on the baseline are diffed. A table absent
+there is built in full by its own ``CREATE TABLE IF NOT EXISTS`` on every
+install, columns and all, so no ALTER applies and there is no upgrade path to
+brick; diffing it would emit one violation per column on every new store.
+(Known limitation: a store file RENAMED in the same change gets an empty
+baseline at its new path, so a column added in that same change is not seen.
+Move the file and add the column in separate commits, or check the old path.)
+
 The third condition is what keeps it from flagging every column in the
 repo: comparison is done against ``git show <baseline-ref>:<path>`` for the
 same file, only NEW columns relative to that snapshot count. The baseline ref
@@ -119,6 +127,54 @@ class Violation:
         )
 
 
+def _strip_sql_comments(sql: str) -> str:
+    """Remove ``--`` line comments and ``/* */`` blocks from SQL.
+
+    Quote state is tracked character by character so a ``--`` inside a string
+    literal (``DEFAULT '--'``) survives. Without this, the first commented
+    column swallows the rest of its line INCLUDING the comma that ends it, so
+    every column declared after it becomes invisible to the column splitter --
+    a silent false negative on any store that documents its columns inline,
+    which is the house style.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(sql)
+    in_single = False
+    in_double = False
+    while i < n:
+        ch = sql[i]
+        if in_single:
+            out.append(ch)
+            if ch == "'":
+                in_single = False
+            i += 1
+        elif in_double:
+            out.append(ch)
+            if ch == '"':
+                in_double = False
+            i += 1
+        elif ch == "'":
+            in_single = True
+            out.append(ch)
+            i += 1
+        elif ch == '"':
+            in_double = True
+            out.append(ch)
+            i += 1
+        elif ch == "-" and sql.startswith("--", i):
+            while i < n and sql[i] != "\n":
+                i += 1
+        elif ch == "/" and sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            out.append(" ")
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
 def _split_columns(body: str) -> set[str]:
     """Extract declared column names from a CREATE TABLE body.
 
@@ -127,6 +183,9 @@ def _split_columns(body: str) -> set[str]:
     whitespace-delimited token of each segment as the column name (unless
     that segment is an inline table-level constraint, which does not add
     a column).
+
+    SQL comments are stripped first: an inline ``-- ...`` comment runs to the
+    end of the line and would otherwise hide every column declared after it.
 
     NOTE: This scanner does not handle a DEFAULT expression that contains a
     top-level comma, or a quoted column name that collides with one of the
@@ -144,6 +203,7 @@ def _split_columns(body: str) -> set[str]:
         "select", "on", "and", "or", "as", "collate", "generated", "always",
     }
 
+    body = _strip_sql_comments(body)
     columns: set[str] = set()
     depth = 0
     segments: list[str] = []
@@ -282,7 +342,7 @@ def _baseline_columns(path: Path, ref: str) -> dict[str, set[str]] | None:
 
     out: dict[str, set[str]] = {}
     for schema in _extract_schemas(baseline_tree, label=spec):
-        for tm in _CREATE_TABLE_RE.finditer(schema):
+        for tm in _CREATE_TABLE_RE.finditer(_strip_sql_comments(schema)):
             out.setdefault(tm.group(1), set()).update(_split_columns(tm.group(2)))
     return out
 
@@ -501,12 +561,19 @@ def find_violations(path: Path, ref: str | None = None) -> list[Violation]:
 
     violations: list[Violation] = []
     for schema in schemas:
-        for tm in _CREATE_TABLE_RE.finditer(schema):
+        for tm in _CREATE_TABLE_RE.finditer(_strip_sql_comments(schema)):
             table = tm.group(1)
             if table in _EXCLUDED_TABLES:
                 continue
+            if table not in baseline_cols:
+                # The table itself is absent from the baseline, so
+                # CREATE TABLE IF NOT EXISTS builds it in full on every
+                # install, columns and all. There is nothing for an ALTER to
+                # add and no upgrade path to brick -- flagging it would mean
+                # one violation per column on every new store.
+                continue
             current_cols = _split_columns(tm.group(2))
-            new_cols = current_cols - baseline_cols.get(table, set())
+            new_cols = current_cols - baseline_cols[table]
             for col in sorted(new_cols):
                 if (table, col) not in added_columns:
                     violations.append(Violation(
