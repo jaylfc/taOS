@@ -11,6 +11,11 @@ on:
   pull_request:
     branches: [master, dev]
 
+# This gate only reads the checkout; nothing here writes to the repo, so do not
+# inherit whatever the repository or org default happens to grant GITHUB_TOKEN.
+permissions:
+  contents: read
+
 jobs:
   doc-gate:
     runs-on: ubuntu-latest

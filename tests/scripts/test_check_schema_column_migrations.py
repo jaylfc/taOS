@@ -911,3 +911,128 @@ class TestQuoteEscapes:
     ) -> None:
         body = "id TEXT, label TEXT DEFAULT 'a''b -- still literal', tail TEXT"
         assert guard_mod._split_columns(body) == {"id", "label", "tail"}
+
+
+class TestParenthesesInsideLiterals:
+    """A `(` or `)` inside a SQL literal must not move the nesting depth.
+
+    The splitter counted brackets over raw characters, so `DEFAULT ')'` drove
+    depth to -1 and the comma that ended that column no longer split anything.
+    Every column declared after it was swallowed into the same segment and
+    disappeared from both sides of the diff.
+    """
+
+    def test_close_paren_in_a_literal_does_not_swallow_the_next_column(
+        self, guard_mod
+    ) -> None:
+        body = "id TEXT, label TEXT NOT NULL DEFAULT ')', tail TEXT"
+        assert guard_mod._split_columns(body) == {"id", "label", "tail"}
+
+    def test_open_paren_in_a_literal_does_not_swallow_the_next_column(
+        self, guard_mod
+    ) -> None:
+        body = "id TEXT, label TEXT NOT NULL DEFAULT '(', tail TEXT"
+        assert guard_mod._split_columns(body) == {"id", "label", "tail"}
+
+    def test_paren_in_a_literal_with_a_doubled_quote(self, guard_mod) -> None:
+        body = "id TEXT, label TEXT DEFAULT 'it''s )', tail TEXT"
+        assert guard_mod._split_columns(body) == {"id", "label", "tail"}
+
+    def test_real_parentheses_still_group(self, guard_mod) -> None:
+        """The control: genuine brackets must still hide their commas."""
+        body = "id INTEGER PRIMARY KEY, name TEXT DEFAULT func(a, b, c), tail TEXT"
+        assert guard_mod._split_columns(body) == {"id", "name", "tail"}
+
+    def test_bracketed_literal_column_add_is_reported(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        body = '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS gadgets (
+    id    TEXT PRIMARY KEY,
+    label TEXT NOT NULL DEFAULT ')',
+    kind  TEXT NOT NULL DEFAULT ''
+);
+"""
+'''
+        path = _write_store(tmp_path, "bracketed.py", body)
+        monkeypatch.setattr(
+            guard_mod,
+            "_baseline_columns",
+            lambda p, ref: {"gadgets": {"id", "label"}},
+        )
+        violations = guard_mod.find_violations(path, "origin/dev")
+        assert [(v.table, v.column) for v in violations] == [("gadgets", "kind")]
+
+
+class TestStatementOrderResolution:
+    """`SCHEMA = SQL` binds the value `SQL` has AT THAT STATEMENT.
+
+    The scope used to be built from the whole body before any SCHEMA was
+    visited, so a constant reassigned later in the file won: the guard compared
+    a table definition the runtime never sees and could miss a real violation.
+    """
+
+    def test_module_level_reassignment_uses_the_earlier_value(
+        self, guard_mod
+    ) -> None:
+        src = '''
+SQL = """
+CREATE TABLE bound_early (id TEXT);
+"""
+SCHEMA = SQL
+SQL = """
+CREATE TABLE rebound_later (id TEXT);
+"""
+'''
+        schemas = guard_mod._extract_schemas(ast.parse(src))
+        joined = "\n".join(schemas)
+        assert "CREATE TABLE bound_early" in joined
+        assert "CREATE TABLE rebound_later" not in joined
+
+    def test_class_level_reassignment_uses_the_earlier_value(
+        self, guard_mod
+    ) -> None:
+        src = '''
+class Store:
+    SQL = """
+    CREATE TABLE bound_early (id TEXT);
+    """
+    SCHEMA = SQL
+    SQL = """
+    CREATE TABLE rebound_later (id TEXT);
+    """
+'''
+        schemas = guard_mod._extract_schemas(ast.parse(src))
+        joined = "\n".join(schemas)
+        assert "CREATE TABLE bound_early" in joined
+        assert "CREATE TABLE rebound_later" not in joined
+
+    def test_forward_reference_is_reported_not_guessed(
+        self, guard_mod, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A name assigned only AFTER the SCHEMA is a NameError at runtime."""
+        src = '''
+SCHEMA = SQL
+SQL = """
+CREATE TABLE too_late (id TEXT);
+"""
+'''
+        schemas = guard_mod._extract_schemas(ast.parse(src), label="forward.py")
+        assert schemas == []
+        assert "forward.py" in capsys.readouterr().err
+
+    def test_module_constant_still_reaches_a_later_class(self, guard_mod) -> None:
+        """The control: ordinary top-down resolution must keep working."""
+        src = '''
+SQL = """
+CREATE TABLE shared (id TEXT);
+"""
+
+
+class Store:
+    SCHEMA = SQL
+'''
+        schemas = guard_mod._extract_schemas(ast.parse(src))
+        assert len(schemas) == 1
+        assert "CREATE TABLE shared" in schemas[0]

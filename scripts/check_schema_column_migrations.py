@@ -198,6 +198,10 @@ def _split_columns(body: str) -> set[str]:
 
     SQL comments are stripped first: an inline ``-- ...`` comment runs to the
     end of the line and would otherwise hide every column declared after it.
+    Quote state is tracked while splitting, so a bracket or comma inside a
+    string literal (``DEFAULT ')'``) is not read as syntax. A doubled ``''``
+    toggles the state twice and lands back inside the literal, which is the
+    correct reading of the SQL escape.
 
     NOTE: This scanner does not handle a DEFAULT expression that contains a
     top-level comma, or a quoted column name that collides with one of the
@@ -226,9 +230,33 @@ def _split_columns(body: str) -> set[str]:
     body = _strip_sql_comments(body)
     columns: set[str] = set()
     depth = 0
+    in_single = False
+    in_double = False
     segments: list[str] = []
     current: list[str] = []
     for ch in body:
+        # Brackets and commas only mean anything OUTSIDE a string literal.
+        # A DEFAULT ')' used to drive depth to -1, after which the comma that
+        # ended that column stopped splitting and every later column was
+        # swallowed into the same segment.
+        if in_single:
+            current.append(ch)
+            if ch == "'":
+                in_single = False
+            continue
+        if in_double:
+            current.append(ch)
+            if ch == '"':
+                in_double = False
+            continue
+        if ch == "'":
+            in_single = True
+            current.append(ch)
+            continue
+        if ch == '"':
+            in_double = True
+            current.append(ch)
+            continue
         if ch == "(":
             depth += 1
         elif ch == ")":
@@ -469,39 +497,38 @@ def _resolve(node: ast.AST, scope: dict[str, str]) -> str | None:
     return None
 
 
-def _scope_constants(
-    body: list[ast.stmt], inherited: dict[str, str]
-) -> dict[str, str]:
-    """Extend ``inherited`` with the string constants bound in ``body``.
+def _bind_constants(stmt: ast.stmt, scope: dict[str, str]) -> None:
+    """Bind any string constant that ``stmt`` assigns into ``scope`` in place.
 
-    ``body`` is a module or class body: a name bound here shadows the same
-    name from an enclosing scope, which is what keeps two classes that both
-    define ``SQL`` from stealing each other's schema.
+    Called as the scan reaches each statement, so a name resolves to the value
+    it holds AT THAT POINT -- Python binds at the assignment statement, and a
+    constant reassigned further down the body must not reach back and change
+    what an earlier ``SCHEMA`` was built from.
     """
-    scope = dict(inherited)
-    for stmt in body:
-        if isinstance(stmt, ast.Assign):
+    if isinstance(stmt, ast.Assign):
+        value = _resolve(stmt.value, scope)
+        if value is None:
+            return
+        for target in stmt.targets:
+            if isinstance(target, ast.Name):
+                scope[target.id] = value
+    elif isinstance(stmt, ast.AnnAssign):
+        if isinstance(stmt.target, ast.Name) and stmt.value is not None:
             value = _resolve(stmt.value, scope)
-            if value is None:
-                continue
-            for target in stmt.targets:
-                if isinstance(target, ast.Name):
-                    scope[target.id] = value
-        elif isinstance(stmt, ast.AnnAssign):
-            if isinstance(stmt.target, ast.Name) and stmt.value is not None:
-                value = _resolve(stmt.value, scope)
-                if value is not None:
-                    scope[stmt.target.id] = value
-    return scope
+            if value is not None:
+                scope[stmt.target.id] = value
 
 
 def _extract_schemas(tree: ast.AST, label: str = "<source>") -> list[str]:
     """Find every module-level or class-level ``SCHEMA`` string in ``tree``.
 
-    Each ``SCHEMA`` is resolved in its own lexical scope (module constants,
-    then the constants of the class it lives in), so same-named aliases in
-    different classes stay independent. Function-local bindings are never used
-    to resolve a class or module ``SCHEMA``.
+    Each ``SCHEMA`` is resolved in its own lexical scope, built in statement
+    order: module constants as of that line, then the constants of the class it
+    lives in as of that line. Same-named aliases in different classes stay
+    independent, a constant reassigned later in the body does not win, and a
+    forward reference resolves to nothing (it is a NameError at runtime).
+    Function-local bindings are never used to resolve a class or module
+    ``SCHEMA``.
 
     A ``SCHEMA`` that cannot be resolved to a static string is reported on
     stderr: the store it belongs to is not checked, and that must be visible
@@ -525,6 +552,13 @@ def _extract_schemas(tree: ast.AST, label: str = "<source>") -> list[str]:
             out.append(value)
 
     def _scan(body: list[ast.stmt], scope: dict[str, str], in_function: bool) -> None:
+        """Walk ``body`` in order, mutating ``scope`` as bindings are reached.
+
+        ``scope`` belongs to the enclosing module or class body, so a name
+        bound inside a nested ``if``/``try`` is visible to later statements of
+        that body -- which is what Python does. A class or function body gets a
+        copy instead, so its own names cannot leak outwards.
+        """
         for stmt in body:
             if not in_function:
                 if isinstance(stmt, ast.Assign):
@@ -539,26 +573,29 @@ def _extract_schemas(tree: ast.AST, label: str = "<source>") -> list[str]:
                     ):
                         _record(stmt.value, scope)
 
+            # Bind AFTER recording: "SCHEMA = SQL" reads the scope as it stood
+            # before this statement, exactly as the interpreter does.
+            if not in_function:
+                _bind_constants(stmt, scope)
+
             if isinstance(stmt, ast.ClassDef):
-                _scan(stmt.body, _scope_constants(stmt.body, scope), False)
+                _scan(stmt.body, dict(scope), False)
             elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 # Descend so a class nested in a function is still found, but
                 # never let the function's own locals resolve a SCHEMA.
-                _scan(stmt.body, scope, True)
+                _scan(stmt.body, dict(scope), True)
             else:
                 # Compound statements (if/try/with/for) at module or class
-                # level still bind names in the enclosing scope.
+                # level bind names in the body that contains them.
                 for _field, value in ast.iter_fields(stmt):
                     if (
                         isinstance(value, list)
                         and value
                         and all(isinstance(v, ast.stmt) for v in value)
                     ):
-                        inner = scope if in_function else _scope_constants(value, scope)
-                        _scan(value, inner, in_function)
+                        _scan(value, scope, in_function)
 
-    module_body = getattr(tree, "body", [])
-    _scan(module_body, _scope_constants(module_body, {}), False)
+    _scan(getattr(tree, "body", []), {}, False)
     return out
 
 
