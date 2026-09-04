@@ -1063,6 +1063,30 @@ _docker_apt_restore() {
     return 0
 }
 
+# Reinstall the distro Docker packages the fallback removed to make room for
+# docker-ce. $1 is the space-separated list actually removed ("" = nothing to
+# do). Without this a failed fallback ends the install with NO Docker at all:
+# the caller installs docker.io just before entering the fallback, so removing
+# it and then failing on apt-get update/install (unsupported arch, proxy,
+# held deps) leaves the host worse off than before the installer ran.
+_docker_restore_distro_pkgs() {
+    local pkgs="$1"
+    [[ -n "$pkgs" ]] || return 0
+    log "restoring the distro Docker packages: $pkgs"
+    # shellcheck disable=SC2086
+    if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs; then
+        return 0
+    fi
+    # Whatever got us here may have left apt's lists inconsistent, and
+    # docker.list has just been rolled back. Refresh once and retry -- a
+    # "restore" that only narrates is worse than no restore at all.
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    # shellcheck disable=SC2086
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs \
+        || warn "could not reinstall $pkgs -- this host has NO Docker now; run: sudo apt-get install $pkgs"
+    return 0
+}
+
 # Docker Engine + Compose v2 plugin from Docker's official apt repo
 # (download.docker.com). Used as a fallback when neither
 # docker-compose-plugin nor docker-compose-v2 are present in the distro
@@ -1161,6 +1185,7 @@ _apt_install_docker_official_repo() {
     local _docker_list_backup=""
     local _docker_created_keyring=0
     local _docker_created_list=0
+    local _docker_removed_pkgs=""
     if [[ -e "$_docker_keyring" ]]; then
         _docker_keyring_backup="$_docker_bak_dir/docker.asc"
         if ! sudo cp -a "$_docker_keyring" "$_docker_keyring_backup"; then
@@ -1200,17 +1225,27 @@ _apt_install_docker_official_repo() {
     # containerd} and /usr/sbin/containerd, so installing them together
     # leaves dpkg half-configured. Match Docker's official upgrade
     # guide: remove the distro packages before installing docker-ce.
-    if dpkg -l docker.io containerd runc 2>/dev/null | awk '/^ii/{print $2}' \
-            | grep -Eq '^(docker\.io|containerd|runc)$'; then
-        log "removing distro docker.io/containerd/runc before installing docker-ce"
-        sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq docker.io containerd runc \
-            || warn "could not remove distro docker.io/containerd/runc -- apt may be left half-configured"
+    # Record WHICH of the trio are actually installed before removing them, so
+    # the failure paths below can put them back. The caller installs docker.io
+    # moments before entering this fallback (trixie ships docker.io -- only the
+    # compose plugin is missing, which is why we are here at all), so removing
+    # them and then failing left the host with NO Docker at all: strictly worse
+    # than before the installer ran.
+    _docker_removed_pkgs="$(dpkg -l docker.io containerd runc 2>/dev/null \
+        | awk '/^ii/{print $2}' \
+        | grep -E '^(docker\.io|containerd|runc)$' | tr '\n' ' ' || true)"
+    if [[ -n "$_docker_removed_pkgs" ]]; then
+        log "removing distro packages before installing docker-ce: $_docker_removed_pkgs"
+        # shellcheck disable=SC2086
+        sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq $_docker_removed_pkgs \
+            || warn "could not remove $_docker_removed_pkgs -- apt may be left half-configured"
     fi
 
     if ! sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq; then
         warn "apt-get update failed after adding Docker's repo -- rolling back the partial repo config"
         _docker_apt_restore "$_docker_list" "$_docker_list_backup" "$_docker_created_list"
         _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
+        _docker_restore_distro_pkgs "$_docker_removed_pkgs"
         return 1
     fi
     if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
@@ -1218,6 +1253,7 @@ _apt_install_docker_official_repo() {
         warn "apt install from Docker's repo failed -- see /var/log/apt/term.log -- rolling back the partial repo config"
         _docker_apt_restore "$_docker_list" "$_docker_list_backup" "$_docker_created_list"
         _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
+        _docker_restore_distro_pkgs "$_docker_removed_pkgs"
         return 1
     fi
     log "Docker Engine + Compose v2 plugin installed via Docker's official repo"

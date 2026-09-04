@@ -15,6 +15,12 @@ sudo/curl/gpg/apt-get and assert the host is left exactly as it was found:
 * pre-existing docker.asc / docker.list are restored byte-for-byte on failure
 * files this invocation created are still deleted on failure
 * the success path leaves Docker's own repo config in place
+
+The fallback also removes the distro docker.io/containerd/runc to make room
+for docker-ce. The caller installs docker.io immediately before entering the
+fallback, so a failure after that removal used to leave the host with NO
+Docker at all -- strictly worse than before the installer ran. The package
+rollback is covered here too.
 """
 import os
 import subprocess
@@ -74,7 +80,14 @@ sudo() {
 }
 
 lsb_release() { echo "trixie"; }
-dpkg() { return 0; }
+
+# `dpkg -l` output the fallback greps for ^ii to decide what to remove.
+dpkg() {
+    [[ "$DISTRO_PKGS" == "1" ]] || return 0
+    printf 'ii  docker.io   20.10.25  amd64  Linux container runtime\n'
+    printf 'ii  containerd  1.6.20    amd64  daemon to control runC\n'
+    printf 'ii  runc        1.1.5     amd64  Open Container runtime\n'
+}
 
 curl() {
     local out=""
@@ -87,12 +100,17 @@ curl() {
 
 gpg() { printf 'fpr:::::::::%s:\n' "$DOCKER_FP"; }
 
+# Every apt-get invocation is journalled so the tests can assert that the
+# distro packages were removed and then put back. Only the docker-ce install
+# is failable -- a reinstall of docker.io must be able to succeed while the
+# docker-ce transaction that triggered the rollback fails.
 apt-get() {
+    printf '%s\n' "$*" >> "$APT_LOG"
     for a in "$@"; do
         case "$a" in
-            update)  return "$APT_UPDATE_RC" ;;
-            install) return "$APT_INSTALL_RC" ;;
-            remove)  return 0 ;;
+            update)    return "$APT_UPDATE_RC" ;;
+            remove)    return 0 ;;
+            docker-ce) return "$APT_INSTALL_RC" ;;
         esac
     done
     return 0
@@ -100,10 +118,19 @@ apt-get() {
 """
 
 
-def _run_fallback(tmp_path, *, preexisting: bool, update_rc: int, install_rc: int):
-    """Run the real fallback against a fake apt root; return (rc, keyring, list).
+def _run_fallback(
+    tmp_path,
+    *,
+    preexisting: bool,
+    update_rc: int,
+    install_rc: int,
+    distro_pkgs: bool = False,
+):
+    """Run the real fallback against a fake apt root.
 
-    `keyring` / `list` are the files' contents afterwards, or None if absent.
+    Returns (rc, keyring, list, stderr, apt_log). `keyring` / `list` are the
+    files' contents afterwards, or None if absent; `apt_log` is one line per
+    apt-get invocation, in order.
     """
     fake = tmp_path / "fakeroot"
     keyrings = fake / "etc/apt/keyrings"
@@ -120,15 +147,21 @@ def _run_fallback(tmp_path, *, preexisting: bool, update_rc: int, install_rc: in
     # untestable in place — `[[ -e ]]` is a builtin, so a sudo stub cannot
     # redirect it). Rebase that one prefix onto the temp root; every branch,
     # backup and restore below is the script's own code, unmodified.
+    apt_log = tmp_path / "apt.log"
+    apt_log.touch()
+
     script = "\n".join([
         _PREAMBLE,
         _extract_func("_docker_apt_restore"),
+        _extract_func("_docker_restore_distro_pkgs"),
         _extract_func("_apt_install_docker_official_repo"),
         "_apt_install_docker_official_repo && echo RC=0 || echo RC=$?",
     ]).replace("/etc/apt", f"{fake}/etc/apt")
     env = os.environ.copy()
     env.update({
         "DOCKER_FP": DOCKER_FP,
+        "APT_LOG": str(apt_log),
+        "DISTRO_PKGS": "1" if distro_pkgs else "0",
         "APT_UPDATE_RC": str(update_rc),
         "APT_INSTALL_RC": str(install_rc),
     })
@@ -144,6 +177,7 @@ def _run_fallback(tmp_path, *, preexisting: bool, update_rc: int, install_rc: in
         keyring.read_text() if keyring.exists() else None,
         listfile.read_text() if listfile.exists() else None,
         proc.stderr,
+        apt_log.read_text().splitlines(),
     )
 
 
@@ -153,7 +187,7 @@ class TestDockerRepoFallbackRollback:
 
     def test_preexisting_files_restored_when_apt_update_fails(self, tmp_path):
         """A host's own docker.asc/docker.list survive an apt-get update failure."""
-        rc, keyring, listfile, stderr = _run_fallback(
+        rc, keyring, listfile, stderr, _apt = _run_fallback(
             tmp_path, preexisting=True, update_rc=1, install_rc=0
         )
         assert rc == 1, f"fallback should report failure; stderr={stderr}"
@@ -168,7 +202,7 @@ class TestDockerRepoFallbackRollback:
 
     def test_preexisting_files_restored_when_apt_install_fails(self, tmp_path):
         """Same guarantee on the later apt-get install failure path."""
-        rc, keyring, listfile, stderr = _run_fallback(
+        rc, keyring, listfile, stderr, _apt = _run_fallback(
             tmp_path, preexisting=True, update_rc=0, install_rc=1
         )
         assert rc == 1, f"fallback should report failure; stderr={stderr}"
@@ -181,7 +215,7 @@ class TestDockerRepoFallbackRollback:
 
     def test_files_we_created_are_deleted_when_apt_update_fails(self, tmp_path):
         """The original cleanup still applies to files this invocation created."""
-        rc, keyring, listfile, stderr = _run_fallback(
+        rc, keyring, listfile, stderr, _apt = _run_fallback(
             tmp_path, preexisting=False, update_rc=1, install_rc=0
         )
         assert rc == 1, f"fallback should report failure; stderr={stderr}"
@@ -194,7 +228,7 @@ class TestDockerRepoFallbackRollback:
 
     def test_success_keeps_dockers_own_repo_config(self, tmp_path):
         """On success the fetched key and docker.com suite stay in place."""
-        rc, keyring, listfile, stderr = _run_fallback(
+        rc, keyring, listfile, stderr, _apt = _run_fallback(
             tmp_path, preexisting=True, update_rc=0, install_rc=0
         )
         assert rc == 0, f"fallback should succeed; stderr={stderr}"
@@ -203,4 +237,75 @@ class TestDockerRepoFallbackRollback:
         )
         assert listfile is not None and "download.docker.com" in listfile, (
             f"docker.list should point at download.docker.com (got {listfile!r})"
+        )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="bash-only test")
+class TestDistroPackageRollback:
+    """A failed fallback must not leave the host with no Docker at all."""
+
+    @staticmethod
+    def _installs(apt_log):
+        return [ln for ln in apt_log if " install " in f" {ln} "]
+
+    def test_distro_packages_reinstalled_when_apt_update_fails(self, tmp_path):
+        """docker.io/containerd/runc come back after an apt-get update failure."""
+        rc, _k, _l, stderr, apt = _run_fallback(
+            tmp_path, preexisting=False, update_rc=1, install_rc=0, distro_pkgs=True
+        )
+        assert rc == 1, f"fallback should report failure; stderr={stderr}"
+        assert any("remove" in ln for ln in apt), (
+            f"the test never exercised the removal it guards; apt={apt}"
+        )
+        restored = [
+            ln for ln in self._installs(apt)
+            if "docker.io" in ln and "containerd" in ln and "runc" in ln
+        ]
+        assert restored, (
+            "distro docker.io/containerd/runc were removed but never reinstalled "
+            f"after apt-get update failed -- the host is left with no Docker. apt={apt}"
+        )
+
+    def test_distro_packages_reinstalled_when_docker_ce_install_fails(self, tmp_path):
+        """Same guarantee when the docker-ce transaction itself fails."""
+        rc, _k, _l, stderr, apt = _run_fallback(
+            tmp_path, preexisting=False, update_rc=0, install_rc=1, distro_pkgs=True
+        )
+        assert rc == 1, f"fallback should report failure; stderr={stderr}"
+        restored = [
+            ln for ln in self._installs(apt)
+            if "docker.io" in ln and "containerd" in ln and "runc" in ln
+        ]
+        assert restored, (
+            "distro docker.io/containerd/runc were removed but never reinstalled "
+            f"after the docker-ce install failed. apt={apt}"
+        )
+        # The reinstall must come after the failed docker-ce transaction, not
+        # be the removal line read backwards.
+        assert apt.index(restored[-1]) > next(
+            i for i, ln in enumerate(apt) if "docker-ce" in ln
+        ), f"reinstall did not happen after the docker-ce failure; apt={apt}"
+
+    def test_success_does_not_reinstall_the_distro_packages(self, tmp_path):
+        """docker-ce installed cleanly: the distro trio must stay removed."""
+        rc, _k, _l, stderr, apt = _run_fallback(
+            tmp_path, preexisting=False, update_rc=0, install_rc=0, distro_pkgs=True
+        )
+        assert rc == 0, f"fallback should succeed; stderr={stderr}"
+        assert not [
+            ln for ln in self._installs(apt)
+            if "docker.io" in ln and "runc" in ln
+        ], f"docker.io/runc were reinstalled on the success path, undoing the swap; apt={apt}"
+
+    def test_nothing_reinstalled_when_nothing_was_installed(self, tmp_path):
+        """No distro packages present: the rollback stays a no-op."""
+        rc, _k, _l, stderr, apt = _run_fallback(
+            tmp_path, preexisting=False, update_rc=1, install_rc=0, distro_pkgs=False
+        )
+        assert rc == 1, f"fallback should report failure; stderr={stderr}"
+        assert not [ln for ln in apt if "remove" in ln], (
+            f"nothing was installed, so nothing should be removed; apt={apt}"
+        )
+        assert not [ln for ln in self._installs(apt) if "docker.io" in ln], (
+            f"nothing was removed, so nothing should be reinstalled; apt={apt}"
         )

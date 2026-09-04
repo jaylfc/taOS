@@ -162,7 +162,25 @@ echo "test: Docker curl download has bounded timeouts"
 grep -q "curl -fsSL --connect-timeout 15 --max-time 60" "$SCRIPT"
 
 echo "test: trixie fallback removes distro docker.io/containerd/runc before installing docker-ce"
-grep -q "apt-get remove -y -qq docker.io containerd runc" "$SCRIPT"
+grep -q 'apt-get remove -y -qq \$_docker_removed_pkgs' "$SCRIPT"
+
+echo "test: removed distro packages are reinstalled on every post-removal failure"
+# The caller installs docker.io immediately before entering the fallback, so a
+# failure AFTER the removal used to leave the host with no Docker at all.
+# Behaviour is covered end to end by tests/test_install_server_docker_repo.py.
+grep -q "^_docker_restore_distro_pkgs()" "$SCRIPT"
+grep -A4 'apt-get update failed after adding Docker' "$SCRIPT" \
+    | grep -q '_docker_restore_distro_pkgs "\$_docker_removed_pkgs"'
+grep -A4 'apt install from Docker' "$SCRIPT" \
+    | grep -q '_docker_restore_distro_pkgs "\$_docker_removed_pkgs"'
+
+echo "test: the package rollback reinstalls exactly what was removed, not a fixed list"
+grep -A12 '^_docker_restore_distro_pkgs()' "$SCRIPT" | grep -q 'local pkgs="\$1"'
+grep -A12 '^_docker_restore_distro_pkgs()' "$SCRIPT" | grep -q '\[\[ -n "\$pkgs" \]\] || return 0'
+
+echo "test: a failed reinstall warns loudly instead of narrating success"
+grep -A22 '^_docker_restore_distro_pkgs()' "$SCRIPT" \
+    | grep -q "this host has NO Docker now"
 
 echo "test: trixie fallback rolls back docker.list + docker.asc on apt-get update failure"
 # Rollback goes through _docker_apt_restore, which restores a pre-existing
