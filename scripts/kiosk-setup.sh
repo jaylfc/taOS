@@ -25,6 +25,18 @@ if ! command -v cage &>/dev/null; then
     }
 fi
 
+# Install seatd (seat driver) for kiosk mode authentication
+if ! command -v seatd &>/dev/null; then
+    echo "Installing seatd (seat driver)..."
+    apt-get install -y -qq seatd 2>/dev/null || {
+        echo "seatd not in repos — skipping seat configuration"
+    }
+    if command -v seatd &>/dev/null; then
+        echo "Adding user $TAOS_USER to seat group..."
+        usermod -a -G seat "$TAOS_USER" 2>/dev/null || true
+    fi
+fi
+
 # Install chromium if not present
 BROWSER=""
 for b in chromium-browser chromium google-chrome-stable; do
@@ -44,8 +56,8 @@ echo "Browser: $BROWSER"
 cat > /etc/systemd/system/taos-kiosk.service << EOF
 [Unit]
 Description=taOS Kiosk Mode
-After=tinyagentos.service network-online.target
-Wants=tinyagentos.service
+After=tinyagentos.service network-online.target seatd.service
+Wants=tinyagentos.service Wants=seatd.service
 
 [Service]
 Type=simple
