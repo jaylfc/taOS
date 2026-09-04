@@ -157,12 +157,14 @@ function openStream(kinds: Coverage): EventSource {
 
   es.onerror = () => {
     if (es === pendingEs) {
-      // The widened stream failed. The narrow one is still delivering
-      // everything it covers, so keep it and drop the attempt; the next mount
-      // or kinds change retries the widening.
+      // The widened stream failed. If the narrow one is still up it keeps
+      // delivering everything it covers, so drop the attempt and let the next
+      // mount or kinds change retry the widening. If it is NOT up, deferring
+      // to this stream is what left the backoff unscheduled, so schedule it.
       if (es.readyState === EventSource.CLOSED) {
         es.close();
         pendingEs = null;
+        if (!sharedEs) scheduleReconnect();
       }
       return;
     }
@@ -183,21 +185,29 @@ function openStream(kinds: Coverage): EventSource {
 
     if (es.readyState === EventSource.CLOSED) {
       sharedEs = null;
-      const delay = Math.min(
-        RECONNECT_DELAY_MS * 2 ** reconnectAttempts,
-        MAX_RECONNECT_DELAY_MS,
-      );
-      reconnectAttempts += 1;
-      reconnectTimer = setTimeout(() => {
-        // Clear the handle FIRST: startConnection reads it, and a fired timer
-        // whose handle is still set would refuse its own reconnect.
-        reconnectTimer = null;
-        startConnection();
-      }, delay);
+      // A widened stream is already on its way and covers everything this one
+      // did, so it IS the reconnect. Scheduling another on top would open a
+      // stream the handoff then immediately closes.
+      if (!pendingEs) scheduleReconnect();
     }
   };
 
   return es;
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  const delay = Math.min(
+    RECONNECT_DELAY_MS * 2 ** reconnectAttempts,
+    MAX_RECONNECT_DELAY_MS,
+  );
+  reconnectAttempts += 1;
+  reconnectTimer = setTimeout(() => {
+    // Clear the handle FIRST: startConnection reads it, and a fired timer
+    // whose handle is still set would refuse its own reconnect.
+    reconnectTimer = null;
+    startConnection();
+  }, delay);
 }
 
 // Widen the server-side filter to cover everything subscribed, without a gap.

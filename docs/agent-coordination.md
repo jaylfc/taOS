@@ -871,6 +871,11 @@ per-subscriber dedup window below is what absorbs that. If the widened stream
 fails instead of opening, it is dropped and the narrow one stays: the next
 mount or `kinds` change retries the widening.
 
+While a widened stream is in flight it IS the reconnect. If the narrow stream
+dies during the handoff, no backoff is scheduled on top of it -- that would
+open a third stream the handoff then immediately closes -- and the backoff is
+scheduled only if the widened stream dies as well, leaving nothing listening.
+
 The stream is open exactly while the subscriber map is non-empty -- that map
 is the only thing consulted on teardown, and it is consulted a microtask after
 the last subscriber leaves, once the React commit has settled. React runs every

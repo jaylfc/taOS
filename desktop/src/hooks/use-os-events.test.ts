@@ -23,11 +23,14 @@ interface MockEventSource {
 let lastEs: MockEventSource | null = null;
 const allEs: MockEventSource[] = [];
 
-// Streams constructed and not yet closed. Widening the server-side filter
-// overlaps two of them on purpose, so "one stream" is an invariant about how
-// many are OPEN, not about how many were ever constructed.
+// Streams that are still live: neither closed by the hook nor dropped by the
+// browser. Widening the server-side filter overlaps two of them on purpose, so
+// "one stream" is an invariant about how many are OPEN, not about how many were
+// ever constructed.
 function openStreams(): MockEventSource[] {
-  return allEs.filter((es) => es.close.mock.calls.length === 0);
+  return allEs.filter(
+    (es) => es.close.mock.calls.length === 0 && es.readyState !== 2,
+  );
 }
 
 // Let a widened stream finish taking over from the narrow one.
@@ -700,5 +703,77 @@ describe("useOsEvents", () => {
     expect(onEvent).toHaveBeenCalledWith(
       expect.objectContaining({ id: "still-here" }),
     );
+  });
+
+  it("does not open a third stream when the narrow one dies mid-widening", async () => {
+    vi.useFakeTimers();
+    const { rerender } = renderHook(
+      ({ kinds }: { kinds: string[] }) => useOsEvents(kinds, () => {}),
+      { initialProps: { kinds: ["projects.task.changed"] } },
+    );
+    settleHandoff();
+    const narrow = lastEs;
+
+    rerender({ kinds: ["projects.task.changed", "notifications.new"] });
+    const widened = lastEs;
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      if (narrow) {
+        narrow.readyState = EventSource.CLOSED;
+        narrow._fireError();
+      }
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    // The widened stream is already on its way and covers everything the dead
+    // one did, so it IS the reconnect. Scheduling another one on top opens a
+    // stream that the handoff then immediately closes.
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      widened?.onopen?.();
+    });
+    expect(openStreams()).toHaveLength(1);
+
+    vi.useRealTimers();
+  });
+
+  it("still reconnects when the widened stream dies too", async () => {
+    vi.useFakeTimers();
+    const { rerender } = renderHook(
+      ({ kinds }: { kinds: string[] }) => useOsEvents(kinds, () => {}),
+      { initialProps: { kinds: ["projects.task.changed"] } },
+    );
+    settleHandoff();
+    const narrow = lastEs;
+
+    rerender({ kinds: ["projects.task.changed", "notifications.new"] });
+    const widened = lastEs;
+
+    act(() => {
+      if (narrow) {
+        narrow.readyState = EventSource.CLOSED;
+        narrow._fireError();
+      }
+    });
+    act(() => {
+      if (widened) {
+        widened.readyState = EventSource.CLOSED;
+        widened._fireError();
+      }
+    });
+
+    // Deferring to the widened stream is only safe while it is still alive.
+    // Once it is gone too, nothing is listening and the backoff has to run.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(3);
+
+    vi.useRealTimers();
   });
 });
