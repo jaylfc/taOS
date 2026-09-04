@@ -395,7 +395,8 @@ class ProjectStore(ProjectsDBStore):
                 "WHERE project_id = ? AND member_id = ?",
                 params,
             )
-        return cur.rowcount == 1
+            changed = cur.rowcount == 1
+        return changed
 
     async def list_members(self, project_id: str) -> list[dict]:
         async with self._db.execute(

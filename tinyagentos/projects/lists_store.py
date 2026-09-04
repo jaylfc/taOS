@@ -100,7 +100,8 @@ class ProjectListsStore(ProjectsDBStore):
             cursor = await self._db.execute(
                 "DELETE FROM project_lists WHERE id = ?", (list_id,)
             )
-        return cursor.rowcount > 0
+            changed = cursor.rowcount > 0
+        return changed
 
 
 class ProjectListEntriesStore(ProjectsDBStore):
@@ -261,7 +262,8 @@ class ProjectListEntriesStore(ProjectsDBStore):
             cursor = await self._db.execute(
                 "DELETE FROM project_list_entries WHERE id = ?", (entry_id,)
             )
-        return cursor.rowcount == 1
+            changed = cursor.rowcount == 1
+        return changed
 
     async def reorder_entries(self, project_id: str, list_id: str, entries: list[dict]) -> bool:
         # An entry that does not belong to this list aborts the whole reorder:

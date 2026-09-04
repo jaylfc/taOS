@@ -127,7 +127,22 @@ async def _rollback(db, store: str, lock: asyncio.Lock) -> bool:
 
 
 def _finish_rollback(task: "asyncio.Future", store: str, lock: asyncio.Lock) -> None:
-    if not task.cancelled() and task.exception() is not None:
+    """Log how the handed-off rollback ended, then always free the lock.
+
+    The release is unconditional on purpose.  Whatever happened to the
+    rollback, holding the per-connection lock forever would block every later
+    write on this store with no way back except a restart -- the exact symptom
+    this module exists to remove.  A transaction that survived is the lesser
+    evil, and both bad endings are logged at ERROR so the journal names the
+    store instead of leaving the next lock-up unexplained.
+    """
+    if task.cancelled():
+        logger.error(
+            "projects.db rollback was itself cancelled in %s: the connection may "
+            "still hold an open transaction",
+            store,
+        )
+    elif task.exception() is not None:
         logger.error(
             "projects.db rollback failed in %s: %r", store, task.exception()
         )

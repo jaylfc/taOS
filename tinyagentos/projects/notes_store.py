@@ -92,4 +92,5 @@ class ProjectNotesStore(ProjectsDBStore):
             cursor = await self._db.execute(
                 "DELETE FROM project_notes WHERE id = ?", (note_id,)
             )
-        return cursor.rowcount > 0
+            changed = cursor.rowcount > 0
+        return changed

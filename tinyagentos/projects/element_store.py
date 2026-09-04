@@ -161,7 +161,8 @@ class ProjectElementStore(ProjectsDBStore):
                 "UPDATE project_elements SET archived_at = ?, updated_at = ? WHERE id = ?",
                 (now, now, element_id),
             )
-        return cur.rowcount == 1
+            changed = cur.rowcount == 1
+        return changed
 
     async def count_element_items(self, project_id: str, element_id: str) -> dict:
         """Counts of items currently tagged with this element.

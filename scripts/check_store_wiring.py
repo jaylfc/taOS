@@ -11,9 +11,11 @@ Algorithm:
      (directly or transitively).
   3. For each modified file, find classes whose ``class Foo(BaseStore)``
      definition line appears in the added diff lines.
-  4. Skip classes that some other class under tinyagentos/ subclasses: a base
-     class exists to be inherited from, never to be assigned to app.state, and
-     its concrete subclasses are checked in their own right.
+  4. Skip classes that some other class under tinyagentos/ subclasses AND
+     that declare no SCHEMA of their own: such a base exists to be inherited
+     from, never to be assigned to app.state, and its concrete subclasses are
+     checked in their own right. A base that declares SCHEMA owns tables, so
+     it is a store and stays policed.
   5. For each remaining newly-added store class, check that its class name
      appears somewhere in tinyagentos/app.py (name-level check).
   6. A "Store-Unwired-Intentionally: <ClassName>, <why>" trailer in the PR
@@ -190,18 +192,45 @@ def build_class_hierarchy(repo_root: Path) -> dict[str, set[str]]:
 def find_intermediate_bases(classes: dict[str, set[str]]) -> set[str]:
     """Class names that some other class under ``tinyagentos/`` subclasses.
 
-    A class written to be inherited from is never assigned to ``app.state``:
-    ``ProjectsDBStore`` in tinyagentos/projects/tx.py carries the shared
-    projects.db transaction helper and every concrete store on that file
-    inherits it.  Flagging such a base would push people to fabricate an
-    app.state entry for a class no route can use, which is worse than the
-    thing the gate exists to catch.  The concrete subclasses keep being
-    checked -- reaching a store still means reaching it through app.state.
+    Being subclassed is only HALF of what exempts a class -- see
+    ``class_declares_schema``, which supplies the other half.
     """
     bases: set[str] = set()
     for own_bases in classes.values():
         bases.update(own_bases)
     return bases
+
+
+def class_declares_schema(source: str, class_name: str) -> bool:
+    """Return True if ``class_name``'s body assigns ``SCHEMA``.
+
+    ``SCHEMA`` is how a store declares the tables it owns, so it separates a
+    real store from a base class that only carries behaviour.  A class is
+    exempt from the wiring requirement only when it is subclassed AND owns no
+    tables: ``ProjectsDBStore`` in tinyagentos/projects/tx.py is the case --
+    it carries the shared projects.db transaction helper, has no tables of its
+    own and is never instantiated, so there is nothing to assign to
+    ``app.state``.  Requiring both halves keeps a real store policed even once
+    somebody subclasses it: without the SCHEMA half, giving an unwired store a
+    subclass would launder the parent past the gate.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef) or node.name != class_name:
+            continue
+        for stmt in node.body:
+            targets: list[ast.expr] = []
+            if isinstance(stmt, ast.Assign):
+                targets = list(stmt.targets)
+            elif isinstance(stmt, ast.AnnAssign):
+                targets = [stmt.target]
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id == "SCHEMA":
+                    return True
+    return False
 
 
 def _inherits_base_store(
@@ -312,13 +341,19 @@ def check_store_wiring(
             if class_name in waived:
                 continue
 
-            if class_name in intermediate_bases:
-                # A base for other stores: nothing to assign to app.state, and
-                # its subclasses are checked in their own right.  Printed, not
-                # silent, so an exemption stays visible in the gate's log.
+            if class_name in intermediate_bases and not class_declares_schema(
+                source, class_name,
+            ):
+                # Subclassed AND owns no tables: a base that carries behaviour,
+                # with nothing to assign to app.state, whose subclasses are
+                # checked in their own right.  A base that declares SCHEMA is a
+                # store and stays policed, so subclassing an unwired store
+                # cannot launder it past the gate.  Printed, not silent, so an
+                # exemption stays visible in the gate's log.
                 print(
-                    f"store-wiring-guard: {class_name} in {file_path} is a base "
-                    f"class for other stores; its subclasses are checked instead"
+                    f"store-wiring-guard: {class_name} in {file_path} declares no "
+                    f"tables and is a base class for other stores; its subclasses "
+                    f"are checked instead"
                 )
                 continue
 

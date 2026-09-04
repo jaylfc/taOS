@@ -408,7 +408,7 @@ class ProjectTaskStore(ProjectsDBStore):
                      )""",
                 (claimer_id, now, now, task_id, claimer_id),
             )
-        changed = cursor.rowcount == 1
+            changed = cursor.rowcount == 1
         if changed:
             existing = await self.get_task(task_id)
             if existing is not None:
@@ -428,7 +428,7 @@ class ProjectTaskStore(ProjectsDBStore):
                    WHERE id = ? AND claimed_by = ? AND status = 'claimed'""",
                 (now, task_id, releaser_id),
             )
-        changed = cursor.rowcount == 1
+            changed = cursor.rowcount == 1
         if changed:
             existing = await self.get_task(task_id)
             if existing is not None:
@@ -468,7 +468,7 @@ class ProjectTaskStore(ProjectsDBStore):
                          AND (claimed_by IS NULL OR claimed_by = ?)""",
                     (closed_by, now, reason, now, task_id, closed_by),
                 )
-        changed = cursor.rowcount == 1
+            changed = cursor.rowcount == 1
         if changed:
             existing = await self.get_task(task_id)
             if existing is not None:
@@ -505,7 +505,7 @@ class ProjectTaskStore(ProjectsDBStore):
                    WHERE id = ? AND status = 'closed'""",
                 (now, task_id),
             )
-        changed = cursor.rowcount == 1
+            changed = cursor.rowcount == 1
         if changed:
             existing = await self.get_task(task_id)
             if existing is not None:
@@ -532,7 +532,7 @@ class ProjectTaskStore(ProjectsDBStore):
                    WHERE id = ? AND status NOT IN ('closed', 'cancelled', 'quarantined')""",
                 (now, task_id),
             )
-        changed = cursor.rowcount == 1
+            changed = cursor.rowcount == 1
         if changed:
             existing = await self.get_task(task_id)
             if existing is not None:
@@ -585,7 +585,7 @@ class ProjectTaskStore(ProjectsDBStore):
                    WHERE id = ? AND status = 'quarantined'""",
                 (now, task_id),
             )
-        changed = cursor.rowcount == 1
+            changed = cursor.rowcount == 1
         if changed:
             if self._strikes is not None:
                 try:

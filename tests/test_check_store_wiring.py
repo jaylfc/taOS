@@ -357,12 +357,12 @@ class TestCheckStoreWiring:
         assert waived == {"UnwiredStore"}
 
     def test_transitive_subclass_flagged(self, tmp_path: Path):
-        """The concrete leaf is still policed when its base is new too.
+        """Both classes own tables, so being subclassed exempts neither.
 
-        ``ParentStore`` exists only to be inherited from, so it is exempt (see
-        ``test_intermediate_base_class_not_flagged``); ``ChildStore`` is the
-        class a route would have to reach through ``app.state``, and the gate
-        still goes red for it.
+        The base-class exemption needs the class to declare no ``SCHEMA`` (see
+        ``test_intermediate_base_class_not_flagged``).  ``ParentStore`` here
+        does, so it is a store, and a store is policed whether or not somebody
+        subclassed it.
         """
         repo = tmp_path / "repo"
         base_tip = _setup_base_repo(repo)
@@ -387,9 +387,9 @@ class TestCheckStoreWiring:
 
         violations, waived = csw.check_store_wiring(base_tip, repo)
 
-        assert len(violations) == 1
+        assert len(violations) == 2
         names = {v.class_name for v in violations}
-        assert names == {"ChildStore"}
+        assert names == {"ParentStore", "ChildStore"}
         assert waived == set()
 
     def test_comment_only_mention_fails_ast(self, tmp_path: Path):
@@ -484,13 +484,14 @@ class TestCheckStoreWiring:
         assert violations[0].file_path == "tinyagentos/metrics_store.py"
 
     def test_intermediate_base_class_not_flagged(self, tmp_path: Path):
-        """A base class other stores inherit from has nothing to wire.
+        """A subclassed class that owns no tables has nothing to wire.
 
         ``ProjectsDBStore`` (tinyagentos/projects/tx.py) is the shape: it exists
         so every store on the shared projects.db inherits one transaction
-        helper, and it is never instantiated or assigned to ``app.state``.  The
-        gate polices the concrete subclasses instead -- demanding an app.state
-        entry for the base would only teach people to fabricate wiring.
+        helper, declares no ``SCHEMA``, and is never instantiated or assigned to
+        ``app.state``.  The gate polices the concrete subclasses instead --
+        demanding an app.state entry for the base would only teach people to
+        fabricate wiring.
         """
         repo = tmp_path / "repo"
         base_tip = _setup_base_repo(repo)
@@ -574,6 +575,92 @@ class TestCheckStoreWiring:
 
         assert [v.class_name for v in violations] == ["NotesStore"]
         assert waived == set()
+
+
+    def test_subclassed_store_that_owns_tables_is_still_policed(
+        self, tmp_path: Path,
+    ):
+        """Subclassing an unwired store must not launder it past the gate.
+
+        A class that declares ``SCHEMA`` owns tables, so it is a store a route
+        has to reach through ``app.state`` -- adding a subclass next to it (the
+        subclass here is wired, so it is clean on its own) cannot turn the
+        parent into an exempt base class.
+        """
+        repo = tmp_path / "repo"
+        base_tip = _setup_base_repo(repo)
+
+        _branch(repo, "pr")
+        _checkout(repo, "pr")
+        _commit(
+            repo, "tinyagentos/ledger_store.py",
+            "from tinyagentos.base_store import BaseStore\n"
+            "\n"
+            "class LedgerStore(BaseStore):\n"
+            "    SCHEMA = 'CREATE TABLE IF NOT EXISTS ledger (id INTEGER PRIMARY KEY);'\n"
+            "    MIGRATIONS = []\n"
+            "\n"
+            "class AuditLedgerStore(LedgerStore):\n"
+            "    SCHEMA = 'CREATE TABLE IF NOT EXISTS audit_ledger (id INTEGER PRIMARY KEY);'\n"
+            "    MIGRATIONS = []\n",
+            "feat: add LedgerStore and AuditLedgerStore",
+        )
+        _commit(
+            repo, "tinyagentos/app.py",
+            "from tinyagentos.base_store import BaseStore\n"
+            "from tinyagentos.metrics_store import MetricsStore\n"
+            "from tinyagentos.ledger_store import AuditLedgerStore\n\n"
+            "metrics_store = MetricsStore('/tmp/metrics.db')\n"
+            "audit_ledger_store = AuditLedgerStore('/tmp/ledger.db')\n\n"
+            "async def lifespan(app):\n"
+            "    await metrics_store.init()\n"
+            "    await audit_ledger_store.init()\n"
+            "    app.state.metrics = metrics_store\n"
+            "    app.state.audit_ledger = audit_ledger_store\n",
+            "feat: wire AuditLedgerStore only",
+        )
+        _checkout(repo, "main")
+        _git(repo, "merge", "pr", "--no-edit")
+
+        violations, waived = csw.check_store_wiring(base_tip, repo)
+
+        assert [v.class_name for v in violations] == ["LedgerStore"]
+        assert waived == set()
+
+
+class TestClassDeclaresSchema:
+    def test_class_with_schema(self):
+        source = "class FooStore(BaseStore):\n    SCHEMA = 'CREATE TABLE foo (id);'\n"
+        assert csw.class_declares_schema(source, "FooStore")
+
+    def test_class_with_annotated_schema(self):
+        source = "class FooStore(BaseStore):\n    SCHEMA: str = 'CREATE TABLE foo (id);'\n"
+        assert csw.class_declares_schema(source, "FooStore")
+
+    def test_class_without_schema(self):
+        source = "class FooBase(BaseStore):\n    AUTOCOMMIT = True\n"
+        assert not csw.class_declares_schema(source, "FooBase")
+
+    def test_schema_on_another_class_does_not_count(self):
+        source = (
+            "class FooBase(BaseStore):\n"
+            "    AUTOCOMMIT = True\n"
+            "\n"
+            "class BarStore(FooBase):\n"
+            "    SCHEMA = 'CREATE TABLE bar (id);'\n"
+        )
+        assert not csw.class_declares_schema(source, "FooBase")
+        assert csw.class_declares_schema(source, "BarStore")
+
+    def test_real_repo_projects_db_store_owns_no_tables(self):
+        source = (REPO_ROOT / "tinyagentos" / "projects" / "tx.py").read_text()
+        assert not csw.class_declares_schema(source, "ProjectsDBStore")
+
+    def test_real_repo_concrete_projects_store_owns_tables(self):
+        source = (
+            REPO_ROOT / "tinyagentos" / "projects" / "task_store.py"
+        ).read_text()
+        assert csw.class_declares_schema(source, "ProjectTaskStore")
 
 
 class TestFindIntermediateBases:

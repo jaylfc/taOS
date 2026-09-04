@@ -15,10 +15,12 @@ store B -- a different store on the same file -- to complete a normal write.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
 
 import pytest
 
+from tinyagentos.projects import tx as tx_module
 from tinyagentos.projects.project_store import ProjectConflict, ProjectStore
 from tinyagentos.projects.task_store import ProjectTaskStore
 
@@ -197,3 +199,26 @@ async def test_cancellation_while_begin_is_queued_does_not_wedge_sibling_store(
 
     await _sibling_write_succeeds(onlooker)
     assert victim._db.in_transaction is False
+
+
+@pytest.mark.asyncio
+async def test_cancelled_handoff_rollback_still_frees_the_lock_and_says_so(caplog):
+    """A rollback that is itself cancelled must not keep the connection lock.
+
+    When ``tx()`` hands the lock to a shielded rollback, that rollback owns the
+    release.  Something else cancelling it -- loop shutdown, a watchdog -- must
+    still free the lock: holding it forever would block every later write on
+    the store with no cure but a restart, which is the symptom this module
+    exists to remove.  A surviving transaction is the lesser evil, so it is
+    logged at ERROR with the store name rather than left silent.
+    """
+    lock = asyncio.Lock()
+    await lock.acquire()
+    rollback = asyncio.get_running_loop().create_future()
+    rollback.cancel()
+
+    with caplog.at_level(logging.ERROR, logger=tx_module.logger.name):
+        tx_module._finish_rollback(rollback, "ProjectTaskStore", lock)
+
+    assert lock.locked() is False
+    assert "rollback was itself cancelled in ProjectTaskStore" in caplog.text

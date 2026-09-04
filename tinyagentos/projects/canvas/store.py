@@ -306,7 +306,8 @@ class ProjectCanvasStore(ProjectsDBStore):
                    WHERE id = ? AND project_id = ? AND deleted_at IS NULL""",
                 (now, now, element_id, project_id),
             )
-        if cur.rowcount == 1:
+            changed = cur.rowcount == 1
+        if changed:
             await self._publish(
                 project_id, "canvas.element_deleted",
                 {"element_id": element_id, "actor": {"kind": author_kind, "id": author_id}},
