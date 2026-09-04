@@ -1,0 +1,2 @@
+### Fixed
+- install-server.sh now installs Docker Engine + Compose v2 on Debian trixie / Armbian trixie, whose distro apt has neither docker-compose-plugin nor docker-compose-v2 (taOS#2). When both names are missing it falls back to Docker's official apt repo (download.docker.com) after verifying the signing key fingerprint, installing docker-ce + docker-ce-cli + containerd.io + docker-buildx-plugin + docker-compose-plugin. Air-gapped hosts that can't reach download.docker.com still complete the install with a "Store Docker apps will be unavailable" warning.
