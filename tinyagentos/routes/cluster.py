@@ -349,6 +349,11 @@ async def list_workers(request: Request):
 
 @router.post("/api/cluster/workers")
 async def register_worker(request: Request, body: WorkerRegister):
+    """HMAC-signed -- a paired worker registers (or re-registers) itself.
+
+    The signing identity must match ``body.name``. The reported hardware is
+    normalised before it reaches :class:`WorkerInfo` and the capability map.
+    """
     # HMAC gate — workers must be paired before registering.
     # The 'local' worker registers in-process (manager.register_worker),
     # never over HTTP, so it is unaffected by this check.
