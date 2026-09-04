@@ -90,21 +90,34 @@ CODERABBIT_SCAFFOLDING_RE = re.compile(
 )
 
 # A CodeRabbit auto-summary comment that reports a completed review with zero
-# findings carries BOTH of the following markers:
-#   (a) "No actionable comments were generated in the recent review"
-#   (b) an "Included review availability:" line that says N remain after this
-#       review (quota was consumed, so a review actually ran).
-# Together these identify a real completed review that found nothing, not a stub.
+# findings carries ALL THREE of the following markers (the three-marker rule):
+#   (a) "No actionable comments were generated in the recent review" -- the
+#       no-findings assertion.
+#   (b) "**Run ID**: <uuid>" -- a CodeRabbit run id, only present when an
+#       actual review ran.
+#   (c) "Files selected for processing (N)" with N >= 1 -- at least one file
+#       was in scope for the review (everything path-filtered -> stub).
+# The previous discriminator used the quota-consumed "Included review
+# availability:" line, which only appears on manually-triggered reviews
+# (e.g. @coderabbitai full review) and is absent on the AUTOMATIC review
+# posted at PR-open -- the very case the gate exists to clear.
 CODERABBIT_ZERO_FINDING_PHRASE_RE = re.compile(
     r"No actionable comments were generated in the recent review",
     re.IGNORECASE,
 )
+# Informational: the quota-consumed line is retained for reference but is no
+# longer required by the predicate. Automatic reviews carry it only after a
+# manual re-trigger rewrites the comment.
 CODERABBIT_QUOTA_RE = re.compile(
     r"Included review availability:.*?remain after this review",
     re.DOTALL | re.IGNORECASE,
 )
 CODERABBIT_RUN_ID_RE = re.compile(
     r"\*\*Run ID\*\*:\s*(\S+)",
+    re.IGNORECASE,
+)
+CODERABBIT_FILES_SELECTED_RE = re.compile(
+    r"Files selected for processing\s*\((\d+)\)",
     re.IGNORECASE,
 )
 
@@ -244,26 +257,43 @@ def is_coderabbit_auto_summary(body: str | None) -> bool:
     return bool(CODERABBIT_AUTO_SUMMARY_RE.search(body))
 
 
-def is_coderabbit_zero_finding_review(body: str | None) -> tuple[bool, str | None]:
-    """Return (True, run_id) if a body is a CodeRabbit auto-summary comment
-    reporting a completed review with zero findings, else (False, None).
+def is_coderabbit_zero_finding_review(body: str | None) -> tuple[bool, str | None, int]:
+    """Return (True, run_id, files_selected) if a body is a CodeRabbit
+    auto-summary comment reporting a completed review with zero findings,
+    else (False, None, 0).
 
     A completed zero-finding review is an auto-summary comment whose body
-    contains BOTH the "no actionable comments" marker and the quota-consumed
-    marker ("Included review availability:" ... "remain after this review"),
-    plus a Run ID. This distinguishes a real completed review from a merge/
-    close stub that carries no review metadata at all.
+    contains ALL THREE of:
+      (a) "No actionable comments were generated in the recent review" --
+          the no-findings assertion.
+      (b) a "**Run ID**: <uuid>" line -- only present when an actual review
+          ran.
+      (c) "Files selected for processing (N)" with N >= 1 -- at least one
+          file was in scope for the review; N == 0 means everything was
+          path-filtered and nothing was reviewed (a stub the lead labels).
+
+    The previous version also required the quota-consumed "Included review
+    availability:" line, but that line appears ONLY on manually-triggered
+    reviews (@coderabbitai full review) and is absent on the AUTOMATIC
+    review posted at PR-open -- so the very case the gate exists to clear
+    stayed red on every clean lane PR.
     """
     if not body:
-        return False, None
+        return False, None, 0
     if not is_coderabbit_auto_summary(body):
-        return False, None
+        return False, None, 0
     if not CODERABBIT_ZERO_FINDING_PHRASE_RE.search(body):
-        return False, None
-    if not CODERABBIT_QUOTA_RE.search(body):
-        return False, None
+        return False, None, 0
     run_id_match = CODERABBIT_RUN_ID_RE.search(body)
-    return True, (run_id_match.group(1) if run_id_match else None)
+    if not run_id_match:
+        return False, None, 0
+    files_match = CODERABBIT_FILES_SELECTED_RE.search(body)
+    if not files_match:
+        return False, None, 0
+    files_selected = int(files_match.group(1))
+    if files_selected < 1:
+        return False, None, 0
+    return True, run_id_match.group(1), files_selected
 
 
 def is_real_item(item: CRItem) -> bool:
@@ -432,15 +462,15 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
         )
 
     # Check for a completed zero-finding review before falling through to the
-    # stub verdict. An auto-summary comment carrying both the "no actionable
-    # comments" marker and the quota-consumed marker means CodeRabbit ran and
+    # stub verdict. An auto-summary comment carrying the three-marker shape
+    # (no-actionable + Run ID + Files selected N>=1) means CodeRabbit ran and
     # found nothing -- that is a real review outcome, not fake-green.
     for item in items:
-        is_zf, run_id = is_coderabbit_zero_finding_review(item.body)
+        is_zf, run_id, files_selected = is_coderabbit_zero_finding_review(item.body)
         if is_zf:
-            run_id_str = f" (run {run_id})" if run_id else ""
             return EXIT_OK, (
-                f"PASS: real CodeRabbit review, 0 findings{run_id_str} "
+                f"PASS: real CodeRabbit review, 0 findings "
+                f"(run {run_id}, {files_selected} file(s) selected) "
                 f"(exit {EXIT_OK})"
             )
 

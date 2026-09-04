@@ -1114,63 +1114,98 @@ class TestDetectorIsolation:
 
 
 class TestIsCoderabbitZeroFindingReview:
-    """The zero-finding detector: an auto-summary comment carrying both the
-    no-findings marker and the quota-consumed marker is a completed review
-    that found nothing, not a stub."""
+    """The zero-finding detector: an auto-summary comment carrying the
+    three-marker shape (no-actionable + Run ID + Files selected N>=1) is a
+    completed review that found nothing, not a stub.
+
+    The three-marker rule replaces the prior quota-line discriminator. The
+    quota line appears only on manually-triggered reviews (@coderabbitai full
+    review), so requiring it left every automatic PR-open review red.
+    """
 
     ZERO_FINDING_BODY = (
         "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
         "**Run ID**: abc123-def456\n"
         "📒 Files selected for processing (3)\n"
         "No actionable comments were generated in the recent review.\n"
-        "**Included review availability:** Your plan provides up to 4 included reviews per hour; 2 remain after this review."
     )
 
-    def test_both_markers_returns_true_and_run_id(self, check_mod) -> None:
-        is_zf, run_id = check_mod.is_coderabbit_zero_finding_review(self.ZERO_FINDING_BODY)
+    def test_three_markers_returns_true_with_run_id_and_count(self, check_mod) -> None:
+        is_zf, run_id, n = check_mod.is_coderabbit_zero_finding_review(self.ZERO_FINDING_BODY)
         assert is_zf is True
         assert run_id == "abc123-def456"
+        assert n == 3
+
+    def test_automatic_shape_without_quota_line_returns_true(self, check_mod) -> None:
+        """The whole reason this fix exists: the auto-summary body at PR-open
+        has no "Included review availability:" line. It must pass."""
+        body = (
+            "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+            "**Run ID**: 549e52b3-aaaa-bbbb-cccc-ddddd1234567890\n"
+            "📒 Files selected for processing (5)\n"
+            "No actionable comments were generated in the recent review."
+        )
+        is_zf, run_id, n = check_mod.is_coderabbit_zero_finding_review(body)
+        assert is_zf is True
+        assert run_id == "549e52b3-aaaa-bbbb-cccc-ddddd1234567890"
+        assert n == 5
 
     def test_without_auto_summary_marker_returns_false(self, check_mod) -> None:
-        body = "No actionable comments were generated in the recent review.\n" \
-               "**Included review availability:** Your plan provides up to 4 included reviews per hour; 2 remain after this review."
-        is_zf, run_id = check_mod.is_coderabbit_zero_finding_review(body)
-        assert is_zf is False
-        assert run_id is None
+        body = (
+            "**Run ID**: abc123-def456\n"
+            "Files selected for processing (3)\n"
+            "No actionable comments were generated in the recent review."
+        )
+        is_zf, run_id, n = check_mod.is_coderabbit_zero_finding_review(body)
+        assert (is_zf, run_id, n) == (False, None, 0)
 
-    def test_without_phrase_a_returns_false(self, check_mod) -> None:
+    def test_without_marker_a_returns_false(self, check_mod) -> None:
+        """Drop marker (a): no "No actionable comments" -> stub. Removing the
+        a-check from the predicate must turn this case RED."""
         body = (
             "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
             "**Run ID**: abc123-def456\n"
-            "**Included review availability:** Your plan provides up to 4 included reviews per hour; 2 remain after this review."
+            "Files selected for processing (3)\n"
         )
-        is_zf, run_id = check_mod.is_coderabbit_zero_finding_review(body)
-        assert is_zf is False
-        assert run_id is None
+        is_zf, run_id, n = check_mod.is_coderabbit_zero_finding_review(body)
+        assert (is_zf, run_id, n) == (False, None, 0)
 
-    def test_without_phrase_b_returns_false(self, check_mod) -> None:
+    def test_without_marker_b_returns_false(self, check_mod) -> None:
+        """Drop marker (b): no Run ID -> stub (a review trigger that found
+        nothing still carries a Run ID)."""
+        body = (
+            "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+            "Files selected for processing (3)\n"
+            "No actionable comments were generated in the recent review."
+        )
+        is_zf, run_id, n = check_mod.is_coderabbit_zero_finding_review(body)
+        assert (is_zf, run_id, n) == (False, None, 0)
+
+    def test_without_marker_c_returns_false(self, check_mod) -> None:
+        """Drop marker (c): no "Files selected for processing" -> stub."""
         body = (
             "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
             "**Run ID**: abc123-def456\n"
             "No actionable comments were generated in the recent review."
         )
-        is_zf, run_id = check_mod.is_coderabbit_zero_finding_review(body)
-        assert is_zf is False
-        assert run_id is None
+        is_zf, run_id, n = check_mod.is_coderabbit_zero_finding_review(body)
+        assert (is_zf, run_id, n) == (False, None, 0)
 
-    def test_empty_body_returns_false(self, check_mod) -> None:
-        assert check_mod.is_coderabbit_zero_finding_review("") == (False, None)
-        assert check_mod.is_coderabbit_zero_finding_review(None) == (False, None)
-
-    def test_run_id_missing_returns_true_without_run_id(self, check_mod) -> None:
+    def test_marker_c_with_zero_files_returns_false(self, check_mod) -> None:
+        """Files selected = 0 -> stub (everything path-filtered, nothing was
+        reviewed -- the lead labels this)."""
         body = (
             "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
-            "No actionable comments were generated in the recent review.\n"
-            "**Included review availability:** Your plan provides up to 4 included reviews per hour; 2 remain after this review."
+            "**Run ID**: abc123-def456\n"
+            "Files selected for processing (0)\n"
+            "No actionable comments were generated in the recent review."
         )
-        is_zf, run_id = check_mod.is_coderabbit_zero_finding_review(body)
-        assert is_zf is True
-        assert run_id is None
+        is_zf, run_id, n = check_mod.is_coderabbit_zero_finding_review(body)
+        assert (is_zf, run_id, n) == (False, None, 0)
+
+    def test_empty_body_returns_false(self, check_mod) -> None:
+        assert check_mod.is_coderabbit_zero_finding_review("") == (False, None, 0)
+        assert check_mod.is_coderabbit_zero_finding_review(None) == (False, None, 0)
 
 
 class TestClassifyZeroFinding:
@@ -1186,14 +1221,23 @@ class TestClassifyZeroFinding:
         assert exit_code == 0
         assert "0 findings" in message
         assert "run abc123-def456" in message
+        assert "3 file(s) selected" in message
 
-    def test_zero_finding_with_run_id_in_message(self, check_mod) -> None:
-        items = [
-            check_mod.CRItem(id=1, body=self.ZERO_FINDING_BODY, is_review=False),
-        ]
+    def test_automatic_review_shape_passes(self, check_mod) -> None:
+        """The automatic-review body at PR-open: no quota line. This is the
+        case the prior discriminator missed."""
+        body = (
+            "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+            "**Run ID**: 549e52b3-aaaa-bbbb-cccc-ddddd1234567890\n"
+            "📒 Files selected for processing (5)\n"
+            "No actionable comments were generated in the recent review."
+        )
+        items = [check_mod.CRItem(id=1, body=body, is_review=False)]
         exit_code, message = check_mod.classify(items)
         assert exit_code == 0
-        assert "abc123-def456" in message
+        assert "0 findings" in message
+        assert "549e52b3-aaaa-bbbb-cccc-ddddd1234567890" in message
+        assert "5 file(s) selected" in message
 
 
 RATE_LIMIT_ACK_BODY = (
@@ -1203,34 +1247,85 @@ RATE_LIMIT_ACK_BODY = (
 )
 A_ONLY_BODY = (
     "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
-    "No actionable comments were generated in the recent review."
+    "**Run ID**: abc123-def456\n"
+    "📒 Files selected for processing (3)\n"
 )
 B_ONLY_BODY = (
     "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
-    "📒 Files selected for processing (3)\n"
-    "**Included review availability:** Your plan provides up to 4 included reviews per hour; 2 remain after this review."
+    "Files selected for processing (3)\n"
+    "No actionable comments were generated in the recent review."
+)
+C_ONLY_BODY = (
+    "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+    "**Run ID**: abc123-def456\n"
+    "No actionable comments were generated in the recent review."
+)
+C_ZERO_BODY = (
+    "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+    "**Run ID**: abc123-def456\n"
+    "Files selected for processing (0)\n"
+    "No actionable comments were generated in the recent review."
 )
 MERGE_CLOSE_BODY = "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"
 
 
 class TestClassifyZeroFindingControls:
-    """Parametrised per-field controls: each bullet from the task plus the
-    positive case. Deleting one half of the predicate must make the corresponding
-    case go RED."""
+    """Delete-one suite: each control body is missing exactly one of the
+    three required markers, so removing any ONE of the marker checks from the
+    predicate must turn its matching control case RED.
 
-    @pytest.mark.parametrize("body,expected_exit,expected_substring", [
-        (TestIsCoderabbitZeroFindingReview.ZERO_FINDING_BODY, 0, "0 findings"),
-        (RATE_LIMIT_ACK_BODY, 1, "FAIL"),
-        (A_ONLY_BODY, 1, "FAIL"),
-        (B_ONLY_BODY, 1, "FAIL"),
-        (MERGE_CLOSE_BODY, 1, "FAIL"),
-        (ACK_BODY, 1, "FAIL"),
+    The positive case (ZERO_FINDING_BODY) and the stubs (rate-limit ack,
+    merge/close, ack-reply) are included so the predicate is not vacuously
+    green.
+    """
+
+    @pytest.mark.parametrize("label,body,expected_exit,expected_substring", [
+        ("positive",
+         TestIsCoderabbitZeroFindingReview.ZERO_FINDING_BODY, 0, "0 findings"),
+        ("missing_a",
+         A_ONLY_BODY, 1, "FAIL"),
+        ("missing_b",
+         B_ONLY_BODY, 1, "FAIL"),
+        ("missing_c",
+         C_ONLY_BODY, 1, "FAIL"),
+        ("files_zero",
+         C_ZERO_BODY, 1, "FAIL"),
+        ("rate_limit_ack",
+         RATE_LIMIT_ACK_BODY, 1, "FAIL"),
+        ("merge_close",
+         MERGE_CLOSE_BODY, 1, "FAIL"),
+        ("ack_reply",
+         ACK_BODY, 1, "FAIL"),
     ])
-    def test_control_cases(self, check_mod, body, expected_exit, expected_substring) -> None:
+    def test_control_cases(
+        self, check_mod, label, body, expected_exit, expected_substring,
+    ) -> None:
         items = [check_mod.CRItem(id=1, body=body, is_review=False)]
         exit_code, message = check_mod.classify(items)
-        assert exit_code == expected_exit, f"body={body!r}: expected exit {expected_exit}, got {exit_code}: {message}"
-        assert expected_substring in message, f"body={body!r}: expected {expected_substring!r} in {message!r}"
+        assert exit_code == expected_exit, (
+            f"{label}: expected exit {expected_exit}, got {exit_code}: {message}"
+        )
+        assert expected_substring in message, (
+            f"{label}: expected {expected_substring!r} in {message!r}"
+        )
+
+    def test_review_with_findings_falls_through_to_real_item_pass(
+        self, check_mod,
+    ) -> None:
+        """(b)+(c) without (a) is the shape of a review with findings, not a
+        zero-finding pass. It must fall through to the real-item count and
+        exit 0 with the standard PASS line, NOT the zero-finding PASS line."""
+        body = (
+            "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+            "**Run ID**: abc123-def456\n"
+            "Files selected for processing (3)\n"
+            # NO "No actionable comments" -- review had findings, listed elsewhere.
+        )
+        items = [check_mod.CRItem(id=1, body=body, is_review=False)]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 1
+        assert "FAIL" in message
+        assert "0 findings" not in message
 
 
 class TestTrueGateFailure:
