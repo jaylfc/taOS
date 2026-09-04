@@ -25,7 +25,7 @@ The `ready_tasks` view body in `tinyagentos/projects/task_store.py:71` correctly
 cross-project label leakage. `_post_init` (`tinyagentos/projects/task_store.py:217`) uses
 `DROP VIEW IF EXISTS` + `CREATE VIEW` to force the new body onto existing databases, which is
 the correct approach since `CREATE VIEW IF NOT EXISTS` is a no-op on an existing view. The
-clamp at `tinyagentos/projects/task_store.py:677` (`limit = max(1, min(limit, 500))`) correctly
+clamp at `tinyagentos/projects/task_store.py:666` (`limit = max(1, min(limit, 500))`) correctly
 prevents the SQLite `LIMIT -1` unbounded trap. The route at
 `tinyagentos/routes/projects.py:920` declares `limit: int = 50` and forwards it; the
 `_authorize_task_actor` guard runs before the store call, so authorisation is unchanged.
@@ -47,7 +47,7 @@ older than `cap_seconds` whose PPID is not 1, and returns the reaped list.
 
 **Severity: none — no findings.**
 
-The process filter at `tinyagentos/scheduling/reaper.py:18` uses
+The process filter at `tinyagentos/scheduling/reaper.py:19` uses
 `any("executor.sh" in str(part) for part in cmdline)`, which correctly matches any argv
 element containing the substring (catches `python executor.sh`, `bash -c 'executor.sh ...'`,
 etc.) without false positives from unrelated process names. The `ppid()` call at
@@ -94,7 +94,7 @@ original position with zero user-visible feedback.
 
 **Code path:**
 
-```
+```text
 BoardLane onDropTask -> dispatchDnd(taskId, "quarantined", laneKey)
   -> line 119: if (columnStatus === "quarantined") return;   <- silent exit
 ```
@@ -109,21 +109,21 @@ silent no-op.
 
 - The Unquarantine `<button>` at `desktop/src/apps/ProjectsApp/board/TaskCard.tsx:60` has
   `type="button"`, an `aria-label` (`Unquarantine task {task.id}`), and a `:focus-visible`
-  outline in `desktop/src/apps/ProjectsApp/board/TaskCard.module.css:292`.
+  outline in `desktop/src/apps/ProjectsApp/board/TaskCard.module.css:34`.
 - Keyboard activation: Enter/Space on the focused button call `e.stopPropagation()` +
   `e.preventDefault()` before `onUnquarantine`, preventing the parent `role="button"` div's
   `onKeyDown` from also firing.
 - The quarantine badge `role="status"` at `desktop/src/apps/ProjectsApp/board/TaskCard.tsx:53`
   carries an `aria-label` and is placed inside the card in reading order.
 - The Quarantined column header carries `aria-label="Quarantined"` via the `NAME` map in
-  `desktop/src/apps/ProjectsApp/board/BoardColumn.tsx:20`).
+  `desktop/src/apps/ProjectsApp/board/BoardColumn.tsx:20`.
 - The `task.unquarantined` handler in
   `desktop/src/apps/ProjectsApp/board/useBoardData.ts:62` resets `status` to `"open"`,
   clears `claimed_by`, and clears `strike_count`/`latest_strike` -- state returns to a
   non-quarantined baseline correctly.
 - The `task.quarantined` SSE handler (`desktop/src/apps/ProjectsApp/board/useBoardData.ts:55`) updates `status` and carries
   `strike_count`/`latest_strike` from the event payload, matching what the backend publishes
-  at `tinyagentos/projects/task_store.py:663`.
+  at `tinyagentos/projects/task_store.py:549`.
 - The `unquarantine` API method at `desktop/src/lib/projects.ts:275` uses the shared `http`
   function which applies `withCsrf` -- the POST is CSRF-protected and the route at
   `tinyagentos/routes/projects.py:1248` requires `_authorize_project_lead`.
@@ -133,7 +133,7 @@ silent no-op.
 ## Fix-forward cards cut
 
 | PR | Finding | Card |
-|---|---|---|
+| --- | --- | --- |
 | #2704 | dispatchDnd silently swallows DnD onto quarantined cells in lanes view (Finding 1, Medium) | #2758 |
 | #2710 | No Bug/Security findings -- none cut | -- |
 | #2709 | No Bug/Security findings -- none cut | -- |
