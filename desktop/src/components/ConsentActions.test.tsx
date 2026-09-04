@@ -32,6 +32,15 @@ function vocabHit(url: unknown, projectScopes: string[] = SERVER_PROJECT_SCOPES)
   });
 }
 
+/** Resolve once the project list has landed: the picker shows "Loading..." as
+ *  its placeholder option until then, and asserting on the selection or on
+ *  Allow before that is a race. */
+async function projectListLoaded() {
+  await waitFor(() =>
+    expect(screen.queryByRole("option", { name: /Loading/i })).toBeNull(),
+  );
+}
+
 function okFetch() {
   return vi.fn((url: string) => vocabHit(url) ?? okJson({ status: "ok" }));
 }
@@ -63,6 +72,10 @@ describe("ConsentActions", () => {
       />,
     );
 
+    // Allow stays disabled until the server's scope vocabulary is in hand.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /allow/i })).not.toBeDisabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: /allow/i }));
 
     await waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
@@ -70,7 +83,8 @@ describe("ConsentActions", () => {
       "/api/agents/auth-requests/req-1/approve",
       expect.objectContaining({ method: "POST" }),
     );
-    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const approve = fetchMock.mock.calls.find((c) => String(c[0]).includes("/approve"));
+    const init = approve![1] as RequestInit;
     expect(JSON.parse(init.body as string)).toEqual({
       granted_scopes: ["memory_read", "a2a_send"],
     });
@@ -107,6 +121,9 @@ describe("ConsentActions", () => {
     const onResolved = vi.fn();
     render(<ConsentActions requestId="req-3" scopes={[]} onResolved={onResolved} />);
 
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /allow/i })).not.toBeDisabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: /allow/i }));
 
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("forbidden"));
@@ -133,6 +150,10 @@ describe("ConsentActions", () => {
     );
     // The picker appears and the single project is auto-selected.
     await screen.findByLabelText(/Grant project access for/i);
+    await projectListLoaded();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /allow/i })).not.toBeDisabled(),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /allow/i }));
     await waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
@@ -163,6 +184,9 @@ describe("ConsentActions", () => {
     render(<ConsentActions requestId="req-m" scopes={["project_tasks"]} />);
 
     const select = await screen.findByLabelText(/Grant project access for/i);
+    await projectListLoaded();
+    // With two projects none is auto-selected, so Allow is still gated.
+    expect(screen.getByRole("option", { name: "Bravo" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /allow/i })).toBeDisabled();
 
     fireEvent.change(select, { target: { value: "p2" } });
@@ -191,6 +215,7 @@ describe("ConsentActions", () => {
     render(<ConsentActions requestId="req-c" scopes={["project_tasks"]} onResolved={onResolved} />);
 
     await screen.findByLabelText(/Grant project access for/i);
+    await projectListLoaded();
     expect(screen.getByRole("button", { name: /allow/i })).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: /new/i }));
@@ -241,6 +266,7 @@ describe("ConsentActions", () => {
     );
 
     await screen.findByLabelText(/Grant project access for/i);
+    await projectListLoaded();
     // The resolved requested project is shown by NAME, not just id.
     const requestLine = screen.getByText(/Requesting access for/i);
     expect(requestLine).toHaveTextContent("BTRDRL");
@@ -299,6 +325,7 @@ describe("ConsentActions", () => {
     );
 
     await screen.findByLabelText(/Grant project access for/i);
+    await projectListLoaded();
     // Explicit not-found message naming the unresolved project id.
     const msg = screen.getByText(/Requested project prj-btrdrl not found/i);
     expect(msg).toBeInTheDocument();
@@ -424,6 +451,10 @@ describe("ConsentActions", () => {
       );
 
       await screen.findByLabelText(/Grant project access for/i);
+      await projectListLoaded();
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /allow/i })).not.toBeDisabled(),
+      );
       fireEvent.click(screen.getByRole("button", { name: /allow/i }));
       await waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
 
@@ -468,6 +499,7 @@ describe("ConsentActions", () => {
     );
 
     await screen.findByLabelText(/Grant project access for/i);
+    await projectListLoaded();
     // Initially, Allow is disabled and the select is marked invalid.
     expect(screen.getByRole("button", { name: /allow/i })).toBeDisabled();
     const select = screen.getByLabelText(/Grant project access for/i);
@@ -516,6 +548,12 @@ describe("ConsentActions", () => {
     );
 
     await screen.findByLabelText(/Grant project access for/i);
+    await projectListLoaded();
+    // The picker renders before the project list lands; Allow unlocks only once
+    // a project is actually selected.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /allow/i })).not.toBeDisabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: /allow/i }));
     await waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
 
@@ -539,6 +577,12 @@ describe("ConsentActions", () => {
     );
 
     await screen.findByLabelText(/Grant project access for/i);
+    await projectListLoaded();
+    // The picker renders before the project list lands; Allow unlocks only once
+    // a project is actually selected.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /allow/i })).not.toBeDisabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: /allow/i }));
     await waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
 

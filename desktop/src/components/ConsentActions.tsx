@@ -34,18 +34,20 @@ import { withCsrf } from "@/lib/csrf";
  * so a request that named no project (or the wrong one) can still be assigned
  * the right project at approval time. The chosen project id is passed to the
  * approve endpoint, which mints the token bound to it.
+ *
+ * WHICH scopes those are is the server's answer, never ours. This file used to
+ * carry its own Set of them, and it fell six scopes behind the backend's
+ * `_PROJECT_SCOPES`: for `files_write` (and five others) the picker never
+ * rendered, approve was POSTed with no project_id, and the operator got a 400
+ * with no control on screen that could fix it. A refreshed copy would only
+ * postpone that until the next scope is added, so there is no copy here at all
+ * -- the vocabulary is fetched below and the picker renders from the response.
  */
-const PROJECT_SCOPES = new Set([
-  "project_tasks",
-  "canvas_read",
-  "canvas_write",
-  "project_tasks_create",
-  "project_tasks_update",
-  "project_lists",
-  "project_notes",
-  "files_read",
-  "files_write",
-]);
+
+/** Server-published scope vocabulary: every grantable scope, plus the subset
+ *  that is meaningless without a project binding. See
+ *  tinyagentos/routes/agent_auth_requests.py. */
+const SCOPE_VOCABULARY_URL = "/api/agents/scope-vocabulary";
 
 interface ProjectOption {
   id: string;
@@ -145,12 +147,19 @@ export function ConsentActions({
   // asked) is unchanged; the prop exists so the Requested vs Granted contrast
   // is always explicit and a narrowing can never be silent.
   const granted = grantedScopes ?? scopes;
-  const needsProject = granted.some((s) => PROJECT_SCOPES.has(s));
   const { dropped, added } = computeScopeDiff(scopes, granted);
   const hasScopeDiff = dropped.length > 0 || added.length > 0;
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // null until the server's vocabulary has been read. There is deliberately no
+  // default value to fall back on: not knowing which scopes need a project is
+  // exactly the state that produced the unfixable 400, so it blocks Allow and
+  // says why rather than guessing from a stale list.
+  const [projectScopes, setProjectScopes] = useState<string[] | null>(null);
+  const [vocabError, setVocabError] = useState<string | null>(null);
+  const needsProject =
+    projectScopes !== null && granted.some((s) => projectScopes.includes(s));
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(false);
   // Start empty on purpose: a requestedProjectId is only adopted after it is
@@ -165,6 +174,38 @@ export function ConsentActions({
     useState<boolean>(false);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(SCOPE_VOCABULARY_URL, { credentials: "include" })
+      .then(async (r) => {
+        if (!r.ok) {
+          throw new Error(`scope vocabulary unavailable (${r.status})`);
+        }
+        const d = (await r.json()) as { project_scopes?: unknown };
+        if (!Array.isArray(d?.project_scopes)) {
+          throw new Error("scope vocabulary response was malformed");
+        }
+        return d.project_scopes.filter((s): s is string => typeof s === "string");
+      })
+      .then((list) => {
+        if (cancelled) return;
+        setProjectScopes(list);
+        setVocabError(null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setProjectScopes(null);
+        setVocabError(
+          e instanceof Error
+            ? e.message
+            : "Could not read the scope vocabulary from the server.",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!needsProject) return;
@@ -258,6 +299,17 @@ export function ConsentActions({
   async function decide(approved: boolean) {
     setBusy(true);
     setError(null);
+    // Approving without knowing whether these scopes are project-bound is the
+    // defect this surface exists to prevent; refuse rather than guess. Denying
+    // needs no vocabulary, so it is never blocked.
+    if (approved && projectScopes === null) {
+      setError(
+        vocabError ??
+          "Still reading the scope vocabulary from the server; try again in a moment.",
+      );
+      setBusy(false);
+      return;
+    }
     let projectId = selectedProjectId;
     // If approving with a project scope while mid-create, create the project first.
     if (approved && needsProject && creating && newName.trim()) {
@@ -319,11 +371,18 @@ export function ConsentActions({
 
   const allowDisabled =
     busy ||
+    projectScopes === null ||
     (needsProject &&
       (creating ? !newName.trim() : !selectedProjectId));
 
   return (
     <div className="mt-2" role="group" aria-label="Consent actions">
+      {vocabError && (
+        <p role="alert" className="mb-2 text-[11px] text-red-300">
+          Could not load the scope vocabulary ({vocabError}), so it is not known
+          whether these scopes need a project. Reload before approving.
+        </p>
+      )}
       {scopes.length > 0 && (
         <div className="mb-2">
           <div className="flex flex-wrap items-baseline gap-1">

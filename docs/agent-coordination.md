@@ -711,7 +711,20 @@ previously grantable without a `project_id`, which minted an inert note grant
 the operator believed was usable; it now follows the same rule as
 `project_tasks`. `decisions_read` /
 `decisions_write` (and the other global scopes) may be granted globally
-(`project_id=None`) or per-project. Creation
+(`project_id=None`) or per-project.
+
+`_PROJECT_SCOPES` is published, not duplicated. `GET /api/agents/scope-vocabulary`
+(authenticated) returns `{"valid_scopes": [...], "project_scopes": [...]}`, and the
+desktop consent surface renders the project picker from that response rather than
+from any list of its own. Adding a scope to `_PROJECT_SCOPES` therefore needs no
+client change; keeping a second copy anywhere is the bug that made Approve answer
+400 for `files_write` with no picker on screen to supply the `project_id`. If the
+vocabulary cannot be read, the consent surface disables Allow and says so — it
+does not fall back to a built-in list. The route lives in `agent_auth_requests.py`
+and must stay ahead of `/api/agents/{name}` in the router include order in
+`tinyagentos/routes/__init__.py`, or that path parameter captures it.
+
+Creation
 surfaces a bell notification (`source: agent_scope_requests`) to the owner/admin,
 retired when the request is decided.
 
