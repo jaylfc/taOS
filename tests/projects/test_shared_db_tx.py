@@ -1,0 +1,136 @@
+"""The shared projects.db must never be wedged by one store's failed write.
+
+``app.py`` opens eight stores on a single ``projects.db``, each with its own
+aiosqlite connection.  sqlite3 issues an implicit ``BEGIN`` before the first DML
+on a connection, so a store that raised -- or was cancelled -- between that DML
+and ``commit()`` left its connection inside an open transaction forever, holding
+the WAL write lock.  Every other store then failed with
+``sqlite3.OperationalError: database is locked`` until the controller was
+restarted (production, 2026-09-02: six minutes of 500s on task create and
+claim_task).
+
+Each test here wedges store A the way one of those paths does and then requires
+store B -- a different store on the same file -- to complete a normal write.
+"""
+from __future__ import annotations
+
+import asyncio
+import sqlite3
+
+import pytest
+
+from tinyagentos.projects.project_store import ProjectConflict, ProjectStore
+from tinyagentos.projects.task_store import ProjectTaskStore
+
+# Generous enough that a healthy write always lands, long enough that a wedged
+# connection surfaces its real "database is locked" rather than a bare timeout.
+_SIBLING_WRITE_TIMEOUT = 10.0
+
+
+async def _project_store(tmp_path) -> ProjectStore:
+    store = ProjectStore(tmp_path / "projects.db")
+    await store.init()
+    return store
+
+
+async def _task_store(tmp_path) -> ProjectTaskStore:
+    store = ProjectTaskStore(tmp_path / "projects.db")
+    await store.init()
+    return store
+
+
+async def _sibling_write_succeeds(store_b: ProjectTaskStore) -> None:
+    """Store B must be able to write while store A's connection stays open."""
+    task = await asyncio.wait_for(
+        store_b.create_task("prj-1", "sibling write", "jay"),
+        _SIBLING_WRITE_TIMEOUT,
+    )
+    assert task["title"] == "sibling write"
+
+
+@pytest.mark.asyncio
+async def test_failed_insert_does_not_wedge_sibling_store(tmp_path):
+    """A DML that raises (duplicate slug) must not keep the write lock."""
+    store_a = await _project_store(tmp_path)
+    store_b = await _task_store(tmp_path)
+
+    await store_a.create_project("Alpha", "alpha", "jay")
+    with pytest.raises(ProjectConflict):
+        # The INSERT itself fails, after sqlite3 has already opened the
+        # transaction: exactly the "raises between DML and commit" shape.
+        await store_a.create_project("Beta", "alpha", "jay")
+
+    await _sibling_write_succeeds(store_b)
+    assert store_a._db.in_transaction is False
+
+
+@pytest.mark.asyncio
+async def test_exception_between_dml_and_commit_does_not_wedge_sibling_store(
+    tmp_path, monkeypatch
+):
+    """Any failure at the DML -> commit boundary must roll back, not linger."""
+    store_a = await _task_store(tmp_path)
+    store_b = await _task_store(tmp_path)
+    task = await store_a.create_task("prj-1", "seed", "jay")
+
+    async def _failing_commit(*args, **kwargs):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(store_a._db, "commit", _failing_commit)
+    with pytest.raises(sqlite3.OperationalError):
+        await store_a.update_task(task["id"], title="edited")
+
+    await _sibling_write_succeeds(store_b)
+    assert store_a._db.in_transaction is False
+
+
+@pytest.mark.asyncio
+async def test_cancellation_between_dml_and_commit_does_not_wedge_sibling_store(
+    tmp_path, monkeypatch
+):
+    """A cancelled request (client disconnect) must roll back its own write."""
+    store_a = await _task_store(tmp_path)
+    store_b = await _task_store(tmp_path)
+    task = await store_a.create_task("prj-1", "seed", "jay")
+
+    never = asyncio.Event()
+
+    async def _hanging_commit(*args, **kwargs):
+        # Suspends the store exactly between its UPDATE and its commit, so the
+        # cancellation below lands inside the open transaction.
+        await never.wait()
+
+    monkeypatch.setattr(store_a._db, "commit", _hanging_commit)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            store_a.update_task(task["id"], title="edited"), 0.05
+        )
+
+    await _sibling_write_succeeds(store_b)
+    assert store_a._db.in_transaction is False
+
+
+@pytest.mark.asyncio
+async def test_publish_failure_leaves_the_committed_write_in_place(
+    tmp_path, monkeypatch
+):
+    """Event publishing stays outside the transaction.
+
+    ``_publish`` runs after the write has committed, so a subscriber that blows
+    up must neither undo the write nor hold the lock -- an invariant this
+    refactor must not quietly invert by pulling the publish inside ``tx()``.
+    """
+    store_a = await _task_store(tmp_path)
+    store_b = await _task_store(tmp_path)
+    task = await store_a.create_task("prj-1", "seed", "jay")
+
+    async def _exploding_publish(*args, **kwargs):
+        raise RuntimeError("subscriber exploded")
+
+    monkeypatch.setattr(store_a, "_publish", _exploding_publish)
+    with pytest.raises(RuntimeError):
+        await store_a.update_task(task["id"], title="edited")
+
+    await _sibling_write_succeeds(store_b)
+    assert store_a._db.in_transaction is False
+    assert (await store_a.get_task(task["id"]))["title"] == "edited"
