@@ -485,4 +485,63 @@ describe("useOsEvents", () => {
     expect(opened?.close).not.toHaveBeenCalled();
     expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
   });
+
+  it("does not cancel a scheduled reconnect when another subscriber mounts", async () => {
+    vi.useFakeTimers();
+    renderHook(() => useOsEvents(["projects.task.changed"], () => {}));
+
+    act(() => {
+      lastEs?.onopen?.();
+    });
+    act(() => {
+      if (lastEs) {
+        lastEs.readyState = EventSource.CLOSED;
+        lastEs._fireError();
+      }
+    });
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
+
+    // A subscriber mounting mid-backoff must not turn the scheduled retry into
+    // an immediate reconnect. A view that mounts callers in a loop against a
+    // down endpoint would otherwise retry at mount frequency, not 5s -> 30s.
+    renderHook(() => useOsEvents(["agents.status.changed"], () => {}));
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
+
+    // The retry it did NOT cancel still has to land.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(2);
+
+    vi.useRealTimers();
+  });
+
+  it("does not let a busy kind evict another subscriber's dedup window", () => {
+    const quiet = vi.fn();
+    const busy = vi.fn();
+
+    renderHook(() => useOsEvents(["projects.task.changed"], quiet));
+    renderHook(() => useOsEvents(["agents.status.changed"], busy));
+
+    act(() => {
+      lastEs?._fire({ kind: "projects.task.changed", id: "quiet-1", ts: 1 });
+    });
+    expect(quiet).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      for (let i = 0; i < 200; i += 1) {
+        lastEs?._fire({ kind: "agents.status.changed", id: `busy-${i}`, ts: 2 });
+      }
+    });
+    expect(busy).toHaveBeenCalledTimes(200);
+
+    // The server replays the tail of EACH channel on reconnect, so `quiet-1`
+    // can come back long after 200 events of somebody else's kind went past.
+    // A dedup budget the quiet subscriber shares with the busy one has already
+    // forgotten it, and the quiet handler refetches for nothing.
+    act(() => {
+      lastEs?._fire({ kind: "projects.task.changed", id: "quiet-1", ts: 1 });
+    });
+    expect(quiet).toHaveBeenCalledTimes(1);
+  });
 });

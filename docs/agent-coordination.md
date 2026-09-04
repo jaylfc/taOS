@@ -856,12 +856,25 @@ is the only thing consulted on teardown, and it is consulted a microtask after
 the last subscriber leaves, once the React commit has settled. React runs every
 effect cleanup in a commit before any setup, so the map is briefly empty in any
 commit that swaps one subscriber for another; reading it mid-teardown would
-close a stream someone is still listening to and immediately reopen it. `connected` / `stale` come from a shared snapshot through
+close a stream someone is still listening to and immediately reopen it.
+A subscriber that mounts while a reconnect is already scheduled leaves that
+retry alone -- connecting immediately on every mount would let a view that
+mounts callers in a loop retry at mount frequency instead of the 5 s -> 30 s
+backoff.
+
+`connected` / `stale` come from a shared snapshot through
 `useSyncExternalStore`, replaced only on a real transition, so the repeated
 `error` events a browser fires while it retries do not re-render every
 subscriber. An `error` does mark the stream stale even while the browser is
 still retrying: the endpoint has no resume, so the gap is real and a
 subscriber must refetch once it reconnects.
+
+The 128-id dedup window is kept PER SUBSCRIBER, not once for the stream. One
+stream now carries every kind, and the replay buffer above is per channel, so
+a shared window would let a busy kind evict a quiet subscriber's ids and hand
+that subscriber a replayed event it already handled -- a refetch for nothing.
+Per subscriber, each caller keeps the window it had when it owned a
+server-filtered stream of its own.
 
 ## LoRA Studio routes (session-only, no agent scope)
 

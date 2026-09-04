@@ -18,6 +18,14 @@ const MAX_SEEN_IDS = 128;
 type Subscriber = {
   kinds: string[];
   onEvent: OsEventHandler;
+  // Per subscriber, NOT shared. On one stream carrying every kind, a shared
+  // budget lets a busy kind evict a quiet subscriber's ids, and the server
+  // replays the tail of each channel independently on reconnect -- so the
+  // quiet subscriber sees an event it already handled and refetches for
+  // nothing. A per-subscriber window is the budget each caller had back when
+  // it owned a server-filtered stream of its own.
+  seenIds: Set<string>;
+  seenIdsOrder: string[];
 };
 
 export type OsEventsStatus = {
@@ -31,8 +39,6 @@ let nextId = 0;
 let sharedEs: EventSource | null = null;
 let reconnectAttempts = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-const seenIdsRef = { current: new Set<string>() };
-const seenIdsListRef = { current: [] as string[] };
 const listeners = new Set<() => void>();
 let stopScheduled = false;
 
@@ -66,10 +72,11 @@ function setStatus(connected: boolean, stale: boolean) {
 function startConnection() {
   if (sharedEs) return;
 
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
+  // Every subscriber that mounts calls this. If a retry is already scheduled,
+  // let it run: cancelling it and connecting immediately would make a view
+  // that mounts callers in a loop retry at mount frequency against a down
+  // endpoint instead of at the intended 5s -> 30s spacing.
+  if (reconnectTimer) return;
 
   const es = new EventSource("/api/os/events");
   sharedEs = es;
@@ -93,18 +100,18 @@ function startConnection() {
       return;
     }
 
-    if (event.id) {
-      if (seenIdsRef.current.has(event.id)) return;
-      seenIdsRef.current.add(event.id);
-      seenIdsListRef.current.push(event.id);
-      if (seenIdsListRef.current.length > MAX_SEEN_IDS) {
-        const oldest = seenIdsListRef.current.shift();
-        if (oldest) seenIdsRef.current.delete(oldest);
-      }
-    }
-
+    const id = event.id;
     subscribers.forEach((sub) => {
       if (sub.kinds.length > 0 && !sub.kinds.includes(event.kind)) return;
+      if (id) {
+        if (sub.seenIds.has(id)) return;
+        sub.seenIds.add(id);
+        sub.seenIdsOrder.push(id);
+        if (sub.seenIdsOrder.length > MAX_SEEN_IDS) {
+          const oldest = sub.seenIdsOrder.shift();
+          if (oldest) sub.seenIds.delete(oldest);
+        }
+      }
       sub.onEvent(event);
     });
   };
@@ -130,6 +137,9 @@ function startConnection() {
       );
       reconnectAttempts += 1;
       reconnectTimer = setTimeout(() => {
+        // Clear the handle FIRST: the guard above reads it, and a fired timer
+        // whose handle is still set would refuse its own reconnect.
+        reconnectTimer = null;
         startConnection();
       }, delay);
     }
@@ -144,8 +154,6 @@ function stopConnection() {
   sharedEs?.close();
   sharedEs = null;
   reconnectAttempts = 0;
-  seenIdsRef.current.clear();
-  seenIdsListRef.current = [];
   setStatus(false, true);
 }
 
@@ -204,6 +212,8 @@ export function useOsEvents(
     subscribers.set(id, {
       kinds: kindsRef.current,
       onEvent: (e) => onEventRef.current(e),
+      seenIds: new Set<string>(),
+      seenIdsOrder: [],
     });
     startConnection();
 
