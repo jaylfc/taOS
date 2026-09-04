@@ -189,7 +189,9 @@ class BackendCatalog:
         """
         if self._task is not None:
             return
-        self._initial_probe_done = asyncio.Event()
+        # The barrier is NOT replaced here: stop() already installs a fresh
+        # one, and swapping it in start() would strand a caller that began
+        # awaiting wait_initial_probe() before start() was reached.
         self._task = asyncio.create_task(self._poll_loop(), name="backend-catalog-poll")
 
     async def wait_initial_probe(self, timeout: float | None = None) -> None:
@@ -198,15 +200,21 @@ class BackendCatalog:
         server boot path should NOT call this — it is the fix for
         tsk-xjwolt that probing backends sequentially with long timeouts
         delayed :6969 from accepting traffic.
+
+        ``stop()`` releases waiters, so this also returns when the catalog
+        is shut down mid-probe; check :meth:`backends` rather than assuming
+        a probe completed.
         """
-        if self._initial_probe_done.is_set():
+        event = self._initial_probe_done
+        if event.is_set():
             return
         if timeout is None:
-            await self._initial_probe_done.wait()
+            await event.wait()
         else:
-            await asyncio.wait_for(self._initial_probe_done.wait(), timeout=timeout)
+            await asyncio.wait_for(event.wait(), timeout=timeout)
 
     async def stop(self) -> None:
+        """Cancel the polling task and reset the first-probe barrier."""
         if self._task is not None:
             self._task.cancel()
             try:
@@ -214,6 +222,12 @@ class BackendCatalog:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        # Release anyone parked in wait_initial_probe(): they captured THIS
+        # Event object, and the poll task that would have set it is now
+        # cancelled. Replacing the event without setting it first strands
+        # those waiters until their own timeout (forever, if untimed).
+        self._initial_probe_done.set()
+        # Fresh barrier so a later start() waits on a real probe again.
         self._initial_probe_done = asyncio.Event()
 
     async def refresh(self) -> None:

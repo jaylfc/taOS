@@ -183,3 +183,118 @@ async def test_start_does_not_block_on_unreachable_backends():
     # The poll task is still running in the background.
     assert catalog._task is not None
     await catalog.stop()
+
+
+@pytest.mark.asyncio
+async def test_probe_pass_is_concurrent_not_sequential():
+    """tsk-ez4cjm: one probe pass must fan the backends out in parallel.
+
+    With N unreachable backends each burning their full connect timeout, a
+    sequential pass costs N x timeout. ``_probe_all()`` gathers them, so the
+    pass costs ~one timeout regardless of N. Asserted on wall clock with a
+    bound only a sequential implementation can miss.
+    """
+    import time
+
+    PROBE_SECONDS = 0.4
+    N_BACKENDS = 6
+    # Sequential would be N * PROBE_SECONDS = 2.4s; concurrent ~0.4s.
+    SEQUENTIAL_FLOOR = N_BACKENDS * PROBE_SECONDS
+
+    async def slow_probe(backend: dict) -> dict:
+        await asyncio.sleep(PROBE_SECONDS)
+        return {"status": "ok", "response_ms": 1, "models": []}
+
+    backends = [
+        {"name": f"b{i}", "type": "ollama", "url": f"http://b{i}", "priority": i}
+        for i in range(N_BACKENDS)
+    ]
+    catalog = BackendCatalog(
+        backends=backends, probe_fn=slow_probe, interval_seconds=3600
+    )
+    t0 = time.monotonic()
+    await catalog.refresh()
+    elapsed = time.monotonic() - t0
+    assert len(catalog.backends()) == N_BACKENDS
+    assert elapsed < SEQUENTIAL_FLOOR / 2, (
+        f"probe pass over {N_BACKENDS} x {PROBE_SECONDS}s backends took "
+        f"{elapsed:.2f}s; a concurrent pass should cost ~{PROBE_SECONDS}s, "
+        f"a sequential one ~{SEQUENTIAL_FLOOR:.1f}s"
+    )
+
+
+@pytest.mark.asyncio
+async def test_stop_releases_in_flight_initial_probe_waiter():
+    """``stop()`` must release callers parked in ``wait_initial_probe()``.
+
+    The poll task that would set the barrier is cancelled by ``stop()``, so
+    a waiter holding the pre-stop Event can never be woken by a probe.
+    ``stop()`` sets that Event before installing a fresh one; without that
+    the waiter hangs for its whole timeout (forever, when untimed).
+    """
+    probe_entered = asyncio.Event()
+
+    async def never_finishing_probe(backend: dict) -> dict:
+        probe_entered.set()
+        await asyncio.sleep(3600)
+        return {"status": "ok", "response_ms": 1, "models": []}
+
+    backends = [{"name": "b1", "type": "ollama", "url": "http://b1", "priority": 1}]
+    catalog = BackendCatalog(
+        backends=backends, probe_fn=never_finishing_probe, interval_seconds=3600
+    )
+    await catalog.start()
+    waiter = asyncio.create_task(catalog.wait_initial_probe())
+    await asyncio.wait_for(probe_entered.wait(), timeout=5.0)
+    assert not waiter.done()
+
+    await catalog.stop()
+    # Released promptly rather than left hanging on the discarded Event.
+    await asyncio.wait_for(waiter, timeout=5.0)
+    # A fresh barrier is installed so the next start() waits on a real probe.
+    assert not catalog._initial_probe_done.is_set()
+
+
+@pytest.mark.asyncio
+async def test_subscriber_registered_before_start_sees_first_probe():
+    """The app registers its lifecycle reconcile subscriber BEFORE start().
+
+    start() no longer blocks on the first probe, so the reconcile that used
+    to run inline after start() is now a one-shot subscriber. Registering it
+    after start() would race the first probe pass; registering it before
+    must deliver that pass. Mirrors the create_app() lifespan wiring.
+    """
+    async def probe(backend: dict) -> dict:
+        # Unreachable auto-managed backend — exactly the boot-time case.
+        return {"status": "error", "error": "connect refused", "models": []}
+
+    backends = [
+        {
+            "name": "auto1",
+            "type": "sd-cpp",
+            "url": "http://auto1",
+            "priority": 1,
+            "auto_manage": True,
+        }
+    ]
+    catalog = BackendCatalog(backends=backends, probe_fn=probe, interval_seconds=3600)
+
+    reconciled = {"done": False}
+
+    async def reconcile() -> None:
+        if reconciled["done"]:
+            return
+        reconciled["done"] = True
+        for entry in catalog.backends():
+            if entry.auto_manage and entry.status != "ok":
+                catalog.set_lifecycle_state(entry.name, "stopped")
+
+    catalog.subscribe(reconcile)
+    await catalog.start()
+    try:
+        await catalog.wait_initial_probe(timeout=5.0)
+        # Subscribers fire inside the probe pass, before the barrier is set.
+        assert reconciled["done"] is True
+        assert catalog.get_lifecycle_state("auto1") == "stopped"
+    finally:
+        await catalog.stop()
