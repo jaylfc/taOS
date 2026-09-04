@@ -208,7 +208,10 @@ configuration for milestone 1 is:
   radiated (ERP) ceiling, not a TX-power setting: the module's `tx_power` is conducted power
   at the antenna port, and ERP = conducted power + antenna gain relative to a dipole (dBd),
   so the pinned `tx_power` must not exceed 27 dBm minus the fitted antenna's dBd gain.
-  Meshtastic's `EU_868` region profile applies this cap automatically.
+  The `28 dBm TX (max)` in the architecture diagram is the module's hardware capability,
+  not the configured value: milestone 1 pins `tx_power` = 27 dBm minus the measured dBd
+  gain of the antenna actually fitted (recorded in the hardware bring-up notes), and
+  Meshtastic's `EU_868` region profile clamps anything higher.
 - Modem preset: `LongFast` -- SF11, BW 250 kHz, coding rate 4/5 (~1.07 kbps link rate).
   Frequency slot 1 (centre 869.525 MHz) is the Meshtastic default after a factory reset, so
   both radios land on the same slot with no manual override.
@@ -216,6 +219,11 @@ configuration for milestone 1 is:
 - PSK: provisioned out of band -- loaded onto each module via the non-radio configuration
   path as a custom 256-bit AES key (never the well-known `AQ==` default), and never
   transmitted over the link.
+- Regulatory overrides pinned OFF on both modules: `is_licensed = false` (no amateur-radio
+  mode, which lifts the power and duty limits) and `lora.override_duty_cycle = false` (the
+  firmware enforces the region's duty cycle). The bring-up checklist reads both values back
+  from each module before the first on-air test; a module reporting either as `true` is not
+  deployed.
 
 Modem-preset trade-off (Meshtastic preset table, see References): `LongFast` (SF11,
 ~1.07 kbps) buys range, `ShortFast` (SF7, ~10.94 kbps) buys throughput -- roughly a 10x
@@ -250,11 +258,11 @@ called out above.
 │  │  +----------------------+                    │   │
 │  │  │  Module 1 (Radio 1) │                    │   │
 │  │  │  - shared config    │                    │   │
-│  │  │  - 28 dBm TX        │                    │   │
+│  │  │  - 28 dBm TX (max)  │                    │   │
 │  │  +----------------------+                    │   │
 │  │  │  Module 2 (Radio 2) │                    │   │
 │  │  │  - shared config    │                    │   │
-│  │  │  - 28 dBm TX        │                    │   │
+│  │  │  - 28 dBm TX (max)  │                    │   │
 │  │  +----------------------+                    │   │
 │  └─────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
@@ -315,7 +323,14 @@ Preamble: (16 + 4.25) symbols = 20.25 × 8.192 ms = 165.9 ms on every frame.
   assuming a 24-byte `Data.payload` (node id, uptime, battery, link-health). The spec does
   not define a beacon size, so 24 bytes is a pinned prototype assumption.
 
-Hourly on-air budget under the EU_868 cap:
+Hourly on-air budget under the EU_868 cap. The duty-cycle limit is per transmitter, so
+this budget is PER RADIO: each module sends its own 120 beacons/hour and its own share of
+parts against its own 360 s. Two radios therefore put ~240 beacons/hour on the shared
+channel, which matters for channel occupancy, not for either radio's regulatory budget.
+Acknowledgements, retransmissions and relayed frames each count against the budget of the
+radio that transmits them; they are not modelled below, so the ~1 s margin is optimistic
+and milestone 1 measures the real per-radio airtime from the firmware's airtime counter
+before the beacon cadence or the part rate is finalised.
 
 - 10% duty = 360 s/hour. 120 beacons/hour (120 × 0.56 s = ~67 s) leaves ~293 s for
   application traffic, i.e. ~135 full 237-byte parts (135 × 2.16 s = ~292 s). Beacons
