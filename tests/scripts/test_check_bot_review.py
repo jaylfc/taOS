@@ -1131,6 +1131,8 @@ class TestIsCoderabbitZeroFindingReview:
     )
 
     def test_three_markers_returns_true_with_run_id_and_count(self, check_mod) -> None:
+        """All three markers present -> accepted, returning the Run ID and
+        the selected-file count so the PASS line can name them."""
         is_zf, run_id, n = check_mod.is_coderabbit_zero_finding_review(self.ZERO_FINDING_BODY)
         assert is_zf is True
         assert run_id == "abc123-def456"
@@ -1151,6 +1153,9 @@ class TestIsCoderabbitZeroFindingReview:
         assert n == 5
 
     def test_without_auto_summary_marker_returns_false(self, check_mod) -> None:
+        """The three markers alone are not enough: the body must also be a
+        CodeRabbit auto-summary comment, or any text quoting the phrases
+        would read as a review."""
         body = (
             "**Run ID**: abc123-def456\n"
             "Files selected for processing (3)\n"
@@ -1204,8 +1209,33 @@ class TestIsCoderabbitZeroFindingReview:
         assert (is_zf, run_id, n) == (False, None, 0)
 
     def test_empty_body_returns_false(self, check_mod) -> None:
+        """An empty or absent body is never a zero-finding review."""
         assert check_mod.is_coderabbit_zero_finding_review("") == (False, None, 0)
         assert check_mod.is_coderabbit_zero_finding_review(None) == (False, None, 0)
+
+    def test_rate_limit_stub_with_all_three_markers_returns_false(
+        self, check_mod,
+    ) -> None:
+        """A rate-limit stub is rejected even when it carries ALL THREE
+        markers. CodeRabbit's real rate-limit body already supplies the
+        auto-summary marker, a Run ID and a non-zero selected-file count
+        (#2765/#2766); splicing in the no-actionable phrase completes the
+        set. Only the explicit rate-limit rejection keeps this false."""
+        body = (
+            "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+            "> ## Review limit reached\n"
+            "> **Run ID**: `129e6056-4f0d-4992-83c7-b068406aaf0b`\n"
+            "> 📒 Files selected for processing (7)\n"
+            "No actionable comments were generated in the recent review."
+        )
+        # Sanity: the body genuinely carries all three markers, so this test
+        # cannot pass merely because a marker is missing.
+        assert check_mod.CODERABBIT_ZERO_FINDING_PHRASE_RE.search(body)
+        assert check_mod.CODERABBIT_RUN_ID_RE.search(body)
+        assert check_mod.CODERABBIT_FILES_SELECTED_RE.search(body)
+        assert check_mod.is_rate_limit_stub(body)
+
+        assert check_mod.is_coderabbit_zero_finding_review(body) == (False, None, 0)
 
 
 class TestClassifyZeroFinding:
@@ -1214,6 +1244,8 @@ class TestClassifyZeroFinding:
     ZERO_FINDING_BODY = TestIsCoderabbitZeroFindingReview.ZERO_FINDING_BODY
 
     def test_zero_finding_only_passes(self, check_mod) -> None:
+        """A lone zero-finding auto-summary is a PASS, and the message names
+        the run and file count a human needs to audit the verdict."""
         items = [
             check_mod.CRItem(id=1, body=self.ZERO_FINDING_BODY, is_review=False),
         ]
@@ -1268,6 +1300,40 @@ C_ZERO_BODY = (
 )
 MERGE_CLOSE_BODY = "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"
 
+# The VERBATIM shape of CodeRabbit's real rate-limit comment, reduced from the
+# body posted on PRs #2765 and #2766. It carries the auto-summary marker, a
+# "**Run ID**:" line and a NON-ZERO "Files selected for processing (N)" list --
+# three of the four gates the zero-finding predicate applies. Only the
+# no-actionable phrase is missing. This is the body class the gate exists to
+# reject, so it is pinned as its own control rather than trusted to the
+# absence of one phrase.
+RATE_LIMIT_WITH_RUN_ID_BODY = (
+    "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+    "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\n"
+    "\n"
+    "> [!WARNING]\n"
+    "> ## Review limit reached\n"
+    "> \n"
+    "> **Next included review available in 29 minutes.**\n"
+    "> \n"
+    "> **Run ID**: `129e6056-4f0d-4992-83c7-b068406aaf0b`\n"
+    "> \n"
+    "> 📒 Files selected for processing (7)\n"
+    "> \n"
+    "> * `tinyagentos/app.py`\n"
+    "\n"
+    "<!-- end of auto-generated comment: rate limited by coderabbit.ai -->"
+)
+
+# The same stub with the no-actionable phrase spliced in -- the adversarial
+# case. Every one of the three markers is now present on a body that is still
+# a rate-limit stub, so ONLY the explicit rate-limit rejection inside
+# is_coderabbit_zero_finding_review can keep this red.
+RATE_LIMIT_WITH_ALL_THREE_MARKERS_BODY = (
+    RATE_LIMIT_WITH_RUN_ID_BODY
+    + "\nNo actionable comments were generated in the recent review."
+)
+
 
 class TestClassifyZeroFindingControls:
     """Delete-one suite: each control body is missing exactly one of the
@@ -1292,6 +1358,10 @@ class TestClassifyZeroFindingControls:
          C_ZERO_BODY, 1, "FAIL"),
         ("rate_limit_ack",
          RATE_LIMIT_ACK_BODY, 1, "FAIL"),
+        ("rate_limit_with_run_id_and_files",
+         RATE_LIMIT_WITH_RUN_ID_BODY, 1, "FAIL"),
+        ("rate_limit_with_all_three_markers",
+         RATE_LIMIT_WITH_ALL_THREE_MARKERS_BODY, 1, "FAIL"),
         ("merge_close",
          MERGE_CLOSE_BODY, 1, "FAIL"),
         ("ack_reply",
@@ -1309,12 +1379,13 @@ class TestClassifyZeroFindingControls:
             f"{label}: expected {expected_substring!r} in {message!r}"
         )
 
-    def test_review_with_findings_falls_through_to_real_item_pass(
+    def test_findings_shape_alone_is_not_a_zero_finding_pass(
         self, check_mod,
     ) -> None:
-        """(b)+(c) without (a) is the shape of a review with findings, not a
-        zero-finding pass. It must fall through to the real-item count and
-        exit 0 with the standard PASS line, NOT the zero-finding PASS line."""
+        """(b)+(c) without (a) is the auto-summary of a review WITH findings.
+        On its own it is still scaffolding -- the findings live in separate
+        inline-comment items -- so `is_real_item` rejects it and classify()
+        must return the stub FAIL, never the zero-finding PASS line."""
         body = (
             "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
             "**Run ID**: abc123-def456\n"
@@ -1325,6 +1396,30 @@ class TestClassifyZeroFindingControls:
         exit_code, message = check_mod.classify(items)
         assert exit_code == 1
         assert "FAIL" in message
+        assert "0 findings" not in message
+
+    def test_findings_shape_with_a_real_inline_comment_passes_as_real(
+        self, check_mod,
+    ) -> None:
+        """The same auto-summary alongside the inline finding it summarises:
+        the inline comment IS real review content, so classify() reports the
+        standard real-item PASS -- not the zero-finding PASS line."""
+        summary = (
+            "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+            "**Run ID**: abc123-def456\n"
+            "Files selected for processing (3)\n"
+        )
+        items = [
+            check_mod.CRItem(id=1, body=summary, is_review=False),
+            check_mod.CRItem(
+                id=2,
+                body="**Update the zero-finding review contract.**",
+                is_review=False,
+            ),
+        ]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 0
+        assert "real CodeRabbit review item(s)" in message
         assert "0 findings" not in message
 
 

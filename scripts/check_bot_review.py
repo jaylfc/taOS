@@ -272,6 +272,16 @@ def is_coderabbit_zero_finding_review(body: str | None) -> tuple[bool, str | Non
           file was in scope for the review; N == 0 means everything was
           path-filtered and nothing was reviewed (a stub the lead labels).
 
+    A rate-limit stub is rejected outright, ahead of the three markers.
+    CodeRabbit's real rate-limit comment (see PRs #2765/#2766) already
+    carries the auto-summary marker, a "**Run ID**:" line AND a non-zero
+    "Files selected for processing (N)" list -- three of the four gates --
+    so the ONLY thing separating it from a genuine zero-finding review is
+    the absence of the no-actionable phrase. That is a one-phrase margin on
+    the exact body class this gate exists to reject, so the stub check is
+    made explicit rather than left implied: a stub must fail because it is
+    a stub, not because one phrase happened not to appear in it.
+
     The previous version also required the quota-consumed "Included review
     availability:" line, but that line appears ONLY on manually-triggered
     reviews (@coderabbitai full review) and is absent on the AUTOMATIC
@@ -279,6 +289,8 @@ def is_coderabbit_zero_finding_review(body: str | None) -> tuple[bool, str | Non
     stayed red on every clean lane PR.
     """
     if not body:
+        return False, None, 0
+    if is_rate_limit_stub(body):
         return False, None, 0
     if not is_coderabbit_auto_summary(body):
         return False, None, 0
@@ -442,8 +454,13 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
     - (0, "PASS ...")            -- a real CodeRabbit review exists.
     - (0, "PASS (absent, ...)")  -- CodeRabbit is entirely absent.
     - (0, "PASS ...")            -- a completed zero-finding CodeRabbit review
-                                   exists (auto-summary with both no-findings
-                                   marker and quota-consumed marker).
+                                   exists: an auto-summary carrying ALL THREE
+                                   markers -- the no-actionable-comments
+                                   phrase, a "**Run ID**:" line, and
+                                   "Files selected for processing (N)" with
+                                   N >= 1. The quota-consumed "Included review
+                                   availability:" line is NOT required; it is
+                                   absent on the automatic PR-open review.
     - (1, "FAIL ...")            -- only stubs exist, i.e. rate-limit stubs
                                    or CodeRabbit auto-generated scaffolding
                                    (acknowledgement / auto-summary), neither
