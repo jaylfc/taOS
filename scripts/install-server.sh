@@ -1002,18 +1002,262 @@ PY
 # it docker-compose-plugin; Ubuntu's universe archive calls it
 # docker-compose-v2. Trying only the Ubuntu name broke Debian Bookworm
 # (vendor Pi images included) with "Unable to locate package" (#1541).
+# Debian trixie (and Armbian trixie, reported in taOS#2) ships NEITHER
+# name in the distro archive, so both madison lookups come back empty. The
+# caller detects that "both miss" case and falls back to Docker's official
+# apt repo via _apt_install_docker_official_repo below.
 _apt_install_compose() {
     # Probe availability with apt-cache madison instead of grepping apt's
     # stderr: the error text is locale-dependent (so string matching broke
     # the fallback on any non-English system) and "no installation candidate"
     # was a second phrasing the match missed; an empty madison covers both.
-    # Any real apt failure (locks, held packages, resolver) then surfaces
-    # from the single install attempt itself.
+    # Return codes:
+    #   0 = compose plugin installed
+    #   2 = neither docker-compose-plugin nor docker-compose-v2 exists in
+    #       the distro archive (callers fall back to Docker's official repo)
+    #   1 = the package EXISTS but apt install failed (lock, held deps,
+    #       resolver error); callers must NOT silently swap repositories
+    #       in this case -- the real apt error is the actionable signal.
     if [[ -n "$(apt-cache madison docker-compose-plugin 2>/dev/null)" ]]; then
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin
+        if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin; then
+            warn "apt install docker-compose-plugin failed -- see /var/log/apt/term.log"
+            return 1
+        fi
+    elif [[ -n "$(apt-cache madison docker-compose-v2 2>/dev/null)" ]]; then
+        if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-v2; then
+            warn "apt install docker-compose-v2 failed -- see /var/log/apt/term.log"
+            return 1
+        fi
     else
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-v2
+        # Neither name is in this distro's apt archive (trixie, some
+        # armbian releases, vendor-stripped images). Leave Docker Engine
+        # un-installed so the caller's fallback path can try Docker's
+        # official repo; if that also fails the install still exits 0
+        # with a "Store Docker apps will be unavailable" warning.
+        return 2
     fi
+}
+
+# Undo one apt file touched by the Docker official-repo fallback below.
+#   $1 = path, $2 = backup path ("" when the file did NOT pre-exist),
+#   $3 = 1 when THIS invocation created the file.
+# A file that already existed is restored byte-for-byte from its backup; only
+# a file this invocation created is deleted. Anything else is left alone --
+# the installer must never destroy an apt config it did not write. Tracking
+# "did we write it" alone was not enough: overwriting a host's customised
+# docker.asc / docker.list and then rm -f'ing it on the failure path wiped an
+# operator's mirror, pinned suite or internal signing key.
+_docker_apt_restore() {
+    local path="$1" backup="$2" created="${3:-0}"
+    if [[ -n "$backup" ]]; then
+        if sudo cp -a "$backup" "$path"; then
+            log "restored the pre-existing $path"
+        else
+            warn "could not restore $path -- a copy is kept at $backup"
+        fi
+    elif (( created )); then
+        sudo rm -f "$path"
+    fi
+    # Explicit: a false (( created )) is the last command otherwise, and a
+    # non-zero return from a bare call would abort the caller under set -e.
+    return 0
+}
+
+# Reinstall the distro Docker packages the fallback removed to make room for
+# docker-ce. $1 is the space-separated list actually removed ("" = nothing to
+# do). Without this a failed fallback ends the install with NO Docker at all:
+# the caller installs docker.io just before entering the fallback, so removing
+# it and then failing on apt-get update/install (unsupported arch, proxy,
+# held deps) leaves the host worse off than before the installer ran.
+_docker_restore_distro_pkgs() {
+    local pkgs="$1"
+    [[ -n "$pkgs" ]] || return 0
+    log "restoring the distro Docker packages: $pkgs"
+    # shellcheck disable=SC2086
+    if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs; then
+        return 0
+    fi
+    # Whatever got us here may have left apt's lists inconsistent, and
+    # docker.list has just been rolled back. Refresh once and retry -- a
+    # "restore" that only narrates is worse than no restore at all.
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    # shellcheck disable=SC2086
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs \
+        || warn "could not reinstall $pkgs -- this host has NO Docker now; run: sudo apt-get install $pkgs"
+    return 0
+}
+
+# Docker Engine + Compose v2 plugin from Docker's official apt repo
+# (download.docker.com). Used as a fallback when neither
+# docker-compose-plugin nor docker-compose-v2 are present in the distro
+# archive (taOS#2 — Debian trixie / Armbian trixie). Mirrors the
+# GPG-verify pattern used by the Zabbly Incus fallback above so a
+# rotated docker.com signing key fails closed instead of silently
+# trusting whatever a MITM serves. Returns 0 on success, 1 on any
+# failure (network blocked, missing codename, fingerprint mismatch,
+# install error). Air-gapped hosts must still let the installer
+# finish, so every caller treats 1 as "give up gracefully".
+_apt_install_docker_official_repo() {
+    local codename=""
+    if command -v lsb_release >/dev/null 2>&1; then
+        codename=$(lsb_release -cs 2>/dev/null)
+    elif [[ -f /etc/os-release ]]; then
+        codename=$(. /etc/os-release && echo "${VERSION_CODENAME:-}")
+    fi
+    if [[ -z "$codename" ]]; then
+        warn "couldn't detect distro codename — skipping Docker official-repo fallback"
+        return 1
+    fi
+
+    # Docker publishes the Debian archive at /linux/debian and the
+    # Ubuntu archive at /linux/ubuntu — the same codename is used as
+    # the suite (bookworm, trixie, jammy, noble, ...). Match on
+    # ID_LIKE so derivatives (raspbian, armbian) route to the right
+    # archive: armbian trixie reports ID=armbian / ID_LIKE=debian.
+    # The default 'debian' is intentional: Docker ships a single
+    # /linux/debian repo that covers every Debian-derived codename
+    # (kali-rolling, elementary, linuxmint, ...), so other ID_LIKE=debian
+    # derivatives fall through to it without an explicit case branch.
+    local docker_os="debian"
+    if [[ -f /etc/os-release ]]; then
+        local os_id
+        os_id=$(. /etc/os-release && echo "${ID:-}")
+        case "$os_id" in
+            ubuntu) docker_os="ubuntu" ;;
+            raspbian) docker_os="debian" ;;
+        esac
+        if [[ "$docker_os" == "debian" ]]; then
+            local id_like
+            id_like=$(. /etc/os-release && echo "${ID_LIKE:-}")
+            case ",$id_like," in
+                *,ubuntu,*) docker_os="ubuntu" ;;
+            esac
+        fi
+    fi
+
+    sudo install -d -m 0755 /etc/apt/keyrings
+
+    local _docker_key_tmp _docker_bak_dir
+    _docker_key_tmp="$(mktemp /tmp/docker-key.XXXXXX.asc)"
+    # Backups of pre-existing apt files live OUTSIDE /etc/apt so a transient
+    # copy is never picked up (or warned about) by apt itself.
+    _docker_bak_dir="$(mktemp -d /tmp/taos-docker-apt.XXXXXX)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$_docker_key_tmp'; rm -rf '$_docker_bak_dir'" RETURN
+    # Bounded timeouts so a blackholed route / stalled peer does not pin
+    # the installer indefinitely and miss its graceful-failure path.
+    if ! curl -fsSL --connect-timeout 15 --max-time 60 \
+            "https://download.docker.com/linux/$docker_os/gpg" \
+            -o "$_docker_key_tmp"; then
+        warn "failed to fetch Docker apt key — skipping Docker official-repo fallback"
+        return 1
+    fi
+    # Expected key fingerprint (verified against https://download.docker.com/linux/debian/gpg
+    # — "Docker Release (CE deb) <docker@docker.com>", primary key
+    # 9DC8 5822 9FC7 DD38 854A  E2D8 8D81 803C 0EBF CD88). Update here
+    # if Docker rotates the signing key. If the fingerprint check below
+    # fails after a rotation, fetch the current key from
+    # https://download.docker.com/linux/$docker_os/gpg and rotate
+    # _docker_expected_fp accordingly; Docker's rotation policy lives
+    # at https://docs.docker.com/engine/security/#rotating-signing-keys.
+    local _docker_expected_fp="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
+    local _docker_actual_fp
+    _docker_actual_fp="$(gpg --with-colons --import-options show-only \
+        --import "$_docker_key_tmp" 2>/dev/null \
+        | awk -F: '/^fpr:/{gsub(/ /,"",$10); print $10}' | head -1)"
+    _docker_actual_fp="${_docker_actual_fp//[[:space:]]/}"
+    if [[ "$_docker_actual_fp" != "$_docker_expected_fp" ]]; then
+        warn "Docker apt key fingerprint mismatch: expected $_docker_expected_fp, got '$_docker_actual_fp'"
+        warn "  Refusing to add Docker's repo — skipping Docker official-repo fallback"
+        warn "  If Docker rotated the signing key, fetch the current one from"
+        warn "  https://download.docker.com/linux/$docker_os/gpg and update _docker_expected_fp"
+        return 1
+    fi
+    log "Docker apt key fingerprint ok (${_docker_actual_fp:0:16}…)"
+
+    # Back up any pre-existing Docker apt config BEFORE overwriting it, and
+    # track CREATION (not merely "we wrote it") so the failure paths below can
+    # put the host back exactly as they found it: restore what was there,
+    # delete only what this invocation brought into existence.
+    local _docker_keyring=/etc/apt/keyrings/docker.asc
+    local _docker_list=/etc/apt/sources.list.d/docker.list
+    local _docker_keyring_backup=""
+    local _docker_list_backup=""
+    local _docker_created_keyring=0
+    local _docker_created_list=0
+    local _docker_removed_pkgs=""
+    if [[ -e "$_docker_keyring" ]]; then
+        _docker_keyring_backup="$_docker_bak_dir/docker.asc"
+        if ! sudo cp -a "$_docker_keyring" "$_docker_keyring_backup"; then
+            warn "could not back up the existing $_docker_keyring -- skipping Docker official-repo fallback"
+            return 1
+        fi
+        log "backed up the existing $_docker_keyring before replacing it"
+    fi
+    if sudo install -m 0644 "$_docker_key_tmp" "$_docker_keyring"; then
+        [[ -n "$_docker_keyring_backup" ]] || _docker_created_keyring=1
+    else
+        warn "could not write Docker apt keyring -- skipping Docker official-repo fallback"
+        _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
+        return 1
+    fi
+    if [[ -e "$_docker_list" ]]; then
+        _docker_list_backup="$_docker_bak_dir/docker.list"
+        if ! sudo cp -a "$_docker_list" "$_docker_list_backup"; then
+            warn "could not back up the existing $_docker_list -- skipping Docker official-repo fallback"
+            _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
+            return 1
+        fi
+        log "backed up the existing $_docker_list before replacing it"
+    fi
+    if echo "deb [signed-by=$_docker_keyring] https://download.docker.com/linux/$docker_os $codename stable" \
+            | sudo tee "$_docker_list" > /dev/null; then
+        [[ -n "$_docker_list_backup" ]] || _docker_created_list=1
+    else
+        warn "could not write Docker apt sources.list -- skipping Docker official-repo fallback"
+        _docker_apt_restore "$_docker_list" "$_docker_list_backup" "$_docker_created_list"
+        _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
+        return 1
+    fi
+
+    # docker.io (Debian) ships containerd; docker-ce (Docker's repo)
+    # ships containerd.io. Both drop binaries at /usr/bin/{docker,
+    # containerd} and /usr/sbin/containerd, so installing them together
+    # leaves dpkg half-configured. Match Docker's official upgrade
+    # guide: remove the distro packages before installing docker-ce.
+    # Record WHICH of the trio are actually installed before removing them, so
+    # the failure paths below can put them back. The caller installs docker.io
+    # moments before entering this fallback (trixie ships docker.io -- only the
+    # compose plugin is missing, which is why we are here at all), so removing
+    # them and then failing left the host with NO Docker at all: strictly worse
+    # than before the installer ran.
+    _docker_removed_pkgs="$(dpkg -l docker.io containerd runc 2>/dev/null \
+        | awk '/^ii/{print $2}' \
+        | grep -E '^(docker\.io|containerd|runc)$' | tr '\n' ' ' || true)"
+    if [[ -n "$_docker_removed_pkgs" ]]; then
+        log "removing distro packages before installing docker-ce: $_docker_removed_pkgs"
+        # shellcheck disable=SC2086
+        sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq $_docker_removed_pkgs \
+            || warn "could not remove $_docker_removed_pkgs -- apt may be left half-configured"
+    fi
+
+    if ! sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq; then
+        warn "apt-get update failed after adding Docker's repo -- rolling back the partial repo config"
+        _docker_apt_restore "$_docker_list" "$_docker_list_backup" "$_docker_created_list"
+        _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
+        _docker_restore_distro_pkgs "$_docker_removed_pkgs"
+        return 1
+    fi
+    if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+        warn "apt install from Docker's repo failed -- see /var/log/apt/term.log -- rolling back the partial repo config"
+        _docker_apt_restore "$_docker_list" "$_docker_list_backup" "$_docker_created_list"
+        _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
+        _docker_restore_distro_pkgs "$_docker_removed_pkgs"
+        return 1
+    fi
+    log "Docker Engine + Compose v2 plugin installed via Docker's official repo"
+    return 0
 }
 
 ensure_docker_for_apps() {
@@ -1060,8 +1304,21 @@ ensure_docker_for_apps() {
             # left the box without Docker at all (#1541).
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io \
                 || warn "apt install docker.io failed — Store Docker apps will be unavailable"
-            _apt_install_compose \
-                || warn "apt install of the compose plugin failed — Store Docker apps will be unavailable"
+            # _apt_install_compose distinguishes missing-package (rc=2)
+            # from install-failure (rc=1). Only the missing-package case
+            # means the distro archive has no compose plugin to offer --
+            # Debian trixie / Armbian trixie (taOS#2). Anything else is a
+            # real apt error and must NOT silently swap to Docker's repo.
+            _apt_install_compose
+            _apt_compose_rc=$?
+            if (( _apt_compose_rc == 2 )); then
+                log "compose plugin not in distro apt — trying Docker's official apt repo"
+                if ! _apt_install_docker_official_repo; then
+                    warn "Docker Engine + Compose plugin are unavailable on this host (Store Docker apps will be unavailable)"
+                fi
+            elif (( _apt_compose_rc != 0 )); then
+                warn "compose plugin install failed -- Store Docker apps will be unavailable"
+            fi
         elif command -v dnf >/dev/null 2>&1; then
             sudo dnf install -y -q moby-engine docker-compose \
                 || warn "dnf install moby-engine/docker-compose failed — Store Docker apps will be unavailable"
@@ -2172,33 +2429,88 @@ fi
 # --- wait for controller to come up -------------------------------------
 
 if [[ "$SERVICE_MODE" != "skip" ]]; then
-    # 120s ceiling: cold-boot on a Pi 5 / Orange Pi 5 lands around 55-65s
-    # (issue #337) so 60s was racing the actual ready state and printing
-    # a false "controller did not respond" warning even on successful
-    # installs. Doubling the cap keeps the safety net while removing the
-    # false alarm. Loop continues to early-exit the moment /api/cluster/workers
-    # answers, so this is just a higher ceiling, not slower steady state.
-    log "waiting for controller to be ready on port $TAOS_PORT (up to 120 s)..."
-    ctrl_tries=0
-    ctrl_up=0
-    while [[ $ctrl_tries -lt 120 ]]; do
-        if curl -sf "http://localhost:$TAOS_PORT/api/cluster/workers" >/dev/null 2>&1; then
-            ctrl_up=1
+    # Cold-boot on a fresh install runs a lot of first-run init (litellm
+    # prisma migration, store creation, backend catalog probing) that can
+    # exceed the old 120 s cap and make the installer print "controller did
+    # not respond" when the app was actually still starting. A re-run then
+    # succeeds because everything is already initialised (taOS#2).
+    #
+    # We wait in two phases so the message names exactly what is happening:
+    #   1. port open  -- the process is alive and uvicorn is listening.
+    #   2. ready      -- /api/cluster/workers answers, meaning the lifespan
+    #                    init chain has completed.
+    _PORT_WAIT=60
+    _READY_WAIT=240
+
+    log "waiting for controller port $TAOS_PORT to open (up to $_PORT_WAIT s)..."
+    _port_tries=0
+    _port_open=0
+    _port_deadline=$(( SECONDS + _PORT_WAIT ))
+    while [[ $_port_tries -lt $_PORT_WAIT ]]; do
+        # `_port_deadline` is an absolute wall-clock deadline, so every guard
+        # below reads the clock at the moment it runs instead of a value
+        # captured earlier in the iteration. The `max(1, ...)` floor keeps
+        # curl's --max-time strictly positive even if a future edit weakens
+        # the deadline guard above; curl --max-time 0 means "no timeout" and
+        # would hang the installer forever.
+        _remaining=$(( _port_deadline - SECONDS ))
+        [[ $_remaining -le 0 ]] && break
+        _curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))
+        if curl -sf --max-time "$_curl_timeout" "http://localhost:$TAOS_PORT/api/health" >/dev/null 2>&1; then
+            _port_open=1
             break
         fi
+        # Re-read the clock after the probe: curl may have burned the whole
+        # remaining budget, so the pre-probe `_remaining` is stale here and
+        # would let the follow-up sleep run past the phase deadline.
+        _remaining=$(( _port_deadline - SECONDS ))
+        [[ $_remaining -le 1 ]] && break
         sleep 1
-        ctrl_tries=$((ctrl_tries + 1))
+        _port_tries=$((_port_tries + 1))
     done
 
-    if [[ $ctrl_up -eq 0 ]]; then
-        warn "controller did not respond within 120 seconds"
+    if [[ $_port_open -eq 0 ]]; then
+        warn "controller did not open port $TAOS_PORT within $_PORT_WAIT seconds"
         if command -v journalctl >/dev/null 2>&1; then
             warn "latest journal output:"
             journalctl -u tinyagentos --no-pager -n 30 2>/dev/null || true
         fi
-        die "controller failed to start — check the journal above and fix before continuing"
+        die "controller process did not start — check the journal above and fix before continuing"
     fi
-    log "controller is up"
+    log "controller port $TAOS_PORT is open, waiting for first-boot init to finish..."
+
+    _ready_tries=0
+    _ready_ok=0
+    _ready_deadline=$(( SECONDS + _READY_WAIT ))
+    while [[ $_ready_tries -lt $_READY_WAIT ]]; do
+        # Same timeout invariant as the port-open loop above: cap curl's
+        # --max-time by remaining phase time, floor it at 1 s so it can
+        # never silently disable curl's per-attempt timeout, and re-read
+        # the clock after the probe so a slow probe cannot push the sleep
+        # past the phase deadline.
+        _remaining=$(( _ready_deadline - SECONDS ))
+        [[ $_remaining -le 0 ]] && break
+        _curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))
+        if curl -sf --max-time "$_curl_timeout" "http://localhost:$TAOS_PORT/api/cluster/workers" >/dev/null 2>&1; then
+            _ready_ok=1
+            break
+        fi
+        _remaining=$(( _ready_deadline - SECONDS ))
+        [[ $_remaining -le 1 ]] && break
+        sleep 1
+        _ready_tries=$((_ready_tries + 1))
+    done
+
+    if [[ $_ready_ok -eq 0 ]]; then
+        warn "controller did not become ready within $_READY_WAIT seconds"
+        warn "first-boot init may still be running (litellm migration, store creation, backend catalog probing)"
+        if command -v journalctl >/dev/null 2>&1; then
+            warn "latest journal output:"
+            journalctl -u tinyagentos --no-pager -n 30 2>/dev/null || true
+        fi
+        die "controller cluster/workers endpoint did not respond — check the journal above and fix before continuing"
+    fi
+    log "controller is ready"
 fi
 
 # --- post-install hardware capability verification -----------------------

@@ -7,6 +7,7 @@ GET    /api/agents/auth-requests/{request_id}          — poll request status (
 POST   /api/agents/auth-requests/{request_id}/approve  — approve + mint identity (admin only)
 POST   /api/agents/auth-requests/{request_id}/deny     — deny the request (admin only)
 GET    /api/agents/auth-requests                       — list pending requests (admin only)
+GET    /api/agents/scope-vocabulary                    — grantable scopes + the project-bound subset
 
 The two public endpoints (create + status poll) are added to auth_middleware.EXEMPT_PATHS
 so unauthenticated external agents can reach them.  The opaque UUID request_id acts as a
@@ -228,6 +229,35 @@ def _get_approve_lock(request: Request, request_id: str) -> asyncio.Lock:
     if request_id not in locks:
         locks[request_id] = asyncio.Lock()
     return locks[request_id]
+
+
+# ---------------------------------------------------------------------------
+# Routes — scope vocabulary (authenticated)
+# ---------------------------------------------------------------------------
+
+@router.get("/api/agents/scope-vocabulary")
+# The dependency is the point: it is what makes this route authenticated. The
+# handler needs nothing from the user -- the vocabulary is the same for all.
+async def get_scope_vocabulary(_user: CurrentUser = Depends(current_user)):
+    """Publish the grantable scope vocabulary and the project-bound subset.
+
+    The consent surface (desktop/src/components/ConsentActions.tsx) has to know
+    which scopes cannot be granted without a project_id, because that is what
+    decides whether it renders the project picker at all. It used to know by
+    keeping its own copy of `_PROJECT_SCOPES`, which fell six scopes behind:
+    approving `files_write` rendered no picker, POSTed no project_id, and the
+    approve handler answered 400 with nothing on screen the operator could act
+    on. Every scope added below would have re-broken it the same silent way.
+
+    So the list is written down once, here, and the client reads it. Note this
+    route must stay ahead of `/api/agents/{name}` (routes/agents.py) in the
+    include order in routes/__init__.py, or that path parameter swallows it —
+    tests/test_consent_actions_scopes.py pins that.
+    """
+    return {
+        "valid_scopes": sorted(VALID_SCOPES),
+        "project_scopes": sorted(_PROJECT_SCOPES),
+    }
 
 
 # ---------------------------------------------------------------------------
