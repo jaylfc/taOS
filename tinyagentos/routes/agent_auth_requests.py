@@ -1177,6 +1177,35 @@ async def _authorized_scope_request_agent(request: Request, canonical_id: str) -
     return record
 
 
+# The public projection of a scope-request row. Whitelisted, not blacklisted:
+# the store does `SELECT *`, so a column added later must be opted IN to the
+# response rather than leaking by default.
+#
+# `decided_by` is deliberately absent. It holds the OWNER/ADMIN user_id that
+# approved or denied, and the agent's own registry token is allowed to read
+# these routes — returning the raw row would hand an agent its owner's internal
+# user id, which no other agent-reachable route discloses. The decision stays
+# fully observable through `status`, `decided_ts` and `granted_scopes`; only
+# the deciding identity is withheld, and the store keeps recording it for the
+# audit trail.
+_PUBLIC_SCOPE_REQUEST_FIELDS = (
+    "id",
+    "canonical_id",
+    "requested_scopes",
+    "project_id",
+    "reason",
+    "status",
+    "granted_scopes",
+    "created_ts",
+    "decided_ts",
+)
+
+
+def _public_scope_request(rec: dict) -> dict:
+    """Project a stored scope-request row onto its public response shape."""
+    return {field: rec.get(field) for field in _PUBLIC_SCOPE_REQUEST_FIELDS}
+
+
 @router.get("/api/agents/registry/{canonical_id}/scope-requests")
 async def list_scope_requests(
     request: Request, canonical_id: str, status: Optional[str] = None
@@ -1197,17 +1226,26 @@ async def list_scope_requests(
     # Validate the filter only AFTER authorizing, mirroring create: an
     # unauthorized caller must not be able to tell a rejected filter value from
     # a rejected identity.
-    if status is not None and status not in _SCOPE_REQUEST_STATUSES:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"unknown status {status!r}; valid: "
-                f"{sorted(_SCOPE_REQUEST_STATUSES)}"
-            ),
-        )
+    #
+    # The stored vocabulary is lowercase, and the comparison is case-folded so
+    # that `?status=Pending` selects the pending rows instead of 400-ing an
+    # authorized caller over a casing typo. The FOLDED value is what reaches
+    # the store, so the SQL parameter still matches the stored spelling — an
+    # accepted filter never yields a silently empty list.
+    if status is not None:
+        status = status.lower()
+        if status not in _SCOPE_REQUEST_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"unknown status {status!r}; valid: "
+                    f"{sorted(_SCOPE_REQUEST_STATUSES)}"
+                ),
+            )
 
     store = _get_scope_requests_store(request)
-    return {"requests": await store.list_for(canonical_id, status)}
+    rows = await store.list_for(canonical_id, status)
+    return {"requests": [_public_scope_request(r) for r in rows]}
 
 
 @router.get("/api/agents/registry/{canonical_id}/scope-requests/{req_id}")
@@ -1224,7 +1262,7 @@ async def get_scope_request(request: Request, canonical_id: str, req_id: str):
     req = await store.get(req_id)
     if req is None or req.get("canonical_id") != canonical_id:
         raise HTTPException(status_code=404, detail="scope request not found")
-    return req
+    return _public_scope_request(req)
 
 
 @router.post("/api/agents/registry/{canonical_id}/scope-requests/{req_id}/approve")

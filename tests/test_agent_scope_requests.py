@@ -1014,3 +1014,184 @@ async def test_list_scope_requests_rejects_unknown_status(
         assert "bogus" in resp.text
     finally:
         await env.close()
+
+
+# ---------------------------------------------------------------------------
+# Read-route response shape and bounds (review fold)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_read_routes_do_not_leak_decided_by(client, monkeypatch, tmp_path):
+    """The read routes must not hand back the DECIDING USER'S id.
+
+    The stored row carries ``decided_by`` (the owner/admin user_id that
+    approved or denied). An agent holding only its own registry token is
+    allowed to read its own requests, so returning the raw row would hand that
+    agent its owner's internal user id -- an identifier it has no other route
+    to. Both reads must project an explicit public shape instead: the decision
+    stays observable through ``status`` / ``decided_ts`` / ``granted_scopes``,
+    only the deciding identity is withheld.
+    """
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        rec = await env.scope_store.create(
+            canonical_id=cid, requested_scopes=["memory_read"]
+        )
+        decided = await env.scope_store.set_decision(
+            rec["id"], "refused", decided_by=env.admin_uid
+        )
+        assert decided is not None
+        # The store still records it -- this is a response-shape defect, not a
+        # storage one, so the audit trail must survive the fix.
+        assert decided["decided_by"] == env.admin_uid
+
+        expected_keys = {
+            "id",
+            "canonical_id",
+            "requested_scopes",
+            "project_id",
+            "reason",
+            "status",
+            "granted_scopes",
+            "created_ts",
+            "decided_ts",
+        }
+
+        owner_one = await client.get(
+            f"/api/agents/registry/{cid}/scope-requests/{rec['id']}"
+        )
+        owner_list = await client.get(f"/api/agents/registry/{cid}/scope-requests")
+
+        token = env.agent_token(cid)
+        app = client._transport.app
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            agent_one = await bare.get(
+                f"/api/agents/registry/{cid}/scope-requests/{rec['id']}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            agent_list = await bare.get(
+                f"/api/agents/registry/{cid}/scope-requests",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        for resp in (owner_one, agent_one):
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert "decided_by" not in body
+            assert set(body) == expected_keys
+            # Redaction must not blind the caller to WHETHER it was decided,
+            # only to BY WHOM.
+            assert body["status"] == "refused"
+            assert body["decided_ts"] == decided["decided_ts"]
+
+        for resp in (owner_list, agent_list):
+            assert resp.status_code == 200, resp.text
+            rows = resp.json()["requests"]
+            assert len(rows) == 1
+            assert "decided_by" not in rows[0]
+            assert set(rows[0]) == expected_keys
+            assert rows[0]["status"] == "refused"
+
+        # And no serialisation of the id survives anywhere in the payloads.
+        for resp in (owner_one, agent_one, owner_list, agent_list):
+            assert env.admin_uid not in resp.text
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_list_scope_requests_is_bounded_and_keeps_pending(
+    client, monkeypatch, tmp_path
+):
+    """The list response is capped, and the cap never truncates a PENDING row.
+
+    Decided rows are never deleted, so an unbounded ``SELECT *`` grows with an
+    agent's whole decision history. Capping naively by "oldest first" would
+    drop the newest rows; capping by "newest first" would drop an OLD pending
+    request -- precisely the row these routes exist to recover. Pending rows
+    are therefore selected ahead of decided ones, and the page is still
+    returned oldest-first.
+    """
+    from tinyagentos import agent_scope_requests_store as srs
+
+    monkeypatch.setattr(srs, "DEFAULT_LIST_LIMIT", 3)
+
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        # Oldest row of all, and the only pending one.
+        pending = await env.scope_store.create(
+            canonical_id=cid, requested_scopes=["memory_read"]
+        )
+        decided_ids = []
+        for _ in range(5):
+            rec = await env.scope_store.create(
+                canonical_id=cid, requested_scopes=["a2a_send"]
+            )
+            await env.scope_store.set_decision(
+                rec["id"], "refused", decided_by=env.admin_uid
+            )
+            decided_ids.append(rec["id"])
+
+        resp = await client.get(f"/api/agents/registry/{cid}/scope-requests")
+        assert resp.status_code == 200, resp.text
+        rows = resp.json()["requests"]
+        ids = [r["id"] for r in rows]
+
+        assert len(rows) == 3, ids
+        assert pending["id"] in ids
+        # Newest decided survives; the oldest decided row is what got dropped.
+        assert decided_ids[-1] in ids
+        assert decided_ids[0] not in ids
+        # Still oldest-first within the page.
+        assert [r["created_ts"] for r in rows] == sorted(
+            r["created_ts"] for r in rows
+        )
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_list_scope_requests_status_filter_is_case_insensitive(
+    client, monkeypatch, tmp_path
+):
+    """``?status=Pending`` is a casing typo, not an unknown status.
+
+    The vocabulary is lowercase by convention; a mixed-case value from a script
+    must select the same rows rather than hard-400 an authorized caller.
+    """
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        pending = await env.scope_store.create(
+            canonical_id=cid, requested_scopes=["memory_read"]
+        )
+        decided = await env.scope_store.create(
+            canonical_id=cid, requested_scopes=["a2a_send"]
+        )
+        await env.scope_store.set_decision(
+            decided["id"], "refused", decided_by=env.admin_uid
+        )
+
+        resp = await client.get(
+            f"/api/agents/registry/{cid}/scope-requests", params={"status": "PENDING"}
+        )
+        assert resp.status_code == 200, resp.text
+        assert [r["id"] for r in resp.json()["requests"]] == [pending["id"]]
+
+        resp = await client.get(
+            f"/api/agents/registry/{cid}/scope-requests", params={"status": "Refused"}
+        )
+        assert resp.status_code == 200, resp.text
+        assert [r["id"] for r in resp.json()["requests"]] == [decided["id"]]
+
+        # A genuinely unknown status is still a 400, not a silent empty list.
+        resp = await client.get(
+            f"/api/agents/registry/{cid}/scope-requests", params={"status": "Bogus"}
+        )
+        assert resp.status_code == 400, resp.text
+    finally:
+        await env.close()

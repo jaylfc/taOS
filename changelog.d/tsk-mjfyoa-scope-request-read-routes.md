@@ -15,3 +15,10 @@
   existence-hiding `404 {"detail": "agent not found or not active"}` the
   neighbouring create/approve/deny routes return, so nobody can enumerate
   another user's agents' requests or use the route as an existence oracle.
+- Both reads return an explicit public projection of the stored row. The
+  deciding owner/admin's user id (`decided_by`) is withheld — the agent's own
+  token may read these routes, and no other agent-reachable route discloses its
+  owner's internal id — while `status`, `decided_ts` and `granted_scopes` keep
+  the decision fully observable. The list response is bounded at 200 rows, and
+  truncation drops the oldest DECIDED requests first so a pending request can
+  never fall off the end. The `?status` filter accepts any casing.

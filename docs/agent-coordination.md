@@ -689,12 +689,32 @@ that SAME canonical_id instead:
   `?status=pending|accepted|refused`): list an agent's scope requests, oldest
   first. Authorized EXACTLY like create -- the agent's own registry bearer
   token, or the owning user / an admin -- so nobody can enumerate another
-  user's agents' requests. An unknown `status` is 400, never a silently empty
-  list.
+  user's agents' requests. The `status` filter is matched case-insensitively
+  (`?status=Pending` selects the pending rows); a value outside the vocabulary
+  is 400, never a silently empty list.
 - `GET /api/agents/registry/{canonical_id}/scope-requests/{req_id}`: read one
   request (same gate). A `req_id` belonging to a different agent is 404 on this
   path even for a caller who owns both, so the `{canonical_id}` segment is
   load-bearing.
+
+Both reads return the same PUBLIC shape -- `{id, canonical_id,
+requested_scopes, project_id, reason, status, granted_scopes, created_ts,
+decided_ts}` -- projected explicitly from the stored row rather than returned
+raw. `decided_by` (the owner/admin user_id that approved or denied) is
+deliberately withheld: an agent's own registry token may read these routes, and
+no other agent-reachable route discloses its owner's internal user id. The
+store still records it, and the decision itself stays observable through
+`status` / `decided_ts` / `granted_scopes` -- only the deciding identity is
+hidden. The projection is a whitelist, so a column added to
+`agent_scope_requests` later has to be opted IN rather than leaking by default.
+
+The list is BOUNDED (`DEFAULT_LIST_LIMIT`, 200, in
+`tinyagentos/agent_scope_requests_store.py`). Decided rows are never deleted --
+there is no retention sweep -- so an unbounded list would grow with an agent's
+whole decision history. Truncation drops the OLDEST DECIDED rows first: pending
+rows are selected ahead of decided ones (and are capped at ten per agent
+anyway), so a long-lived agent can never lose sight of the pending request the
+route exists to recover. The page itself is still ordered oldest-first.
 
 The two reads exist because the `request_id` was otherwise handed out exactly
 once, inside the notification payload raised at create time. Dismiss that
