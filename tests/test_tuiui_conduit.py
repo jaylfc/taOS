@@ -12,15 +12,18 @@ import os
 import socket
 import threading
 import time
+from collections import deque
 
 import pytest
 
+from tinyagentos import tuiui_conduit
 from tinyagentos.tuiui_conduit import (
     Frame,
     SpawnedApp,
     TuiuiConduit,
     TuiuiConduitError,
     _extract_grid,
+    _verify_connected_peer,
     default_socket_path,
 )
 
@@ -593,3 +596,141 @@ class TestGridGeometry:
         assert len(cells) == 8
         frame = Frame(cells=cells, cols=cols, rows=rows, truncated=truncated)
         assert TuiuiConduit.frame_lines(frame) == ["ab", "cdef"]
+
+
+class TestPeerCredentialGuard:
+    """A verified pathname can be swapped; the connected peer cannot."""
+
+    def test_peer_running_as_another_uid_is_refused(self, monkeypatch):
+        ours, _theirs = socket.socketpair()
+        try:
+            monkeypatch.setattr(os, "geteuid", lambda: os.getuid() + 1)
+            with pytest.raises(TuiuiConduitError, match="peer runs as uid"):
+                _verify_connected_peer(ours, "/run/user/x/apphost.sock")
+        finally:
+            ours.close()
+            _theirs.close()
+
+    def test_peer_running_as_us_is_accepted(self):
+        ours, theirs = socket.socketpair()
+        try:
+            _verify_connected_peer(ours, "/run/user/x/apphost.sock")
+        finally:
+            ours.close()
+            theirs.close()
+
+    def test_connect_verifies_the_peer_it_actually_reached(self, apphost_sock):
+        """The guard runs on the live connection, not just on the path."""
+        _, sock_path = apphost_sock
+        calls: list[str] = []
+        monkeypatched = pytest.MonkeyPatch()
+        monkeypatched.setattr(
+            "tinyagentos.tuiui_conduit._verify_connected_peer",
+            lambda sock, path: calls.append(path),
+        )
+        try:
+            with TuiuiConduit(sock_path, timeout=2.0):
+                pass
+        finally:
+            monkeypatched.undo()
+        assert calls == [sock_path]
+
+
+class TestMalformedWireData:
+    """Garbage on the wire is a protocol error, not an arbitrary ValueError."""
+
+    @pytest.mark.parametrize(
+        "grid",
+        [
+            {"cells": list("ab"), "rows": "two"},
+            {"cells": list("ab"), "cols": "six"},
+            {"cols": "wide", "rows_list": [{"cols": [{"ch": "a"}]}]},
+        ],
+    )
+    def test_non_integer_geometry_raises_conduit_error(self, grid):
+        with pytest.raises(TuiuiConduitError, match="not an integer"):
+            _extract_grid(grid)
+
+    def test_null_geometry_is_treated_as_absent(self):
+        """An explicit JSON null means "not sent", as it does elsewhere."""
+        cells, cols, rows, truncated = _extract_grid({"cells": list("ab"), "cols": None})
+        assert (cols, rows) == (2, 1)
+        assert truncated is False
+
+    def test_non_integer_roster_field_raises_conduit_error(self):
+        with pytest.raises(TuiuiConduitError, match="not an integer"):
+            TuiuiConduit._parse_roster({"app": "one"})
+
+    def test_a_malformed_frame_does_not_kill_the_reader(self, paired_conduit):
+        """One bad frame must not take down every other in-flight consumer."""
+        conduit, peer = paired_conduit
+        conduit.connect()
+        bad = _flat_frame("x", cols=1, rows=1)
+        bad["Frame"]["grid"]["cols"] = "wide"
+        peer.sendall(_line(bad))
+        peer.sendall(_line({"Spawned": {"app": 5, "pid": 55}}))
+
+        frames = conduit.iter_frames()
+        with pytest.raises(TuiuiConduitError, match="not an integer"):
+            next(frames)
+        # The reader thread is untouched: the reply behind the bad frame is
+        # still there for its waiter.
+        assert conduit._wait_for_matching(TuiuiConduit._match_spawned)["Spawned"]["app"] == 5
+
+
+class TestBacklogAccounting:
+    """A dropped event must be counted, never silently vanish."""
+
+    def test_dropped_replies_are_counted(self, paired_conduit):
+        conduit, peer = paired_conduit
+        conduit._replies = deque(maxlen=2)
+        conduit.connect()
+        conduit._replies = deque(maxlen=2)
+        for app in range(4):
+            peer.sendall(_line({"Roster": [{"app": app, "cmd": "sh", "pid": 1}]}))
+        deadline = time.monotonic() + 5.0
+        while conduit.dropped_replies < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert conduit.dropped_replies == 2
+
+    def test_dropped_frames_are_counted(self, paired_conduit):
+        conduit, peer = paired_conduit
+        conduit.connect()
+        conduit._frames = deque(maxlen=2)
+        for text in ("a", "b", "c", "d"):
+            peer.sendall(_line(_flat_frame(text, cols=1, rows=1)))
+        deadline = time.monotonic() + 5.0
+        while conduit.dropped_frames < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert conduit.dropped_frames == 2
+
+
+class TestConnectIsAtomic:
+    """Racing __enter__ calls must not leak a socket or a reader thread."""
+
+    def test_concurrent_connect_opens_exactly_one_socket(self, apphost_sock):
+        _, sock_path = apphost_sock
+        opened: list[socket.socket] = []
+        real_connect = tuiui_conduit._socket_connect
+
+        def counting_connect(path: str, timeout: float) -> socket.socket:
+            sock = real_connect(path, timeout)
+            opened.append(sock)
+            # Widen the window between the guard and the assignment.
+            time.sleep(0.1)
+            return sock
+
+        monkeypatched = pytest.MonkeyPatch()
+        monkeypatched.setattr(tuiui_conduit, "_socket_connect", counting_connect)
+        conduit = TuiuiConduit(sock_path, timeout=2.0)
+        try:
+            threads = [threading.Thread(target=conduit.connect) for _ in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10.0)
+            assert len(opened) == 1, f"connect() opened {len(opened)} sockets"
+            assert threading.active_count() >= 1
+        finally:
+            monkeypatched.undo()
+            conduit.close()

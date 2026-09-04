@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import socket
 import stat
+import struct
 import tempfile
 import threading
 import time
@@ -38,6 +40,9 @@ _READ_POLL_SECS = 0.5
 # Replies buffered for waiters that have not asked for them yet. Replies are
 # small and one-per-request; this is a leak guard, not flow control.
 _REPLY_BACKLOG = 256
+
+# struct ucred: pid, uid, gid as native ints.
+_UCRED = "3i"
 
 
 def default_socket_path() -> str:
@@ -62,6 +67,22 @@ def default_socket_path() -> str:
 
 class TuiuiConduitError(Exception):
     """Raised when the apphost returns an error or the protocol is violated."""
+
+
+def _as_int(value: Any, field: str) -> int:
+    """Coerce one wire value to int, or report it as a protocol violation.
+
+    Everything arriving on the socket is untrusted input. A bare
+    ``int("two")`` would surface as a ValueError from whichever call the
+    caller happened to make, which is neither the documented contract nor
+    something a caller can reasonably catch.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise TuiuiConduitError(
+            f"bad frame: {field}={value!r} is not an integer"
+        ) from exc
 
 
 @dataclass
@@ -160,6 +181,33 @@ def _verify_socket_owner(path: str) -> None:
             )
 
 
+def _verify_connected_peer(sock: socket.socket, path: str) -> None:
+    """Confirm the process holding the other end really is this user.
+
+    :func:`_verify_socket_owner` validates a *pathname*, and a pathname can
+    be swapped between the check and the connect (CWE-367). SO_PEERCRED is
+    read from the kernel for this established connection, so there is
+    nothing left to swap: it is the identity of the process actually on the
+    other end, which is what the ownership check was trying to establish.
+
+    Skipped where the platform does not expose SO_PEERCRED; the pathname
+    checks still apply there.
+    """
+    peercred = getattr(socket, "SO_PEERCRED", None)
+    if peercred is None:
+        return
+    try:
+        raw = sock.getsockopt(socket.SOL_SOCKET, peercred, struct.calcsize(_UCRED))
+    except OSError:
+        return
+    _pid, uid, _gid = struct.unpack(_UCRED, raw)
+    euid = os.geteuid()
+    if uid != euid:
+        raise TuiuiConduitError(
+            f"refusing apphost at {path}: peer runs as uid {uid}, not {euid}"
+        )
+
+
 class TuiuiConduit:
     """Synchronous client for the tuiui apphost Unix socket.
 
@@ -186,10 +234,13 @@ class TuiuiConduit:
         self.timeout = timeout
         #: Frames dropped because no consumer kept up with ``frame_backlog``.
         self.dropped_frames = 0
+        #: Replies dropped because no waiter claimed them within the backlog.
+        self.dropped_replies = 0
         self._sock: socket.socket | None = None
         self._read_buf = b""
         self._req_counter = 0
         self._lock = threading.RLock()
+        self._conn_lock = threading.RLock()
         self._cv = threading.Condition()
         self._frames: deque[dict[str, Any]] = deque(maxlen=max(1, frame_backlog))
         self._replies: deque[dict[str, Any]] = deque(maxlen=_REPLY_BACKLOG)
@@ -208,70 +259,88 @@ class TuiuiConduit:
     def connect(self) -> None:
         """Open the socket and start the demultiplexing reader.
 
+        The pathname is verified before connecting and the connected peer's
+        uid after, so a swap between the two lookups cannot get an
+        attacker's listener talking to this client. The whole sequence is
+        one atomic step under ``_conn_lock``, so two threads racing through
+        ``__enter__`` cannot both open a socket and leak one of them.
+
         Raises :class:`TuiuiConduitError` when the socket is not ours to
         talk to, or when the connection itself fails: connection failures
         are the most common error a caller sees, so they belong to the same
         exception contract as protocol errors rather than leaking raw
         ``OSError``.
         """
-        if self._sock is not None:
-            return
-        _verify_socket_owner(self.socket_path)
-        try:
-            sock = _socket_connect(self.socket_path, self.timeout)
-        except OSError as exc:
-            raise TuiuiConduitError(
-                f"cannot connect to apphost at {self.socket_path}: {exc}"
-            ) from exc
-        self._read_buf = b""
-        self._stopping.clear()
-        with self._cv:
-            self._frames.clear()
-            self._replies.clear()
-            self._reader_error = None
-            self._closed = False
-        self._sock = sock
-        sock.settimeout(_READ_POLL_SECS)
-        self._reader = threading.Thread(
-            target=self._read_loop,
-            args=(sock,),
-            name="tuiui-conduit-reader",
-            daemon=True,
-        )
-        self._reader.start()
+        with self._conn_lock:
+            if self._sock is not None:
+                return
+            _verify_socket_owner(self.socket_path)
+            try:
+                sock = _socket_connect(self.socket_path, self.timeout)
+            except OSError as exc:
+                raise TuiuiConduitError(
+                    f"cannot connect to apphost at {self.socket_path}: {exc}"
+                ) from exc
+            try:
+                _verify_connected_peer(sock, self.socket_path)
+            except BaseException:
+                sock.close()
+                raise
+            self._read_buf = b""
+            self._stopping.clear()
+            with self._cv:
+                self._frames.clear()
+                self._replies.clear()
+                self._reader_error = None
+                self._closed = False
+            self._sock = sock
+            self._reader = threading.Thread(
+                target=self._read_loop,
+                args=(sock,),
+                name="tuiui-conduit-reader",
+                daemon=True,
+            )
+            self._reader.start()
 
     def close(self) -> None:
         """Close the socket and stop the reader thread."""
-        self._stopping.set()
-        sock, self._sock = self._sock, None
-        if sock is not None:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                sock.close()
-            except OSError:
-                pass
-        reader, self._reader = self._reader, None
-        if reader is not None and reader is not threading.current_thread():
-            reader.join(timeout=_READ_POLL_SECS * 4)
-        self._read_buf = b""
+        with self._conn_lock:
+            self._stopping.set()
+            sock, self._sock = self._sock, None
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+            reader, self._reader = self._reader, None
+            if reader is not None and reader is not threading.current_thread():
+                reader.join(timeout=_READ_POLL_SECS * 4)
+            self._read_buf = b""
         with self._cv:
             self._closed = True
             self._cv.notify_all()
 
     def _send(self, payload: dict[str, Any]) -> None:
-        """Encode ``payload`` as one JSON line and write it."""
-        sock = self._sock
-        if sock is None:
-            raise TuiuiConduitError("not connected")
+        """Encode ``payload`` as one JSON line and write it.
+
+        ``_conn_lock`` is held across the write so a concurrent
+        :meth:`close` cannot pull the fd out from under ``sendall`` and turn
+        a shutdown into what looks like an apphost write failure.
+        """
         line = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
-        with self._lock:
-            try:
-                sock.sendall(line)
-            except OSError as exc:
-                raise TuiuiConduitError(f"apphost write failed: {exc}") from exc
+        with self._conn_lock:
+            sock = self._sock
+            if sock is None:
+                raise TuiuiConduitError("not connected")
+            with self._lock:
+                try:
+                    sock.sendall(line)
+                except OSError as exc:
+                    raise TuiuiConduitError(f"apphost write failed: {exc}") from exc
 
     def _read_loop(self, sock: socket.socket) -> None:
         """Own the socket and sort every event into its consumer's backlog.
@@ -279,13 +348,14 @@ class TuiuiConduit:
         This is the only place ``recv()`` and ``_read_buf`` are touched, so
         no two threads can ever split a JSON line between them or claim
         bytes meant for the other. Frame events go to the frame backlog,
-        everything else to the reply backlog; nothing is discarded here.
+        everything else to the reply backlog; nothing is discarded here
+        except an oldest entry once a backlog is full, which
+        :attr:`dropped_frames` and :attr:`dropped_replies` count.
         """
         try:
             while not self._stopping.is_set():
-                try:
-                    evt = self._recv_event(sock)
-                except TimeoutError:
+                evt = self._recv_event(sock)
+                if evt is None:
                     continue
                 with self._cv:
                     if "Frame" in evt:
@@ -293,6 +363,8 @@ class TuiuiConduit:
                             self.dropped_frames += 1
                         self._frames.append(evt)
                     else:
+                        if len(self._replies) == self._replies.maxlen:
+                            self.dropped_replies += 1
                         self._replies.append(evt)
                     self._cv.notify_all()
         except BaseException as exc:  # noqa: BLE001 - handed to every waiter
@@ -305,13 +377,17 @@ class TuiuiConduit:
                 self._closed = True
                 self._cv.notify_all()
 
-    def _recv_event(self, sock: socket.socket) -> dict[str, Any]:
-        """Read one full newline-delimited JSON object from the socket.
+    def _recv_event(self, sock: socket.socket) -> dict[str, Any] | None:
+        """Read one full newline-delimited JSON object, or None if none is ready.
 
         Called only from the reader thread. Frames are pushed by the apphost
         without a request, so this is the generic receive path: a request
         that expects a reply also arrives here because the apphost
         interleaves frames freely.
+
+        Readiness is polled with ``select`` rather than a short socket
+        timeout, so bounding how long the reader parks does not also bound
+        how long a write may take.
         """
         while True:
             if b"\n" in self._read_buf:
@@ -322,6 +398,9 @@ class TuiuiConduit:
                     return json.loads(line.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise TuiuiConduitError(f"bad frame: {exc!r}") from exc
+            ready, _, _ = select.select([sock], [], [], _READ_POLL_SECS)
+            if not ready:
+                return None
             chunk = sock.recv(65536)
             if not chunk:
                 raise TuiuiConduitError("apphost closed connection")
@@ -371,7 +450,11 @@ class TuiuiConduit:
         with self._lock:
             self._send(payload)
             evt = self._wait_for_matching(self._match_spawned, timeout=timeout)
-        return SpawnedApp(app=int(evt["Spawned"]["app"]), pid=int(evt["Spawned"]["pid"]))
+        spawned = evt["Spawned"]
+        return SpawnedApp(
+            app=_as_int(spawned["app"], "Spawned.app"),
+            pid=_as_int(spawned["pid"], "Spawned.pid"),
+        )
 
     @staticmethod
     def _match_spawned(evt: dict[str, Any]) -> bool:
@@ -428,13 +511,13 @@ class TuiuiConduit:
     @staticmethod
     def _parse_roster(raw: dict[str, Any]) -> RosterEntry:
         return RosterEntry(
-            app=int(raw["app"]),
+            app=_as_int(raw["app"], "Roster.app"),
             cmd=str(raw.get("cmd", "")),
             args=list(raw.get("args", [])),
-            pid=int(raw.get("pid", 0)),
-            cols=int(raw.get("cols", 0)),
-            rows=int(raw.get("rows", 0)),
-            age_secs=int(raw.get("age_secs", 0)),
+            pid=_as_int(raw.get("pid", 0), "Roster.pid"),
+            cols=_as_int(raw.get("cols", 0), "Roster.cols"),
+            rows=_as_int(raw.get("rows", 0), "Roster.rows"),
+            age_secs=_as_int(raw.get("age_secs", 0), "Roster.age_secs"),
             alive=bool(raw.get("alive", True)),
             meta=raw.get("meta"),
         )
@@ -494,17 +577,24 @@ class TuiuiConduit:
         cursor = raw.get("cursor")
         cur_pair: tuple[int, int] | None = None
         if isinstance(cursor, (list, tuple)) and len(cursor) == 2:
-            cur_pair = (int(cursor[0]), int(cursor[1]))
+            cur_pair = (
+                _as_int(cursor[0], "Frame.cursor[0]"),
+                _as_int(cursor[1], "Frame.cursor[1]"),
+            )
         return Frame(
             cells=cells,
             cols=cols,
             rows=rows,
             cursor=cur_pair,
-            flags=int(raw.get("flags", 0)),
+            flags=_as_int(raw.get("flags", 0), "Frame.flags"),
             images=list(raw.get("images", [])),
             image_data=list(raw.get("image_data", [])),
             clear=bool(raw.get("clear", False)),
-            switch_to=(int(raw["switch_to"]) if raw.get("switch_to") is not None else None),
+            switch_to=(
+                _as_int(raw["switch_to"], "Frame.switch_to")
+                if raw.get("switch_to") is not None
+                else None
+            ),
             clipboard=(str(raw["clipboard"]) if raw.get("clipboard") is not None else None),
             truncated=truncated,
         )
@@ -596,14 +686,18 @@ def _extract_grid(grid: dict[str, Any]) -> tuple[list[str], int, int, bool]:
         declared_cols = grid.get("cols")
         declared_rows = grid.get("rows")
         if declared_cols is not None:
-            cols = int(declared_cols)
-        elif declared_rows is not None and int(declared_rows) > 0:
-            cols = _ceil_div(len(cells), int(declared_rows))
+            cols = _as_int(declared_cols, "grid.cols")
+        elif declared_rows is not None and _as_int(declared_rows, "grid.rows") > 0:
+            cols = _ceil_div(len(cells), _as_int(declared_rows, "grid.rows"))
         else:
             cols = len(cells)
         if cols <= 0:
             return [], 0, 0, False
-        rows = int(declared_rows) if declared_rows is not None else _ceil_div(len(cells), cols)
+        rows = (
+            _as_int(declared_rows, "grid.rows")
+            if declared_rows is not None
+            else _ceil_div(len(cells), cols)
+        )
         return _fit(cells, cols, max(0, rows))
     rows_raw = grid.get("rows_list") or grid.get("rows")
     if isinstance(rows_raw, list):
@@ -618,7 +712,7 @@ def _extract_grid(grid: dict[str, Any]) -> tuple[list[str], int, int, bool]:
             per_row.append([_cell_char(c) for c in raw_cells])
         declared_cols = grid.get("cols")
         if declared_cols is not None:
-            cols = int(declared_cols)
+            cols = _as_int(declared_cols, "grid.cols")
         else:
             cols = max((len(r) for r in per_row), default=0)
         cells: list[str] = []
