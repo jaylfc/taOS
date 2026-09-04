@@ -171,7 +171,7 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask, isLead, ele
         key={t.id}
         task={t}
         onOpen={(id) => onOpenTask?.(id)}
-        onMove={(id) => setMovePopover(id)}
+        onMove={t.status === "quarantined" || t.status === "parked" ? undefined : (id) => setMovePopover(id)}
         justClaimed={justClaimed === t.id}
         draggable={drag && t.status !== "quarantined" && t.status !== "parked"}
         elementName={showElementBadge && t.element_id ? (elementNameById[t.element_id] ?? null) : null}

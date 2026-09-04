@@ -336,6 +336,16 @@ class ProjectTaskStore(BaseStore):
         parent_task_id: str | None = None,
         element_id: object = _ELEMENT_UNCHANGED,
     ) -> None:
+        # Reject generic status transitions from parked: parked is permanent
+        # and such a transition would clear claim fields and return the task
+        # to the ready pool.  This runs BEFORE `candidates` is built: the
+        # tuple captures the status value by copy, so dropping the local name
+        # afterwards would leave the original status in the candidate list and
+        # the UPDATE would still un-park the task.
+        if status is not None:
+            existing = await self.get_task(task_id)
+            if existing is not None and existing.get("status") == "parked":
+                status = None  # skip the status candidate; allow other fields
         candidates = [
             ("title", title, title),
             ("body", body, body),
@@ -345,13 +355,6 @@ class ProjectTaskStore(BaseStore):
             ("assignee_id", assignee_id, assignee_id),
             ("parent_task_id", parent_task_id, parent_task_id),
         ]
-        # Reject generic status transitions from parked: parked is permanent
-        # and such a transition would clear claim fields and return the task
-        # to the ready pool.
-        if status is not None:
-            existing = await self.get_task(task_id)
-            if existing is not None and existing.get("status") == "parked":
-                status = None  # skip the status candidate; allow other fields
         sets: list[str] = []
         params: list = []
         patch: dict = {}
@@ -380,8 +383,14 @@ class ProjectTaskStore(BaseStore):
             sets.append("claimed_at = ?"); params.append(None); patch["claimed_at"] = None
         sets.append("updated_at = ?"); params.append(time.time())
         params.append(task_id)
+        where = "id = ?"
+        if status is not None:
+            # Close the read-then-write gap on the parked guard above: if the
+            # task was parked between that read and this write, the status edit
+            # must not land (it was decided against a stale row).
+            where += " AND status != 'parked'"
         await self._db.execute(
-            f"UPDATE project_tasks SET {', '.join(sets)} WHERE id = ?", params
+            f"UPDATE project_tasks SET {', '.join(sets)} WHERE {where}", params
         )
         await self._db.commit()
         existing = await self.get_task(task_id)
@@ -454,16 +463,15 @@ class ProjectTaskStore(BaseStore):
                         task_id, "dispatch_failed", actor=releaser_id
                     )
                     if count >= StrikeStore.STRIKE_THRESHOLD:
-                        # After recording the strike, verify the task is still
-                        # in a state where parking is appropriate. If another
-                        # worker claimed it between the release and the strike
-                        # recording, we should not park it (it is now claimed
-                        # by someone else).
-                        existing = await self.get_task(task_id)
-                        if existing is not None and existing.get(
-                            "status"
-                        ) == "open" and existing.get("claimed_by") is None:
-                            await self.park_task(task_id, "system")
+                        # The conditional UPDATE inside park_task is itself the
+                        # decision: it only fires while the task is still open
+                        # and unclaimed.  A separate pre-read here would leave a
+                        # window in which another worker claims the task between
+                        # the check and the park, and the park would then
+                        # swallow that worker's live claim.
+                        await self.park_task(
+                            task_id, "system", only_if_unclaimed=True
+                        )
                 except Exception:
                     logger.warning(
                         "strike recording failed for task %s on release",
@@ -472,31 +480,57 @@ class ProjectTaskStore(BaseStore):
                     )
         return changed
 
-    async def park_task(self, task_id: str, actor: str) -> bool:
+    async def park_task(
+        self, task_id: str, actor: str, *, only_if_unclaimed: bool = False
+    ) -> bool:
         """Permanently park a task.
 
         A parked task is removed from the ready pool permanently.  Unlike
         quarantine there is no un-park operation.  Only acts on a task that is
         not already closed, cancelled, or parked; returns False otherwise.
+
+        ``only_if_unclaimed`` narrows the guard to a task that is still ``open``
+        with no claimer, so a caller that must not steal another worker's live
+        claim can use this update's row count as the parking decision instead of
+        a separate (racy) pre-read.
         """
         now = time.time()
+        guard = (
+            "status = 'open' AND claimed_by IS NULL"
+            if only_if_unclaimed
+            else "status NOT IN ('closed', 'cancelled', 'parked')"
+        )
         cursor = await self._db.execute(
-            """UPDATE project_tasks
-               SET status = 'parked', updated_at = ?
-               WHERE id = ? AND status NOT IN ('closed', 'cancelled', 'parked')""",
+            f"""UPDATE project_tasks
+                SET status = 'parked', updated_at = ?
+                WHERE id = ? AND {guard}""",
             (now, task_id),
         )
         await self._db.commit()
         changed = cursor.rowcount == 1
         if changed:
             existing = await self.get_task(task_id)
+            # Derive the pre-park status race-free from the committed row rather
+            # than a pre-read: the park above does not touch claimed_by, so a
+            # set claimer means the task was 'claimed'.
+            from_status = "claimed" if existing and existing.get("claimed_by") else "open"
+            # Parked is terminal, so an owner on a parked row is stale state:
+            # it makes the card look held by an agent that can never release it.
+            # Safe as a second statement because nothing can re-acquire a parked
+            # row -- claim_task only matches status = 'open'.
+            await self._db.execute(
+                """UPDATE project_tasks
+                   SET claimed_by = NULL, claimed_at = NULL
+                   WHERE id = ? AND status = 'parked'""",
+                (task_id,),
+            )
+            await self._db.commit()
             if existing is not None:
                 await self._publish(
                     existing["project_id"],
                     "task.parked",
                     {"id": task_id, "actor": actor},
                 )
-            from_status = "claimed" if existing and existing.get("claimed_by") else "open"
             await self._record_audit(
                 task_id, "task.parked", actor, from_status, "parked",
                 project_id=existing["project_id"] if existing else "",
