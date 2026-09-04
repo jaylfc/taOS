@@ -1,0 +1,2 @@
+### Added
+- Added `skip_if_no_embed_backend` marker to 10 tests across `test_routes_taosmd.py`, `test_resource_manager.py`, and `test_qmd_client.py`. Tests with this marker now skip cleanly when no embed backend (ONNX model / qmd service) is configured, instead of failing.

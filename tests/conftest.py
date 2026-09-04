@@ -54,6 +54,68 @@ from tinyagentos.routes.desktop import SPA_DIR
 from starlette.requests import HTTPConnection as _HTTPConnection
 
 CSRF_BYPASS_MARKER = "csrf_bypass"
+EMBED_BACKEND_MARKER = "skip_if_no_embed_backend"
+
+
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line("markers", "skip_if_no_embed_backend: skip this test when no embed backend (ONNX model / qmd service) is configured")
+
+
+#: Marker to skip a test when no embed backend (ONNX model / qmd service) is available.
+#: Usage::
+#
+#:     @pytest.mark.skip_if_no_embed_backend
+#:     def test_something(self): ...
+#:
+#:     # Or at module level:
+#:
+#:     pytestmark = pytest.mark.skip_if_no_embed_backend
+#
+#: Opt OUT of the skip (run the test always) by marking the test, its class,
+#: or the module with ``@pytest.mark.not_embed_backend_skip`` the opposite
+#: marker is not built-in; use ``pytestmark = pytest.mark.skip_if_no_embed_backend``
+#: explicitly or add ``-o "skip_if_no_embed_backend=false"`` to pytest cli.
+SKIP_IF_NO_EMBED_BACKEND_MARKER = "skip_if_no_embed_backend"
+
+
+def _is_embed_backend_available() -> bool:
+    """Detect if an embed backend (ONNX model / qmd service) is available.
+
+    Checks:
+      - qmd service: URL must be set beyond the default localhost placeholder
+      - ONNX: ONNX runtime must be importable
+    Returns True if at least one backend is available, False otherwise.
+    """
+    import os
+
+    # Check qmd: if TAOSMD_URL is set to a non-default URL, consider it available
+    qmd_url = os.environ.get("TAOSMD_URL", "")
+    default_qmd = "http://localhost:7832"
+    qmd_available = qmd_url and qmd_url != default_qmd
+
+    # Check ONNX: try importing the runtime
+    onnx_available = False
+    try:
+        import onnx  # noqa: F401  # lgtm[py/exceptions-as-control-structures]
+        onnx_available = True
+    except ImportError:
+        pass
+
+    return qmd_available or onnx_available
+
+
+def _skip_if_no_embed_backend(item) -> bool:
+    """Return True if the test should be skipped due to no embed backend."""
+    return not _is_embed_backend_available()
+
+
+def pytest_collection_modifyitems(items):
+    """Skip tests with skip_if_no_embed_backend when no embed backend available."""
+    for item in items:
+        if item.get_closest_marker("skip_if_no_embed_backend"):
+            if _skip_if_no_embed_backend(item):
+                item.add_marker(pytest.mark.skip(reason="embed backend (ONNX model / qmd service) not available"))
 
 
 def _noop_verify_csrf(conn: _HTTPConnection) -> None:
