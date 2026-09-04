@@ -1,4 +1,4 @@
-export type TaskStatus = "open" | "claimed" | "closed";
+export type TaskStatus = "open" | "claimed" | "closed" | "quarantined";
 
 export interface Task {
   id: string;
@@ -18,6 +18,8 @@ export interface Task {
   created_by: string;
   created_at: string;
   updated_at: string;
+  strike_count?: number;
+  latest_strike?: { id: string; task_id: string; step: string; log_tail: string; actor: string; created_at: number } | null;
 }
 
 // Element filter axis. null = no element filter (all tasks, tagged or not).

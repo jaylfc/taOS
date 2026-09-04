@@ -2,11 +2,11 @@ import type { DragEvent, ReactNode } from "react";
 import styles from "./BoardLane.module.css";
 import type { LaneHeader } from "./types";
 
-type CellStatus = "ready" | "claimed" | "closed";
+type CellStatus = "ready" | "claimed" | "closed" | "quarantined";
 
 export interface BoardLaneProps {
   header: LaneHeader;
-  cells: { ready: ReactNode; claimed: ReactNode; closed: ReactNode };
+  cells: { ready: ReactNode; claimed: ReactNode; closed: ReactNode; quarantined: ReactNode };
   onDropTask: (taskId: string, status: CellStatus, laneKey: string) => void;
 }
 
@@ -30,6 +30,7 @@ export function BoardLane({ header, cells, onDropTask }: BoardLaneProps) {
       <div data-testid="lane-cell-ready" className={styles.cell} onDragOver={dragOver} onDrop={onCellDrop("ready")}>{cells.ready}</div>
       <div data-testid="lane-cell-claimed" className={styles.cell} onDragOver={dragOver} onDrop={onCellDrop("claimed")}>{cells.claimed}</div>
       <div data-testid="lane-cell-closed" className={styles.cell} onDragOver={dragOver} onDrop={onCellDrop("closed")}>{cells.closed}</div>
+      <div data-testid="lane-cell-quarantined" className={styles.cell}>{cells.quarantined}</div>
     </div>
   );
 }

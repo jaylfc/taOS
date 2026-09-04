@@ -469,8 +469,46 @@ async def approve_request_record(
     display_name = (display_name or "").strip() or _claim or record["framework"]
 
     handle = _slugify(_claim)
+    # The handle column is NOT uniformly slugified: internal driver agents are
+    # seeded with their RAW sigilled spelling (@taOSmd-dev, @Hermes, ...) while
+    # this path registers the slugified claim (`taosmd-dev`). An exact lookup on
+    # the slug therefore MISSES an active internal row holding the same logical
+    # handle, and without the normalised fallback below the guard would fall
+    # through and mint a SECOND active identity under one handle. The
+    # ux_agent_active_handle index cannot catch that either: it is keyed on the
+    # raw column and the two spellings (@taOSmd-dev vs taosmd-dev) genuinely
+    # differ. The slug comparison is direction-free -- slugifying either
+    # spelling lands on the same key -- and the exact lookup still runs first as
+    # the indexed common case (see get_by_handle_normalised).
     existing_active = await registry.get_by_handle(handle, status="active")
+    collision_via_normalised = False
+    if existing_active is None:
+        existing_active = await registry.get_by_handle_normalised(
+            handle, status="active"
+        )
+        collision_via_normalised = existing_active is not None
     if existing_active is not None:
+        # The consent approve flow is the only origin that registers here
+        # (external-selfjoin). A normalised match whose origin is anything else
+        # (taos-internal driver agents, taos-deployed, ...) is a foreign
+        # identity the external requester is trying to claim. Taking the reuse
+        # arm below would mint a registry JWT for THAT canonical_id -- a straight
+        # impersonation of an internal identity. Fail closed instead; the
+        # requester must pick a different identity_claim. This mirrors the
+        # default-deny in agent_registry._mint_internal_identity, where a
+        # non-internal owner is only reused with adopt=true. Exact-match reuse
+        # for a genuine same-origin (external-selfjoin) re-approval is
+        # unaffected -- it never reaches this branch because its handle matches
+        # exactly and collision_via_normalised stays False.
+        if existing_active.get("origin") not in (None, "external-selfjoin"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"handle '{handle}' collides with an active identity of a "
+                    f"different origin ({existing_active.get('origin')!r}); "
+                    f"pick a different identity_claim"
+                ),
+            )
         # The handle already maps to an ACTIVE identity. In the multi-project
         # model (taOS #1862) this is NOT a hard collision when the approval is
         # for a project-scoped grant: instead of 409ing, ADD the existing agent

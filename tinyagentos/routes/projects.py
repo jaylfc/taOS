@@ -917,13 +917,25 @@ async def ready_tasks(
     project_id: str,
     request: Request,
     element_id: str | None = None,
+    limit: int = 50,
 ):
+    """List ready (open, unclaimed, unblocked) tasks for the project.
+
+    ``limit`` is clamped to ``[1, 500]`` in the store: a floor of 1 stops
+    ``?limit=0`` / negative inputs from being silently widened to unbounded
+    or the default 50 (the LIMIT -1 SQLite trap, see taosmd #415), and the
+    500 cap keeps the route from streaming an unreasonable window back to a
+    caller.  The view honours the ``blocked-on:<id>`` label convention
+    alongside ``task_relationships`` edges (defect tsk-wkah3z).
+    """
     pstore = request.app.state.project_store
     auth = await _authorize_task_actor(request, pstore, project_id)
     if isinstance(auth, JSONResponse):
         return auth
     store = request.app.state.project_task_store
-    return {"items": await store.list_ready_tasks(project_id=project_id, element_id=element_id)}
+    return {"items": await store.list_ready_tasks(
+        project_id=project_id, element_id=element_id, limit=limit
+    )}
 
 
 @router.get("/api/projects/{project_id}/tasks/{task_id}")

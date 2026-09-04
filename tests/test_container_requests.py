@@ -7,6 +7,9 @@ quota changes whether an over-quota request is auto-approved).
 """
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock, patch
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -568,5 +571,493 @@ async def test_canonical_id_from_token_not_body(client, monkeypatch, tmp_path):
         body = resp.json()
         assert body["canonical_id"] == cid
         assert body["status"] == "approved"
+    finally:
+        await env.close()
+
+
+# ---------------------------------------------------------------------------
+# P2: alias route
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_alias_container_requests_path(client, monkeypatch, tmp_path):
+    """POST /api/container-requests is an alias for /api/containers/requests."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        app = _app(client)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp = await bare.post(
+                "/api/container-requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"image": "images:debian/bookworm", "reason": "alias"},
+            )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "approved"
+        assert "request_id" in body
+    finally:
+        await env.close()
+
+
+# ---------------------------------------------------------------------------
+# P2: provision endpoint
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_provision_approved_request(client, monkeypatch, tmp_path):
+    """POST /api/containers/requests/{id}/provision creates the container and
+    transitions the request to provisioned."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        app = _app(client)
+
+        # Create an approved request.
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp = await bare.post(
+                "/api/containers/requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"image": "images:debian/bookworm", "reason": "to-provision"},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "approved"
+        crq_id = resp.json()["request_id"]
+
+        # Provision it: mock the LXC backend so no real incus call happens.
+        fake_result = {"success": True, "name": "taos-agent-crq-provisioned"}
+        with patch("tinyagentos.routes.container_requests.LXCBackend") as MockBackend:
+            mock_backend = MockBackend.return_value
+            mock_backend.create_container = AsyncMock(return_value=fake_result)
+            mock_backend.set_env = AsyncMock(return_value={"success": True})
+
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as bare:
+                resp2 = await bare.post(
+                    f"/api/containers/requests/{crq_id}/provision",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+
+        assert resp2.status_code == 200, resp2.text
+        body = resp2.json()
+        assert body["status"] == "provisioned"
+        assert body["request_id"] == crq_id
+        assert "container_name" in body
+
+        stored = await env.request_store.get(crq_id)
+        assert stored["status"] == "provisioned"
+        assert stored["container_name"] is not None
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_provision_rejects_non_approved(client, monkeypatch, tmp_path):
+    """Provisioning a pending-approval request returns 400."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        app = _app(client)
+
+        # First request: approved (under quota=1).
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp1 = await bare.post(
+                "/api/containers/requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"image": "images:debian/bookworm", "reason": "first"},
+            )
+        assert resp1.status_code == 200
+        assert resp1.json()["status"] == "approved"
+
+        # Second request: pending-approval (over quota=1).
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp2 = await bare.post(
+                "/api/containers/requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"image": "images:debian/bookworm", "reason": "pending"},
+            )
+        assert resp2.status_code == 200
+        crq_id = resp2.json()["request_id"]
+        assert resp2.json()["status"] == "pending-approval"
+
+        # Provisioning a non-approved request returns 400; mock backend so
+        # no real incus call happens even if the guard is bypassed.
+        with patch("tinyagentos.routes.container_requests.LXCBackend") as MockBackend:
+            mock_backend = MockBackend.return_value
+            mock_backend.create_container = AsyncMock(return_value={"success": True})
+            mock_backend.set_env = AsyncMock(return_value={"success": True})
+
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as bare:
+                resp3 = await bare.post(
+                    f"/api/containers/requests/{crq_id}/provision",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        assert resp3.status_code == 400, resp3.text
+    finally:
+        await env.close()
+
+
+# ---------------------------------------------------------------------------
+# P2: destroy endpoint
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_destroy_request_releases_quota(client, monkeypatch, tmp_path):
+    """POST /api/containers/requests/{id}/destroy deletes the request and
+    frees quota."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        app = _app(client)
+
+        # Create an approved request (consumes quota with quota=1).
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp = await bare.post(
+                "/api/containers/requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"image": "images:debian/bookworm", "reason": "will-destroy"},
+            )
+        assert resp.status_code == 200
+        crq_id = resp.json()["request_id"]
+
+        # Destroy it.
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp2 = await bare.post(
+                f"/api/containers/requests/{crq_id}/destroy",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp2.status_code == 200, resp2.text
+        assert resp2.json()["released"] is True
+
+        # Request row is gone.
+        stored = await env.request_store.get(crq_id)
+        assert stored is None
+
+        # Quota is freed: next request auto-approves.
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp3 = await bare.post(
+                "/api/containers/requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"image": "images:debian/bookworm", "reason": "after-destroy"},
+            )
+        assert resp3.status_code == 200
+        assert resp3.json()["status"] == "approved"
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_destroy_provisioned_also_deletes_container(client, monkeypatch, tmp_path):
+    """Destroying a provisioned request also destroys the incus container."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        app = _app(client)
+
+        # Provision a request first (mocking the backend).
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp = await bare.post(
+                "/api/containers/requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"image": "images:debian/bookworm", "reason": "provisioned"},
+            )
+        crq_id = resp.json()["request_id"]
+
+        fake_result = {"success": True, "name": "taos-agent-crq-provisioned"}
+        with patch("tinyagentos.routes.container_requests.LXCBackend") as MockBackend:
+            mock_backend = MockBackend.return_value
+            mock_backend.create_container = AsyncMock(return_value=fake_result)
+            mock_backend.set_env = AsyncMock(return_value={"success": True})
+            mock_backend.destroy_container = AsyncMock(return_value={"success": True})
+
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as bare:
+                await bare.post(
+                    f"/api/containers/requests/{crq_id}/provision",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as bare:
+                resp2 = await bare.post(
+                    f"/api/containers/requests/{crq_id}/destroy",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+
+        assert resp2.status_code == 200
+        mock_backend.destroy_container.assert_called_once()
+    finally:
+        await env.close()
+
+
+# ---------------------------------------------------------------------------
+# P2: quota endpoint
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_quota_endpoint_returns_limits(client, monkeypatch, tmp_path):
+    """GET /api/agents/containers/quota returns quota, threshold, active_count,
+    and remaining for the calling agent."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        app = _app(client)
+
+        # 0 active: remaining == quota.
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp = await bare.get(
+                "/api/agents/containers/quota",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["canonical_id"] == cid
+        assert body["quota"] == 1
+        assert body["threshold"] == 3
+        assert body["active_count"] == 0
+        assert body["remaining"] == 1
+
+        # Create a request: now 1 active, remaining == 0.
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            await bare.post(
+                "/api/containers/requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"image": "images:debian/bookworm"},
+            )
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp2 = await bare.get(
+                "/api/agents/containers/quota",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp2.status_code == 200
+        assert resp2.json()["active_count"] == 1
+        assert resp2.json()["remaining"] == 0
+    finally:
+        await env.close()
+
+
+# ---------------------------------------------------------------------------
+# P2: rejected state is terminal and releases quota
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_rejected_is_terminal_and_releases_quota(client, monkeypatch, tmp_path):
+    """A request marked 'rejected' does not consume quota, so the next
+    request under a tight quota is auto-approved."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        app = _app(client)
+
+        # First request: approved (under quota=1).
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            r = await bare.post(
+                "/api/containers/requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"image": "images:debian/bookworm"},
+            )
+        assert r.status_code == 200
+        assert r.json()["status"] == "approved"
+        crq_id = r.json()["request_id"]
+
+        # Mark as rejected.
+        await env.request_store.set_status(crq_id, "rejected")
+
+        # Second request: active_count is now 0 (rejected is terminal) -> approved.
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            r2 = await bare.post(
+                "/api/containers/requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"image": "images:debian/bookworm"},
+            )
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["status"] == "approved", r2.json()
+    finally:
+        await env.close()
+
+
+# ---------------------------------------------------------------------------
+# P2: quota=1 concurrency (TOCTOU fix)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_quota_one_concurrency_only_one_approved(client, monkeypatch, tmp_path):
+    """With quota=1, two concurrent requests must not both be approved."""
+    env = await _wire(
+        client,
+        monkeypatch,
+        tmp_path,
+        policy=ProvisioningPolicy(PolicyConfig(quota=1, threshold=3)),
+    )
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        app = _app(client)
+
+        async def _post_request(reason):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as bare:
+                r = await bare.post(
+                    "/api/containers/requests",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"image": "images:debian/bookworm", "reason": reason},
+                )
+                return r.status_code, r.json().get("status")
+
+        results = await asyncio.gather(
+            _post_request("concurrent-a"),
+            _post_request("concurrent-b"),
+        )
+        approved = [s for _, s in results if s == "approved"]
+        assert len(approved) == 1, f"expected exactly 1 approved, got {results}"
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_over_quota_requests_both_created(client, monkeypatch, tmp_path):
+    """Two concurrent over-quota requests both get records inside the lock."""
+    env = await _wire(
+        client,
+        monkeypatch,
+        tmp_path,
+        policy=ProvisioningPolicy(PolicyConfig(quota=1, threshold=3)),
+    )
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        app = _app(client)
+
+        # Pre-create one approved request so active_count=1.
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            r = await bare.post(
+                "/api/containers/requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"image": "images:debian/bookworm", "reason": "first"},
+            )
+        assert r.status_code == 200
+        assert r.json()["status"] == "approved"
+
+        async def _post_request(reason):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as bare:
+                r = await bare.post(
+                    "/api/containers/requests",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"image": "images:debian/bookworm", "reason": reason},
+                )
+                return r.status_code, r.json().get("status")
+
+        results = await asyncio.gather(
+            _post_request("concurrent-a"),
+            _post_request("concurrent-b"),
+        )
+        statuses = [s for _, s in results]
+        assert all(s == "pending-approval" for s in statuses)
+        all_reqs = await env.request_store.list(canonical_id=cid)
+        assert len(all_reqs) == 3
+    finally:
+        await env.close()
+
+
+# ---------------------------------------------------------------------------
+# P2: quota accounting mutation -- break the decrement and prove red
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# P2: escalate-failure -- decision_store.create raising must not strand the row
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_escalate_failure_marks_request_failed(client, monkeypatch, tmp_path):
+    """If decision_store.create raises during escalation, the request is
+    marked 'failed' (terminal) so it does not strand quota."""
+    env = await _wire(
+        client,
+        monkeypatch,
+        tmp_path,
+        policy=ProvisioningPolicy(PolicyConfig(quota=1, threshold=2)),
+    )
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        app = _app(client)
+
+        # Fill to threshold: 2 approved requests.
+        for _ in range(2):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as bare:
+                r = await bare.post(
+                    "/api/containers/requests",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"image": "images:debian/bookworm"},
+                )
+            assert r.status_code == 200
+
+        # 3rd request triggers escalation; break decision_store.create.
+        async def _broken_create(*args, **kwargs):
+            raise RuntimeError("decision store boom")
+
+        monkeypatch.setattr(env.decision_store, "create", _broken_create)
+
+        with pytest.raises(RuntimeError, match="decision store boom"):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as bare:
+                await bare.post(
+                    "/api/containers/requests",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"image": "images:debian/bookworm", "reason": "escalate-fail"},
+                )
+
+        # The request must be terminal (failed), not stranded in requested.
+        all_reqs = await env.request_store.list(canonical_id=cid)
+        stranded = [r for r in all_reqs if r.get("reason") == "escalate-fail"]
+        assert len(stranded) == 1
+        assert stranded[0]["status"] == "failed"
     finally:
         await env.close()

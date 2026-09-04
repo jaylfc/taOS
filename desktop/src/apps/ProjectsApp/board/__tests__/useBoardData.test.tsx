@@ -42,4 +42,20 @@ describe("useBoardData", () => {
     await waitFor(() => expect(result.current.elements.length).toBe(1));
     expect(result.current.elements[0].id).toBe("el1");
   });
+
+  it("applies strike_count and latest_strike from a task.quarantined event", async () => {
+    vi.spyOn(projectsApi.tasks, "list").mockResolvedValue([seed({})]);
+    const { result } = renderHook(() => useBoardData("p1"));
+    await waitFor(() => expect(result.current.tasks.length).toBe(1));
+    const latest = { id: "s2", task_id: "t1", step: "verification failed", log_tail: "boom", actor: "system", created_at: 2 };
+    act(() => result.current.applyEvent({
+      kind: "task.quarantined",
+      payload: { id: "t1", actor: "lead", strike_count: 2, latest_strike: latest },
+      ts: 0,
+    }));
+    const t = result.current.tasks[0];
+    expect(t.status).toBe("quarantined");
+    expect(t.strike_count).toBe(2);
+    expect(t.latest_strike).toEqual(latest);
+  });
 });

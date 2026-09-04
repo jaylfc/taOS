@@ -454,6 +454,20 @@ not resolve that 409 by minting a second identity: canonical ids are issued once
 per agent (`{slug}-{YYYYMMDD}-{HHMMSS}`), and a duplicate splits the agent's
 memory and grants across two ids that never reconcile.
 
+The collision guard is not blind to internal handles. Internal driver agents are
+seeded with their raw sigilled handle (`@taOSmd-dev`, `@Hermes`, ...) while the
+consent-approve path registers the slugified claim (`taosmd-dev`, `hermes`), so
+an exact lookup on the slug misses an active internal row that holds the same
+logical handle. The guard therefore chains an exact-then-normalised handle lookup;
+an external-selfjoin approval that collides (via the normalised handle) with an
+identity owned by a foreign origin (`taos-internal` or `taos-deployed`) fails
+closed with **409** instead of reusing that identity's `canonical_id`. A token
+minted for an internal driver id from an unauthenticated consent claim would be a
+straight impersonation of that driver, so the requester must pick a different
+`identity_claim`. A genuine same-origin re-approval (an already-active
+external-selfjoin handle) still reuses the identity per the multi-project rule
+above.
+
 Reserved name prefixes: registration rejects any name whose slug is or starts
 with `user-`, `human-`, `admin-` or `taos-` (including casing, spacing and
 punctuation obfuscations like `U s e r`), so an external agent cannot mint an
@@ -1102,16 +1116,12 @@ worker lane is therefore refused on `POST` (it lacks the create grant, `403`)
 and authorised on `GET`. `tests/test_routes_task_checklist.py` pins this scope
 split directly, not behind an xfail.
 
-Container provisioning request (P1, agent-container-provisioning spec):
+Container provisioning request (P1 + P2, agent-container-provisioning spec):
 
-- `POST /api/containers/requests` -- an active agent submits a container
-  provisioning request with its own registry JWT. The route resolves the
-  canonical_id from the token (never from the request body) and applies the
-  provisioning policy (per-agent quota + threshold). Under quota the request is
-  auto-approved; over quota it lands in `pending-approval`; over threshold it is
-  escalated to a Decisions-app item for Jay. This is an identity-only check
-  (no scope grant required), matching the scope-request create flow's use of
-  `check_agent_identity`.
+- `POST /api/containers/requests` and `POST /api/container-requests` -- an active agent submits a container provisioning request with its own registry JWT. The route resolves the canonical_id from the token (never from the request body) and applies the provisioning policy (per-agent quota + threshold). Under quota the request is auto-approved; over quota it lands in `pending-approval`; over threshold it is escalated to a Decisions-app item for Jay. This is an identity-only check (no scope grant required), matching the scope-request create flow's use of `check_agent_identity`.
+- `POST /api/containers/requests/{id}/provision` -- provisions an incus/LXC container for an `approved` request. Only the requesting agent may call this, and only when the request is in the `approved` state. On success the request transitions to `provisioned` and the container name is recorded. The container is bound to the agent + project via environment variables (`TAOS_AGENT_CANONICAL_ID`, `TAOS_PROJECT_ID`).
+- `POST /api/containers/requests/{id}/destroy` -- deletes the request row and, if the request was already `provisioned`, destroys the underlying incus container. Quota is returned to the agent on deletion.
+- `GET /api/agents/containers/quota` -- returns the calling agent's quota, threshold, current active (non-terminal) request count, and remaining slots.
 
 ## Skill-exec agent identity (credential-bound, not body-supplied)
 

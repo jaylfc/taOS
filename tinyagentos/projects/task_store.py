@@ -79,6 +79,13 @@ WHERE t.status = 'open'
       WHERE r.from_task_id = t.id
         AND r.kind = 'blocks'
         AND bt.status NOT IN ('closed', 'cancelled')
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM json_each(t.labels) je
+      JOIN project_tasks bt
+        ON 'blocked-on:' || bt.id = je.value
+       AND bt.project_id = t.project_id
+      WHERE bt.status NOT IN ('closed', 'cancelled')
   );
 
 CREATE TABLE IF NOT EXISTS task_checklist_items (
@@ -197,6 +204,35 @@ class ProjectTaskStore(BaseStore):
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_element "
             "ON project_tasks(project_id, element_id)"
+        )
+        await self._db.commit()
+        # Ready-view migration: re-create ready_tasks so it honours the
+        # ``blocked-on:<id>`` label mechanism (defect tsk-wkah3z). SQLite's
+        # ``CREATE VIEW IF NOT EXISTS`` is a no-op when the view already
+        # exists, so databases created before this change keep the old view
+        # body and silently keep returning tasks whose blocker is still
+        # open. Drop + recreate is safe here: the view is a derived
+        # projection of project_tasks, so a rebuild after the drop picks up
+        # the new WHERE clause with no data movement.
+        await self._db.execute("DROP VIEW IF EXISTS ready_tasks")
+        await self._db.execute(
+            "CREATE VIEW ready_tasks AS "
+            "SELECT t.* FROM project_tasks t "
+            "WHERE t.status = 'open' "
+            "AND t.claimed_by IS NULL "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM task_relationships r "
+            "JOIN project_tasks bt ON bt.id = r.to_task_id "
+            "WHERE r.from_task_id = t.id "
+            "AND r.kind = 'blocks' "
+            "AND bt.status NOT IN ('closed', 'cancelled')"
+            ") "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM json_each(t.labels) je "
+            "JOIN project_tasks bt ON 'blocked-on:' || bt.id = je.value "
+            "AND bt.project_id = t.project_id "
+            "WHERE bt.status NOT IN ('closed', 'cancelled')"
+            ")"
         )
         await self._db.commit()
         # Add created_by column for checklist items (defect tsk-6xymzj).
@@ -500,10 +536,25 @@ class ProjectTaskStore(BaseStore):
         if changed:
             existing = await self.get_task(task_id)
             if existing is not None:
+                strike_count = (
+                    await self._strikes.count_strikes(task_id)
+                    if self._strikes is not None
+                    else 0
+                )
+                latest_strike = (
+                    await self._strikes.latest(task_id)
+                    if self._strikes is not None
+                    else None
+                )
                 await self._publish(
                     existing["project_id"],
                     "task.quarantined",
-                    {"id": task_id, "actor": actor},
+                    {
+                        "id": task_id,
+                        "actor": actor,
+                        "strike_count": strike_count,
+                        "latest_strike": latest_strike,
+                    },
                 )
             # Derive the pre-quarantine status race-free from the committed row
             # rather than a separate pre-read (which would have a TOCTOU gap).
@@ -608,7 +659,11 @@ class ProjectTaskStore(BaseStore):
     async def list_ready_tasks(
         self, project_id: str, limit: int = 50, element_id: str | None = None
     ) -> list[dict]:
-        limit = max(1, min(limit, 200))
+        # Clamp to [1, 500]. The floor stops ``limit=0`` / negative inputs from
+        # being silently widened to ``unbounded`` or the default 50, and the
+        # cap protects the route from a caller asking for an unreasonable
+        # window (defect tsk-wkah3z).
+        limit = max(1, min(limit, 500))
         conds = ["project_id = ?"]
         params: list = [project_id]
         if element_id is not None:

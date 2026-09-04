@@ -1866,7 +1866,7 @@ class TestAgentWakeBudget:
         data = resp.json()
         assert data["consumed"] == 1
 
-    async def test_wake_budget_reports_per_project_override(
+    async def test_wake_budget_reports_per_agent_override(
         self, client, app, tmp_data_dir, monkeypatch
     ):
         from tinyagentos.agent_heartbeat import _heartbeat_tick
@@ -1881,8 +1881,8 @@ class TestAgentWakeBudget:
         )
         app.state.config.wake_budget = {
             "global_default": 2,
-            "per_agent": {},
-            "per_project": {project["id"]: 1},
+            "per_agent": {"test-agent": 1},
+            "per_project": {},
         }
         await app.state.project_task_store.create_task(
             project_id=project["id"],
@@ -1914,6 +1914,142 @@ class TestAgentWakeBudget:
         assert agent_row["budget"] == 1
         assert agent_row["consumed"] == 1
         assert agent_row["remaining"] == 0
+
+    async def test_wake_budget_reports_consumed_after_tasks_closed(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        from tinyagentos.agent_heartbeat import _heartbeat_tick
+
+        agent = next(a for a in app.state.config.agents if a["name"] == "test-agent")
+        agent["id"] = "test-agent"
+        agent["status"] = "running"
+        app.state.config.server["agent_heartbeat_enabled"] = True
+
+        project_a = await app.state.project_store.create_project(
+            name="proj-a", slug="proj-a", created_by="test",
+        )
+        project_b = await app.state.project_store.create_project(
+            name="proj-b", slug="proj-b", created_by="test",
+        )
+        task_a = await app.state.project_task_store.create_task(
+            project_id=project_a["id"],
+            title="task a",
+            created_by="test",
+            assignee_id="test-agent",
+        )
+        task_b = await app.state.project_task_store.create_task(
+            project_id=project_b["id"],
+            title="task b",
+            created_by="test",
+            assignee_id="test-agent",
+        )
+
+        async def fake_wake(*args, **kwargs):
+            return True
+
+        monkeypatch.setattr(
+            "tinyagentos.agent_heartbeat._wake_agent_with_task", fake_wake
+        )
+
+        await _heartbeat_tick(app.state)
+
+        # Close task_a so the next tick picks up task_b (proj-b)
+        await app.state.project_task_store.update_task(task_a["id"], status="closed")
+
+        await _heartbeat_tick(app.state)
+
+        # Close both tasks so held_task and list_ready_tasks both return empty
+        await app.state.project_task_store.update_task(task_b["id"], status="closed")
+
+        resp = await client.get("/api/agents/test-agent/wake-budget")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["consumed"] == 2
+        assert data["remaining"] == 0
+
+        resp2 = await client.get("/api/observatory/wake-budget")
+        assert resp2.status_code == 200
+        data2 = resp2.json()
+        agent_row = next(a for a in data2["agents"] if a["agent_id"] == "test-agent")
+        assert agent_row["consumed"] == 2
+        assert agent_row["remaining"] == 0
+
+    async def test_wake_budget_enforces_per_agent_total_across_projects(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        from tinyagentos.agent_heartbeat import _heartbeat_tick
+
+        agent = next(a for a in app.state.config.agents if a["name"] == "test-agent")
+        agent["id"] = "test-agent"
+        agent["status"] = "running"
+        app.state.config.server["agent_heartbeat_enabled"] = True
+        app.state.config.wake_budget = {
+            "global_default": 2,
+            "per_agent": {},
+            "per_project": {},
+        }
+
+        project_a = await app.state.project_store.create_project(
+            name="proj-a", slug="proj-a", created_by="test",
+        )
+        project_b = await app.state.project_store.create_project(
+            name="proj-b", slug="proj-b", created_by="test",
+        )
+        task_a = await app.state.project_task_store.create_task(
+            project_id=project_a["id"],
+            title="task a",
+            created_by="test",
+            assignee_id="test-agent",
+        )
+        task_b = await app.state.project_task_store.create_task(
+            project_id=project_b["id"],
+            title="task b",
+            created_by="test",
+            assignee_id="test-agent",
+        )
+
+        async def fake_wake(*args, **kwargs):
+            return True
+
+        from tinyagentos.wake_budget import can_wake as real_can_wake
+        can_wake_calls = []
+        def fake_can_wake(*args, **kwargs):
+            can_wake_calls.append((args, kwargs))
+            return real_can_wake(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "tinyagentos.agent_heartbeat._wake_agent_with_task", fake_wake
+        )
+        monkeypatch.setattr(
+            "tinyagentos.agent_heartbeat.can_wake", fake_can_wake
+        )
+
+        await _heartbeat_tick(app.state)
+
+        # Close task_a so the next tick picks up task_b instead of re-debouncing
+        await app.state.project_task_store.update_task(task_a["id"], status="closed")
+
+        await _heartbeat_tick(app.state)
+
+        # Close task_b and create a new ready task so the third tick reaches
+        # can_wake (same task would re-debounce and skip budget enforcement).
+        await app.state.project_task_store.update_task(task_b["id"], status="closed")
+        task_c = await app.state.project_task_store.create_task(
+            project_id=project_b["id"],
+            title="task c",
+            created_by="test",
+            assignee_id="test-agent",
+        )
+
+        # Third tick: budget exhausted, no more wakes regardless of ready tasks
+        await _heartbeat_tick(app.state)
+
+        resp = await client.get("/api/agents/test-agent/wake-budget")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["consumed"] == 2
+        assert data["remaining"] == 0
+        assert len(can_wake_calls) == 3
 
     async def test_get_wake_budget_not_found(self, client):
         resp = await client.get("/api/agents/no-such-agent/wake-budget")
