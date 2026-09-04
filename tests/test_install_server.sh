@@ -137,15 +137,41 @@ echo "test: controller wait names first-boot init in the timeout message"
 grep -q "first-boot init may still be running" "$SCRIPT"
 
 echo "test: port-open loop caps curl probe by remaining phase time"
-grep -q '_remaining=$(( _PORT_WAIT - (SECONDS - _port_start) ))' "$SCRIPT"
+grep -q '_PORT_WAIT - (SECONDS - _port_start)' "$SCRIPT"
+
+echo "test: port-open loop passes a positive timeout to curl --max-time"
+# Scoped to the /api/health curl so a regression on the ready loop cannot
+# satisfy this assertion (and vice versa).
+awk '/_PORT_WAIT.*\(SECONDS.*_port_start\)/{port=1} port && /--max-time/{print; exit}' "$SCRIPT" \
+    | grep -q -- '--max-time "[^"]*"'
 
 echo "test: port-open loop breaks before sleep when remaining <= 1"
-grep -q '\[\[ $_remaining -le 1 \]\] && break' "$SCRIPT"
+awk '/while.*_port_tries.*do/{port=1; next} port && /curl.*api.health/{health=1; next} port && health && /_remaining -le 1/{print; exit}' "$SCRIPT" \
+    | grep -q '_remaining -le 1'
+
+echo "test: port-open loop computes remaining phase time once per iteration"
+# Catches the duplicated deadline check refactor regression; the original
+# branch recomputed `_PORT_WAIT - (SECONDS - _port_start)` twice per loop.
+[[ $(grep -c '_PORT_WAIT - (SECONDS - _port_start)' "$SCRIPT") -eq 1 ]]
+
+echo "test: port-open loop floors curl --max-time at 1 s"
+# Ensures a future edit cannot weaken the deadline guard and silently
+# disable curl's per-attempt timeout (finding #3 / #4 invariant).
+grep -q '_curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))' "$SCRIPT"
 
 echo "test: ready loop caps curl probe by remaining phase time"
-grep -q '_remaining=$(( _READY_WAIT - (SECONDS - _ready_start) ))' "$SCRIPT"
+grep -q '_READY_WAIT - (SECONDS - _ready_start)' "$SCRIPT"
+
+echo "test: ready loop passes a positive timeout to curl --max-time"
+awk '/_READY_WAIT.*\(SECONDS.*_ready_start\)/{ready=1} ready && /--max-time/{print; exit}' "$SCRIPT" \
+    | grep -q -- '--max-time "[^"]*"'
 
 echo "test: ready loop breaks before sleep when remaining <= 1"
-grep -q '\[\[ $_remaining -le 1 \]\] && break' "$SCRIPT"
+awk '/while.*_ready_tries.*do/{ready=1; next} ready && /curl.*cluster.workers/{workers=1; next} ready && workers && /_remaining -le 1/{print; exit}' "$SCRIPT" \
+    | grep -q '_remaining -le 1'
+
+echo "test: ready loop computes remaining phase time once per iteration"
+# Same as port-open: original branch recomputed twice per loop.
+[[ $(grep -c '_READY_WAIT - (SECONDS - _ready_start)' "$SCRIPT") -eq 1 ]]
 
 echo "all tests passed"

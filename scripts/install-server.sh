@@ -2190,14 +2190,17 @@ if [[ "$SERVICE_MODE" != "skip" ]]; then
     _port_open=0
     _port_start=$(( SECONDS ))
     while [[ $_port_tries -lt $_PORT_WAIT ]]; do
-        [[ $(( SECONDS - _port_start )) -ge $_PORT_WAIT ]] && break
+        # Compute remaining phase time once per iteration. The `max(1, ...)`
+        # floor keeps curl's --max-time strictly positive even if a future
+        # edit weakens the deadline guard above; curl --max-time 0 means
+        # "no timeout" and would hang the installer forever.
         _remaining=$(( _PORT_WAIT - (SECONDS - _port_start) ))
-        if curl -sf --max-time "$_remaining" "http://localhost:$TAOS_PORT/api/health" >/dev/null 2>&1; then
+        [[ $_remaining -le 0 ]] && break
+        _curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))
+        if curl -sf --max-time "$_curl_timeout" "http://localhost:$TAOS_PORT/api/health" >/dev/null 2>&1; then
             _port_open=1
             break
         fi
-        [[ $(( SECONDS - _port_start )) -ge $_PORT_WAIT ]] && break
-        _remaining=$(( _PORT_WAIT - (SECONDS - _port_start) ))
         [[ $_remaining -le 1 ]] && break
         sleep 1
         _port_tries=$((_port_tries + 1))
@@ -2217,14 +2220,16 @@ if [[ "$SERVICE_MODE" != "skip" ]]; then
     _ready_ok=0
     _ready_start=$(( SECONDS ))
     while [[ $_ready_tries -lt $_READY_WAIT ]]; do
-        [[ $(( SECONDS - _ready_start )) -ge $_READY_WAIT ]] && break
+        # Same timeout invariant as the port-open loop above: cap curl's
+        # --max-time by remaining phase time and floor at 1 s so it can
+        # never silently disable curl's per-attempt timeout.
         _remaining=$(( _READY_WAIT - (SECONDS - _ready_start) ))
-        if curl -sf --max-time "$_remaining" "http://localhost:$TAOS_PORT/api/cluster/workers" >/dev/null 2>&1; then
+        [[ $_remaining -le 0 ]] && break
+        _curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))
+        if curl -sf --max-time "$_curl_timeout" "http://localhost:$TAOS_PORT/api/cluster/workers" >/dev/null 2>&1; then
             _ready_ok=1
             break
         fi
-        [[ $(( SECONDS - _ready_start )) -ge $_READY_WAIT ]] && break
-        _remaining=$(( _READY_WAIT - (SECONDS - _ready_start) ))
         [[ $_remaining -le 1 ]] && break
         sleep 1
         _ready_tries=$((_ready_tries + 1))
