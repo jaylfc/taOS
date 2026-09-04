@@ -1,0 +1,22 @@
+{
+  "tests/test_agent_loop::test_case_0005": 1020.0,
+  "tests/test_broker::test_case_0008": 840.0,
+  "tests/test_broker::test_case_0016": 294.0,
+  "tests/test_config::test_case_0003": 1086.0,
+  "tests/test_config::test_case_0004": 1020.0,
+  "tests/test_config::test_case_0013": 804.0,
+  "tests/test_config::test_case_0017": 294.0,
+  "tests/test_container_runtime_config::test_case_0018": 240.0,
+  "tests/test_db_migrations::test_case_0012": 804.0,
+  "tests/test_db_migrations::test_case_0015": 666.0,
+  "tests/test_memory_model::test_case_0002": 1086.0,
+  "tests/test_memory_model::test_case_0019": 240.0,
+  "tests/test_routes_agents::test_case_0007": 840.0,
+  "tests/test_routes_agents::test_case_0011": 804.0,
+  "tests/test_routes_chat::test_case_0001": 1086.0,
+  "tests/test_routes_chat::test_case_0010": 804.0,
+  "tests/test_routes_chat::test_case_0014": 774.0,
+  "tests/test_routes_knowledge::test_case_0009": 840.0,
+  "tests/test_routes_projects::test_case_0000": 1086.0,
+  "tests/test_routes_projects::test_case_0006": 1020.0
+}
