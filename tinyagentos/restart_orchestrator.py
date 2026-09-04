@@ -280,31 +280,36 @@ def _cap_context_snapshot(note: dict) -> None:
         + 1,
         reverse=True,
     )
-    dropped = []
+    dropped_count = 0
+    max_dropped = len(fields)
+    marker_overhead = len(
+        json.dumps(
+            {"_truncated": True, "_dropped": max_dropped}, separators=(",", ":")
+        )
+    )
     for key, _ in fields:
         del snapshot_copy[key]
-        dropped.append(key)
+        dropped_count += 1
         encoded = json.dumps(snapshot_copy, separators=(",", ":"))
-        if len(encoded) <= _MAX_CONTEXT_SNAPSHOT_BYTES:
+        if len(encoded) + marker_overhead <= _MAX_CONTEXT_SNAPSHOT_BYTES:
             break
-    if dropped:
-        snapshot_copy["_truncated"] = True
-        snapshot_copy["_dropped"] = dropped
+    snapshot_copy["_truncated"] = True
+    snapshot_copy["_dropped"] = dropped_count
+    encoded = json.dumps(snapshot_copy, separators=(",", ":"))
+    while len(encoded) > _MAX_CONTEXT_SNAPSHOT_BYTES and len(snapshot_copy) > 2:
+        remaining = [k for k in snapshot_copy if k not in ("_truncated", "_dropped")]
+        if not remaining:
+            break
+        smallest = min(
+            remaining,
+            key=lambda k: len(json.dumps(k, separators=(",", ":")))
+            + len(json.dumps(snapshot_copy[k], separators=(",", ":")))
+            + 1,
+        )
+        del snapshot_copy[smallest]
+        dropped_count += 1
+        snapshot_copy["_dropped"] = dropped_count
         encoded = json.dumps(snapshot_copy, separators=(",", ":"))
-        while len(encoded) > _MAX_CONTEXT_SNAPSHOT_BYTES and len(snapshot_copy) > 1:
-            remaining = [k for k in snapshot_copy if k not in ("_truncated", "_dropped")]
-            if not remaining:
-                break
-            smallest = min(
-                remaining,
-                key=lambda k: len(json.dumps(k, separators=(",", ":")))
-                + len(json.dumps(snapshot_copy[k], separators=(",", ":")))
-                + 1,
-            )
-            del snapshot_copy[smallest]
-            dropped.append(smallest)
-            snapshot_copy["_dropped"] = dropped
-            encoded = json.dumps(snapshot_copy, separators=(",", ":"))
     note["context_snapshot"] = snapshot_copy
 
 

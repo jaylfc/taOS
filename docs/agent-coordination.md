@@ -119,7 +119,7 @@ into the same overflow every time and the recovery note is never consumed.
 
 `_cap_context_snapshot()` in `tinyagentos/restart_orchestrator.py` drops the largest
 fields from the snapshot until its serialized form fits within 32768 bytes, then
-adds a `_truncated` marker and a `_dropped` list naming the removed keys. The
+adds a `_truncated` marker and a `_dropped` count of the removed keys. The
 result is always valid JSON and preserves as much of the remaining structure as
 possible. Do not bypass it: any code that writes a resume note by hand must still
 route it through that guard, lest an unbounded transcript become a 32 KB failure.
