@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ConsentActions, computeScopeDiff, consentPayload } from "./ConsentActions";
 
@@ -620,6 +620,72 @@ describe("ConsentActions", () => {
     });
   });
 
+  it("treats a vocabulary array with a non-string entry as a failure, not a shorter list", async () => {
+    // Filtering the bad entry out would yield a list that still looks valid
+    // while missing a project scope -- the picker-never-renders bug again, now
+    // with no error to point at.
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).startsWith("/api/agents/scope-vocabulary")) {
+        return okJson({ project_scopes: ["files_write", null, "project_tasks"] });
+      }
+      return okJson({ status: "ok" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onResolved = vi.fn();
+    render(
+      <ConsentActions requestId="req-bad-vocab" scopes={["files_write"]} onResolved={onResolved} />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(/malformed/i),
+    );
+    expect(screen.getByRole("button", { name: /allow/i })).toBeDisabled();
+    expect(screen.queryByLabelText(/Grant project access for/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /allow/i }));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/approve"))).toBe(false),
+    );
+    expect(onResolved).not.toHaveBeenCalled();
+  });
+
+  it("times the vocabulary request out rather than leaving Allow disabled with no reason", async () => {
+    vi.useFakeTimers();
+    try {
+      // A request that never settles unless aborted -- the hang case.
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (String(url).startsWith("/api/agents/scope-vocabulary")) {
+          return new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new DOMException("Aborted", "AbortError")),
+            );
+          });
+        }
+        return okJson({ status: "ok" });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      render(<ConsentActions requestId="req-hang" scopes={["files_write"]} />);
+
+      // Before the deadline: disabled, but nothing is claimed either way.
+      expect(screen.getByRole("button", { name: /allow/i })).toBeDisabled();
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      await act(async () => {
+        vi.advanceTimersByTime(10_000);
+      });
+
+      expect(screen.getByRole("alert")).toHaveTextContent(/no answer within 10s/i);
+      expect(screen.getByRole("button", { name: /allow/i })).toBeDisabled();
+      // The signal was actually passed, so the socket is released too.
+      const vocabCall = fetchMock.mock.calls.find((c) =>
+        String(c[0]).startsWith("/api/agents/scope-vocabulary"),
+      );
+      expect((vocabCall![1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("blocks Allow and says so when the scope vocabulary cannot be loaded", async () => {
     // Fail closed. Falling back to a built-in list here is exactly the state
     // this card removes, and a silent fallback would be indistinguishable from
@@ -641,7 +707,9 @@ describe("ConsentActions", () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByRole("alert")).toHaveTextContent(/scope vocabulary/i),
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /Could not confirm which scopes need a project \(the server answered 503\)/i,
+      ),
     );
     expect(screen.getByRole("button", { name: /allow/i })).toBeDisabled();
 

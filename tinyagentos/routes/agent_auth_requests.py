@@ -236,7 +236,9 @@ def _get_approve_lock(request: Request, request_id: str) -> asyncio.Lock:
 # ---------------------------------------------------------------------------
 
 @router.get("/api/agents/scope-vocabulary")
-async def get_scope_vocabulary(user: CurrentUser = Depends(current_user)):
+# The dependency is the point: it is what makes this route authenticated. The
+# handler needs nothing from the user -- the vocabulary is the same for all.
+async def get_scope_vocabulary(_user: CurrentUser = Depends(current_user)):
     """Publish the grantable scope vocabulary and the project-bound subset.
 
     The consent surface (desktop/src/components/ConsentActions.tsx) has to know

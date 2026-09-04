@@ -49,6 +49,11 @@ import { withCsrf } from "@/lib/csrf";
  *  tinyagentos/routes/agent_auth_requests.py. */
 const SCOPE_VOCABULARY_URL = "/api/agents/scope-vocabulary";
 
+/** How long to wait for the vocabulary before treating silence as a failure.
+ *  A hung request must become a visible error, not an Allow button that is
+ *  disabled forever for no stated reason. */
+const VOCAB_TIMEOUT_MS = 10_000;
+
 interface ProjectOption {
   id: string;
   name: string;
@@ -177,16 +182,30 @@ export function ConsentActions({
 
   useEffect(() => {
     let cancelled = false;
-    fetch(SCOPE_VOCABULARY_URL, { credentials: "include" })
+    // A request that never settles would leave Allow disabled forever with
+    // nothing on screen saying why -- the same "no remedy on screen" shape as
+    // the 400 this card removes. Bound it and report the timeout.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), VOCAB_TIMEOUT_MS);
+    fetch(SCOPE_VOCABULARY_URL, {
+      credentials: "include",
+      signal: controller.signal,
+    })
       .then(async (r) => {
         if (!r.ok) {
-          throw new Error(`scope vocabulary unavailable (${r.status})`);
+          throw new Error(`the server answered ${r.status}`);
         }
         const d = (await r.json()) as { project_scopes?: unknown };
-        if (!Array.isArray(d?.project_scopes)) {
-          throw new Error("scope vocabulary response was malformed");
+        // Every entry must be a string. Filtering the bad ones out instead
+        // would hand back a SHORTER list that still looks valid, silently
+        // dropping a project scope and reopening the picker-never-renders bug.
+        if (
+          !Array.isArray(d?.project_scopes) ||
+          !d.project_scopes.every((v): v is string => typeof v === "string")
+        ) {
+          throw new Error("the server's answer was malformed");
         }
-        return d.project_scopes.filter((s): s is string => typeof s === "string");
+        return d.project_scopes;
       })
       .then((list) => {
         if (cancelled) return;
@@ -197,13 +216,18 @@ export function ConsentActions({
         if (cancelled) return;
         setProjectScopes(null);
         setVocabError(
-          e instanceof Error
-            ? e.message
-            : "Could not read the scope vocabulary from the server.",
+          controller.signal.aborted
+            ? `no answer within ${Math.round(VOCAB_TIMEOUT_MS / 1000)}s`
+            : e instanceof Error
+              ? e.message
+              : "the request failed",
         );
-      });
+      })
+      .finally(() => clearTimeout(timer));
     return () => {
       cancelled = true;
+      clearTimeout(timer);
+      controller.abort();
     };
   }, []);
 
@@ -379,8 +403,8 @@ export function ConsentActions({
     <div className="mt-2" role="group" aria-label="Consent actions">
       {vocabError && (
         <p role="alert" className="mb-2 text-[11px] text-red-300">
-          Could not load the scope vocabulary ({vocabError}), so it is not known
-          whether these scopes need a project. Reload before approving.
+          Could not confirm which scopes need a project ({vocabError}), so this
+          request cannot be approved safely. Reload and try again.
         </p>
       )}
       {scopes.length > 0 && (
