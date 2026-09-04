@@ -1088,6 +1088,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # before :6969 can accept a single request. Probes run in the
         # background; the lifecycle-state reconcile below fires on the
         # first probe pass via a one-shot subscriber.
+        backend_catalog.subscribe(_reconcile_auto_manage_lifecycle)
         try:
             await backend_catalog.start()
         except Exception:
@@ -1156,8 +1157,6 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 )
                 if _b_conf.get("auto_manage") and _entry.status != "ok":
                     backend_catalog.set_lifecycle_state(_entry.name, "stopped")
-
-        backend_catalog.subscribe(_reconcile_auto_manage_lifecycle)
 
         # Joined view of the registry cache + live catalog probes.
         # Used by the Store / Dashboard / Models routes instead of

@@ -189,6 +189,7 @@ class BackendCatalog:
         """
         if self._task is not None:
             return
+        self._initial_probe_done = asyncio.Event()
         self._task = asyncio.create_task(self._poll_loop(), name="backend-catalog-poll")
 
     async def wait_initial_probe(self, timeout: float | None = None) -> None:
@@ -213,6 +214,7 @@ class BackendCatalog:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        self._initial_probe_done = asyncio.Event()
 
     async def refresh(self) -> None:
         """Force a single probe pass immediately, used after a backend change."""
