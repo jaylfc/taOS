@@ -127,13 +127,18 @@ async def _is_desktop_working_tree_clean(project_root: Path) -> bool:
     if not desktop_dir.is_dir():
         return False
     try:
+        # --untracked-files=normal (the default) is deliberate: we only need to
+        # know whether the output is empty, and an untracked file always shows
+        # up -- as itself or as its untracked parent directory.  The "all" form
+        # would descend into every untracked directory under desktop/ for no
+        # extra signal, which is real I/O on SD-card hosts (Pi 4).
         proc = await asyncio.create_subprocess_exec(
             "git",
             "-C",
             str(project_root),
             "status",
             "--porcelain",
-            "--untracked-files=all",
+            "--untracked-files=normal",
             "--",
             "desktop",
             stdout=asyncio.subprocess.PIPE,
@@ -181,18 +186,49 @@ async def _is_bundle_provenance_current(project_root: Path) -> bool:
 def _record_bundle_provenance(project_root: Path, tree_sha: str) -> None:
     """Record the desktop tree SHA that the current bundle was built from.
 
+    The marker records a *committed* tree SHA (``HEAD:desktop``), so callers
+    must only write it when the bundle really was built from that tree: the
+    prebuilt-bundle install (which is keyed by that SHA) or a local build from
+    a clean desktop working tree.  ``_is_bundle_provenance_current`` relies on
+    that invariant and re-checks the working tree before trusting the marker.
+
     The SHA is normalized (no trailing whitespace) so the read path's
     ``.strip()`` is symmetric and tolerant of future git wrappers that
     might not emit a trailing newline.
+
+    Marker failures are never fatal: a missing marker only costs the next
+    invocation a fall-through to the mtime check, so a freshly built bundle
+    must not be reported as a failed rebuild because the marker could not be
+    written -- the mkdir is inside the try for exactly that reason.
     """
     marker = project_root / "static" / "desktop" / ".taos-bundle-provenance"
-    marker.parent.mkdir(parents=True, exist_ok=True)
     try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(tree_sha.strip() + "\n")
     except OSError as exc:
         logger.warning(
             "Could not write bundle provenance marker (%s); next update may "
             "fall through to the mtime path.", exc,
+        )
+
+
+def _clear_bundle_provenance(project_root: Path) -> None:
+    """Drop the provenance marker when the bundle cannot be attributed to HEAD.
+
+    A bundle built from a dirty desktop/ tree does not correspond to any
+    committed tree SHA.  Leaving an older marker in place would let a later
+    revert back to that SHA present a clean tree plus a matching marker in
+    front of a bundle that was built from the edited source.
+    """
+    marker = project_root / "static" / "desktop" / ".taos-bundle-provenance"
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning(
+            "Could not remove stale bundle provenance marker (%s); it may "
+            "skip a needed rebuild once the working tree is clean again.", exc,
         )
 
 
@@ -426,9 +462,15 @@ async def rebuild_desktop_bundle_if_stale(
 
         logger.info("Desktop bundle rebuilt successfully.")
         # Record provenance so future checks use content hash, not mtime.
+        # The marker names HEAD:desktop, which only describes the artefacts we
+        # just built when the tree that was built is clean.  After a build from
+        # a dirty tree we invalidate the marker instead of writing a SHA the
+        # bundle does not correspond to.
         tree_sha = await _get_desktop_tree_sha(project_root)
-        if tree_sha:
+        if tree_sha and await _is_desktop_working_tree_clean(project_root):
             _record_bundle_provenance(project_root, tree_sha)
+        else:
+            _clear_bundle_provenance(project_root)
         return RebuildResult(rebuilt=True, success=True, message="Desktop bundle rebuilt successfully.")
 
     except asyncio.TimeoutError:

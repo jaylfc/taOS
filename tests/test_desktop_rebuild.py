@@ -615,3 +615,208 @@ async def test_prebuilt_bundle_rejected_on_checksum_mismatch(tmp_path, monkeypat
 
     assert await _try_prebuilt_desktop_bundle(tmp_path) is False
     assert not (tmp_path / "static" / "desktop").exists()
+
+
+# ---------------------------------------------------------------------------
+# Provenance marker: it must only ever describe a bundle built from HEAD
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_local_build_from_dirty_tree_clears_provenance_marker(tmp_path, monkeypatch):
+    """A build from a dirty desktop/ tree must not leave a HEAD-shaped marker.
+
+    ``git rev-parse HEAD:desktop`` reports the committed tree, never the local
+    edits the build actually consumed, so recording it after a dirty build
+    writes a marker the bundle does not correspond to.  Reverting the edits
+    would then present a clean tree plus a matching marker in front of a bundle
+    built from the edited source, and the rebuild would be skipped.
+    """
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// local edit")
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"x"}')
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    bundle = static_dir / "index.html"
+    bundle.write_text("<html />")
+    marker = static_dir / ".taos-bundle-provenance"
+    marker.write_text("OLD_TREE_SHA\n")
+    # Source newer than bundle so the rebuild path is entered.
+    os.utime(bundle, (time.time() - 60, time.time() - 60))
+    os.utime(src_dir / "App.tsx", (time.time(), time.time()))
+
+    class Proc:
+        def __init__(self, rc, out=b"", err=b""):
+            self.returncode = rc
+            self._out = out
+            self._err = err
+
+        async def communicate(self):
+            return self._out, self._err
+
+    async def fake_exec(*args, **kwargs):
+        if args[0] == "git":
+            sub = args[3] if len(args) > 3 else ""
+            if sub == "rev-parse":
+                return Proc(0, b"OLD_TREE_SHA\n")
+            if sub == "status":
+                return Proc(0, b" M desktop/src/App.tsx\n")  # dirty
+            return Proc(0)
+        return Proc(0)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+    assert result.rebuilt is True
+    assert result.success is True
+    assert not marker.exists(), "dirty build must invalidate, not refresh, the marker"
+
+
+@pytest.mark.asyncio
+async def test_successful_build_survives_unwritable_provenance_marker(tmp_path, monkeypatch):
+    """A marker that cannot be written must not turn a good build into a failure.
+
+    The marker is an optimisation: without it the next invocation only falls
+    back to the mtime check.  A read-only/undirectory-able static/ path used to
+    let mkdir() raise out of the helper, which the outer handler reported as
+    ``success=False`` even though the bundle had just been built.
+    """
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"x"}')
+    # static/ is a FILE, so static/desktop/ can never be created (NotADirectoryError).
+    (tmp_path / "static").write_text("not a directory")
+
+    class Proc:
+        def __init__(self, rc, out=b"", err=b""):
+            self.returncode = rc
+            self._out = out
+            self._err = err
+
+        async def communicate(self):
+            return self._out, self._err
+
+    async def fake_exec(*args, **kwargs):
+        if args[0] == "git":
+            sub = args[3] if len(args) > 3 else ""
+            if sub == "rev-parse":
+                return Proc(0, b"LOCAL_TREE_SHA\n")
+            return Proc(0)  # clean tree
+        return Proc(0)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+    assert result.rebuilt is True
+    assert result.success is True, result.message
+
+
+# ---------------------------------------------------------------------------
+# scripts/rebuild-desktop.sh -- the systemd path must match the Python gate
+# ---------------------------------------------------------------------------
+
+import subprocess
+from pathlib import Path
+
+REBUILD_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "rebuild-desktop.sh"
+
+
+def _git_shim(bin_dir, *, status_rc, tree_sha="TREE_SHA"):
+    """Install a fake `git` on PATH with per-subcommand exit codes."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        "#!/bin/bash\n"
+        "for a in \"$@\"; do\n"
+        "  case \"$a\" in\n"
+        f"    status) exit {status_rc} ;;\n"
+        f"    rev-parse) echo {tree_sha}; exit 0 ;;\n"
+        "  esac\n"
+        "done\n"
+        "exit 0\n"
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _run_rebuild_script(cwd, bin_dir):
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+    return subprocess.run(
+        ["bash", str(REBUILD_SCRIPT)],
+        cwd=str(cwd), env=env, capture_output=True, text=True, timeout=60,
+    )
+
+
+def test_script_treats_failing_git_status_as_dirty(tmp_path):
+    """`git status` failing must NOT be read as a clean tree.
+
+    The old `|| echo ""` swallowed the exit code, so a missing git, a broken
+    .git, or an unreadable index produced an empty status string that read as
+    "clean" and let the script trust the provenance marker -- serving a stale
+    bundle from the systemd path while the Python gate correctly rebuilt.
+    """
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    (static_dir / "index.html").write_text("<html />")
+    # Marker matches what the (working) rev-parse reports.
+    (static_dir / ".taos-bundle-provenance").write_text("TREE_SHA\n")
+    # Source newer than bundle so the mtime fallback also says "rebuild".
+    os.utime(static_dir / "index.html", (time.time() - 60, time.time() - 60))
+    os.utime(src_dir / "App.tsx", (time.time(), time.time()))
+    # No desktop/package.json -> the script stops right after deciding to rebuild.
+    _git_shim(tmp_path / "bin", status_rc=1)
+
+    proc = _run_rebuild_script(tmp_path, tmp_path / "bin")
+    assert proc.returncode == 0, proc.stderr
+    assert "provenance is current" not in proc.stdout, proc.stdout
+    assert "newer than bundle" in proc.stdout, proc.stdout
+
+
+def test_script_skips_rebuild_when_git_status_is_clean_and_marker_matches(tmp_path):
+    """Control for the test above: a working, clean `git status` still skips."""
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    (static_dir / "index.html").write_text("<html />")
+    (static_dir / ".taos-bundle-provenance").write_text("TREE_SHA\n")
+    os.utime(static_dir / "index.html", (time.time() - 60, time.time() - 60))
+    os.utime(src_dir / "App.tsx", (time.time(), time.time()))
+    _git_shim(tmp_path / "bin", status_rc=0)
+
+    proc = _run_rebuild_script(tmp_path, tmp_path / "bin")
+    assert proc.returncode == 0, proc.stderr
+    assert "provenance is current" in proc.stdout, proc.stdout
+
+
+def test_script_reports_provenance_marker_write_failure(tmp_path):
+    """The post-build marker write uses a private scratch file for stderr.
+
+    Concurrent invocations used to share /tmp/.taos-rebuild-desktop-marker.err,
+    so one run's `rm -f` could delete another's in-flight error text and swallow
+    a real write failure.  This pins that the failure is still reported.
+    """
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"x"}')
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    # No index.html -> unconditional rebuild; marker path is a directory so the
+    # redirect fails and the script must say so on stderr and still exit 0.
+    (static_dir / ".taos-bundle-provenance").mkdir()
+    bin_dir = tmp_path / "bin"
+    _git_shim(bin_dir, status_rc=0)
+    npm = bin_dir / "npm"
+    npm.write_text("#!/bin/bash\nexit 0\n")
+    npm.chmod(0o755)
+
+    proc = _run_rebuild_script(tmp_path, bin_dir)
+    assert proc.returncode == 0, proc.stderr
+    assert "could not write bundle provenance marker" in proc.stderr, proc.stderr
