@@ -11,6 +11,7 @@ and none of the "secrets" are real credentials.
 
 from __future__ import annotations
 
+from tinyagentos import code_analyzer
 from tinyagentos.code_analyzer import (
     Finding,
     adversarial_verify,
@@ -400,3 +401,60 @@ class TestAdversarialVerify:
         findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
         result = adversarial_verify(findings, {"app.js": "const note = 1; /* eval(userInput) */;"})
         assert result == []
+
+    def test_eval_after_closed_block_comment_on_same_line_is_kept(self):
+        content = "/* note */ eval(userInput);"
+        findings = detect_eval_like("app.js", content)
+        result = adversarial_verify(findings, {"app.js": content})
+        assert len(result) == 1
+
+    def test_eval_before_block_comment_on_same_line_is_kept(self):
+        content = "eval(userInput); /* end */"
+        findings = detect_eval_like("app.js", content)
+        result = adversarial_verify(findings, {"app.js": content})
+        assert len(result) == 1
+
+    def test_block_comment_open_inside_string_does_not_mask_later_lines(self):
+        content = 'const s = "/*";\neval(userInput);\n'
+        findings = detect_eval_like("app.js", content)
+        result = adversarial_verify(findings, {"app.js": content})
+        assert len(result) == 1
+        assert result[0].line == 2
+
+    def test_block_comment_open_after_line_comment_does_not_mask_later_lines(self):
+        content = "const n = 1; // /*\neval(userInput);\n"
+        findings = detect_eval_like("app.js", content)
+        result = adversarial_verify(findings, {"app.js": content})
+        assert len(result) == 1
+        assert result[0].line == 2
+
+    def test_block_comment_mask_is_built_once_per_file(self, monkeypatch):
+        calls: list[int] = []
+        real = code_analyzer._compute_block_comment_mask
+
+        def counting(lines):
+            calls.append(len(lines))
+            return real(lines)
+
+        monkeypatch.setattr(code_analyzer, "_compute_block_comment_mask", counting)
+        content = "eval(a);\neval(b);\neval(c);\n"
+        findings = detect_eval_like("app.js", content)
+        assert len(findings) == 3
+        code_analyzer.adversarial_verify(findings, {"app.js": content})
+        assert len(calls) == 1
+
+    def test_match_span_starting_at_column_zero_is_used(self):
+        # `new Function(` starts at offset 0; the trigger-token fallback finds
+        # the later `eval(` inside the line comment and refutes the finding.
+        content = "new Function(x); // eval(y)"
+        findings = [f for f in detect_eval_like("app.js", content) if f.match_start == 0]
+        assert len(findings) == 1
+        result = adversarial_verify(findings, {"app.js": content})
+        assert len(result) == 1
+
+    def test_real_key_beside_example_key_on_same_line_is_kept(self):
+        content = 'const demo = "AKIAIOSFODNN7EXAMPLE"; const real = "AKIAABCDEFGHIJKLMNOP";'
+        findings = detect_hardcoded_secrets("app.js", content)
+        result = adversarial_verify(findings, {"app.js": content})
+        assert len(result) == 1
+        assert content[result[0].match_start:result[0].match_end] == "AKIAABCDEFGHIJKLMNOP"

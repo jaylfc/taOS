@@ -330,8 +330,10 @@ def detect_hardcoded_secrets(filename: str, content: str) -> list[Finding]:
     findings: list[Finding] = []
     for i, line in enumerate(_iter_lines(content), start=1):
         for pattern, label in _SECRET_PATTERNS:
-            m = pattern.search(line)
-            if m:
+            # Every match on the line, not just the first: the span-scoped
+            # example allowlist can refute one match while a real secret
+            # further along the same line still has to be reported.
+            for m in pattern.finditer(line):
                 findings.append(Finding(
                     "critical", "hardcoded-secret", filename, i,
                     f"Line looks like it contains {label} -- secrets baked into client-side "
@@ -540,40 +542,89 @@ def adversarial_verify(findings: list[Finding], files: dict[str, str]) -> list[F
     a known example/placeholder value.
     """
     verified: list[Finding] = []
+    # Lexing a file is O(len(file)); doing it per finding would make the whole
+    # pass O(findings x lines).  Cache the split lines and the block-comment
+    # mask per file and reuse them for every finding in that file.
+    lexed: dict[str, tuple[list[str], list[bool]]] = {}
     for f in findings:
         content = files.get(f.file, "")
         if not content:
             verified.append(f)
             continue
-        lines = content.splitlines()
+        cached = lexed.get(f.file)
+        if cached is None:
+            file_lines = content.splitlines()
+            cached = (file_lines, _compute_block_comment_mask(file_lines))
+            lexed[f.file] = cached
+        lines, block_comment_mask = cached
         if f.line < 1 or f.line > len(lines):
             continue
         line = lines[f.line - 1]
-        block_comment_mask = _compute_block_comment_mask(lines)
         if _is_clearly_false_positive(f, line, block_comment_mask=block_comment_mask, line_idx=f.line - 1):
             continue
         verified.append(f)
     return verified
 
 
+def _block_state_after_line(line: str, in_block: bool) -> bool:
+    """Return the block-comment state at the end of `line`, given its state at the start.
+
+    Comment markers that sit inside a string literal or after a `//` line
+    comment are not markers at all, so `const s = "/*";` must not open a block
+    comment for the lines that follow it.
+    """
+    in_string = False
+    string_char: str | None = None
+    escaped = False
+    i = 0
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if in_block:
+            if ch == "*" and i + 1 < n and line[i + 1] == "/":
+                in_block = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == string_char:
+                in_string = False
+                string_char = None
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n:
+            if line[i + 1] == "/":
+                # Rest of the line is a line comment; it cannot open a block.
+                return in_block
+            if line[i + 1] == "*":
+                in_block = True
+                i += 2
+                continue
+        if ch in ('"', "'", "`"):
+            in_string = True
+            string_char = ch
+        i += 1
+    return in_block
+
+
 def _compute_block_comment_mask(lines: list[str]) -> list[bool]:
-    """Return a per-line mask indicating whether that line is inside a block comment."""
+    """Return a per-line mask indicating whether that line *starts* inside a block comment.
+
+    The mask is deliberately a start-of-line state, not a whole-line verdict:
+    a line may open or close a block comment part way through, and the
+    per-character scan in `_is_inside_string_or_comment` resolves the state at
+    the finding's own match position from this starting point.
+    """
     in_block = False
     mask: list[bool] = []
     for line in lines:
-        is_in_block = in_block
-        if in_block:
-            if "*/" in line:
-                in_block = False
-        else:
-            if "/*" in line:
-                is_in_block = True
-                after_open = line.split("/*", 1)[1]
-                if "*/" in after_open:
-                    in_block = False
-                else:
-                    in_block = True
-        mask.append(is_in_block)
+        mask.append(in_block)
+        in_block = _block_state_after_line(line, in_block)
     return mask
 
 
@@ -627,22 +678,48 @@ def _is_inside_string_or_comment(
     return in_string or in_single_comment or in_block
 
 
+def _has_span(finding: Finding) -> bool:
+    """Return True when the finding carries a usable match span.
+
+    A span is unavailable when the detector left the default `0, 0`; a real
+    match starting at column 0 has `match_end > match_start`, so this must not
+    be a truthiness test on `match_start`.
+    """
+    return finding.match_end > finding.match_start
+
+
 def _trigger_is_inside_string(finding: Finding, line: str, in_block_comment: bool = False) -> bool:
-    if in_block_comment:
-        return True
-    if finding.match_start and finding.match_end:
+    """Return True when the finding's match sits inside a string or comment.
+
+    `in_block_comment` is only the state at the *start* of the line -- the
+    per-character scan carries it forward to the match position, so real code
+    after a same-line `*/` is still classified as live code.
+    """
+    if _has_span(finding):
         return _is_inside_string_or_comment(
             line, finding.match_start, finding.match_end, in_block_comment=in_block_comment
         )
     token = _TRIGGER_TOKENS.get(finding.rule_id)
     if not token:
-        return False
+        return in_block_comment
+    # No span: fall back to the trigger token. Any live occurrence on the line
+    # is enough to keep the finding -- taking only the first occurrence would
+    # refute a real call because an earlier mention sits in a comment.
     idx = line.find(token)
-    if idx == -1:
-        return False
-    return _is_inside_string_or_comment(
-        line, idx, idx + len(token), in_block_comment=in_block_comment
-    )
+    found = False
+    while idx != -1:
+        found = True
+        if not _is_inside_string_or_comment(
+            line, idx, idx + len(token), in_block_comment=in_block_comment
+        ):
+            return False
+        idx = line.find(token, idx + 1)
+    if not found:
+        # The trigger token is not on the line at all (e.g. the line is a
+        # continuation of a multi-line block comment); the only evidence left
+        # is the block-comment state the line starts in.
+        return in_block_comment
+    return True
 
 
 def _is_clearly_false_positive(
@@ -659,8 +736,12 @@ def _is_clearly_false_positive(
         return True
 
     if finding.rule_id == "hardcoded-secret":
+        # Scope the allowlist to what this finding actually matched: a whole-line
+        # check would suppress a real key that merely shares a line with a
+        # documented example value.
+        haystack = line[finding.match_start:finding.match_end] if _has_span(finding) else line
         for example in _KNOWN_EXAMPLES:
-            if example in line:
+            if example in haystack:
                 return True
 
     return False
