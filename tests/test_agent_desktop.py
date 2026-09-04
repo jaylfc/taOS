@@ -487,3 +487,68 @@ class TestAgentDesktopStartReadiness:
             "the password must be passed as an argv element, not interpolated into bash -c"
         )
         assert password in vncpasswd[0][3:]
+
+
+@pytest.mark.asyncio
+class TestAgentDesktopRegistryDegradation:
+    """A registry outage may take access away; it must never grant any."""
+
+    async def test_registry_failure_refuses_non_admins(self, desktop_owner_clients, monkeypatch):
+        _alice, bob, handle = desktop_owner_clients
+        registry = bob._transport.app.state.agent_registry
+
+        async def boom(*_a, **_kw):
+            raise RuntimeError("AgentRegistryStore not initialised")
+
+        monkeypatch.setattr(registry, "get_by_handle", boom)
+        assert (await bob.get(f"/api/agents/{handle}/desktop/status")).status_code == 403
+
+    async def test_registry_failure_leaves_admins_where_they_already_were(
+        self, client, monkeypatch
+    ):
+        """An admin is authorised for every agent with or without the registry,
+        so the degraded path grants nothing a healthy registry would not."""
+        async def boom(*_a, **_kw):
+            raise RuntimeError("AgentRegistryStore not initialised")
+
+        registry = client._transport.app.state.agent_registry
+        monkeypatch.setattr(registry, "get_by_handle", boom)
+        resp = await client.get("/api/agents/test-agent/desktop/status")
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "not_installed"
+
+
+@pytest.mark.asyncio
+class TestAgentDesktopNameLength:
+    async def test_a_long_registry_handle_is_still_accepted(self, client, monkeypatch):
+        """Handles the registry accepts at registration must not 400 here."""
+        async def fake_exec(name, cmd, timeout=300):
+            return (0, "OK")
+
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+        handle = "a" + "b" * 61  # 62 chars, within the project-slug convention
+        resp = await client.post(f"/api/agents/{handle}/desktop/install")
+        assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+class TestAgentDesktopInstallClearsStaleError:
+    async def test_install_after_a_failed_start_reports_installed(self, client, monkeypatch):
+        async def fake_exec(name, cmd, timeout=300):
+            cmd_str = " ".join(cmd)
+            if "apt-get" in cmd_str:
+                return (0, "OK")
+            if "x11vnc -display" in cmd_str:
+                return (1, "TIMEOUT")
+            return (0, "OK")
+
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+
+        assert (await client.post("/api/agents/test-agent/desktop/install")).status_code == 200
+        assert (await client.post("/api/agents/test-agent/desktop/start")).status_code == 500
+
+        again = await client.post("/api/agents/test-agent/desktop/install")
+        assert again.status_code == 200
+        assert again.json()["state"] == "installed", (
+            "install must not answer 200 with another call's error state"
+        )

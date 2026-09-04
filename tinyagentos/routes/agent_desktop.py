@@ -19,8 +19,10 @@ _DESKTOP_STATES = ("not_installed", "installed", "starting", "running", "stoppin
 # ``incus exec`` as an argv element. Instance names are limited to letters,
 # digits, hyphens and underscores, so anything else is not a name we could ever
 # have created -- reject it at the door rather than deriving a container name
-# from it.
-_AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,50}$")
+# from it. The 63-character bound matches the slug pattern the project and
+# element routes already use, so a handle the registry accepted at
+# registration is not refused here.
+_AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$")
 
 
 def _get_desktop_store(request: Request) -> dict[str, dict[str, Any]]:
@@ -80,7 +82,14 @@ async def _authorize(request: Request, user: CurrentUser, agent_name: str) -> No
     if registry is not None:
         try:
             agent = await registry.get_by_handle(agent_name)
-        except RuntimeError:
+        except RuntimeError as exc:
+            # The store is uninitialised or its connection dropped, so no row
+            # can be read. The outcome is deliberately the same as for a name
+            # with no row: administrators are already authorised for every
+            # agent whatever the registry says, and everyone else is refused.
+            # The degraded mode is therefore a strict subset of the healthy
+            # one -- it can only take access away, never grant it.
+            logger.warning("agent registry unreadable for desktop authz: %s", exc)
             agent = None
     if agent is None:
         if not user.is_admin:
@@ -129,6 +138,13 @@ async def install_desktop(request: Request, agent_name: str, user: CurrentUser =
                 state["last_error"] = output
                 return JSONResponse({"error": f"desktop install failed: {output}"}, status_code=500)
             state["installed"] = True
+            state["state"] = "installed"
+            state.pop("last_error", None)
+        elif state["state"] == "error":
+            # The packages are already present, so this call did succeed; the
+            # error was left behind by a later start or stop. Returning 200
+            # with state 'error' would report someone else's failure, so clear
+            # it back to the installed baseline that start expects.
             state["state"] = "installed"
             state.pop("last_error", None)
 
