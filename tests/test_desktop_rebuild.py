@@ -4,6 +4,7 @@ import time
 
 import pytest
 
+from tinyagentos import desktop_rebuild
 from tinyagentos.desktop_rebuild import _is_bundle_stale, rebuild_desktop_bundle_if_stale
 
 
@@ -622,6 +623,19 @@ async def test_prebuilt_bundle_rejected_on_checksum_mismatch(tmp_path, monkeypat
 # ---------------------------------------------------------------------------
 
 
+def _no_prebuilt_bundle(monkeypatch):
+    """Keep the local-build tests off the network.
+
+    rebuild_desktop_bundle_if_stale() probes the published prebuilt bundle over
+    HTTP before building locally; a fake git that returns a SHA would otherwise
+    let these unit tests reach the release service (30 s timeout each).
+    """
+    async def _never(_project_root):
+        return False
+
+    monkeypatch.setattr(desktop_rebuild, "_try_prebuilt_desktop_bundle", _never)
+
+
 @pytest.mark.asyncio
 async def test_local_build_from_dirty_tree_clears_provenance_marker(tmp_path, monkeypatch):
     """A build from a dirty desktop/ tree must not leave a HEAD-shaped marker.
@@ -666,6 +680,7 @@ async def test_local_build_from_dirty_tree_clears_provenance_marker(tmp_path, mo
         return Proc(0)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    _no_prebuilt_bundle(monkeypatch)
 
     result = await rebuild_desktop_bundle_if_stale(tmp_path)
     assert result.rebuilt is True
@@ -707,6 +722,7 @@ async def test_successful_build_survives_unwritable_provenance_marker(tmp_path, 
         return Proc(0)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    _no_prebuilt_bundle(monkeypatch)
 
     result = await rebuild_desktop_bundle_if_stale(tmp_path)
     assert result.rebuilt is True
@@ -717,21 +733,22 @@ async def test_successful_build_survives_unwritable_provenance_marker(tmp_path, 
 # scripts/rebuild-desktop.sh -- the systemd path must match the Python gate
 # ---------------------------------------------------------------------------
 
+import shlex
 import subprocess
 from pathlib import Path
 
 REBUILD_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "rebuild-desktop.sh"
 
 
-def _git_shim(bin_dir, *, status_rc, tree_sha="TREE_SHA"):
-    """Install a fake `git` on PATH with per-subcommand exit codes."""
+def _git_shim(bin_dir, *, status_rc, status_out="", tree_sha="TREE_SHA"):
+    """Install a fake `git` on PATH with per-subcommand exit code and output."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "git"
     shim.write_text(
         "#!/bin/bash\n"
         "for a in \"$@\"; do\n"
         "  case \"$a\" in\n"
-        f"    status) exit {status_rc} ;;\n"
+        f"    status) printf '%s' {shlex.quote(status_out)}; exit {status_rc} ;;\n"
         f"    rev-parse) echo {tree_sha}; exit 0 ;;\n"
         "  esac\n"
         "done\n"
@@ -820,3 +837,32 @@ def test_script_reports_provenance_marker_write_failure(tmp_path):
     proc = _run_rebuild_script(tmp_path, bin_dir)
     assert proc.returncode == 0, proc.stderr
     assert "could not write bundle provenance marker" in proc.stderr, proc.stderr
+
+
+def test_script_clears_provenance_marker_after_a_dirty_build(tmp_path):
+    """A build from a dirty desktop/ tree must not leave a HEAD-shaped marker.
+
+    `git rev-parse HEAD:desktop` reports the committed tree, never the local
+    edits the build consumed, so recording it here would let a later revert
+    present a clean tree plus a matching marker in front of a bundle built from
+    the edited source.  Mirrors the Python path's behaviour.
+    """
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// local edit")
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"x"}')
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    marker = static_dir / ".taos-bundle-provenance"
+    marker.write_text("TREE_SHA\n")
+    # No index.html -> unconditional rebuild.
+    bin_dir = tmp_path / "bin"
+    _git_shim(bin_dir, status_rc=0, status_out=" M desktop/src/App.tsx\n")
+    npm = bin_dir / "npm"
+    npm.write_text("#!/bin/bash\nexit 0\n")
+    npm.chmod(0o755)
+
+    proc = _run_rebuild_script(tmp_path, bin_dir)
+    assert proc.returncode == 0, proc.stderr
+    assert not marker.exists(), proc.stdout
+    assert "provenance marker cleared" in proc.stdout, proc.stdout

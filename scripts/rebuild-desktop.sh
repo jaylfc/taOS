@@ -72,8 +72,18 @@ fi
 
 if (cd desktop && npm install && npm run build); then
     echo "[taos-rebuild-desktop] desktop rebuild succeeded"
+    # The marker names HEAD:desktop, so it only describes what we just built
+    # when the tree that was built is clean.  After a build from a dirty tree we
+    # invalidate any existing marker instead of recording a SHA the bundle does
+    # not correspond to -- otherwise reverting the edits would present a clean
+    # tree plus a matching marker in front of a bundle built from edited source.
+    # Mirrors rebuild_desktop_bundle_if_stale() in tinyagentos/desktop_rebuild.py.
     _current_tree="$(git rev-parse HEAD:desktop 2>/dev/null || echo "")"
-    if [ -n "$_current_tree" ]; then
+    if ! _post_build_status="$(git status --porcelain --untracked-files=normal -- desktop 2>/dev/null)" \
+        || [ -n "$_post_build_status" ]; then
+        rm -f static/desktop/.taos-bundle-provenance || true
+        echo "[taos-rebuild-desktop] desktop tree is dirty (or git unavailable) -- provenance marker cleared"
+    elif [ -n "$_current_tree" ]; then
         mkdir -p static/desktop || { echo "[taos-rebuild-desktop] could not create static/desktop -- bundle provenance marker NOT written; next update may fall through to the mtime path" >&2; exit 0; }
         # Per-invocation scratch file: two rebuilds racing (systemd Restart=, or a
         # manual `systemctl start` over an in-flight run) must not read or delete
