@@ -32,11 +32,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from contextlib import asynccontextmanager
 
 from tinyagentos.base_store import BaseStore
 
 logger = logging.getLogger(__name__)
+
+# One asyncio lock per connection.  A sqlite connection can only be inside one
+# transaction at a time, so two coroutines writing through the same store (two
+# concurrent requests, say) must queue rather than have the second one hit
+# "cannot start a transaction within a transaction".  Keyed weakly so a closed
+# store's lock goes away with it.
+_CONNECTION_LOCKS: "weakref.WeakKeyDictionary[object, asyncio.Lock]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _lock_for(db) -> asyncio.Lock:
+    lock = _CONNECTION_LOCKS.get(db)
+    if lock is None:
+        lock = asyncio.Lock()
+        _CONNECTION_LOCKS[db] = lock
+    return lock
 
 
 @asynccontextmanager
@@ -47,23 +65,35 @@ async def tx(db, store: str = "projects.db"):
     takes the write lock up front: a DEFERRED transaction that upgrades from a
     read to a write can fail with ``SQLITE_BUSY_SNAPSHOT``, which
     ``PRAGMA busy_timeout`` does not retry.
+
+    Only writes belong in here.  The block runs under the connection's write
+    lock, so an unrelated await inside it would stall every other writer on
+    that store.
     """
     if db is None:
         raise RuntimeError(f"{store}: store is not initialised (call init() first)")
-    await db.execute("BEGIN IMMEDIATE")
+    lock = _lock_for(db)
+    await lock.acquire()
+    # True once the rollback task owns the release (see _rollback).
+    handed_off = False
     try:
-        yield db
-        await db.commit()
-    except BaseException as exc:
-        logger.error(
-            "projects.db transaction rolled back in %s: %s: %s",
-            store, type(exc).__name__, exc,
-        )
-        await _rollback(db, store)
-        raise
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            yield db
+            await db.commit()
+        except BaseException as exc:
+            logger.error(
+                "projects.db transaction rolled back in %s: %s: %s",
+                store, type(exc).__name__, exc,
+            )
+            handed_off = await _rollback(db, store, lock)
+            raise
+    finally:
+        if not handed_off:
+            lock.release()
 
 
-async def _rollback(db, store: str) -> None:
+async def _rollback(db, store: str, lock: asyncio.Lock) -> bool:
     """Roll *db* back, surviving the cancellation that may have caused this.
 
     When the failure IS a cancellation, a bare ``await db.rollback()`` can be
@@ -71,25 +101,29 @@ async def _rollback(db, store: str) -> None:
     write lock would then outlive the very error path that exists to release
     it.  Shielding lets the rollback finish even if this coroutine is torn down
     first.
+
+    Returns True when the shielded rollback outlived this coroutine and now
+    owns releasing *lock*: the next writer must not BEGIN until the rollback
+    has actually landed on the connection.
     """
     task = asyncio.ensure_future(db.rollback())
-    task.add_done_callback(_log_rollback_failure)
     try:
         await asyncio.shield(task)
     except asyncio.CancelledError:
-        # The shielded rollback keeps running to completion; the original
-        # exception is re-raised by the caller.
-        pass
+        task.add_done_callback(lambda t: _finish_rollback(t, store, lock))
+        return True
     except Exception:
         logger.error("projects.db rollback failed in %s", store, exc_info=True)
+    return False
 
 
-def _log_rollback_failure(task: "asyncio.Future") -> None:
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.error("projects.db rollback failed: %r", exc)
+def _finish_rollback(task: "asyncio.Future", store: str, lock: asyncio.Lock) -> None:
+    if not task.cancelled() and task.exception() is not None:
+        logger.error(
+            "projects.db rollback failed in %s: %r", store, task.exception()
+        )
+    if lock.locked():
+        lock.release()
 
 
 class ProjectsDBStore(BaseStore):

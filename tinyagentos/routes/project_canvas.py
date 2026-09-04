@@ -372,24 +372,18 @@ async def set_canvas_permission(
             },
             status_code=403,
         )
-    sets: list[str] = []
-    params: list = []
-    if payload.can_read_canvas is not None:
-        sets.append("can_read_canvas = ?")
-        params.append(1 if payload.can_read_canvas else 0)
-    if payload.can_edit_canvas is not None:
-        sets.append("can_edit_canvas = ?")
-        params.append(1 if payload.can_edit_canvas else 0)
-    if not sets:
+    if payload.can_read_canvas is None and payload.can_edit_canvas is None:
         return JSONResponse({"error": "no permission field provided"}, status_code=400)
-    params.extend([project_id, agent_id])
-    cur = await ps._db.execute(
-        f"UPDATE project_members SET {', '.join(sets)} "
-        "WHERE project_id = ? AND member_id = ?",
-        params,
+    # Through the store, not ps._db: every write to projects.db has to go
+    # through the store's explicit transaction or a failure here would leave
+    # the shared connection holding the write lock.
+    updated = await ps.update_member_canvas_flags(
+        project_id,
+        agent_id,
+        can_read=payload.can_read_canvas,
+        can_edit=payload.can_edit_canvas,
     )
-    await ps._db.commit()
-    if cur.rowcount == 0:
+    if not updated:
         return JSONResponse({"error": "member not found"}, status_code=404)
     member = await ps.get_member(project_id, agent_id)
     broker = request.app.state.project_event_broker

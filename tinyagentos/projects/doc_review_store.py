@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import time
 
-from tinyagentos.base_store import BaseStore
 from tinyagentos.projects.ids import new_id
+from tinyagentos.projects.tx import ProjectsDBStore
 
 DOC_REVIEW_SCHEMA = """
 CREATE TABLE IF NOT EXISTS doc_reviews (
@@ -31,7 +31,7 @@ VALID_TRANSITIONS: dict[str, list[str]] = {
 }
 
 
-class DocReviewStore(BaseStore):
+class DocReviewStore(ProjectsDBStore):
     SCHEMA = DOC_REVIEW_SCHEMA
 
     def _row_to_review(self, row, description) -> dict:
@@ -78,21 +78,21 @@ class DocReviewStore(BaseStore):
             elif new_state == "changes_requested":
                 changes_requested_by = actor_id
                 changes_requested_at = now
-            await self._db.execute(
-                """INSERT INTO doc_reviews
-                   (id, project_id, doc_path, review_state,
-                    reviewed_by, reviewed_at,
-                    changes_requested_by, changes_requested_at,
-                    created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    review_id, project_id, doc_path, new_state,
-                    reviewed_by, reviewed_at,
-                    changes_requested_by, changes_requested_at,
-                    now, now,
-                ),
-            )
-            await self._db.commit()
+            async with self._tx():
+                await self._db.execute(
+                    """INSERT INTO doc_reviews
+                       (id, project_id, doc_path, review_state,
+                        reviewed_by, reviewed_at,
+                        changes_requested_by, changes_requested_at,
+                        created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        review_id, project_id, doc_path, new_state,
+                        reviewed_by, reviewed_at,
+                        changes_requested_by, changes_requested_at,
+                        now, now,
+                    ),
+                )
             return await self.get_review(project_id, doc_path)
 
         current_state = existing["review_state"]
@@ -115,11 +115,11 @@ class DocReviewStore(BaseStore):
             params.extend([actor_id, now])
 
         params.extend([project_id, doc_path])
-        await self._db.execute(
-            f"UPDATE doc_reviews SET {', '.join(sets)} WHERE project_id = ? AND doc_path = ?",
-            params,
-        )
-        await self._db.commit()
+        async with self._tx():
+            await self._db.execute(
+                f"UPDATE doc_reviews SET {', '.join(sets)} WHERE project_id = ? AND doc_path = ?",
+                params,
+            )
         return await self.get_review(project_id, doc_path)
 
     async def list_reviews(
@@ -140,10 +140,10 @@ class DocReviewStore(BaseStore):
         return [self._row_to_review(r, cur.description) for r in rows]
 
     async def delete_review(self, project_id: str, doc_path: str) -> bool:
-        async with self._db.execute(
-            "DELETE FROM doc_reviews WHERE project_id = ? AND doc_path = ?",
-            (project_id, doc_path),
-        ) as cur:
-            deleted = cur.rowcount > 0
-        await self._db.commit()
+        async with self._tx():
+            async with self._db.execute(
+                "DELETE FROM doc_reviews WHERE project_id = ? AND doc_path = ?",
+                (project_id, doc_path),
+            ) as cur:
+                deleted = cur.rowcount > 0
         return deleted

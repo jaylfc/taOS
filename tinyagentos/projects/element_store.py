@@ -16,8 +16,8 @@ import re
 import sqlite3
 import time
 
-from tinyagentos.base_store import BaseStore
 from tinyagentos.projects.ids import new_id
+from tinyagentos.projects.tx import ProjectsDBStore
 
 # Element slugs follow the project slug rules.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
@@ -64,7 +64,7 @@ def _row_to_element(row, description) -> dict:
     return e
 
 
-class ProjectElementStore(BaseStore):
+class ProjectElementStore(ProjectsDBStore):
     SCHEMA = ELEMENT_SCHEMA
 
     async def get_element(self, element_id: str) -> "dict | None":
@@ -102,23 +102,22 @@ class ProjectElementStore(BaseStore):
         eid = new_id("elm")
         now = time.time()
         try:
-            await self._db.execute(
-                """INSERT INTO project_elements
-                   (id, project_id, name, slug, type, description, assignee_id,
-                    settings, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    eid, project_id, name, slug, type, description, assignee_id,
-                    json.dumps(settings or {}), now, now,
-                ),
-            )
-            await self._db.commit()
+            async with self._tx():
+                await self._db.execute(
+                    """INSERT INTO project_elements
+                       (id, project_id, name, slug, type, description, assignee_id,
+                        settings, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        eid, project_id, name, slug, type, description, assignee_id,
+                        json.dumps(settings or {}), now, now,
+                    ),
+                )
         except sqlite3.IntegrityError as exc:
-            # UNIQUE(project_id, slug) is the only uniqueness a caller can trigger.
+            # UNIQUE(project_id, slug) is the only uniqueness a caller can
+            # trigger; tx() has already rolled the failed INSERT back.
             if "slug" in str(exc).lower() or "unique" in str(exc).lower():
-                await self._db.rollback()
                 raise ValueError(f"element slug already used in project: {slug}") from exc
-            await self._db.rollback()
             raise
         return await self.get_element(eid)
 
@@ -149,19 +148,19 @@ class ProjectElementStore(BaseStore):
         sets.append("updated_at = ?")
         params.append(time.time())
         params.append(element_id)
-        await self._db.execute(
-            f"UPDATE project_elements SET {', '.join(sets)} WHERE id = ?", params
-        )
-        await self._db.commit()
+        async with self._tx():
+            await self._db.execute(
+                f"UPDATE project_elements SET {', '.join(sets)} WHERE id = ?", params
+            )
         return await self.get_element(element_id)
 
     async def archive_element(self, element_id: str) -> bool:
         now = time.time()
-        cur = await self._db.execute(
-            "UPDATE project_elements SET archived_at = ?, updated_at = ? WHERE id = ?",
-            (now, now, element_id),
-        )
-        await self._db.commit()
+        async with self._tx():
+            cur = await self._db.execute(
+                "UPDATE project_elements SET archived_at = ?, updated_at = ? WHERE id = ?",
+                (now, now, element_id),
+            )
         return cur.rowcount == 1
 
     async def count_element_items(self, project_id: str, element_id: str) -> dict:
@@ -220,25 +219,28 @@ class ProjectElementStore(BaseStore):
         return out
 
     async def delete_element(self, element_id: str, untag: bool = False) -> None:
-        if untag:
-            await self._db.execute(
-                "UPDATE project_tasks SET element_id = NULL WHERE element_id = ?",
-                (element_id,),
-            )
-            # Canvas untag (slice 4). Tolerates a not-yet-initialized canvas
-            # table the same way count_element_items does, so deleting an
-            # element never fails just because the canvas store has not run.
-            try:
+        # One transaction: the untag and the delete land together or not at
+        # all, so a failure can never leave tasks untagged from an element that
+        # still exists.
+        async with self._tx():
+            if untag:
                 await self._db.execute(
-                    "UPDATE project_canvas_elements SET element_id = NULL WHERE element_id = ?",
+                    "UPDATE project_tasks SET element_id = NULL WHERE element_id = ?",
                     (element_id,),
                 )
-            except sqlite3.OperationalError:
-                pass
-        await self._db.execute(
-            "DELETE FROM project_elements WHERE id = ?", (element_id,)
-        )
-        await self._db.commit()
+                # Canvas untag (slice 4). Tolerates a not-yet-initialized canvas
+                # table the same way count_element_items does, so deleting an
+                # element never fails just because the canvas store has not run.
+                try:
+                    await self._db.execute(
+                        "UPDATE project_canvas_elements SET element_id = NULL WHERE element_id = ?",
+                        (element_id,),
+                    )
+                except sqlite3.OperationalError:
+                    pass
+            await self._db.execute(
+                "DELETE FROM project_elements WHERE id = ?", (element_id,)
+            )
 
     async def _count(self, sql: str, params: tuple) -> int:
         async with self._db.execute(sql, params) as cur:

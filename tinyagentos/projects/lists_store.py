@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import time
 
-from tinyagentos.base_store import BaseStore
 from tinyagentos.projects.ids import new_id
+from tinyagentos.projects.tx import ProjectsDBStore
 
 LISTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS project_lists (
@@ -21,7 +21,11 @@ CREATE INDEX IF NOT EXISTS idx_lists_status ON project_lists(project_id, status)
 """
 
 
-class ProjectListsStore(BaseStore):
+class _RowMissing(Exception):
+    """Internal: a reorder referenced an entry outside the target list."""
+
+
+class ProjectListsStore(ProjectsDBStore):
     SCHEMA = LISTS_SCHEMA
 
     async def create_list(
@@ -34,13 +38,13 @@ class ProjectListsStore(BaseStore):
     ) -> dict:
         list_id = new_id("lst")
         now = time.time()
-        await self._db.execute(
-            "INSERT INTO project_lists "
-            "(id, project_id, title, description, status, created_by, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (list_id, project_id, title, description, status, created_by, now, now),
-        )
-        await self._db.commit()
+        async with self._tx():
+            await self._db.execute(
+                "INSERT INTO project_lists "
+                "(id, project_id, title, description, status, created_by, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (list_id, project_id, title, description, status, created_by, now, now),
+            )
         return await self.get_list(list_id)
 
     async def get_list(self, list_id: str) -> dict | None:
@@ -85,21 +89,21 @@ class ProjectListsStore(BaseStore):
         sets.append("updated_at = ?")
         params.append(time.time())
         params.append(list_id)
-        await self._db.execute(
-            f"UPDATE project_lists SET {', '.join(sets)} WHERE id = ?", params
-        )
-        await self._db.commit()
+        async with self._tx():
+            await self._db.execute(
+                f"UPDATE project_lists SET {', '.join(sets)} WHERE id = ?", params
+            )
         return await self.get_list(list_id)
 
     async def delete_list(self, list_id: str) -> bool:
-        cursor = await self._db.execute(
-            "DELETE FROM project_lists WHERE id = ?", (list_id,)
-        )
-        await self._db.commit()
+        async with self._tx():
+            cursor = await self._db.execute(
+                "DELETE FROM project_lists WHERE id = ?", (list_id,)
+            )
         return cursor.rowcount > 0
 
 
-class ProjectListEntriesStore(BaseStore):
+class ProjectListEntriesStore(ProjectsDBStore):
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS project_list_entries (
         id TEXT PRIMARY KEY,
@@ -138,33 +142,33 @@ class ProjectListEntriesStore(BaseStore):
         entry_id = new_id("ent")
         now = time.time()
 
-        if position is not None:
-            await self._db.execute(
-                "INSERT INTO project_list_entries "
-                "(id, list_id, project_id, text, original_text, category, status, "
-                "done, author_kind, author_id, position, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    entry_id, list_id, project_id, text, original_text,
-                    category, "new", 0, author_kind, author_id,
-                    position, now, now,
-                ),
-            )
-        else:
-            await self._db.execute(
-                "INSERT INTO project_list_entries "
-                "(id, list_id, project_id, text, original_text, category, status, "
-                "done, author_kind, author_id, position, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-                "COALESCE((SELECT MAX(position) + 1 FROM project_list_entries "
-                "WHERE list_id = ? AND project_id = ?), 0), ?, ?)",
-                (
-                    entry_id, list_id, project_id, text, original_text,
-                    category, "new", 0, author_kind, author_id,
-                    list_id, project_id, now, now,
-                ),
-            )
-        await self._db.commit()
+        async with self._tx():
+            if position is not None:
+                await self._db.execute(
+                    "INSERT INTO project_list_entries "
+                    "(id, list_id, project_id, text, original_text, category, status, "
+                    "done, author_kind, author_id, position, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        entry_id, list_id, project_id, text, original_text,
+                        category, "new", 0, author_kind, author_id,
+                        position, now, now,
+                    ),
+                )
+            else:
+                await self._db.execute(
+                    "INSERT INTO project_list_entries "
+                    "(id, list_id, project_id, text, original_text, category, status, "
+                    "done, author_kind, author_id, position, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    "COALESCE((SELECT MAX(position) + 1 FROM project_list_entries "
+                    "WHERE list_id = ? AND project_id = ?), 0), ?, ?)",
+                    (
+                        entry_id, list_id, project_id, text, original_text,
+                        category, "new", 0, author_kind, author_id,
+                        list_id, project_id, now, now,
+                    ),
+                )
         return await self.get_entry(entry_id)
 
     async def get_entry(self, entry_id: str) -> dict | None:
@@ -245,40 +249,36 @@ class ProjectListEntriesStore(BaseStore):
         sets.append("updated_at = ?")
         params.append(time.time())
         params.append(entry_id)
-        await self._db.execute(
-            f"UPDATE project_list_entries SET {', '.join(sets)} WHERE id = ?",
-            params,
-        )
-        await self._db.commit()
+        async with self._tx():
+            await self._db.execute(
+                f"UPDATE project_list_entries SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
         return await self.get_entry(entry_id)
 
     async def delete_entry(self, entry_id: str) -> bool:
-        cursor = await self._db.execute(
-            "DELETE FROM project_list_entries WHERE id = ?", (entry_id,)
-        )
-        await self._db.commit()
+        async with self._tx():
+            cursor = await self._db.execute(
+                "DELETE FROM project_list_entries WHERE id = ?", (entry_id,)
+            )
         return cursor.rowcount == 1
 
     async def reorder_entries(self, project_id: str, list_id: str, entries: list[dict]) -> bool:
+        # An entry that does not belong to this list aborts the whole reorder:
+        # _RowMissing leaves the transaction via tx(), which rolls the earlier
+        # UPDATEs back, and is swallowed here into the documented False return.
         try:
-            for entry in entries:
-                cursor = await self._db.execute(
-                    "UPDATE project_list_entries SET position = ?, updated_at = ? "
-                    "WHERE id = ? AND project_id = ? AND list_id = ?",
-                    (entry["position"], time.time(), entry["id"], project_id, list_id),
-                )
-                if cursor.rowcount == 0:
-                    await self._db.rollback()
-                    return False
-            await self._db.commit()
-        except BaseException:
-            # Without this, the UPDATEs already issued stay pending on the
-            # shared connection and the next unrelated commit() flushes a
-            # half-applied reorder. BaseException, not Exception: task
-            # cancellation (CancelledError) must also roll back, and commit()
-            # itself is inside the guard for the same reason.
-            await self._db.rollback()
-            raise
+            async with self._tx():
+                for entry in entries:
+                    cursor = await self._db.execute(
+                        "UPDATE project_list_entries SET position = ?, updated_at = ? "
+                        "WHERE id = ? AND project_id = ? AND list_id = ?",
+                        (entry["position"], time.time(), entry["id"], project_id, list_id),
+                    )
+                    if cursor.rowcount == 0:
+                        raise _RowMissing
+        except _RowMissing:
+            return False
         return True
 
     async def _get_next_position(self, project_id: str, list_id: str) -> int:

@@ -4,8 +4,8 @@ import json
 import time
 from typing import TYPE_CHECKING
 
-from tinyagentos.base_store import BaseStore
 from tinyagentos.projects.ids import new_id
+from tinyagentos.projects.tx import ProjectsDBStore
 
 if TYPE_CHECKING:
     from tinyagentos.projects.events import ProjectEventBroker
@@ -72,7 +72,7 @@ def _row_to_element(row, description) -> dict:
     return e
 
 
-class ProjectCanvasStore(BaseStore):
+class ProjectCanvasStore(ProjectsDBStore):
     SCHEMA = CANVAS_SCHEMA
 
     def __init__(self, db_path, *, broker: "ProjectEventBroker | None" = None) -> None:
@@ -85,17 +85,18 @@ class ProjectCanvasStore(BaseStore):
         # before the element tag existed on canvas items get the column added
         # here; fresh installs already have it from SCHEMA. Swallow the
         # duplicate-column error the same way the task/element stores do.
+        # DDL runs outside tx(): the connection is in autocommit mode, so each
+        # statement commits on its own and the expected duplicate-column error
+        # has no transaction left to leak.
         try:
             await self._db.execute(
                 "ALTER TABLE project_canvas_elements ADD COLUMN element_id TEXT"
             )
-            await self._db.commit()
         except Exception:
             pass
         # Created here (not in SCHEMA) so the column exists first on the
         # migration path. Idempotent (IF NOT EXISTS).
         await self._db.execute(_CANVAS_ELEMENT_INDEX)
-        await self._db.commit()
 
     async def _publish(self, project_id: str, kind: str, payload: dict) -> None:
         if self._broker is not None:
@@ -145,8 +146,9 @@ class ProjectCanvasStore(BaseStore):
         # Upsert: the client may re-send an element it already created (e.g. a
         # shape hydrated then nudged), which a plain INSERT rejected with a
         # UNIQUE constraint 500. On conflict, update in place (keep created_at).
-        await self._db.execute(
-            """INSERT INTO project_canvas_elements
+        async with self._tx():
+            await self._db.execute(
+                """INSERT INTO project_canvas_elements
                (id, project_id, kind, author_kind, author_id,
                 x, y, w, h, rotation, z_index, payload, element_id, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -157,18 +159,17 @@ class ProjectCanvasStore(BaseStore):
                  z_index=excluded.z_index, payload=excluded.payload,
                  element_id=excluded.element_id,
                  updated_at=excluded.updated_at""",
-            (
-                eid, project_id, kind, author_kind, author_id,
-                float(element["x"]), float(element["y"]),
-                float(element["w"]), float(element["h"]),
-                float(element.get("rotation", 0)),
-                int(element.get("z_index", 0)),
-                json.dumps(element.get("payload") or {}),
-                element_id,
-                now, now,
-            ),
-        )
-        await self._db.commit()
+                (
+                    eid, project_id, kind, author_kind, author_id,
+                    float(element["x"]), float(element["y"]),
+                    float(element["w"]), float(element["h"]),
+                    float(element.get("rotation", 0)),
+                    int(element.get("z_index", 0)),
+                    json.dumps(element.get("payload") or {}),
+                    element_id,
+                    now, now,
+                ),
+            )
         new_el = await self.get_element(eid)
         await self._publish(
             project_id, "canvas.element_added",
@@ -273,12 +274,12 @@ class ProjectCanvasStore(BaseStore):
         sets.append("updated_at = ?"); params.append(time.time())
         params.append(element_id)
         params.append(project_id)
-        await self._db.execute(
-            f"UPDATE project_canvas_elements SET {', '.join(sets)} "
-            f"WHERE id = ? AND project_id = ? AND deleted_at IS NULL",
-            params,
-        )
-        await self._db.commit()
+        async with self._tx():
+            await self._db.execute(
+                f"UPDATE project_canvas_elements SET {', '.join(sets)} "
+                f"WHERE id = ? AND project_id = ? AND deleted_at IS NULL",
+                params,
+            )
         updated = await self.get_element(element_id, project_id=project_id)
         if updated is None:
             raise ValueError(f"element not found: {element_id}")
@@ -298,13 +299,13 @@ class ProjectCanvasStore(BaseStore):
     ) -> None:
         await self._check_edit_permission(project_id, author_kind, author_id)
         now = time.time()
-        cur = await self._db.execute(
-            """UPDATE project_canvas_elements
-               SET deleted_at = ?, updated_at = ?
-               WHERE id = ? AND project_id = ? AND deleted_at IS NULL""",
-            (now, now, element_id, project_id),
-        )
-        await self._db.commit()
+        async with self._tx():
+            cur = await self._db.execute(
+                """UPDATE project_canvas_elements
+                   SET deleted_at = ?, updated_at = ?
+                   WHERE id = ? AND project_id = ? AND deleted_at IS NULL""",
+                (now, now, element_id, project_id),
+            )
         if cur.rowcount == 1:
             await self._publish(
                 project_id, "canvas.element_deleted",

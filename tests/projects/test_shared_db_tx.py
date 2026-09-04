@@ -134,3 +134,22 @@ async def test_publish_failure_leaves_the_committed_write_in_place(
     await _sibling_write_succeeds(store_b)
     assert store_a._db.in_transaction is False
     assert (await store_a.get_task(task["id"]))["title"] == "edited"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_writes_on_one_store_all_land(tmp_path):
+    """A burst of concurrent writes on one connection must all commit.
+
+    The production incident opened with seven task creates inside one second.
+    A connection can only be inside one transaction at a time, so the writes
+    have to queue on it -- otherwise the second BEGIN fails with "cannot start
+    a transaction within a transaction".
+    """
+    store = await _task_store(tmp_path)
+
+    created = await asyncio.gather(
+        *(store.create_task("prj-1", f"burst {i}", "jay") for i in range(7))
+    )
+
+    assert len({task["id"] for task in created}) == 7
+    assert len(await store.list_tasks("prj-1")) == 7
