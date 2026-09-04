@@ -153,3 +153,47 @@ async def test_concurrent_writes_on_one_store_all_land(tmp_path):
 
     assert len({task["id"] for task in created}) == 7
     assert len(await store.list_tasks("prj-1")) == 7
+
+
+@pytest.mark.asyncio
+async def test_cancellation_while_begin_is_queued_does_not_wedge_sibling_store(
+    tmp_path,
+):
+    """A write cancelled while its BEGIN is still queued must roll back too.
+
+    ``BEGIN IMMEDIATE`` is the statement that waits: while another connection
+    holds the write lock it blocks for the whole ``busy_timeout``.  aiosqlite has
+    already handed it to the connection's worker thread by then, and that thread
+    runs it whether or not the awaiting task is still around -- so a request
+    cancelled at THIS boundary opened the transaction after the coroutine that
+    would have rolled it back was gone.  Same wedge as a cancellation between
+    the DML and the commit, one statement earlier.
+    """
+    holder = await _task_store(tmp_path)
+    victim = await _task_store(tmp_path)
+    onlooker = await _task_store(tmp_path)
+
+    # Take the write lock so the victim's BEGIN has to wait for it.
+    await holder._db.execute("BEGIN IMMEDIATE")
+
+    pending = asyncio.ensure_future(
+        victim.create_task("prj-1", "cancelled mid-BEGIN", "jay")
+    )
+    # Long enough that the victim is parked inside BEGIN IMMEDIATE.
+    await asyncio.sleep(0.1)
+    pending.cancel()
+
+    # Release the lock so the victim's queued BEGIN lands on its worker thread,
+    # which is exactly the race: the statement outlives its awaiting task.
+    await holder._db.rollback()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(pending, _SIBLING_WRITE_TIMEOUT)
+
+    # aiosqlite runs one statement at a time on the connection's worker thread,
+    # so awaiting anything on that connection drains whatever the cancellation
+    # left queued -- the BEGIN, and the rollback that has to follow it.  Without
+    # this the assertions below race the worker thread and pass by luck.
+    await victim._db.execute("SELECT 1")
+
+    await _sibling_write_succeeds(onlooker)
+    assert victim._db.in_transaction is False

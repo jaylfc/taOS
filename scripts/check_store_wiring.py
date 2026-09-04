@@ -11,9 +11,12 @@ Algorithm:
      (directly or transitively).
   3. For each modified file, find classes whose ``class Foo(BaseStore)``
      definition line appears in the added diff lines.
-  4. For each newly-added store class, check that its class name appears
-     somewhere in tinyagentos/app.py (name-level check).
-  5. A "Store-Unwired-Intentionally: <ClassName>, <why>" trailer in the PR
+  4. Skip classes that some other class under tinyagentos/ subclasses: a base
+     class exists to be inherited from, never to be assigned to app.state, and
+     its concrete subclasses are checked in their own right.
+  5. For each remaining newly-added store class, check that its class name
+     appears somewhere in tinyagentos/app.py (name-level check).
+  6. A "Store-Unwired-Intentionally: <ClassName>, <why>" trailer in the PR
      body waives a named class and logs it.
 
 Usage:
@@ -184,6 +187,23 @@ def build_class_hierarchy(repo_root: Path) -> dict[str, set[str]]:
     return classes
 
 
+def find_intermediate_bases(classes: dict[str, set[str]]) -> set[str]:
+    """Class names that some other class under ``tinyagentos/`` subclasses.
+
+    A class written to be inherited from is never assigned to ``app.state``:
+    ``ProjectsDBStore`` in tinyagentos/projects/tx.py carries the shared
+    projects.db transaction helper and every concrete store on that file
+    inherits it.  Flagging such a base would push people to fabricate an
+    app.state entry for a class no route can use, which is worse than the
+    thing the gate exists to catch.  The concrete subclasses keep being
+    checked -- reaching a store still means reaching it through app.state.
+    """
+    bases: set[str] = set()
+    for own_bases in classes.values():
+        bases.update(own_bases)
+    return bases
+
+
 def _inherits_base_store(
     class_name: str,
     classes: dict[str, set[str]],
@@ -254,6 +274,7 @@ def check_store_wiring(
         app_py_content = app_py_path.read_text(encoding="utf-8", errors="ignore")
 
     all_classes = build_class_hierarchy(repo_root)
+    intermediate_bases = find_intermediate_bases(all_classes)
 
     violations: list[Violation] = []
     waived: set[str] = set()
@@ -289,6 +310,16 @@ def check_store_wiring(
                 continue
 
             if class_name in waived:
+                continue
+
+            if class_name in intermediate_bases:
+                # A base for other stores: nothing to assign to app.state, and
+                # its subclasses are checked in their own right.  Printed, not
+                # silent, so an exemption stays visible in the gate's log.
+                print(
+                    f"store-wiring-guard: {class_name} in {file_path} is a base "
+                    f"class for other stores; its subclasses are checked instead"
+                )
                 continue
 
             wired, how = _is_wired_in_app_py(app_py_content, class_name)

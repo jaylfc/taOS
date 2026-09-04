@@ -77,17 +77,26 @@ async def tx(db, store: str = "projects.db"):
     # True once the rollback task owns the release (see _rollback).
     handed_off = False
     try:
+        # The BEGIN is inside the rollback scope, not before it.  It is the
+        # statement that WAITS -- while another connection holds the write lock
+        # it blocks for the whole busy_timeout -- and aiosqlite has already
+        # handed it to the connection's worker thread, which runs it whether or
+        # not the awaiting task is still there.  A cancellation here therefore
+        # opens a transaction nobody is left to close, which is the same wedge
+        # this helper exists to prevent, one statement earlier.  The rollback
+        # queues behind the BEGIN on that same worker thread, so it lands after
+        # it either way; on a BEGIN that genuinely failed there is no
+        # transaction and rollback() is a no-op.
         await db.execute("BEGIN IMMEDIATE")
-        try:
-            yield db
-            await db.commit()
-        except BaseException as exc:
-            logger.error(
-                "projects.db transaction rolled back in %s: %s: %s",
-                store, type(exc).__name__, exc,
-            )
-            handed_off = await _rollback(db, store, lock)
-            raise
+        yield db
+        await db.commit()
+    except BaseException as exc:
+        logger.error(
+            "projects.db transaction rolled back in %s: %s: %s",
+            store, type(exc).__name__, exc,
+        )
+        handed_off = await _rollback(db, store, lock)
+        raise
     finally:
         if not handed_off:
             lock.release()

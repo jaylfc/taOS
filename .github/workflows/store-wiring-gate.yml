@@ -6,7 +6,10 @@ name: Store wiring gate
 #
 # Start with a NAME-LEVEL check (class name appears in the lifespan file).
 # Only newly added classes are policed; pre-existing orphans are skipped so
-# the check is mergeable on any branch.
+# the check is mergeable on any branch. A class that some other class under
+# tinyagentos/ subclasses is skipped too: a base class exists to be inherited
+# from, never to be assigned to app.state, and its concrete subclasses are
+# each checked in their own right.
 #
 # A "Store-Unwired-Intentionally: <ClassName>, <why>" trailer in the PR body
 # waives a named class and logs it, for stores genuinely constructed elsewhere

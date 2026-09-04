@@ -357,6 +357,13 @@ class TestCheckStoreWiring:
         assert waived == {"UnwiredStore"}
 
     def test_transitive_subclass_flagged(self, tmp_path: Path):
+        """The concrete leaf is still policed when its base is new too.
+
+        ``ParentStore`` exists only to be inherited from, so it is exempt (see
+        ``test_intermediate_base_class_not_flagged``); ``ChildStore`` is the
+        class a route would have to reach through ``app.state``, and the gate
+        still goes red for it.
+        """
         repo = tmp_path / "repo"
         base_tip = _setup_base_repo(repo)
 
@@ -380,9 +387,9 @@ class TestCheckStoreWiring:
 
         violations, waived = csw.check_store_wiring(base_tip, repo)
 
-        assert len(violations) == 2
+        assert len(violations) == 1
         names = {v.class_name for v in violations}
-        assert names == {"ParentStore", "ChildStore"}
+        assert names == {"ChildStore"}
         assert waived == set()
 
     def test_comment_only_mention_fails_ast(self, tmp_path: Path):
@@ -475,3 +482,118 @@ class TestCheckStoreWiring:
         assert len(violations) == 1
         assert violations[0].class_name == "NewStore"
         assert violations[0].file_path == "tinyagentos/metrics_store.py"
+
+    def test_intermediate_base_class_not_flagged(self, tmp_path: Path):
+        """A base class other stores inherit from has nothing to wire.
+
+        ``ProjectsDBStore`` (tinyagentos/projects/tx.py) is the shape: it exists
+        so every store on the shared projects.db inherits one transaction
+        helper, and it is never instantiated or assigned to ``app.state``.  The
+        gate polices the concrete subclasses instead -- demanding an app.state
+        entry for the base would only teach people to fabricate wiring.
+        """
+        repo = tmp_path / "repo"
+        base_tip = _setup_base_repo(repo)
+
+        _branch(repo, "pr")
+        _checkout(repo, "pr")
+        _commit(
+            repo, "tinyagentos/shared_db.py",
+            "from tinyagentos.base_store import BaseStore\n"
+            "\n"
+            "class SharedDBStore(BaseStore):\n"
+            "    AUTOCOMMIT = True\n",
+            "feat: add the SharedDBStore base",
+        )
+        _commit(
+            repo, "tinyagentos/notes_store.py",
+            "from tinyagentos.shared_db import SharedDBStore\n"
+            "\n"
+            "class NotesStore(SharedDBStore):\n"
+            "    SCHEMA = 'CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY);'\n"
+            "    MIGRATIONS = []\n",
+            "feat: add NotesStore on the shared base",
+        )
+        _commit(
+            repo, "tinyagentos/app.py",
+            "from tinyagentos.base_store import BaseStore\n"
+            "from tinyagentos.metrics_store import MetricsStore\n"
+            "from tinyagentos.notes_store import NotesStore\n\n"
+            "metrics_store = MetricsStore('/tmp/metrics.db')\n"
+            "notes_store = NotesStore('/tmp/notes.db')\n\n"
+            "async def lifespan(app):\n"
+            "    await metrics_store.init()\n"
+            "    await notes_store.init()\n"
+            "    app.state.metrics = metrics_store\n"
+            "    app.state.notes = notes_store\n",
+            "feat: wire NotesStore in app",
+        )
+        _checkout(repo, "main")
+        _git(repo, "merge", "pr", "--no-edit")
+
+        violations, waived = csw.check_store_wiring(base_tip, repo)
+
+        assert violations == []
+        assert waived == set()
+
+    def test_intermediate_base_exemption_does_not_cover_its_subclass(
+        self, tmp_path: Path,
+    ):
+        """The exemption must not travel down to an unwired concrete store.
+
+        The same two classes with the app.py wiring left out: the gate has to
+        keep failing, otherwise adding a base class next to a new store would
+        launder it past the check.
+        """
+        repo = tmp_path / "repo"
+        base_tip = _setup_base_repo(repo)
+
+        _branch(repo, "pr")
+        _checkout(repo, "pr")
+        _commit(
+            repo, "tinyagentos/shared_db.py",
+            "from tinyagentos.base_store import BaseStore\n"
+            "\n"
+            "class SharedDBStore(BaseStore):\n"
+            "    AUTOCOMMIT = True\n",
+            "feat: add the SharedDBStore base",
+        )
+        _commit(
+            repo, "tinyagentos/notes_store.py",
+            "from tinyagentos.shared_db import SharedDBStore\n"
+            "\n"
+            "class NotesStore(SharedDBStore):\n"
+            "    SCHEMA = 'CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY);'\n"
+            "    MIGRATIONS = []\n",
+            "feat: add NotesStore on the shared base",
+        )
+        _checkout(repo, "main")
+        _git(repo, "merge", "pr", "--no-edit")
+
+        violations, waived = csw.check_store_wiring(base_tip, repo)
+
+        assert [v.class_name for v in violations] == ["NotesStore"]
+        assert waived == set()
+
+
+class TestFindIntermediateBases:
+    def test_class_that_is_subclassed_is_intermediate(self):
+        classes = {
+            "BaseStore": set(),
+            "SharedDBStore": {"BaseStore"},
+            "NotesStore": {"SharedDBStore"},
+        }
+        assert csw.find_intermediate_bases(classes) == {"BaseStore", "SharedDBStore"}
+
+    def test_leaf_class_is_not_intermediate(self):
+        classes = {"BaseStore": set(), "NotesStore": {"BaseStore"}}
+        assert "NotesStore" not in csw.find_intermediate_bases(classes)
+
+    def test_real_repo_exempts_projects_db_store(self):
+        """The class the gate tripped on, checked against the real tree."""
+        classes = csw.build_class_hierarchy(REPO_ROOT)
+        intermediate = csw.find_intermediate_bases(classes)
+        assert "ProjectsDBStore" in intermediate
+        # The concrete stores that inherit it stay policed.
+        assert "ProjectTaskStore" not in intermediate
+        assert "ProjectNotesStore" not in intermediate
