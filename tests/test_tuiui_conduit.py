@@ -17,10 +17,52 @@ import pytest
 
 from tinyagentos.tuiui_conduit import (
     Frame,
+    SpawnedApp,
     TuiuiConduit,
     TuiuiConduitError,
+    _extract_grid,
     default_socket_path,
 )
+
+
+def _line(payload: dict) -> bytes:
+    """Encode one wire event the way the apphost writes it."""
+    return (json.dumps(payload) + "\n").encode("utf-8")
+
+
+def _read_line(sock: socket.socket, timeout: float = 5.0) -> bytes:
+    """Read one newline-delimited line off a raw peer socket."""
+    sock.settimeout(timeout)
+    buf = b""
+    while b"\n" not in buf:
+        chunk = sock.recv(65536)
+        if not chunk:
+            raise AssertionError("peer closed before a full line arrived")
+        buf += chunk
+    return buf.split(b"\n", 1)[0]
+
+
+# Time allowed for a thread to settle into its blocking read before the next
+# event goes out, so both consumers really are parked on the socket at once.
+# It shapes which reader the kernel wakes, not whether the assertions hold.
+_SETTLE_SECS = 0.25
+
+
+def _flat_frame(text: str, *, cols: int, rows: int) -> dict:
+    """A Frame event carrying ``text`` in a flat ``cells`` grid."""
+    chars = list(text.ljust(cols * rows, " "))
+    return {
+        "Frame": {
+            "grid": {"cols": cols, "rows": rows, "cells": [{"ch": ch} for ch in chars]},
+            "cursor": [0, 0],
+            "flags": 0,
+            "images": [],
+            "image_data": [],
+            "clear": False,
+            "switch_to": None,
+            "clipboard": None,
+        }
+    }
 
 
 class StubApphost:
@@ -35,6 +77,10 @@ class StubApphost:
         self.socket_path = socket_path
         self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._listener.bind(socket_path)
+        # The real apphost publishes a mode-0600 socket inside a mode-0700
+        # per-user directory; bind() alone leaves it at 0777 & ~umask, which
+        # the client's ownership guard rightly refuses.
+        os.chmod(socket_path, 0o600)
         self._listener.listen(1)
         self._listener.settimeout(2.0)
         self._stop = threading.Event()
@@ -205,10 +251,18 @@ class TestDefaultSocketPath:
         monkeypatch.setenv("USER", "alice")
         assert default_socket_path() == "/run/user/1000/tuiui-alice/apphost.sock"
 
-    def test_default_falls_back_to_tmp_when_xdg_unset(self, monkeypatch):
+    def test_fallback_is_uid_scoped_not_user_scoped(self, monkeypatch):
+        """$USER is caller-controlled env; the numeric uid is not.
+
+        A $USER-keyed fallback path is trivially predictable by any local
+        user, who can then pre-create it and receive this client's PTY
+        input (CWE-377).
+        """
         monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
         monkeypatch.setenv("USER", "bob")
-        assert default_socket_path() == "/tmp/tuiui-bob/apphost.sock"
+        path = default_socket_path()
+        assert f"tuiui-{os.geteuid()}" in path
+        assert "tuiui-bob" not in path
 
 
 class TestSpawnRoundTrip:
@@ -230,21 +284,25 @@ class TestInputByteEncoding:
         """
         server, sock_path = apphost_sock
         captured_lines: list[bytes] = []
+        input_seen = threading.Event()
 
         original_handle = server._handle
 
         def _capturing_handle(conn, msg):
             captured_lines.append(json.dumps(msg).encode("utf-8"))
+            if "Input" in msg:
+                input_seen.set()
             original_handle(conn, msg)
 
         server._handle = _capturing_handle
 
-        with TuiuiConduit(sock_path, timeout=2.0) as c:
-            c.spawn("sh", [], cols=6, rows=2)
-            c.send_input(1, b"hello")
-            time.sleep(0.1)
-
-        server._handle = original_handle
+        try:
+            with TuiuiConduit(sock_path, timeout=2.0) as c:
+                c.spawn("sh", [], cols=6, rows=2)
+                c.send_input(1, b"hello")
+                assert input_seen.wait(5.0), "apphost never parsed the Input line"
+        finally:
+            server._handle = original_handle
 
         input_lines = [ln for ln in captured_lines if b'"Input"' in ln]
         assert input_lines, f"no Input line captured: {captured_lines!r}"
@@ -271,9 +329,17 @@ class TestMetaRebindAcrossRestart:
         server_a = StubApphost(sock_a)
         try:
             with TuiuiConduit(sock_a, timeout=2.0) as c:
+                # Burn AppId 1 first so the pre-restart id cannot coincide
+                # with the id the restarted daemon hands out.
+                c.spawn("sh", ["-c", "true"], cols=80, rows=24)
                 spawned = c.spawn("sh", ["-c", "echo hi"], cols=80, rows=24)
+                assert spawned.app == 2
                 c.set_meta(spawned.app, [{"title": "agent-shell", "app_key": "k1"}])
-                time.sleep(0.05)
+                # A round trip on the same connection is an ordered barrier:
+                # the Roster reply cannot come back before SetMeta was applied.
+                assert any(
+                    e.app == spawned.app and e.meta for e in c.list_apps()
+                ), "SetMeta was not applied before the restart"
         finally:
             server_a.stop()
 
@@ -281,6 +347,8 @@ class TestMetaRebindAcrossRestart:
         server_b = StubApphost(sock_b)
         try:
             with TuiuiConduit(sock_b, timeout=2.0) as c:
+                # The restarted daemon reset its counter: the same window is
+                # back under AppId 1, and only the meta blob still matches.
                 server_b._apps[1] = {
                     "cmd": "sh",
                     "args": ["-c", "echo hi"],
@@ -294,6 +362,7 @@ class TestMetaRebindAcrossRestart:
                 rebind = c.rebind_by_meta("agent-shell", app_key="k1")
             assert rebind is not None
             assert rebind.app == 1
+            assert rebind.app != spawned.app, "the AppId did not actually change"
             assert rebind.meta[0]["title"] == "agent-shell"
         finally:
             server_b.stop()
@@ -319,3 +388,208 @@ class TestProtocolErrors:
         assert roster[0].app == 1
         assert roster[0].cmd == "sh"
         assert roster[0].alive is True
+
+@pytest.fixture
+def paired_conduit(tmp_path, monkeypatch):
+    """A conduit wired to one end of a real ``socketpair``.
+
+    The other end is handed to the test so it can write exactly the event
+    sequence a race needs, byte for byte, with no stub scheduling in the
+    way. A real mode-0600 socket file is published at the conduit's path so
+    ``connect()``'s ownership guard sees production-shaped permissions.
+    """
+    sock_path = str(tmp_path / "paired.sock")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(sock_path)
+    os.chmod(sock_path, 0o600)
+    client_end, peer_end = socket.socketpair()
+
+    def _fake_connect(path: str, timeout: float) -> socket.socket:
+        client_end.settimeout(timeout)
+        return client_end
+
+    monkeypatch.setattr("tinyagentos.tuiui_conduit._socket_connect", _fake_connect)
+    conduit = TuiuiConduit(sock_path, timeout=2.0)
+    try:
+        yield conduit, peer_end
+    finally:
+        conduit.close()
+        for sock in (peer_end, client_end, listener):
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
+class TestConcurrentFramesAndRequests:
+    """The socket has two consumers; neither may eat the other's events."""
+
+    def test_spawn_reply_survives_a_concurrent_frame_consumer(self, paired_conduit):
+        """A frame consumer and a request waiter must not eat each other's events.
+
+        Two threads are parked on the same socket -- one inside
+        ``iter_frames()``, one inside ``spawn()`` -- when the apphost writes
+        Frame, Spawned, Frame. Whichever blocked reader the kernel picks
+        first, the reply belongs to ``spawn()`` and both frames belong to
+        the iterator; no consumer may discard the other's event.
+        """
+        conduit, peer = paired_conduit
+        conduit.connect()
+
+        spawned: list[SpawnedApp] = []
+        spawn_error: list[BaseException] = []
+        consumed: list[str] = []
+        consumer_error: list[BaseException] = []
+
+        def request() -> None:
+            try:
+                spawned.append(conduit.spawn("sh", [], cols=6, rows=2))
+            except BaseException as exc:  # noqa: BLE001 - reported to the test
+                spawn_error.append(exc)
+
+        requester = threading.Thread(target=request, daemon=True)
+        requester.start()
+        # Reading the request off the peer is the deterministic proof that
+        # spawn() has written and is now sitting in the read path.
+        _read_line(peer)
+        time.sleep(_SETTLE_SECS)
+
+        def consume() -> None:
+            try:
+                frames = conduit.iter_frames()
+                for _ in range(2):
+                    consumed.append(TuiuiConduit.frame_lines(next(frames))[0])
+            except BaseException as exc:  # noqa: BLE001 - reported to the test
+                consumer_error.append(exc)
+
+        consumer = threading.Thread(target=consume, daemon=True)
+        consumer.start()
+        time.sleep(_SETTLE_SECS)
+
+        peer.sendall(_line(_flat_frame("one", cols=6, rows=2)))
+        time.sleep(_SETTLE_SECS)
+        peer.sendall(_line({"Spawned": {"app": 1, "pid": 4242}}))
+        time.sleep(_SETTLE_SECS)
+        peer.sendall(_line(_flat_frame("two", cols=6, rows=2)))
+
+        requester.join(timeout=10.0)
+        consumer.join(timeout=10.0)
+        assert not spawn_error, f"spawn() lost its reply: {spawn_error!r}"
+        assert not consumer_error, f"frame consumer lost a frame: {consumer_error!r}"
+        assert [(s.app, s.pid) for s in spawned] == [(1, 4242)]
+        assert consumed == ["one", "two"]
+
+    def test_frame_arriving_before_a_reply_is_not_discarded(self, paired_conduit):
+        """A Frame that precedes the reply must still reach ``iter_frames()``."""
+        conduit, peer = paired_conduit
+        conduit.connect()
+
+        def reply() -> None:
+            _read_line(peer)  # the Spawn request
+            peer.sendall(_line(_flat_frame("early", cols=6, rows=2)))
+            peer.sendall(_line({"Spawned": {"app": 7, "pid": 99}}))
+
+        threading.Thread(target=reply, daemon=True).start()
+
+        spawned = conduit.spawn("sh", [], cols=6, rows=2)
+        assert spawned.app == 7
+        frame = next(conduit.iter_frames())
+        assert TuiuiConduit.frame_lines(frame)[0] == "early"
+
+    def test_unmatched_reply_is_kept_for_its_own_waiter(self, paired_conduit):
+        """A Roster that arrives while Spawned is awaited must not be lost."""
+        conduit, peer = paired_conduit
+        conduit.connect()
+
+        def reply() -> None:
+            _read_line(peer)  # the Spawn request
+            peer.sendall(_line({"Roster": [{"app": 3, "cmd": "sh", "pid": 1}]}))
+            peer.sendall(_line({"Spawned": {"app": 3, "pid": 1}}))
+
+        threading.Thread(target=reply, daemon=True).start()
+
+        assert conduit.spawn("sh", []).app == 3
+        # The Roster was already buffered before anyone asked for it; it must
+        # still be there for list_apps() rather than dropped by spawn().
+        roster = conduit.list_apps()
+        assert [e.app for e in roster] == [3]
+
+
+class TestSocketOwnershipGuard:
+    """The client must not hand PTY input to someone else's listener."""
+
+    def test_connect_refuses_a_socket_owned_by_another_uid(self, apphost_sock, monkeypatch):
+        _, sock_path = apphost_sock
+        real_uid = os.stat(sock_path).st_uid
+        monkeypatch.setattr(os, "geteuid", lambda: real_uid + 1)
+        with pytest.raises(TuiuiConduitError, match="owned by uid"):
+            TuiuiConduit(sock_path, timeout=2.0).connect()
+
+    def test_connect_refuses_a_group_or_world_accessible_socket(self, apphost_sock):
+        _, sock_path = apphost_sock
+        os.chmod(sock_path, 0o666)
+        with pytest.raises(TuiuiConduitError, match="group/other access"):
+            TuiuiConduit(sock_path, timeout=2.0).connect()
+
+    def test_connect_refuses_a_world_writable_parent_directory(self, apphost_sock, tmp_path):
+        _, sock_path = apphost_sock
+        os.chmod(tmp_path, 0o777)
+        try:
+            with pytest.raises(TuiuiConduitError, match="group/other access"):
+                TuiuiConduit(sock_path, timeout=2.0).connect()
+        finally:
+            os.chmod(tmp_path, 0o700)
+
+    def test_connect_wraps_connection_failure(self, tmp_path):
+        """A refused connection is part of the TuiuiConduitError contract."""
+        dead_path = str(tmp_path / "dead.sock")
+        bound = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        bound.bind(dead_path)  # bound but never listening -> ECONNREFUSED
+        os.chmod(dead_path, 0o600)
+        try:
+            with pytest.raises(TuiuiConduitError, match="cannot connect"):
+                TuiuiConduit(dead_path, timeout=2.0).connect()
+        finally:
+            bound.close()
+
+    def test_connect_reports_a_missing_socket(self, tmp_path):
+        with pytest.raises(TuiuiConduitError, match="cannot stat"):
+            TuiuiConduit(str(tmp_path / "missing.sock"), timeout=2.0).connect()
+
+
+class TestGridGeometry:
+    """The grid parser must never silently lose or invent cells."""
+
+    def test_partial_final_row_is_kept(self):
+        cells, cols, rows, truncated = _extract_grid({"cells": list("abcdefg"), "cols": 6})
+        assert (cols, rows) == (6, 2)
+        assert truncated is True
+        frame = Frame(cells=cells, cols=cols, rows=rows, truncated=truncated)
+        assert TuiuiConduit.frame_lines(frame) == ["abcdef", "g"]
+
+    def test_flat_grid_without_cols_does_not_assume_eighty(self):
+        cells, cols, rows, truncated = _extract_grid({"cells": list("x" * 132), "rows": 1})
+        assert (cols, rows) == (132, 1)
+        assert truncated is False
+        assert len(cells) == 132
+
+    def test_flat_grid_without_any_geometry_is_one_row(self):
+        cells, cols, rows, truncated = _extract_grid({"cells": list("abc")})
+        assert (cols, rows) == (3, 1)
+        assert truncated is False
+        assert cells == ["a", "b", "c"]
+
+    def test_short_row_is_padded_and_flagged(self):
+        grid = {
+            "cols": 4,
+            "rows_list": [
+                {"cols": [{"ch": ch} for ch in "ab"]},
+                {"cols": [{"ch": ch} for ch in "cdef"]},
+            ],
+        }
+        cells, cols, rows, truncated = _extract_grid(grid)
+        assert (cols, rows) == (4, 2)
+        assert truncated is True, "a short row must be reported, not rstripped away"
+        assert len(cells) == 8
+        frame = Frame(cells=cells, cols=cols, rows=rows, truncated=truncated)
+        assert TuiuiConduit.frame_lines(frame) == ["ab", "cdef"]

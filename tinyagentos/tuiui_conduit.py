@@ -11,6 +11,11 @@ Session identity: AppId is transient within one apphost lifetime. The
 SetMeta blob is the persistent identifier across a daemon restart. Use
 :meth:`TuiuiConduit.rebind_by_meta` after a reconnect to recover the new
 AppId for a known meta title.
+
+Threading: one background reader thread owns the socket and demultiplexes
+every incoming event into a frame backlog and a reply backlog, so a thread
+iterating frames and a thread awaiting a reply never compete for bytes and
+never discard each other's events.
 """
 
 from __future__ import annotations
@@ -18,22 +23,41 @@ from __future__ import annotations
 import json
 import os
 import socket
+import stat
+import tempfile
 import threading
+import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterator
+
+# How long the reader thread blocks in one recv() before looping. Only a
+# liveness knob: it bounds how quickly close() joins the reader.
+_READ_POLL_SECS = 0.5
+
+# Replies buffered for waiters that have not asked for them yet. Replies are
+# small and one-per-request; this is a leak guard, not flow control.
+_REPLY_BACKLOG = 256
 
 
 def default_socket_path() -> str:
     """Return the default apphost socket path.
 
     Matches ``$XDG_RUNTIME_DIR/tuiui-$USER/apphost.sock`` per the spike
-    (per-user, mode 0600 socket, 0700 directory). Falls back to
-    ``/tmp/tuiui-$USER/apphost.sock`` when ``XDG_RUNTIME_DIR`` is unset.
+    (per-user, mode 0600 socket, 0700 directory).
+
+    With no ``XDG_RUNTIME_DIR`` there is no per-user runtime directory to
+    use, so the fallback is keyed on the numeric uid rather than ``$USER``:
+    ``$USER`` is caller-controlled environment that any local user can
+    predict and pre-create a listener for (CWE-377), while the uid is not
+    forgeable from the environment. Either way
+    :meth:`TuiuiConduit.connect` verifies the socket's owner and mode
+    before it speaks to whatever is listening there.
     """
-    user = os.environ.get("USER", "unknown")
     if xdg := os.environ.get("XDG_RUNTIME_DIR"):
+        user = os.environ.get("USER", "unknown")
         return os.path.join(xdg, f"tuiui-{user}", "apphost.sock")
-    return os.path.join("/tmp", f"tuiui-{user}", "apphost.sock")
+    return os.path.join(tempfile.gettempdir(), f"tuiui-{os.geteuid()}", "apphost.sock")
 
 
 class TuiuiConduitError(Exception):
@@ -67,10 +91,15 @@ class RosterEntry:
 class Frame:
     """A single ``Frame`` event from the apphost.
 
-    ``cells`` is the row-major char grid extracted from the raw grid dict.
-    ``cols`` is the width of each row; ``rows`` is the row count. Per the
-    spike, cells are ANSI-free; reconstruct lines with
-    :meth:`TuiuiConduit.frame_lines`.
+    ``cells`` is the row-major char grid extracted from the raw grid dict,
+    always exactly ``rows * cols`` long. ``cols`` is the width of each row;
+    ``rows`` is the row count. Per the spike, cells are ANSI-free;
+    reconstruct lines with :meth:`TuiuiConduit.frame_lines`.
+
+    ``truncated`` is True when the wire grid did not match its own declared
+    geometry (short rows padded with spaces, or surplus cells dropped), so
+    a caller can tell missing data from genuinely blank cells instead of
+    having :meth:`TuiuiConduit.frame_lines` quietly strip the gap away.
     """
 
     cells: list[str]
@@ -83,6 +112,7 @@ class Frame:
     clear: bool = False
     switch_to: int | None = None
     clipboard: str | None = None
+    truncated: bool = False
 
 
 def _socket_connect(path: str, timeout: float) -> socket.socket:
@@ -93,12 +123,54 @@ def _socket_connect(path: str, timeout: float) -> socket.socket:
     return sock
 
 
+def _verify_socket_owner(path: str) -> None:
+    """Refuse an apphost socket another local user could have planted.
+
+    The apphost publishes a mode-0600 socket inside a mode-0700 per-user
+    directory. Anything looser means a second local user can substitute a
+    listener of their own and then read every keystroke this client sends
+    to the PTY, or forge replies back to it. Both the socket and the
+    directory holding it are checked, because a socket nobody else can open
+    is still replaceable if its directory is writable by others.
+    """
+    euid = os.geteuid()
+    directory = os.path.dirname(path) or "."
+    for target, label, is_expected_type in (
+        (directory, "directory", stat.S_ISDIR),
+        (path, "socket", stat.S_ISSOCK),
+    ):
+        try:
+            # lstat, not stat: a symlink standing in for the socket is
+            # itself the substitution this check exists to catch.
+            st = os.lstat(target) if label == "socket" else os.stat(target)
+        except OSError as exc:
+            raise TuiuiConduitError(
+                f"cannot stat apphost {label} {target}: {exc}"
+            ) from exc
+        if not is_expected_type(st.st_mode):
+            raise TuiuiConduitError(f"apphost {label} {target} is not a {label}")
+        if st.st_uid != euid:
+            raise TuiuiConduitError(
+                f"refusing apphost {label} {target}: owned by uid {st.st_uid}, not {euid}"
+            )
+        if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            raise TuiuiConduitError(
+                f"refusing apphost {label} {target}: mode "
+                f"{stat.S_IMODE(st.st_mode):04o} grants group/other access"
+            )
+
+
 class TuiuiConduit:
     """Synchronous client for the tuiui apphost Unix socket.
 
     The wire format is one JSON object per line, externally tagged (the Rust
     side uses serde's externally-tagged enums). One client at a time per
     apphost instance.
+
+    A background reader thread is the only caller of ``recv()``; it sorts
+    every event into a frame backlog and a reply backlog. That is what lets
+    :meth:`iter_frames` run concurrently with :meth:`spawn` / :meth:`list_apps`
+    without either side consuming the other's events.
 
     Use as a context manager or call :meth:`close` explicitly.
     """
@@ -108,13 +180,23 @@ class TuiuiConduit:
         socket_path: str | None = None,
         *,
         timeout: float = 30.0,
+        frame_backlog: int = 512,
     ) -> None:
         self.socket_path = socket_path or default_socket_path()
         self.timeout = timeout
+        #: Frames dropped because no consumer kept up with ``frame_backlog``.
+        self.dropped_frames = 0
         self._sock: socket.socket | None = None
         self._read_buf = b""
         self._req_counter = 0
         self._lock = threading.RLock()
+        self._cv = threading.Condition()
+        self._frames: deque[dict[str, Any]] = deque(maxlen=max(1, frame_backlog))
+        self._replies: deque[dict[str, Any]] = deque(maxlen=_REPLY_BACKLOG)
+        self._reader: threading.Thread | None = None
+        self._reader_error: BaseException | None = None
+        self._closed = False
+        self._stopping = threading.Event()
 
     def __enter__(self) -> "TuiuiConduit":
         self.connect()
@@ -124,38 +206,113 @@ class TuiuiConduit:
         self.close()
 
     def connect(self) -> None:
-        """Open the socket and prepare for JSON line exchange."""
+        """Open the socket and start the demultiplexing reader.
+
+        Raises :class:`TuiuiConduitError` when the socket is not ours to
+        talk to, or when the connection itself fails: connection failures
+        are the most common error a caller sees, so they belong to the same
+        exception contract as protocol errors rather than leaking raw
+        ``OSError``.
+        """
         if self._sock is not None:
             return
-        self._sock = _socket_connect(self.socket_path, self.timeout)
+        _verify_socket_owner(self.socket_path)
+        try:
+            sock = _socket_connect(self.socket_path, self.timeout)
+        except OSError as exc:
+            raise TuiuiConduitError(
+                f"cannot connect to apphost at {self.socket_path}: {exc}"
+            ) from exc
         self._read_buf = b""
+        self._stopping.clear()
+        with self._cv:
+            self._frames.clear()
+            self._replies.clear()
+            self._reader_error = None
+            self._closed = False
+        self._sock = sock
+        sock.settimeout(_READ_POLL_SECS)
+        self._reader = threading.Thread(
+            target=self._read_loop,
+            args=(sock,),
+            name="tuiui-conduit-reader",
+            daemon=True,
+        )
+        self._reader.start()
 
     def close(self) -> None:
-        """Close the socket if open."""
-        if self._sock is not None:
+        """Close the socket and stop the reader thread."""
+        self._stopping.set()
+        sock, self._sock = self._sock, None
+        if sock is not None:
             try:
-                self._sock.close()
-            finally:
-                self._sock = None
-                self._read_buf = b""
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+        reader, self._reader = self._reader, None
+        if reader is not None and reader is not threading.current_thread():
+            reader.join(timeout=_READ_POLL_SECS * 4)
+        self._read_buf = b""
+        with self._cv:
+            self._closed = True
+            self._cv.notify_all()
 
     def _send(self, payload: dict[str, Any]) -> None:
         """Encode ``payload`` as one JSON line and write it."""
-        if self._sock is None:
+        sock = self._sock
+        if sock is None:
             raise TuiuiConduitError("not connected")
         line = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
         with self._lock:
-            self._sock.sendall(line)
+            try:
+                sock.sendall(line)
+            except OSError as exc:
+                raise TuiuiConduitError(f"apphost write failed: {exc}") from exc
 
-    def _recv_event(self) -> dict[str, Any]:
+    def _read_loop(self, sock: socket.socket) -> None:
+        """Own the socket and sort every event into its consumer's backlog.
+
+        This is the only place ``recv()`` and ``_read_buf`` are touched, so
+        no two threads can ever split a JSON line between them or claim
+        bytes meant for the other. Frame events go to the frame backlog,
+        everything else to the reply backlog; nothing is discarded here.
+        """
+        try:
+            while not self._stopping.is_set():
+                try:
+                    evt = self._recv_event(sock)
+                except TimeoutError:
+                    continue
+                with self._cv:
+                    if "Frame" in evt:
+                        if len(self._frames) == self._frames.maxlen:
+                            self.dropped_frames += 1
+                        self._frames.append(evt)
+                    else:
+                        self._replies.append(evt)
+                    self._cv.notify_all()
+        except BaseException as exc:  # noqa: BLE001 - handed to every waiter
+            with self._cv:
+                if not self._stopping.is_set():
+                    self._reader_error = exc
+                self._cv.notify_all()
+        finally:
+            with self._cv:
+                self._closed = True
+                self._cv.notify_all()
+
+    def _recv_event(self, sock: socket.socket) -> dict[str, Any]:
         """Read one full newline-delimited JSON object from the socket.
 
-        Frames are pushed by the apphost without a request, so this is the
-        generic receive path. A request that expects a reply also goes through
-        here because the apphost interleaves frames freely.
+        Called only from the reader thread. Frames are pushed by the apphost
+        without a request, so this is the generic receive path: a request
+        that expects a reply also arrives here because the apphost
+        interleaves frames freely.
         """
-        if self._sock is None:
-            raise TuiuiConduitError("not connected")
         while True:
             if b"\n" in self._read_buf:
                 line, self._read_buf = self._read_buf.split(b"\n", 1)
@@ -165,14 +322,24 @@ class TuiuiConduit:
                     return json.loads(line.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise TuiuiConduitError(f"bad frame: {exc!r}") from exc
-            chunk = self._sock.recv(65536)
+            chunk = sock.recv(65536)
             if not chunk:
                 raise TuiuiConduitError("apphost closed connection")
             self._read_buf += chunk
 
+    def _fail_if_reader_stopped(self) -> None:
+        """Raise the reader's failure (or a clean close) for a waiter. Caller holds ``_cv``."""
+        if self._reader_error is not None:
+            raise TuiuiConduitError(
+                f"apphost read failed: {self._reader_error!r}"
+            ) from self._reader_error
+        if self._closed:
+            raise TuiuiConduitError("apphost closed connection")
+
     def _next_req_id(self) -> int:
-        self._req_counter += 1
-        return self._req_counter
+        with self._lock:
+            self._req_counter += 1
+            return self._req_counter
 
     def spawn(
         self,
@@ -216,25 +383,26 @@ class TuiuiConduit:
         *,
         timeout: float | None = None,
     ) -> dict[str, Any]:
-        """Drain incoming events until one matches ``predicate``.
+        """Return the first buffered reply matching ``predicate``.
 
-        The apphost may push Frame events between a request and its reply,
-        so callers cannot assume the next event is the reply.
+        Replies that do not match stay in the backlog for the waiter that
+        does want them, and Frame events never reach this queue at all, so
+        waiting for a reply can no longer destroy either.
         """
         if timeout is None:
             timeout = self.timeout
-        if self._sock is None:
-            raise TuiuiConduitError("not connected")
-        prev_timeout = self._sock.gettimeout()
-        if timeout is not None:
-            self._sock.settimeout(timeout)
-        try:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._cv:
             while True:
-                evt = self._recv_event()
-                if predicate(evt):
-                    return evt
-        finally:
-            self._sock.settimeout(prev_timeout)
+                for index, evt in enumerate(self._replies):
+                    if predicate(evt):
+                        del self._replies[index]
+                        return evt
+                self._fail_if_reader_stopped()
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise TuiuiConduitError("timed out waiting for an apphost reply")
+                self._cv.wait(remaining)
 
     def send_input(self, app: int, data: bytes) -> None:
         """Write raw PTY bytes to ``app``.
@@ -245,11 +413,11 @@ class TuiuiConduit:
         """
         self._send({"Input": {"app": app, "bytes": list(data)}})
 
-    def list_apps(self) -> list[RosterEntry]:
+    def list_apps(self, *, timeout: float | None = None) -> list[RosterEntry]:
         """Ask the apphost for a Roster and return all live apps."""
         with self._lock:
             self._send({"ListApps": {}})
-            evt = self._wait_for_matching(self._match_roster)
+            evt = self._wait_for_matching(self._match_roster, timeout=timeout)
         apps = evt.get("Roster") or evt.get("apps") or []
         return [self._parse_roster(a) for a in apps]
 
@@ -288,23 +456,41 @@ class TuiuiConduit:
         """Ask the apphost daemon to shut down."""
         self._send({"Shutdown": {}})
 
-    def iter_frames(self) -> Iterator[Frame]:
+    def iter_frames(self, *, timeout: float | None = None) -> Iterator[Frame]:
         """Yield :class:`Frame` objects as the apphost pushes them.
 
-        Mixed events (Roster replies, Spawned replies) are filtered out;
-        unknown event shapes are skipped so the iterator can run alongside
-        request/response traffic on the same socket.
+        Frames come from the backlog the reader thread fills, so this really
+        does run alongside request/response traffic: it can neither consume
+        a reply another thread is waiting on nor lose a frame that arrived
+        while a request was in flight.
+
+        Waits up to ``timeout`` seconds (default: the conduit timeout) for
+        each frame and raises :class:`TuiuiConduitError` if none arrives or
+        the apphost hangs up. A consumer slower than ``frame_backlog``
+        loses the oldest frames; :attr:`dropped_frames` counts them.
         """
         while True:
-            evt = self._recv_event()
-            if "Frame" not in evt:
-                continue
-            yield self._parse_frame(evt["Frame"])
+            yield self._parse_frame(self._next_frame(timeout)["Frame"])
+
+    def _next_frame(self, timeout: float | None) -> dict[str, Any]:
+        """Pop the oldest buffered Frame event, waiting up to ``timeout``."""
+        if timeout is None:
+            timeout = self.timeout
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._cv:
+            while True:
+                if self._frames:
+                    return self._frames.popleft()
+                self._fail_if_reader_stopped()
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise TuiuiConduitError("timed out waiting for an apphost frame")
+                self._cv.wait(remaining)
 
     @classmethod
     def _parse_frame(cls, raw: dict[str, Any]) -> Frame:
         grid = raw.get("grid") or {}
-        cells, cols, rows = _extract_grid(grid)
+        cells, cols, rows, truncated = _extract_grid(grid)
         cursor = raw.get("cursor")
         cur_pair: tuple[int, int] | None = None
         if isinstance(cursor, (list, tuple)) and len(cursor) == 2:
@@ -320,6 +506,7 @@ class TuiuiConduit:
             clear=bool(raw.get("clear", False)),
             switch_to=(int(raw["switch_to"]) if raw.get("switch_to") is not None else None),
             clipboard=(str(raw["clipboard"]) if raw.get("clipboard") is not None else None),
+            truncated=truncated,
         )
 
     @staticmethod
@@ -328,7 +515,10 @@ class TuiuiConduit:
 
         Per the spike, every cell is ANSI-free, so the rows are read
         row-major and each row's ``cols`` chars are joined. Trailing spaces
-        are stripped per line so empty rows show as ``""``.
+        are stripped per line so empty rows show as ``""``. ``cells`` is
+        already normalised to ``rows * cols``, so a short row cannot be
+        mistaken here for a blank one -- check ``frame.truncated`` to tell
+        the two apart.
         """
         out: list[str] = []
         width = frame.cols
@@ -363,40 +553,83 @@ class TuiuiConduit:
         return None
 
 
-def _extract_grid(grid: dict[str, Any]) -> tuple[list[str], int, int]:
+def _cell_char(cell: Any) -> str:
+    """Render one wire cell as its character."""
+    return str(cell.get("ch", "") if isinstance(cell, dict) else cell)
+
+
+def _ceil_div(numerator: int, denominator: int) -> int:
+    return -(-numerator // denominator) if denominator > 0 else 0
+
+
+def _fit(cells: list[str], cols: int, rows: int) -> tuple[list[str], int, int, bool]:
+    """Normalise ``cells`` to exactly ``rows * cols`` entries.
+
+    Returns the ``truncated`` flag so a caller can tell a grid that did not
+    match its declared geometry from one that is simply blank.
+    """
+    want = cols * rows
+    if len(cells) < want:
+        return cells + [" "] * (want - len(cells)), cols, rows, True
+    if len(cells) > want:
+        return cells[:want], cols, rows, True
+    return cells, cols, rows, False
+
+
+def _extract_grid(grid: dict[str, Any]) -> tuple[list[str], int, int, bool]:
     """Flatten a grid dict into a row-major list of ``ch`` strings.
 
-    Returns ``(cells, cols, rows)``. Accepts both
+    Returns ``(cells, cols, rows, truncated)``. Accepts both
     ``{"rows_list": [{"cols": [...]}]}`` and ``{"cells": [...]}`` shapes.
-    When the grid only carries a flat ``cells`` list, ``cols`` is taken from
-    ``grid["cols"]`` (default 80) so the row-major join in
-    :meth:`Frame.frame_lines` stays deterministic.
+    ``cells`` is always exactly ``rows * cols`` long, and ``truncated``
+    reports whether the wire grid had to be padded or clipped to get there.
+
+    Geometry is never guessed: a flat ``cells`` list with no ``cols`` is
+    read as a single row rather than assumed to be 80 wide, because an
+    assumed width silently garbles every other width (a 132-column grid
+    would be re-flowed into nonsense with no signal at all).
     """
     if not grid:
-        return [], 0, 0
+        return [], 0, 0, False
     if isinstance(grid.get("cells"), list):
-        flat = grid["cells"]
-        cells = [str(c.get("ch", "") if isinstance(c, dict) else c) for c in flat]
-        cols = int(grid.get("cols", 80))
-        rows = int(grid.get("rows", max(1, len(cells) // max(1, cols))))
-        return cells, cols, rows
+        cells = [_cell_char(c) for c in grid["cells"]]
+        declared_cols = grid.get("cols")
+        declared_rows = grid.get("rows")
+        if declared_cols is not None:
+            cols = int(declared_cols)
+        elif declared_rows is not None and int(declared_rows) > 0:
+            cols = _ceil_div(len(cells), int(declared_rows))
+        else:
+            cols = len(cells)
+        if cols <= 0:
+            return [], 0, 0, False
+        rows = int(declared_rows) if declared_rows is not None else _ceil_div(len(cells), cols)
+        return _fit(cells, cols, max(0, rows))
     rows_raw = grid.get("rows_list") or grid.get("rows")
     if isinstance(rows_raw, list):
-        cells: list[str] = []
-        cols = 0
+        per_row: list[list[str]] = []
         for row in rows_raw:
-            row_cells: list[str] = []
             if isinstance(row, dict):
-                cols_raw = row.get("cols") or row.get("cells") or []
-                for c in cols_raw:
-                    row_cells.append(str(c.get("ch", "") if isinstance(c, dict) else c))
-                if cols == 0:
-                    cols = int(row.get("cols_len", len(row_cells)))
+                raw_cells = row.get("cols") or row.get("cells") or []
             elif isinstance(row, list):
-                for c in row:
-                    row_cells.append(str(c.get("ch", "") if isinstance(c, dict) else c))
-            if cols == 0:
-                cols = len(row_cells)
+                raw_cells = row
+            else:
+                raw_cells = []
+            per_row.append([_cell_char(c) for c in raw_cells])
+        declared_cols = grid.get("cols")
+        if declared_cols is not None:
+            cols = int(declared_cols)
+        else:
+            cols = max((len(r) for r in per_row), default=0)
+        cells: list[str] = []
+        truncated = False
+        for row_cells in per_row:
+            if len(row_cells) != cols:
+                truncated = True
+            if len(row_cells) < cols:
+                row_cells = row_cells + [" "] * (cols - len(row_cells))
+            elif len(row_cells) > cols:
+                row_cells = row_cells[:cols]
             cells.extend(row_cells)
-        return cells, cols, len(rows_raw)
-    return [], 0, 0
+        return cells, cols, len(per_row), truncated
+    return [], 0, 0, False
