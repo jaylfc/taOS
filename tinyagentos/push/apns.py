@@ -49,6 +49,19 @@ def build_apns_payload(
     actions: list[dict] | None = None,
     image: str | None = None,
 ) -> dict:
+    # `data` goes down first so the explicit keyword arguments below win over any
+    # same-named key the caller happened to put in it. Merging the other way round
+    # let a stray data["image"] replace the explicit image *after* mutable-content
+    # had already been decided, so the payload advertised one image while the flag
+    # was computed from another.
+    payload: dict = dict(data or {})
+    if image:
+        payload["image"] = image
+    # `data` may still be the only source of an image, so read the merged value
+    # back rather than trusting the argument: mutable-content has to follow the
+    # image the service extension will actually fetch.
+    effective_image = payload.get("image")
+
     aps: dict = {}
     if title or body:
         aps["alert"] = {"title": title, "body": body}
@@ -65,13 +78,11 @@ def build_apns_payload(
     # extension to mutate the payload before display: download the image, attach
     # UNNotificationAttachment, and surface the action buttons. APNs only allows
     # that mutation when `mutable-content` is set.
-    if (image or actions) and not content_available:
+    if (effective_image or actions) and not content_available:
         aps["mutable-content"] = 1
-    payload = {"aps": aps}
-    if image:
-        payload["image"] = image
-    if data:
-        payload.update(data)
+    # `aps` is Apple's reserved envelope; assigning it last keeps a stray
+    # data["aps"] from overwriting the alert and flags computed above.
+    payload["aps"] = aps
     return payload
 
 

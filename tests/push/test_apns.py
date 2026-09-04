@@ -157,3 +157,43 @@ def test_build_payload_does_not_override_content_available_for_mutable_content()
         title="", body="", content_available=True, image="https://x.test/i.png",
     )
     assert payload["aps"]["content-available"] == 1
+
+
+# ---------------------------------------------------------------------------
+# tsk-674fwg: `data` must not silently clobber the explicit image argument
+# ---------------------------------------------------------------------------
+
+
+def test_build_payload_explicit_image_wins_over_data_image():
+    # mutable-content is decided from the image the service extension will
+    # fetch, so a caller-supplied data["image"] must not replace the explicit
+    # argument after that decision was made -- otherwise the payload advertises
+    # one image and the flag was computed from another.
+    payload = build_apns_payload(
+        title="t",
+        body="b",
+        image="https://example.com/explicit.png",
+        data={"image": "https://example.com/from-caller-data.png"},
+    )
+    assert payload["image"] == "https://example.com/explicit.png"
+    assert payload["aps"]["mutable-content"] == 1
+
+
+def test_build_payload_sets_mutable_content_for_data_supplied_image():
+    # The mirror case: no explicit image, but data carries one. The extension
+    # still has to download it, so mutable-content must be set from the value
+    # that actually lands in the payload.
+    payload = build_apns_payload(
+        title="t", body="b", data={"image": "https://example.com/from-data.png"},
+    )
+    assert payload["image"] == "https://example.com/from-data.png"
+    assert payload["aps"]["mutable-content"] == 1
+
+
+def test_build_payload_data_cannot_replace_aps():
+    # aps is Apple's reserved envelope built from the explicit arguments; a
+    # stray data["aps"] must not overwrite the alert and flags just computed.
+    payload = build_apns_payload(
+        title="Hi", body="there", data={"aps": {"alert": "hijacked"}},
+    )
+    assert payload["aps"]["alert"] == {"title": "Hi", "body": "there"}
