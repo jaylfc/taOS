@@ -711,10 +711,26 @@ hidden. The projection is a whitelist, so a column added to
 The list is BOUNDED (`DEFAULT_LIST_LIMIT`, 200, in
 `tinyagentos/agent_scope_requests_store.py`). Decided rows are never deleted --
 there is no retention sweep -- so an unbounded list would grow with an agent's
-whole decision history. Truncation drops the OLDEST DECIDED rows first: pending
-rows are selected ahead of decided ones (and are capped at ten per agent
-anyway), so a long-lived agent can never lose sight of the pending request the
-route exists to recover. The page itself is still ordered oldest-first.
+whole decision history. The two lifecycle groups truncate in OPPOSITE
+directions, and that is the point:
+
+- **Pending** rows are taken oldest-first and ahead of everything else. The
+  oldest pending request is the one whose notification is long gone and whose
+  id nobody holds any more -- the row these reads exist to recover -- so it is
+  the LAST thing a full page drops. This holds even if the ten-per-agent
+  pending cap is exceeded (that cap is a count-then-insert, so concurrent
+  creates can pass it together; the read path deliberately does not depend on
+  it holding).
+- **Decided** rows fill whatever is left of the page, newest-first, so a caller
+  checking on a recent approval still sees it.
+
+The page itself is returned oldest-first. Each group is a separate indexed
+query with its own `LIMIT` rather than one sort over the whole history, so
+`idx_scope_requests_canonical_created` lets SQLite stop reading once the page is
+full: the read cost is bounded by the page size, not by how much history the
+agent has accumulated. `tests/test_agent_scope_requests.py::test_list_for_page_does_not_sort_the_whole_history`
+asserts on the query plans the store actually issues and fails if a
+`TEMP B-TREE` sort reappears.
 
 The two reads exist because the `request_id` was otherwise handed out exactly
 once, inside the notification payload raised at create time. Dismiss that

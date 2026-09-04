@@ -19,6 +19,10 @@
   deciding owner/admin's user id (`decided_by`) is withheld — the agent's own
   token may read these routes, and no other agent-reachable route discloses its
   owner's internal id — while `status`, `decided_ts` and `granted_scopes` keep
-  the decision fully observable. The list response is bounded at 200 rows, and
-  truncation drops the oldest DECIDED requests first so a pending request can
-  never fall off the end. The `?status` filter accepts any casing.
+  the decision fully observable. The list response is bounded at 200 rows:
+  pending requests are taken oldest-first and ahead of everything else, so the
+  stranded request these reads exist to recover is the last row a full page
+  drops, and decided requests fill the remainder newest-first. Each group is a
+  separate indexed query with its own `LIMIT`, so read cost is bounded by the
+  page size rather than by how much decision history the agent has
+  accumulated. The `?status` filter accepts any casing.

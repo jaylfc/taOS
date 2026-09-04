@@ -1195,3 +1195,80 @@ async def test_list_scope_requests_status_filter_is_case_insensitive(
         assert resp.status_code == 400, resp.text
     finally:
         await env.close()
+
+
+@pytest.mark.asyncio
+async def test_list_keeps_the_oldest_pending_even_past_the_route_cap(tmp_path):
+    """A full page drops the NEWEST pending rows, never the oldest.
+
+    The route's ten-per-agent pending cap is enforced with a count-then-insert,
+    so concurrent creates can push an agent past it. The read path must not
+    depend on that cap holding: the oldest pending request is the one whose
+    notification is long gone and whose id nobody has any more, so it is the
+    last row a full page may drop. Newer pending rows are the ones the caller
+    just created and still holds ids for.
+    """
+    store = AgentScopeRequestsStore(tmp_path / "scope.db")
+    await store.init()
+    try:
+        pending_ids = []
+        for _ in range(5):
+            rec = await store.create(
+                canonical_id="agent-1", requested_scopes=["memory_read"]
+            )
+            pending_ids.append(rec["id"])
+
+        page = await store.list_for("agent-1", limit=3)
+        assert [r["id"] for r in page] == pending_ids[:3]
+
+        # Same guarantee through the status filter the desktop app uses.
+        page = await store.list_for("agent-1", "pending", limit=3)
+        assert [r["id"] for r in page] == pending_ids[:3]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_list_for_page_does_not_sort_the_whole_history(tmp_path, monkeypatch):
+    """The LIMIT must bound the DATABASE WORK, not just the response size.
+
+    Ordering by an expression SQLite cannot serve from an index forces
+    ``USE TEMP B-TREE FOR ORDER BY``: every retained row for the agent is read
+    and sorted before the LIMIT is applied, so read cost still tracks the
+    decision history the cap was meant to stop tracking. Assert on the plan of
+    the queries the store ACTUALLY issues rather than on a copy of them.
+    """
+    store = AgentScopeRequestsStore(tmp_path / "scope.db")
+    await store.init()
+    try:
+        for _ in range(3):
+            rec = await store.create(
+                canonical_id="agent-1", requested_scopes=["memory_read"]
+            )
+            await store.set_decision(rec["id"], "refused", decided_by="u1")
+        await store.create(canonical_id="agent-1", requested_scopes=["a2a_send"])
+
+        captured: list[tuple] = []
+        original = store._db.execute
+
+        async def _spy(sql, params=()):
+            captured.append((sql, params))
+            return await original(sql, params)
+
+        monkeypatch.setattr(store._db, "execute", _spy)
+        await store.list_for("agent-1")
+        await store.list_for("agent-1", "refused")
+        monkeypatch.undo()
+
+        assert captured, "list_for issued no queries"
+        for sql, params in captured:
+            rows = await (
+                await store._db.execute("EXPLAIN QUERY PLAN " + sql, params)
+            ).fetchall()
+            plan = " | ".join(str(r[-1]) for r in rows)
+            assert "TEMP B-TREE" not in plan, f"{sql!r} sorts the history: {plan}"
+            assert "idx_scope_requests_canonical_created" in plan, (
+                f"{sql!r} does not use the ordered index: {plan}"
+            )
+    finally:
+        await store.close()
