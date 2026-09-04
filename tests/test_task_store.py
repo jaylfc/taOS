@@ -793,6 +793,27 @@ async def test_parked_task_cannot_be_claimed(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_parked_task_cannot_be_closed_or_reopened(tmp_path):
+    """The two remaining routes back into the pool stay shut.
+
+    ``reopen_task`` guards on ``status = 'closed'`` alone; that is only
+    sufficient because ``close_task`` refuses a parked task, keeping 'parked'
+    and 'closed' mutually exclusive.  Assert both halves so the pair cannot
+    drift apart -- if a future edit lets a parked card be closed, reopen would
+    silently become a way to un-park it.
+    """
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.park_task(task["id"], "system")
+    assert await s.close_task(task["id"], "alice") is False
+    assert await s.close_task(task["id"], "alice", force=True) is False
+    assert await s.reopen_task(task["id"], "alice") is False
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    await s.close()
+
+
+@pytest.mark.asyncio
 async def test_update_task_cannot_unpark(tmp_path):
     """A generic edit must not resurrect a parked card.
 

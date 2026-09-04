@@ -15,3 +15,6 @@
 - Board: the Parked column is now actually fed — `useBoardData` fetches
   `status=parked` on load and applies the `task.parked` live event, so a card
   parked by the dispatcher moves out of its old column without a refetch.
+- `reopen_task`: drop the dead `AND status != 'parked'` predicate (no row can fail
+  it that has not already failed `status = 'closed'`), and cover the real
+  invariant with a test that a parked card can be neither closed nor reopened.

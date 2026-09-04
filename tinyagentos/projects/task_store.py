@@ -589,13 +589,21 @@ class ProjectTaskStore(BaseStore):
     async def reopen_task(self, task_id: str, reopened_by: str) -> bool:
         """Undo a close: a closed task returns to the open pool (claimer stays
         cleared, so a free agent can pick it up again). Only acts on a closed
-        task that is not parked; returns False otherwise."""
+        task; returns False otherwise.
+
+        A parked task is refused by that same predicate rather than by one of
+        its own: park and close each reject the other's status, so 'parked' and
+        'closed' are mutually exclusive and ``status = 'closed'`` is what keeps
+        a parked card out of the open pool.  An explicit ``AND status !=
+        'parked'`` here would be a dead predicate -- no row can fail it that has
+        not already failed the first -- so it is not written.
+        """
         now = time.time()
         cursor = await self._db.execute(
             """UPDATE project_tasks
                SET status = 'open', closed_by = NULL, closed_at = NULL, close_reason = NULL,
                    claimed_by = NULL, claimed_at = NULL, updated_at = ?
-               WHERE id = ? AND status = 'closed' AND status != 'parked'""",
+               WHERE id = ? AND status = 'closed'""",
             (now, task_id),
         )
         await self._db.commit()
