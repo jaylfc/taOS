@@ -674,7 +674,9 @@ that SAME canonical_id instead:
   this is CREDENTIALLED: the caller must be the agent's OWN registry bearer token
   (`sub` == `canonical_id`) OR the owning user / an admin. An anonymous caller can
   never escalate an existing identity. The middleware allowlist exposes only the
-  create path to a registry JWT; the route re-checks identity == canonical_id.
+  create path and the two READ paths below to a registry JWT -- approve/deny are
+  POST with an extra trailing segment and match no pattern, so an agent can
+  never self-approve; the routes re-check identity == canonical_id.
 - `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/approve`
   `{granted_scopes, project_id?}`: owner/admin only. The admin may narrow but
   never widen the requested scopes; each granted scope is added via
@@ -683,11 +685,35 @@ that SAME canonical_id instead:
   new identity is created.
 - `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/deny`:
   owner/admin only.
+- `GET /api/agents/registry/{canonical_id}/scope-requests` (optional
+  `?status=pending|accepted|refused`): list an agent's scope requests, oldest
+  first. Authorized EXACTLY like create -- the agent's own registry bearer
+  token, or the owning user / an admin -- so nobody can enumerate another
+  user's agents' requests. An unknown `status` is 400, never a silently empty
+  list.
+- `GET /api/agents/registry/{canonical_id}/scope-requests/{req_id}`: read one
+  request (same gate). A `req_id` belonging to a different agent is 404 on this
+  path even for a caller who owns both, so the `{canonical_id}` segment is
+  load-bearing.
+
+The two reads exist because the `request_id` was otherwise handed out exactly
+once, inside the notification payload raised at create time. Dismiss that
+notification and the row stayed alive in `agent_scope_requests` -- still
+pending, still counting against `_SCOPE_REQUEST_PENDING_CAP` (10 per
+canonical_id, then 429), and addressable by nobody. A *failed* approval was
+therefore indistinguishable from a successful one, and a retry meant minting a
+duplicate request that pushed the agent closer to locking itself out. Agents
+should poll the list route rather than re-requesting a scope they cannot see.
+The desktop Agents app renders each active agent's pending requests inline
+(`PendingScopeRequests` in `desktop/src/apps/agents/RegistryPanel.tsx`, reusing
+the same `ConsentActions` Allow/Deny control the notification renders), so
+approval no longer depends on an ephemeral toast.
 
 All owner-gated registry routes are existence-hiding (#2106): an authenticated
 caller who is not the owner gets the same 404 body as a nonexistent
-`canonical_id`, on the scope-request create/approve/deny routes above and on
-registry PATCH, DELETE (revoke), rotate-tokens, and `PUT /api/agents/{id}/org`.
+`canonical_id`, on the scope-request create/read/approve/deny routes above and
+on registry PATCH, DELETE (revoke), rotate-tokens, and
+`PUT /api/agents/{id}/org`.
 Agents must not treat a 404 from these routes as proof an id does not exist,
 and must not expect a 403 to distinguish "exists, not yours". Admin-only
 lifecycle routes (approve/reject/suspend/reactivate) still 403 non-admins

@@ -975,10 +975,23 @@ async def list_auth_requests(
 # the agent's OWN registry token (self-request) OR the owner/admin, because the
 # agent already has credentials — an anonymous caller must never be able to
 # escalate an existing identity. Approve/deny are owner/admin only.
+#
+# The two READ routes (list + get-by-id) share the create gate exactly. They
+# exist because the request_id was otherwise handed out once, inside a
+# notification payload: dismiss the notification and the row stayed pending,
+# kept consuming _SCOPE_REQUEST_PENDING_CAP, and was addressable by nobody — so
+# a failed approval was indistinguishable from a successful one and a retry
+# meant minting a duplicate request.
 # ---------------------------------------------------------------------------
 
 # Maximum unresolved scope requests per canonical_id before new ones are 429'd.
 _SCOPE_REQUEST_PENDING_CAP = 10
+
+# Closed vocabulary of scope-request lifecycle states, mirroring the store's
+# state machine (pending -> accepted | refused). Used to validate the ?status
+# filter on the list route so a typo is a 400 rather than a silently empty list
+# that reads as "no such request".
+_SCOPE_REQUEST_STATUSES = frozenset({"pending", "accepted", "refused"})
 
 # Scopes that bind a grant to a specific project (and add a membership row), so
 # a real project_id is required for them. decisions_read/decisions_write are
@@ -1113,6 +1126,75 @@ async def create_scope_request(
             pass
 
     return {"request_id": rec["id"], "status": "pending"}
+
+
+async def _authorized_scope_request_agent(request: Request, canonical_id: str) -> dict:
+    """Resolve *canonical_id* and authorize the caller to READ its scope requests.
+
+    Reads are gated EXACTLY like create: the agent's own registry bearer token,
+    or the owning user / an admin. Returns the registry record on success and
+    raises the uniform existence-hiding 404 otherwise, so an unauthorized caller
+    cannot use the read routes as an oracle for which canonical_ids exist or
+    which agents another user owns.
+    """
+    registry = _get_registry_store(request)
+    record = await registry.get(canonical_id)
+    if record is None or record.get("status") != "active":
+        logger.info("scope request read 404-unknown for %s", canonical_id)
+        raise HTTPException(status_code=404, detail="agent not found or not active")
+
+    await _authorize_scope_request_creation(request, canonical_id, record)
+    return record
+
+
+@router.get("/api/agents/registry/{canonical_id}/scope-requests")
+async def list_scope_requests(
+    request: Request, canonical_id: str, status: Optional[str] = None
+):
+    """List an agent's scope requests, oldest first, optionally by status.
+
+    Auth: the agent's own registry bearer token (sub == canonical_id) OR the
+    owning user / an admin — the same gate as create, so nobody can enumerate
+    another user's agents' requests.
+
+    This is what makes a pending request recoverable: the request_id handed out
+    at create time only ever lived in the notification payload, so dismissing
+    the notification stranded the row — still counting against
+    ``_SCOPE_REQUEST_PENDING_CAP``, still ungranted, and addressable by nobody.
+    """
+    await _authorized_scope_request_agent(request, canonical_id)
+
+    # Validate the filter only AFTER authorizing, mirroring create: an
+    # unauthorized caller must not be able to tell a rejected filter value from
+    # a rejected identity.
+    if status is not None and status not in _SCOPE_REQUEST_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown status {status!r}; valid: "
+                f"{sorted(_SCOPE_REQUEST_STATUSES)}"
+            ),
+        )
+
+    store = _get_scope_requests_store(request)
+    return {"requests": await store.list_for(canonical_id, status)}
+
+
+@router.get("/api/agents/registry/{canonical_id}/scope-requests/{req_id}")
+async def get_scope_request(request: Request, canonical_id: str, req_id: str):
+    """Read a single scope request. Auth is identical to the list route.
+
+    A request id belonging to a DIFFERENT agent is 404 on this path even for a
+    caller who owns both, so the {canonical_id} segment stays load-bearing
+    rather than decorative (same check the approve/deny paths make).
+    """
+    await _authorized_scope_request_agent(request, canonical_id)
+
+    store = _get_scope_requests_store(request)
+    req = await store.get(req_id)
+    if req is None or req.get("canonical_id") != canonical_id:
+        raise HTTPException(status_code=404, detail="scope request not found")
+    return req
 
 
 @router.post("/api/agents/registry/{canonical_id}/scope-requests/{req_id}/approve")

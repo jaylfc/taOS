@@ -183,6 +183,38 @@ class AgentScopeRequestsStore(BaseStore):
         rows = await cursor.fetchall()
         return [_row_to_dict(r) for r in rows]
 
+    async def list_for(
+        self, canonical_id: str, status: Optional[str] = None
+    ) -> list[dict]:
+        """Return every scope request for *canonical_id*, oldest first.
+
+        ``status`` narrows to one lifecycle state ('pending', 'accepted' or
+        'refused'); ``None`` returns all of them. Unlike ``list_pending`` this
+        includes DECIDED requests, which is what makes a failed approval
+        distinguishable from a successful one: the caller can see that a
+        request it believes was approved is in fact still 'pending'.
+
+        The status value is bound as a parameter, never interpolated — the
+        caller is expected to have validated it against the closed vocabulary
+        first, but a bad value here yields an empty list, not SQL.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentScopeRequestsStore not initialised")
+        if status is not None:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_scope_requests "
+                "WHERE canonical_id = ? AND status = ? ORDER BY created_ts",
+                (canonical_id, status),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_scope_requests "
+                "WHERE canonical_id = ? ORDER BY created_ts",
+                (canonical_id,),
+            )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
     async def count_pending_for(self, canonical_id: str) -> int:
         """Return the number of pending requests for a given canonical_id."""
         if self._db is None:
