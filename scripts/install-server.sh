@@ -1038,6 +1038,31 @@ _apt_install_compose() {
     fi
 }
 
+# Undo one apt file touched by the Docker official-repo fallback below.
+#   $1 = path, $2 = backup path ("" when the file did NOT pre-exist),
+#   $3 = 1 when THIS invocation created the file.
+# A file that already existed is restored byte-for-byte from its backup; only
+# a file this invocation created is deleted. Anything else is left alone --
+# the installer must never destroy an apt config it did not write. Tracking
+# "did we write it" alone was not enough: overwriting a host's customised
+# docker.asc / docker.list and then rm -f'ing it on the failure path wiped an
+# operator's mirror, pinned suite or internal signing key.
+_docker_apt_restore() {
+    local path="$1" backup="$2" created="${3:-0}"
+    if [[ -n "$backup" ]]; then
+        if sudo cp -a "$backup" "$path"; then
+            log "restored the pre-existing $path"
+        else
+            warn "could not restore $path -- a copy is kept at $backup"
+        fi
+    elif (( created )); then
+        sudo rm -f "$path"
+    fi
+    # Explicit: a false (( created )) is the last command otherwise, and a
+    # non-zero return from a bare call would abort the caller under set -e.
+    return 0
+}
+
 # Docker Engine + Compose v2 plugin from Docker's official apt repo
 # (download.docker.com). Used as a fallback when neither
 # docker-compose-plugin nor docker-compose-v2 are present in the distro
@@ -1088,10 +1113,13 @@ _apt_install_docker_official_repo() {
 
     sudo install -d -m 0755 /etc/apt/keyrings
 
-    local _docker_key_tmp
+    local _docker_key_tmp _docker_bak_dir
     _docker_key_tmp="$(mktemp /tmp/docker-key.XXXXXX.asc)"
+    # Backups of pre-existing apt files live OUTSIDE /etc/apt so a transient
+    # copy is never picked up (or warned about) by apt itself.
+    _docker_bak_dir="$(mktemp -d /tmp/taos-docker-apt.XXXXXX)"
     # shellcheck disable=SC2064
-    trap "rm -f '$_docker_key_tmp'" RETURN
+    trap "rm -f '$_docker_key_tmp'; rm -rf '$_docker_bak_dir'" RETURN
     # Bounded timeouts so a blackholed route / stalled peer does not pin
     # the installer indefinitely and miss its graceful-failure path.
     if ! curl -fsSL --connect-timeout 15 --max-time 60 \
@@ -1123,23 +1151,47 @@ _apt_install_docker_official_repo() {
     fi
     log "Docker apt key fingerprint ok (${_docker_actual_fp:0:16}…)"
 
-    # Track what we've written so a partial failure below can clean up
-    # the half-configured repo instead of leaving docker.com sources.list
-    # entries that break every subsequent apt-get update.
-    local _docker_wrote_keyring=0
-    local _docker_wrote_list=0
-    if sudo install -m 0644 "$_docker_key_tmp" /etc/apt/keyrings/docker.asc; then
-        _docker_wrote_keyring=1
+    # Back up any pre-existing Docker apt config BEFORE overwriting it, and
+    # track CREATION (not merely "we wrote it") so the failure paths below can
+    # put the host back exactly as they found it: restore what was there,
+    # delete only what this invocation brought into existence.
+    local _docker_keyring=/etc/apt/keyrings/docker.asc
+    local _docker_list=/etc/apt/sources.list.d/docker.list
+    local _docker_keyring_backup=""
+    local _docker_list_backup=""
+    local _docker_created_keyring=0
+    local _docker_created_list=0
+    if [[ -e "$_docker_keyring" ]]; then
+        _docker_keyring_backup="$_docker_bak_dir/docker.asc"
+        if ! sudo cp -a "$_docker_keyring" "$_docker_keyring_backup"; then
+            warn "could not back up the existing $_docker_keyring -- skipping Docker official-repo fallback"
+            return 1
+        fi
+        log "backed up the existing $_docker_keyring before replacing it"
+    fi
+    if sudo install -m 0644 "$_docker_key_tmp" "$_docker_keyring"; then
+        [[ -n "$_docker_keyring_backup" ]] || _docker_created_keyring=1
     else
         warn "could not write Docker apt keyring -- skipping Docker official-repo fallback"
+        _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
         return 1
     fi
-    if echo "deb [signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$docker_os $codename stable" \
-            | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null; then
-        _docker_wrote_list=1
+    if [[ -e "$_docker_list" ]]; then
+        _docker_list_backup="$_docker_bak_dir/docker.list"
+        if ! sudo cp -a "$_docker_list" "$_docker_list_backup"; then
+            warn "could not back up the existing $_docker_list -- skipping Docker official-repo fallback"
+            _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
+            return 1
+        fi
+        log "backed up the existing $_docker_list before replacing it"
+    fi
+    if echo "deb [signed-by=$_docker_keyring] https://download.docker.com/linux/$docker_os $codename stable" \
+            | sudo tee "$_docker_list" > /dev/null; then
+        [[ -n "$_docker_list_backup" ]] || _docker_created_list=1
     else
         warn "could not write Docker apt sources.list -- skipping Docker official-repo fallback"
-        sudo rm -f /etc/apt/keyrings/docker.asc
+        _docker_apt_restore "$_docker_list" "$_docker_list_backup" "$_docker_created_list"
+        _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
         return 1
     fi
 
@@ -1157,23 +1209,15 @@ _apt_install_docker_official_repo() {
 
     if ! sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq; then
         warn "apt-get update failed after adding Docker's repo -- rolling back the partial repo config"
-        if (( _docker_wrote_list )); then
-            sudo rm -f /etc/apt/sources.list.d/docker.list
-        fi
-        if (( _docker_wrote_keyring )); then
-            sudo rm -f /etc/apt/keyrings/docker.asc
-        fi
+        _docker_apt_restore "$_docker_list" "$_docker_list_backup" "$_docker_created_list"
+        _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
         return 1
     fi
     if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
         warn "apt install from Docker's repo failed -- see /var/log/apt/term.log -- rolling back the partial repo config"
-        if (( _docker_wrote_list )); then
-            sudo rm -f /etc/apt/sources.list.d/docker.list
-        fi
-        if (( _docker_wrote_keyring )); then
-            sudo rm -f /etc/apt/keyrings/docker.asc
-        fi
+        _docker_apt_restore "$_docker_list" "$_docker_list_backup" "$_docker_created_list"
+        _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
         return 1
     fi
     log "Docker Engine + Compose v2 plugin installed via Docker's official repo"
