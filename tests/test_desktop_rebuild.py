@@ -8,6 +8,19 @@ from tinyagentos import desktop_rebuild
 from tinyagentos.desktop_rebuild import _is_bundle_stale, rebuild_desktop_bundle_if_stale
 
 
+def _no_prebuilt_bundle(monkeypatch):
+    """Keep the local-build tests off the network.
+
+    rebuild_desktop_bundle_if_stale() probes the published prebuilt bundle over
+    HTTP before building locally; a fake git that returns a SHA would otherwise
+    let these unit tests reach the release service (30 s timeout each).
+    """
+    async def _never(_project_root):
+        return False
+
+    monkeypatch.setattr(desktop_rebuild, "_try_prebuilt_desktop_bundle", _never)
+
+
 # ---------------------------------------------------------------------------
 # _is_bundle_stale
 # ---------------------------------------------------------------------------
@@ -88,7 +101,12 @@ def test_is_bundle_stale_returns_true_despite_fresh_bundle_with_future_mtime(tmp
 
 @pytest.mark.asyncio
 async def test_rebuild_skips_when_bundle_current(tmp_path, monkeypatch):
-    """If bundle is current, no subprocess is spawned."""
+    """If the bundle is current, no build is spawned.
+
+    A single read-only `git status` on desktop/ is expected: mtimes alone
+    cannot see a dirty build input that is older than the bundle, so the skip
+    is confirmed against git when it is available.
+    """
     src_dir = tmp_path / "desktop" / "src"
     src_dir.mkdir(parents=True)
     static_dir = tmp_path / "static" / "desktop"
@@ -99,15 +117,23 @@ async def test_rebuild_skips_when_bundle_current(tmp_path, monkeypatch):
 
     called = []
 
+    class _Clean:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
     async def fake_exec(*args, **kwargs):
         called.append(args)
-        raise AssertionError("subprocess should NOT be called when bundle is current")
+        if args[0] == "git":
+            return _Clean()
+        raise AssertionError("no build subprocess when the bundle is current")
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
     result = await rebuild_desktop_bundle_if_stale(tmp_path)
     assert result.rebuilt is False
-    assert called == []
+    assert [c[3] for c in called] == ["status"], called
 
 
 @pytest.mark.asyncio
@@ -134,6 +160,7 @@ async def test_rebuild_handles_npm_missing(tmp_path, monkeypatch):
         raise FileNotFoundError("npm not found")
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    _no_prebuilt_bundle(monkeypatch)
 
     result = await rebuild_desktop_bundle_if_stale(tmp_path)
     assert result.rebuilt is False
@@ -158,6 +185,7 @@ async def test_rebuild_returns_true_on_npm_install_failure(tmp_path, monkeypatch
         return FakeProc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    _no_prebuilt_bundle(monkeypatch)
 
     result = await rebuild_desktop_bundle_if_stale(tmp_path)
     assert result.rebuilt is True
@@ -192,6 +220,7 @@ async def test_rebuild_returns_true_on_npm_build_failure(tmp_path, monkeypatch):
         return Proc(0)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    _no_prebuilt_bundle(monkeypatch)
 
     result = await rebuild_desktop_bundle_if_stale(tmp_path)
     assert result.rebuilt is True
@@ -217,6 +246,7 @@ async def test_rebuild_success(tmp_path, monkeypatch):
         return OkProc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    _no_prebuilt_bundle(monkeypatch)
 
     result = await rebuild_desktop_bundle_if_stale(tmp_path)
     assert result.rebuilt is True
@@ -248,6 +278,7 @@ async def test_rebuild_falls_back_to_npm_install_when_ci_fails(tmp_path, monkeyp
         return Proc(0)  # npm install, git checkout, npm run build all succeed
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    _no_prebuilt_bundle(monkeypatch)
 
     result = await rebuild_desktop_bundle_if_stale(tmp_path)
     assert result.rebuilt is True
@@ -351,6 +382,7 @@ async def test_rebuild_falls_through_when_provenance_matches_but_tree_dirty(tmp_
         return _Proc(0)  # npm ci / install / build all succeed
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    _no_prebuilt_bundle(monkeypatch)
 
     result = await rebuild_desktop_bundle_if_stale(tmp_path)
     # Dirty tree means we must NOT short-circuit; fall through to the rebuild path.
@@ -397,6 +429,7 @@ async def test_rebuild_falls_through_when_provenance_matches_but_index_html_miss
         return _Proc(0)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    _no_prebuilt_bundle(monkeypatch)
 
     result = await rebuild_desktop_bundle_if_stale(tmp_path)
     assert result.rebuilt is True
@@ -443,6 +476,7 @@ async def test_local_build_records_provenance_marker(tmp_path, monkeypatch):
         return Proc(0)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    _no_prebuilt_bundle(monkeypatch)
 
     result = await rebuild_desktop_bundle_if_stale(tmp_path)
     assert result.rebuilt is True
@@ -621,19 +655,6 @@ async def test_prebuilt_bundle_rejected_on_checksum_mismatch(tmp_path, monkeypat
 # ---------------------------------------------------------------------------
 # Provenance marker: it must only ever describe a bundle built from HEAD
 # ---------------------------------------------------------------------------
-
-
-def _no_prebuilt_bundle(monkeypatch):
-    """Keep the local-build tests off the network.
-
-    rebuild_desktop_bundle_if_stale() probes the published prebuilt bundle over
-    HTTP before building locally; a fake git that returns a SHA would otherwise
-    let these unit tests reach the release service (30 s timeout each).
-    """
-    async def _never(_project_root):
-        return False
-
-    monkeypatch.setattr(desktop_rebuild, "_try_prebuilt_desktop_bundle", _never)
 
 
 @pytest.mark.asyncio
@@ -866,3 +887,236 @@ def test_script_clears_provenance_marker_after_a_dirty_build(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert not marker.exists(), proc.stdout
     assert "provenance marker cleared" in proc.stdout, proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# Dirty build inputs outrank the mtime heuristic
+# ---------------------------------------------------------------------------
+
+
+def test_is_bundle_stale_sees_newer_build_config(tmp_path):
+    """A bumped package.json/vite.config/tsconfig is a source change too.
+
+    The mtime scan used to walk desktop/src only, so a dependency or build-tool
+    config newer than the bundle reported "current" -- while the shell script
+    has always compared those files.
+    """
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    bundle = static_dir / "index.html"
+    bundle.write_text("<html />")
+    os.utime(src_dir / "App.tsx", (time.time() - 120, time.time() - 120))
+    os.utime(bundle, (time.time() - 60, time.time() - 60))
+    pkg = tmp_path / "desktop" / "package.json"
+    pkg.write_text('{"name":"x"}')
+    os.utime(pkg, (time.time(), time.time()))
+
+    assert _is_bundle_stale(tmp_path) is True
+
+
+def test_is_bundle_stale_ignores_node_modules(tmp_path):
+    """Installed deps are a build output, not an input.
+
+    npm rewrites thousands of package.json files under node_modules on every
+    install; counting them would make an install alone look like a stale
+    bundle -- a false-positive full rebuild, the bug class this card is about.
+    """
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    bundle = static_dir / "index.html"
+    bundle.write_text("<html />")
+    os.utime(src_dir / "App.tsx", (time.time() - 120, time.time() - 120))
+    os.utime(bundle, (time.time() - 60, time.time() - 60))
+    dep = tmp_path / "desktop" / "node_modules" / "left-pad"
+    dep.mkdir(parents=True)
+    (dep / "package.json").write_text('{"name":"left-pad"}')
+    os.utime(dep / "package.json", (time.time(), time.time()))
+
+    assert _is_bundle_stale(tmp_path) is False
+
+
+@pytest.mark.asyncio
+async def test_rebuild_forced_when_a_dirty_build_input_is_older_than_the_bundle(
+    tmp_path, monkeypatch
+):
+    """mtimes cannot see a dirty build input that is older than the bundle.
+
+    Restoring desktop/package.json from a backup or an archive preserves its
+    old mtime, and a clock-skewed host (a Pi with no RTC) can write a new file
+    with a past timestamp. The bundle then looks "current" although it was
+    never built from that content, so a git-reported dirty build input has to
+    beat the heuristic.
+    """
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"x"}')
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    bundle = static_dir / "index.html"
+    bundle.write_text("<html />")
+    # Every build input is OLDER than the bundle -> the mtime check says fresh.
+    old = time.time() - 600
+    os.utime(src_dir / "App.tsx", (old, old))
+    os.utime(tmp_path / "desktop" / "package.json", (old, old))
+    os.utime(bundle, (time.time(), time.time()))
+
+    calls = []
+
+    class _Proc:
+        def __init__(self, rc, out=b"", err=b""):
+            self.returncode = rc
+            self._out = out
+            self._err = err
+
+        async def communicate(self):
+            return self._out, self._err
+
+    async def fake_exec(*args, **kwargs):
+        calls.append(args)
+        if args[0] == "git":
+            sub = args[3] if len(args) > 3 else ""
+            if sub == "rev-parse":
+                return _Proc(0, b"TREE_SHA\n")
+            if sub == "status":
+                return _Proc(0, b" M desktop/package.json\n")
+            return _Proc(0)
+        return _Proc(0)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    _no_prebuilt_bundle(monkeypatch)
+
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+    assert result.rebuilt is True, result.message
+    assert result.success is True, result.message
+    assert any(c[0] == "npm" and c[1] == "run" for c in calls), calls
+
+
+@pytest.mark.asyncio
+async def test_mtime_skip_is_kept_when_git_cannot_verify_the_tree(tmp_path, monkeypatch):
+    """An unverifiable tree must NOT force a rebuild.
+
+    Deployments installed from a tarball have no .git at all. Treating
+    "git cannot answer" as "dirty" here would run a full npm rebuild on every
+    single service start -- exactly the cost this check exists to avoid -- so
+    those hosts keep the mtime heuristic that predates the provenance marker.
+    """
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"x"}')
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    bundle = static_dir / "index.html"
+    bundle.write_text("<html />")
+    old = time.time() - 600
+    os.utime(src_dir / "App.tsx", (old, old))
+    os.utime(tmp_path / "desktop" / "package.json", (old, old))
+    os.utime(bundle, (time.time(), time.time()))
+
+    async def fake_exec(*args, **kwargs):
+        if args[0] == "git":
+            raise FileNotFoundError("git")  # not installed
+        raise AssertionError("no build subprocess when git cannot verify the tree")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    _no_prebuilt_bundle(monkeypatch)
+
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+    assert result.rebuilt is False
+    assert result.success is True
+    assert "current" in result.message
+
+
+def test_script_rebuilds_when_a_dirty_build_input_is_older_than_the_bundle(tmp_path):
+    """Shell counterpart: git-reported dirty build inputs beat the mtime scan."""
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"x"}')
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    bundle = static_dir / "index.html"
+    bundle.write_text("<html />")
+    old = time.time() - 600
+    os.utime(src_dir / "App.tsx", (old, old))
+    os.utime(tmp_path / "desktop" / "package.json", (old, old))
+    os.utime(bundle, (time.time(), time.time()))
+    bin_dir = tmp_path / "bin"
+    _git_shim(bin_dir, status_rc=0, status_out=" M desktop/package.json\n")
+    npm = bin_dir / "npm"
+    npm.write_text("#!/bin/bash\nexit 0\n")
+    npm.chmod(0o755)
+
+    proc = _run_rebuild_script(tmp_path, bin_dir)
+    assert proc.returncode == 0, proc.stderr
+    assert "bundle is current" not in proc.stdout, proc.stdout
+    assert "rebuilding" in proc.stdout, proc.stdout
+
+
+def test_script_keeps_mtime_skip_when_git_cannot_verify_the_tree(tmp_path):
+    """Shell counterpart: a git-less install keeps the mtime skip."""
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"x"}')
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    bundle = static_dir / "index.html"
+    bundle.write_text("<html />")
+    old = time.time() - 600
+    os.utime(src_dir / "App.tsx", (old, old))
+    os.utime(tmp_path / "desktop" / "package.json", (old, old))
+    os.utime(bundle, (time.time(), time.time()))
+    bin_dir = tmp_path / "bin"
+    # git present but unable to answer anything (no repo / broken .git).
+    shim = bin_dir / "git"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim.write_text("#!/bin/bash\nexit 128\n")
+    shim.chmod(0o755)
+    npm = bin_dir / "npm"
+    npm.write_text("#!/bin/bash\nexit 1\n")  # a rebuild here would fail loudly
+    npm.chmod(0o755)
+
+    proc = _run_rebuild_script(tmp_path, bin_dir)
+    assert proc.returncode == 0, proc.stderr
+    assert "bundle is current" in proc.stdout, proc.stdout
+
+
+def test_script_ignores_node_modules_package_json_mtimes(tmp_path):
+    """An npm install alone must not look like a stale bundle.
+
+    The config scan walked node_modules, where npm rewrites thousands of
+    package.json files on every install -- a false-positive full rebuild of the
+    exact class this card is about.
+    """
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"x"}')
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    bundle = static_dir / "index.html"
+    bundle.write_text("<html />")
+    old = time.time() - 600
+    os.utime(src_dir / "App.tsx", (old, old))
+    os.utime(tmp_path / "desktop" / "package.json", (old, old))
+    os.utime(bundle, (time.time() - 300, time.time() - 300))
+    dep = tmp_path / "desktop" / "node_modules" / "left-pad"
+    dep.mkdir(parents=True)
+    (dep / "package.json").write_text('{"name":"left-pad"}')  # written just now
+    bin_dir = tmp_path / "bin"
+    _git_shim(bin_dir, status_rc=0)
+    npm = bin_dir / "npm"
+    npm.write_text("#!/bin/bash\nexit 1\n")
+    npm.chmod(0o755)
+
+    proc = _run_rebuild_script(tmp_path, bin_dir)
+    assert proc.returncode == 0, proc.stderr
+    assert "bundle is current" in proc.stdout, proc.stdout

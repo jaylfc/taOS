@@ -29,6 +29,9 @@ fi
 #   • desktop/tsconfig*.json   — TypeScript compiler config
 #
 # Using -print -quit so find stops at the first hit (no need to scan everything).
+_stale_src=""
+_stale_cfg=""
+_dirty_inputs=""
 if [ -f static/desktop/index.html ]; then
     # Provenance check: if a fetched bundle matches current source, skip
     # regardless of filesystem mtimes (which can be misleading after a fetch).
@@ -42,8 +45,9 @@ if [ -f static/desktop/index.html ]; then
     # This matches _is_desktop_working_tree_clean() in tinyagentos/desktop_rebuild.py,
     # which returns False on a non-zero git exit.
     _provenance_file="static/desktop/.taos-bundle-provenance"
-    if _working_tree_status="$(git status --porcelain --untracked-files=normal -- desktop 2>/dev/null)" \
-        && [ -z "$_working_tree_status" ] && [ -f "$_provenance_file" ]; then
+    _tree_verified=1
+    _working_tree_status="$(git status --porcelain --untracked-files=normal -- desktop 2>/dev/null)" || _tree_verified=0
+    if [ "$_tree_verified" = 1 ] && [ -z "$_working_tree_status" ] && [ -f "$_provenance_file" ]; then
         _current_tree="$(git rev-parse HEAD:desktop 2>/dev/null || echo "")"
         _recorded_tree="$(cat "$_provenance_file" 2>/dev/null || echo "")"
         if [ -n "$_current_tree" ] && [ "$_current_tree" = "$_recorded_tree" ]; then
@@ -52,15 +56,39 @@ if [ -f static/desktop/index.html ]; then
         fi
     fi
 
+    # Dirty build inputs outrank the mtime heuristic. A modified or untracked
+    # src file / package.json / lock-file / vite or tsconfig can easily be OLDER
+    # than the bundle -- restored from an archive or backup that preserved
+    # mtimes, or written on a clock-skewed host (a Pi with no RTC) -- and the
+    # mtime scan would then report "current" for a bundle that was never built
+    # from it.  Only git-VERIFIED dirt counts: a git-less tarball install would
+    # otherwise run a full npm rebuild on every service start, the exact cost
+    # this check exists to avoid, so those hosts keep the mtime heuristic that
+    # predates the provenance marker.  Mirrors _dirty_desktop_build_inputs() in
+    # tinyagentos/desktop_rebuild.py.
+    if [ "$_tree_verified" = 1 ] && [ -n "$_working_tree_status" ]; then
+        _dirty_inputs="$(printf '%s\n' "$_working_tree_status" \
+            | sed -e 's/^...//' -e 's/.* -> //' \
+            | grep -vE '(^|/)node_modules/' \
+            | grep -E '^"?desktop/(src/|package\.json|[^/]*-lock\.|vite\.config\.|tsconfig[^/]*\.json)' || true)"
+    fi
+
     _stale_src="$(find desktop/src -type f -not -path '*/node_modules/*' -newer static/desktop/index.html -print -quit 2>/dev/null)"
-    _stale_cfg="$(find desktop \( -name 'package.json' -o -name '*-lock.*' -o -name 'vite.config.*' -o -name 'tsconfig*.json' \) -type f -newer static/desktop/index.html -print -quit 2>/dev/null)"
-    if [ -z "$_stale_src" ] && [ -z "$_stale_cfg" ]; then
+    # node_modules is a build OUTPUT of the lock-file, and npm rewrites thousands
+    # of package.json files in there on every install -- scanning it here made an
+    # install alone (with no source change) look like a stale bundle.
+    _stale_cfg="$(find desktop -path 'desktop/node_modules' -prune -o \( -name 'package.json' -o -name '*-lock.*' -o -name 'vite.config.*' -o -name 'tsconfig*.json' \) -type f -newer static/desktop/index.html -print -quit 2>/dev/null)"
+    if [ -z "$_stale_src" ] && [ -z "$_stale_cfg" ] && [ -z "$_dirty_inputs" ]; then
         echo "[taos-rebuild-desktop] desktop bundle is current — skipping rebuild"
         exit 0
     fi
 fi
 
-echo "[taos-rebuild-desktop] desktop source newer than bundle (or no bundle) — rebuilding..."
+if [ -n "$_dirty_inputs" ] && [ -z "$_stale_src" ] && [ -z "$_stale_cfg" ]; then
+    echo "[taos-rebuild-desktop] desktop build inputs are modified but not newer than the bundle — rebuilding..."
+else
+    echo "[taos-rebuild-desktop] desktop source newer than bundle (or no bundle) — rebuilding..."
+fi
 
 # Guard: without package.json, npm install will fail with a confusing error.
 # Exit cleanly so the service doesn't look broken when this is a bare install
