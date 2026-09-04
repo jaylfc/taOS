@@ -18,12 +18,12 @@ const MAX_SEEN_IDS = 128;
 type Subscriber = {
   kinds: string[];
   onEvent: OsEventHandler;
-  // Per subscriber, NOT shared. On one stream carrying every kind, a shared
-  // budget lets a busy kind evict a quiet subscriber's ids, and the server
-  // replays the tail of each channel independently on reconnect -- so the
-  // quiet subscriber sees an event it already handled and refetches for
-  // nothing. A per-subscriber window is the budget each caller had back when
-  // it owned a server-filtered stream of its own.
+  // Per subscriber, NOT shared. One stream carries the union of every
+  // subscribed kind, so a shared budget would let a busy kind evict a quiet
+  // subscriber's ids, and the server replays the tail of each channel
+  // independently on reconnect -- the quiet subscriber would then see an event
+  // it already handled and refetch for nothing. Per subscriber, this is the
+  // budget each caller had back when it owned a stream of its own.
   seenIds: Set<string>;
   seenIdsOrder: string[];
 };
@@ -33,10 +33,20 @@ export type OsEventsStatus = {
   stale: boolean;
 };
 
+// `null` means "no filter, every kind". An empty array means nothing has been
+// committed yet, which only happens while there are no subscribers.
+type Coverage = string[] | null;
+
 const subscribers = new Map<number, Subscriber>();
 let nextId = 0;
 
 let sharedEs: EventSource | null = null;
+// A widened stream that has not opened yet. The narrow one keeps delivering
+// until it does.
+let pendingEs: EventSource | null = null;
+// The widest set we have committed to asking the server for. It only grows, so
+// it converges: at most one reopen per distinct kind for the life of the page.
+let committedKinds: Coverage = [];
 let reconnectAttempts = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<() => void>();
@@ -69,54 +79,96 @@ function setStatus(connected: boolean, stale: boolean) {
   listeners.forEach((fn) => fn());
 }
 
-function startConnection() {
-  if (sharedEs) return;
+function unionKinds(a: Coverage, b: Coverage): Coverage {
+  // "Every kind" absorbs anything narrower.
+  if (a === null || b === null) return null;
+  const out = new Set(a);
+  b.forEach((kind) => out.add(kind));
+  return [...out].sort();
+}
 
-  // Every subscriber that mounts calls this. If a retry is already scheduled,
-  // let it run: cancelling it and connecting immediately would make a view
-  // that mounts callers in a loop retry at mount frequency against a down
-  // endpoint instead of at the intended 5s -> 30s spacing.
-  if (reconnectTimer) return;
+function sameKinds(a: Coverage, b: Coverage): boolean {
+  if (a === null || b === null) return a === b;
+  return a.length === b.length && a.every((kind, i) => kind === b[i]);
+}
 
-  const es = new EventSource("/api/os/events");
-  sharedEs = es;
+// The union of what every live subscriber asked for. A subscriber with an empty
+// list means "all kinds", which collapses the union to no filter.
+function desiredKinds(): Coverage {
+  let wanted: Coverage = [];
+  for (const sub of subscribers.values()) {
+    if (sub.kinds.length === 0) return null;
+    wanted = unionKinds(wanted, sub.kinds);
+  }
+  return wanted;
+}
+
+function streamUrl(kinds: Coverage): string {
+  if (kinds === null || kinds.length === 0) return "/api/os/events";
+  return `/api/os/events?kinds=${kinds.map(encodeURIComponent).join(",")}`;
+}
+
+function handleMessage(msg: MessageEvent) {
+  let event: OsEvent | null;
+  try {
+    event = JSON.parse(msg.data as string) as OsEvent;
+  } catch {
+    return;
+  }
+  if (!event || typeof event !== "object" || !event.kind) return;
+
+  if (event.kind === LAGGED_KIND) {
+    subscribers.forEach((sub) => sub.onEvent(event));
+    return;
+  }
+
+  const id = event.id;
+  subscribers.forEach((sub) => {
+    if (sub.kinds.length > 0 && !sub.kinds.includes(event.kind)) return;
+    if (id) {
+      if (sub.seenIds.has(id)) return;
+      sub.seenIds.add(id);
+      sub.seenIdsOrder.push(id);
+      if (sub.seenIdsOrder.length > MAX_SEEN_IDS) {
+        const oldest = sub.seenIdsOrder.shift();
+        if (oldest) sub.seenIds.delete(oldest);
+      }
+    }
+    sub.onEvent(event);
+  });
+}
+
+function openStream(kinds: Coverage): EventSource {
+  const es = new EventSource(streamUrl(kinds));
+  es.onmessage = handleMessage;
 
   es.onopen = () => {
     reconnectAttempts = 0;
+    if (es === pendingEs) {
+      // The widened stream is live, so the narrow one can go now -- not before.
+      // Overlapping the two is what keeps delivery unbroken across a filter
+      // change, and the per-subscriber dedup drops whatever arrives on both.
+      sharedEs?.close();
+      sharedEs = pendingEs;
+      pendingEs = null;
+    }
     setStatus(true, false);
   };
 
-  es.onmessage = (msg) => {
-    let event: OsEvent | null;
-    try {
-      event = JSON.parse(msg.data as string) as OsEvent;
-    } catch {
-      return;
-    }
-    if (!event || typeof event !== "object" || !event.kind) return;
-
-    if (event.kind === LAGGED_KIND) {
-      subscribers.forEach((sub) => sub.onEvent(event));
-      return;
-    }
-
-    const id = event.id;
-    subscribers.forEach((sub) => {
-      if (sub.kinds.length > 0 && !sub.kinds.includes(event.kind)) return;
-      if (id) {
-        if (sub.seenIds.has(id)) return;
-        sub.seenIds.add(id);
-        sub.seenIdsOrder.push(id);
-        if (sub.seenIdsOrder.length > MAX_SEEN_IDS) {
-          const oldest = sub.seenIdsOrder.shift();
-          if (oldest) sub.seenIds.delete(oldest);
-        }
-      }
-      sub.onEvent(event);
-    });
-  };
-
   es.onerror = () => {
+    if (es === pendingEs) {
+      // The widened stream failed. The narrow one is still delivering
+      // everything it covers, so keep it and drop the attempt; the next mount
+      // or kinds change retries the widening.
+      if (es.readyState === EventSource.CLOSED) {
+        es.close();
+        pendingEs = null;
+      }
+      return;
+    }
+    // A stream we already handed off from has nothing left to say.
+    if (es !== sharedEs) return;
+
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -137,13 +189,51 @@ function startConnection() {
       );
       reconnectAttempts += 1;
       reconnectTimer = setTimeout(() => {
-        // Clear the handle FIRST: the guard above reads it, and a fired timer
+        // Clear the handle FIRST: startConnection reads it, and a fired timer
         // whose handle is still set would refuse its own reconnect.
         reconnectTimer = null;
         startConnection();
       }, delay);
     }
   };
+
+  return es;
+}
+
+// Widen the server-side filter to cover everything subscribed, without a gap.
+//
+// The filter has to be applied upstream: the relay in
+// `tinyagentos/routes/os_events.py` drops unrequested kinds BEFORE its bounded
+// 256-slot queue, so a kind nobody asked for can never occupy a slot, evict an
+// event somebody did ask for, and raise an `events.lagged` that from the
+// subscriber's side never happened. Filtering only in the browser gives that
+// property up.
+//
+// Coverage never narrows. Widening is the only thing that costs a reopen, so
+// shrinking it when a subscriber leaves would just buy another reopen when the
+// next one arrives. Monotone, it converges instead.
+function ensureCoverage() {
+  const wanted = unionKinds(committedKinds, desiredKinds());
+  if (sameKinds(wanted, committedKinds)) return;
+  committedKinds = wanted;
+
+  // Nothing is open yet, so whatever opens next picks the new coverage up.
+  if (!sharedEs) return;
+
+  pendingEs?.close();
+  pendingEs = openStream(committedKinds);
+}
+
+function startConnection() {
+  if (sharedEs) return;
+
+  // Every subscriber that mounts calls this. If a retry is already scheduled,
+  // let it run: cancelling it and connecting immediately would make a view
+  // that mounts callers in a loop retry at mount frequency against a down
+  // endpoint instead of at the intended 5s -> 30s spacing.
+  if (reconnectTimer) return;
+
+  sharedEs = openStream(committedKinds);
 }
 
 function stopConnection() {
@@ -151,8 +241,11 @@ function stopConnection() {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  pendingEs?.close();
+  pendingEs = null;
   sharedEs?.close();
   sharedEs = null;
+  committedKinds = [];
   reconnectAttempts = 0;
   setStatus(false, true);
 }
@@ -215,6 +308,7 @@ export function useOsEvents(
       seenIds: new Set<string>(),
       seenIdsOrder: [],
     });
+    ensureCoverage();
     startConnection();
 
     return () => {
@@ -225,7 +319,7 @@ export function useOsEvents(
   }, []);
 
   // `kindsKey` is the value identity of `kinds`: a fresh array holding the same
-  // entries must not churn the registration.
+  // entries must not churn the registration or the coverage.
   const kindsKey = kinds.join(",");
   useEffect(() => {
     kindsRef.current = kinds;
@@ -233,6 +327,7 @@ export function useOsEvents(
     if (id === null) return;
     const sub = subscribers.get(id);
     if (sub) sub.kinds = kinds;
+    ensureCoverage();
   }, [kindsKey]);
 
   return useSyncExternalStore(subscribeToStatus, getStatus, getStatus);

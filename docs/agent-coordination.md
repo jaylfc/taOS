@@ -845,11 +845,31 @@ client that disconnected before the stream started.
 
 The desktop side is `desktop/src/hooks/use-os-events.ts`:
 `useOsEvents(kinds, onEvent)` multiplexes one EventSource across all callers
-in the same window, returns `connected` / `stale`, dedupes by event id,
-reconnects with exponential backoff, and filters by `kinds` client-side so
-the connection does not need to reopen when a subscriber widens its list.
-The desktop client therefore never sends `?kinds=`; the server-side filter
-above is unchanged and stays available to other clients.
+in the same window, returns `connected` / `stale`, dedupes by event id, and
+reconnects with exponential backoff.
+
+The stream is opened with `?kinds=` set to the UNION of every live
+subscriber's list, and each subscriber's own list is applied again in the
+browser so it only sees what it asked for. The union is what goes on the wire
+because the relay filters BEFORE its bounded queue (above): a kind nobody
+subscribed to must never occupy one of those 256 slots, evict an event
+somebody did ask for, and raise an `events.lagged` that from the subscriber's
+side never happened. A subscriber whose list is empty means "all kinds", which
+collapses the union to no filter at all.
+
+The union only ever GROWS while subscribers exist; it is never narrowed when
+one leaves. Narrowing would only buy another reopen the next time a subscriber
+asks for that kind again, so a monotone union converges instead: at most one
+reopen per distinct kind for the life of the page, and none at all when a
+subscriber widens into kinds the union already covers.
+
+A reopen does not interrupt delivery. The widened stream is opened alongside
+the narrow one and the narrow one is closed only once the widened one fires
+`open`, so there is no window with nothing listening -- which matters because
+this endpoint has no resume. The overlap delivers some events twice; the
+per-subscriber dedup window below is what absorbs that. If the widened stream
+fails instead of opening, it is dropped and the narrow one stays: the next
+mount or `kinds` change retries the widening.
 
 The stream is open exactly while the subscriber map is non-empty -- that map
 is the only thing consulted on teardown, and it is consulted a microtask after
@@ -870,11 +890,12 @@ still retrying: the endpoint has no resume, so the gap is real and a
 subscriber must refetch once it reconnects.
 
 The 128-id dedup window is kept PER SUBSCRIBER, not once for the stream. One
-stream now carries every kind, and the replay buffer above is per channel, so
-a shared window would let a busy kind evict a quiet subscriber's ids and hand
-that subscriber a replayed event it already handled -- a refetch for nothing.
-Per subscriber, each caller keeps the window it had when it owned a
-server-filtered stream of its own.
+stream carries the union of every subscribed kind, and the replay buffer above
+is per channel, so a shared window would let a busy kind evict a quiet
+subscriber's ids and hand that subscriber a replayed event it already handled
+-- a refetch for nothing. Per subscriber, each caller keeps the window it had
+when it owned a stream of its own, and the same window is what makes the
+overlap during a filter widening invisible to callers.
 
 ## LoRA Studio routes (session-only, no agent scope)
 

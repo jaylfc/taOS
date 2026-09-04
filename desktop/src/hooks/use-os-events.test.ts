@@ -21,6 +21,21 @@ interface MockEventSource {
 }
 
 let lastEs: MockEventSource | null = null;
+const allEs: MockEventSource[] = [];
+
+// Streams constructed and not yet closed. Widening the server-side filter
+// overlaps two of them on purpose, so "one stream" is an invariant about how
+// many are OPEN, not about how many were ever constructed.
+function openStreams(): MockEventSource[] {
+  return allEs.filter((es) => es.close.mock.calls.length === 0);
+}
+
+// Let a widened stream finish taking over from the narrow one.
+function settleHandoff() {
+  act(() => {
+    lastEs?.onopen?.();
+  });
+}
 
 const MockEventSourceCtor = vi.fn().mockImplementation(function (this: any, url: string) {
   this.url = url;
@@ -36,6 +51,7 @@ const MockEventSourceCtor = vi.fn().mockImplementation(function (this: any, url:
     (this as MockEventSource).onerror?.(new Event("error"));
   };
   lastEs = this as MockEventSource;
+  allEs.push(this as MockEventSource);
 });
 
 Object.assign(MockEventSourceCtor, { CONNECTING: 0, OPEN: 1, CLOSED: 2 });
@@ -45,6 +61,7 @@ beforeEach(() => {
   vi.stubGlobal("EventSource", MockEventSourceCtor);
   MockEventSourceCtor.mockClear();
   lastEs = null;
+  allEs.length = 0;
 });
 
 afterEach(() => {
@@ -52,9 +69,11 @@ afterEach(() => {
 });
 
 describe("useOsEvents", () => {
-  it("opens an EventSource to /api/os/events on mount", () => {
+  it("opens an EventSource filtered to the kinds someone asked for", () => {
     renderHook(() => useOsEvents(["projects.task.changed"], () => {}));
-    expect(MockEventSourceCtor).toHaveBeenCalledWith("/api/os/events");
+    expect(MockEventSourceCtor).toHaveBeenCalledWith(
+      "/api/os/events?kinds=projects.task.changed",
+    );
   });
 
   it("opens an EventSource without kinds when kinds is empty", () => {
@@ -229,17 +248,42 @@ describe("useOsEvents", () => {
     expect(onEvent).not.toHaveBeenCalled();
   });
 
-  it("does not reopen the stream when kinds changes", () => {
+  it("does not reopen when a subscriber widens into kinds already covered", () => {
+    // Another subscriber already put `agents.status.changed` in the union, so
+    // this widening costs nothing -- which is the whole point of one shared
+    // stream carrying the union rather than one stream per caller.
+    renderHook(() => useOsEvents(["agents.status.changed"], () => {}));
     const { rerender } = renderHook(
       ({ kinds }: { kinds: string[] }) => useOsEvents(kinds, () => {}),
       { initialProps: { kinds: ["projects.task.changed"] } },
     );
-    expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
-    expect(MockEventSourceCtor).toHaveBeenCalledWith("/api/os/events");
+    settleHandoff();
+    const opened = MockEventSourceCtor.mock.calls.length;
 
-    rerender({ kinds: ["projects.task.changed", "notifications.new"] });
+    rerender({ kinds: ["projects.task.changed", "agents.status.changed"] });
+
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(opened);
+    expect(openStreams()).toHaveLength(1);
+  });
+
+  it("never reopens when a subscriber narrows its kinds", () => {
+    const { rerender } = renderHook(
+      ({ kinds }: { kinds: string[] }) => useOsEvents(kinds, () => {}),
+      {
+        initialProps: {
+          kinds: ["projects.task.changed", "notifications.new"],
+        },
+      },
+    );
+    settleHandoff();
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
+
+    // Coverage is monotone. Narrowing it would only buy another reopen the
+    // next time a subscriber asks for that kind again.
+    rerender({ kinds: ["projects.task.changed"] });
 
     expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
+    expect(openStreams()).toHaveLength(1);
   });
 
   it("reports disconnected while the stream is only CONNECTING", () => {
@@ -294,8 +338,12 @@ describe("useOsEvents", () => {
 
     renderHook(() => useOsEvents(["projects.task.changed"], onEvent1));
     renderHook(() => useOsEvents(["agents.status.changed"], onEvent2));
+    settleHandoff();
 
-    expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
+    expect(openStreams()).toHaveLength(1);
+    expect(openStreams()[0].url).toBe(
+      "/api/os/events?kinds=agents.status.changed,projects.task.changed",
+    );
   });
 
   it("filters events client-side per subscriber", () => {
@@ -304,6 +352,7 @@ describe("useOsEvents", () => {
 
     renderHook(() => useOsEvents(["projects.task.changed"], onEvent1));
     renderHook(() => useOsEvents(["agents.status.changed"], onEvent2));
+    settleHandoff();
 
     act(() => {
       lastEs?._fire({
@@ -324,12 +373,13 @@ describe("useOsEvents", () => {
     renderHook(() =>
       useOsEvents(["agents.status.changed"], () => {}),
     );
-
-    expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
+    settleHandoff();
+    expect(openStreams()).toHaveLength(1);
 
     unmount1();
     await act(async () => {});
     expect(lastEs?.close).not.toHaveBeenCalled();
+    expect(openStreams()).toHaveLength(1);
   });
 
   it("closes the EventSource when the last instance unmounts", async () => {
@@ -339,8 +389,8 @@ describe("useOsEvents", () => {
     const { unmount: unmount2 } = renderHook(() =>
       useOsEvents(["agents.status.changed"], () => {}),
     );
-
-    expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
+    settleHandoff();
+    expect(openStreams()).toHaveLength(1);
 
     unmount2();
     await act(async () => {});
@@ -349,6 +399,7 @@ describe("useOsEvents", () => {
     unmount1();
     await act(async () => {});
     expect(lastEs?.close).toHaveBeenCalled();
+    expect(openStreams()).toHaveLength(0);
   });
 
   it("deduplicates events across subscribers", () => {
@@ -387,8 +438,10 @@ describe("useOsEvents", () => {
       return null;
     }
 
+    // Same kinds as `Widening` starts with, so nothing here widens the union:
+    // this test is about the teardown race, not about coverage changes.
     function Leaving() {
-      useOsEvents(["agents.status.changed"], () => {});
+      useOsEvents(["projects.task.changed"], () => {});
       return null;
     }
 
@@ -414,10 +467,13 @@ describe("useOsEvents", () => {
       );
 
     const { rerender } = render(harness(["projects.task.changed"], true));
+    settleHandoff();
     expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
     const opened = lastEs;
 
-    rerender(harness(["projects.task.changed", "notifications.new"], false));
+    // Widening to a kind already in the union costs no reopen, so anything
+    // that closes here closed for the wrong reason.
+    rerender(harness(["projects.task.changed"], false));
 
     expect(opened?.close).not.toHaveBeenCalled();
     expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
@@ -465,8 +521,10 @@ describe("useOsEvents", () => {
       return null;
     }
 
+    // Same kinds as `Leaving`: the union does not move, so a reopen here can
+    // only come from the teardown misreading the map.
     function Arriving() {
-      useOsEvents(["agents.status.changed"], () => {});
+      useOsEvents(["projects.task.changed"], () => {});
       return null;
     }
 
@@ -476,6 +534,7 @@ describe("useOsEvents", () => {
     // stops listening. Closing on that moment drops in-flight events and the
     // dedup window for nothing.
     const { rerender } = render(createElement(Leaving));
+    settleHandoff();
     expect(MockEventSourceCtor).toHaveBeenCalledTimes(1);
     const opened = lastEs;
 
@@ -522,6 +581,7 @@ describe("useOsEvents", () => {
 
     renderHook(() => useOsEvents(["projects.task.changed"], quiet));
     renderHook(() => useOsEvents(["agents.status.changed"], busy));
+    settleHandoff();
 
     act(() => {
       lastEs?._fire({ kind: "projects.task.changed", id: "quiet-1", ts: 1 });
@@ -543,5 +603,102 @@ describe("useOsEvents", () => {
       lastEs?._fire({ kind: "projects.task.changed", id: "quiet-1", ts: 1 });
     });
     expect(quiet).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks the server for only the kinds someone subscribed to", () => {
+    // The relay in tinyagentos/routes/os_events.py drops unrequested kinds
+    // BEFORE its bounded 256-slot queue. If the desktop opened the stream
+    // unfiltered, a busy kind nobody subscribed to would occupy those slots,
+    // evict an event somebody did ask for, and raise an `events.lagged` that
+    // from the subscriber's side never happened. The filter has to be upstream.
+    renderHook(() => useOsEvents(["projects.task.changed"], () => {}));
+    renderHook(() => useOsEvents(["notifications.new"], () => {}));
+    settleHandoff();
+
+    expect(openStreams()).toHaveLength(1);
+    const url = openStreams()[0].url;
+    expect(url).toBe(
+      "/api/os/events?kinds=notifications.new,projects.task.changed",
+    );
+    expect(url).not.toContain("agents.status.changed");
+  });
+
+  it("keeps delivering on the old stream while a widened one takes over", () => {
+    const onEvent = vi.fn();
+    const { rerender } = renderHook(
+      ({ kinds }: { kinds: string[] }) => useOsEvents(kinds, onEvent),
+      { initialProps: { kinds: ["projects.task.changed"] } },
+    );
+    settleHandoff();
+    const narrow = lastEs;
+
+    rerender({ kinds: ["projects.task.changed", "notifications.new"] });
+    const widened = lastEs;
+
+    expect(widened).not.toBe(narrow);
+    expect(widened?.url).toBe(
+      "/api/os/events?kinds=notifications.new,projects.task.changed",
+    );
+    // The narrow stream is still live: closing it before its replacement is
+    // open would drop every event in the gap, and this endpoint has no resume.
+    expect(narrow?.close).not.toHaveBeenCalled();
+
+    act(() => {
+      narrow?._fire({
+        kind: "projects.task.changed",
+        id: "during-handoff",
+        ts: 1,
+      });
+    });
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "during-handoff" }),
+    );
+
+    act(() => {
+      widened?.onopen?.();
+    });
+    expect(narrow?.close).toHaveBeenCalled();
+    expect(openStreams()).toHaveLength(1);
+
+    // The replay the widened stream opens with re-sends what the narrow one
+    // already delivered; the per-subscriber dedup is what makes the overlap
+    // safe rather than duplicated.
+    act(() => {
+      widened?._fire({
+        kind: "projects.task.changed",
+        id: "during-handoff",
+        ts: 1,
+      });
+    });
+    expect(onEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the narrow stream when the widened one fails to open", () => {
+    const onEvent = vi.fn();
+    const { rerender } = renderHook(
+      ({ kinds }: { kinds: string[] }) => useOsEvents(kinds, onEvent),
+      { initialProps: { kinds: ["projects.task.changed"] } },
+    );
+    settleHandoff();
+    const narrow = lastEs;
+
+    rerender({ kinds: ["projects.task.changed", "notifications.new"] });
+    const widened = lastEs;
+
+    act(() => {
+      if (widened) {
+        widened.readyState = EventSource.CLOSED;
+        widened._fireError();
+      }
+    });
+
+    // A failed widening must not take the working stream down with it.
+    expect(narrow?.close).not.toHaveBeenCalled();
+    act(() => {
+      narrow?._fire({ kind: "projects.task.changed", id: "still-here", ts: 1 });
+    });
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "still-here" }),
+    );
   });
 });
