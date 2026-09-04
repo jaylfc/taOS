@@ -390,9 +390,16 @@ class ProjectTaskStore(ProjectsDBStore):
             # must not land (it was decided against a stale row).
             where += " AND status != 'parked'"
         async with self._tx():
-            await self._db.execute(
+            cursor = await self._db.execute(
                 f"UPDATE project_tasks SET {', '.join(sets)} WHERE {where}", params
             )
+            changed = cursor.rowcount == 1
+        if not changed:
+            # The guard above refused the edit (the task was parked after the
+            # pre-read), or the id does not exist.  Nothing committed, so there
+            # is nothing to announce: a task.updated here would tell every
+            # consumer to apply a patch the database never took.
+            return
         existing = await self.get_task(task_id)
         if existing is not None:
             await self._publish(existing["project_id"], "task.updated", {"id": task_id, "patch": patch})
@@ -500,6 +507,12 @@ class ProjectTaskStore(ProjectsDBStore):
             if only_if_unclaimed
             else "status NOT IN ('closed', 'cancelled', 'parked')"
         )
+        existing = None
+        from_status = "open"
+        # Park and disown in ONE transaction: parked is terminal, so an owner
+        # left on a parked row makes the card look held by an agent that can
+        # never release it, and a failure or cancellation between two separate
+        # transactions would leave exactly that.
         async with self._tx():
             cursor = await self._db.execute(
                 f"""UPDATE project_tasks
@@ -508,23 +521,22 @@ class ProjectTaskStore(ProjectsDBStore):
                 (now, task_id),
             )
             changed = cursor.rowcount == 1
-        if changed:
-            existing = await self.get_task(task_id)
-            # Derive the pre-park status race-free from the committed row rather
-            # than a pre-read: the park above does not touch claimed_by, so a
-            # set claimer means the task was 'claimed'.
-            from_status = "claimed" if existing and existing.get("claimed_by") else "open"
-            # Parked is terminal, so an owner on a parked row is stale state:
-            # it makes the card look held by an agent that can never release it.
-            # Safe as a second statement because nothing can re-acquire a parked
-            # row -- claim_task only matches status = 'open'.
-            async with self._tx():
+            if changed:
+                # Read inside the transaction, before the claimer is cleared:
+                # the park above does not touch claimed_by, so a set claimer
+                # means the task was 'claimed'.  Deriving it from the row rather
+                # than a pre-read keeps it race-free.
+                existing = await self.get_task(task_id)
+                from_status = (
+                    "claimed" if existing and existing.get("claimed_by") else "open"
+                )
                 await self._db.execute(
                     """UPDATE project_tasks
                        SET claimed_by = NULL, claimed_at = NULL
                        WHERE id = ? AND status = 'parked'""",
                     (task_id,),
                 )
+        if changed:
             if existing is not None:
                 await self._publish(
                     existing["project_id"],

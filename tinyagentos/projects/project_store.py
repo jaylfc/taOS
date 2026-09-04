@@ -138,14 +138,20 @@ class ProjectStore(ProjectsDBStore):
         there is no partial-update window. A member_id that is not a current
         member of the project raises KeyError (the route maps it to 404).
         """
-        p = await self.get_project(project_id)
-        if p is None:
-            raise KeyError(f"project {project_id!r} not found")
-        if member_id is not None:
-            member = await self.get_member(project_id, member_id)
-            if member is None:
-                raise KeyError(f"member {member_id!r} not in project {project_id!r}")
+        # Both checks read INSIDE the transaction: BEGIN IMMEDIATE holds the
+        # write lock, so a concurrent remove_member cannot delete the member
+        # between the check and the pointer write and leave lead_member_id
+        # dangling.
         async with self._tx():
+            p = await self.get_project(project_id)
+            if p is None:
+                raise KeyError(f"project {project_id!r} not found")
+            if member_id is not None:
+                member = await self.get_member(project_id, member_id)
+                if member is None:
+                    raise KeyError(
+                        f"member {member_id!r} not in project {project_id!r}"
+                    )
             await self._db.execute(
                 "UPDATE projects SET lead_member_id = ? WHERE id = ?",
                 (member_id, project_id),
@@ -162,14 +168,17 @@ class ProjectStore(ProjectsDBStore):
     ) -> dict:
         pid = new_id("prj")
         now = time.time()
-        # Enforce case-insensitive name uniqueness via a query check (not a
-        # schema constraint) so existing duplicate names are not destructively
-        # rejected on upgrade. A UNIQUE(slug) constraint remains as the
-        # backstop for slug collisions caught via IntegrityError below.
-        if await self.get_project_by_name(name) is not None:
-            raise ProjectConflict("name", name)
         try:
             async with self._tx():
+                # Enforce case-insensitive name uniqueness via a query check
+                # (not a schema constraint) so existing duplicate names are not
+                # destructively rejected on upgrade. A UNIQUE(slug) constraint
+                # remains as the backstop for slug collisions caught via
+                # IntegrityError below. The check reads INSIDE the transaction:
+                # there is no unique index on name, so outside it two concurrent
+                # creates would both pass and both insert.
+                if await self.get_project_by_name(name) is not None:
+                    raise ProjectConflict("name", name)
                 await self._db.execute(
                     """INSERT INTO projects
                        (id, name, slug, description, status, created_by, user_id, created_at, updated_at, settings)

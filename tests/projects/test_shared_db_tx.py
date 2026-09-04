@@ -258,3 +258,88 @@ async def test_failure_after_a_nested_write_rolls_the_whole_nest_back(tmp_path):
 
     assert await store.list_tasks("prj-1") == []
     assert store._db.in_transaction is False
+
+
+@pytest.mark.asyncio
+async def test_park_and_disown_land_together_or_not_at_all(tmp_path):
+    """Parking a claimed task must not commit half of itself.
+
+    Parked is terminal, so a claimer left on a parked row makes the card look
+    held by an agent that can never release it.  The status write and the
+    disown are one transaction, so a failure at the second one takes the first
+    back with it.
+    """
+    store = await _task_store(tmp_path)
+    task = await store.create_task("prj-1", "seed", "jay")
+    await store.claim_task(task["id"], "worker-1")
+
+    real_execute = store._db.execute
+
+    def failing_execute(sql, *args, **kwargs):
+        if "claimed_by = NULL" in sql:
+
+            async def _boom():
+                raise sqlite3.OperationalError("disk I/O error")
+
+            return _boom()
+        return real_execute(sql, *args, **kwargs)
+
+    store._db.execute = failing_execute
+    with pytest.raises(sqlite3.OperationalError):
+        await store.park_task(task["id"], "system")
+    store._db.execute = real_execute
+
+    fetched = await store.get_task(task["id"])
+    assert fetched["status"] == "claimed"
+    assert fetched["claimed_by"] == "worker-1"
+    assert store._db.in_transaction is False
+
+
+@pytest.mark.asyncio
+async def test_duplicate_project_name_is_refused_under_concurrency(tmp_path):
+    """The name check must read inside the transaction that inserts.
+
+    ``projects.name`` has no unique index -- the check is a query, so outside
+    the transaction two concurrent creates both pass it and both insert.
+    """
+    store = await _project_store(tmp_path)
+
+    results = await asyncio.gather(
+        store.create_project("Alpha", "alpha-1", "jay"),
+        store.create_project("alpha", "alpha-2", "jay"),
+        return_exceptions=True,
+    )
+
+    conflicts = [r for r in results if isinstance(r, ProjectConflict)]
+    assert len(conflicts) == 1
+    assert len(await store.list_projects()) == 1
+
+
+@pytest.mark.asyncio
+async def test_set_lead_validates_the_member_inside_the_transaction(tmp_path):
+    """The membership check has to hold the write lock it decides under.
+
+    Checked outside, a concurrent ``remove_member`` between the check and the
+    pointer write leaves ``lead_member_id`` pointing at a member that no longer
+    exists.  There is no deterministic single-task interleaving to demonstrate
+    that -- the two writers are serialised by the connection lock -- so this
+    asserts the property that closes it: the read happens with the
+    transaction open.
+    """
+    store = await _project_store(tmp_path)
+    project = await store.create_project("Alpha", "alpha", "jay")
+    await store.add_member(project["id"], "agent-1", "native")
+
+    seen: dict[str, bool] = {}
+    real_get_member = store.get_member
+
+    async def spying_get_member(*args, **kwargs):
+        seen["in_transaction"] = store._db.in_transaction
+        return await real_get_member(*args, **kwargs)
+
+    store.get_member = spying_get_member
+    await store.set_lead(project["id"], "agent-1")
+    store.get_member = real_get_member
+
+    assert seen["in_transaction"] is True
+    assert (await store.get_project(project["id"]))["lead_member_id"] == "agent-1"

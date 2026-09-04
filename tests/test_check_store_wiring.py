@@ -628,6 +628,45 @@ class TestCheckStoreWiring:
         assert waived == set()
 
 
+    def test_qualified_base_is_resolved(self, tmp_path: Path):
+        """`class NotesStore(shared_db.SharedDBStore)` must still be policed.
+
+        Recording only bare-name bases would make a store declared through a
+        qualified import look like it inherits nothing: not a store to the
+        gate, and not a base for the exemption either.
+        """
+        repo = tmp_path / "repo"
+        base_tip = _setup_base_repo(repo)
+
+        _branch(repo, "pr")
+        _checkout(repo, "pr")
+        _commit(
+            repo, "tinyagentos/shared_db.py",
+            "from tinyagentos.base_store import BaseStore\n"
+            "\n"
+            "class SharedDBStore(BaseStore):\n"
+            "    AUTOCOMMIT = True\n",
+            "feat: add the SharedDBStore base",
+        )
+        _commit(
+            repo, "tinyagentos/notes_store.py",
+            "from tinyagentos import shared_db\n"
+            "\n"
+            "class NotesStore(shared_db.SharedDBStore):\n"
+            "    SCHEMA = 'CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY);'\n"
+            "    MIGRATIONS = []\n",
+            "feat: add NotesStore through a qualified import",
+        )
+        _checkout(repo, "main")
+        _git(repo, "merge", "pr", "--no-edit")
+
+        violations, waived = csw.check_store_wiring(base_tip, repo)
+
+        # The base is exempt (subclassed, no tables); the store is not wired.
+        assert [v.class_name for v in violations] == ["NotesStore"]
+        assert waived == set()
+
+
 class TestClassDeclaresSchema:
     def test_class_with_schema(self):
         source = "class FooStore(BaseStore):\n    SCHEMA = 'CREATE TABLE foo (id);'\n"

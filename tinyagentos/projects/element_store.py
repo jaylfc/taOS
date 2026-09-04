@@ -237,8 +237,17 @@ class ProjectElementStore(ProjectsDBStore):
                         "UPDATE project_canvas_elements SET element_id = NULL WHERE element_id = ?",
                         (element_id,),
                     )
-                except sqlite3.OperationalError:
-                    pass
+                except sqlite3.OperationalError as exc:
+                    # ONLY the not-yet-created canvas schema is tolerated.  Any
+                    # other OperationalError (a locked database, an I/O error)
+                    # must abort the transaction: swallowing it would commit the
+                    # element's deletion while canvas rows still point at it.
+                    message = str(exc).lower()
+                    if not (
+                        message.startswith("no such table")
+                        or message.startswith("no such column")
+                    ):
+                        raise
             await self._db.execute(
                 "DELETE FROM project_elements WHERE id = ?", (element_id,)
             )

@@ -835,6 +835,57 @@ async def test_update_task_cannot_unpark(tmp_path):
     fetched = await s.get_task(task["id"])
     assert fetched["status"] == "parked"
     assert fetched["title"] == "Renamed"
+
+
+@pytest.mark.asyncio
+async def test_update_refused_by_the_parked_guard_publishes_nothing(tmp_path):
+    """An edit the parked predicate refuses must not announce itself.
+
+    The guard closes the read-then-write gap by matching zero rows when the
+    task was parked after the pre-read.  Nothing commits in that case, so a
+    `task.updated` event would tell every consumer to apply a patch the
+    database never took.
+    """
+    mock_broker = AsyncMock()
+    s = ProjectTaskStore(tmp_path / "tasks.db", broker=mock_broker)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        mock_broker.reset_mock()
+
+        real_execute = s._db.execute
+        state = {"raced": False}
+
+        def racing_execute(sql, *args, **kwargs):
+            # Park the task in the last moment before the guarded UPDATE runs:
+            # the window the predicate exists to cover.  Stays a plain function
+            # so every other statement hands back aiosqlite's cursor unchanged.
+            if (
+                not state["raced"]
+                and sql.lstrip().upper().startswith("UPDATE")
+                and "status != 'parked'" in sql
+            ):
+                state["raced"] = True
+
+                async def _park_then_execute():
+                    assert await s.park_task(task["id"], "system") is True
+                    return await real_execute(sql, *args, **kwargs)
+
+                return _park_then_execute()
+            return real_execute(sql, *args, **kwargs)
+
+        s._db.execute = racing_execute
+        await s.update_task(task["id"], status="closed")
+        s._db.execute = real_execute
+
+        assert state["raced"] is True
+        assert (await s.get_task(task["id"]))["status"] == "parked"
+        published = [
+            call.args[1].kind for call in mock_broker.publish.call_args_list
+        ]
+        assert "task.updated" not in published
+    finally:
+        await s.close()
     await s.close()
 
 

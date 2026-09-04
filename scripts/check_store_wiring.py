@@ -185,6 +185,12 @@ def build_class_hierarchy(repo_root: Path) -> dict[str, set[str]]:
                 for base in node.bases:
                     if isinstance(base, ast.Name):
                         bases.add(base.id)
+                    elif isinstance(base, ast.Attribute):
+                        # `class NotesStore(shared_db.SharedDBStore)` -- record
+                        # the terminal name, or a store declared through a
+                        # qualified import would look like it inherits nothing:
+                        # unpoliced as a store, and useless as a base.
+                        bases.add(base.attr)
                 classes[node.name] = bases
     return classes
 
