@@ -89,6 +89,38 @@ CODERABBIT_SCAFFOLDING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A CodeRabbit auto-summary comment that reports a completed review with zero
+# findings carries ALL THREE of the following markers (the three-marker rule):
+#   (a) "No actionable comments were generated in the recent review" -- the
+#       no-findings assertion.
+#   (b) "**Run ID**: <uuid>" -- a CodeRabbit run id, only present when an
+#       actual review ran.
+#   (c) "Files selected for processing (N)" with N >= 1 -- at least one file
+#       was in scope for the review (everything path-filtered -> stub).
+# The previous discriminator used the quota-consumed "Included review
+# availability:" line, which only appears on manually-triggered reviews
+# (e.g. @coderabbitai full review) and is absent on the AUTOMATIC review
+# posted at PR-open -- the very case the gate exists to clear.
+CODERABBIT_ZERO_FINDING_PHRASE_RE = re.compile(
+    r"No actionable comments were generated in the recent review",
+    re.IGNORECASE,
+)
+# Informational: the quota-consumed line is retained for reference but is no
+# longer required by the predicate. Automatic reviews carry it only after a
+# manual re-trigger rewrites the comment.
+CODERABBIT_QUOTA_RE = re.compile(
+    r"Included review availability:.*?remain after this review",
+    re.DOTALL | re.IGNORECASE,
+)
+CODERABBIT_RUN_ID_RE = re.compile(
+    r"\*\*Run ID\*\*:\s*(\S+)",
+    re.IGNORECASE,
+)
+CODERABBIT_FILES_SELECTED_RE = re.compile(
+    r"Files selected for processing\s*\((\d+)\)",
+    re.IGNORECASE,
+)
+
 EXIT_OK = 0
 EXIT_STUB = 1
 EXIT_ERROR = 2
@@ -223,6 +255,57 @@ def is_coderabbit_auto_summary(body: str | None) -> bool:
     if not body:
         return False
     return bool(CODERABBIT_AUTO_SUMMARY_RE.search(body))
+
+
+def is_coderabbit_zero_finding_review(body: str | None) -> tuple[bool, str | None, int]:
+    """Return (True, run_id, files_selected) if a body is a CodeRabbit
+    auto-summary comment reporting a completed review with zero findings,
+    else (False, None, 0).
+
+    A completed zero-finding review is an auto-summary comment whose body
+    contains ALL THREE of:
+      (a) "No actionable comments were generated in the recent review" --
+          the no-findings assertion.
+      (b) a "**Run ID**: <uuid>" line -- only present when an actual review
+          ran.
+      (c) "Files selected for processing (N)" with N >= 1 -- at least one
+          file was in scope for the review; N == 0 means everything was
+          path-filtered and nothing was reviewed (a stub the lead labels).
+
+    A rate-limit stub is rejected outright, ahead of the three markers.
+    CodeRabbit's real rate-limit comment (see PRs #2765/#2766) already
+    carries the auto-summary marker, a "**Run ID**:" line AND a non-zero
+    "Files selected for processing (N)" list -- three of the four gates --
+    so the ONLY thing separating it from a genuine zero-finding review is
+    the absence of the no-actionable phrase. That is a one-phrase margin on
+    the exact body class this gate exists to reject, so the stub check is
+    made explicit rather than left implied: a stub must fail because it is
+    a stub, not because one phrase happened not to appear in it.
+
+    The previous version also required the quota-consumed "Included review
+    availability:" line, but that line appears ONLY on manually-triggered
+    reviews (@coderabbitai full review) and is absent on the AUTOMATIC
+    review posted at PR-open -- so the very case the gate exists to clear
+    stayed red on every clean lane PR.
+    """
+    if not body:
+        return False, None, 0
+    if is_rate_limit_stub(body):
+        return False, None, 0
+    if not is_coderabbit_auto_summary(body):
+        return False, None, 0
+    if not CODERABBIT_ZERO_FINDING_PHRASE_RE.search(body):
+        return False, None, 0
+    run_id_match = CODERABBIT_RUN_ID_RE.search(body)
+    if not run_id_match:
+        return False, None, 0
+    files_match = CODERABBIT_FILES_SELECTED_RE.search(body)
+    if not files_match:
+        return False, None, 0
+    files_selected = int(files_match.group(1))
+    if files_selected < 1:
+        return False, None, 0
+    return True, run_id_match.group(1), files_selected
 
 
 def is_real_item(item: CRItem) -> bool:
@@ -370,12 +453,20 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
     Returns (exit_code, message):
     - (0, "PASS ...")            -- a real CodeRabbit review exists.
     - (0, "PASS (absent, ...)")  -- CodeRabbit is entirely absent.
+    - (0, "PASS ...")            -- a completed zero-finding CodeRabbit review
+                                   exists: an auto-summary carrying ALL THREE
+                                   markers -- the no-actionable-comments
+                                   phrase, a "**Run ID**:" line, and
+                                   "Files selected for processing (N)" with
+                                   N >= 1. The quota-consumed "Included review
+                                   availability:" line is NOT required; it is
+                                   absent on the automatic PR-open review.
     - (1, "FAIL ...")            -- only stubs exist, i.e. rate-limit stubs
-                                  or CodeRabbit auto-generated scaffolding
-                                  (acknowledgement / auto-summary), neither
-                                  of which is review content.
+                                   or CodeRabbit auto-generated scaffolding
+                                   (acknowledgement / auto-summary), neither
+                                   of which is review content.
     - (0, "PASS ...")            -- CR output exists but is neither a stub
-                                  nor substantive (edge case, not fake-green).
+                                   nor substantive (edge case, not fake-green).
     """
     if not items:
         return EXIT_OK, "PASS (absent, not stubbed): no CodeRabbit output on this PR"
@@ -386,6 +477,19 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
             f"PASS: {len(real_items)} real CodeRabbit review item(s) "
             f"(exit {EXIT_OK})"
         )
+
+    # Check for a completed zero-finding review before falling through to the
+    # stub verdict. An auto-summary comment carrying the three-marker shape
+    # (no-actionable + Run ID + Files selected N>=1) means CodeRabbit ran and
+    # found nothing -- that is a real review outcome, not fake-green.
+    for item in items:
+        is_zf, run_id, files_selected = is_coderabbit_zero_finding_review(item.body)
+        if is_zf:
+            return EXIT_OK, (
+                f"PASS: real CodeRabbit review, 0 findings "
+                f"(run {run_id}, {files_selected} file(s) selected) "
+                f"(exit {EXIT_OK})"
+            )
 
     # No real review threads. A trigger was accepted but produced no review
     # content: that is the fake-green condition. This covers both the
