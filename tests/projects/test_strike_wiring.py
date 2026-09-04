@@ -9,6 +9,7 @@ pass even with the store never wired up.
 """
 from __future__ import annotations
 
+import asyncio
 import pytest
 from httpx import ASGITransport, AsyncClient
 from taos_test_csrf import csrf_event_hooks
@@ -131,3 +132,81 @@ async def test_unquarantine_route_lead_success_and_noauth_failure(app):
             assert body["status"] == "open"
 
             assert await strikes.count_strikes(task_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_release_parks_after_threshold_strikes(app):
+    """Releasing a claimed task records a strike; after STRIKE_THRESHOLD
+    cumulative releases the task is permanently parked."""
+    async with app.router.lifespan_context(app):
+        async with _auth_client(app) as c:
+            _, task_id = await _make_project_and_task(c, "strike-park")
+
+            task_store = app.state.project_task_store
+            strikes = app.state.task_strikes
+
+            for i in range(strikes.STRIKE_THRESHOLD):
+                await task_store.claim_task(task_id, "worker-1")
+                ok = await task_store.release_task(task_id, "worker-1")
+                assert ok is True
+                count = await strikes.count_strikes(task_id)
+                if i < strikes.STRIKE_THRESHOLD - 1:
+                    assert count == i + 1
+
+            fetched = await task_store.get_task(task_id)
+            assert fetched["status"] == "parked"
+            assert await strikes.count_strikes(task_id) == strikes.STRIKE_THRESHOLD
+
+
+@pytest.mark.asyncio
+async def test_concurrent_claim_during_release(app):
+    """During release_task, if another worker claims the task, the strike
+    recording and parking must not leave the task in an invalid state with a
+    stale claimed_by held in parked status.
+
+    The release must record the *threshold* strike for the parking path to run
+    at all, so seed STRIKE_THRESHOLD - 1 strikes first; with fewer the release
+    never reaches park_task and the test proves nothing."""
+    async with app.router.lifespan_context(app):
+        async with _auth_client(app) as c:
+            _, task_id = await _make_project_and_task(c, "strike-concurrent")
+
+            task_store = app.state.project_task_store
+            strikes = app.state.task_strikes
+
+            # Claim the task so release_task can clear claimed_by and set status to 'open'
+            await task_store.claim_task(task_id, "worker-1")
+
+            # Seed up to one below the threshold so the strike recorded by
+            # release_task below is the one that trips parking.
+            for _ in range(strikes.STRIKE_THRESHOLD - 1):
+                await strikes.record_strike(task_id, "dispatch_failed", actor="worker-1")
+            assert await strikes.count_strikes(task_id) == strikes.STRIKE_THRESHOLD - 1
+
+            # Now race: release the task (which records the threshold strike and
+            # attempts to park) while another worker tries to claim it.
+            released = asyncio.create_task(
+                task_store.release_task(task_id, "worker-1")
+            )
+            claimed = asyncio.create_task(task_store.claim_task(task_id, "worker-2"))
+
+            release_ok, claim_ok = await asyncio.gather(released, claimed)
+            assert release_ok is True
+
+            fetched = await task_store.get_task(task_id)
+            status = fetched["status"]
+            assert status in ("open", "claimed", "parked")
+            # Parking may never swallow a live claim, and a parked card may
+            # never carry an owner that can no longer release it.
+            if status == "parked":
+                assert fetched.get("claimed_by") is None, "Task parked with stale claimed_by"
+                assert fetched.get("claimed_at") is None, "Task parked with stale claimed_at"
+            if claim_ok:
+                # worker-2 won the claim, so the release path must have left it
+                # alone rather than parking someone else's active card.
+                assert status == "claimed", f"concurrent claim was overridden ({status})"
+                assert fetched.get("claimed_by") == "worker-2"
+            # The threshold strike from the release is recorded regardless of
+            # whether parking was skipped.
+            count = await strikes.count_strikes(task_id)
+            assert count == strikes.STRIKE_THRESHOLD

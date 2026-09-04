@@ -610,3 +610,31 @@ async def test_close_unclaimed_unchanged(store):
     again = await store.get_task(t["id"])
     assert again["status"] == "closed"
     assert again["closed_by"] == "reviewer"
+
+
+@pytest.mark.asyncio
+async def test_park_task(store):
+    """park_task sets status to parked and records audit."""
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    ok = await store.park_task(t["id"], actor="system")
+    assert ok is True
+    back = await store.get_task(t["id"])
+    assert back["status"] == "parked"
+
+
+@pytest.mark.asyncio
+async def test_park_already_parked_is_noop(store):
+    """park_task on an already-parked task returns False."""
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    await store.park_task(t["id"], actor="system")
+    ok = await store.park_task(t["id"], actor="system")
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_park_closed_task_is_noop(store):
+    """park_task on a closed task returns False."""
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    await store.close_task(t["id"], closed_by="u")
+    ok = await store.park_task(t["id"], actor="system")
+    assert ok is False

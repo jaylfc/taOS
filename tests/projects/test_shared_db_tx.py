@@ -222,3 +222,39 @@ async def test_cancelled_handoff_rollback_still_frees_the_lock_and_says_so(caplo
 
     assert lock.locked() is False
     assert "rollback was itself cancelled in ProjectTaskStore" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_nested_write_on_the_same_store_joins_the_open_transaction(tmp_path):
+    """A write called from inside another write must not wait on its own lock.
+
+    The per-connection lock is not re-entrant, so without the join a store
+    method that writes through the same connection while a transaction is open
+    -- a write calling another write, which is what a hook or a helper method
+    does -- waits forever on a lock its own task already holds.  That is a
+    worse failure than the wedge this module removes, so a nested scope in the
+    same task joins the transaction already running.
+    """
+    store = await _task_store(tmp_path)
+
+    async with store._tx():
+        task = await asyncio.wait_for(
+            store.create_task("prj-1", "nested write", "jay"), 5.0
+        )
+
+    assert (await store.get_task(task["id"]))["title"] == "nested write"
+    assert store._db.in_transaction is False
+
+
+@pytest.mark.asyncio
+async def test_failure_after_a_nested_write_rolls_the_whole_nest_back(tmp_path):
+    """The outermost scope owns the commit, so the nest is one transaction."""
+    store = await _task_store(tmp_path)
+
+    with pytest.raises(RuntimeError):
+        async with store._tx():
+            await store.create_task("prj-1", "doomed", "jay")
+            raise RuntimeError("outer failed after the nested write")
+
+    assert await store.list_tasks("prj-1") == []
+    assert store._db.in_transaction is False

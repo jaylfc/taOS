@@ -48,6 +48,18 @@ _CONNECTION_LOCKS: "weakref.WeakKeyDictionary[object, asyncio.Lock]" = (
     weakref.WeakKeyDictionary()
 )
 
+# The task that currently holds each connection's transaction.  The lock above
+# is not re-entrant, so a store method that writes through the same connection
+# from inside an open transaction -- a write calling another write -- would wait
+# on a lock its own task already holds, and wait forever.  That is a worse
+# failure than the one this module removes, so a nested scope in the SAME task
+# JOINS the transaction already running instead of starting a second one: the
+# outermost scope owns the single COMMIT or ROLLBACK, which is also what makes
+# the pair atomic.
+_ACTIVE_TX: "weakref.WeakKeyDictionary[object, asyncio.Task]" = (
+    weakref.WeakKeyDictionary()
+)
+
 
 def _lock_for(db) -> asyncio.Lock:
     lock = _CONNECTION_LOCKS.get(db)
@@ -72,8 +84,19 @@ async def tx(db, store: str = "projects.db"):
     """
     if db is None:
         raise RuntimeError(f"{store}: store is not initialised (call init() first)")
+
+    current = asyncio.current_task()
+    if current is not None and _ACTIVE_TX.get(db) is current:
+        # Already inside a transaction on this connection, in this task: join it
+        # rather than deadlock on our own lock.  No BEGIN, no COMMIT, no
+        # ROLLBACK here -- the outermost scope owns all three, so a failure
+        # anywhere in the nest still unwinds the whole thing.
+        yield db
+        return
+
     lock = _lock_for(db)
     await lock.acquire()
+    _ACTIVE_TX[db] = current
     # True once the rollback task owns the release (see _rollback).
     handed_off = False
     try:
@@ -98,6 +121,7 @@ async def tx(db, store: str = "projects.db"):
         handed_off = await _rollback(db, store, lock)
         raise
     finally:
+        _ACTIVE_TX.pop(db, None)
         if not handed_off:
             lock.release()
 
