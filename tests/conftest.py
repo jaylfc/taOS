@@ -120,7 +120,17 @@ def _is_embed_backend_available() -> bool:
     latter, so probing `onnx` reports "no backend" on every developer box and
     every CI row.
 
-    Cached: the probe opens a socket and is consulted once per collected item.
+    Cached for the whole process (``maxsize=1``): the body runs once per
+    interpreter, not once per collected item, so a qmd that starts after
+    collection is not seen until the next pytest run. That is deliberate: the
+    verdict for one run must be one verdict, or half a session skips and the
+    other half runs.
+
+    The reachability probe is a TCP connect to qmd's configured host:port. Any
+    listener on that port satisfies it; a foreign service squatting the default
+    port makes the marked tests run and fail loudly on the protocol mismatch
+    rather than skip. That direction (a false run) is the one we can see in CI;
+    a false skip is the one this gate exists to end.
     """
     return _qmd_reachable() or importlib.util.find_spec("onnxruntime") is not None
 

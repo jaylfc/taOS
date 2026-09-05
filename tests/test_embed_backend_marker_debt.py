@@ -134,7 +134,14 @@ def _root_conftest(config):
     """
     target = Path(__file__).resolve().parent / "conftest.py"
     for plugin in config.pluginmanager.get_plugins():
-        if Path(getattr(plugin, "__file__", "") or "").resolve() == target:
+        # Built-in and many third-party plugins have no ``__file__``; skip them
+        # rather than resolving ``Path("")`` -- that is the CWD, which equals
+        # ``tests/conftest.py`` for no plugin but would match a fileless one
+        # under ``cd tests && pytest`` for the wrong reason.
+        file = getattr(plugin, "__file__", None)
+        if not file:
+            continue
+        if Path(file).resolve() == target:
             return plugin
     raise AssertionError(f"pytest did not load {target} as a conftest plugin")
 
