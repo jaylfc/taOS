@@ -93,6 +93,12 @@ def _shell_ref_safe(name: str) -> bool:
     return subprocess.run(["bash", "-c", script, "bash", name]).returncode == 0
 
 
+def _shell_sha_safe(sha: str) -> bool:
+    """Ask rollback.sh's own sha_safe() whether it would use this commit."""
+    script = _shell_func("sha_safe") + '\nsha_safe "$1"\n'
+    return subprocess.run(["bash", "-c", script, "bash", sha]).returncode == 0
+
+
 def test_record_then_read_roundtrip(tmp_path):
     record_pre_update(tmp_path, branch="dev", sha=SHA_A, ts=1700000000)
     target = read_rollback_target(tmp_path)
@@ -126,6 +132,43 @@ def test_quote_injection_is_safe(tmp_path):
     record_pre_update(tmp_path, branch="a'b", sha=SHA_A, ts=1)
     assert read_rollback_target(tmp_path)["branch"] == "a'b"
     assert _shell_record_field(tmp_path, "prev_branch") == "a'b"
+
+
+@pytest.mark.parametrize(
+    "sha",
+    [SHA_A + "\n", SHA_A + " ", " " + SHA_A, SHA_A + "\r\n", SHA_A + "\t"],
+)
+def test_record_rejects_a_sha_with_surrounding_whitespace(tmp_path, sha):
+    """Whitespace around the object name makes it unusable, so refuse to write it.
+
+    Python's ``$`` matches before one final newline, so a plain ``re.match`` lets
+    ``<40 hex>\\n`` through -- and bash's ``=~`` does not, which is the worse
+    half: the writer would happily record a value the shell then refuses, losing
+    the rollback target rather than reporting anything.
+    """
+    with pytest.raises(ValueError):
+        record_pre_update(tmp_path, branch="dev", sha=sha, ts=1)
+    assert not (tmp_path / ROLLBACK_FILE).exists()
+
+
+@pytest.mark.parametrize(
+    "sha", [SHA_A, "c" * 64, SHA_A + "\n", SHA_A + " ", " " + SHA_A, SHA_A[:39], "dev"]
+)
+def test_shell_sha_safe_matches_the_writer(tmp_path, sha):
+    """Both ends must draw the line in the same place, whitespace included.
+
+    Compares the shell's own sha_safe() against what the writer will actually
+    put in the file: a value the writer accepts but the shell refuses is a
+    rollback target that silently does not work.
+    """
+    try:
+        record_pre_update(tmp_path, branch="dev", sha=sha, ts=1)
+        writable = True
+    except ValueError:
+        writable = False
+    assert _shell_sha_safe(sha) == writable, (
+        f"shell sha_safe({sha!r}) disagrees with the writer"
+    )
 
 
 def test_record_rejects_a_non_sha(tmp_path):

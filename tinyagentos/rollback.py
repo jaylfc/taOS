@@ -28,6 +28,10 @@ ROLLBACK_FILE = ".taos-rollback"
 # records ``git rev-parse HEAD``, which is 40 hex (64 in a sha256 checkout) and
 # never abbreviated. A short value is therefore a truncated or forged record,
 # not a legitimate prefix. Kept in sync with sha_safe() in scripts/rollback.sh.
+# Matched with fullmatch(), never match(): Python's `$` also matches just before
+# a final newline, so `<40 hex>\n` would pass here while bash's `=~` in
+# sha_safe() rejects it -- the writer would record a value the shell then
+# refuses, which loses the rollback target instead of reporting anything.
 _SHA_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 
 # Characters git bans anywhere in a ref name: ASCII control characters, space,
@@ -76,7 +80,7 @@ def record_pre_update(project_dir, *, branch: str, sha: str, ts: int) -> Path:
     The caller records best-effort, so a rejected write simply leaves the
     rollback script on its recovery-tag fallback rather than on a bad target.
     """
-    if not _SHA_RE.match(str(sha)):
+    if not _SHA_RE.fullmatch(str(sha)):
         raise ValueError(f"rollback sha is not a git object name: {sha!r}")
     if "\n" in str(branch) or "\r" in str(branch):
         raise ValueError(f"rollback branch contains a newline: {branch!r}")
@@ -115,7 +119,7 @@ def read_rollback_target(project_dir) -> dict | None:
         if len(val) >= 2 and val[0] == val[-1] == "'":
             val = val[1:-1].replace("'\\''", "'")
         out[key.strip()] = val
-    if not _SHA_RE.match(out.get("prev_sha", "")):
+    if not _SHA_RE.fullmatch(out.get("prev_sha", "")):
         return None
     branch = out.get("prev_branch", "")
     return {
