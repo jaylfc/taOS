@@ -39,6 +39,13 @@ SERVER_EXTRAS = ("proxy",)
 # Licence expressions/classifiers that must never reach the shipped venv.
 # ``LicenseRef-`` is SPDX's escape hatch for a licence with no SPDX id, which in
 # practice means a bespoke proprietary grant we cannot pass on.
+#
+# These are substrings, not word-bounded — that is a deliberate choice, not an
+# oversight: erring toward a false positive here costs a minute of by-hand
+# triage, while a false negative ships a BLOCKER licence straight into the
+# shipped venv. Commons Clause is handled separately below because its real-
+# world spelling varies ("Commons Clause", "Commons-Clause") in a way a plain
+# substring cannot cover without also widening every other pattern.
 BLOCKING_PATTERNS = (
     "licenseref-",
     "proprietary",
@@ -46,8 +53,11 @@ BLOCKING_PATTERNS = (
     "sspl",
     "business source",
     "busl",
-    "commons clause",
 )
+
+# Matches "Commons Clause" and "Commons-Clause" (SPDX-adjacent text spells it
+# both ways, e.g. "MIT-0 WITH Commons-Clause"), case-insensitively.
+COMMONS_CLAUSE_RE = re.compile(r"\bcommons[\s-]?clause\b", re.IGNORECASE)
 
 # First-party packages: same licensor as taOS, so the terms that would block a
 # third-party dependency are ours to grant. taosmd ships MIT + Commons Clause
@@ -167,6 +177,40 @@ def canonical(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def litellm_cap_pins_mirrored_minor(
+    litellm_req: str, floor: str = "1.94.2", ceiling: str = "1.95"
+) -> bool:
+    """True iff ``litellm_req`` pins exactly ``>=floor,<ceiling``.
+
+    ``"<" in litellm_req`` alone cannot tell a real cap from a decoy one — it is
+    true for a ceiling as loose as ``<2`` just as it is for the ``<1.95`` the
+    inlined proxy subset actually mirrors, which would let a fresh
+    ``pip install -e .[proxy]`` pull a litellm minor whose proxy extra has grown
+    requirements this repo's inlined subset does not carry.
+    """
+    from packaging.requirements import Requirement
+
+    specifiers = {(s.operator, s.version) for s in Requirement(litellm_req).specifier}
+    return specifiers == {(">=", floor), ("<", ceiling)}
+
+
+def licence_from_info(info: dict) -> str:
+    """Best-effort licence string from a PyPI release ``info`` dict.
+
+    Prefers the SPDX ``license_expression``, then the free-text ``license``
+    field, then any ``License ::`` classifier. Returns ``"UNKNOWN"`` when none
+    of those carry anything readable — an unreadable licence is not evidence
+    the package is safe to redistribute, so callers must treat it as a finding
+    of its own rather than as a silent pass.
+    """
+    expression = info.get("license_expression") or ""
+    if expression:
+        return expression
+    licence = (info.get("license") or "").strip()
+    classifiers = [c for c in info.get("classifiers", []) if c.startswith("License ::")]
+    return licence or "; ".join(classifiers) or "UNKNOWN"
+
+
 def pypi_licence(name: str, version: str) -> str:
     """Best-effort licence string for a release: expression, then classifiers."""
     url = f"https://pypi.org/pypi/{name}/{version}/json"
@@ -176,12 +220,23 @@ def pypi_licence(name: str, version: str) -> str:
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         # Never narrate a degraded run as a clean one.
         raise SystemExit(f"ERROR  could not read licence for {name} {version}: {exc}")
-    expression = info.get("license_expression") or ""
-    if expression:
-        return expression
-    licence = (info.get("license") or "").strip()
-    classifiers = [c for c in info.get("classifiers", []) if c.startswith("License ::")]
-    return licence or "; ".join(classifiers) or "UNKNOWN"
+    return licence_from_info(info)
+
+
+def classify_licence(licence: str) -> str | None:
+    """Classify a licence string as ``"unknown-licence"``, ``"blocked"``, or ``None`` (ok).
+
+    An ``"UNKNOWN"`` licence (see ``licence_from_info``) is its own finding,
+    distinct from ``"blocked"``: PyPI gave us nothing to check, which is not
+    the same claim as "we checked and it is clear". Both must count toward a
+    non-zero exit so the gate cannot pass silently on either.
+    """
+    if licence == "UNKNOWN":
+        return "unknown-licence"
+    low = licence.lower()
+    if any(pattern in low for pattern in BLOCKING_PATTERNS) or COMMONS_CLAUSE_RE.search(licence):
+        return "blocked"
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -214,8 +269,15 @@ def main(argv: list[str] | None = None) -> int:
             if canonical(name) in FIRST_PARTY:
                 continue
             licence = pypi_licence(name, install_set[name])
-            low = licence.lower()
-            if any(pattern in low for pattern in BLOCKING_PATTERNS):
+            finding = classify_licence(licence)
+            if finding == "unknown-licence":
+                print(
+                    f"unknown-licence {name} {install_set[name]}  "
+                    "PyPI gave no license_expression, license, or License classifier "
+                    "-- verify by hand before shipping"
+                )
+                failures += 1
+            elif finding == "blocked":
                 # Some projects paste the whole licence text into the field;
                 # one line is enough to name the offender.
                 summary = licence.strip().splitlines()[0][:120]

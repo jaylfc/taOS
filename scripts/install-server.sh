@@ -1516,10 +1516,29 @@ log "installing controller python deps into .venv (pip install -e '.[proxy]')"
 # it. Nothing in taOS imports it (grep -rn litellm_enterprise tinyagentos/ is
 # empty), so removing it is inert; and it is the shipped venv, not the source
 # tree, that a commercial licensee redistributes.
-if ./.venv/bin/python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('litellm_enterprise') else 1)" 2>/dev/null; then
+#
+# Probed with importlib.metadata.distribution(), not importlib.util.find_spec():
+# that is exactly what `pip uninstall` itself consults, so the probe and the
+# uninstall it gates can no longer disagree about whether the package is there.
+litellm_enterprise_present() {
+    ./.venv/bin/python -c "
+import importlib.metadata as m, sys
+try:
+    m.distribution('litellm-enterprise')
+except m.PackageNotFoundError:
+    sys.exit(1)
+" 2>/dev/null
+}
+
+if litellm_enterprise_present; then
     log "removing litellm-enterprise (LicenseRef-Proprietary) left in .venv by an earlier install"
-    ./.venv/bin/pip uninstall --quiet --yes litellm-enterprise \
-        || warn "could not remove litellm-enterprise from .venv -- remove it by hand: ./.venv/bin/pip uninstall -y litellm-enterprise"
+    ./.venv/bin/pip uninstall --quiet --yes litellm-enterprise
+    # Fail closed: a warning that lets the installer succeed anyway ships the
+    # proprietary package right along with it. Re-probe with the same check
+    # pip uninstall itself consults, rather than trusting its exit code alone.
+    if litellm_enterprise_present; then
+        die "litellm-enterprise (LicenseRef-Proprietary) is still present in .venv after uninstall -- remove it by hand: ./.venv/bin/pip uninstall -y litellm-enterprise"
+    fi
 fi
 
 log "verifying controller import"

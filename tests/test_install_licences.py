@@ -89,3 +89,57 @@ def test_proxy_extra_pins_litellm_to_the_minor_it_mirrors():
         "litellm[proxy] pulls litellm-enterprise; the subset is inlined below it "
         f"instead (got {litellm_req!r})"
     )
+    assert check_install_licences.litellm_cap_pins_mirrored_minor(litellm_req), (
+        "litellm's specifier must pin exactly the mirrored minor (>=1.94.2,<1.95), "
+        f"not merely carry *some* upper bound (got {litellm_req!r})"
+    )
+
+
+def test_litellm_cap_helper_rejects_a_ceiling_wider_than_the_mirrored_minor():
+    """A loose ceiling like ``<2`` must not satisfy the cap check.
+
+    ``"<" in litellm_req`` (the original assertion) is true for ``litellm>=1.94.2,<2``
+    just as it is for the correct ``litellm>=1.94.2,<1.95`` — it cannot tell a real
+    cap from a decoy one, so a fresh pip resolve could still outrun the inlined
+    proxy subset while this test stayed green.
+    """
+    assert not check_install_licences.litellm_cap_pins_mirrored_minor(
+        "litellm>=1.94.2,<2"
+    ), "a <2 ceiling is far wider than the <1.95 the inlined subset mirrors"
+
+
+def test_unreadable_licence_is_its_own_failing_finding():
+    """A PyPI release with no expression/license/classifiers must fail the gate.
+
+    ``licence_from_info`` returns ``"UNKNOWN"`` for a bare release ``info`` dict
+    (no ``license_expression``, no ``license``, no ``License ::`` classifier).
+    ``classify_licence`` must turn that into an ``"unknown-licence"`` finding —
+    distinct wording from ``"blocked"`` — so main() counts it toward a non-zero
+    exit instead of treating "we could not tell" as "this is clear".
+    """
+    bare_info: dict = {"license_expression": None, "license": "", "classifiers": []}
+    licence = check_install_licences.licence_from_info(bare_info)
+    assert licence == "UNKNOWN"
+    assert check_install_licences.classify_licence(licence) == "unknown-licence"
+
+
+def test_commons_clause_with_hyphen_is_flagged():
+    """"MIT-0 WITH Commons-Clause" (hyphenated) must be flagged as blocked.
+
+    A plain substring check for ``"commons clause"`` (with a space) misses the
+    hyphenated spelling PyPI text commonly uses, letting a Commons-Clause
+    package through the gate with no finding at all.
+    """
+    assert check_install_licences.classify_licence("MIT-0 WITH Commons-Clause") == "blocked"
+
+
+def test_proprietary_style_substring_is_not_narrowed_to_word_boundaries():
+    """The non-Commons-Clause patterns stay plain substrings on purpose.
+
+    A gate erring toward a false positive costs a minute of by-hand triage; one
+    erring toward a false negative ships a BLOCKER licence. "proprietary-ish"
+    is a deliberately awkward superstring that must still trip the substring
+    match, proving the fix did not quietly tighten these into word-bounded
+    regexes as a side effect of the Commons Clause change.
+    """
+    assert check_install_licences.classify_licence("Proprietary-ish") == "blocked"
