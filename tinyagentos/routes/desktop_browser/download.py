@@ -38,6 +38,7 @@ from tinyagentos.routes.desktop_browser.cookie_jar import (
 )
 from tinyagentos.routes.desktop_browser.ssrf import (
     SsrfBlockedError,
+    guarded_async_client,
     validate_url_or_raise,
 )
 
@@ -152,7 +153,7 @@ async def download_endpoint(
     )
 
     # Manage the AsyncClient lifetime — don't close until the streamer finishes.
-    http = httpx.AsyncClient(
+    http = guarded_async_client(
         follow_redirects=False, timeout=_FETCH_TIMEOUT, cookies=cookies,
     )
 
