@@ -93,7 +93,10 @@ class IngestPipeline:
         it must stay unguarded — they live on loopback. Article URLs are
         user-supplied and are fetched with `fetch_client` instead, which
         defaults to a fresh SSRF-pinned client per download; pass one only if
-        it is guarded too.
+        it is guarded too. If the object passed in is an `httpx.AsyncClient`,
+        this is enforced at fetch time — it must carry the
+        `SsrfGuardedAsyncTransport`, or a `TypeError` is raised. Test doubles
+        that are not `httpx.AsyncClient` (mocks, fakes) are exempt.
         """
         self._store = store
         self._http_client = http_client
@@ -300,11 +303,25 @@ class IngestPipeline:
         from contextlib import nullcontext
         from urllib.parse import urljoin
 
+        import httpx
+
         from tinyagentos.routes.desktop_browser.ssrf import (
             SsrfBlockedError,
+            SsrfGuardedAsyncTransport,
             guarded_async_client,
             validate_url_or_raise,
         )
+
+        # A caller-supplied fetch_client that IS an httpx.AsyncClient must
+        # carry the SSRF-pinned transport, or the guard is silently bypassed
+        # for every article fetch through this pipeline (e.g. a shared
+        # app-wide client handed in by mistake). Test doubles that are not
+        # httpx.AsyncClient at all (mocks, fakes) pass through unchanged.
+        if self._fetch_client is not None and isinstance(self._fetch_client, httpx.AsyncClient):
+            if not isinstance(
+                getattr(self._fetch_client, "_transport", None), SsrfGuardedAsyncTransport
+            ):
+                raise TypeError("fetch_client must be built by guarded_async_client")
 
         client_cm = (
             nullcontext(self._fetch_client)

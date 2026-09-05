@@ -489,13 +489,17 @@ class WebProcessor(Processor):
         # — a hostile server streaming a multi-GB text/html body is OOM-safe.
         async def _fetch() -> tuple[str, str, bytes]:
             current_url = source_url
-            for _hop in range(self._MAX_WEB_REDIRECTS + 1):
-                validate_url_or_raise(current_url)
+            # One client (one pool, one SSL context, one pinned backend) serves
+            # every hop of the redirect chain — the inner backend re-resolves
+            # and re-validates per connection anyway (see ssrf.py), so reuse
+            # across hops is exactly what it was designed for.
+            async with guarded_async_client(
+                timeout=httpx.Timeout(30),
+                follow_redirects=False,
+            ) as client:
+                for _hop in range(self._MAX_WEB_REDIRECTS + 1):
+                    validate_url_or_raise(current_url)
 
-                async with guarded_async_client(
-                    timeout=httpx.Timeout(30),
-                    follow_redirects=False,
-                ) as client:
                     async with client.stream("GET", current_url) as resp:
                         status_code = resp.status_code
                         content_type = resp.headers.get("content-type", "")
@@ -528,10 +532,10 @@ class WebProcessor(Processor):
                                 body_chunks.append(chunk)
                             encoding = resp.encoding or "utf-8"
                             return content_type, encoding, b"".join(body_chunks)
-            else:
-                raise SsrfBlockedError(
-                    f"too many redirects fetching {source_url!r}"
-                )
+                else:
+                    raise SsrfBlockedError(
+                        f"too many redirects fetching {source_url!r}"
+                    )
 
         try:
             content_type, encoding, body = await asyncio.wait_for(

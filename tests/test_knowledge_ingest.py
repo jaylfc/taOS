@@ -305,7 +305,7 @@ async def test_max_concurrent_zero_raises(store, mock_http):
         IngestPipeline(
             store=store,
             http_client=mock_http,
-        fetch_client=mock_http,
+            fetch_client=mock_http,
             notifications=notif,
             category_engine=cat_engine,
             max_concurrent=0,
@@ -420,3 +420,36 @@ async def test_download_article_blocks_internal_url(pipeline, store):
     # The guard raises before any HTTP call to the internal address.
     for call in pipeline._http_client.get.await_args_list:
         assert "127.0.0.1" not in str(call)
+
+
+@pytest.mark.asyncio
+async def test_fetch_client_must_be_guarded(store, mock_http):
+    """A caller-supplied fetch_client that IS an httpx.AsyncClient must carry
+    the SSRF-pinned transport. Otherwise a caller handing in a plain,
+    unguarded client (e.g. a shared app-wide client) would silently bypass
+    the guard for every article fetch through this pipeline."""
+    import httpx
+
+    def _handler(request):
+        # Should never actually be reached — the type check must fire first.
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text="<html><body><p>Should never be read.</p></body></html>",
+        )
+
+    notif = AsyncMock()
+    cat_engine = AsyncMock()
+    unguarded_client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=unguarded_client,
+        notifications=notif,
+        category_engine=cat_engine,
+    )
+    try:
+        with pytest.raises(TypeError, match="guarded_async_client"):
+            await pipeline._download_article("https://example.com/a", "", {})
+    finally:
+        await unguarded_client.aclose()

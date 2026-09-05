@@ -154,9 +154,9 @@ def resolve_and_validate(hostname: str, *, allow_private: bool = False) -> list[
                 results = socket.getaddrinfo(host, None)
                 # results is a list of (family, type, proto, canonname, sockaddr).
                 # sockaddr[0] is the address string for both AF_INET and AF_INET6.
-                # Dedupe but keep resolver order: the first answer is the one a
-                # pinned connection uses, and getaddrinfo already sorts by the
-                # RFC 6724 destination preference.
+                # Dedupe but keep first-seen order: `dict.fromkeys` preserves the
+                # resolver's own order, and the first answer is the one the pin
+                # connects to.
                 addrs = list(dict.fromkeys(r[4][0] for r in results))
             except socket.gaierror as e:
                 raise SsrfBlockedError(f"could not resolve hostname: {e}") from e
