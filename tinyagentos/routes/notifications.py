@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import time
 from typing import Any
@@ -40,10 +41,14 @@ async def list_notifications(request: Request, unread_only: bool = False):
         for item in items:
             cls = "notif-item unread" if not item["read"] else "notif-item"
             level_icon = {"warning": "&#x26A0;&#xFE0F;", "error": "&#x274C;", "info": "&#x2139;&#xFE0F;"}.get(item["level"], "")
+            # title and message are agent-supplied (the broker access-request
+            # reason lands here verbatim), so escape them at the HTML sink; the
+            # JSON branch below still returns the raw text. level_icon is a
+            # fixed entity literal and cls is derived from a bool.
             html_parts.append(
                 f'<div class="{cls}">'
-                f'<div class="notif-title">{level_icon} {item["title"]}</div>'
-                f'<div class="notif-meta">{item["message"]} &middot; {_format_ts(item["timestamp"])}</div>'
+                f'<div class="notif-title">{level_icon} {html.escape(item["title"])}</div>'
+                f'<div class="notif-meta">{html.escape(item["message"])} &middot; {_format_ts(item["timestamp"])}</div>'
                 f'</div>'
             )
         return HTMLResponse("".join(html_parts))
