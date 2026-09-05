@@ -16,7 +16,7 @@ Granting `project_tasks` also makes the agent a project member.
 
 ### project_tasks_update
 
-`PATCH /api/projects/{pid}/tasks/{tid}` — whitelisted fields (title, body, labels, priority). own-or-lead cards only. SEPARATE from `project_tasks`; plain project_tasks token gets 403.
+`PATCH /api/projects/{pid}/tasks/{tid}` — whitelisted fields (title, body, labels, priority). own-or-lead cards only. SEPARATE from `project_tasks`; plain project_tasks token gets 403. The whitelist keys on which fields the body SENDS, so `{"assignee_id": null}` is a 403 like any other assignee edit.
 
 ### canvas_read & canvas_write
 

@@ -18,6 +18,21 @@ Access the kanban board for a project. Granting `project_tasks` also makes the a
 - `POST /api/projects/{pid}/tasks/{id}/reopen` — reopen a closed task
 - `GET /api/projects/tasks/{id}/context` — get task context
 
+### PATCH body semantics
+
+`PATCH /api/projects/{pid}/tasks/{id}` writes exactly the fields the body sends
+and answers with the stored task:
+
+- an omitted field is left unchanged;
+- `assignee_id`, `parent_task_id` and `element_id` accept `null` as a real edit
+  (unassign / orphan / untag); `element_id` also accepts the legacy `"none"`
+  string for the same clear;
+- `null` on any other field is a `422` — it cannot be written, so it is not
+  silently ignored;
+- a key the route cannot write (a misspelling, or a read-only column such as
+  `id`, `created_by`, `claimed_by`) is a `422`, never a `200` that echoes back
+  an unchanged task.
+
 ### Grant requirements
 
 Granting `project_tasks` also makes the agent a project member.
@@ -45,7 +60,7 @@ Granting `project_tasks` also makes the agent a project member.
 
 ### project_tasks_update
 
-`PATCH /api/projects/{pid}/tasks/{tid}` — whitelisted fields (title, body, labels, priority). own-or-lead cards only. SEPARATE from `project_tasks`; plain project_tasks token gets 403.
+`PATCH /api/projects/{pid}/tasks/{tid}` — whitelisted fields (title, body, labels, priority). own-or-lead cards only. SEPARATE from `project_tasks`; plain project_tasks token gets 403. The whitelist keys on which fields the body SENDS, so `{"assignee_id": null}` is a 403 like any other assignee edit.
 
 ### canvas_read & canvas_write
 

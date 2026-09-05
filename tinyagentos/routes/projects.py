@@ -24,7 +24,6 @@ from tinyagentos.projects.folders import (
     write_project_yaml,
 )
 from tinyagentos.projects.project_store import ProjectConflict
-from tinyagentos.projects.task_store import _ELEMENT_CLEAR
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -498,17 +497,53 @@ class CreateTaskIn(_TaskRequestModelMixin, BaseModel):
         return self
 
 
+# Task columns the PATCH route can write as NULL, i.e. the fields for which an
+# explicit ``null`` is a real edit ("unassign me", "orphan this card") rather
+# than a typo.  Every other field must carry a value.
+_NULLABLE_TASK_FIELDS = frozenset({"assignee_id", "parent_task_id", "element_id"})
+
+
 class UpdateTaskIn(_TaskRequestModelMixin, BaseModel):
+    # extra="forbid", as on CreateTaskIn: a key this route cannot write -- a
+    # misspelling, or a read-only column such as id/created_by/claimed_by -- is
+    # refused 422 instead of being answered 200 with the task it did not change
+    # (tsk-5xq2mw).  A dropped write that reports success passes every caller
+    # check short of a re-read.
+    model_config = ConfigDict(extra="forbid")
+
     title: str | None = None
     body: str | None = None
     priority: int | None = None
     labels: list[str] | None = None
     status: str | None = None
+    # Omitted -> unchanged; null -> cleared (the board's "Unassigned" and
+    # "Orphans" lanes send exactly that).
     assignee_id: str | None = None
     parent_task_id: str | None = None
-    # Omit to leave the element tag unchanged; send "none" to clear it to
-    # project-level (NULL); send a real element id to move the task.
+    # Omit to leave the element tag unchanged; send null (or the legacy "none"
+    # string) to clear it to project-level; send a real element id to move the
+    # task.
     element_id: str | None = None
+
+    @model_validator(mode="after")
+    def _reject_null_on_non_nullable_fields(self) -> UpdateTaskIn:
+        """A null for a column that cannot hold one is a caller mistake.
+
+        Treating it as "field omitted" would answer 200 with the unchanged
+        task -- the same silent drop this route is being fixed for -- so it is
+        a 422 naming the offending fields.
+        """
+        nulled = sorted(
+            f
+            for f in self.model_fields_set
+            if f not in _NULLABLE_TASK_FIELDS and getattr(self, f) is None
+        )
+        if nulled:
+            raise ValueError(
+                f"{', '.join(nulled)}: null is not a valid value; "
+                "omit the field to leave it unchanged"
+            )
+        return self
 
 
 class ClaimIn(_TaskRequestModelMixin, BaseModel):
@@ -1001,13 +1036,16 @@ async def update_task(
             )
 
     # Field whitelist for agents: title, body, labels, priority ONLY.
-    # Any other field that is set is rejected 403 (future fields included)
+    # Any other field the caller SENT is rejected 403 (future fields included)
     # so the surface stays minimal and future task fields are protected by
     # default. assignee_id and parent_task_id stay human-only: an agent may
-    # not reassign work to itself or rewire hierarchies.
+    # not reassign work to itself or rewire hierarchies -- including by
+    # clearing them, which is why this keys on which fields were sent rather
+    # than on their value (an explicit null is a write too, tsk-5xq2mw).
+    sent = payload.model_fields_set
     if is_agent:
-        for f in payload.model_fields:
-            if f not in _AGENT_EDITABLE_FIELDS and getattr(payload, f) is not None:
+        for f in sorted(sent):
+            if f not in _AGENT_EDITABLE_FIELDS:
                 return JSONResponse(
                     {"error": f"field {f!r} is not editable by agents"},
                     status_code=403,
@@ -1029,14 +1067,17 @@ async def update_task(
             cur = await store.get_task(cur["parent_task_id"])
 
     estore = request.app.state.project_element_store
+    # Keyed on what the caller SENT: an omitted field is unchanged, a field
+    # sent as null clears its column (the model has already refused a null on
+    # a column that cannot hold one).
     update_fields: dict = {}
     for f in ("title", "body", "priority", "labels", "status", "assignee_id", "parent_task_id"):
-        v = getattr(payload, f)
-        if v is not None:
-            update_fields[f] = v
-    if payload.element_id is not None:
-        if payload.element_id == "none":
-            update_fields["element_id"] = _ELEMENT_CLEAR
+        if f in sent:
+            update_fields[f] = getattr(payload, f)
+    if "element_id" in sent:
+        # "none" is the legacy spelling of the clear; a real null means the same.
+        if payload.element_id is None or payload.element_id == "none":
+            update_fields["element_id"] = None
         else:
             el_check = await _require_active_element(estore, project_id, payload.element_id)
             if isinstance(el_check, JSONResponse):
