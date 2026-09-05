@@ -13,13 +13,52 @@ from cryptography.hazmat.primitives.asymmetric import ec, utils as asym_utils
 
 logger = logging.getLogger(__name__)
 
+# Apple caps provider-token GENERATION, not use: minting a fresh token per push
+# earns 403 TooManyProviderTokenUpdates and refuses pushes account-wide. A token
+# stays valid for an hour, so one cached token is reused and reminted after 50
+# minutes -- inside the validity window, and far under the generation cap.
+_TOKEN_REFRESH_SECONDS = 50 * 60
+
 
 def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
+class ApnsUnregistered(Exception):
+    """APNs answered 410 Unregistered: this device token is permanently dead.
+
+    Not a delivery failure to retry -- Apple is telling us the app was removed
+    or the token no longer belongs to this topic, so the caller must stop
+    pushing to it and drop it from the device store. Mirrors the 404/410 prune
+    the web-push path performs on WebPushException.
+    """
+
+    def __init__(self, push_token: str, *, apns_id: str | None = None, reason: str | None = None):
+        # The token is deliberately kept out of the message: it is a device
+        # identifier and this exception can reach a log formatter.
+        super().__init__(f"APNs 410 Unregistered (reason={reason or 'unknown'})")
+        self.push_token = push_token
+        self.apns_id = apns_id
+        self.reason = reason
+
+
+def _apns_reason(resp: httpx.Response) -> str | None:
+    """Apple returns the failure cause as ``{"reason": "..."}`` in the body."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    return body.get("reason") if isinstance(body, dict) else None
+
+
 class ApnsSender(Protocol):
     async def send(self, push_token: str, payload: dict, *, topic: str | None = None) -> bool:
+        """True when APNs accepted the push, False for a retryable refusal.
+
+        Raises ApnsUnregistered when APNs reports the token is permanently dead
+        (410), which the caller must handle by dropping the token rather than
+        counting it as another failed delivery.
+        """
         ...
 
     async def aclose(self) -> None:
@@ -82,12 +121,31 @@ class HttpApnsSender:
         # Only close the client on aclose() if this sender created it; an
         # injected client is owned by the caller.
         self._owns_client = client is None
+        # Cached provider token, reused across pushes (see _provider_token).
+        self._jwt: str | None = None
+        self._jwt_minted_at = 0.0
+
+    def _provider_token(self, now: float) -> str:
+        """Return the cached provider token, reminting only when it is stale.
+
+        Minting per push is what Apple refuses with TooManyProviderTokenUpdates,
+        so the token is cached and refreshed on a timer instead. A clock that
+        moves backwards also counts as stale, so a bad NTP step cannot pin a
+        token past its real expiry. No await runs between the staleness check
+        and the store, so concurrent senders on one event loop cannot interleave
+        into a double mint.
+        """
+        age = now - self._jwt_minted_at
+        if self._jwt is None or not 0 <= age < _TOKEN_REFRESH_SECONDS:
+            self._jwt = build_apns_jwt(
+                key_pem=self._key_pem, key_id=self._key_id,
+                team_id=self._team_id, now=int(now),
+            )
+            self._jwt_minted_at = now
+        return self._jwt
 
     async def send(self, push_token: str, payload: dict, *, topic: str | None = None) -> bool:
-        jwt = build_apns_jwt(
-            key_pem=self._key_pem, key_id=self._key_id,
-            team_id=self._team_id, now=int(time.time()),
-        )
+        jwt = self._provider_token(time.time())
         try:
             resp = await self._client.post(
                 f"https://{self._host}/3/device/{push_token}",
@@ -103,7 +161,26 @@ class HttpApnsSender:
         except httpx.HTTPError:
             logger.warning("APNs send failed for %s", push_token[:8], exc_info=True)
             return False
-        return resp.status_code == 200
+        if resp.status_code == 200:
+            return True
+        # Every refusal carries Apple's own cause and a request id; without them
+        # a non-200 is undiagnosable, which is why they are logged before the
+        # status is turned into a return value.
+        apns_id = resp.headers.get("apns-id")
+        reason = _apns_reason(resp)
+        logger.warning(
+            "APNs push refused for %s: status=%s reason=%s apns-id=%s",
+            push_token[:8], resp.status_code, reason or "unknown", apns_id or "-",
+        )
+        if resp.status_code == 410:
+            raise ApnsUnregistered(push_token, apns_id=apns_id, reason=reason)
+        if resp.status_code == 403 and reason == "ExpiredProviderToken":
+            # Caching a token introduces this failure mode: under clock skew the
+            # cached token can expire before the refresh timer fires, and every
+            # push would then be refused until it did. Drop it so the next send
+            # mints a replacement.
+            self._jwt = None
+        return False
 
     async def aclose(self) -> None:
         # Close the httpx client only if this sender created it; an injected

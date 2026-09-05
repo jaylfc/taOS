@@ -155,7 +155,7 @@ permanently is a different product from one that wakes on push.**
   the same shape, just client-side on the Pi.
 - **Wake-on-push** (the "wakes on push" end of the spectrum) already exists for
   the device class — but only APNs / UnifiedPush for ios/watchos/android
-  (`notifications_push.py:388-429` `send_device_push`, branching on
+  (`notifications_push.py:417-466` `send_device_push`, branching on
   `device["platform"]` in `routes/devices.py`). A Pi has neither push endpoint,
   so **polling is the only delivery mode available to it today**; the device
   bearer has no push token registered and there is no `linux`/`embedded` platform

@@ -1,0 +1,4 @@
+### Fixed
+- Apple push no longer mints a fresh provider token for every notification: one token is now cached and reminted on a 50-minute timer, so a burst of notifications can no longer trip Apple's `TooManyProviderTokenUpdates` cap and get pushes refused for the whole account (tsk-42q2qf).
+- A `410 Unregistered` from Apple now clears the dead push token from the device instead of being reported as a generic delivery failure, so an uninstalled or re-provisioned device is no longer pushed to forever. The device itself stays paired and visible; it simply has no push token until it registers a new one.
+- Every refused push now logs Apple's own `reason` and the `apns-id`, so a refusal can be diagnosed instead of appearing as an unexplained non-delivery. An expired provider token also forces an immediate remint rather than waiting out the refresh timer.
