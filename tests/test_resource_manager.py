@@ -538,7 +538,6 @@ class TestBestModelForTask:
         assert result["model"] == "qwen3.5:9b"
         assert result["location"] == "worker:gpu-worker"
 
-    @pytest.mark.skip_if_no_embed_backend
     @pytest.mark.asyncio
     async def test_embed_returns_onnx_model(self):
         from tinyagentos.scheduling.resource_manager import ResourceManager
@@ -551,7 +550,6 @@ class TestBestModelForTask:
         assert result["model"] == "all-MiniLM-L6-v2"
         assert result["resource_type"] == "npu"
 
-    @pytest.mark.skip_if_no_embed_backend
     @pytest.mark.asyncio
     async def test_embed_without_npu_uses_cpu(self):
         from tinyagentos.scheduling.resource_manager import ResourceManager

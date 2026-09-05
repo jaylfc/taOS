@@ -1,7 +1,10 @@
+import functools
 import hashlib
 import hmac
+import importlib.util
 import json as _json
 import os
+import socket
 import sqlite3
 import sys
 import time
@@ -54,68 +57,79 @@ from tinyagentos.routes.desktop import SPA_DIR
 from starlette.requests import HTTPConnection as _HTTPConnection
 
 CSRF_BYPASS_MARKER = "csrf_bypass"
+
+# ---------------------------------------------------------------------------
+# skip_if_no_embed_backend — an opt-in skip for a test that CANNOT run without
+# an embedding backend.
+#
+#     @pytest.mark.skip_if_no_embed_backend
+#     def test_something(self): ...
+#
+#     pytestmark = pytest.mark.skip_if_no_embed_backend   # whole module
+#
+# There is no opt-out marker and no `-o` switch: not applying the marker IS the
+# opt-out, and that is the default for every test in the tree.
+#
+# The list of tests carrying it is meant to stay EMPTY, and
+# `tests/test_embed_backend_marker_debt.py` asserts that.  A skip marker is a
+# way to turn a red green without fixing it, so before adding one, check what
+# the test actually calls: a test driving an `AsyncMock(spec=httpx.AsyncClient)`,
+# a hand-built `_snapshot`, or a patched `_run_setup` never reaches a backend
+# and does not need the marker — marking it only deletes it from every CI row.
+# ---------------------------------------------------------------------------
+
 EMBED_BACKEND_MARKER = "skip_if_no_embed_backend"
+_EMBED_BACKEND_SKIP_REASON = "no embed backend: qmd unreachable and onnxruntime not installed"
 
 
-def pytest_configure(config):
-    """Register custom markers."""
-    config.addinivalue_line("markers", "skip_if_no_embed_backend: skip this test when no embed backend (ONNX model / qmd service) is configured")
+def _qmd_reachable(timeout: float = 0.25) -> bool:
+    """True when something is listening at the qmd URL the product would use.
 
-
-#: Marker to skip a test when no embed backend (ONNX model / qmd service) is available.
-#: Usage::
-#
-#:     @pytest.mark.skip_if_no_embed_backend
-#:     def test_something(self): ...
-#:
-#:     # Or at module level:
-#:
-#:     pytestmark = pytest.mark.skip_if_no_embed_backend
-#
-#: Opt OUT of the skip (run the test always) by marking the test, its class,
-#: or the module with ``@pytest.mark.not_embed_backend_skip`` the opposite
-#: marker is not built-in; use ``pytestmark = pytest.mark.skip_if_no_embed_backend``
-#: explicitly or add ``-o "skip_if_no_embed_backend=false"`` to pytest cli.
-SKIP_IF_NO_EMBED_BACKEND_MARKER = "skip_if_no_embed_backend"
-
-
-def _is_embed_backend_available() -> bool:
-    """Detect if an embed backend (ONNX model / qmd service) is available.
-
-    Checks:
-      - qmd service: URL must be set beyond the default localhost placeholder
-      - ONNX: ONNX runtime must be importable
-    Returns True if at least one backend is available, False otherwise.
+    A reachability probe, not an environment-variable read.  The previous
+    version of this check asked whether `TAOSMD_URL` was set to a non-default
+    value — a variable no module under `tinyagentos/` reads — so it answered
+    "no backend" on a box running qmd on the configured default, and "backend"
+    for a URL pointing at a host that does not exist.  Both answers are the
+    opposite of the capability the marker is asking about.
     """
-    import os
+    from urllib.parse import urlparse
 
-    # Check qmd: if TAOSMD_URL is set to a non-default URL, consider it available
-    qmd_url = os.environ.get("TAOSMD_URL", "")
-    default_qmd = "http://localhost:7832"
-    qmd_available = qmd_url and qmd_url != default_qmd
+    from tinyagentos.config import DEFAULT_CONFIG
 
-    # Check ONNX: try importing the runtime
-    onnx_available = False
+    # The packaged default, not a loaded `config.yaml`: a test box's verdict
+    # must not depend on whichever config file happens to sit in this user's
+    # home directory, or the same commit skips different tests per machine.
+    parsed = urlparse(DEFAULT_CONFIG["qmd"]["url"])
+    host, port = parsed.hostname, parsed.port
+    if not host or not port:
+        return False
     try:
-        import onnx  # noqa: F401  # lgtm[py/exceptions-as-control-structures]
-        onnx_available = True
-    except ImportError:
-        pass
-
-    return qmd_available or onnx_available
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
-def _skip_if_no_embed_backend(item) -> bool:
-    """Return True if the test should be skipped due to no embed backend."""
-    return not _is_embed_backend_available()
+@functools.lru_cache(maxsize=1)
+def _is_embed_backend_available() -> bool:
+    """True when this box can produce an embedding.
+
+    Either backend suffices: a reachable qmd service, or the ONNX runtime.
+    The package to probe is `onnxruntime` (what executes a model), NOT `onnx`
+    (the model-format library) — taOS depends on the former and not the
+    latter, so probing `onnx` reports "no backend" on every developer box and
+    every CI row.
+
+    Cached: the probe opens a socket and is consulted once per collected item.
+    """
+    return _qmd_reachable() or importlib.util.find_spec("onnxruntime") is not None
 
 
 def pytest_collection_modifyitems(items):
-    """Skip tests with skip_if_no_embed_backend when no embed backend available."""
+    """Skip items marked skip_if_no_embed_backend when no backend can serve them."""
     for item in items:
-        if item.get_closest_marker("skip_if_no_embed_backend"):
-            if _skip_if_no_embed_backend(item):
-                item.add_marker(pytest.mark.skip(reason="embed backend (ONNX model / qmd service) not available"))
+        if item.get_closest_marker(EMBED_BACKEND_MARKER) and not _is_embed_backend_available():
+            item.add_marker(pytest.mark.skip(reason=_EMBED_BACKEND_SKIP_REASON))
 
 
 def _noop_verify_csrf(conn: _HTTPConnection) -> None:
@@ -449,6 +463,13 @@ def _verify_core_deps() -> None:
     raise RuntimeError("\n".join(lines))
 
 
+# THE canonical `pytest_configure` for tests/.  Do not add a second one: two
+# module-level `def pytest_configure` in one file is last-wins rebinding, not
+# additive registration, so the earlier body never runs and its next edit is a
+# silent no-op in CI.  Markers are declared in `pyproject.toml` under
+# `[tool.pytest.ini_options] markers`, not here.
+# `tests/test_embed_backend_marker_debt.py` asserts this file defines the hook
+# exactly once.
 def pytest_configure(config):
     """Stub the SPA bundle so the test suite doesn't depend on a real
     `npm run build`. Two tests need actual files on disk to exercise

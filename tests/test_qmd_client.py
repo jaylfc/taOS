@@ -14,7 +14,6 @@ def _make_response(json_data, status_code=200):
 
 
 class TestQmdClient:
-    @pytest.mark.skip_if_no_embed_backend
     @pytest.mark.asyncio
     async def test_embed_returns_vector(self):
         client = QmdClient("http://localhost:7832")

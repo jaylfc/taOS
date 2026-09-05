@@ -50,7 +50,6 @@ class TestDefault:
         resp = await client.get("/api/taosmd/default")
         assert resp.status_code == 404
 
-    @pytest.mark.skip_if_no_embed_backend
     async def test_put_default_round_trip(self, client):
         body = {"device_id": "local", "tier_id": "standard"}
         put_resp = await client.put("/api/taosmd/default", json=body)
@@ -64,7 +63,6 @@ class TestDefault:
         assert get_resp.status_code == 200
         assert get_resp.json() == data
 
-    @pytest.mark.skip_if_no_embed_backend
     async def test_put_default_unknown_tier_still_saves(self, client):
         """Unknown tier_id should still save — label falls back to the tier_id string."""
         body = {"device_id": "remote-node", "tier_id": "custom-tier"}
@@ -75,7 +73,6 @@ class TestDefault:
 
 @pytest.mark.asyncio
 class TestSetup:
-    @pytest.mark.skip_if_no_embed_backend
     async def test_post_setup_returns_task_id(self, client):
         with patch(
             "tinyagentos.routes.taosmd._run_setup",
@@ -97,7 +94,6 @@ class TestSetup:
         )
         assert resp.status_code == 422  # Pydantic rejects the literal
 
-    @pytest.mark.skip_if_no_embed_backend
     async def test_get_setup_status_pending(self, client):
         with patch(
             "tinyagentos.routes.taosmd._run_setup",
@@ -121,7 +117,6 @@ class TestSetup:
         resp = await client.get("/api/taosmd/setup/nonexistent-task-id")
         assert resp.status_code == 404
 
-    @pytest.mark.skip_if_no_embed_backend
     async def test_setup_progresses_to_done_with_mock_installer(self, client, app):
         """Integration: _run_setup drives state to 'done' when the resolver
         picks a backend and the installer succeeds.
@@ -189,7 +184,6 @@ class TestSetup:
         assert tasks[task_id]["state"] == "done", tasks[task_id]
         assert tasks[task_id]["progress_pct"] == 100
 
-    @pytest.mark.skip_if_no_embed_backend
     async def test_setup_marks_failed_on_install_error(self, client, app):
         from tinyagentos.routes.taosmd import _run_setup, MEMORY_TIERS
         from types import SimpleNamespace
@@ -250,7 +244,6 @@ class TestSetupResolverPath:
     backends.
     """
 
-    @pytest.mark.skip_if_no_embed_backend
     async def test_setup_fails_clearly_when_no_compatible_backend(self):
         from tinyagentos.routes.taosmd import _run_setup, MEMORY_TIERS
         from types import SimpleNamespace

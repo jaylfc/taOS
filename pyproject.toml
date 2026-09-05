@@ -113,7 +113,7 @@ markers = [
     # it, and every module carrying it is inventoried in
     # tests/test_csrf_bypass_debt.py so the list cannot grow unnoticed.
     "csrf_bypass: run this test with verify_csrf stubbed to a no-op (legacy debt)",
-    "skip_if_no_embed_backend: skip this test when no embed backend (ONNX model / qmd service) is configured",
+    "skip_if_no_embed_backend: skip when no embed backend can serve the test (qmd unreachable and onnxruntime absent)",
 ]
 filterwarnings = [
     # Asyncio teardown emits unraisable RuntimeError("Event loop is closed")

@@ -1,2 +1,2 @@
 ### Added
-- Added `skip_if_no_embed_backend` marker to 10 tests across `test_routes_taosmd.py`, `test_resource_manager.py`, and `test_qmd_client.py`. Tests with this marker now skip cleanly when no embed backend (ONNX model / qmd service) is configured, instead of failing.
+- Added a `skip_if_no_embed_backend` pytest marker for tests that genuinely cannot run without an embedding backend. The gate probes the capability itself — a socket to the configured qmd URL, or an installed `onnxruntime` — rather than an environment variable no product module reads. Nothing carries the marker today, and `tests/test_embed_backend_marker_debt.py` asserts that list stays empty so it cannot become a way to turn a red test green.
