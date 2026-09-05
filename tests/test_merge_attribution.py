@@ -650,3 +650,167 @@ class TestMergeAttributionReconciliation:
         # merge unmatched.
         result = self._run_checker(tmp_path, env, cutoff="2026-08-28T00:00:00Z")
         assert result.returncode == 0, result.stdout + result.stderr
+
+    # ---- review fold: audit entries that are valid JSON but not objects ----
+
+    def test_non_object_audit_lines_are_skipped_not_crashed_on(self, tmp_path: Path) -> None:
+        """A `null`/array/string/number audit line must be skipped, not crash.
+
+        `json.loads` happily returns None, list, str and int, none of which
+        have `.get`. Appending them and then reading `e.get("sha")` raises
+        AttributeError, which `main()` does not map to EXIT_ERROR -- the run
+        dies with a traceback and an exit code that reads as FAIL, so a real
+        unmatched merge is indistinguishable from a malformed log.
+        """
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
+        merge_sha = _commit_file(repo, "feat.txt", "feature\n", "merge PR #42")
+
+        prs = [
+            {
+                "number": 42,
+                "mergeCommit": {"oid": merge_sha},
+                "mergedAt": "2026-08-28T12:00:00Z",
+                "mergedBy": {"login": "bot"},
+            },
+        ]
+        config_file = self._write_config(tmp_path, prs)
+        self._write_stub_gh(tmp_path)
+        env = self._make_env(tmp_path, config_file)
+
+        # Every line here is valid JSON and none of them is an audit object.
+        # The last line is the real entry, which must still be honoured.
+        (tmp_path / "audit.jsonl").write_text(
+            "null\n"
+            '["not", "an", "object"]\n'
+            '"just a string"\n'
+            "42\n"
+            + json.dumps({
+                "actor": "bot", "repo": "test-org/test-repo", "pr": 42,
+                "sha": merge_sha, "merged_by": "bot",
+                "timestamp": "2026-08-28T12:00:00Z", "script": "gate_merge.sh",
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        result = self._run_checker(tmp_path, env, cutoff="2026-08-28T00:00:00Z")
+
+        assert "Traceback" not in result.stderr, result.stderr
+        assert "AttributeError" not in result.stderr, result.stderr
+        # The one real entry matches, so the audit is clean.
+        assert result.returncode == 0, result.stdout + result.stderr
+        # ...and the four junk lines were reported, not swallowed.
+        assert result.stderr.count("WARN") == 4, result.stderr
+
+    # ---- review fold: audit entries are scoped to the repository ----
+
+    def test_audit_entry_from_another_repo_does_not_match(self, tmp_path: Path) -> None:
+        """An audit entry for a different repo must not satisfy this merge.
+
+        `gate_merge.sh` records `repo` alongside `sha`, and the default audit
+        log (`~/.fleet/merge-audit.jsonl`) is one file shared by every repo the
+        fleet merges. Matching on `sha` alone lets an entry written for another
+        repo -- a fork or mirror carrying the same commit OID -- stand in as
+        proof for a merge here that nobody attributed.
+        """
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
+        merge_sha = _commit_file(repo, "feat.txt", "feature\n", "merge PR #42")
+
+        prs = [
+            {
+                "number": 42,
+                "mergeCommit": {"oid": merge_sha},
+                "mergedAt": "2026-08-28T12:00:00Z",
+                "mergedBy": {"login": "bot"},
+            },
+        ]
+        # `gh repo view` answers "test-org/test-repo" for this checkout.
+        config_file = self._write_config(tmp_path, prs, repo="test-org/test-repo")
+        self._write_stub_gh(tmp_path)
+        env = self._make_env(tmp_path, config_file)
+
+        # Same OID, different repo -- must NOT count as attribution here.
+        (tmp_path / "audit.jsonl").write_text(
+            json.dumps({
+                "actor": "bot", "repo": "other-org/other-repo", "pr": 42,
+                "sha": merge_sha, "merged_by": "bot",
+                "timestamp": "2026-08-28T12:00:00Z", "script": "gate_merge.sh",
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        result = self._run_checker(tmp_path, env, cutoff="2026-08-28T00:00:00Z")
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "42" in result.stdout
+        assert merge_sha[:12] in result.stdout
+
+    # ---- review fold: the merge OID lookup must not degrade to "unknown" ----
+
+    def test_gate_fails_loudly_when_merge_oid_cannot_be_read(self, tmp_path: Path) -> None:
+        """A failed post-merge OID lookup must be loud, not logged as "unknown".
+
+        `gh pr view` can fail after a successful merge. Writing
+        `"sha":"unknown"` and exiting 0 tells the operator the merge was
+        audited when it was not: the checker matches on the real OID, so that
+        merge is reported as unattributed with nothing pointing at the cause.
+        """
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
+        merge_sha = _commit_file(repo, "feat.txt", "feature\n", "merge PR #42")
+
+        # A stub gh whose merge succeeds but whose mergeCommit lookup fails.
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        gh_path = bin_dir / "gh"
+        gh_path.write_text(
+            "#!/bin/sh\n"
+            "case \"$*\" in\n"
+            "  *mergeCommit*) echo 'gh: could not resolve PR' >&2; exit 1;;\n"
+            "  *mergedBy*) echo bot;;\n"
+            "  *nameWithOwner*) echo test-org/test-repo;;\n"
+            "  *number*) echo 42;;\n"
+            "  *) exit 0;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        gh_path.chmod(0o755)
+
+        config_file = self._write_config(tmp_path, [{
+            "number": 42,
+            "mergeCommit": {"oid": merge_sha},
+            "mergedAt": "2026-08-28T12:00:00Z",
+            "mergedBy": {"login": "bot"},
+        }])
+        audit_file = tmp_path / "audit.jsonl"
+        audit_file.write_text("", encoding="utf-8")
+        env = self._make_env(tmp_path, config_file, extra={"FLEET_AUDIT_LOG": str(audit_file)})
+
+        gate_result = subprocess.run(
+            ["bash", GATE, "42", "tsk-test", "test note"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+
+        assert gate_result.returncode != 0, gate_result.stdout + gate_result.stderr
+        assert "42" in gate_result.stderr
+        assert "mergeCommit" in gate_result.stderr
+
+        # Whatever was written must not be able to stand in as attribution:
+        # `sha` is the reconciliation key, so it must be empty rather than a
+        # placeholder like "unknown" that reads as a recorded value.
+        for line in audit_file.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                assert json.loads(line).get("sha") == ""
+
+        # The checker still reports the merge -- the gate's nonzero exit is
+        # the early warning, not a substitute for the audit going red. Restore
+        # the healthy stub first: the failure being simulated is a transient
+        # `gh pr view` at merge time, not a permanently broken gh.
+        self._write_stub_gh(tmp_path)
+        result = self._run_checker(tmp_path, env, cutoff="2026-08-28T00:00:00Z")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "42" in result.stdout

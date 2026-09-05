@@ -16,6 +16,13 @@ set -uo pipefail
 # commit on the base branch; for a merge commit it is the merge-commit SHA.
 # Both the PR number and the mergeCommit come from the GitHub API, not from
 # the local branch.
+#
+# Exit status is the merge's own status, except: 64 for a usage error, and 65
+# when the merge SUCCEEDED but its audit entry could not be completed (the
+# mergeCommit OID or the repo slug could not be read, or no JSON encoder was
+# available). 65 is deliberately not 0 -- an incomplete entry means
+# check_merge_attribution.py will report that merge as unattributed, and the
+# operator has to know before the checker tells them.
 
 # --- argument parsing (strict: unknown flags abort) ---
 CHECK_ONLY=0
@@ -80,11 +87,44 @@ set -e
 if [ "$rc" -eq 0 ]; then
     # mergeCommit from the API -- the OID that the checker also reads.
     # For a squash merge this is the new commit on the base branch.
-    MERGE_COMMIT="$(gh pr view "$PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || echo "unknown")"
-    PR_NUM="$(gh pr view "$PR_NUMBER" --json number --jq '.number' 2>/dev/null || echo "$PR_NUMBER")"
-    MERGED_BY="$(gh pr view "$PR_NUMBER" --json mergedBy --jq '.mergedBy.login' 2>/dev/null || echo "unknown")"
-    REPO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "unknown")"
+    # `gh --jq` prints the string "null" for an absent field, so an empty
+    # result and a literal "null" both mean "not read".
+    _read_field() {
+        local _v
+        _v="$("$@" 2>/dev/null || true)"
+        if [ "$_v" = "null" ]; then
+            _v=""
+        fi
+        printf '%s' "$_v"
+    }
+
+    MERGE_COMMIT="$(_read_field gh pr view "$PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid')"
+    REPO="$(_read_field gh repo view --json nameWithOwner --jq '.nameWithOwner')"
+    PR_NUM="$(_read_field gh pr view "$PR_NUMBER" --json number --jq '.number')"
+    MERGED_BY="$(_read_field gh pr view "$PR_NUMBER" --json mergedBy --jq '.mergedBy.login')"
+    [ -n "$PR_NUM" ] || PR_NUM="$PR_NUMBER"
+    [ -n "$MERGED_BY" ] || MERGED_BY="unknown"
     TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+    # `sha` and `repo` are the two keys check_merge_attribution.py reconciles
+    # on. A placeholder like "unknown" in either one is worse than an empty
+    # field: the wrapper would exit 0, telling the operator the merge was
+    # audited, while the checker still reports it as unattributed with nothing
+    # pointing at the cause. Leave them empty (an empty `sha` can never stand
+    # in as attribution) and say so loudly.
+    AUDIT_RC=0
+    if [ -z "$MERGE_COMMIT" ] || [ -z "$REPO" ]; then
+        echo "ERROR: PR #${PR_NUMBER} merged, but its audit entry is INCOMPLETE:" >&2
+        if [ -z "$MERGE_COMMIT" ]; then
+            echo "       gh pr view --json mergeCommit returned no OID." >&2
+        fi
+        if [ -z "$REPO" ]; then
+            echo "       gh repo view --json nameWithOwner returned no slug." >&2
+        fi
+        echo "       check_merge_attribution.py will report PR #${PR_NUMBER} as an" >&2
+        echo "       unattributed merge until this entry is completed by hand." >&2
+        AUDIT_RC=65
+    fi
 
     # Encode with a real JSON encoder. ACTOR comes from the caller
     # (FLEET_ACTOR/USER) and MERGED_BY/REPO come from the API, so
@@ -132,6 +172,13 @@ print(json.dumps({
         # operator needs to know why.
         echo "ERROR: could not encode the audit entry (neither jq nor python3 is available)." >&2
         echo "       PR #${PR_NUMBER} merged but is UNATTRIBUTED in ${AUDIT_LOG}." >&2
+        AUDIT_RC=65
+    fi
+
+    # The merge succeeded; surface an incomplete audit entry in the exit code
+    # so it cannot pass for a clean run.
+    if [ "$AUDIT_RC" -ne 0 ]; then
+        rc="$AUDIT_RC"
     fi
 fi
 

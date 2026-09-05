@@ -4,3 +4,5 @@
 
 ### Security
 - `scripts/check_merge_attribution.py` now bounds every `gh` call with a timeout (`--gh-timeout`, default 60s), so a hung `gh` surfaces as an infrastructure error instead of hanging CI, and it warns on unparseable audit lines instead of skipping them in silence.
+- `scripts/check_merge_attribution.py` now reconciles on the `(repo, sha)` pair rather than `sha` alone. The default audit log is one file shared by every repo the fleet merges, so an entry written for a fork or mirror carrying the same commit OID could previously stand in as proof for an unattributed merge elsewhere. It also skips audit lines that are valid JSON but not objects (`null`, arrays, strings, numbers), which used to crash reconciliation with an `AttributeError` that was not mapped to an infrastructure error.
+- `scripts/gate_merge.sh` no longer records `"sha":"unknown"` when the post-merge `gh pr view` lookup fails. The reconciliation keys (`sha`, `repo`) are left empty, an explicit error names the PR, and the wrapper exits 65 -- a successful merge whose audit entry is incomplete can no longer read as a clean run.

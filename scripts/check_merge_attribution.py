@@ -5,10 +5,12 @@ Enumerates merged PRs (since the cutoff) via `gh pr list --state merged` and
 asserts each has a matching audit entry. An unmatched merge is the signal that
 an unattributed action occurred -- e.g. a squash merge with no audit line.
 
-Reconciliation is on the mergeCommit OID from the GitHub API (`gh pr view <n>
---json mergeCommit`), which for a squash merge is the new commit on the base
-branch. Squash merges are visible because we enumerate from the API, not from
-`git log --merges` (which never sees them).
+Reconciliation is on the (repo, mergeCommit OID) pair from the GitHub API
+(`gh repo view --json nameWithOwner` and `gh pr view <n> --json mergeCommit`),
+where the OID for a squash merge is the new commit on the base branch. The repo
+is part of the key because the default audit log is one file shared by every
+repo the fleet merges. Squash merges are visible because we enumerate from the
+API, not from `git log --merges` (which never sees them).
 
 A --cutoff (ISO timestamp or git SHA) keeps pre-adoption merges out of scope.
 Cutoffs and merge timestamps are normalised to UTC and compared as instants,
@@ -182,14 +184,21 @@ def read_audit_log(audit_file: Path) -> list[dict]:
         line = line.strip()
         if not line:
             continue
+        # Skipping a bad line is fail-CLOSED: the merge it described stays
+        # unmatched and is reported. Say so rather than dropping it in
+        # silence, so a producer emitting bad JSON is visible.
         try:
-            entries.append(json.loads(line))
+            entry = json.loads(line)
         except json.JSONDecodeError:
-            # Skipping is fail-CLOSED: the merge the mangled line described
-            # stays unmatched and is reported. Say so rather than dropping it
-            # in silence, so a producer emitting bad JSON is visible.
             print(f"WARN: unparseable audit line in {audit_file}: {line[:120]}", file=sys.stderr)
             continue
+        # `null`, arrays, strings and numbers are all valid JSON and none of
+        # them has `.get`; letting one through crashes reconcile() with an
+        # AttributeError that main() does not map to EXIT_ERROR.
+        if not isinstance(entry, dict):
+            print(f"WARN: audit line is not an object in {audit_file}: {line[:120]}", file=sys.stderr)
+            continue
+        entries.append(entry)
     return entries
 
 
@@ -207,6 +216,23 @@ def _extract_merge_commit_oid(pr: dict) -> str:
     return ""
 
 
+def resolve_repo_slug(repo: Path, gh_timeout: float = DEFAULT_GH_TIMEOUT) -> str:
+    """Return the `owner/name` slug of the checkout at *repo*.
+
+    This is the same key `gate_merge.sh` records in the audit entry's `repo`
+    field, resolved the same way (`gh repo view --json nameWithOwner`). A
+    failure raises RuntimeError (-> EXIT_ERROR): without a repo identity the
+    reconciliation cannot tell its own merges from another repo's.
+    """
+    slug = _gh(
+        "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner",
+        cwd=repo, timeout=gh_timeout,
+    ).strip()
+    if not slug:
+        raise RuntimeError(f"gh repo view returned no nameWithOwner for {repo}")
+    return slug
+
+
 def reconcile(
     repo: Path,
     audit_file: Path,
@@ -217,10 +243,22 @@ def reconcile(
 
     Each description is ``"#{pr} {short_sha}"`` so the caller can print
     a human-readable unmatched-merge report.
+
+    Attribution is keyed on ``(repo, sha)``, not on ``sha`` alone. The default
+    audit log (`~/.fleet/merge-audit.jsonl`) is one file shared by every repo
+    the fleet merges, so an entry written for a fork or mirror carrying the
+    same commit OID would otherwise stand in as proof for a merge here that
+    nobody attributed. An entry whose `repo` is missing or does not match is
+    not proof for this checkout.
     """
+    repo_slug = resolve_repo_slug(repo, gh_timeout=gh_timeout)
     merged_prs = find_merged_prs(repo, cutoff, gh_timeout=gh_timeout)
     audit_entries = read_audit_log(audit_file)
-    audit_shas = {e.get("sha", "") for e in audit_entries if e.get("sha")}
+    audit_shas = {
+        e.get("sha", "")
+        for e in audit_entries
+        if e.get("sha") and e.get("repo") == repo_slug
+    }
 
     unmatched: list[str] = []
     for pr in merged_prs:
