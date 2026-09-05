@@ -187,6 +187,6 @@ def extract_tar_safely(
         max_uncompressed_bytes=max_uncompressed_bytes,
     )
     try:
-        tar.extractall(dest, filter="data")
+        tar.extractall(dest, filter=tarfile.data_filter)
     except _FILTER_ERRORS as exc:
         raise ArchiveError(f"{kind} contains an unsafe member: {exc}") from exc
