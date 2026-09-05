@@ -7,7 +7,9 @@
 #   bash scripts/rollback.sh <ref>      # roll back to a specific tag/branch/sha
 #
 # The updater records the pre-update state in <install>/.taos-rollback before it
-# touches anything, so even a clean fast-forward has a restore point.
+# touches anything, so even a clean fast-forward has a restore point. That file
+# is read as DATA (see record_field below), never sourced: it is writable by the
+# taos service account and this script escalates with sudo.
 set -euo pipefail
 
 # --- locate the install (this script lives in <install>/scripts) ---
@@ -22,28 +24,61 @@ fi
 
 log(){ echo "[rollback] $*"; }
 
+# Read one `key='value'` field out of the record file WITHOUT executing it.
+# The record sits in the install dir, which the installer chowns to the taos
+# service account, and this script escalates with sudo further down -- so
+# `source` would hand arbitrary code from a writable data file straight to
+# root. tinyagentos/rollback.py writes the values single-quoted with the
+# usual '\'' escape for an embedded quote; anything else is returned verbatim
+# and rejected by the validation below.
+record_field(){
+  local key="$1" line val
+  line="$(grep -m1 -E "^[[:space:]]*${key}=" .taos-rollback 2>/dev/null)" || return 0
+  val="${line#*=}"
+  if [[ "$val" == \'*\' ]]; then
+    val="${val:1:${#val}-2}"
+    val="${val//\'\\\'\'/\'}"
+  fi
+  printf '%s' "$val"
+}
+
 target_ref="${1:-}"
+prev_branch=""
+prev_sha=""
 
 if [[ -n "$target_ref" ]]; then
   # Explicit target: a tag, branch, or sha the user named.
-  prev_branch=""
   prev_sha="$target_ref"
   log "explicit target: $target_ref"
 elif [[ -f .taos-rollback ]]; then
-  # shellcheck disable=SC1091
-  source .taos-rollback
-  prev_branch="${prev_branch:-}"
-  prev_sha="${prev_sha:-}"
-  log "recorded target: branch='${prev_branch}' commit='${prev_sha:0:12}'"
-else
-  # Fallback for installs predating the recorded file: newest recovery tag.
+  prev_branch="$(record_field prev_branch)"
+  prev_sha="$(record_field prev_sha)"
+  # A truncated or tampered record must not reach git: only a hex object name
+  # counts as a recorded commit, and a branch name must look like a ref (never
+  # a leading dash, which git would read as an option).
+  if [[ ! "$prev_sha" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+    log "record file has no usable commit; falling back to the recovery tag"
+    prev_branch=""
+    prev_sha=""
+  else
+    if [[ ! "$prev_branch" =~ ^[A-Za-z0-9_][A-Za-z0-9._/-]*$ ]]; then
+      log "record file has no usable branch; restoring the commit only"
+      prev_branch=""
+    fi
+    log "recorded target: branch='${prev_branch}' commit='${prev_sha:0:12}'"
+  fi
+fi
+
+if [[ -z "$prev_sha" ]]; then
+  # No usable record (install predates the file, or it is missing/corrupt):
+  # fall back to the newest recovery tag.
   prev_sha="$(git tag --list 'taos-pre-update-*' --sort=-creatordate | head -1)"
   prev_branch=""
   if [[ -z "$prev_sha" ]]; then
-    echo "taos rollback: no recorded rollback target and no taos-pre-update-* tag found" >&2
+    echo "taos rollback: no usable rollback target and no taos-pre-update-* tag found" >&2
     exit 1
   fi
-  log "no record file; using newest recovery tag: $prev_sha"
+  log "using newest recovery tag: $prev_sha"
 fi
 
 # Best-effort fetch so an explicit branch/tag that only exists on the remote
