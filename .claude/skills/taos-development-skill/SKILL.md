@@ -216,7 +216,7 @@ its next edit is a silent no-op in CI.
   `_run_setup` never reaches a backend, so the marker does not protect it from
   anything — it just deletes it from every CI row while the suite stays green.
 - **Probe the capability, not a proxy for it.** The backend check opens a socket
-  against the configured qmd URL and looks for `onnxruntime` (what executes a
+  against the packaged default qmd URL and looks for `onnxruntime` (what executes a
   model), not `onnx` (the model-format library taOS does not depend on) and not
   an environment variable no module under `tinyagentos/` reads. A proxy answers
   "no backend" on a box that works and "backend" for a host that does not exist.
