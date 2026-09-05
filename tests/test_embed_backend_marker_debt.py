@@ -123,7 +123,23 @@ def test_conftest_defines_pytest_configure_exactly_once():
     )
 
 
-def test_the_marker_gate_is_wired_and_probes_a_real_capability():
+def _root_conftest(config):
+    """The loaded ``tests/conftest.py`` plugin, found by path rather than by name.
+
+    Binding the bare name ``conftest`` is forbidden under ``tests/`` (see
+    ``test_no_bare_conftest_import.py``): under ``pytest tests/`` the name
+    resolves to whichever conftest.py pytest imported first, which is not this
+    one. pytest registers every conftest it loads as a plugin object, so the
+    real module is reachable by its file path without ever binding the name.
+    """
+    target = Path(__file__).resolve().parent / "conftest.py"
+    for plugin in config.pluginmanager.get_plugins():
+        if Path(getattr(plugin, "__file__", "") or "").resolve() == target:
+            return plugin
+    raise AssertionError(f"pytest did not load {target} as a conftest plugin")
+
+
+def test_the_marker_gate_is_wired_and_probes_a_real_capability(pytestconfig):
     """The hatch is unused, so prove here that it is not merely broken.
 
     An opt-out nobody exercises rots into a no-op, and a no-op opt-out reads as
@@ -138,7 +154,7 @@ def test_the_marker_gate_is_wired_and_probes_a_real_capability():
     """
     import importlib.util
 
-    import conftest  # tests/conftest.py, on sys.path via rootdir
+    conftest = _root_conftest(pytestconfig)
 
     assert hasattr(conftest, "pytest_collection_modifyitems"), (
         "conftest lost the collection hook that applies the skip -- the marker "
@@ -174,7 +190,7 @@ class _FakeItem:
         self.added.append(marker)
 
 
-def test_the_gate_skips_a_marked_item_only_when_no_backend_can_serve_it(monkeypatch):
+def test_the_gate_skips_a_marked_item_only_when_no_backend_can_serve_it(monkeypatch, pytestconfig):
     """Both directions.
 
     Asserting only that a marked item is skipped when the probe says "no
@@ -182,7 +198,7 @@ def test_the_gate_skips_a_marked_item_only_when_no_backend_can_serve_it(monkeypa
     unmarked item and the backend-present case are the halves that fail on
     an over-broad gate.
     """
-    import conftest
+    conftest = _root_conftest(pytestconfig)
 
     marked, plain = _FakeItem(marked=True), _FakeItem(marked=False)
     monkeypatch.setattr(conftest, "_is_embed_backend_available", lambda: False)
