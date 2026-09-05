@@ -44,6 +44,15 @@ _REPLY_BACKLOG = 256
 # struct ucred: pid, uid, gid as native ints.
 _UCRED = "3i"
 
+# Largest single wire event this client will buffer. The apphost frames its
+# events with a newline, so until one arrives the bytes have nowhere to go but
+# the read buffer: without a ceiling, a peer that never sends a newline -- or
+# one that genuinely delivers a billion cells -- sizes an allocation in this
+# process. The ceiling is what makes every downstream size bounded, because
+# nothing larger can reach json.loads, let alone the grid parser. Generous
+# enough for a full-screen grid carrying inline image data.
+_MAX_FRAME_BYTES = 32 * 1024 * 1024
+
 # Largest gap between a grid's declared geometry and the cells actually
 # delivered that is worth padding. ``cols`` and ``rows`` are wire values, so
 # their product is an attacker-chosen allocation: a one-cell frame declaring
@@ -448,6 +457,11 @@ class TuiuiConduit:
         Readiness is polled with ``select`` rather than a short socket
         timeout, so bounding how long the reader parks does not also bound
         how long a write may take.
+
+        A line is refused once it passes ``_MAX_FRAME_BYTES``. The buffer is
+        the one place every byte from the peer has to pass through, so it is
+        the only place a ceiling actually bounds memory: a cap further down
+        would be applied to a list json.loads had already built.
         """
         while True:
             if b"\n" in self._read_buf:
@@ -465,6 +479,15 @@ class TuiuiConduit:
             if not chunk:
                 raise TuiuiConduitError("apphost closed connection")
             self._read_buf += chunk
+            if len(self._read_buf) > _MAX_FRAME_BYTES:
+                # Drop it now: without a newline there is no frame boundary to
+                # resynchronise on, so keeping the bytes only grows the leak.
+                size = len(self._read_buf)
+                self._read_buf = b""
+                raise TuiuiConduitError(
+                    f"apphost frame too large: {size} bytes buffered with no "
+                    f"newline, ceiling is {_MAX_FRAME_BYTES}"
+                )
 
     def _fail_if_desynced(self) -> None:
         """Refuse to talk to the apphost once replies stopped being attributable."""
@@ -756,7 +779,12 @@ def _check_geometry(cols: int, rows: int, have: int) -> None:
     allocation an apphost -- or anything that got in front of one -- chooses
     for this process. Padding a short grid is normal; padding a one-cell grid
     out to a trillion entries is a malformed frame, and it has to be rejected
-    before the list is built rather than after.
+    before the padding list is built rather than after.
+
+    This bounds the *amplification* only -- one delivered cell must not become
+    a trillion. The cells a payload really delivers are bounded upstream by
+    ``_MAX_FRAME_BYTES``, which is where a ceiling can still be applied before
+    anything has been allocated.
     """
     want = cols * rows
     if want > have + _MAX_GRID_PAD:
@@ -796,7 +824,9 @@ def _extract_grid(grid: dict[str, Any]) -> tuple[list[str], int, int, bool]:
 
     Nor is a declared geometry trusted as an allocation: both shapes run
     through :func:`_check_geometry` before any padding, so ``cols`` and
-    ``rows`` off the wire cannot size a list this process then has to build.
+    ``rows`` off the wire cannot amplify a small grid into a huge one. The
+    size of the grid actually delivered is bounded before it gets here, by
+    the reader's ``_MAX_FRAME_BYTES`` ceiling.
     """
     if not grid:
         return [], 0, 0, False

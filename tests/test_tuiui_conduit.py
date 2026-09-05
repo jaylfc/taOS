@@ -705,6 +705,40 @@ class TestAbsurdDeclaredGeometry:
         assert len(cells) == 8
 
 
+class TestOversizedWirePayload:
+    """A delivered payload sizes an allocation too, not just a declared one."""
+
+    def test_a_line_beyond_the_frame_ceiling_is_refused(self, paired_conduit, monkeypatch):
+        """The reader must stop buffering, not grow ``_read_buf`` without limit."""
+        conduit, peer = paired_conduit
+        monkeypatch.setattr(tuiui_conduit, "_MAX_FRAME_BYTES", 4096, raising=False)
+        conduit.connect()
+        # No newline: json.loads is never reached, so only the reader's own
+        # ceiling can stop this from being buffered forever.
+        peer.sendall(b"x" * 16384)
+        with pytest.raises(TuiuiConduitError, match="frame too large"):
+            next(conduit.iter_frames(timeout=3.0))
+
+    def test_a_huge_delivered_cell_list_cannot_reach_the_parser(
+        self, paired_conduit, monkeypatch
+    ):
+        """A payload that really carries the cells is bounded by the same ceiling."""
+        conduit, peer = paired_conduit
+        monkeypatch.setattr(tuiui_conduit, "_MAX_FRAME_BYTES", 4096, raising=False)
+        conduit.connect()
+        huge = {"Frame": {"grid": {"cells": ["a"] * 4000, "cols": 1, "rows": 4000}}}
+        peer.sendall(_line(huge))
+        with pytest.raises(TuiuiConduitError, match="frame too large"):
+            next(conduit.iter_frames(timeout=3.0))
+
+    def test_a_frame_within_the_ceiling_still_arrives(self, paired_conduit, monkeypatch):
+        conduit, peer = paired_conduit
+        monkeypatch.setattr(tuiui_conduit, "_MAX_FRAME_BYTES", 4096, raising=False)
+        conduit.connect()
+        peer.sendall(_line(_flat_frame("hi", cols=2, rows=1)))
+        assert TuiuiConduit.frame_lines(next(conduit.iter_frames(timeout=3.0))) == ["hi"]
+
+
 class TestWireRecordShapes:
     """A malformed record shape is a protocol error, not a KeyError."""
 
