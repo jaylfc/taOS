@@ -15,11 +15,14 @@ echo "=== taOS Kiosk Mode Setup ==="
 echo "URL: $TAOS_URL"
 echo "User: $TAOS_USER"
 
+# Refresh the package index once, unconditionally: a later install must never
+# fail on a stale index just because an earlier package happened to be present.
+apt-get update -qq
+
 # Install cage (minimal Wayland compositor) if not present
 if ! command -v cage &>/dev/null; then
     echo "Installing cage (Wayland kiosk compositor)..."
-    apt-get update -qq
-    apt-get install -y -qq cage 2>/dev/null || {
+    apt-get install -y -qq cage || {
         echo "cage not in repos — trying weston as fallback..."
         apt-get install -y -qq weston
     }
@@ -28,12 +31,27 @@ fi
 # Install seatd (seat driver) for kiosk mode authentication
 if ! command -v seatd &>/dev/null; then
     echo "Installing seatd (seat driver)..."
-    apt-get install -y -qq seatd 2>/dev/null || {
-        echo "seatd not in repos — skipping seat configuration"
+    apt-get install -y -qq seatd || {
+        echo "seatd not in repos — skipping seat configuration" >&2
     }
-    if command -v seatd &>/dev/null; then
-        echo "Adding user $TAOS_USER to seat group..."
-        usermod -a -G seat "$TAOS_USER" 2>/dev/null || true
+fi
+
+# Configure the seat whenever seatd is available, including when it was already
+# installed before this run.
+if command -v seatd &>/dev/null; then
+    echo "Enabling seatd..."
+    if ! systemctl enable --now seatd; then
+        echo "Failed to enable seatd.service" >&2
+        exit 1
+    fi
+    if ! getent group seat >/dev/null; then
+        echo "Creating missing seat group..."
+        groupadd -r seat
+    fi
+    echo "Adding user $TAOS_USER to seat group..."
+    if ! usermod -a -G seat "$TAOS_USER"; then
+        echo "Failed to add $TAOS_USER to the seat group" >&2
+        exit 1
     fi
 fi
 
@@ -57,7 +75,7 @@ cat > /etc/systemd/system/taos-kiosk.service << EOF
 [Unit]
 Description=taOS Kiosk Mode
 After=tinyagentos.service network-online.target seatd.service
-Wants=tinyagentos.service Wants=seatd.service
+Wants=tinyagentos.service seatd.service
 
 [Service]
 Type=simple
