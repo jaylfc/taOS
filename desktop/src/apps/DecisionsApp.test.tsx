@@ -10,13 +10,29 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { DecisionsApp } from "./DecisionsApp";
 import { useDecisionEventsStore } from "@/stores/decision-events-store";
 
-function mockFetch(
-  responses: Record<string, { ok: boolean; status?: number; body: unknown }>,
-) {
+/** ConsentActions reads the server's project-scope vocabulary before it will
+ *  enable Allow, so any surface embedding it needs this route answered. It is a
+ *  fixed server-side constant, so the harness answers it by default rather than
+ *  every test restating it; a test may still override the key. */
+const SCOPE_VOCABULARY_RESPONSE = {
+  ok: true,
+  body: {
+    valid_scopes: ["a2a_send", "canvas_read", "files_write", "memory_read", "project_tasks"],
+    project_scopes: ["canvas_read", "files_write", "project_tasks"],
+  },
+};
+
+type MockResponse = { ok: boolean; status?: number; body: unknown };
+
+function mockFetch(responses: Record<string, MockResponse>) {
+  const withDefaults: Record<string, MockResponse> = {
+    "GET /api/agents/scope-vocabulary": SCOPE_VOCABULARY_RESPONSE,
+    ...responses,
+  };
   return vi.fn().mockImplementation((input: string, init?: RequestInit) => {
     const method = (init?.method ?? "GET").toUpperCase();
     const key = `${method} ${input}`;
-    const hit = responses[key] ?? responses[input] ?? responses["*"];
+    const hit = withDefaults[key] ?? withDefaults[input] ?? withDefaults["*"];
     if (!hit) throw new Error(`Unmocked fetch: ${key}`);
     return Promise.resolve({
       ok: hit.ok,
@@ -265,6 +281,10 @@ describe("DecisionsApp", () => {
     await waitFor(() => expect(screen.getByText("owl@lab")).toBeTruthy());
     expect(screen.getByText(/access requests/i)).toBeTruthy();
 
+    // Allow stays disabled until the scope vocabulary is in hand.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /allow/i })).not.toBeDisabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: /allow/i }));
     await flush();
 
