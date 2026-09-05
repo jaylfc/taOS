@@ -1209,6 +1209,15 @@ Route module `tinyagentos/routes/projects.py`.
   another project is existence-hiding rather than merely forbidden.
 - Creating an item logs `checklist.item.created` to the project activity feed
   with the actor, task id, item id and text.
+- Both `checklist.item.created` and `checklist.item.archived` are published on
+  the broker under the task's **`project_id`**, because project subscribers
+  subscribe at project scope. The store therefore resolves the parent task
+  first and raises `ValueError: task not found: <task_id>` when it is gone —
+  create refuses before inserting the row, archive refuses before flipping
+  `archived`. `task_checklist_items.task_id` declares a foreign key but the
+  store never sets `PRAGMA foreign_keys = ON`, so an item can outlive its task;
+  without the guard the event went to a topic nobody listens to and was
+  silently lost.
 - Archiving is store-level only and refuses unless the item is both **verified**
   and **reported**; there is no archive route.
 - `DELETE` and per-item subpaths (`.../checklist-items/{item_id}`) stay
