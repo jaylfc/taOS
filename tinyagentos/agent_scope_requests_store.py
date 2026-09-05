@@ -38,9 +38,22 @@ CREATE TABLE IF NOT EXISTS agent_scope_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_scope_requests_status ON agent_scope_requests(status);
 CREATE INDEX IF NOT EXISTS idx_scope_requests_canonical ON agent_scope_requests(canonical_id, status);
+-- Serves ``list_for``'s decided-history page: SQLite walks this index backwards
+-- for one canonical_id and stops after LIMIT rows, so read work is bounded by
+-- the page size rather than by how much history the agent has accumulated.
+-- Without it the LIMIT bounds only the RESPONSE, and the sort still touches
+-- every retained row.
+CREATE INDEX IF NOT EXISTS idx_scope_requests_canonical_created
+    ON agent_scope_requests(canonical_id, created_ts, id);
 """
 
 _VALID_DECISION_STATUSES = frozenset({"accepted", "refused"})
+
+# Hard ceiling on a single ``list_for`` page. Decided rows accumulate forever,
+# so the read routes must never return a response whose size tracks an agent's
+# whole history. Well above the ten-pending-per-agent route cap, so a bounded
+# page can always carry every pending request plus recent decided context.
+DEFAULT_LIST_LIMIT = 200
 
 
 def _row_to_dict(row: aiosqlite.Row) -> dict:
@@ -182,6 +195,86 @@ class AgentScopeRequestsStore(BaseStore):
             )
         rows = await cursor.fetchall()
         return [_row_to_dict(r) for r in rows]
+
+    async def list_for(
+        self,
+        canonical_id: str,
+        status: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> list[dict]:
+        """Return a BOUNDED page of *canonical_id*'s scope requests, oldest first.
+
+        ``status`` narrows to one lifecycle state ('pending', 'accepted' or
+        'refused'); ``None`` returns all of them. Unlike ``list_pending`` this
+        includes DECIDED requests, which is what makes a failed approval
+        distinguishable from a successful one: the caller can see that a
+        request it believes was approved is in fact still 'pending'.
+
+        Decided rows are never deleted (there is no retention sweep and
+        ``set_decision`` only updates), so an agent that has cycled through a
+        long decision history would otherwise return a response whose size
+        grows without limit. At most ``limit`` rows come back
+        (``DEFAULT_LIST_LIMIT`` when unset).
+
+        WHICH rows get dropped matters more than the cap itself, and the two
+        lifecycle groups want OPPOSITE truncation:
+
+        * PENDING rows are taken oldest-first, and ahead of everything else.
+          The oldest pending request is the one whose notification is long
+          gone — the row these reads exist to recover — so it must be the LAST
+          thing a full page drops, not the first. This holds even if the
+          route's ten-per-agent pending cap is ever exceeded.
+        * DECIDED rows fill whatever remains of the page, newest-first, so a
+          caller checking on a recent approval sees it.
+
+        The page is re-sorted oldest-first before it is returned.
+
+        Each group is a separate indexed query with its own LIMIT rather than
+        one sort over the whole history, so the database stops reading once the
+        page is full: the work is bounded by the page size, not by how many
+        decided rows the agent has accumulated (see
+        ``idx_scope_requests_canonical_created``).
+
+        The status value is bound as a parameter, never interpolated — the
+        caller is expected to have validated it against the closed vocabulary
+        first, but a bad value here yields an empty list, not SQL.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentScopeRequestsStore not initialised")
+        page = DEFAULT_LIST_LIMIT if limit is None else max(1, int(limit))
+
+        rows: list = []
+        if status is None or status == "pending":
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_scope_requests "
+                "WHERE canonical_id = ? AND status = 'pending' "
+                "ORDER BY created_ts, id LIMIT ?",
+                (canonical_id, page),
+            )
+            rows.extend(await cursor.fetchall())
+
+        remaining = page - len(rows)
+        if status != "pending" and remaining > 0:
+            if status is None:
+                cursor = await self._db.execute(
+                    "SELECT * FROM agent_scope_requests "
+                    "WHERE canonical_id = ? AND status <> 'pending' "
+                    "ORDER BY created_ts DESC, id DESC LIMIT ?",
+                    (canonical_id, remaining),
+                )
+            else:
+                cursor = await self._db.execute(
+                    "SELECT * FROM agent_scope_requests "
+                    "WHERE canonical_id = ? AND status = ? "
+                    "ORDER BY created_ts DESC, id DESC LIMIT ?",
+                    (canonical_id, status, remaining),
+                )
+            rows.extend(await cursor.fetchall())
+
+        return sorted(
+            (_row_to_dict(r) for r in rows),
+            key=lambda rec: (rec["created_ts"], rec["id"]),
+        )
 
     async def count_pending_for(self, canonical_id: str) -> int:
         """Return the number of pending requests for a given canonical_id."""
