@@ -7,7 +7,7 @@ describe("BoardLane", () => {
     render(
       <BoardLane
         header={{ key: "alice", kind: "assignee", title: "alice", subtitle: "2 active" }}
-        cells={{ ready: <></>, claimed: <></>, closed: <></> }}
+        cells={{ ready: <></>, claimed: <></>, closed: <></>, quarantined: <></>, parked: <></> }}
         onDropTask={() => {}}
       />,
     );
@@ -20,7 +20,7 @@ describe("BoardLane", () => {
     render(
       <BoardLane
         header={{ key: "alice", kind: "assignee", title: "alice" }}
-        cells={{ ready: <div data-testid="r" />, claimed: <></>, closed: <></> }}
+        cells={{ ready: <div data-testid="r" />, claimed: <></>, closed: <></>, quarantined: <></>, parked: <></> }}
         onDropTask={onDrop}
       />,
     );
