@@ -917,6 +917,16 @@ class ProjectTaskStore(BaseStore):
         text: str,
         created_by: str,
     ) -> dict:
+        """Create a checklist item on a task.
+
+        Raises ValueError if the task does not exist: the item's only route to
+        a project subscriber is the task's ``project_id``, so a missing task
+        leaves nothing to publish under. Resolved before the INSERT so a refusal
+        never leaves an orphan row behind.
+        """
+        task = await self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"task not found: {task_id}")
         cid = new_id("cki")
         now = time.time()
         await self._db.execute(
@@ -932,9 +942,7 @@ class ProjectTaskStore(BaseStore):
         row = await cur.fetchone()
         desc = cur.description
         item = _row_to_checklist_item(row, desc)
-        task = await self.get_task(task_id)
-        project_id = task["project_id"] if task is not None else ""
-        await self._publish(project_id, "checklist.item.created", {"id": item["id"], "text": item["text"], "task_id": task_id})
+        await self._publish(task["project_id"], "checklist.item.created", {"id": item["id"], "text": item["text"], "task_id": task_id})
         return item
 
     async def list_checklist_items(
@@ -989,7 +997,10 @@ class ProjectTaskStore(BaseStore):
         """Archive a checklist item. Only valid if verified=1 and reported=1.
 
         Raises ValueError if the item cannot be archived because it lacks
-        verification or a report.
+        verification or a report, or because its task is gone — the task
+        carries the ``project_id`` that ``checklist.item.archived`` is
+        published under, and project subscribers listen at project scope only.
+        Resolved before the UPDATE so a refusal leaves the item untouched.
         """
         item = await self.get_checklist_item(item_id)
         if item is None:
@@ -998,15 +1009,16 @@ class ProjectTaskStore(BaseStore):
             raise ValueError("item cannot be archived: not verified")
         if item["reported"] != 1:
             raise ValueError("item cannot be archived: not reported")
+        task = await self.get_task(item["task_id"])
+        if task is None:
+            raise ValueError(f"task not found: {item['task_id']}")
         now = time.time()
         await self._db.execute(
             "UPDATE task_checklist_items SET archived = 1, updated_at = ? WHERE id = ?",
             (now, item_id),
         )
         await self._db.commit()
-        task = await self.get_task(item["task_id"])
-        project_id = task["project_id"] if task is not None else ""
-        await self._publish(project_id, "checklist.item.archived", {"id": item_id, "task_id": item["task_id"], "archived": True})
+        await self._publish(task["project_id"], "checklist.item.archived", {"id": item_id, "task_id": item["task_id"], "archived": True})
         return await self.get_checklist_item(item_id)
 
     async def get_checklist_item(self, item_id: str) -> dict | None:

@@ -110,6 +110,41 @@ reach it, and write your pid to a pidfile. Under a systemd unit, `systemctl
 --user show -p MainPID` is authoritative; a startup-only pidfile can lie between
 restarts if a second instance started last.
 
+## Resume notes: context snapshot must be bounded
+
+A resume note's `context_snapshot` is carried through `POST /resume` and can grow
+without limit if the agent dumps its transcript or memory into it. An oversized
+snapshot saturates the framework's input window at wake, so the agent restarts
+into the same overflow every time and the recovery note is never consumed.
+
+`_cap_context_snapshot()` in `tinyagentos/restart_orchestrator.py` caps the
+snapshot by dropping the largest fields first until the serialized form fits
+within 32768 bytes. `agent_id` and `session_id` are never candidates while any
+other field remains - a note that cannot say which agent or session it belongs
+to is not worth resuming - and they are dropped only if they alone still breach
+the cap, because an over-limit note re-triggers the overflow the cap exists to
+prevent. Preservation is by name, not by size: ordering the drop by value size
+(or by serialized entry size) keeps a required field only while its value
+happens to be the smaller one.
+
+The dropped field names are recorded in a `_truncated` marker. The marker is
+size-budgeted and room for a bare one is held back before the drop loop stops,
+so a snapshot never goes out flush against the cap with no way to say what it
+lost; the name list is then filled from whatever room is left, down to
+`...and N more` and finally to an empty list. Payload fields are never dropped
+just to widen that list.
+
+**The snapshot is only an object by convention.** A framework that answers
+/prepare-for-shutdown writes `resume_note.json` itself, so `context_snapshot`
+can arrive as a string, a list or a number. There are no fields to drop from
+those, so an oversized non-object value is replaced wholesale by the marker
+(with `dropped_fields: ["context_snapshot"]`), which is bounded by construction
+and puts the note back in the documented object shape. A small non-object value
+is left exactly as it is - only the size is the cap's business.
+
+Do not bypass the guard: any code that writes a resume note by hand must still
+route it through it, lest a 32 KB transcript become a 32 KB failure.
+
 ## Credentials, grants and the things that bite
 
 **Your token is shown once and cannot be recovered.** Not by you, not by the
@@ -676,7 +711,11 @@ that SAME canonical_id instead:
   never escalate an existing identity. The middleware allowlist exposes only the
   create path and the two READ paths below to a registry JWT -- approve/deny are
   POST with an extra trailing segment and match no pattern, so an agent can
-  never self-approve; the routes re-check identity == canonical_id.
+  never self-approve; the routes re-check identity == canonical_id. At most
+  `_SCOPE_REQUEST_PENDING_CAP` (10) requests may be pending per canonical_id;
+  further creates are 429. The cap is compared INSIDE the store's INSERT, not
+  counted by the route first, so a burst of concurrent self-requests cannot
+  slip past it and flood the approver's queue.
 - `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/approve`
   `{granted_scopes, project_id?}`: owner/admin only. The admin may narrow but
   never widen the requested scopes; each granted scope is added via
@@ -717,10 +756,9 @@ directions, and that is the point:
 - **Pending** rows are taken oldest-first and ahead of everything else. The
   oldest pending request is the one whose notification is long gone and whose
   id nobody holds any more -- the row these reads exist to recover -- so it is
-  the LAST thing a full page drops. This holds even if the ten-per-agent
-  pending cap is exceeded (that cap is a count-then-insert, so concurrent
-  creates can pass it together; the read path deliberately does not depend on
-  it holding).
+  the LAST thing a full page drops. The read path deliberately does not
+  depend on the ten-per-agent pending cap holding, so a page stays correct
+  however many pending rows an agent has.
 - **Decided** rows fill whatever is left of the page, newest-first, so a caller
   checking on a recent approval still sees it.
 
@@ -991,6 +1029,37 @@ Python**, so an agent holding grants on several projects and carrying more than
 500 decisions in total can still lose allowed-project rows to the limit. Same
 shape as the original bug, narrower blast radius.
 
+## MCP tool calls (`POST /api/mcp/call`)
+
+Route module `tinyagentos/routes/mcp.py`, backed by `tinyagentos/mcp/proxy.py`.
+Body: `{"server_id", "tool", "agent_name", "agent_groups"?, "arguments"?,
+"resource"?}`.
+
+**The JSON-RPC transport is NOT wired yet, and the route says so.** Three
+answers are possible today:
+
+| status | body | meaning |
+|---|---|---|
+| `403` | `{"error": "permission_denied", "reason": ...}` | the attachment does not grant this agent that tool/resource |
+| `503` | `{"error": "server_unavailable", ...}` | the server is not running and could not be started |
+| `501` | `{"error": "not_implemented", "reason": "MCP JSON-RPC transport is not wired yet; no tool call was made"}` | permissions passed, the server is up, and nothing was called |
+
+Until issue-time this route answered `200` with
+`{"ok": true, "result": "stub — MCP JSON-RPC call not yet wired"}`, which no
+caller could tell apart from a real tool result. **Do not write a caller that
+treats a 2xx from this route as proof a tool ran** — there is no success shape
+on this path yet. When the transport lands, the 501 becomes a real result; the
+403 and 503 arms keep their meaning.
+
+`MCPSupervisor` spawns stdio servers with both pipes captured and **drains
+both**. `GET /api/mcp/servers/{id}/logs` and its `/logs/stream` SSE tail carry
+entries tagged `"stream": "stdout"` or `"stream": "stderr"` so the two can be
+told apart; `level` stays `"error"`/`"info"` for the colour-coded tail. A
+server that writes more than a pipe buffer to stdout used to block in `write()`
+forever while `get_status()` still reported it `running` — for a
+stdio-transport server stdout is the JSON-RPC channel, so that was the primary
+data path, not an edge case.
+
 ## Config save and restore (`/api/config`, session-only)
 
 Route module `tinyagentos/routes/settings.py`. Owner routes behind the session
@@ -1176,6 +1245,15 @@ Route module `tinyagentos/routes/projects.py`.
   another project is existence-hiding rather than merely forbidden.
 - Creating an item logs `checklist.item.created` to the project activity feed
   with the actor, task id, item id and text.
+- Both `checklist.item.created` and `checklist.item.archived` are published on
+  the broker under the task's **`project_id`**, because project subscribers
+  subscribe at project scope. The store therefore resolves the parent task
+  first and raises `ValueError: task not found: <task_id>` when it is gone —
+  create refuses before inserting the row, archive refuses before flipping
+  `archived`. `task_checklist_items.task_id` declares a foreign key but the
+  store never sets `PRAGMA foreign_keys = ON`, so an item can outlive its task;
+  without the guard the event went to a topic nobody listens to and was
+  silently lost.
 - Archiving is store-level only and refuses unless the item is both **verified**
   and **reported**; there is no archive route.
 - `DELETE` and per-item subpaths (`.../checklist-items/{item_id}`) stay
