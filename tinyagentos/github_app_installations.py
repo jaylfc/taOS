@@ -12,6 +12,8 @@ import logging
 import time
 from pathlib import Path
 
+from tinyagentos.atomic_io import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 _INSTALLATIONS_FILE = "github_app_installations.json"
@@ -58,9 +60,7 @@ class GitHubAppInstallations:
 
     def _save_sync(self, data: dict) -> None:
         """Write pre-serialised data to disk (called in a thread)."""
-        tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2))
-        tmp.replace(self._path)
+        atomic_write_text(self._path, json.dumps(data, indent=2))
 
     async def _save(self) -> None:
         """Persist installations to disk without blocking the event loop.

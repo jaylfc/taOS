@@ -10,8 +10,9 @@ Registering the free taos.my username mints, *on the user's node*, two keypairs
 
 Private keys are generated locally and never leave the node. They persist in a
 single 0600 file under the data dir (``<data_dir>/hub/identity.json``),
-following the ``mesh_credentials.py`` pattern: atomic write (temp + os.replace),
-an allowlist of persisted fields, and the ``TAOS_DATA_DIR`` override so local
+following the ``mesh_credentials.py`` pattern: a durable atomic write via
+``tinyagentos.atomic_io``, an allowlist of persisted fields, and the
+``TAOS_DATA_DIR`` override so local
 dev and tests keep working. The node registers the two *public* keys with the
 directory, proving key possession with a signature over a server-issued
 challenge.
@@ -43,6 +44,8 @@ from cryptography.hazmat.primitives.serialization import (
     PrivateFormat,
     PublicFormat,
 )
+
+from tinyagentos.atomic_io import atomic_write_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +92,12 @@ def _pub_raw(key) -> bytes:
 def _save(identity: dict) -> None:
     """Persist the keystore, mode 0600, atomically.
 
-    Keeps only the ``_FIELDS`` allowlist. Atomic (write temp + ``os.replace``)
-    so a crash mid-write never leaves a partial file. The parent dir is created
-    0700; the file is created 0600 so private key material is never group- or
-    world-readable.
+    Keeps only the ``_FIELDS`` allowlist. Written through
+    ``tinyagentos.atomic_io``, which fsyncs the temp file and the parent
+    directory, so a crash mid-write leaves the complete old keystore or the
+    complete new one -- never a partial or NUL-filled file. The parent dir is
+    created 0700; the file is created 0600 so private key material is never
+    group- or world-readable.
     """
     creds = {k: identity.get(k) for k in _FIELDS}
 
@@ -103,17 +108,10 @@ def _save(identity: dict) -> None:
     except OSError:  # pragma: no cover - best effort on odd filesystems
         pass
 
-    p = _path()
-    tmp = p.with_name(p.name + ".tmp")
-    data = json.dumps(creds).encode("utf-8")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
-    os.replace(tmp, p)
-    try:
-        os.chmod(p, 0o600)
-    except OSError:  # pragma: no cover
-        pass
+    # 0o600 is applied to the temp file before the rename, so the credentials
+    # are never briefly world-readable; the fsyncs mean a power cut cannot
+    # leave the file the right length and full of NULs.
+    atomic_write_bytes(_path(), json.dumps(creds).encode("utf-8"), mode=0o600)
 
 
 def _load() -> Optional[dict]:

@@ -495,6 +495,14 @@ items by number (for example "pitfall 5").
   `test_config.py`.
 - **Catalog entry:** `manifest.yaml` under `app-catalog/<category>/<id>/` → add to `catalog.yaml` →
   `pytest tests/test_catalog_sync.py`.
+- **Writing a state file:** call `atomic_write_text` / `atomic_write_bytes` from
+  `tinyagentos.atomic_io` (it creates the parent dir, fsyncs the temp file and the parent
+  directory, applies `mode` before the rename, and randomises the temp name). Never hand-roll
+  `tmp.write_text(...)` + `tmp.replace(target)` — that fsyncs nothing, so a power cut brings the
+  file back the right size and full of NULs, which is the 2026-08-21 account-store wipe.
+  `tests/test_config_atomic.py` fails the build on a new copy; a promotion that genuinely cannot
+  use `atomic_io` (a symlink swap) is waived in place with `# atomic-io-exempt: <reason>`
+  (pitfall 24).
 - **Debugging a test:** confirm it uses the async `client` fixture and that `tmp_data_dir` setup is
   complete; check the store's `init()`; isolate with `pytest <path>::<test> -v`.
 

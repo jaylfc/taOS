@@ -42,6 +42,7 @@ from typing import Any
 
 import httpx
 
+from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.installers.base import AppInstaller, run_cmd
 from tinyagentos.installers.model_paths import (
     backend_model_dir,
@@ -177,7 +178,10 @@ class RkLlamaCppInstaller(AppInstaller):
         if tmp_link.exists() or tmp_link.is_symlink():
             tmp_link.unlink()
         tmp_link.symlink_to(target)
-        os.replace(tmp_link, active_link)
+        # This promotes a symlink, not file content, so it cannot go through
+        # atomic_io: that writes bytes and would turn the link into a copy of
+        # the multi-GB GGUF.
+        os.replace(tmp_link, active_link)  # atomic-io-exempt: symlink promotion
 
         # Tell llama-server which manifest id is now active so its
         # /v1/models endpoint advertises the right name. The systemd
@@ -185,7 +189,9 @@ class RkLlamaCppInstaller(AppInstaller):
         # llama-server as --alias. Reading via a sidecar file means
         # we never rewrite the unit at runtime — install-time only.
         active_alias_path = self.install_dir / "active.alias"
-        active_alias_path.write_text(f"TAOS_ACTIVE_ALIAS={app_id}\n")
+        # systemd reads this via EnvironmentFile=, and a NUL-filled or
+        # half-written alias file fails the unit at boot, so write it durably.
+        atomic_write_text(active_alias_path, f"TAOS_ACTIVE_ALIAS={app_id}\n")
 
         # Enable + restart the service. Failure here means the model file
         # is on disk but the runtime is not actually serving it — we report

@@ -1,0 +1,3 @@
+### Fixed
+
+- Every persisted state file now survives an unclean power-off. `config.yaml`, the Fernet key that decrypts stored secrets, the hub and mesh credential stores, the GitHub installations file, the wake budget, the Observatory pause state, the store star cache and the beads/canvas exports were written with a rename that fsynced neither the file nor its parent directory, so a power cut could bring any of them back at the right size and full of NUL bytes — the failure that wiped the account store on 2026-08-21. All of them now go through the crash-safe writer, which also randomises the temp name so two concurrent writers cannot share one temp file.

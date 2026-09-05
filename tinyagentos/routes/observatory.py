@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import tempfile
 import time
 import logging
 from datetime import datetime, timezone
@@ -27,6 +25,7 @@ from tinyagentos.agent_token_auth import (
     _grant_unexpired,
     check_agent_scope,
 )
+from tinyagentos.atomic_io import atomic_write_text
 
 router = APIRouter()
 
@@ -42,7 +41,7 @@ STALE_CLAIM_SECONDS = 1800
 
 # Serialise read-modify-write of the pause/throttle state files so two
 # concurrent admin POSTs cannot lose an update (each reads the same prior
-# state and the second os.replace clobbers the first). The writes are
+# state and the second write clobbers the first). The writes are
 # infrequent admin actions, so a single in-process lock is sufficient.
 _write_lock = asyncio.Lock()
 
@@ -67,22 +66,11 @@ def _read_state(request: Request) -> dict:
 
 
 def _atomic_write(p: Path, state: dict) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    # Write to a temp file in the same dir then atomically rename, so a crash
-    # mid-write or a concurrent writer can never leave a truncated/corrupt file
-    # (a reader always sees either the old or the new complete state).
-    fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix="." + p.stem + ".", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(json.dumps(state))
-        os.replace(tmp, p)
-        tmp = None
-    finally:
-        if tmp is not None:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+    # Temp file in the same dir, fsynced, then renamed (and the directory
+    # fsynced too), so neither a crash mid-write nor a concurrent writer can
+    # leave a truncated, corrupt or NUL-filled file -- a reader always sees
+    # either the old or the new complete state.
+    atomic_write_text(p, json.dumps(state))
 
 
 def _write_state(request: Request, state: dict) -> None:

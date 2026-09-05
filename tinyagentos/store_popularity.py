@@ -43,6 +43,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from tinyagentos.atomic_io import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 # Stars move slowly and the list endpoint is hit often, so 200s and genuine
@@ -304,13 +306,13 @@ def _persist_cache() -> None:
     if _cache_path is None:
         return
     try:
-        _cache_path.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic write: a crash mid-write must not corrupt the persisted cache.
-        tmp_path = _cache_path.with_name(_cache_path.name + ".tmp")
-        tmp_path.write_text(
-            json.dumps({r: [exp, stars] for r, (exp, stars) in _star_cache.items()})
+        # Atomic + durable: a crash mid-write must not corrupt the persisted
+        # cache, and without the fsyncs a rename can land while the bytes are
+        # still only in page cache.
+        atomic_write_text(
+            _cache_path,
+            json.dumps({r: [exp, stars] for r, (exp, stars) in _star_cache.items()}),
         )
-        tmp_path.replace(_cache_path)
     except Exception as exc:
         logger.debug("store popularity cache persist failed: %s", exc)
 

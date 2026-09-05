@@ -168,6 +168,11 @@ Submit a pull request. The CI will run the catalog tests automatically. Include 
 - Follow the patterns already in the codebase - there is no strict linter, but keep it readable
 - One concern per module; avoid cross-importing between route files
 - Use `async def` for route handlers; use `await` for all I/O
+- Persist state with `tinyagentos.atomic_io` (`atomic_write_text` /
+  `atomic_write_bytes`), never a hand-rolled write-temp-then-rename: the
+  hand-rolled form fsyncs nothing, so a power cut can bring the file back the
+  right size and full of NULs. `tests/test_config_atomic.py` enforces this;
+  see pitfall 24 in [`docs/contributor-pitfalls.md`](docs/contributor-pitfalls.md)
 
 ### Frontend
 

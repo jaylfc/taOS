@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from cryptography.fernet import Fernet
 
+from tinyagentos.atomic_io import atomic_write_bytes
 from tinyagentos.base_store import BaseStore
 
 SECRETS_SCHEMA = """
@@ -88,11 +89,12 @@ def _get_fernet_key(key_dir: Path) -> bytes:
 
     # Generate a fresh random 32-byte key only when the file does not exist.
     raw = os.urandom(32)
-    key_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = key_path.with_suffix(".tmp")
-    tmp.write_bytes(raw)
-    os.chmod(tmp, 0o600)
-    tmp.rename(key_path)
+    # The key that decrypts every stored secret: if a power cut leaves it the
+    # right length and full of NULs, the load path above rejects it as corrupt
+    # and every secret on the box becomes unreadable. atomic_io fsyncs the temp
+    # file and the parent directory, and applies 0600 before the rename so the
+    # key is never briefly world-readable.
+    atomic_write_bytes(key_path, raw, mode=0o600)
     _fernet_key_cache[cache_key] = raw
     return raw
 
