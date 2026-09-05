@@ -44,9 +44,17 @@ let sharedEs: EventSource | null = null;
 // A widened stream that has not opened yet. The narrow one keeps delivering
 // until it does.
 let pendingEs: EventSource | null = null;
-// The widest set we have committed to asking the server for. It only grows, so
-// it converges: at most one reopen per distinct kind for the life of the page.
-let committedKinds: Coverage = [];
+// What we WANT served: the widest set asked for since the current run of
+// subscribers began. It only grows, so it converges -- at most one reopen per
+// distinct kind for as long as at least one subscriber stays mounted. It resets
+// with the connection when the last one leaves.
+let targetKinds: Coverage = [];
+// What is actually ON THE WIRE. Kept apart from the target because a widening
+// that fails must not look served; if it did, nothing would ever retry it and
+// the kind it added would stay filtered out with its subscriber getting silence.
+let servedKinds: Coverage = [];
+// What the in-flight widened stream is aiming at.
+let pendingKinds: Coverage = [];
 let reconnectAttempts = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<() => void>();
@@ -150,7 +158,9 @@ function openStream(kinds: Coverage): EventSource {
       // change, and the per-subscriber dedup drops whatever arrives on both.
       sharedEs?.close();
       sharedEs = pendingEs;
+      servedKinds = pendingKinds;
       pendingEs = null;
+      pendingKinds = [];
     }
     setStatus(true, false);
   };
@@ -164,6 +174,7 @@ function openStream(kinds: Coverage): EventSource {
       if (es.readyState === EventSource.CLOSED) {
         es.close();
         pendingEs = null;
+        pendingKinds = [];
         if (!sharedEs) scheduleReconnect();
       }
       return;
@@ -223,19 +234,27 @@ function scheduleReconnect() {
 // shrinking it when a subscriber leaves would just buy another reopen when the
 // next one arrives. Monotone, it converges instead.
 function ensureCoverage() {
-  const wanted = unionKinds(committedKinds, desiredKinds());
-  if (sameKinds(wanted, committedKinds)) return;
-  committedKinds = wanted;
+  targetKinds = unionKinds(targetKinds, desiredKinds());
 
-  // Nothing is open yet, so whatever opens next picks the new coverage up.
+  // Nothing is open yet, so whatever opens next picks the target up.
   if (!sharedEs) return;
+  // The wire already carries it.
+  if (sameKinds(servedKinds, targetKinds)) return;
+  // A stream aiming at it is already on its way.
+  if (pendingEs && sameKinds(pendingKinds, targetKinds)) return;
 
   pendingEs?.close();
-  pendingEs = openStream(committedKinds);
+  pendingKinds = targetKinds;
+  pendingEs = openStream(targetKinds);
 }
 
 function startConnection() {
   if (sharedEs) return;
+
+  // A widened stream in flight already covers the target, so it IS the
+  // connection in progress -- opening another beside it just gets closed by
+  // the handoff a moment later.
+  if (pendingEs) return;
 
   // Every subscriber that mounts calls this. If a retry is already scheduled,
   // let it run: cancelling it and connecting immediately would make a view
@@ -243,7 +262,8 @@ function startConnection() {
   // endpoint instead of at the intended 5s -> 30s spacing.
   if (reconnectTimer) return;
 
-  sharedEs = openStream(committedKinds);
+  servedKinds = targetKinds;
+  sharedEs = openStream(targetKinds);
 }
 
 function stopConnection() {
@@ -255,7 +275,9 @@ function stopConnection() {
   pendingEs = null;
   sharedEs?.close();
   sharedEs = null;
-  committedKinds = [];
+  targetKinds = [];
+  servedKinds = [];
+  pendingKinds = [];
   reconnectAttempts = 0;
   setStatus(false, true);
 }

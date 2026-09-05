@@ -860,8 +860,16 @@ collapses the union to no filter at all.
 The union only ever GROWS while subscribers exist; it is never narrowed when
 one leaves. Narrowing would only buy another reopen the next time a subscriber
 asks for that kind again, so a monotone union converges instead: at most one
-reopen per distinct kind for the life of the page, and none at all when a
-subscriber widens into kinds the union already covers.
+reopen per distinct kind, and none when a subscriber widens into kinds the
+union already covers. That guarantee spans one continuous run of subscribers,
+not the whole page -- the last subscriber to unmount closes the stream and
+resets the union with it, so a later mount starts the count over.
+
+Coverage is tracked as what is SERVED, separately from what is wanted. A
+widening that fails must not look served: if it did, the union would already
+contain the kind it added, nothing would notice the shortfall, and that kind
+would stay filtered out server-side while its subscriber sat in silence. The
+mismatch is retried on the next mount or `kinds` change rather than on a timer.
 
 A reopen does not interrupt delivery. The widened stream is opened alongside
 the narrow one and the narrow one is closed only once the widened one fires

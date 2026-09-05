@@ -776,4 +776,63 @@ describe("useOsEvents", () => {
 
     vi.useRealTimers();
   });
+
+  it("retries a failed widening on the next subscriber change", () => {
+    const { rerender } = renderHook(
+      ({ kinds }: { kinds: string[] }) => useOsEvents(kinds, () => {}),
+      { initialProps: { kinds: ["projects.task.changed"] } },
+    );
+    settleHandoff();
+
+    rerender({ kinds: ["projects.task.changed", "notifications.new"] });
+    const widened = lastEs;
+    act(() => {
+      if (widened) {
+        widened.readyState = EventSource.CLOSED;
+        widened._fireError();
+      }
+    });
+    const opened = MockEventSourceCtor.mock.calls.length;
+
+    // Coverage has to record what is SERVED, not what we hoped to serve. The
+    // live stream is still the narrow one, so a trigger that asks for nothing
+    // new must still notice the shortfall -- otherwise `notifications.new`
+    // stays filtered out server-side and its subscriber gets silence.
+    renderHook(() => useOsEvents(["notifications.new"], () => {}));
+
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(opened + 1);
+    expect(lastEs?.url).toBe(
+      "/api/os/events?kinds=notifications.new,projects.task.changed",
+    );
+  });
+
+  it("does not open a second stream while a widened one is still connecting", () => {
+    const { rerender } = renderHook(
+      ({ kinds }: { kinds: string[] }) => useOsEvents(kinds, () => {}),
+      { initialProps: { kinds: ["projects.task.changed"] } },
+    );
+    settleHandoff();
+    const narrow = lastEs;
+
+    rerender({ kinds: ["projects.task.changed", "notifications.new"] });
+    const widened = lastEs;
+
+    act(() => {
+      if (narrow) {
+        narrow.readyState = EventSource.CLOSED;
+        narrow._fireError();
+      }
+    });
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(2);
+
+    // Nothing is serving right now, but a widened stream is already on its
+    // way; a mount has to defer to it exactly as the backoff does.
+    renderHook(() => useOsEvents(["projects.task.changed"], () => {}));
+    expect(MockEventSourceCtor).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      widened?.onopen?.();
+    });
+    expect(openStreams()).toHaveLength(1);
+  });
 });

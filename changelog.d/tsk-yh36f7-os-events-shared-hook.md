@@ -4,7 +4,7 @@
 
 ### Changed
 
-- The desktop client opens `/api/os/events` with `?kinds=` set to the union of every live subscriber's kind list, then applies each subscriber's own list in the browser. Widening into kinds the union already covers no longer reopens the connection, and the union is never narrowed when a subscriber leaves, so it settles at one reopen per distinct kind for the life of the page. A reopen overlaps the old and new streams and closes the old one only once the new one is live, so no events are lost across a filter change.
+- The desktop client opens `/api/os/events` with `?kinds=` set to the union of every live subscriber's kind list, then applies each subscriber's own list in the browser. Widening into kinds the union already covers no longer reopens the connection, and the union is never narrowed when a subscriber leaves, so it settles at one reopen per distinct kind for as long as at least one subscriber stays mounted (the union resets with the connection when the last one leaves). A reopen overlaps the old and new streams and closes the old one only once the new one is live, so no events are lost across a filter change.
 
 ### Fixed
 
