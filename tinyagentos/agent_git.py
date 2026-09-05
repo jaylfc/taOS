@@ -2,13 +2,17 @@
 
 All container interactions go through ``exec_in_container`` and
 ``push_file`` so the same helpers work for both LXC and Docker backends.
+
+The repo root is the agent's whole home directory and every commit is made
+with ``git add -A``, so the versioned scope is an ALLOWLIST (``_STATE_PATHS``)
+rather than a list of secret patterns to deny — see ``_build_gitignore``.
 """
 from __future__ import annotations
 
 import logging
 import os
 import tempfile
-from typing import List
+from typing import Iterable, List, NoReturn
 
 from tinyagentos.containers import exec_in_container, push_file
 
@@ -17,6 +21,12 @@ logger = logging.getLogger(__name__)
 _REPO_PATH = "/root"
 
 _STATE_LOCK_PATH = "/tmp/agent_state.lock"
+
+# The first `git add -A` only descends into the allowlisted paths below, so it
+# never walks .cache/, .local/ or .venv/ — but an image that ships a populated
+# workspace/ can still outlast an ordinary git call on Pi-class storage, and a
+# timeout there disables versioning for the whole deployment.
+_INITIAL_COMMIT_TIMEOUT = 300
 
 
 class DirtyTreeError(RuntimeError):
@@ -30,26 +40,94 @@ class NotAncestorError(RuntimeError):
 class ContainerUnreachableError(RuntimeError):
     pass
 
-_GITIGNORE_CONTENTS = """\
-.env
-*.cred
-*token*
-*.pem
-*.p12
-*.key
-*.secret
-.ssh/
-caches/
-venv/
-node_modules/
-.browser_profiles/
-__pycache__/
-*.pyc
-.taos/trace/
-.aws/
-credentials
-*.credentials
-"""
+
+# Per-framework AGENTS.md path inside the agent's container. Frameworks read
+# this file on every turn to pick up agent rules (per the taosmd contract —
+# see issue #378). It lives here because the versioned scope below derives
+# from it: adding a framework must not also mean remembering to version its
+# rules file. ``deployer`` re-exports the name it has always exposed.
+AGENTS_MD_PATHS: dict[str, str] = {
+    "openclaw": "/root/.openclaw/AGENTS.md",
+    "hermes": "/root/.hermes/AGENTS.md",
+}
+
+
+def _home_relative(path: str) -> str:
+    """Return *path* relative to the agent home, for a .gitignore entry."""
+    prefix = _REPO_PATH.rstrip("/") + "/"
+    if not path.startswith(prefix):
+        raise ValueError(f"{path} is not inside the agent home {_REPO_PATH}")
+    return path[len(prefix):]
+
+
+# Everything the agent state repo versions. The repo root IS the agent home,
+# so the scope has to be an allowlist: a denylist over a home directory can
+# never be complete — every framework install drops another config file
+# carrying an API key (.hermes/config.yaml), a bridge token (.openclaw/env)
+# or a multi-gigabyte cache tree. A new framework adds a state path here,
+# never a new secret pattern.
+#
+# Deliberately out of scope, and covered by the leading "*": .ssh/, .taos/
+# (the trace bind mount and the committer's own log), the framework config
+# files that sit next to these AGENTS.md files, shell history, and every
+# cache/venv tree.
+_STATE_PATHS: tuple[str, ...] = (
+    ".gitignore",
+    "AGENTS.md",
+    "workspace/",
+    "memory/",
+    *sorted(_home_relative(p) for p in AGENTS_MD_PATHS.values()),
+)
+
+
+def _build_gitignore(state_paths: Iterable[str]) -> str:
+    """Render the allowlist .gitignore: ignore everything, re-include state.
+
+    git refuses to re-include a file whose parent directory is excluded, so
+    every parent of a re-included file is re-included too. That is also what
+    keeps the scan cheap: git descends into the allowlisted directories only,
+    and the excluded ones (.cache/, .local/, .venv/) are never walked.
+    """
+    lines = [
+        "# taOS agent state repo — ALLOWLIST: everything under the agent home",
+        "# is ignored and only the paths re-included below are versioned.",
+        "# Generated from _STATE_PATHS in tinyagentos/agent_git.py — edit there,",
+        "# a deploy overwrites this file.",
+        "*",
+    ]
+    for path in state_paths:
+        if path.endswith("/"):
+            lines.append(f"!/{path}")
+            lines.append(f"!/{path}**")
+            continue
+        parents = path.split("/")[:-1]
+        for depth in range(1, len(parents) + 1):
+            entry = "!/" + "/".join(parents[:depth]) + "/"
+            if entry not in lines:
+                lines.append(entry)
+        lines.append(f"!/{path}")
+    return "\n".join(lines) + "\n"
+
+
+_GITIGNORE_CONTENTS = _build_gitignore(_STATE_PATHS)
+
+# git words a missing object differently per subcommand and version:
+# `rev-parse` says "bad revision", `show` says "ambiguous argument ...:
+# unknown revision or path not in the working tree", older builds say "bad
+# object". Every one of them is a 404, not an unreachable container.
+_UNKNOWN_REV_MARKERS = (
+    "bad revision",
+    "unknown revision",
+    "ambiguous argument",
+    "bad object",
+)
+
+
+def _raise_unknown_revision_or_unreachable(sha: str, out: str) -> NoReturn:
+    lowered = out.lower()
+    if any(marker in lowered for marker in _UNKNOWN_REV_MARKERS):
+        raise RuntimeError(f"unknown revision {sha}")
+    raise ContainerUnreachableError(out.strip() or "container unreachable")
 
 
 async def _git(container: str, args: List[str], timeout: int = 60) -> tuple[int, str]:
@@ -83,10 +161,14 @@ async def git_config_user(container: str, name: str, email: str) -> None:
 
 
 async def git_add_commit(container: str, message: str) -> None:
-    rc, out = await _git(container, ["add", "-A"])
+    rc, out = await _git(container, ["add", "-A"], timeout=_INITIAL_COMMIT_TIMEOUT)
     if rc != 0:
         raise RuntimeError(f"git add failed: {out}")
-    rc, out = await _git(container, ["commit", "-m", message, "--allow-empty"])
+    rc, out = await _git(
+        container,
+        ["commit", "-m", message, "--allow-empty"],
+        timeout=_INITIAL_COMMIT_TIMEOUT,
+    )
     if rc != 0:
         raise RuntimeError(f"git commit failed: {out}")
 
@@ -99,9 +181,7 @@ async def git_is_dirty(container: str) -> bool:
 async def git_rev_parse(container: str, sha: str) -> str:
     rc, out = await _git(container, ["rev-parse", "--verify", f"{sha}^{{commit}}"])
     if rc != 0:
-        if "bad revision" in out.lower():
-            raise RuntimeError(f"unknown revision {sha}")
-        raise ContainerUnreachableError(out.strip() or "container unreachable")
+        _raise_unknown_revision_or_unreachable(sha, out)
     return out.strip()
 
 
@@ -135,30 +215,47 @@ async def git_log(container: str) -> List[dict]:
 async def git_diff(container: str, sha: str) -> str:
     rc, out = await _git(container, ["show", "--format=", "--patch", sha])
     if rc != 0:
-        if "bad revision" in out.lower():
-            raise RuntimeError(f"unknown revision {sha}")
-        raise ContainerUnreachableError(out.strip() or "container unreachable")
+        _raise_unknown_revision_or_unreachable(sha, out)
     return out
 
 
+# Exit codes the locked revert script reports back through `flock`.
+_REVERT_DIRTY = 2
+_REVERT_NOOP = 3
+
+
 async def git_revert(container: str, sha: str) -> str:
-    head_rc, head_out = await _git(container, ["rev-parse", "HEAD"])
-    if head_rc != 0:
-        raise RuntimeError(f"git rev-parse HEAD failed: {head_out}")
-    head_sha = head_out.strip()
-    if sha == head_sha:
-        return "noop"
-    await git_rev_parse(container, sha)
-    if not await git_merge_base_is_ancestor(container, sha):
+    """Reset the state repo to *sha*, returning "reverted" or "noop".
+
+    The whole decision — is *sha* already HEAD, is the tree clean, reset —
+    runs inside the flock the auto-committer also takes. Reading HEAD outside
+    the lock let the committer commit in the gap, so a caller that asked to
+    restore what was HEAD a moment ago got "noop" while the tree sat on the
+    committer's new commit.
+    """
+    resolved = await git_rev_parse(container, sha)
+    if not await git_merge_base_is_ancestor(container, resolved):
         raise NotAncestorError(f"{sha} is not an ancestor of HEAD")
     script = (
-        "dirty=$(git -C /root status --porcelain); "
-        'test -z "$dirty" && git -C /root reset --hard ' + sha
+        f"head=$(git -C {_REPO_PATH} rev-parse HEAD) || exit 1; "
+        f'test "$head" = {resolved} && exit {_REVERT_NOOP}; '
+        f"dirty=$(git -C {_REPO_PATH} status --porcelain) || exit 1; "
+        f'test -n "$dirty" && exit {_REVERT_DIRTY}; '
+        f"git -C {_REPO_PATH} reset --hard {resolved}"
     )
     rc, out = await exec_in_container(
         container,
         ["bash", "-c", f"flock {_STATE_LOCK_PATH} -c {script!r}"],
     )
-    if rc != 0:
+    if rc == _REVERT_NOOP:
+        return "noop"
+    if rc == _REVERT_DIRTY:
         raise DirtyTreeError("dirty_tree: working tree has uncommitted changes")
+    if rc != 0:
+        # The reset itself failed (exec failed, or git could not read the
+        # repo). Same bucket as any other failed git call in this module —
+        # 409, not the 404 a bare RuntimeError would map to.
+        raise ContainerUnreachableError(
+            f"git revert failed: {out.strip() or f'rc={rc}'}"
+        )
     return "reverted"

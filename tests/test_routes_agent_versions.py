@@ -219,6 +219,47 @@ class TestAgentVersionsRoutes:
         assert resp.status_code == 200
         assert resp.json()["status"] == "noop"
 
+    async def test_revert_wins_a_commit_racing_the_sha_resolution(self, tmp_path, client):
+        """The auto-committer can commit between resolving the requested sha and
+        the reset. The noop decision therefore belongs inside the flock: a sha
+        that was HEAD a moment ago must still be restored, not reported `noop`
+        while the tree sits on the committer's new commit."""
+        fixture = tmp_path / "repo"
+        fixture.mkdir()
+        _init_fixture_repo(fixture)
+        head_sha = subprocess.run(
+            ["git", "-C", str(fixture), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        passthrough = _fake_exec_for_repo(fixture)
+        raced = []
+
+        async def racing_exec(container, cmd, timeout=60):
+            result = await passthrough(container, cmd, timeout)
+            if not raced and "rev-parse" in cmd:
+                raced.append(cmd)
+                (fixture / "racy.txt").write_text("written between resolve and revert")
+                subprocess.run(
+                    ["git", "-C", str(fixture), "add", "racy.txt"],
+                    check=True, capture_output=True,
+                )
+                subprocess.run(
+                    ["git", "-C", str(fixture), "commit", "-m", "auto: racy"],
+                    check=True, capture_output=True,
+                )
+            return result
+
+        with patch("tinyagentos.agent_git.exec_in_container", new=racing_exec):
+            resp = await client.post(f"/api/agents/test-agent/versions/{head_sha}/revert")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "reverted"
+        final_sha = subprocess.run(
+            ["git", "-C", str(fixture), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert final_sha == head_sha
+        assert not (fixture / "racy.txt").exists()
+
     async def test_revert_non_ancestor_returns_409(self, tmp_path, client):
         fixture = tmp_path / "repo"
         fixture.mkdir()

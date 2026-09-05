@@ -4,6 +4,15 @@ Exposes git-history operations against each agent container's local state
 repo at /root. Container interactions go via ``agent_git`` helpers so the
 same code works for both LXC and Docker backends.
 
+Scope
+-----
+The repo root is the agent's home directory, so what these routes can serve
+is bounded by an allowlist rather than by the caller: only the state paths in
+``agent_git._STATE_PATHS`` (workspace, memory, the per-framework AGENTS.md)
+are versioned. Framework config carrying API keys and bridge tokens, shell
+history and cache trees are never in history, so ``/diff`` cannot leak them
+and ``/revert`` cannot roll the framework install back.
+
 Routes
 ------
 GET  /api/agents/{name}/versions            — list commits
@@ -33,7 +42,6 @@ from tinyagentos.agent_git import (
     NotAncestorError,
     git_diff,
     git_log,
-    git_merge_base_is_ancestor,
     git_rev_parse,
     git_revert,
 )
@@ -180,12 +188,13 @@ async def revert_version(request: Request, name: str, sha: str):
 
     try:
         container = _container_name(agent)
-        head_sha = (await git_rev_parse(container, "HEAD")).strip()
+        # Resolve the sha (404s an unknown one), then let git_revert decide
+        # noop vs reverted *inside* the state lock — comparing against a HEAD
+        # read out here races the auto-committer, which would answer "noop"
+        # while the tree sits on a commit the caller never asked for.
         resolved_sha = await git_rev_parse(container, sha)
-        if resolved_sha != head_sha:
-            status = await git_revert(container, resolved_sha)
-            return {"agent": name, "sha": resolved_sha, "status": status}
-        return {"agent": name, "sha": sha, "status": "noop"}
+        status = await git_revert(container, resolved_sha)
+        return {"agent": name, "sha": resolved_sha, "status": status}
     except InvalidRemoteError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except DirtyTreeError as exc:
