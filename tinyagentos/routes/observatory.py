@@ -65,16 +65,22 @@ def _read_state(request: Request) -> dict:
     }
 
 
-def _atomic_write(p: Path, state: dict) -> None:
+async def _atomic_write(p: Path, state: dict) -> None:
     # Temp file in the same dir, fsynced, then renamed (and the directory
     # fsynced too), so neither a crash mid-write nor a concurrent writer can
     # leave a truncated, corrupt or NUL-filled file -- a reader always sees
     # either the old or the new complete state.
-    atomic_write_text(p, json.dumps(state))
+    #
+    # Those two fsyncs are blocking syscalls: on a slow disk (an SD card on a
+    # Pi) they are tens of milliseconds in which no other request, dispatch
+    # tick or heartbeat can run, so the pause switch would stall the very
+    # fleet it steers. Run them on a worker thread; ``_write_lock`` is what
+    # serialises the read-modify-write, and it is still held across this await.
+    await asyncio.to_thread(atomic_write_text, p, json.dumps(state))
 
 
-def _write_state(request: Request, state: dict) -> None:
-    _atomic_write(_state_path(request), state)
+async def _write_state(request: Request, state: dict) -> None:
+    await _atomic_write(_state_path(request), state)
 
 
 async def _authorize_observatory_read(request: Request) -> str:
@@ -153,7 +159,7 @@ async def set_pause(body: PauseBody, request: Request):
             state["lanes"][scope] = True
         else:
             state["lanes"].pop(scope, None)
-        _write_state(request, state)
+        await _write_state(request, state)
     return state
 
 
@@ -221,7 +227,7 @@ async def set_throttle(body: ThrottleBody, request: Request):
             state["lanes"][scope] = limit
         else:
             state["lanes"].pop(scope, None)
-        _atomic_write(_throttle_path(request), state)
+        await _atomic_write(_throttle_path(request), state)
     return state
 
 
@@ -311,7 +317,7 @@ async def set_approval_mode(body: ApprovalModeBody, request: Request):
             state["sessions"][scope] = mode
         else:
             state["sessions"].pop(scope, None)
-        _atomic_write(_approval_path(request), state)
+        await _atomic_write(_approval_path(request), state)
     return state
 
 

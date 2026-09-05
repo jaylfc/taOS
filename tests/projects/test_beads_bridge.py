@@ -1224,3 +1224,35 @@ async def test_announce_newly_ready_appends_why_line(tmp_path):
         c.kwargs["content"] for c in bridge._msg_store.send_message.await_args_list
     ]
     assert any("tsk_b ready" in b and "Why: Launch → Epic" in b for b in bodies)
+
+
+@pytest.mark.asyncio
+async def test_jsonl_render_writes_off_the_event_loop(tmp_path, monkeypatch):
+    """The .beads render is a background tick — it must not stall the loop.
+
+    ``atomic_write_text`` fsyncs the file and the parent directory; on a slow
+    disk that is tens of milliseconds of dead event loop per project per tick,
+    which is felt as latency on every unrelated request.
+    """
+    import tinyagentos.projects.beads_bridge as bb
+
+    on_loop: list[bool] = []
+
+    def recording_write(path, text, **kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_loop.append(False)
+        else:
+            on_loop.append(True)
+        Path(path).write_text(text)
+
+    monkeypatch.setattr(bb, "atomic_write_text", recording_write)
+
+    bridge = _make_bridge(tmp_path)
+    await bridge._render_jsonl("prj_1")
+
+    assert on_loop == [False], (
+        "atomic_write_text ran on the event loop thread — its fsyncs block "
+        "every other coroutine for the duration of the write"
+    )

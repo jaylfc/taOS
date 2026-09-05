@@ -226,7 +226,11 @@ class BeadsBridge:
                 json.dumps(task_to_jsonl_dict(t, outbound, ready), separators=(",", ":"))
             )
 
-        atomic_write_text(target, "\n".join(lines) + ("\n" if lines else ""))
+        # fsync of the file and of the parent dir are blocking syscalls; this
+        # renders on a background tick, so keep them off the shared event loop.
+        await asyncio.to_thread(
+            atomic_write_text, target, "\n".join(lines) + ("\n" if lines else "")
+        )
 
     async def _find_a2a_channel(self, project_id: str) -> dict | None:
         """Resolve the project's A2A channel. None if missing/archived."""

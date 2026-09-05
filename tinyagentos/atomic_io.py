@@ -27,7 +27,27 @@ import os
 import secrets
 from pathlib import Path
 
-__all__ = ["atomic_write_text", "atomic_write_bytes"]
+__all__ = ["atomic_write_text", "atomic_write_bytes", "atomic_create_bytes"]
+
+
+def _fsync_dir(directory: Path) -> None:
+    """``fsync`` *directory* so a rename into it survives a power cut.
+
+    Without this the rename can be lost on a crash even though the file
+    contents were synced -- so a failure here means we did not deliver the
+    durability the caller asked for, and saying nothing would be a lie.
+    The exception is a filesystem that cannot fsync a directory at all
+    (some network and union filesystems); that is a property of the mount,
+    not a failed write.
+    """
+    dir_fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EBADF):
+            raise
+    finally:
+        os.close(dir_fd)
 
 
 def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> None:
@@ -76,20 +96,96 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> N
             pass
         raise
 
-    # Without this the rename can be lost on a crash even though the file
-    # contents were synced -- so a failure here means we did not deliver the
-    # durability the caller asked for, and saying nothing would be a lie.
-    # The exception is a filesystem that cannot fsync a directory at all
-    # (some network and union filesystems); that is a property of the mount,
-    # not a failed write.
-    dir_fd = os.open(path.parent, os.O_RDONLY)
+    _fsync_dir(path.parent)
+
+
+def atomic_create_bytes(path: Path, data: bytes, *, mode: int | None = None) -> bytes:
+    """Durably create *path* holding *data*, but only if it is not there yet.
+
+    Returns the bytes that are actually persisted at *path*: *data* when this
+    call created the file, or the existing content when the file was already
+    there -- including when another process created it in the window between
+    this call's own existence check and its write.
+
+    ``atomic_write_bytes`` is a durable *replace*, which is right for a state
+    file any writer may legitimately overwrite and wrong for the one-time
+    creation of persistent key material.  Two processes sharing a data dir can
+    both observe an absent key file and both generate; each write is atomic, so
+    the file is never corrupt, but the last one wins and the *loser* carries on
+    using key material that is not on disk.  Everything it encrypted (or
+    signed) is unreadable after a restart.
+
+    The name is therefore claimed with ``os.link``, which fails ``EEXIST``
+    rather than replacing: the race is decided by the kernel, exactly one
+    writer's bytes are ever persisted, and every other writer is handed those
+    same bytes back to use instead of its own.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
     try:
-        os.fsync(dir_fd)
-    except OSError as exc:
-        if exc.errno not in (errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EBADF):
-            raise
+        return path.read_bytes()
+    except FileNotFoundError:
+        pass
+
+    tmp = path.with_name(f".{path.name}.tmp{secrets.token_hex(8)}")
+    linked = False
+    try:
+        # O_EXCL: a name this random cannot legitimately exist already, so a
+        # collision means something else is writing and we must not join it.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                     mode if mode is not None else 0o666)
+        try:
+            # os.write is allowed to write fewer bytes than it was given.
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        if mode is not None:
+            # os.open honours the umask; chmod does not.
+            os.chmod(tmp, mode)
+        try:
+            os.link(tmp, path)
+            linked = True
+        except FileExistsError:
+            pass
+        except OSError:
+            # A filesystem without hard links (exFAT/FAT on a removable data
+            # dir).  Claim the target name exclusively instead: the atomic
+            # create-or-fail guarantee this function exists for is preserved,
+            # at the cost of a crash window in which the new file can be
+            # partial -- which a replace would not have closed either.
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                             mode if mode is not None else 0o666)
+            except FileExistsError:
+                pass
+            else:
+                try:
+                    view = memoryview(data)
+                    while view:
+                        view = view[os.write(fd, view):]
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                if mode is not None:
+                    os.chmod(path, mode)
+                linked = True
     finally:
-        os.close(dir_fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+    if not linked:
+        # Someone else got there first; their bytes are the ones that survive a
+        # restart, so they are the ones the caller must use.
+        return path.read_bytes()
+
+    _fsync_dir(path.parent)
+    return data
 
 
 def atomic_write_text(

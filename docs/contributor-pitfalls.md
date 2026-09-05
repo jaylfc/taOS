@@ -103,6 +103,20 @@ inode. `tests/test_config_atomic.py` fails the build on a new copy; a promotion
 that genuinely cannot use `atomic_io` (swapping a symlink, say) is waived in
 place with a `# atomic-io-exempt: <reason>` comment on the same line.
 
+Two follow-on rules the writers get wrong:
+
+- One-time key material is *created*, not written. `atomic_write_bytes` is a
+  durable replace, so two processes sharing a data dir that both observe an
+  absent `.secrets_key` (or `hub/identity.json`) both generate and the last one
+  wins -- the loser goes on encrypting under a key that is not on disk, and
+  everything it wrote is unreadable after a restart. Use `atomic_create_bytes`,
+  which claims the name with `link(2)` and hands a losing process the bytes that
+  actually persisted.
+- A durable write from `async` code goes through
+  `await asyncio.to_thread(atomic_write_text, ...)`. The two fsyncs are blocking
+  syscalls; on an SD card they are tens of milliseconds in which no other
+  request, dispatch tick or heartbeat can run.
+
 **17. A new view must be wired into every surface it has: desktop AND mobile.**
 The desktop tab list and the mobile tab order are separate registries; updating
 one and not the other ships a view that is unreachable on phones (#2042:

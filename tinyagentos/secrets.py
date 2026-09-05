@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from cryptography.fernet import Fernet
 
-from tinyagentos.atomic_io import atomic_write_bytes
+from tinyagentos.atomic_io import atomic_create_bytes
 from tinyagentos.base_store import BaseStore
 
 SECRETS_SCHEMA = """
@@ -76,8 +76,8 @@ def _get_fernet_key(key_dir: Path) -> bytes:
         return _fernet_key_cache[cache_key]
 
     key_path = Path(key_dir) / ".secrets_key"
-    if key_path.exists():
-        raw = key_path.read_bytes()
+
+    def _validated(raw: bytes) -> bytes:
         if len(raw) != 32:
             raise ValueError(
                 f"Corrupt Fernet key file at {key_path}: expected 32 bytes, got "
@@ -87,6 +87,9 @@ def _get_fernet_key(key_dir: Path) -> bytes:
         _fernet_key_cache[cache_key] = raw
         return raw
 
+    if key_path.exists():
+        return _validated(key_path.read_bytes())
+
     # Generate a fresh random 32-byte key only when the file does not exist.
     raw = os.urandom(32)
     # The key that decrypts every stored secret: if a power cut leaves it the
@@ -94,9 +97,14 @@ def _get_fernet_key(key_dir: Path) -> bytes:
     # and every secret on the box becomes unreadable. atomic_io fsyncs the temp
     # file and the parent directory, and applies 0600 before the rename so the
     # key is never briefly world-readable.
-    atomic_write_bytes(key_path, raw, mode=0o600)
-    _fernet_key_cache[cache_key] = raw
-    return raw
+    #
+    # *create*, not *write*: a second process sharing this data dir can observe
+    # the same absent file and generate its own key. A replace would let the
+    # last writer win, leaving the loser encrypting under a key that is not on
+    # disk -- every secret it wrote unreadable after a restart. atomic_create_bytes
+    # hands back whatever is actually persisted, so both processes converge on
+    # one key.
+    return _validated(atomic_create_bytes(key_path, raw, mode=0o600))
 
 
 def _fernet_token(key_dir: Path) -> "Fernet":

@@ -135,8 +135,12 @@ _PROMOTION = re.compile(
 )
 
 # Only names that unambiguously denote a temp file, so an ordinary
-# ``str.replace`` or a variable called ``template`` is never flagged.
-_TEMP_NAME = re.compile(r"^(?:tmp|tmp_\w+|\w+_tmp)$")
+# ``str.replace`` or a variable called ``template`` is never flagged.  Both
+# spellings are here: a guard that knew only ``tmp*`` let ``temp_path`` walk
+# straight past it, which is a one-word rename, not a different defect.
+# ``temp``/``tmp`` must be the whole name or a whole underscore-separated part,
+# which is what keeps ``template`` out.
+_TEMP_NAME = re.compile(r"^(?:tmp|temp|temporary|(?:tmp|temp)_\w+|\w+_(?:tmp|temp))$")
 
 # A promotion that genuinely cannot go through atomic_io -- a symlink swap, say
 # -- carries this marker plus a reason on the same line.  The reason is
@@ -202,6 +206,33 @@ def test_the_guard_flags_a_freshly_reintroduced_copy(tmp_path: Path) -> None:
             )(_PROMOTION.search(line))
         )
     ] == ["tmp_path.replace(path)"]
+
+
+@pytest.mark.parametrize(
+    "line, promoted",
+    [
+        ("tmp.replace(path)", "tmp"),
+        ("tmp_path.replace(path)", "tmp_path"),
+        ("temp_path.replace(path)", "temp_path"),
+        ("temp_file.replace(path)", "temp_file"),
+        ("temporary.replace(path)", "temporary"),
+        ("os.replace(temp, path)", "temp"),
+        ("os.replace(config_temp, path)", "config_temp"),
+        ("os.replace(config_tmp, path)", "config_tmp"),
+    ],
+)
+def test_the_guard_recognises_common_temp_variable_names(line: str, promoted: str) -> None:
+    """``temp``-spelled names are temp files too.
+
+    A guard that only knew ``tmp*`` let ``temp_path.write_text(...)`` followed
+    by ``temp_path.replace(...)`` reintroduce the whole defect while staying
+    green -- a one-word rename around the check.
+    """
+    match = _PROMOTION.search(line)
+    assert match is not None, f"promotion not detected in {line!r}"
+    name = (match.group("arg") or match.group("recv")).rsplit(".", 1)[-1]
+    assert name == promoted
+    assert _TEMP_NAME.match(name), f"{name!r} not recognised as a temp file name"
 
 
 def test_the_guard_ignores_ordinary_string_replace() -> None:

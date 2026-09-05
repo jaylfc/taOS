@@ -82,6 +82,46 @@ class TestKeystore:
         assert identity.exists() is False
         identity.clear()  # no-op when already gone
 
+    def test_an_identity_persisted_mid_mint_is_adopted_not_clobbered(
+        self, data_dir, monkeypatch
+    ):
+        """Concurrent first-boot minting must converge on one identity.
+
+        Two processes sharing the data dir can both see no keystore and both
+        mint. The write is atomic but it *replaces*, so the last one wins and
+        the loser signs with a key that is not on disk — after a restart its
+        author fingerprint changes and everything it signed is unverifiable
+        against the identity the node actually has. Fault-injects that
+        interleave by persisting a rival keystore while we are minting.
+        """
+        rival = identity.load_or_create()
+        identity_file = data_dir / "hub" / "identity.json"
+        rival_bytes = identity_file.read_bytes()
+        identity_file.unlink()
+
+        real_x25519 = identity.X25519PrivateKey
+
+        class RacingX25519:
+            @staticmethod
+            def generate():
+                if not identity_file.exists():
+                    identity_file.parent.mkdir(parents=True, exist_ok=True)
+                    identity_file.write_bytes(rival_bytes)
+                return real_x25519.generate()
+
+        monkeypatch.setattr(identity, "X25519PrivateKey", RacingX25519)
+
+        minted = identity.load_or_create()
+
+        on_disk = json.loads(identity_file.read_text())
+        assert on_disk["signing_private"] == rival["signing_private"], (
+            "an identity another process had already persisted was overwritten"
+        )
+        assert minted["signing_private"] == rival["signing_private"], (
+            "returned an identity that is not the one on disk: this node would "
+            "sign under a fingerprint it loses on the next restart"
+        )
+
 
 class TestChallengeProof:
     def test_registration_proof_verifies_with_the_right_key(self, data_dir):

@@ -207,7 +207,11 @@ class CanvasSnapshotter:
 
         elements = await self._canvas_store.list_elements(project_id)
         snapshot = _build_tldraw_snapshot(elements)
-        atomic_write_text(target, json.dumps(snapshot, separators=(",", ":")))
+        # fsync of the file and of the parent dir are blocking syscalls; a board
+        # snapshot is the largest of these writes, so keep it off the event loop.
+        await asyncio.to_thread(
+            atomic_write_text, target, json.dumps(snapshot, separators=(",", ":"))
+        )
         return target
 
 

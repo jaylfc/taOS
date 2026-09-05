@@ -45,7 +45,7 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 
-from tinyagentos.atomic_io import atomic_write_bytes
+from tinyagentos.atomic_io import atomic_create_bytes, atomic_write_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +89,8 @@ def _pub_raw(key) -> bytes:
     return key.public_bytes(Encoding.Raw, PublicFormat.Raw)
 
 
-def _save(identity: dict) -> None:
-    """Persist the keystore, mode 0600, atomically.
+def _save_new(identity: dict) -> dict:
+    """Persist a freshly minted keystore, mode 0600, durably -- if absent.
 
     Keeps only the ``_FIELDS`` allowlist. Written through
     ``tinyagentos.atomic_io``, which fsyncs the temp file and the parent
@@ -98,6 +98,12 @@ def _save(identity: dict) -> None:
     complete new one -- never a partial or NUL-filled file. The parent dir is
     created 0700; the file is created 0600 so private key material is never
     group- or world-readable.
+
+    Returns the credentials that are actually on disk afterwards, which are not
+    necessarily *identity*: two processes sharing the data dir can both find no
+    keystore and both mint. A replace would let the last one win and leave the
+    loser signing under a fingerprint it loses on the next restart, so this is a
+    *create*, and a caller that loses the race adopts the persisted identity.
     """
     creds = {k: identity.get(k) for k in _FIELDS}
 
@@ -111,7 +117,20 @@ def _save(identity: dict) -> None:
     # 0o600 is applied to the temp file before the rename, so the credentials
     # are never briefly world-readable; the fsyncs mean a power cut cannot
     # leave the file the right length and full of NULs.
-    atomic_write_bytes(_path(), json.dumps(creds).encode("utf-8"), mode=0o600)
+    persisted = atomic_create_bytes(
+        _path(), json.dumps(creds).encode("utf-8"), mode=0o600
+    )
+    try:
+        on_disk = json.loads(persisted)
+    except ValueError:  # pragma: no cover - a hand-corrupted file mid-mint
+        return creds
+    if not isinstance(on_disk, dict) or not on_disk.get("signing_private"):
+        # Something unusable is already sitting at the path (a corrupt file the
+        # loader treats as absent). Replace it: there is no identity in it to
+        # lose, and refusing would wedge the node at every boot.
+        atomic_write_bytes(_path(), json.dumps(creds).encode("utf-8"), mode=0o600)
+        return creds
+    return on_disk
 
 
 def _load() -> Optional[dict]:
@@ -156,8 +175,9 @@ def load_or_create() -> dict:
         "encryption_public": _pub_raw(encryption.public_key()).hex(),
         "created_at": time.time(),
     }
-    _save(identity)
-    return identity
+    # A process that lost the mint race gets the persisted identity back, so
+    # every process on this node agrees on one author fingerprint.
+    return _save_new(identity)
 
 
 def signing_fingerprint() -> str:
