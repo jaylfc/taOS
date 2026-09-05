@@ -215,6 +215,7 @@ def test_build_payload_explicit_empty_actions_overrides_data_actions():
         actions=[],
     )
     assert "mutable-content" not in payload["aps"]
+    assert payload.get("actions") in (None, [])
 
 
 def test_build_payload_data_cannot_replace_aps():

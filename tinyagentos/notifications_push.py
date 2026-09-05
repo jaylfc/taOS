@@ -194,11 +194,20 @@ def _build_payload(row: dict) -> dict:
     JSON data, else the desktop shell. ``tag`` collapses re-notifies for the
     same source+id so a newer push replaces the older banner.
 
-    Routing fields (``source``, ``id``, ``image`` (when present), and ``target``
-    when present) are copied into the inner ``data`` dict so the service worker
-    can route on them. The SW only reads ``event.notification.data``, not the
-    top-level payload. ``image`` is the standard Notification API field for a
-    rich attachment; non-native clients that ignore it still get a valid text
+    Routing fields (``source``, ``id``, and ``target`` when present) are
+    copied into the inner ``data`` dict so the service worker can route on
+    them from ``event.notification.data`` after a click.
+
+    ``image`` (when present) is copied to BOTH the inner ``data`` dict and
+    the top level. This repo's own SW (``desktop/src/sw.ts`` /
+    ``tinyagentos/routes/desktop_browser/sw.js``) does not currently wire
+    either shape into ``showNotification``'s ``options.image``, so neither
+    copy renders a rich image today; the top-level copy matches the standard
+    Notification API's ``options.image`` field so a SW implementation that
+    reads it directly (as this file's native APNs/UnifiedPush payload
+    builders already do for their own top-level ``image``) still sees it,
+    without every consumer having to know to look inside ``data``. Non-native
+    clients that ignore ``image`` entirely still get a valid text
     notification.
     """
     data = row.get("data") if isinstance(row.get("data"), dict) else {}

@@ -49,6 +49,16 @@ def build_apns_payload(
     actions: list[dict] | None = None,
     image: str | None = None,
 ) -> dict:
+    """Build an APNs payload, letting explicit keyword args win over `data`.
+
+    ``actions``: when the caller passes anything other than the default
+    ``None`` (including an explicit empty list ``[]``), it is authoritative
+    for `payload["actions"]` too, not only for the mutable-content gate below.
+    An explicit `[]` overrides a stale `data["actions"]` (e.g. re-sending a
+    notification after a decision resolved) by leaving the key present with
+    an empty list, rather than removing it. Omitting `actions` entirely
+    (`None`) leaves any `data`-supplied action set untouched.
+    """
     # `data` goes down first so the explicit keyword arguments below win over any
     # same-named key the caller happened to put in it. Merging the other way round
     # let a stray data["image"] replace the explicit image *after* mutable-content
@@ -57,12 +67,14 @@ def build_apns_payload(
     payload: dict = dict(data or {})
     if image:
         payload["image"] = image
+    if actions is not None:
+        payload["actions"] = actions
     # `data` may still be the only source of an image or an action set (that is
     # how notifications_push threads both), so read the merged values back rather
     # than trusting the arguments: mutable-content has to follow what the service
     # extension will actually be handed, not what this call was told about.
     effective_image = payload.get("image")
-    effective_actions = actions if actions is not None else payload.get("actions")
+    effective_actions = payload.get("actions")
 
     aps: dict = {}
     if title or body:
