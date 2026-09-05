@@ -1,0 +1,2 @@
+### Fixed
+- The auth middleware's wrong-URL 404 is now limited to paths the router cannot serve. A registry JWT presented against a route that exists but is deliberately off the agent-token allowlist -- `GET /api/agents/registry`, or the scope-request approve/deny routes -- again receives 401 from the session gate instead of being told the URL does not exist. The route handler is still never reached in either case.

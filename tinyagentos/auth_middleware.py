@@ -9,6 +9,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.routing import Match
 
 from tinyagentos.agent_registry_store import verify_registry_token
 from tinyagentos.auth import AuthStoreCorruptError
@@ -322,6 +323,49 @@ async def _looks_like_registry_jwt(
         return False
 
     return True
+
+
+def _route_list_matches(routes, scope: dict) -> bool:
+    """True if any route in *routes* claims *scope*'s path.
+
+    A method mismatch (``Match.PARTIAL``) counts as a match: the URL exists,
+    only the verb is wrong, so the caller must not be told the path is unknown.
+    ``Mount``/``Host`` entries match on a prefix only, so recurse into their
+    children instead of trusting the parent match.
+    """
+    for route in routes:
+        match, child_scope = route.matches(scope)
+        if match is Match.NONE:
+            continue
+        sub_routes = getattr(route, "routes", None)
+        if sub_routes:
+            if _route_list_matches(sub_routes, {**scope, **child_scope}):
+                return True
+            continue
+        return True
+    return False
+
+
+def _path_is_routed(app, method: str, path: str) -> bool:
+    """True if *path* resolves to a route registered on *app*.
+
+    This keeps the unlisted-route 404 below narrow.  A path the router can
+    serve is a real URL even when the presented credential is not authorised
+    for it -- ``GET /api/agents/registry`` and the scope-request approve/deny
+    routes exist but are deliberately off the agent-token allowlist.  Those
+    must fall through to the 401/403 session gate; only a genuinely unrouted
+    path is a wrong URL.
+
+    Returns False when *app* exposes no route list, which leaves the 404 branch
+    reachable for a caller whose app was never a Starlette router.
+    """
+    routes = getattr(app, "routes", None)
+    if not isinstance(routes, (list, tuple)):
+        return False
+    return _route_list_matches(
+        routes,
+        {"type": "http", "method": method, "path": path, "root_path": ""},
+    )
 
 
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
@@ -682,14 +726,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
             next_param = f"?next={path}" if path != "/" else ""
             return RedirectResponse(f"/auth/login{next_param}", status_code=303)
 
-        # A registry JWT presented for an unlisted route is a real credential
-        # pointing at the wrong URL.  Returning 404 here (without calling
-        # call_next) keeps the agent-token allowlist closed -- routing is never
-        # reached, so a registry JWT cannot authenticate any other route -- and
-        # gives the caller a response that is distinguishable from dead
-        # credentials (which still get 401).  The anonymous caller (no header,
-        # no session cookie) still falls through to 401 below.
-        if auth_header.lower().startswith("bearer "):
+        # A registry JWT presented for a path no route serves is a real
+        # credential pointing at the wrong URL.  Returning 404 here (without
+        # calling call_next) keeps the agent-token allowlist closed -- routing
+        # is never reached, so a registry JWT cannot authenticate any other
+        # route -- and gives the caller a response that is distinguishable from
+        # dead credentials (which still get 401).  The anonymous caller (no
+        # header, no session cookie) still falls through to 401 below.
+        #
+        # The router is consulted FIRST so this stays limited to unrouted
+        # paths.  A route that exists but is off the agent-token allowlist --
+        # /api/agents/registry, the scope-request approve/deny routes -- is the
+        # mirror-image case: the URL is right and the credential is simply not
+        # authorised for it, so it keeps its 401/403 from the gate below.
+        if auth_header.lower().startswith("bearer ") and not _path_is_routed(
+            request.app, request.method, path
+        ):
             presented_bearer = auth_header[7:].strip()
             if presented_bearer:
                 keypair = getattr(
