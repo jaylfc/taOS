@@ -1027,6 +1027,37 @@ Python**, so an agent holding grants on several projects and carrying more than
 500 decisions in total can still lose allowed-project rows to the limit. Same
 shape as the original bug, narrower blast radius.
 
+## MCP tool calls (`POST /api/mcp/call`)
+
+Route module `tinyagentos/routes/mcp.py`, backed by `tinyagentos/mcp/proxy.py`.
+Body: `{"server_id", "tool", "agent_name", "agent_groups"?, "arguments"?,
+"resource"?}`.
+
+**The JSON-RPC transport is NOT wired yet, and the route says so.** Three
+answers are possible today:
+
+| status | body | meaning |
+|---|---|---|
+| `403` | `{"error": "permission_denied", "reason": ...}` | the attachment does not grant this agent that tool/resource |
+| `503` | `{"error": "server_unavailable", ...}` | the server is not running and could not be started |
+| `501` | `{"error": "not_implemented", "reason": "MCP JSON-RPC transport is not wired yet; no tool call was made"}` | permissions passed, the server is up, and nothing was called |
+
+Until issue-time this route answered `200` with
+`{"ok": true, "result": "stub — MCP JSON-RPC call not yet wired"}`, which no
+caller could tell apart from a real tool result. **Do not write a caller that
+treats a 2xx from this route as proof a tool ran** — there is no success shape
+on this path yet. When the transport lands, the 501 becomes a real result; the
+403 and 503 arms keep their meaning.
+
+`MCPSupervisor` spawns stdio servers with both pipes captured and **drains
+both**. `GET /api/mcp/servers/{id}/logs` and its `/logs/stream` SSE tail carry
+entries tagged `"stream": "stdout"` or `"stream": "stderr"` so the two can be
+told apart; `level` stays `"error"`/`"info"` for the colour-coded tail. A
+server that writes more than a pipe buffer to stdout used to block in `write()`
+forever while `get_status()` still reported it `running` — for a
+stdio-transport server stdout is the JSON-RPC channel, so that was the primary
+data path, not an edge case.
+
 ## Config save and restore (`/api/config`, session-only)
 
 Route module `tinyagentos/routes/settings.py`. Owner routes behind the session
