@@ -68,7 +68,7 @@ class ProjectElementStore(ProjectsDBStore):
     SCHEMA = ELEMENT_SCHEMA
 
     async def get_element(self, element_id: str) -> "dict | None":
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM project_elements WHERE id = ?", (element_id,)
         ) as cur:
             row = await cur.fetchone()
@@ -77,7 +77,7 @@ class ProjectElementStore(ProjectsDBStore):
             return _row_to_element(row, cur.description)
 
     async def get_element_by_slug(self, project_id: str, slug: str) -> "dict | None":
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM project_elements WHERE project_id = ? AND slug = ?",
             (project_id, slug),
         ) as cur:
@@ -203,7 +203,7 @@ class ProjectElementStore(ProjectsDBStore):
         }
 
     async def list_elements(self, project_id: str) -> list[dict]:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM project_elements WHERE project_id = ? ORDER BY created_at ASC",
             (project_id,),
         ) as cur:
@@ -253,6 +253,6 @@ class ProjectElementStore(ProjectsDBStore):
             )
 
     async def _count(self, sql: str, params: tuple) -> int:
-        async with self._db.execute(sql, params) as cur:
+        async with self._read(sql, params) as cur:
             row = await cur.fetchone()
         return int(row[0]) if row else 0

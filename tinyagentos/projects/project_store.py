@@ -196,7 +196,7 @@ class ProjectStore(ProjectsDBStore):
         return await self.get_project(pid)
 
     async def get_project(self, project_id: str) -> dict | None:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM projects WHERE id = ?", (project_id,)
         ) as cur:
             row = await cur.fetchone()
@@ -205,7 +205,7 @@ class ProjectStore(ProjectsDBStore):
             return _row_to_project(row, cur.description)
 
     async def get_project_by_slug(self, slug: str) -> dict | None:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM projects WHERE slug = ?", (slug,)
         ) as cur:
             row = await cur.fetchone()
@@ -214,7 +214,7 @@ class ProjectStore(ProjectsDBStore):
             return _row_to_project(row, cur.description)
 
     async def get_project_by_name(self, name: str) -> dict | None:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM projects WHERE LOWER(name) = LOWER(?)", (name,)
         ) as cur:
             row = await cur.fetchone()
@@ -230,7 +230,7 @@ class ProjectStore(ProjectsDBStore):
         else:
             sql = "SELECT * FROM projects WHERE status = ? ORDER BY created_at DESC"
             params = (status,)
-        async with self._db.execute(sql, params) as cur:
+        async with self._read(sql, params) as cur:
             rows = await cur.fetchall()
             desc = cur.description
         return [_row_to_project(r, desc) for r in rows]
@@ -250,7 +250,7 @@ class ProjectStore(ProjectsDBStore):
         else:
             sql = "SELECT * FROM projects WHERE user_id = ? AND status = ? ORDER BY created_at DESC"
             params = (user_id, status)
-        async with self._db.execute(sql, params) as cur:
+        async with self._read(sql, params) as cur:
             rows = await cur.fetchall()
             desc = cur.description
         return [_row_to_project(r, desc) for r in rows]
@@ -275,6 +275,16 @@ class ProjectStore(ProjectsDBStore):
         sets.append("updated_at = ?"); params.append(time.time())
         params.append(project_id)
         async with self._tx():
+            # The same case-insensitive name check create_project runs, for the
+            # same reason: `projects.name` has no unique index, so a rename
+            # straight onto another project's name left two rows sharing one
+            # name and get_project_by_name returning only one of them. Reads
+            # INSIDE the transaction that writes, and ignores this project's
+            # own row so a project can still be recased.
+            if name is not None:
+                clash = await self.get_project_by_name(name)
+                if clash is not None and clash["id"] != project_id:
+                    raise ProjectConflict("name", name)
             await self._db.execute(
                 f"UPDATE projects SET {', '.join(sets)} WHERE id = ?", params
             )
@@ -408,7 +418,7 @@ class ProjectStore(ProjectsDBStore):
         return changed
 
     async def list_members(self, project_id: str) -> list[dict]:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM project_members WHERE project_id = ? ORDER BY added_at ASC",
             (project_id,),
         ) as cur:
@@ -417,7 +427,7 @@ class ProjectStore(ProjectsDBStore):
         return [dict(zip(keys, r)) for r in rows]
 
     async def get_member(self, project_id: str, member_id: str) -> dict | None:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM project_members WHERE project_id = ? AND member_id = ?",
             (project_id, member_id),
         ) as cur:
@@ -444,7 +454,7 @@ class ProjectStore(ProjectsDBStore):
 
     async def list_activity(self, project_id: str, limit: int = 100) -> list[dict]:
         limit = max(1, min(limit, 500))
-        async with self._db.execute(
+        async with self._read(
             """SELECT * FROM project_activity
                WHERE project_id = ?
                ORDER BY created_at DESC

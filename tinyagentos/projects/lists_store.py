@@ -48,7 +48,7 @@ class ProjectListsStore(ProjectsDBStore):
         return await self.get_list(list_id)
 
     async def get_list(self, list_id: str) -> dict | None:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM project_lists WHERE id = ?", (list_id,)
         ) as cur:
             row = await cur.fetchone()
@@ -58,7 +58,7 @@ class ProjectListsStore(ProjectsDBStore):
             return dict(zip(keys, row))
 
     async def list_lists(self, project_id: str) -> list[dict]:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM project_lists WHERE project_id = ? ORDER BY created_at ASC",
             (project_id,),
         ) as cur:
@@ -173,7 +173,7 @@ class ProjectListEntriesStore(ProjectsDBStore):
         return await self.get_entry(entry_id)
 
     async def get_entry(self, entry_id: str) -> dict | None:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM project_list_entries WHERE id = ?", (entry_id,)
         ) as cur:
             row = await cur.fetchone()
@@ -203,7 +203,7 @@ class ProjectListEntriesStore(ProjectsDBStore):
             where_parts.append("category = ?")
             params.append(category)
 
-        async with self._db.execute(
+        async with self._read(
             f"SELECT * FROM project_list_entries WHERE {' AND '.join(where_parts)} "
             "ORDER BY position ASC, created_at ASC",
             params,
@@ -284,7 +284,7 @@ class ProjectListEntriesStore(ProjectsDBStore):
         return True
 
     async def _get_next_position(self, project_id: str, list_id: str) -> int:
-        async with self._db.execute(
+        async with self._read(
             "SELECT MAX(position) + 1 FROM project_list_entries "
             "WHERE project_id = ? AND list_id = ?",
             (project_id, list_id),

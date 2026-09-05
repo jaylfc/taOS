@@ -152,9 +152,25 @@ class ProjectTaskStore(ProjectsDBStore):
         self._strikes = strikes
 
     async def _publish(self, project_id: str, kind: str, payload: dict) -> None:
-        if self._broker is not None:
-            from tinyagentos.projects.events import ProjectEvent
-            await self._broker.publish(project_id, ProjectEvent(kind=kind, payload=payload))
+        """Announce a mutation, once the write behind it has actually landed.
+
+        Every mutation here publishes after its own ``async with self._tx():``
+        block, so normally there is no open transaction and this goes straight
+        out.  A mutation called from inside another one JOINS that transaction
+        instead of nesting, and the join returns without committing -- so the
+        event waits for the outermost commit and is dropped if it rolls back
+        (see ``tx.after_commit``).  Otherwise the broker would replay a
+        transition the database never took.
+        """
+        if self._broker is None:
+            return
+        from tinyagentos.projects.events import ProjectEvent
+        event = ProjectEvent(kind=kind, payload=payload)
+
+        async def _emit() -> None:
+            await self._broker.publish(project_id, event)
+
+        await self._after_commit(_emit)
 
     async def _record_audit(
         self,
@@ -170,20 +186,29 @@ class ProjectTaskStore(ProjectsDBStore):
         The audit log lives in its own store; a failure to record must never
         roll back or break the task mutation that already committed. project_id
         is recorded so the project-scoped activity feed never crosses projects.
+        Like ``_publish`` it waits for the outermost commit when this mutation
+        joined an open transaction, so the log cannot keep a transition that
+        rolled back.
         """
         if self._audit is None:
             return
-        try:
-            await self._audit.record(
-                task_id=task_id,
-                event=event,
-                actor=actor,
-                from_status=from_status,
-                to_status=to_status,
-                project_id=project_id,
-            )
-        except Exception:
-            logger.warning("board audit record failed for task %s", task_id, exc_info=True)
+
+        async def _write() -> None:
+            try:
+                await self._audit.record(
+                    task_id=task_id,
+                    event=event,
+                    actor=actor,
+                    from_status=from_status,
+                    to_status=to_status,
+                    project_id=project_id,
+                )
+            except Exception:
+                logger.warning(
+                    "board audit record failed for task %s", task_id, exc_info=True
+                )
+
+        await self._after_commit(_write)
 
     async def _post_init(self) -> None:
         # Additive column for project elements (slice 1 of
@@ -284,7 +309,7 @@ class ProjectTaskStore(ProjectsDBStore):
         return new_task
 
     async def get_task(self, task_id: str) -> dict | None:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM project_tasks WHERE id = ?", (task_id,)
         ) as cur:
             row = await cur.fetchone()
@@ -318,7 +343,7 @@ class ProjectTaskStore(ProjectsDBStore):
                 conds.append("element_id = ?")
                 params.append(element_id)
         sql = f"SELECT * FROM project_tasks WHERE {' AND '.join(conds)} ORDER BY created_at ASC"
-        async with self._db.execute(sql, params) as cur:
+        async with self._read(sql, params) as cur:
             rows = await cur.fetchall()
             desc = cur.description
         return [_row_to_task(r, desc) for r in rows]
@@ -407,7 +432,7 @@ class ProjectTaskStore(ProjectsDBStore):
     async def held_task(self, claimer_id: str) -> str | None:
         """Return the id of the active ('claimed') task this agent currently
         holds, or None. Used to enforce one active claim per agent."""
-        async with self._db.execute(
+        async with self._read(
             "SELECT id FROM project_tasks WHERE claimed_by = ? AND status = 'claimed' LIMIT 1",
             (claimer_id,),
         ) as cur:
@@ -761,7 +786,7 @@ class ProjectTaskStore(ProjectsDBStore):
         if direction not in ("from", "to"):
             raise ValueError(f"invalid direction: {direction}")
         col = "from_task_id" if direction == "from" else "to_task_id"
-        async with self._db.execute(
+        async with self._read(
             f"SELECT * FROM task_relationships WHERE {col} = ? ORDER BY created_at ASC",
             (task_id,),
         ) as cur:
@@ -786,7 +811,7 @@ class ProjectTaskStore(ProjectsDBStore):
                 conds.append("element_id = ?")
                 params.append(element_id)
         params.append(limit)
-        async with self._db.execute(
+        async with self._read(
             f"""SELECT * FROM ready_tasks
                 WHERE {' AND '.join(conds)}
                 ORDER BY priority DESC, created_at ASC
@@ -803,7 +828,7 @@ class ProjectTaskStore(ProjectsDBStore):
         assignee instead of project - used by the agent heartbeat loop to find
         an idle agent's next task without a per-project scan."""
         limit = max(1, min(limit, 200))
-        async with self._db.execute(
+        async with self._read(
             """SELECT * FROM ready_tasks
                WHERE assignee_id = ?
                ORDER BY priority DESC, created_at ASC
@@ -886,7 +911,7 @@ class ProjectTaskStore(ProjectsDBStore):
         replies_to_comment_id: str | None = None,
     ) -> dict:
         if replies_to_comment_id is not None:
-            async with self._db.execute(
+            async with self._read(
                 "SELECT task_id FROM task_comments WHERE id = ?",
                 (replies_to_comment_id,),
             ) as cur:
@@ -912,7 +937,7 @@ class ProjectTaskStore(ProjectsDBStore):
         return new_comment
 
     async def list_comments(self, task_id: str) -> list[dict]:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC",
             (task_id,),
         ) as cur:
@@ -937,11 +962,11 @@ class ProjectTaskStore(ProjectsDBStore):
                    VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?, ?)""",
                 (cid, task_id, text, created_by, now, now),
             )
-        cur = await self._db.execute(
+        async with self._read(
             "SELECT * FROM task_checklist_items WHERE id = ?", (cid,)
-        )
-        row = await cur.fetchone()
-        desc = cur.description
+        ) as cur:
+            row = await cur.fetchone()
+            desc = cur.description
         item = _row_to_checklist_item(row, desc)
         task = await self.get_task(task_id)
         project_id = task["project_id"] if task is not None else ""
@@ -959,7 +984,7 @@ class ProjectTaskStore(ProjectsDBStore):
         if not include_archived:
             conds.append("archived = 0")
         sql = f"SELECT * FROM task_checklist_items WHERE {' AND '.join(conds)} ORDER BY created_at ASC"
-        async with self._db.execute(sql, params) as cur:
+        async with self._read(sql, params) as cur:
             rows = await cur.fetchall()
             desc = cur.description
         return [_row_to_checklist_item(r, desc) for r in rows]
@@ -1011,9 +1036,20 @@ class ProjectTaskStore(ProjectsDBStore):
             raise ValueError("item cannot be archived: not reported")
         now = time.time()
         async with self._tx():
-            await self._db.execute(
-                "UPDATE task_checklist_items SET archived = 1, updated_at = ? WHERE id = ?",
+            # The invariant is enforced by the UPDATE, not only by the read
+            # above it: an update_checklist_item that cleared `verified` or
+            # `reported` between the two would otherwise archive an item that
+            # no longer satisfies it -- and announce the archival. Matching no
+            # row is that race, so it is refused rather than reported as done.
+            cursor = await self._db.execute(
+                "UPDATE task_checklist_items SET archived = 1, updated_at = ? "
+                "WHERE id = ? AND verified = 1 AND reported = 1",
                 (now, item_id),
+            )
+            archived = cursor.rowcount == 1
+        if not archived:
+            raise ValueError(
+                "item cannot be archived: verification or report was withdrawn"
             )
         task = await self.get_task(item["task_id"])
         project_id = task["project_id"] if task is not None else ""
@@ -1021,7 +1057,7 @@ class ProjectTaskStore(ProjectsDBStore):
         return await self.get_checklist_item(item_id)
 
     async def get_checklist_item(self, item_id: str) -> dict | None:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM task_checklist_items WHERE id = ?", (item_id,)
         ) as cur:
             row = await cur.fetchone()

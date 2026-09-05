@@ -17,10 +17,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+from unittest.mock import AsyncMock
 
 import pytest
 
 from tinyagentos.projects import tx as tx_module
+from tinyagentos.projects.doc_review_store import DocReviewStore
 from tinyagentos.projects.project_store import ProjectConflict, ProjectStore
 from tinyagentos.projects.task_store import ProjectTaskStore
 
@@ -343,3 +345,193 @@ async def test_set_lead_validates_the_member_inside_the_transaction(tmp_path):
 
     assert seen["in_transaction"] is True
     assert (await store.get_project(project["id"]))["lead_member_id"] == "agent-1"
+
+
+@pytest.mark.asyncio
+async def test_a_read_never_sees_another_task_s_uncommitted_write(tmp_path):
+    """A read must not observe a transaction that has not committed.
+
+    Each store uses ONE connection for its reads and its writes, and sqlite
+    shows a connection its own uncommitted changes.  aiosqlite runs every
+    statement on that connection's single worker thread, so a read issued
+    while another task holds an open transaction is executed between that
+    transaction's statements and returns rows that may never commit.  The
+    reader here runs while a rename is open and then rolls back: it must see
+    the name that is actually in the database.
+    """
+    store = await _project_store(tmp_path)
+    project = await store.create_project("Alpha", "alpha", "jay")
+
+    wrote = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def doomed_rename():
+        with pytest.raises(RuntimeError):
+            async with store._tx():
+                await store._db.execute(
+                    "UPDATE projects SET name = ? WHERE id = ?",
+                    ("Renamed", project["id"]),
+                )
+                wrote.set()
+                await finish.wait()
+                raise RuntimeError("the rename fails after its write")
+
+    writer = asyncio.create_task(doomed_rename())
+    await wrote.wait()
+
+    reader = asyncio.create_task(store.get_project(project["id"]))
+    # Long enough that an ungated read reaches the connection and comes back
+    # with the uncommitted row while the transaction is still open.
+    await asyncio.sleep(0.05)
+    finish.set()
+    await writer
+
+    seen = await asyncio.wait_for(reader, _SIBLING_WRITE_TIMEOUT)
+    assert seen["name"] == "Alpha"
+
+
+@pytest.mark.asyncio
+async def test_effects_of_a_joined_write_are_discarded_when_the_nest_rolls_back(
+    tmp_path,
+):
+    """Events and audit rows must wait for the OUTERMOST commit.
+
+    ``tx()`` returns straight away for a nested scope in the same task -- the
+    outermost scope owns the commit -- so a mutation that publishes after its
+    own ``async with self._tx():`` block publishes while the enclosing
+    transaction can still roll back.  The broker replay and the audit log then
+    carry a transition the database never took.
+    """
+    broker = AsyncMock()
+    audit = AsyncMock()
+    store = ProjectTaskStore(tmp_path / "projects.db", broker=broker, audit=audit)
+    await store.init()
+    task = await store.create_task("prj-1", "seed", "jay")
+    broker.reset_mock()
+    audit.reset_mock()
+
+    with pytest.raises(RuntimeError):
+        async with store._tx():
+            assert await store.park_task(task["id"], "system") is True
+            raise RuntimeError("the outer scope fails after the nested park")
+
+    assert (await store.get_task(task["id"]))["status"] == "open"
+    published = [call.args[1].kind for call in broker.publish.call_args_list]
+    assert published == []
+    assert audit.record.await_count == 0
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_effects_of_a_joined_write_still_fire_once_the_nest_commits(tmp_path):
+    """Deferral must not swallow the effects of a nest that DID commit."""
+    broker = AsyncMock()
+    audit = AsyncMock()
+    store = ProjectTaskStore(tmp_path / "projects.db", broker=broker, audit=audit)
+    await store.init()
+    task = await store.create_task("prj-1", "seed", "jay")
+    broker.reset_mock()
+    audit.reset_mock()
+
+    async with store._tx():
+        assert await store.park_task(task["id"], "system") is True
+
+    assert (await store.get_task(task["id"]))["status"] == "parked"
+    published = [call.args[1].kind for call in broker.publish.call_args_list]
+    assert "task.parked" in published
+    assert audit.record.await_count == 1
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_review_transition_is_validated_inside_the_transaction(tmp_path):
+    """Two concurrent review transitions must not both pass the same check.
+
+    ``set_review_state`` read the current state and validated the transition
+    before opening its transaction, so two callers both saw
+    ``awaiting_review``, both passed, and the second overwrote the first with a
+    transition that was never legal from the state it landed on.
+    """
+    store = DocReviewStore(tmp_path / "projects.db")
+    await store.init()
+    await store.set_review_state("prj-1", "docs/a.md", "awaiting_review", "jay")
+
+    results = await asyncio.gather(
+        store.set_review_state("prj-1", "docs/a.md", "approved", "alice"),
+        store.set_review_state("prj-1", "docs/a.md", "changes_requested", "bob"),
+        return_exceptions=True,
+    )
+
+    refused = [r for r in results if isinstance(r, ValueError)]
+    assert len(refused) == 1
+    final = await store.get_review("prj-1", "docs/a.md")
+    assert final["review_state"] in ("approved", "changes_requested")
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_renaming_a_project_onto_a_taken_name_is_refused(tmp_path):
+    """``update_project`` has to run the same name check ``create_project`` does.
+
+    ``projects.name`` has no unique index and the create path enforces
+    case-insensitive uniqueness with a query, so a PATCH that renames straight
+    onto another project's name left two rows sharing one name and
+    ``get_project_by_name`` returning only one of them.
+    """
+    store = await _project_store(tmp_path)
+    await store.create_project("Alpha", "alpha", "jay")
+    beta = await store.create_project("Beta", "beta", "jay")
+
+    with pytest.raises(ProjectConflict):
+        await store.update_project(beta["id"], name="ALPHA")
+
+    assert (await store.get_project(beta["id"]))["name"] == "Beta"
+    # A project may still be renamed to a different case of its OWN name.
+    await store.update_project(beta["id"], name="BETA")
+    assert (await store.get_project(beta["id"]))["name"] == "BETA"
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_archive_refuses_an_item_unverified_after_the_check(tmp_path):
+    """The archive invariant has to be enforced by the UPDATE, not before it.
+
+    ``archive_checklist_item`` validated ``verified``/``reported`` before
+    BEGIN IMMEDIATE and then archived unconditionally, so an
+    ``update_checklist_item`` that cleared either flag in the gap archived an
+    item that no longer satisfied the invariant -- and announced it.
+    """
+    store = await _task_store(tmp_path)
+    task = await store.create_task("prj-1", "seed", "jay")
+    item = await store.create_checklist_item(task["id"], "step", "jay")
+    await store.update_checklist_item(item["id"], verified=True, reported=True)
+
+    real_execute = store._db.execute
+    state = {"raced": False}
+
+    def racing_execute(sql, *args, **kwargs):
+        # Clear `verified` in the last moment before the archiving UPDATE runs:
+        # the window between the pre-read validation and the write.
+        if not state["raced"] and "archived = 1" in sql:
+            state["raced"] = True
+
+            async def _unverify_then_archive():
+                await real_execute(
+                    "UPDATE task_checklist_items SET verified = 0 WHERE id = ?",
+                    (item["id"],),
+                )
+                return await real_execute(sql, *args, **kwargs)
+
+            return _unverify_then_archive()
+        return real_execute(sql, *args, **kwargs)
+
+    store._db.execute = racing_execute
+    try:
+        with pytest.raises(ValueError):
+            await store.archive_checklist_item(item["id"])
+    finally:
+        store._db.execute = real_execute
+
+    assert state["raced"] is True
+    assert (await store.get_checklist_item(item["id"]))["archived"] == 0
+    await store.close()

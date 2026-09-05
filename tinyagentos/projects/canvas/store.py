@@ -99,9 +99,21 @@ class ProjectCanvasStore(ProjectsDBStore):
         await self._db.execute(_CANVAS_ELEMENT_INDEX)
 
     async def _publish(self, project_id: str, kind: str, payload: dict) -> None:
-        if self._broker is not None:
-            from tinyagentos.projects.events import ProjectEvent
-            await self._broker.publish(project_id, ProjectEvent(kind=kind, payload=payload))
+        """Announce a canvas mutation once its write has actually committed.
+
+        Held back until the outermost transaction commits when this call is
+        made from inside one -- a joined scope returns without committing, so
+        emitting there would announce a change that can still roll back.
+        """
+        if self._broker is None:
+            return
+        from tinyagentos.projects.events import ProjectEvent
+        event = ProjectEvent(kind=kind, payload=payload)
+
+        async def _emit() -> None:
+            await self._broker.publish(project_id, event)
+
+        await self._after_commit(_emit)
 
     async def get_element(
         self, element_id: str, *, project_id: str | None = None
@@ -115,7 +127,7 @@ class ProjectCanvasStore(ProjectsDBStore):
                 "WHERE id = ? AND project_id = ?"
             )
             args = (element_id, project_id)
-        async with self._db.execute(sql, args) as cur:
+        async with self._read(sql, args) as cur:
             row = await cur.fetchone()
             if row is None:
                 return None
@@ -200,7 +212,7 @@ class ProjectCanvasStore(ProjectsDBStore):
             sql += " AND element_id = ?"
             params.append(element_id)
         sql += " ORDER BY z_index ASC, created_at ASC"
-        async with self._db.execute(sql, params) as cur:
+        async with self._read(sql, params) as cur:
             rows = await cur.fetchall()
             desc = cur.description
         return [_row_to_element(r, desc) for r in rows]
@@ -212,7 +224,7 @@ class ProjectCanvasStore(ProjectsDBStore):
             return
         if author_kind != "agent":
             raise ValueError(f"invalid author_kind: {author_kind}")
-        async with self._db.execute(
+        async with self._read(
             "SELECT can_edit_canvas FROM project_members "
             "WHERE project_id = ? AND member_id = ?",
             (project_id, author_id),
@@ -236,7 +248,7 @@ class ProjectCanvasStore(ProjectsDBStore):
             return
         if author_kind != "agent":
             raise ValueError(f"invalid author_kind: {author_kind}")
-        async with self._db.execute(
+        async with self._read(
             "SELECT can_read_canvas FROM project_members "
             "WHERE project_id = ? AND member_id = ?",
             (project_id, author_id),

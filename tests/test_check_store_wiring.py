@@ -723,3 +723,101 @@ class TestFindIntermediateBases:
         # The concrete stores that inherit it stay policed.
         assert "ProjectTaskStore" not in intermediate
         assert "ProjectNotesStore" not in intermediate
+
+
+class TestDuplicateClassNamesAcrossModules:
+    """Two modules may define the same class name; the gate must not merge them.
+
+    The exemption (subclassed AND owns no tables) is decided per class.  Keyed
+    by bare name, one module's subclassed base laundered an unrelated,
+    unwired class of the same name in another module straight past the gate.
+    """
+
+    def test_only_the_subclassed_module_s_class_is_exempt(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        base_tip = _setup_base_repo(repo)
+
+        _branch(repo, "pr")
+        _checkout(repo, "pr")
+        _commit(
+            repo, "tinyagentos/alpha/shared.py",
+            "from tinyagentos.base_store import BaseStore\n"
+            "\n"
+            "class SharedStore(BaseStore):\n"
+            "    AUTOCOMMIT = True\n",
+            "feat: add the alpha SharedStore base",
+        )
+        _commit(
+            repo, "tinyagentos/alpha/notes.py",
+            "from tinyagentos.alpha.shared import SharedStore\n"
+            "\n"
+            "class AlphaNotesStore(SharedStore):\n"
+            "    SCHEMA = 'CREATE TABLE IF NOT EXISTS alpha_notes (id INTEGER PRIMARY KEY);'\n"
+            "    MIGRATIONS = []\n",
+            "feat: add AlphaNotesStore on the alpha base",
+        )
+        # A DIFFERENT SharedStore: a real, concrete, unwired store that nothing
+        # subclasses.  It owns no SCHEMA either, so bare-name keying handed it
+        # the alpha base's exemption.
+        _commit(
+            repo, "tinyagentos/beta/shared.py",
+            "from tinyagentos.base_store import BaseStore\n"
+            "\n"
+            "class SharedStore(BaseStore):\n"
+            "    AUTOCOMMIT = True\n",
+            "feat: add an unwired beta SharedStore",
+        )
+        _commit(
+            repo, "tinyagentos/app.py",
+            "from tinyagentos.base_store import BaseStore\n"
+            "from tinyagentos.metrics_store import MetricsStore\n"
+            "from tinyagentos.alpha.notes import AlphaNotesStore\n\n"
+            "metrics_store = MetricsStore('/tmp/metrics.db')\n"
+            "alpha_notes_store = AlphaNotesStore('/tmp/alpha.db')\n\n"
+            "async def lifespan(app):\n"
+            "    await metrics_store.init()\n"
+            "    await alpha_notes_store.init()\n"
+            "    app.state.metrics = metrics_store\n"
+            "    app.state.alpha_notes = alpha_notes_store\n",
+            "feat: wire AlphaNotesStore only",
+        )
+        _checkout(repo, "main")
+        _git(repo, "merge", "pr", "--no-edit")
+
+        violations, waived = csw.check_store_wiring(base_tip, repo)
+
+        assert [(v.class_name, v.file_path) for v in violations] == [
+            ("SharedStore", "tinyagentos/beta/shared.py")
+        ]
+        assert waived == set()
+
+    def test_hierarchy_keeps_same_named_classes_apart(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        repo.mkdir(parents=True, exist_ok=True)
+        _write(
+            repo, "tinyagentos/alpha/shared.py",
+            "from tinyagentos.base_store import BaseStore\n"
+            "\n"
+            "class SharedStore(BaseStore):\n"
+            "    AUTOCOMMIT = True\n",
+        )
+        _write(
+            repo, "tinyagentos/alpha/notes.py",
+            "from tinyagentos.alpha.shared import SharedStore\n"
+            "\n"
+            "class AlphaNotesStore(SharedStore):\n"
+            "    SCHEMA = 'x'\n",
+        )
+        _write(
+            repo, "tinyagentos/beta/shared.py",
+            "from tinyagentos.base_store import BaseStore\n"
+            "\n"
+            "class SharedStore(BaseStore):\n"
+            "    AUTOCOMMIT = True\n",
+        )
+
+        qualified = csw.build_qualified_hierarchy(repo)
+        intermediate = csw.find_intermediate_bases(qualified)
+
+        assert ("tinyagentos/alpha/shared.py", "SharedStore") in intermediate
+        assert ("tinyagentos/beta/shared.py", "SharedStore") not in intermediate

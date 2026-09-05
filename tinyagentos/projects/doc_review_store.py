@@ -39,7 +39,7 @@ class DocReviewStore(ProjectsDBStore):
         return dict(zip(keys, row))
 
     async def get_review(self, project_id: str, doc_path: str) -> dict | None:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM doc_reviews WHERE project_id = ? AND doc_path = ?",
             (project_id, doc_path),
         ) as cur:
@@ -59,26 +59,33 @@ class DocReviewStore(ProjectsDBStore):
             raise ValueError(f"invalid review state: {new_state}")
 
         now = time.time()
-        existing = await self.get_review(project_id, doc_path)
+        # Read the current state INSIDE the transaction that writes the next
+        # one.  Validated outside it, two concurrent transitions both saw
+        # `awaiting_review`, both passed the check, and the second landed a
+        # transition that was never legal from the state it actually met --
+        # `approved` overwritten by `changes_requested`, say.  BEGIN IMMEDIATE
+        # holds the write lock across the read, so the second caller reads what
+        # the first committed and is refused.
+        async with self._tx():
+            existing = await self.get_review(project_id, doc_path)
 
-        if existing is None:
-            if new_state != "awaiting_review" and new_state not in VALID_TRANSITIONS.get("awaiting_review", []):
-                raise ValueError(
-                    f"invalid transition: (new) -> {new_state}; "
-                    f"first state must be awaiting_review or a direct transition target"
-                )
-            review_id = new_id("rev")
-            reviewed_by = None
-            reviewed_at = None
-            changes_requested_by = None
-            changes_requested_at = None
-            if new_state == "approved":
-                reviewed_by = actor_id
-                reviewed_at = now
-            elif new_state == "changes_requested":
-                changes_requested_by = actor_id
-                changes_requested_at = now
-            async with self._tx():
+            if existing is None:
+                if new_state != "awaiting_review" and new_state not in VALID_TRANSITIONS.get("awaiting_review", []):
+                    raise ValueError(
+                        f"invalid transition: (new) -> {new_state}; "
+                        f"first state must be awaiting_review or a direct transition target"
+                    )
+                review_id = new_id("rev")
+                reviewed_by = None
+                reviewed_at = None
+                changes_requested_by = None
+                changes_requested_at = None
+                if new_state == "approved":
+                    reviewed_by = actor_id
+                    reviewed_at = now
+                elif new_state == "changes_requested":
+                    changes_requested_by = actor_id
+                    changes_requested_at = now
                 await self._db.execute(
                     """INSERT INTO doc_reviews
                        (id, project_id, doc_path, review_state,
@@ -93,46 +100,44 @@ class DocReviewStore(ProjectsDBStore):
                         now, now,
                     ),
                 )
-            return await self.get_review(project_id, doc_path)
+            else:
+                current_state = existing["review_state"]
+                allowed = VALID_TRANSITIONS.get(current_state, [])
+                if new_state not in allowed:
+                    raise ValueError(
+                        f"invalid transition: {current_state} -> {new_state}"
+                    )
 
-        current_state = existing["review_state"]
-        allowed = VALID_TRANSITIONS.get(current_state, [])
-        if new_state not in allowed:
-            raise ValueError(
-                f"invalid transition: {current_state} -> {new_state}"
-            )
+                sets: list[str] = ["review_state = ?", "updated_at = ?"]
+                params: list = [new_state, now]
 
-        sets: list[str] = ["review_state = ?", "updated_at = ?"]
-        params: list = [new_state, now]
+                if new_state == "approved":
+                    sets.append("reviewed_by = ?")
+                    sets.append("reviewed_at = ?")
+                    params.extend([actor_id, now])
+                elif new_state == "changes_requested":
+                    sets.append("changes_requested_by = ?")
+                    sets.append("changes_requested_at = ?")
+                    params.extend([actor_id, now])
 
-        if new_state == "approved":
-            sets.append("reviewed_by = ?")
-            sets.append("reviewed_at = ?")
-            params.extend([actor_id, now])
-        elif new_state == "changes_requested":
-            sets.append("changes_requested_by = ?")
-            sets.append("changes_requested_at = ?")
-            params.extend([actor_id, now])
-
-        params.extend([project_id, doc_path])
-        async with self._tx():
-            await self._db.execute(
-                f"UPDATE doc_reviews SET {', '.join(sets)} WHERE project_id = ? AND doc_path = ?",
-                params,
-            )
+                params.extend([project_id, doc_path])
+                await self._db.execute(
+                    f"UPDATE doc_reviews SET {', '.join(sets)} WHERE project_id = ? AND doc_path = ?",
+                    params,
+                )
         return await self.get_review(project_id, doc_path)
 
     async def list_reviews(
         self, project_id: str, *, state: str | None = None
     ) -> list[dict]:
         if state is not None:
-            async with self._db.execute(
+            async with self._read(
                 "SELECT * FROM doc_reviews WHERE project_id = ? AND review_state = ? ORDER BY doc_path",
                 (project_id, state),
             ) as cur:
                 rows = await cur.fetchall()
         else:
-            async with self._db.execute(
+            async with self._read(
                 "SELECT * FROM doc_reviews WHERE project_id = ? ORDER BY doc_path",
                 (project_id,),
             ) as cur:

@@ -44,7 +44,7 @@ class ProjectNotesStore(ProjectsDBStore):
         return await self.get_note(note_id)
 
     async def get_note(self, note_id: str) -> dict | None:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM project_notes WHERE id = ?", (note_id,)
         ) as cur:
             row = await cur.fetchone()
@@ -54,7 +54,7 @@ class ProjectNotesStore(ProjectsDBStore):
             return dict(zip(keys, row))
 
     async def list_notes(self, project_id: str) -> list[dict]:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM project_notes WHERE project_id = ? ORDER BY created_at DESC",
             (project_id,),
         ) as cur:

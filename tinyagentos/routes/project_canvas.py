@@ -386,6 +386,11 @@ async def set_canvas_permission(
     if not updated:
         return JSONResponse({"error": "member not found"}, status_code=404)
     member = await ps.get_member(project_id, agent_id)
+    if member is None:
+        # The flag write committed before this read, so a concurrent
+        # remove_member can delete the row in between. Dereferencing that None
+        # turned a race the API already answers with 404 into a 500.
+        return JSONResponse({"error": "member not found"}, status_code=404)
     broker = request.app.state.project_event_broker
     from tinyagentos.projects.events import ProjectEvent
     await broker.publish(
