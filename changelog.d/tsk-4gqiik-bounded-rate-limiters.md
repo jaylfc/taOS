@@ -20,3 +20,6 @@
   caught up. Every limiter now uses the monotonic clock.
 - `429 Too Many Requests` responses now carry `Retry-After`, so a client that
   is throttled can back off instead of retrying as fast as it can fail.
+- `RateLimiter` and `MovingWindowLimiter` now reject a non-positive `max_keys`
+  at construction with `ValueError` instead of raising `KeyError` out of the
+  eviction loop on the very first tracked key.

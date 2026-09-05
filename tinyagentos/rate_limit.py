@@ -108,6 +108,8 @@ class RateLimiter:
 
     def __init__(self, capacity: float = 30, refill_per_second: float = 10.0,
                  *, max_keys: int = MAX_TRACKED_KEYS):
+        if max_keys < 1:
+            raise ValueError("max_keys must be at least 1")
         self.capacity = capacity
         self.refill_per_second = refill_per_second
         self.max_keys = max_keys
@@ -179,6 +181,8 @@ class MovingWindowLimiter:
 
     def __init__(self, max_per_window: int, window_secs: float,
                  *, max_keys: int = MAX_TRACKED_KEYS):
+        if max_keys < 1:
+            raise ValueError("max_keys must be at least 1")
         self.max_per_window = max_per_window
         self.window_secs = float(window_secs)
         self.max_keys = max_keys

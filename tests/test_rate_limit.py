@@ -4,7 +4,14 @@ from __future__ import annotations
 import time
 
 from tinyagentos import auth_middleware
-from tinyagentos.rate_limit import RateLimiter, TokenBucket, make_should_rate_limit
+import pytest
+
+from tinyagentos.rate_limit import (
+    MovingWindowLimiter,
+    RateLimiter,
+    TokenBucket,
+    make_should_rate_limit,
+)
 
 
 class TestTokenBucket:
@@ -158,3 +165,29 @@ class TestWindowBoundary:
             )
         finally:
             auth_middleware._rate_limit_hits.clear()
+
+
+class TestMaxKeysValidation:
+    """max_keys <= 0 must be rejected up front, not surfaced as a 500.
+
+    With max_keys <= 0 the first never-seen key enters the eviction loop
+    against an empty registry (`len(registry) >= max_keys` is already true),
+    and `popitem()` on an empty OrderedDict/dict raises KeyError -- a
+    request-time 500 instead of a clean construction-time error.
+    """
+
+    def test_rate_limiter_rejects_zero_max_keys(self):
+        with pytest.raises(ValueError):
+            RateLimiter(capacity=2, refill_per_second=1.0, max_keys=0)
+
+    def test_rate_limiter_rejects_negative_max_keys(self):
+        with pytest.raises(ValueError):
+            RateLimiter(capacity=2, refill_per_second=1.0, max_keys=-1)
+
+    def test_moving_window_limiter_rejects_zero_max_keys(self):
+        with pytest.raises(ValueError):
+            MovingWindowLimiter(max_per_window=5, window_secs=60, max_keys=0)
+
+    def test_moving_window_limiter_rejects_negative_max_keys(self):
+        with pytest.raises(ValueError):
+            MovingWindowLimiter(max_per_window=5, window_secs=60, max_keys=-1)
