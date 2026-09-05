@@ -291,13 +291,18 @@ _AGENT_FILES_ROUTES = (
     ("GET", re.compile(rf"^/api/projects/{_SEG}/stats$")),
 )
 
-# Scope-request CREATE an agent may reach with its own registry JWT to ask for
-# MORE scopes on its own identity. Only the create endpoint; the approve/deny
-# subactions have extra path segments and are NOT matched here, so they stay
-# owner/admin session-only. The route verifies the JWT identity == the path
-# canonical_id (an agent may only self-request).
+# Scope-request CREATE + READ an agent may reach with its own registry JWT: it
+# may ask for MORE scopes on its own identity and read back what it asked for.
+# The approve/deny subactions are POST-only with an extra trailing segment
+# (/approve, /deny) that no pattern here matches, so deciding a request stays
+# owner/admin session-only — an agent can never self-approve. The GET-by-id
+# pattern would otherwise also match those two paths, so it is anchored to GET.
+# The routes verify the JWT identity == the path canonical_id (an agent may
+# only see its OWN requests).
 _AGENT_SCOPE_REQUEST_ROUTES = (
     ("POST", re.compile(rf"^/api/agents/registry/{_SEG}/scope-requests$")),
+    ("GET", re.compile(rf"^/api/agents/registry/{_SEG}/scope-requests$")),
+    ("GET", re.compile(rf"^/api/agents/registry/{_SEG}/scope-requests/{_SEG}$")),
 )
 
 
@@ -333,10 +338,11 @@ def _is_agent_files_path(method: str, path: str) -> bool:
 
 
 def _is_agent_scope_request_path(method: str, path: str) -> bool:
-    """True only for POST /api/agents/registry/{cid}/scope-requests, which an
-    agent may reach with its own registry JWT to self-request more scopes. The
-    route verifies the JWT identity == canonical_id; approve/deny are excluded
-    (extra path segments) and stay owner/admin session-only."""
+    """True only for the scope-request create (POST) and read (GET list +
+    GET by id) routes, which an agent may reach with its own registry JWT to
+    self-request more scopes and to see the state of what it requested. The
+    routes verify the JWT identity == canonical_id; approve/deny are excluded
+    (POST with an extra trailing segment) and stay owner/admin session-only."""
     return any(m == method and rx.match(path) for m, rx in _AGENT_SCOPE_REQUEST_ROUTES)
 
 

@@ -1052,3 +1052,32 @@ async def test_generation_echo_and_layer2_protection(client, app):
     # manager.heartbeat returns False when generation mismatch; route returns 404.
     assert resp.status_code == 404, f"Expected 404 (generation mismatch rejection), got {resp.status_code}: {resp.text}"
     assert "not registered" in resp.json().get("error", ""), f"Unexpected error message: {resp.json()}"
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_register_worker_null_ram_mb_does_not_crash_list_workers(client, app):
+    """A registration payload with ram_mb=null must not cause list_workers
+    to 500 via worker_tier_id doing None // 1024."""
+    import json as _json
+
+    key = await pair_worker(client, app, "null-ram-worker", "http://10.0.0.1:9000")
+    reg_body = _json.dumps({
+        "name": "null-ram-worker",
+        "url": "http://10.0.0.1:9000",
+        "hardware": {"ram_mb": None, "cpu": {"arch": "x86_64"}},
+    }).encode()
+    resp = await client.post(
+        "/api/cluster/workers",
+        content=reg_body,
+        headers={**sign_worker_request(key, "null-ram-worker", "POST", "/api/cluster/workers", reg_body), "content-type": "application/json"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.get("/api/cluster/workers")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    w = next((w for w in data if w["name"] == "null-ram-worker"), None)
+    assert w is not None
+    assert w["tier_id"] not in ("", "unknown"), f"tier_id should be derived, got {w['tier_id']!r}"
+    await app.state.cluster_pairing.close()

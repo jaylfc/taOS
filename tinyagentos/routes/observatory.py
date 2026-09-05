@@ -77,8 +77,6 @@ def _atomic_write(p: Path, state: dict) -> None:
             f.write(json.dumps(state))
         os.replace(tmp, p)
         tmp = None
-    except (OSError, ValueError, TypeError):
-        raise
     finally:
         if tmp is not None:
             try:

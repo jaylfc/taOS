@@ -349,6 +349,11 @@ async def list_workers(request: Request):
 
 @router.post("/api/cluster/workers")
 async def register_worker(request: Request, body: WorkerRegister):
+    """HMAC-signed -- a paired worker registers (or re-registers) itself.
+
+    The signing identity must match ``body.name``. The reported hardware is
+    normalised before it reaches :class:`WorkerInfo` and the capability map.
+    """
     # HMAC gate — workers must be paired before registering.
     # The 'local' worker registers in-process (manager.register_worker),
     # never over HTTP, so it is unaffected by this check.
@@ -379,10 +384,16 @@ async def register_worker(request: Request, body: WorkerRegister):
         key = await pairing_store.get_signing_key(body.name)
         if key is not None:
             signing_key = key
+    hw = body.hardware or {}
+    # Treat null ram_mb as missing so downstream arithmetic never sees None.
+    # Preserve explicit 0 (e.g. ram_mb=0 is valid).
+    if hw.get("ram_mb") is None:
+        hw = dict(hw)
+        hw.pop("ram_mb", None)
     info = WorkerInfo(
         name=body.name,
         url=body.url,
-        hardware=body.hardware,
+        hardware=hw,
         backends=body.backends,
         models=body.models,
         capabilities=body.capabilities,
@@ -429,8 +440,9 @@ async def _record_worker_capability(app, name: str, host_lan_ip: str, hardware: 
         prev = current or {}
 
         def _keep(key, default):
-            val = hw.get(key)
-            return val if val else prev.get(key, default)
+            if key in hw and hw[key] is not None:
+                return hw[key]
+            return prev.get(key, default)
 
         await store.upsert(
             {
