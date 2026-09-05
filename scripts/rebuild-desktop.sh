@@ -123,6 +123,14 @@ if (cd desktop && npm install && npm run build); then
             exit 0
         fi
         rm -f "$_marker_err"
+    else
+        # git status succeeded and reported a clean tree, but rev-parse could
+        # not resolve HEAD:desktop (unborn HEAD, or a shallow/partial checkout
+        # missing the tree object). We cannot vouch for what was just built,
+        # so an existing marker must not survive unverified. Mirrors the
+        # Python path's `if tree_sha and clean: record else: clear`.
+        rm -f static/desktop/.taos-bundle-provenance || true
+        echo "[taos-rebuild-desktop] could not resolve HEAD:desktop -- provenance marker cleared"
     fi
 elif [ -f static/desktop/index.html ]; then
     echo "[taos-rebuild-desktop] desktop rebuild FAILED -- keeping the existing bundle (see journalctl -u tinyagentos-rebuild-desktop)"

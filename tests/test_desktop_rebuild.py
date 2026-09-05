@@ -889,6 +889,50 @@ def test_script_clears_provenance_marker_after_a_dirty_build(tmp_path):
     assert "provenance marker cleared" in proc.stdout, proc.stdout
 
 
+def test_script_clears_stale_marker_when_rev_parse_fails_on_a_clean_tree(tmp_path):
+    """A clean tree that git cannot resolve must not leave a stale marker.
+
+    `git status` can succeed and report clean while `git rev-parse
+    HEAD:desktop` fails (unborn HEAD, or a shallow/partial checkout missing
+    the tree object). `_current_tree` is then empty and, before this fix,
+    neither the dirty-tree branch nor the `[ -n "$_current_tree" ]` branch
+    ran -- an existing marker from a previous build survived unchanged even
+    though it was never re-verified against this build. Mirrors the Python
+    path's `if tree_sha and clean: record else: clear`.
+    """
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"x"}')
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    marker = static_dir / ".taos-bundle-provenance"
+    marker.write_text("STALE_SHA\n")
+    # No index.html -> unconditional rebuild.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        "#!/bin/bash\n"
+        "for a in \"$@\"; do\n"
+        "  case \"$a\" in\n"
+        "    status) printf ''; exit 0 ;;\n"
+        "    rev-parse) exit 128 ;;\n"
+        "  esac\n"
+        "done\n"
+        "exit 0\n"
+    )
+    shim.chmod(0o755)
+    npm = bin_dir / "npm"
+    npm.write_text("#!/bin/bash\nexit 0\n")
+    npm.chmod(0o755)
+
+    proc = _run_rebuild_script(tmp_path, bin_dir)
+    assert proc.returncode == 0, proc.stderr
+    assert not marker.exists(), proc.stdout
+    assert "provenance marker cleared" in proc.stdout, proc.stdout
+
+
 # ---------------------------------------------------------------------------
 # Dirty build inputs outrank the mtime heuristic
 # ---------------------------------------------------------------------------
