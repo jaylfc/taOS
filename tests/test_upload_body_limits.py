@@ -86,7 +86,10 @@ async def test_restore_stops_a_chunked_body_at_the_cap(client, monkeypatch, spoo
         "/api/restore", content=_stream(), headers={"content-type": _CONTENT_TYPE}
     )
     assert resp.status_code == 413, resp.text
-    assert spooled["total"] <= _CAP + 64 * _KIB, (
+    # The middleware answers http.disconnect for the very chunk that would push
+    # received over cap, so that chunk is never forwarded to the parser: the
+    # spool should never see more than the cap itself, chunked body or not.
+    assert spooled["total"] <= _CAP, (
         f"{spooled['total']} bytes reached the upload spool for a {_CAP}-byte cap"
     )
 
