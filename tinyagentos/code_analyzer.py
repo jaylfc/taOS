@@ -54,6 +54,10 @@ class Finding:
     file: the filename (key from the submitted `files` dict) the finding is in.
     line: 1-indexed line number within that file.
     message: human-readable explanation shown in the findings panel.
+    match_start: 0-indexed start position of the detector match on the line,
+        or 0 when not available.
+    match_end: 0-indexed end position of the detector match on the line,
+        or 0 when not available.
     """
 
     severity: Severity
@@ -61,6 +65,8 @@ class Finding:
     file: str
     line: int
     message: str
+    match_start: int = 0
+    match_end: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -146,8 +152,12 @@ def detect_eval_like(filename: str, content: str) -> list[Finding]:
     findings: list[Finding] = []
     for i, line in enumerate(_iter_lines(content), start=1):
         for pattern, message in _EVAL_LIKE_PATTERNS:
-            if pattern.search(line):
-                findings.append(Finding("critical", "eval-like-execution", filename, i, message))
+            m = pattern.search(line)
+            if m:
+                findings.append(Finding(
+                    "critical", "eval-like-execution", filename, i, message,
+                    m.start(), m.end(),
+                ))
     return findings
 
 
@@ -184,6 +194,7 @@ def detect_network_exfil(filename: str, content: str,
                         f"Network call to a non-relative, non-allowlisted host: {url!r}. "
                         "Sandboxed apps have no network access by default -- this looks "
                         "like an attempt to exfiltrate data or reach an external origin.",
+                        m.start(), m.end(),
                     ))
     return findings
 
@@ -218,6 +229,7 @@ def detect_dom_xss_sink(filename: str, content: str) -> list[Finding]:
                     "critical", "dom-xss-sink", filename, i,
                     f"{sink} assigned/called with dynamic content -- a classic DOM XSS sink "
                     "if any part of the value is attacker-influenced.",
+                    m.start(), m.end(),
                 ))
     return findings
 
@@ -245,6 +257,7 @@ def detect_dangerous_url_scheme(filename: str, content: str) -> list[Finding]:
                 "critical", "dangerous-url-scheme", filename, i,
                 f"Dangerous URL scheme {m.group(1)!r} found -- executes script when navigated "
                 "to or assigned as a location/href.",
+                m.start(), m.end(),
             ))
     return findings
 
@@ -275,12 +288,15 @@ def detect_inline_event_handler_injection(filename: str, content: str) -> list[F
                 "critical", "inline-event-handler-injection", filename, i,
                 f"setAttribute used to wire an inline event handler ({m.group(1)}) -- "
                 "unsafe if the handler name or body ever derives from user input.",
+                m.start(), m.end(),
             ))
-        if _INLINE_HANDLER_INTERP_RE.search(line):
+        m = _INLINE_HANDLER_INTERP_RE.search(line)
+        if m:
             findings.append(Finding(
                 "critical", "inline-event-handler-injection", filename, i,
                 "Inline event handler attribute built with string interpolation -- "
                 "classic HTML injection vector if the interpolated value is attacker-controlled.",
+                m.start(), m.end(),
             ))
     return findings
 
@@ -314,11 +330,15 @@ def detect_hardcoded_secrets(filename: str, content: str) -> list[Finding]:
     findings: list[Finding] = []
     for i, line in enumerate(_iter_lines(content), start=1):
         for pattern, label in _SECRET_PATTERNS:
-            if pattern.search(line):
+            # Every match on the line, not just the first: the span-scoped
+            # example allowlist can refute one match while a real secret
+            # further along the same line still has to be reported.
+            for m in pattern.finditer(line):
                 findings.append(Finding(
                     "critical", "hardcoded-secret", filename, i,
                     f"Line looks like it contains {label} -- secrets baked into client-side "
                     "app source are world-readable and must not ship.",
+                    m.start(), m.end(),
                 ))
     return findings
 
@@ -347,11 +367,13 @@ def detect_sandbox_escape(filename: str, content: str) -> list[Finding]:
     findings: list[Finding] = []
     for i, line in enumerate(_iter_lines(content), start=1):
         for pattern in _SANDBOX_ESCAPE_PATTERNS:
-            if pattern.search(line):
+            m = pattern.search(line)
+            if m:
                 findings.append(Finding(
                     "critical", "sandbox-escape-attempt", filename, i,
                     "Access to window.parent/top/opener -- an attempt to reach outside "
                     "the sandboxed iframe.",
+                    m.start(), m.end(),
                 ))
     return findings
 
@@ -385,19 +407,23 @@ def detect_postmessage_no_origin_check(filename: str, content: str) -> list[Find
     findings: list[Finding] = []
     lines = _iter_lines(content)
     for i, line in enumerate(lines, start=1):
-        if _POSTMESSAGE_WILDCARD_RE.search(line):
+        m = _POSTMESSAGE_WILDCARD_RE.search(line)
+        if m:
             findings.append(Finding(
                 "critical", "postmessage-no-origin-check", filename, i,
                 "postMessage sent with target origin \"*\" -- broadcasts to any origin "
                 "listening on the recipient window.",
+                m.start(), m.end(),
             ))
-        if _ADD_MESSAGE_LISTENER_RE.search(line):
+        m = _ADD_MESSAGE_LISTENER_RE.search(line)
+        if m:
             window_lines = lines[i - 1: i - 1 + _ORIGIN_CHECK_WINDOW]
             if not any(_ORIGIN_CHECK_RE.search(wl) for wl in window_lines):
                 findings.append(Finding(
                     "critical", "postmessage-no-origin-check", filename, i,
                     "\"message\" event listener does not check event.origin -- it will "
                     "accept and act on messages from any origin.",
+                    m.start(), m.end(),
                 ))
     return findings
 
@@ -462,6 +488,11 @@ def analyze_app_source(files: dict[str, str]) -> list[Finding]:
     content. Findings are returned in a stable order: file (as given in the
     dict), then line number, then detector registration order -- so repeat
     calls against the same input are deterministic and diffable.
+
+    After the initial detector pass, findings are run through an
+    adversarial-verify stage that refutes false positives by checking
+    whether the detected pattern appears inside a string literal, comment,
+    or known example value.
     """
     findings: list[Finding] = []
     for filename, content in files.items():
@@ -469,9 +500,249 @@ def analyze_app_source(files: dict[str, str]) -> list[Finding]:
             findings.extend(detector(filename, content))
     file_order = {name: idx for idx, name in enumerate(files)}
     findings.sort(key=lambda f: (file_order[f.file], f.line))
-    return findings
+    return adversarial_verify(findings, files)
 
 
 def has_critical(findings: list[Finding]) -> bool:
     """Return True if any finding is severity "critical"."""
     return any(f.severity == "critical" for f in findings)
+
+
+# --------------------------------------------------------------------------- #
+# Adversarial verification
+# --------------------------------------------------------------------------- #
+
+# Trigger tokens used to decide whether a finding's pattern sits inside a
+# string literal.  The token is the shortest unique substring the detector
+# matches on that line.
+_TRIGGER_TOKENS: dict[str, str] = {
+    "eval-like-execution": "eval(",
+    "network-exfil": "fetch(",
+    "dom-xss-sink": ".innerHTML",
+    "dangerous-url-scheme": "javascript:",
+    "inline-event-handler-injection": "setAttribute(",
+    "hardcoded-secret": "AKIA",
+    "sandbox-escape-attempt": "window.parent",
+    "postmessage-no-origin-check": "postMessage(",
+    "storage-exfil": "localStorage.",
+}
+
+# Known example/placeholder values that should never trigger a real finding.
+_KNOWN_EXAMPLES: tuple[str, ...] = (
+    "AKIAIOSFODNN7EXAMPLE",
+)
+
+
+def adversarial_verify(findings: list[Finding], files: dict[str, str]) -> list[Finding]:
+    """Second-pass adversarial check that refutes false-positive findings.
+
+    Each finding is re-examined against its source line.  A finding is
+    dropped when the line context clearly shows the detected pattern is
+    inert -- e.g. it lives inside a string literal, a comment, or matches
+    a known example/placeholder value.
+    """
+    verified: list[Finding] = []
+    # Lexing a file is O(len(file)); doing it per finding would make the whole
+    # pass O(findings x lines).  Cache the split lines and the block-comment
+    # mask per file and reuse them for every finding in that file.
+    lexed: dict[str, tuple[list[str], list[bool]]] = {}
+    for f in findings:
+        content = files.get(f.file, "")
+        if not content:
+            verified.append(f)
+            continue
+        cached = lexed.get(f.file)
+        if cached is None:
+            file_lines = content.splitlines()
+            cached = (file_lines, _compute_block_comment_mask(file_lines))
+            lexed[f.file] = cached
+        lines, block_comment_mask = cached
+        if f.line < 1 or f.line > len(lines):
+            continue
+        line = lines[f.line - 1]
+        if _is_clearly_false_positive(f, line, block_comment_mask=block_comment_mask, line_idx=f.line - 1):
+            continue
+        verified.append(f)
+    return verified
+
+
+def _block_state_after_line(line: str, in_block: bool) -> bool:
+    """Return the block-comment state at the end of `line`, given its state at the start.
+
+    Comment markers that sit inside a string literal or after a `//` line
+    comment are not markers at all, so `const s = "/*";` must not open a block
+    comment for the lines that follow it.
+    """
+    in_string = False
+    string_char: str | None = None
+    escaped = False
+    i = 0
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if in_block:
+            if ch == "*" and i + 1 < n and line[i + 1] == "/":
+                in_block = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == string_char:
+                in_string = False
+                string_char = None
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n:
+            if line[i + 1] == "/":
+                # Rest of the line is a line comment; it cannot open a block.
+                return in_block
+            if line[i + 1] == "*":
+                in_block = True
+                i += 2
+                continue
+        if ch in ('"', "'", "`"):
+            in_string = True
+            string_char = ch
+        i += 1
+    return in_block
+
+
+def _compute_block_comment_mask(lines: list[str]) -> list[bool]:
+    """Return a per-line mask indicating whether that line *starts* inside a block comment.
+
+    The mask is deliberately a start-of-line state, not a whole-line verdict:
+    a line may open or close a block comment part way through, and the
+    per-character scan in `_is_inside_string_or_comment` resolves the state at
+    the finding's own match position from this starting point.
+    """
+    in_block = False
+    mask: list[bool] = []
+    for line in lines:
+        mask.append(in_block)
+        in_block = _block_state_after_line(line, in_block)
+    return mask
+
+
+def _is_inside_string_or_comment(
+    line: str, span_start: int, span_end: int, in_block_comment: bool = False
+) -> bool:
+    """Return True when the span [span_start, span_end) sits inside a string or comment."""
+    in_string = False
+    string_char: str | None = None
+    in_single_comment = False
+    in_block = in_block_comment
+    escaped = False
+
+    for i, ch in enumerate(line):
+        if i >= span_start:
+            return in_string or in_single_comment or in_block
+
+        if in_single_comment:
+            continue
+
+        if in_block:
+            if ch == "*" and i + 1 < len(line) and line[i + 1] == "/":
+                in_block = False
+            continue
+
+        if in_string:
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == string_char:
+                in_string = False
+                string_char = None
+            continue
+
+        if ch == "/" and i + 1 < len(line):
+            if line[i + 1] == "/":
+                in_single_comment = True
+                continue
+            if line[i + 1] == "*":
+                in_block = True
+                continue
+
+        if ch in ('"', "'", "`"):
+            in_string = True
+            string_char = ch
+            continue
+
+    return in_string or in_single_comment or in_block
+
+
+def _has_span(finding: Finding) -> bool:
+    """Return True when the finding carries a usable match span.
+
+    A span is unavailable when the detector left the default `0, 0`; a real
+    match starting at column 0 has `match_end > match_start`, so this must not
+    be a truthiness test on `match_start`.
+    """
+    return finding.match_end > finding.match_start
+
+
+def _trigger_is_inside_string(finding: Finding, line: str, in_block_comment: bool = False) -> bool:
+    """Return True when the finding's match sits inside a string or comment.
+
+    `in_block_comment` is only the state at the *start* of the line -- the
+    per-character scan carries it forward to the match position, so real code
+    after a same-line `*/` is still classified as live code.
+    """
+    if _has_span(finding):
+        return _is_inside_string_or_comment(
+            line, finding.match_start, finding.match_end, in_block_comment=in_block_comment
+        )
+    token = _TRIGGER_TOKENS.get(finding.rule_id)
+    if not token:
+        return in_block_comment
+    # No span: fall back to the trigger token. Any live occurrence on the line
+    # is enough to keep the finding -- taking only the first occurrence would
+    # refute a real call because an earlier mention sits in a comment.
+    idx = line.find(token)
+    found = False
+    while idx != -1:
+        found = True
+        if not _is_inside_string_or_comment(
+            line, idx, idx + len(token), in_block_comment=in_block_comment
+        ):
+            return False
+        idx = line.find(token, idx + 1)
+    if not found:
+        # The trigger token is not on the line at all (e.g. the line is a
+        # continuation of a multi-line block comment); the only evidence left
+        # is the block-comment state the line starts in.
+        return in_block_comment
+    return True
+
+
+def _is_clearly_false_positive(
+    finding: Finding,
+    line: str,
+    block_comment_mask: list[bool] | None = None,
+    line_idx: int = -1,
+) -> bool:
+    in_block_comment = (
+        block_comment_mask is not None and 0 <= line_idx < len(block_comment_mask) and block_comment_mask[line_idx]
+    )
+
+    if finding.rule_id != "hardcoded-secret" and _trigger_is_inside_string(finding, line, in_block_comment=in_block_comment):
+        return True
+
+    if finding.rule_id == "hardcoded-secret":
+        # Scope the allowlist to what this finding actually matched: a whole-line
+        # check would suppress a real key that merely shares a line with a
+        # documented example value.
+        haystack = line[finding.match_start:finding.match_end] if _has_span(finding) else line
+        for example in _KNOWN_EXAMPLES:
+            if example in haystack:
+                return True
+
+    return False
+

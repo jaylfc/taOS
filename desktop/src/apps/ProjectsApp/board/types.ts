@@ -1,4 +1,4 @@
-export type TaskStatus = "open" | "claimed" | "closed" | "quarantined";
+export type TaskStatus = "open" | "claimed" | "closed" | "quarantined" | "parked";
 
 export interface Task {
   id: string;
