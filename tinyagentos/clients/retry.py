@@ -13,7 +13,8 @@ Design:
   inherit ``ConnectError``, so it has to be named through its own base class.
 - Retries 429 (honouring ``Retry-After``) and the retryable 5xx codes.  No
   other 4xx is ever retried — client errors are not transient.
-- Bounds total elapsed time when the caller passes ``max_total_seconds``, so a
+- Bounds total elapsed time when the caller passes ``max_total_seconds``: the
+  loop stops rather than starting an attempt the budget cannot cover, so a
   retry loop cannot outlive the request handler waiting on it.
 - Caller passes a zero-arg factory so the coroutine can be re-created on
   each attempt (httpx coroutines cannot be awaited twice).
@@ -36,7 +37,7 @@ from tenacity import (
     RetryCallState,
     retry_if_exception,
     stop_after_attempt,
-    stop_after_delay,
+    stop_before_delay,
     wait_exponential,
     wait_exponential_jitter,
 )
@@ -170,9 +171,11 @@ async def with_retry(
         returned the ``httpx.Response`` or raised ``httpx.HTTPStatusError``.
         Any status outside this set propagates on the first attempt.
     max_total_seconds:
-        Optional wall-clock budget for the whole loop.  No attempt starts
-        once it has elapsed, and every sleep is clamped to what is left of
-        it, so the worst case is the budget plus one per-call HTTP timeout.
+        Optional wall-clock budget for the whole loop.  The loop ends rather
+        than starting an attempt the budget cannot cover: a backoff that would
+        not finish inside it stops the loop instead of being slept, so no
+        attempt ever begins after the deadline and the worst case is the
+        budget plus one per-call HTTP timeout.
         Callers running inside a request handler should set this below the
         handler's own timeout (see ``tinyagentos/adapters/retry_policy.py``).
 
@@ -187,7 +190,15 @@ async def with_retry(
     """
     stop = stop_after_attempt(max_attempts)
     if max_total_seconds is not None:
-        stop = stop | stop_after_delay(max_total_seconds)
+        # stop_BEFORE_delay, not stop_after_delay: tenacity computes the next
+        # sleep first and only then asks the stop condition, so a post-hoc
+        # "have we passed the deadline" check lands the loop exactly on the
+        # budget and then starts one more attempt -- a whole extra per-call
+        # HTTP timeout past the deadline the caller sized against its own
+        # handler.  stop_before_delay compares elapsed + upcoming_sleep, so
+        # the loop ends instead of overrunning, and the sleep it lets through
+        # is by construction one that finishes inside the budget.
+        stop = stop | stop_before_delay(max_total_seconds)
 
     if jitter:
         backoff = wait_exponential_jitter(
@@ -212,9 +223,10 @@ async def with_retry(
             if retry_after is not None:
                 # The server named a time; never come back sooner than that.
                 delay = max(delay, min(retry_after, MAX_RETRY_AFTER_SECONDS))
-        if max_total_seconds is not None:
-            remaining = max_total_seconds - (retry_state.seconds_since_start or 0.0)
-            delay = min(delay, max(0.0, remaining))
+        # No clamp against the remaining budget: stop_before_delay above sees
+        # this value and ends the loop when it would not fit.  Truncating the
+        # sleep instead would both overrun the deadline and come back sooner
+        # than a Retry-After the server explicitly asked us to honour.
         return delay
 
     def _log_retry(retry_state: RetryCallState) -> None:
@@ -251,7 +263,13 @@ async def with_retry(
                     raise _status_error(result)
                 return result
     except Exception as exc:
-        if attempts_made > 1:
+        # Log every *exhaustion*, however few attempts it took.  The adapters
+        # run a 45 s budget behind a 60 s per-call timeout, so attempt 1 can
+        # outlive the deadline on its own: the loop ends after one attempt, no
+        # before_sleep warning ever fires, and this line is the only signal the
+        # retry loop ran.  A non-retryable failure is a pass-through, not an
+        # exhaustion, and stays out of the log.
+        if attempts_made >= 1 and _should_retry(exc):
             logger.error(
                 "retry: all %d attempts exhausted, last error: %s", attempts_made, exc
             )

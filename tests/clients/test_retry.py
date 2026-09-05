@@ -14,6 +14,7 @@ The suite pins the four behaviours the retry helper got wrong:
 from __future__ import annotations
 
 import importlib
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -272,3 +273,113 @@ def test_parse_retry_after_accepts_both_rfc_forms():
 
     assert _parse_retry_after(_response(429)) is None
     assert _parse_retry_after(_response(429, {"Retry-After": "soon"})) is None
+
+
+# ---------------------------------------------------------------------------
+# fold (#2794 review): the deadline must stop the loop BEFORE the attempt
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_no_attempt_starts_after_the_deadline():
+    """``max_total_seconds`` must stop the loop, not merely truncate the sleep.
+
+    ``stop_after_delay`` is evaluated *after* the sleep, so clamping the
+    backoff to the remaining budget lands the loop exactly on the deadline and
+    then starts one more attempt — a full extra per-call HTTP timeout past the
+    budget the caller sized against its own handler's deadline.
+    """
+    budget = 0.3
+    starts: list[float] = []
+    started = time.monotonic()
+
+    async def _factory():
+        starts.append(time.monotonic() - started)
+        raise httpx.ConnectTimeout("still booting")
+
+    with pytest.raises(httpx.ConnectTimeout):
+        await with_retry(
+            _factory,
+            max_attempts=10,
+            base_delay=0.5,
+            multiplier=1.0,
+            max_delay=0.5,
+            jitter=False,
+            max_total_seconds=budget,
+        )
+
+    assert starts, "the factory never ran"
+    assert starts[-1] < budget, (
+        f"attempt {len(starts)} started {starts[-1]:.3f}s in, "
+        f"past the {budget}s budget"
+    )
+
+
+# ---------------------------------------------------------------------------
+# fold (#2794 review): exhaustion is never silent
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_exhaustion_is_logged_even_after_a_single_attempt(caplog):
+    """A retryable failure that exhausts on attempt 1 must still be logged.
+
+    The adapters run a 45 s budget behind a 60 s per-call timeout, so the very
+    first attempt can outlive the deadline: the loop exhausts after one
+    attempt, no ``before_sleep`` warning ever fires, and the ERROR line is the
+    only signal the retry loop ran at all.
+    """
+    async def _factory():
+        raise httpx.ConnectTimeout("still booting")
+
+    with caplog.at_level(logging.ERROR, logger="tinyagentos.clients.retry"):
+        with pytest.raises(httpx.ConnectTimeout):
+            await with_retry(_factory, max_attempts=1, base_delay=0.001)
+
+    assert any("attempts exhausted" in r.getMessage() for r in caplog.records), (
+        "a single-attempt exhaustion left no trace in the log"
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_first_failure_is_not_logged_as_exhaustion(caplog):
+    """A pass-through error is not an exhaustion and must not claim to be."""
+    async def _factory():
+        raise ValueError("not a transport problem")
+
+    with caplog.at_level(logging.ERROR, logger="tinyagentos.clients.retry"):
+        with pytest.raises(ValueError):
+            await with_retry(_factory, max_attempts=5, base_delay=0.001)
+
+    assert not any("attempts exhausted" in r.getMessage() for r in caplog.records), (
+        "a non-retryable first failure was reported as retry exhaustion"
+    )
+
+
+# ---------------------------------------------------------------------------
+# fold (#2794 review): the shared policy is shared AND read-only
+# ---------------------------------------------------------------------------
+
+def test_shared_retry_policy_is_one_read_only_object():
+    """Every proxying adapter binds the same immutable policy mapping.
+
+    ``_RETRY_KWARGS = RETRY_KWARGS`` aliases one dict into eight adapter
+    modules, so a single ``module._RETRY_KWARGS["max_attempts"] = 3`` would
+    silently retune every other adapter and the router's own arithmetic. The
+    sharing is deliberate; the mutability is not.
+    """
+    from tinyagentos.adapters import retry_policy
+
+    modules = [
+        importlib.import_module(f"tinyagentos.adapters.{name}_adapter")
+        for name in PROXY_ADAPTERS
+    ]
+    for module in modules:
+        assert module._RETRY_KWARGS is retry_policy.RETRY_KWARGS, (
+            f"{module.__name__} does not bind the shared policy object"
+        )
+
+    # Re-assigning the value it already holds mutates nothing, so this probes
+    # writability without disturbing the rest of the session.
+    with pytest.raises(TypeError):
+        modules[0]._RETRY_KWARGS["max_attempts"] = (
+            modules[0]._RETRY_KWARGS["max_attempts"]
+        )
