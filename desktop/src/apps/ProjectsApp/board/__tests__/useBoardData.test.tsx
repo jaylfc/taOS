@@ -42,4 +42,42 @@ describe("useBoardData", () => {
     await waitFor(() => expect(result.current.elements.length).toBe(1));
     expect(result.current.elements[0].id).toBe("el1");
   });
+
+  it("loads parked tasks so the Parked column can render them", async () => {
+    vi.spyOn(projectsApi.tasks, "list").mockImplementation(async (_pid, status) => {
+      return status === "parked" ? [seed({ id: "tp1", status: "parked" })] : [];
+    });
+    const { result } = renderHook(() => useBoardData("p1"));
+    await waitFor(() => expect(result.current.tasks.length).toBe(1));
+    expect(result.current.tasks[0].status).toBe("parked");
+  });
+
+  it("applies a task.parked event and drops the stale claim", async () => {
+    vi.spyOn(projectsApi.tasks, "list").mockImplementation(async (_pid, status) => {
+      return status === "claimed" ? [seed({ status: "claimed", claimed_by: "w1", claimed_at: "1" })] : [];
+    });
+    const { result } = renderHook(() => useBoardData("p1"));
+    await waitFor(() => expect(result.current.tasks.length).toBe(1));
+    act(() => result.current.applyEvent({ kind: "task.parked", payload: { id: "t1", actor: "system" }, ts: 0 }));
+    const t = result.current.tasks[0];
+    expect(t.status).toBe("parked");
+    expect(t.claimed_by).toBeNull();
+    expect(t.claimed_at).toBeNull();
+  });
+
+  it("applies strike_count and latest_strike from a task.quarantined event", async () => {
+    vi.spyOn(projectsApi.tasks, "list").mockResolvedValue([seed({})]);
+    const { result } = renderHook(() => useBoardData("p1"));
+    await waitFor(() => expect(result.current.tasks.length).toBe(1));
+    const latest = { id: "s2", task_id: "t1", step: "verification failed", log_tail: "boom", actor: "system", created_at: 2 };
+    act(() => result.current.applyEvent({
+      kind: "task.quarantined",
+      payload: { id: "t1", actor: "lead", strike_count: 2, latest_strike: latest },
+      ts: 0,
+    }));
+    const t = result.current.tasks[0];
+    expect(t.status).toBe("quarantined");
+    expect(t.strike_count).toBe(2);
+    expect(t.latest_strike).toEqual(latest);
+  });
 });

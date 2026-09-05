@@ -215,7 +215,11 @@ def load_config(path: Path) -> AppConfig:
         qmd=data.get("qmd", DEFAULT_CONFIG["qmd"].copy()),
         agents=agents,
         metrics=data.get("metrics", DEFAULT_CONFIG["metrics"].copy()),
-        wake_budget=copy.deepcopy(data.get("wake_budget", DEFAULT_CONFIG["wake_budget"])),
+        wake_budget=copy.deepcopy(
+            data["wake_budget"]
+            if isinstance(data.get("wake_budget"), dict)
+            else DEFAULT_CONFIG["wake_budget"]
+        ),
         webhooks=data.get("webhooks", []),
         archived_agents=data.get("archived_agents", []),
         archive=archive_cfg,
@@ -520,14 +524,17 @@ def validate_config(config: AppConfig) -> list[str]:
         fb = a.get("fallback_models")
         if fb is not None and not isinstance(fb, list):
             errors.append(f"agents[{i}]: fallback_models must be a list")
-    wb = config.wake_budget or {}
-    try:
-        gd = int(wb.get("global_default", 2))
-    except (TypeError, ValueError):
+    wb = config.wake_budget
+    if wb is None:
+        return errors
+    if not isinstance(wb, dict):
+        errors.append("wake_budget must be a mapping")
+        return errors
+    raw_gd = wb.get("global_default", 2)
+    if isinstance(raw_gd, bool) or not isinstance(raw_gd, int):
         errors.append("wake_budget.global_default must be an integer")
-    else:
-        if gd < 0:
-            errors.append("wake_budget.global_default must be >= 0")
+    elif raw_gd < 0:
+        errors.append("wake_budget.global_default must be >= 0")
     for section in ("per_agent", "per_project"):
         bucket = wb.get(section)
         if bucket is None:
@@ -536,11 +543,12 @@ def validate_config(config: AppConfig) -> list[str]:
             errors.append(f"wake_budget.{section} must be a mapping")
             continue
         for key, val in bucket.items():
-            try:
-                n = int(val)
-            except (TypeError, ValueError):
+            if isinstance(val, bool):
                 errors.append(f"wake_budget.{section}[{key!r}] must be an integer")
                 continue
-            if n < 0:
+            if not isinstance(val, int):
+                errors.append(f"wake_budget.{section}[{key!r}] must be an integer")
+                continue
+            if val < 0:
                 errors.append(f"wake_budget.{section}[{key!r}] must be >= 0")
     return errors

@@ -1,4 +1,5 @@
 from httpx import ASGITransport, AsyncClient
+from unittest.mock import patch
 
 import pytest
 
@@ -434,6 +435,16 @@ async def test_fleet_unregistered_working_agent_has_empty_framework(app, client)
     mine = [a for a in agents if a["handle"] == "@lane-unregistered"]
     assert len(mine) == 1
     assert mine[0]["framework"] == ""
+
+
+@pytest.mark.asyncio
+async def test_fleet_does_not_break_when_registry_raises_non_runtime_error(app, client):
+    reg = app.state.agent_registry
+    if reg._db is None:
+        await reg.init()
+    with patch.object(reg, "list_all", side_effect=ValueError("registry boom")):
+        resp = await client.get("/api/observatory/fleet")
+    assert resp.status_code == 200
 
 
 class TestObservatoryAgentAuth:

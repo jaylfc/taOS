@@ -24,3 +24,11 @@
 .lbl_review { background: rgba(191,90,242,.18); color: #d397ff; }
 .foot { display: flex; gap: 8px; font: 10.5px -apple-system; color: #86868b; }
 .grow { flex: 1; }
+.quarantined { border-color: rgba(255, 69, 58, .35); }
+.quarantineBadge { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; padding: 4px 8px; border-radius: 6px; background: rgba(255, 69, 58, .12); color: #ff7a73; font: 600 10px -apple-system; }
+.quarantineIcon { font-size: 12px; line-height: 1; }
+.quarantineText { flex: 1; }
+.quarantineReason { color: #86868b; font-weight: 400; }
+.unquarantineBtn { background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .12); border-radius: 6px; color: #f5f5f7; padding: 2px 8px; font: 600 10px -apple-system; cursor: pointer; }
+.unquarantineBtn:hover { background: rgba(255, 255, 255, .1); border-color: var(--board-hair-strong); }
+.unquarantineBtn:focus-visible { outline: 2px solid #64d2ff; outline-offset: 2px; }
