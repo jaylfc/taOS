@@ -12,3 +12,4 @@
 - Connection status is published through a shared snapshot, so a stream that keeps erroring while the browser retries no longer re-renders every subscriber on each repeated error.
 - `useOsEvents` keeps the 128-id dedup window per subscriber rather than once for the shared stream, so a busy event kind can no longer evict a quiet subscriber's ids and make it handle a replayed event twice.
 - A subscriber mounting while a reconnect is already scheduled no longer cancels it, so a view that mounts callers repeatedly against a down endpoint retries on the 5s-to-30s backoff instead of at mount frequency.
+- Each subscriber's handler runs inside its own isolation boundary on the shared stream, so an app whose handler throws can no longer stop later subscribers from receiving that OS event (`events.lagged` included). The failure is logged and delivery continues.

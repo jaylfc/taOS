@@ -116,6 +116,21 @@ function streamUrl(kinds: Coverage): string {
   return `/api/os/events?kinds=${kinds.map(encodeURIComponent).join(",")}`;
 }
 
+// Every subscriber shares one dispatch loop now, so a handler that throws would
+// abort `forEach` and silently rob every subscriber after it of the event --
+// `events.lagged` included, the one frame that can never be recovered by a
+// refetch the caller never learns it needs. Back when each caller owned its own
+// EventSource a throw could only break the caller that threw; the isolation
+// boundary is what keeps that property across the multiplex. Reported the way
+// the rest of the desktop reports a failed user callback: warn and carry on.
+function dispatch(sub: Subscriber, event: OsEvent) {
+  try {
+    sub.onEvent(event);
+  } catch (err) {
+    console.warn("os events: subscriber handler failed", event.kind, err);
+  }
+}
+
 function handleMessage(msg: MessageEvent) {
   let event: OsEvent | null;
   try {
@@ -126,7 +141,7 @@ function handleMessage(msg: MessageEvent) {
   if (!event || typeof event !== "object" || !event.kind) return;
 
   if (event.kind === LAGGED_KIND) {
-    subscribers.forEach((sub) => sub.onEvent(event));
+    subscribers.forEach((sub) => dispatch(sub, event));
     return;
   }
 
@@ -142,7 +157,7 @@ function handleMessage(msg: MessageEvent) {
         if (oldest) sub.seenIds.delete(oldest);
       }
     }
-    sub.onEvent(event);
+    dispatch(sub, event);
   });
 }
 

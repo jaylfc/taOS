@@ -335,6 +335,68 @@ describe("useOsEvents", () => {
     expect(onEvent).toHaveBeenCalledTimes(2);
   });
 
+  // One shared stream means one dispatch loop for every subscriber. Before the
+  // multiplex each caller owned an EventSource, so a throwing handler could only
+  // ever break its own delivery; on the shared loop an unguarded throw aborts
+  // the iteration and silently robs every later subscriber of the event.
+  it("keeps delivering to later subscribers when an earlier onEvent throws", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const boom = vi.fn(() => {
+      throw new Error("subscriber blew up");
+    });
+    const onEvent2 = vi.fn();
+
+    renderHook(() => useOsEvents(["projects.task.changed"], boom));
+    renderHook(() => useOsEvents(["projects.task.changed"], onEvent2));
+    settleHandoff();
+
+    act(() => {
+      lastEs?._fire({
+        kind: "projects.task.changed",
+        id: "evt-1",
+        ts: 1,
+      });
+    });
+
+    expect(boom).toHaveBeenCalledTimes(1);
+    expect(onEvent2).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "projects.task.changed", id: "evt-1" }),
+    );
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  // events.lagged takes its own dispatch path, and it is the frame a subscriber
+  // can least afford to miss: it is the only signal that the server dropped
+  // events it will never resend.
+  it("keeps delivering events.lagged to later subscribers when an earlier onEvent throws", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const boom = vi.fn(() => {
+      throw new Error("subscriber blew up");
+    });
+    const onEvent2 = vi.fn();
+
+    renderHook(() => useOsEvents(["projects.task.changed"], boom));
+    renderHook(() => useOsEvents(["projects.task.changed"], onEvent2));
+    settleHandoff();
+
+    act(() => {
+      lastEs?._fire({
+        kind: "events.lagged",
+        id: null,
+        ts: 1,
+        dropped: 7,
+      });
+    });
+
+    expect(boom).toHaveBeenCalledTimes(1);
+    expect(onEvent2).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "events.lagged", dropped: 7 }),
+    );
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it("two hook instances share one EventSource", () => {
     const onEvent1 = vi.fn();
     const onEvent2 = vi.fn();
