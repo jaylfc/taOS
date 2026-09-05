@@ -41,6 +41,15 @@ class ContainerUnreachableError(RuntimeError):
     pass
 
 
+class GitOperationError(RuntimeError):
+    """A git command reached the container and failed on repo state.
+
+    Distinct from ``ContainerUnreachableError``: the container answered, but
+    git could not do the work (corrupt index, unwritable .git, missing
+    object). Both map to 409 — the class is what tells the two apart in a log.
+    """
+
+
 # Per-framework AGENTS.md path inside the agent's container. Frameworks read
 # this file on every turn to pick up agent rules (per the taosmd contract —
 # see issue #378). It lives here because the versioned scope below derives
@@ -53,10 +62,20 @@ AGENTS_MD_PATHS: dict[str, str] = {
 
 
 def _home_relative(path: str) -> str:
-    """Return *path* relative to the agent home, for a .gitignore entry."""
+    """Return *path* relative to the agent home, for a .gitignore entry.
+
+    Deliberately loud at import time rather than skipping the entry: a path
+    outside the home cannot be versioned by a repo rooted at the home, and a
+    silently dropped one would leave that framework's rules unversioned with
+    nothing to notice it.
+    """
     prefix = _REPO_PATH.rstrip("/") + "/"
     if not path.startswith(prefix):
-        raise ValueError(f"{path} is not inside the agent home {_REPO_PATH}")
+        raise ValueError(
+            f"{path} is not inside the agent home {_REPO_PATH}, so the agent "
+            f"state repo cannot version it — put the file under {_REPO_PATH} "
+            f"or drop it from AGENTS_MD_PATHS"
+        )
     return path[len(prefix):]
 
 
@@ -123,10 +142,21 @@ _UNKNOWN_REV_MARKERS = (
 )
 
 
+# git reports a missing object on a line of its own prefixed "fatal:", and only
+# those lines are searched for the markers. Matching anywhere in the container's
+# combined output would let an unrelated failure that happens to quote one of
+# these phrases — an incus "Error: Instance is not running (ambiguous
+# argument)" — turn an unreachable container into a 404 "unknown revision".
+_GIT_FATAL_PREFIX = "fatal:"
+
+
 def _raise_unknown_revision_or_unreachable(sha: str, out: str) -> NoReturn:
-    lowered = out.lower()
-    if any(marker in lowered for marker in _UNKNOWN_REV_MARKERS):
-        raise RuntimeError(f"unknown revision {sha}")
+    for line in out.lower().splitlines():
+        line = line.strip()
+        if not line.startswith(_GIT_FATAL_PREFIX):
+            continue
+        if any(marker in line for marker in _UNKNOWN_REV_MARKERS):
+            raise RuntimeError(f"unknown revision {sha}")
     raise ContainerUnreachableError(out.strip() or "container unreachable")
 
 
@@ -252,10 +282,9 @@ async def git_revert(container: str, sha: str) -> str:
     if rc == _REVERT_DIRTY:
         raise DirtyTreeError("dirty_tree: working tree has uncommitted changes")
     if rc != 0:
-        # The reset itself failed (exec failed, or git could not read the
-        # repo). Same bucket as any other failed git call in this module —
-        # 409, not the 404 a bare RuntimeError would map to.
-        raise ContainerUnreachableError(
-            f"git revert failed: {out.strip() or f'rc={rc}'}"
-        )
+        # The reset itself failed: a corrupt index, an unwritable .git, a
+        # missing object. Its own class, because calling that "container
+        # unreachable" would misdescribe a repo-state problem, and a bare
+        # RuntimeError would surface it as 404 "unknown revision".
+        raise GitOperationError(f"git revert failed: {out.strip() or f'rc={rc}'}")
     return "reverted"

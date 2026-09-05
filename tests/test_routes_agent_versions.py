@@ -127,7 +127,6 @@ class TestAgentVersionsRoutes:
             new=_fake_exec_for_repo(fixture),
         ):
             resp = await client.post(f"/api/agents/test-agent/versions/{first_sha}/revert")
-        print("RESP:", resp.status_code, resp.text)
         assert resp.status_code == 200
         assert resp.json()["status"] == "reverted"
         assert (fixture / "README.md").exists()
@@ -294,6 +293,56 @@ class TestAgentVersionsRoutes:
     async def test_short_sha_rejected_by_versions_route(self, client):
         resp = await client.get("/api/agents/test-agent/versions/abc1/diff")
         assert resp.status_code == 400
+
+    async def test_uppercase_sha_is_accepted(self, tmp_path, client):
+        """Hex object names are case-insensitive to git, and every route a
+        user copies a sha from can hand one over uppercase."""
+        fixture = tmp_path / "repo"
+        fixture.mkdir()
+        _init_fixture_repo(fixture)
+        head_sha = subprocess.run(
+            ["git", "-C", str(fixture), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        with patch(
+            "tinyagentos.agent_git.exec_in_container",
+            new=_fake_exec_for_repo(fixture),
+        ):
+            resp = await client.post(
+                f"/api/agents/test-agent/versions/{head_sha.upper()}/revert"
+            )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "noop"
+
+    async def test_agent_name_that_breaks_the_container_target_returns_400(self, tmp_path):
+        """"remote:container" is the qualified form, so a name carrying a
+        colon would silently address a different remote."""
+        app, token = _make_app_with_remote(tmp_path, None)
+        app.state.config.agents[0]["name"] = "bad:name"
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": token},
+            event_hooks=csrf_event_hooks(),
+        ) as c:
+            resp = await c.get("/api/agents/bad:name/versions")
+        assert resp.status_code == 400
+        assert "invalid agent name" in resp.json()["error"]
+
+    async def test_failed_reset_returns_409_with_the_git_error(self, client):
+        """A repo-state failure is 409 and says what git said — not a 404
+        "unknown revision" and not a bare "container_unreachable"."""
+        async def _fake(container, cmd, timeout=60):
+            if cmd[0] == "bash":
+                return 1, "fatal: Unable to write new index file"
+            if "merge-base" in cmd:
+                return 0, ""
+            return 0, "b" * 40
+
+        with patch("tinyagentos.agent_git.exec_in_container", new=_fake):
+            resp = await client.post(f"/api/agents/test-agent/versions/{'b' * 40}/revert")
+        assert resp.status_code == 409
+        assert "Unable to write new index file" in resp.json()["error"]
 
     async def test_list_versions_403_for_unauthorized_user(self, tmp_path):
         config = {

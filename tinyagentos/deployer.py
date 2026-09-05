@@ -785,7 +785,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /root/.taos/agent_committer.py
+ExecStart=/usr/bin/env python3 /root/.taos/agent_committer.py
 Restart=always
 RestartSec=5
 Environment=AGENT_STATE_REPO=/root

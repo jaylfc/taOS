@@ -173,3 +173,34 @@ class TestUnknownRevisionDiagnostics:
         monkeypatch.setattr(agent_git, "exec_in_container", fake_exec)
         with pytest.raises(agent_git.ContainerUnreachableError):
             await agent_git.git_rev_parse("taos-agent-test", "deadbeef")
+
+
+    @pytest.mark.asyncio
+    async def test_marker_outside_a_git_diagnostic_is_still_unreachable(self, monkeypatch):
+        """The markers are git's words. A container-side failure that merely
+        quotes one of them is not a missing object."""
+        async def fake_exec(container, cmd, timeout=60):
+            return 1, "Error: Instance is not running (ambiguous argument)"
+
+        monkeypatch.setattr(agent_git, "exec_in_container", fake_exec)
+        with pytest.raises(agent_git.ContainerUnreachableError):
+            await agent_git.git_rev_parse("taos-agent-test", "deadbeef")
+
+
+class TestRevertFailureClassification:
+    @pytest.mark.asyncio
+    async def test_failed_reset_raises_git_operation_error(self, monkeypatch):
+        """A reset that fails on repo state is not an unreachable container:
+        the container answered, git could not do the work."""
+        async def fake_exec(container, cmd, timeout=60):
+            if cmd[0] == "bash":
+                return 1, "fatal: Unable to write new index file"
+            if "merge-base" in cmd:
+                return 0, ""
+            return 0, "a" * 40
+
+        monkeypatch.setattr(agent_git, "exec_in_container", fake_exec)
+        with pytest.raises(agent_git.GitOperationError) as excinfo:
+            await agent_git.git_revert("taos-agent-test", "a" * 40)
+        assert not isinstance(excinfo.value, agent_git.ContainerUnreachableError)
+        assert "Unable to write new index file" in str(excinfo.value)
