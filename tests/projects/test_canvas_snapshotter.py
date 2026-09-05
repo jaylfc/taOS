@@ -79,7 +79,7 @@ async def test_tldr_render_writes_off_the_event_loop(env, monkeypatch):
     """
     import tinyagentos.projects.canvas.snapshotter as sn
 
-    ps, cs, snap, p, data_root = env
+    _ps, _cs, snap, p, _data_root = env
     on_loop: list[bool] = []
 
     def recording_write(path, text, **kwargs):

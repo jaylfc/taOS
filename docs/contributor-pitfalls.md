@@ -94,7 +94,7 @@ temp-plus-replace.**
 it fsyncs neither the temp file nor the parent directory, so a power cut can
 land the rename while the bytes are still in page cache and the file comes back
 the right size and full of NULs. That is the 2026-08-21 account-store wipe.
-Nine copies of those five lines had accumulated (`save_config`, the star cache,
+Ten copies of those five lines had accumulated (`save_config`, the star cache,
 the beads and canvas snapshots, the hub and mesh credential stores, the
 observatory pause state, the GitHub installations file, the wake budget, the
 Fernet key). Call `atomic_write_text` / `atomic_write_bytes` instead — they
