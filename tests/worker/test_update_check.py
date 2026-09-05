@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -180,6 +181,18 @@ class TestVersionMatchesChannel:
         """
         assert version_matches_channel("1.0.0+devbuild", "stable") is True
         assert version_matches_channel("1.0.0+devbuild", "beta") is True
+
+    def test_unparseable_version_reaches_only_the_dev_channel(self, caplog):
+        """An unrecognisable version is withheld from stable and beta, and logged.
+
+        Withholding is the safe direction, but silently is not: without the log
+        an operator sees a worker that simply never updates and no reason why.
+        """
+        with caplog.at_level(logging.DEBUG, logger="tinyagentos.worker.update_check"):
+            assert version_matches_channel("nightly", "stable") is False
+            assert version_matches_channel("nightly", "beta") is False
+            assert version_matches_channel("nightly", "dev") is True
+        assert "not a PEP 440 version" in caplog.text
 
     def test_channel_detection_case_insensitive(self):
         """Channel detection from version should be case-insensitive."""

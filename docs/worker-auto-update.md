@@ -391,7 +391,9 @@ versions like `1.0.0-beta.50`, and the pre-release segment is part of the orderi
 The channel of a version comes from its parsed pre-release segments, not from searching the raw
 string for the words: a dev release (`1.0.0.dev5`) is `dev`, an alpha/beta/rc is `beta`, anything
 else is `stable`. A GA release carrying local build metadata such as `1.0.0+devbuild` is therefore
-still `stable`. An unparseable version reports as `dev`, so only the catch-all channel accepts it.
+still `stable`. An unparseable version reports as `dev`, so only the catch-all channel accepts it
+— and the parse failure is logged at DEBUG, because a worker that quietly never updates and a
+worker with nothing to update look identical from the outside.
 
 Note that `packaging` normalises as it parses — `1.0.0-beta.50` becomes `1.0.0b50`. Compare
 `Version` objects; never compare the normalised text against a raw version string.

@@ -165,12 +165,24 @@ def _channel_from_version(version: str) -> str:
     match classified a GA release carrying build metadata such as
     '1.0.0+devbuild' as a dev build and withheld it from everyone else.
     An unparseable version belongs to no published channel, so it is reported
-    as 'dev' and only the catch-all channel accepts it.
+    as 'dev' and only the catch-all channel accepts it. That withholds it from
+    stable- and beta-channel workers, which is the safe direction but is
+    invisible from the outside, so the parse failure is logged rather than
+    swallowed.
     """
     v = _parse_version(version)
-    if v is None or v.is_devrelease:
+    if v is None:
+        logger.debug(
+            "update check: version %r is not a PEP 440 version; "
+            "treating it as the dev channel",
+            version,
+        )
         return "dev"
-    if v.is_prerelease:  # alpha / beta / rc
+    if v.is_devrelease:
+        return "dev"
+    # is_prerelease covers every PEP 440 pre-release spelling -- alpha/a,
+    # beta/b, c, rc, pre and preview all normalise to a, b or rc.
+    if v.is_prerelease:
         return "beta"
     return "stable"
 
