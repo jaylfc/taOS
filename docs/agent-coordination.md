@@ -1000,7 +1000,11 @@ cookie plus the CSRF double-submit on writes; no registry scope reaches them.
 - `POST /api/restore` -- multipart `file`, restores a backup tarball into the
   data dir. **The path is `/api/restore`, NOT `/api/settings/restore`**, even
   though the handler sits in `routes/settings.py` beside the `/api/settings/*`
-  routes.
+  routes. The upload is capped at 64 MB (`413` above it) and the tarball goes
+  through `tinyagentos/safe_archive.py`: over the shared bomb caps (256 MB
+  declared uncompressed, 64 MB per member, 10000 members) or carrying a member
+  the path-safe tar filter rejects, the whole restore answers `400` and writes
+  nothing. `POST /api/themes/install` is capped the same way at 32 MB.
 
 **Both write paths REBUILD `AppConfig` field by field**, and a field missing
 from either rebuild is silently dropped on the next save, wiping whatever the

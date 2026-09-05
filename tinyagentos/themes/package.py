@@ -2,6 +2,7 @@ from __future__ import annotations
 import io, zipfile
 from pathlib import Path
 import yaml
+from tinyagentos.safe_archive import ArchiveError, check_zip_limits
 from tinyagentos.themes.schema import validate_theme_config, ThemeError
 
 class ThemePackageError(Exception):
@@ -29,6 +30,13 @@ def extract_theme_package(data: bytes, themes_root: Path) -> dict:
         zf = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as exc:
         raise ThemePackageError("not a valid .taostheme (zip) archive") from exc
+    # Bomb guard first: every zf.read() below inflates the declared size into
+    # memory, so the caps have to be checked against the central directory
+    # before the first read -- including the theme.yaml one.
+    try:
+        check_zip_limits(zf, kind="theme package")
+    except ArchiveError as exc:
+        raise ThemePackageError(str(exc)) from exc
     try:
         manifest = parse_theme_manifest(zf.read("theme.yaml").decode("utf-8"))
     except KeyError as exc:
