@@ -1284,50 +1284,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/e2/ee/0103172fef01c90fa7560e2523b52a7bcfc2cbc9a167a9cebabb05af72f4/litellm-1.94.2-cp313-cp313-win_amd64.whl", hash = "sha256:64650ee158a90be9a7d2a16a615f55ca8315c5ddbab054b1852262f2f45631ee", size = 20267318, upload-time = "2026-08-08T02:32:21.18Z" },
 ]
 
-[package.optional-dependencies]
-proxy = [
-    { name = "apscheduler" },
-    { name = "azure-identity" },
-    { name = "azure-storage-blob" },
-    { name = "backoff" },
-    { name = "boto3" },
-    { name = "cryptography" },
-    { name = "expression" },
-    { name = "fastapi" },
-    { name = "fastapi-sso" },
-    { name = "granian" },
-    { name = "gunicorn" },
-    { name = "inquirerpy" },
-    { name = "litellm-enterprise" },
-    { name = "litellm-proxy-extras" },
-    { name = "mcp" },
-    { name = "orjson" },
-    { name = "polars" },
-    { name = "pydantic-settings" },
-    { name = "pyjwt" },
-    { name = "pynacl" },
-    { name = "pyroscope-io", marker = "sys_platform != 'win32'" },
-    { name = "python-multipart" },
-    { name = "pyyaml" },
-    { name = "restrictedpython" },
-    { name = "rich" },
-    { name = "rq" },
-    { name = "soundfile" },
-    { name = "starlette" },
-    { name = "uvicorn" },
-    { name = "uvloop", marker = "sys_platform != 'win32'" },
-    { name = "websockets" },
-]
-
-[[package]]
-name = "litellm-enterprise"
-version = "0.1.51"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/eb/00/075bacfb3a4f2043d63e18b26054954bad56b675c0ae267c066d5db193f9/litellm_enterprise-0.1.51.tar.gz", hash = "sha256:54be807872d1ac2528220ffbb546784bf10a80bf49a5532274684220068fe51e", size = 73553, upload-time = "2026-07-17T02:51:12.801Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a2/4e/f3cc34955cbab56844469e51189333e2fbc1b32d34300707062fdaae84ad/litellm_enterprise-0.1.51-py3-none-any.whl", hash = "sha256:7a5ee72226936ad58ff6062fd9c8c24e0b54dedaae1880b51844d550196544a3", size = 140677, upload-time = "2026-07-17T02:51:11.384Z" },
-]
-
 [[package]]
 name = "litellm-proxy-extras"
 version = "0.4.79.post2"
@@ -3087,6 +3043,7 @@ dependencies = [
     { name = "taosmd" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
+    { name = "yt-dlp" },
     { name = "zeroconf" },
 ]
 
@@ -3096,8 +3053,38 @@ e2e = [
     { name = "pytest-playwright" },
 ]
 proxy = [
-    { name = "litellm", extra = ["proxy"] },
+    { name = "apscheduler" },
+    { name = "azure-identity" },
+    { name = "azure-storage-blob" },
+    { name = "backoff" },
+    { name = "boto3" },
+    { name = "cryptography" },
+    { name = "expression" },
+    { name = "fastapi" },
+    { name = "fastapi-sso" },
+    { name = "granian" },
+    { name = "gunicorn" },
+    { name = "inquirerpy" },
+    { name = "litellm" },
+    { name = "litellm-proxy-extras" },
+    { name = "mcp" },
+    { name = "orjson" },
+    { name = "polars" },
     { name = "prisma" },
+    { name = "pydantic-settings" },
+    { name = "pyjwt" },
+    { name = "pynacl" },
+    { name = "pyroscope-io", marker = "sys_platform != 'win32'" },
+    { name = "python-multipart" },
+    { name = "pyyaml" },
+    { name = "restrictedpython" },
+    { name = "rich" },
+    { name = "rq" },
+    { name = "soundfile" },
+    { name = "starlette" },
+    { name = "uvicorn" },
+    { name = "uvloop", marker = "sys_platform != 'win32'" },
+    { name = "websockets" },
 ]
 torrent = [
     { name = "libtorrent" },
@@ -3122,33 +3109,64 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
+    { name = "apscheduler", marker = "extra == 'proxy'", specifier = ">=3.11.2,<4.0" },
     { name = "argon2-cffi", specifier = ">=23.1.0" },
+    { name = "azure-identity", marker = "extra == 'proxy'", specifier = ">=1.25.2,<2.0" },
+    { name = "azure-storage-blob", marker = "extra == 'proxy'", specifier = ">=12.28.0,<13.0" },
+    { name = "backoff", marker = "extra == 'proxy'", specifier = ">=2.2.1,<3.0" },
+    { name = "boto3", marker = "extra == 'proxy'", specifier = ">=1.43.1,<2.0" },
     { name = "croniter", specifier = ">=6.2.4" },
     { name = "cryptography", specifier = ">=50.0.0" },
+    { name = "cryptography", marker = "extra == 'proxy'", specifier = ">=49.0.0,<51.0" },
     { name = "diff-match-patch", specifier = ">=20230430" },
+    { name = "expression", marker = "extra == 'proxy'", specifier = ">=5.6.0,<6.0" },
     { name = "fastapi", specifier = ">=0.115.0,<0.137" },
+    { name = "fastapi", marker = "extra == 'proxy'", specifier = ">=0.136.3,<1.0" },
+    { name = "fastapi-sso", marker = "extra == 'proxy'", specifier = ">=0.19.0,<1.0" },
     { name = "filelock", specifier = ">=3.12" },
+    { name = "granian", marker = "extra == 'proxy'", specifier = ">=2.7.4,<3.0" },
+    { name = "gunicorn", marker = "extra == 'proxy'", specifier = ">=23.0.0,<24.0" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "inquirerpy", marker = "extra == 'proxy'", specifier = ">=0.3.4,<1.0" },
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "libtorrent", marker = "extra == 'torrent'", specifier = ">=2.0.9" },
-    { name = "litellm", extras = ["proxy"], marker = "extra == 'proxy'", specifier = ">=1.94.0" },
+    { name = "litellm", marker = "extra == 'proxy'", specifier = ">=1.94.2,<1.95" },
+    { name = "litellm-proxy-extras", marker = "extra == 'proxy'", specifier = ">=0.4.79.post2" },
     { name = "lxml", specifier = ">=5.0.0" },
     { name = "matrix-nio", specifier = ">=0.26.0" },
+    { name = "mcp", marker = "extra == 'proxy'", specifier = ">=1.28.1,<2.0" },
+    { name = "orjson", marker = "extra == 'proxy'", specifier = ">=3.11.6,<4.0" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "pillow", marker = "extra == 'worker'", specifier = ">=10.0" },
+    { name = "polars", marker = "extra == 'proxy'", specifier = ">=1.38.1,<2.0" },
     { name = "prisma", marker = "extra == 'proxy'", specifier = ">=0.11.0" },
     { name = "psutil", specifier = ">=5.9.0" },
+    { name = "pydantic-settings", marker = "extra == 'proxy'", specifier = ">=2.14.1,<3.0" },
+    { name = "pyjwt", marker = "extra == 'proxy'", specifier = ">=2.13.0,<3.0" },
+    { name = "pynacl", marker = "extra == 'proxy'", specifier = ">=1.6.2,<2.0" },
+    { name = "pyroscope-io", marker = "sys_platform != 'win32' and extra == 'proxy'", specifier = ">=0.8.16,<1.0" },
     { name = "pystray", marker = "extra == 'worker'", specifier = ">=0.19.0" },
     { name = "pytest", marker = "extra == 'e2e'", specifier = ">=9.1.1" },
     { name = "pytest-playwright", marker = "extra == 'e2e'", specifier = ">=0.5.0" },
     { name = "python-multipart", specifier = ">=0.0.9" },
+    { name = "python-multipart", marker = "extra == 'proxy'", specifier = ">=0.0.27,<1.0" },
     { name = "pywebpush", specifier = ">=1.14" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "pyyaml", marker = "extra == 'proxy'", specifier = ">=6.0.3,<7.0" },
     { name = "readability-lxml", specifier = ">=0.8.1" },
+    { name = "restrictedpython", marker = "extra == 'proxy'", specifier = ">=8.1,<9.0" },
+    { name = "rich", marker = "extra == 'proxy'", specifier = ">=13.9.4,<14.0" },
+    { name = "rq", marker = "extra == 'proxy'", specifier = ">=2.7.0,<3.0" },
+    { name = "soundfile", marker = "extra == 'proxy'", specifier = ">=0.12.1,<1.0" },
     { name = "sqlcipher3", specifier = ">=0.6.2" },
+    { name = "starlette", marker = "extra == 'proxy'", specifier = ">=1.0.1,<2.0" },
     { name = "taosmd", specifier = "==0.4.0" },
+    { name = "uvicorn", marker = "extra == 'proxy'", specifier = ">=0.33.0,<1.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.52.1" },
+    { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'proxy'", specifier = ">=0.21.0,<1.0" },
     { name = "websockets", specifier = ">=12.0" },
+    { name = "websockets", marker = "extra == 'proxy'", specifier = ">=15.0.1,<16.0" },
+    { name = "yt-dlp", specifier = ">=2025.1.15" },
     { name = "zeroconf", specifier = ">=0.150.0" },
 ]
 provides-extras = ["worker", "proxy", "torrent", "e2e"]
@@ -3538,6 +3556,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/92/dd/3ae5fe417e9d1c353a548553326eb9935e76b6b727161563b424cc296df3/yarl-1.24.2-cp313-cp313-win_amd64.whl", hash = "sha256:7d37fb7c38f2b6edab0f845c4f85148d4c44204f52bc127021bd2bc9fdbf1656", size = 92667, upload-time = "2026-05-19T21:29:52.743Z" },
     { url = "https://files.pythonhosted.org/packages/10/cc/a7beb239f78f27fca1b053c8e8595e4179c02e62249b4687ec218c370c50/yarl-1.24.2-cp313-cp313-win_arm64.whl", hash = "sha256:1e831894be7c2954240e49791fa4b50c05a0dc881de2552cfe3ffd8631c7f461", size = 87069, upload-time = "2026-05-19T21:29:54.442Z" },
     { url = "https://files.pythonhosted.org/packages/fd/4d/4b880086bd0d3e034d25647be1d830afc3e3f610e98c4ab3490af6b1b6d5/yarl-1.24.2-py3-none-any.whl", hash = "sha256:2783d9226db8797636cd6896e4de81feed252d1db72265686c9558d97a4d94b9", size = 53576, upload-time = "2026-05-19T21:31:03.909Z" },
+]
+
+[[package]]
+name = "yt-dlp"
+version = "2026.8.19"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/e0/832fa4ca334b766a06933a196066edc3dba37cdb6f14cd98d59bcc69a4b4/yt_dlp-2026.8.19.tar.gz", hash = "sha256:9e213e48cea35c66b378e4447903f118f6392a5fa380a2b6d7070ec86f4e0af1", size = 3052025, upload-time = "2026-08-19T23:48:59.291Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/69/b2/8cd1613f56eed7ceb64fbd4df3f1c01246bfb098e6f398228bafda22b80b/yt_dlp-2026.8.19-py3-none-any.whl", hash = "sha256:1d57897e94c6665a0a6f9bc54b34e584284e32c034ffab3a7df25d8f7b24eedf", size = 3185533, upload-time = "2026-08-19T23:48:56.925Z" },
 ]
 
 [[package]]

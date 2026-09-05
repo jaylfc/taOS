@@ -1509,10 +1509,17 @@ log "installing controller python deps into .venv (pip install -e '.[proxy]')"
 ./.venv/bin/pip install --quiet --upgrade pip
 ./.venv/bin/pip install --quiet -e ".[proxy]"
 
-# yt-dlp is needed for YouTube and X content ingestion (runs as subprocess)
-if ! command -v yt-dlp &>/dev/null; then
-    log "installing yt-dlp for YouTube/X content ingestion"
-    ./.venv/bin/pip install --quiet yt-dlp || log "WARN: yt-dlp install failed — YouTube ingest will not work"
+# The proxy extra no longer routes through litellm[proxy], so the proprietary
+# litellm-enterprise wheel is no longer part of the install set. A FRESH install
+# therefore never lands it -- but pip does not prune what an EARLIER install put
+# in the venv, so upgrading an existing box would silently keep redistributing
+# it. Nothing in taOS imports it (grep -rn litellm_enterprise tinyagentos/ is
+# empty), so removing it is inert; and it is the shipped venv, not the source
+# tree, that a commercial licensee redistributes.
+if ./.venv/bin/python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('litellm_enterprise') else 1)" 2>/dev/null; then
+    log "removing litellm-enterprise (LicenseRef-Proprietary) left in .venv by an earlier install"
+    ./.venv/bin/pip uninstall --quiet --yes litellm-enterprise \
+        || warn "could not remove litellm-enterprise from .venv -- remove it by hand: ./.venv/bin/pip uninstall -y litellm-enterprise"
 fi
 
 log "verifying controller import"
