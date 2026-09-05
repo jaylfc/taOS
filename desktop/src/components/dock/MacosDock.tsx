@@ -1,6 +1,7 @@
 import type { WindowState } from "@/stores/process-store";
 import type { DockIconSize, DockPosition } from "@/stores/dock-store";
 import { DockIcon } from "../DockIcon";
+import { pinnedAppId } from "@/registry/app-registry";
 
 export interface DockVariantProps {
   pinned: string[];
@@ -20,7 +21,11 @@ export function MacosDock({
   position = "bottom",
 }: DockVariantProps) {
   const runningAppIds = windows.map((w) => w.appId);
-  const runningNotPinned = runningAppIds.filter((id) => !pinned.includes(id));
+  // A pin is matched by the app it launches, not by its own id: a legacy pin
+  // id is not an app id, so comparing the two directly would leave its icon
+  // un-dotted and list its own window again as a second, unpinned icon.
+  const pinnedAppIds = pinned.map(pinnedAppId);
+  const runningNotPinned = runningAppIds.filter((id) => !pinnedAppIds.includes(id));
   const isLeft = position === "left";
   const dividerClassName = isLeft ? "h-px w-8 bg-shell-border my-1" : "w-px h-8 bg-shell-border mx-1";
 
@@ -56,11 +61,11 @@ export function MacosDock({
 
       <div className={dividerClassName} />
 
-      {pinned.map((appId) => (
+      {pinned.map((appId, i) => (
         <DockIcon
           key={appId}
           appId={appId}
-          isRunning={runningAppIds.includes(appId)}
+          isRunning={runningAppIds.includes(pinnedAppIds[i]!)}
           onClick={() => onAppClick(appId)}
           size={iconSize}
         />

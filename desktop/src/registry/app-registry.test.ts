@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { AppManifest } from "./app-registry";
-import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, isDefaultSurfaceApp, prefetchApp, resolveApp, apps, APP_REDIRECTS, resolvePinnedId } from "./app-registry";
+import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, isDefaultSurfaceApp, prefetchApp, resolveApp, apps, APP_REDIRECTS, resolvePinnedId, pinnedAppId, pinnedLaunchProps } from "./app-registry";
 
 describe("resolveApp (deep-navigation token resolver)", () => {
   it("resolves an exact app id", () => {
@@ -287,6 +287,36 @@ describe("resolvePinnedId", () => {
 
   it("resolves notification-archive to notifications with section archive via APP_REDIRECTS", () => {
     expect(resolvePinnedId("notification-archive")).toEqual({ id: "notifications", section: "archive" });
+  });
+});
+
+describe("pinnedAppId", () => {
+  it("returns the app a pin renders and launches as", () => {
+    expect(pinnedAppId("messages")).toBe("messages");
+    expect(pinnedAppId("notification-archive")).toBe("notifications");
+  });
+
+  it("keeps the pin id when no app claims it yet", () => {
+    expect(pinnedAppId("userspace:not-synced-yet")).toBe("userspace:not-synced-yet");
+  });
+});
+
+describe("pinnedLaunchProps", () => {
+  it("turns a pin's section into the props its launch must carry", () => {
+    expect(pinnedLaunchProps("notification-archive")).toEqual({ section: "archive" });
+  });
+
+  it("is undefined for a pin that opens the app's default view", () => {
+    expect(pinnedLaunchProps("messages")).toBeUndefined();
+    APP_REDIRECTS["legacy-id"] = { appId: "agents" };
+    expect(pinnedLaunchProps("legacy-id")).toBeUndefined();
+    delete APP_REDIRECTS["legacy-id"];
+  });
+
+  it("is undefined for a redirect no app claims, so a launch cannot be half-built", () => {
+    APP_REDIRECTS["legacy-id"] = { appId: "does-not-exist", section: "archive" };
+    expect(pinnedLaunchProps("legacy-id")).toBeUndefined();
+    delete APP_REDIRECTS["legacy-id"];
   });
 });
 

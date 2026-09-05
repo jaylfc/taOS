@@ -15,7 +15,7 @@ import { useOnAuthReady } from "@/hooks/use-on-auth-ready";
 import { usePushClickHandler } from "@/hooks/use-push-click";
 import { useProcessStore } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
-import { getApp, resolvePinnedId } from "@/registry/app-registry";
+import { getApp, pinnedAppId, pinnedLaunchProps } from "@/registry/app-registry";
 import { MobileDock } from "@/components/mobile/MobileDock";
 import { CardSwitcher } from "@/components/mobile/CardSwitcher";
 import { MobileTopBar } from "@/components/mobile/MobileTopBar";
@@ -96,14 +96,12 @@ function SystemShortcuts({ toggleSearch, toggleLaunchpad, toggleAssistant }: Sys
 
   // Ctrl+1 through Ctrl+9 — open/focus Nth pinned dock app
   const openPinned = useCallback((n: number) => {
-    const appId = pinned[n];
-    if (!appId) return;
-    const resolved = resolvePinnedId(appId);
-    const targetId = resolved?.id ?? appId;
+    const pinId = pinned[n];
+    if (!pinId) return;
+    const targetId = pinnedAppId(pinId);
     const app = getApp(targetId);
     if (app) {
-      const props = resolved?.section ? { section: resolved.section } : undefined;
-      openWindow(targetId, app.defaultSize, props);
+      openWindow(targetId, app.defaultSize, pinnedLaunchProps(pinId));
     }
   }, [pinned, openWindow]);
 

@@ -1,7 +1,7 @@
 import { useDockStore } from "@/stores/dock-store";
 import { useProcessStore } from "@/stores/process-store";
 import { useThemeStore } from "@/stores/theme-store";
-import { getApp, resolvePinnedId } from "@/registry/app-registry";
+import { getApp, pinnedAppId, pinnedLaunchProps } from "@/registry/app-registry";
 import { DOCK_VARIANTS, type DockVariantId } from "./dock/DockVariants";
 
 interface Props {
@@ -25,12 +25,12 @@ export function Dock({ onLaunchpadOpen }: Props) {
         focusWindow(existing.id);
       }
     } else {
-      const resolved = resolvePinnedId(appId);
-      const targetId = resolved?.id ?? appId;
+      // `appId` is the pin id the dock stores, which for a legacy pin is not
+      // an app id: resolve both the app and the section it opens on.
+      const targetId = pinnedAppId(appId);
       const app = getApp(targetId);
       if (app) {
-        const props = resolved?.section ? { section: resolved.section } : undefined;
-        openWindow(targetId, app.defaultSize, props);
+        openWindow(targetId, app.defaultSize, pinnedLaunchProps(appId));
       }
     }
   };
