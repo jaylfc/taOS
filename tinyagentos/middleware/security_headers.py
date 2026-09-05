@@ -40,6 +40,12 @@ def _build_csp(frame_src_extra: str = "") -> str:
 # metadata, grants, project files), so it must never be stored by a shared
 # proxy cache or replayed from the browser's back/forward cache on the next
 # user of the machine.
+#
+# Each entry MUST keep its trailing slash. That is what makes a plain
+# startswith safe against prefix confusion: "/api/" cannot match a sibling
+# route such as "/api-docs", and dropping the slash to "shorten" the list
+# would silently widen the match to every path that merely starts with those
+# letters.
 _NO_STORE_PREFIXES = ("/api/", "/agent/")
 
 

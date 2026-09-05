@@ -83,8 +83,12 @@ class TestApiNoStore:
 
     @pytest.mark.asyncio
     async def test_agent_prefix_is_no_store(self, client):
-        # The /agent/ debugger surface is per-agent state, same rule.
+        # The /agent/ debugger surface is per-agent state, same rule. This is a
+        # SUCCESSFUL response, not a 404: debugger_status answers 200 with the
+        # trace counters for any agent id, so the assertion covers the
+        # happy path and not just "the middleware ran on an error".
         resp = await client.get("/agent/does-not-exist/debug/status")
+        assert resp.status_code == 200
         assert resp.headers.get("cache-control") == "no-store"
 
     @pytest.mark.asyncio
