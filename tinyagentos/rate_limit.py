@@ -108,6 +108,10 @@ class RateLimiter:
 
     def __init__(self, capacity: float = 30, refill_per_second: float = 10.0,
                  *, max_keys: int = MAX_TRACKED_KEYS):
+        if capacity < 1:
+            raise ValueError("capacity must be at least 1")
+        if refill_per_second <= 0:
+            raise ValueError("refill_per_second must be greater than 0")
         if max_keys < 1:
             raise ValueError("max_keys must be at least 1")
         self.capacity = capacity
@@ -134,10 +138,6 @@ class RateLimiter:
         with self._lock:
             bucket = self._buckets.get(key)
             wait = bucket.seconds_until(cost) if bucket is not None else 0.0
-        if math.isinf(wait):
-            # Only a never-refilling bucket gets here (test configuration);
-            # advertise the shortest honest-ish backoff rather than a lie.
-            return 1
         return max(1, math.ceil(wait))
 
     def clear(self) -> None:
@@ -181,6 +181,10 @@ class MovingWindowLimiter:
 
     def __init__(self, max_per_window: int, window_secs: float,
                  *, max_keys: int = MAX_TRACKED_KEYS):
+        if max_per_window < 1:
+            raise ValueError("max_per_window must be at least 1")
+        if window_secs <= 0:
+            raise ValueError("window_secs must be greater than 0")
         if max_keys < 1:
             raise ValueError("max_keys must be at least 1")
         self.max_per_window = max_per_window

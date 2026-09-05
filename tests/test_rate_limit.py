@@ -48,7 +48,9 @@ class TestTokenBucket:
 
 class TestRateLimiter:
     def test_separate_keys(self):
-        r = RateLimiter(capacity=2, refill_per_second=0)
+        # refill_per_second must be > 0; a tiny value keeps the test
+        # deterministic since it runs in well under a second.
+        r = RateLimiter(capacity=2, refill_per_second=1e-9)
         assert r.check("ip-a") is True
         assert r.check("ip-b") is True
         assert r.check("ip-a") is True
@@ -191,3 +193,38 @@ class TestMaxKeysValidation:
     def test_moving_window_limiter_rejects_negative_max_keys(self):
         with pytest.raises(ValueError):
             MovingWindowLimiter(max_per_window=5, window_secs=60, max_keys=-1)
+
+
+class TestRateLimiterParamValidation:
+    """capacity/refill_per_second must be validated the same way as max_keys.
+
+    capacity=0 makes every try_consume() return False permanently (a locked-
+    out limiter); a negative refill_per_second means tokens decrease instead
+    of refilling, eventually draining the bucket even under no load.
+    """
+
+    def test_rate_limiter_rejects_zero_capacity(self):
+        with pytest.raises(ValueError):
+            RateLimiter(capacity=0, refill_per_second=1.0)
+
+    def test_rate_limiter_rejects_negative_refill_per_second(self):
+        with pytest.raises(ValueError):
+            RateLimiter(capacity=2, refill_per_second=-1.0)
+
+
+class TestMovingWindowLimiterParamValidation:
+    """max_per_window/window_secs must be validated the same way as max_keys.
+
+    max_per_window=0 rejects every request forever; window_secs<=0 collapses
+    _expire's cutoff to `now`, which drops every timestamp in the window and
+    makes the limiter accept every request -- the DoS guard silently
+    disappears.
+    """
+
+    def test_moving_window_limiter_rejects_zero_max_per_window(self):
+        with pytest.raises(ValueError):
+            MovingWindowLimiter(max_per_window=0, window_secs=60)
+
+    def test_moving_window_limiter_rejects_zero_window_secs(self):
+        with pytest.raises(ValueError):
+            MovingWindowLimiter(max_per_window=5, window_secs=0)

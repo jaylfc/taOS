@@ -53,12 +53,13 @@ async def test_empty_message_rejected(client):
 async def test_post_is_rate_limited_per_user(client, monkeypatch):
     from tinyagentos.rate_limit import RateLimiter
 
-    # Small, non-refilling bucket so a flood is deterministically capped: the
-    # 4th valid post past a capacity of 3 is rejected, protecting other users'
-    # entries in the shared ring buffer.
+    # Small, effectively-non-refilling bucket so a flood is deterministically
+    # capped: the 4th valid post past a capacity of 3 is rejected, protecting
+    # other users' entries in the shared ring buffer. refill_per_second must
+    # be > 0, so use a value negligible over the test's real running time.
     monkeypatch.setattr(
         "tinyagentos.routes.client_logs._post_limiter",
-        RateLimiter(capacity=3, refill_per_second=0.0),
+        RateLimiter(capacity=3, refill_per_second=1e-9),
     )
     for _ in range(3):
         ok = await client.post("/api/client-logs", json={"level": "error", "message": "flood"})

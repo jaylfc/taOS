@@ -23,3 +23,10 @@
 - `RateLimiter` and `MovingWindowLimiter` now reject a non-positive `max_keys`
   at construction with `ValueError` instead of raising `KeyError` out of the
   eviction loop on the very first tracked key.
+- `RateLimiter` now rejects a non-positive `capacity` or `refill_per_second`,
+  and `MovingWindowLimiter` a non-positive `max_per_window` or `window_secs`,
+  at construction with `ValueError`. Previously a bad value silently locked
+  every caller out forever (`capacity=0`) or disabled the limiter entirely
+  (`window_secs<=0` accepted every request); `Retry-After` also no longer
+  advertises a made-up 1-second retry for a bucket configured to never
+  refill, since that configuration is now rejected up front.
