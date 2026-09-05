@@ -23,11 +23,22 @@ NUL-filled one.
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import secrets
+import time
 from pathlib import Path
 
 __all__ = ["atomic_write_text", "atomic_write_bytes", "atomic_create_bytes"]
+
+logger = logging.getLogger(__name__)
+
+# The no-hard-link fallback's sidecar claim: how long a loser polls for the
+# winner's claim to disappear before treating it as abandoned, and how many
+# times. 20 * 100ms = 2s -- generous for a few KB of key material, short
+# enough not to wedge a boot.
+_CLAIM_POLL_ATTEMPTS = 20
+_CLAIM_POLL_INTERVAL = 0.1
 
 
 def _fsync_dir(directory: Path) -> None:
@@ -99,6 +110,76 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> N
     _fsync_dir(path.parent)
 
 
+def _create_via_claim(path: Path, data: bytes, mode: int | None) -> bytes:
+    """``atomic_create_bytes`` on a filesystem with no hard links.
+
+    ``os.link`` is what makes the normal path race-safe: it is the kernel
+    that decides who wins, and a loser can only ever see the winner's
+    complete bytes because the link cannot exist before the winner's
+    ``fsync`` returned. exFAT/FAT (a removable data dir on a Pi) have no hard
+    links, so exclusivity has to come from a *sidecar* claim file instead:
+
+    - Creating ``<path>.claim`` with ``O_EXCL`` is itself race-safe the same
+      way ``os.link`` is. The winner then writes *path* through
+      ``atomic_write_bytes`` -- tmp file, fsync, ``os.replace``, fsync the
+      directory -- so ``path`` itself never exists in a partial state; it
+      transitions atomically from absent to complete. Only once that has
+      landed is the claim removed.
+    - A loser polls for the claim to disappear, then reads *path*. Because
+      the claim outlives the write, "the claim is gone" means "path is
+      complete", never "path is present but partial".
+    - If the claim outlives the poll window without *path* ever becoming
+      non-empty, the winner crashed before writing anything durable: the
+      claim is reclaimed and the whole fallback is retried once. A second
+      failure raises rather than ever handing back non-durable bytes.
+    """
+    claim = path.with_name(path.name + ".claim")
+    for _ in range(2):  # the initial attempt, plus one retry after a stale claim
+        try:
+            fd = os.open(claim, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
+            logger.warning(
+                "%s: filesystem has no hard links; falling back to a sidecar "
+                "claim file for exclusive creation -- an operator should "
+                "check whether this mount is expected to lack them",
+                path,
+            )
+            try:
+                atomic_write_bytes(path, data, mode=mode)
+            finally:
+                try:
+                    os.unlink(claim)
+                except OSError:
+                    pass
+            return data
+
+        for _ in range(_CLAIM_POLL_ATTEMPTS):
+            if not claim.exists():
+                break
+            time.sleep(_CLAIM_POLL_INTERVAL)
+        else:
+            # Poll bound exceeded and the claim is still there.
+            if not path.exists() or not path.read_bytes():
+                # The winner crashed before ever producing durable bytes.
+                # Reclaim the name and retry the whole fallback once.
+                try:
+                    os.unlink(claim)
+                except OSError:
+                    pass
+                continue
+            # else: path is already complete even though the winner has not
+            # unlinked its claim yet -- fall through to read it below.
+
+        return path.read_bytes()
+
+    raise OSError(
+        f"could not persist {path}: filesystem without hard links and a stale claim"
+    )
+
+
 def atomic_create_bytes(path: Path, data: bytes, *, mode: int | None = None) -> bytes:
     """Durably create *path* holding *data*, but only if it is not there yet.
 
@@ -153,26 +234,11 @@ def atomic_create_bytes(path: Path, data: bytes, *, mode: int | None = None) -> 
             pass
         except OSError:
             # A filesystem without hard links (exFAT/FAT on a removable data
-            # dir).  Claim the target name exclusively instead: the atomic
-            # create-or-fail guarantee this function exists for is preserved,
-            # at the cost of a crash window in which the new file can be
-            # partial -- which a replace would not have closed either.
-            try:
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                             mode if mode is not None else 0o666)
-            except FileExistsError:
-                pass
-            else:
-                try:
-                    view = memoryview(data)
-                    while view:
-                        view = view[os.write(fd, view):]
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
-                if mode is not None:
-                    os.chmod(path, mode)
-                linked = True
+            # dir): os.link cannot give us the race decision, so fall back to
+            # a sidecar claim file that gives the same "exactly one writer"
+            # guarantee without ever exposing a partial or absent target to a
+            # reader (see ``_create_via_claim``).
+            return _create_via_claim(path, data, mode)
     finally:
         try:
             os.unlink(tmp)

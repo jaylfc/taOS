@@ -134,13 +134,17 @@ _PROMOTION = re.compile(
     re.VERBOSE,
 )
 
-# Only names that unambiguously denote a temp file, so an ordinary
-# ``str.replace`` or a variable called ``template`` is never flagged.  Both
-# spellings are here: a guard that knew only ``tmp*`` let ``temp_path`` walk
-# straight past it, which is a one-word rename, not a different defect.
-# ``temp``/``tmp`` must be the whole name or a whole underscore-separated part,
-# which is what keeps ``template`` out.
-_TEMP_NAME = re.compile(r"^(?:tmp|temp|temporary|(?:tmp|temp)_\w+|\w+_(?:tmp|temp))$")
+# Any name that *contains* a temp word, not just one spelled entirely as one.
+# The anchored version let a one-word rename walk straight past the guard --
+# ``tmp_path`` renamed to ``draft_tmpfile`` or ``intermediate_temp`` is still
+# a temp file, and the whole point of widening this from ``tmp*`` to
+# ``tmp*|temp*|temporary`` was to stop that kind of rename from re-opening
+# the defect. The cost is a handful of ordinary words that happen to contain
+# "tmp"/"temp" as a substring (``template``, ``attempt``, ``contempt``) --
+# measured at zero real hits across ``tinyagentos/`` when this was widened,
+# so the trade is worth it; any real hit is waived in place with
+# ``# atomic-io-exempt: <reason>`` (see ``_EXEMPT`` below).
+_TEMP_NAME = re.compile(r"tmp|temp", re.IGNORECASE)
 
 # A promotion that genuinely cannot go through atomic_io -- a symlink swap, say
 # -- carries this marker plus a reason on the same line.  The reason is
@@ -148,15 +152,19 @@ _TEMP_NAME = re.compile(r"^(?:tmp|temp|temporary|(?:tmp|temp)_\w+|\w+_(?:tmp|tem
 _EXEMPT = re.compile(r"#\s*atomic-io-exempt:\s*\S")
 
 
-def _hand_rolled_promotions() -> list[str]:
-    """Every ``<temp>.replace(...)`` / ``os.replace(<temp>, ...)`` in the package.
+def _hand_rolled_promotions(package: Path = _PACKAGE) -> list[str]:
+    """Every ``<temp>.replace(...)`` / ``os.replace(<temp>, ...)`` in *package*.
 
     Mirrors the shell check a reviewer would run::
 
         grep -rnE '(os\\.(replace|rename)\\(\\s*tmp|tmp[\\w.]*\\.(replace|rename)\\()' tinyagentos/
+
+    *package* defaults to the real ``tinyagentos/`` tree; tests pass a
+    ``tmp_path`` fixture to exercise the ``# atomic-io-exempt`` waiver against
+    synthetic content without touching the real package.
     """
     violations: list[str] = []
-    for py in sorted(_PACKAGE.rglob("*.py")):
+    for py in sorted(package.rglob("*.py")):
         if py == _ATOMIC_IO:
             continue
         for lineno, line in enumerate(py.read_text().splitlines(), start=1):
@@ -164,8 +172,11 @@ def _hand_rolled_promotions() -> list[str]:
                 continue
             for match in _PROMOTION.finditer(line):
                 name = match.group("arg") or match.group("recv")
-                if _TEMP_NAME.match(name.rsplit(".", 1)[-1]):
-                    rel = py.relative_to(_REPO_ROOT)
+                if _TEMP_NAME.search(name.rsplit(".", 1)[-1]):
+                    try:
+                        rel = py.relative_to(_REPO_ROOT)
+                    except ValueError:
+                        rel = py.relative_to(package)
                     violations.append(f"{rel}:{lineno}: {line.strip()}")
                     break
     return violations
@@ -200,12 +211,40 @@ def test_the_guard_flags_a_freshly_reintroduced_copy(tmp_path: Path) -> None:
         line
         for line in reintroduced.splitlines()
         if _PROMOTION.search(line)
-        and _TEMP_NAME.match(
+        and _TEMP_NAME.search(
             (
                 lambda m: (m.group("arg") or m.group("recv")).rsplit(".", 1)[-1]
             )(_PROMOTION.search(line))
         )
     ] == ["tmp_path.replace(path)"]
+
+
+def test_the_guard_flags_a_temp_word_hidden_inside_a_longer_name(tmp_path: Path) -> None:
+    """A rename that keeps the temp word but stops being a whole part must still be caught.
+
+    ``draft_tmpfile.replace(...)`` and ``intermediate_temp.replace(...)`` are
+    exactly the one-word-rename dodge the anchored regex missed: neither
+    ``tmpfile`` nor ``intermediate_temp`` is ``tmp``/``temp``/``temporary`` on
+    the nose, or ``tmp_*``/``*_tmp`` on the nose, but both plainly still name
+    a temp file.
+    """
+    reintroduced = (
+        "draft_tmpfile = path.with_suffix('.json.tmp')\n"
+        "draft_tmpfile.replace(path)\n"
+        "intermediate_temp = path.with_suffix('.json.tmp')\n"
+        "intermediate_temp.replace(path)\n"
+    )
+    flagged = [
+        line
+        for line in reintroduced.splitlines()
+        if _PROMOTION.search(line)
+        and _TEMP_NAME.search(
+            (
+                lambda m: (m.group("arg") or m.group("recv")).rsplit(".", 1)[-1]
+            )(_PROMOTION.search(line))
+        )
+    ]
+    assert flagged == ["draft_tmpfile.replace(path)", "intermediate_temp.replace(path)"]
 
 
 @pytest.mark.parametrize(
@@ -219,26 +258,33 @@ def test_the_guard_flags_a_freshly_reintroduced_copy(tmp_path: Path) -> None:
         ("os.replace(temp, path)", "temp"),
         ("os.replace(config_temp, path)", "config_temp"),
         ("os.replace(config_tmp, path)", "config_tmp"),
+        # Substring hits: the word is present but is not the whole name and
+        # not a whole underscore-separated part either.
+        ("temporary_file.replace(path)", "temporary_file"),
+        ("partial_temp.replace(path)", "partial_temp"),
+        ("intermediate_tmpfile.replace(path)", "intermediate_tmpfile"),
     ],
 )
 def test_the_guard_recognises_common_temp_variable_names(line: str, promoted: str) -> None:
-    """``temp``-spelled names are temp files too.
+    """``temp``-spelled names are temp files too, wherever the word sits.
 
     A guard that only knew ``tmp*`` let ``temp_path.write_text(...)`` followed
     by ``temp_path.replace(...)`` reintroduce the whole defect while staying
-    green -- a one-word rename around the check.
+    green -- a one-word rename around the check. Anchoring the word to the
+    whole name (or a whole underscore-separated part) has the same hole one
+    level up: ``tmp_path`` renamed to ``intermediate_tmpfile`` walks straight
+    past an anchored regex.
     """
     match = _PROMOTION.search(line)
     assert match is not None, f"promotion not detected in {line!r}"
     name = (match.group("arg") or match.group("recv")).rsplit(".", 1)[-1]
     assert name == promoted
-    assert _TEMP_NAME.match(name), f"{name!r} not recognised as a temp file name"
+    assert _TEMP_NAME.search(name), f"{name!r} not recognised as a temp file name"
 
 
 def test_the_guard_ignores_ordinary_string_replace() -> None:
-    """``template.replace(...)`` and ``s.replace(...)`` are not promotions."""
+    """``value.replace(...)`` and a commented-past ``os.replace`` are not promotions."""
     benign = [
-        "return template.replace('{name}', name)",
         "slug = value.replace(' ', '-')",
         "os.replace(part, dest)  # streamed download, not a temp copy",
     ]
@@ -247,4 +293,29 @@ def test_the_guard_ignores_ordinary_string_replace() -> None:
         if match is None:
             continue
         name = (match.group("arg") or match.group("recv")).rsplit(".", 1)[-1]
-        assert not _TEMP_NAME.match(name), f"false positive on {line!r}"
+        assert not _TEMP_NAME.search(name), f"false positive on {line!r}"
+
+
+def test_the_guard_s_known_false_positive_needs_a_waiver(tmp_path: Path) -> None:
+    """Widening from anchored to substring buys ~3 known false positives.
+
+    ``template``, ``attempt`` and ``contempt`` all contain "temp" as a
+    substring, so ``template.replace(...)`` -- ordinary ``str.replace``, not a
+    temp-file promotion -- is flagged by the widened regex. Measured against
+    the real ``tinyagentos/`` tree this hits zero call sites (nothing there
+    names a string-replace receiver that way), but if one ever does, this is
+    how it gets silenced: an ``# atomic-io-exempt: <reason>`` on that exact
+    line, honoured only there.
+    """
+    unwaived = tmp_path / "unwaived.py"
+    unwaived.write_text("greeting = template.replace('{name}', name)\n")
+    assert _hand_rolled_promotions(tmp_path) == [
+        f"unwaived.py:1: greeting = template.replace('{{name}}', name)"
+    ]
+
+    waived = tmp_path / "waived.py"
+    unwaived.unlink()
+    waived.write_text(
+        "greeting = template.replace('{name}', name)  # atomic-io-exempt: ordinary str.replace\n"
+    )
+    assert _hand_rolled_promotions(tmp_path) == []

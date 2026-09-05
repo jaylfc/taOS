@@ -15,12 +15,16 @@ bytes back.
 """
 from __future__ import annotations
 
+import errno
 import os
 import stat
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
+import tinyagentos.atomic_io as atomic_io
 from tinyagentos.atomic_io import atomic_create_bytes
 
 
@@ -108,3 +112,143 @@ class TestAtomicCreateBytes:
         target = tmp_path / "nested" / "deeper" / "key.bin"
         assert atomic_create_bytes(target, b"k") == b"k"
         assert target.read_bytes() == b"k"
+
+
+def _no_hardlinks(*_a, **_kw) -> None:
+    raise OSError(errno.EPERM, "no hard links on this filesystem")
+
+
+class TestNoHardlinkFallback:
+    """``os.link`` raising a non-``EEXIST`` ``OSError`` -- the exFAT/FAT shape.
+
+    The winner still has to claim the name exclusively; on a filesystem
+    without hard links that has to be a sidecar ``<name>.claim`` file rather
+    than ``path`` itself, so ``path`` only ever exists once it is complete.
+    """
+
+    def test_never_exposes_a_partial_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A concurrent reader must never see ``path`` half-written.
+
+        Forces the no-hard-link path and, from a second "writer"'s vantage
+        point, checks the target the instant the winner starts writing its
+        payload -- before the old fallback (which created ``path`` itself
+        via ``O_CREAT|O_EXCL`` and wrote into it directly) had fsynced
+        anything. On that old code this observes an empty ``path``; the
+        sidecar-claim fallback writes only ever land on a temp file, so
+        ``path`` must not exist at all until the write is complete.
+        """
+        target = tmp_path / "key.bin"
+        payload = b"k" * 4096
+        monkeypatch.setattr(os, "link", _no_hardlinks)
+
+        observed: list[bytes] = []
+        real_write = os.write
+
+        def spying_write(fd, data):
+            if target.exists():
+                observed.append(target.read_bytes())
+            return real_write(fd, data)
+
+        monkeypatch.setattr(os, "write", spying_write)
+
+        returned = atomic_create_bytes(target, payload)
+
+        assert returned == payload
+        assert target.read_bytes() == payload
+        assert observed == [], (
+            "a concurrent reader observed the target while it was still "
+            f"incomplete: {observed!r}"
+        )
+
+    def test_two_writers_converge_on_one_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two processes racing the sidecar claim must agree on one file.
+
+        Neither can use ``os.link`` (simulating exFAT/FAT). The second
+        writer must poll the first's claim and adopt its bytes instead of
+        clobbering them or minting its own file.
+        """
+        target = tmp_path / "key.bin"
+        claim = target.with_name(target.name + ".claim")
+        monkeypatch.setattr(os, "link", _no_hardlinks)
+        monkeypatch.setattr(atomic_io, "_CLAIM_POLL_INTERVAL", 0.01)
+
+        first_write_started = threading.Event()
+        release_first_write = threading.Event()
+        real_write = os.write
+
+        def gated_write(fd, data):
+            # Only gate the winner's durable write of `path` itself -- once
+            # it holds the claim -- not either writer's private per-call tmp
+            # file, and only the first time this happens.
+            if claim.exists() and not first_write_started.is_set():
+                first_write_started.set()
+                release_first_write.wait(timeout=2)
+            return real_write(fd, data)
+
+        monkeypatch.setattr(os, "write", gated_write)
+
+        results: dict[str, bytes] = {}
+
+        def run_first_writer() -> None:
+            results["first"] = atomic_create_bytes(target, b"first-writer")
+
+        first_thread = threading.Thread(target=run_first_writer)
+        first_thread.start()
+        assert first_write_started.wait(timeout=2), "first writer never started writing"
+
+        def release_soon() -> None:
+            time.sleep(0.05)
+            release_first_write.set()
+
+        threading.Thread(target=release_soon).start()
+
+        # The second writer must see the claim, poll it, and adopt the
+        # winner's bytes rather than minting its own file.
+        second = atomic_create_bytes(target, b"second-writer")
+
+        first_thread.join(timeout=2)
+
+        assert results["first"] == b"first-writer"
+        assert second == b"first-writer", (
+            "the losing writer on a no-hard-link filesystem must be handed "
+            "the persisted bytes, not its own"
+        )
+        assert target.read_bytes() == b"first-writer"
+
+    def test_stale_claim_is_reclaimed_and_the_fallback_retries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A claim left behind by a crashed winner must not wedge every reader."""
+        target = tmp_path / "key.bin"
+        claim = target.with_name(target.name + ".claim")
+        claim.parent.mkdir(parents=True, exist_ok=True)
+        claim.touch()  # a winner claimed the name, then died before writing
+
+        monkeypatch.setattr(os, "link", _no_hardlinks)
+        monkeypatch.setattr(atomic_io, "_CLAIM_POLL_ATTEMPTS", 2)
+        monkeypatch.setattr(atomic_io, "_CLAIM_POLL_INTERVAL", 0.01)
+
+        returned = atomic_create_bytes(target, b"recovered")
+
+        assert returned == b"recovered"
+        assert target.read_bytes() == b"recovered"
+        assert not claim.exists()
+
+    def test_operators_are_warned_once_about_the_degraded_mount(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        target = tmp_path / "key.bin"
+        monkeypatch.setattr(os, "link", _no_hardlinks)
+
+        with caplog.at_level("WARNING", logger="tinyagentos.atomic_io"):
+            atomic_create_bytes(target, b"k" * 32)
+
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1, (
+            f"expected exactly one warning about the no-hard-link fallback, got "
+            f"{len(warnings)}"
+        )

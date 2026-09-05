@@ -122,7 +122,14 @@ def _save_new(identity: dict) -> dict:
     )
     try:
         on_disk = json.loads(persisted)
-    except ValueError:  # pragma: no cover - a hand-corrupted file mid-mint
+    except ValueError:
+        # Something unparsable is already sitting at the path -- pre-existing
+        # corruption (the 2026-08-21 NUL-filled shape), since a winner's own
+        # write is always complete JSON. There is no identity in it to lose,
+        # and leaving it would wedge every future boot: `_load` treats it as
+        # absent, mints again, and races again forever. Repair it now so this
+        # recovery cycle ends with a usable keystore on disk.
+        atomic_write_bytes(_path(), json.dumps(creds).encode("utf-8"), mode=0o600)
         return creds
     if not isinstance(on_disk, dict) or not on_disk.get("signing_private"):
         # Something unusable is already sitting at the path (a corrupt file the

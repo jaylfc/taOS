@@ -156,3 +156,29 @@ class TestChallengeProof:
     def test_verify_signature_never_raises_on_garbage(self, data_dir):
         assert identity.verify_signature("nothex", b"x", "alsonothex") is False
         assert identity.verify_signature("", b"x", "") is False
+
+
+class TestSaveNewRepairsUnparsableReadback:
+    def test_a_nul_filled_file_is_repaired_not_re_minted_every_boot(
+        self, data_dir
+    ) -> None:
+        """``atomic_create_bytes`` can hand ``_save_new`` bytes it cannot parse
+        when the file already at the path is pre-existing corruption (the
+        2026-08-21 NUL-filled shape). If ``_save_new`` returns its in-memory
+        creds without repairing the on-disk file, the bad bytes are still
+        there on the next boot: ``_load`` sees them, treats them as absent,
+        and mints again -- forever. One recovery cycle must end with a
+        keystore that is actually usable on disk.
+        """
+        hub_dir = data_dir / "hub"
+        hub_dir.mkdir(parents=True, exist_ok=True)
+        (hub_dir / "identity.json").write_bytes(b"\x00" * 200)
+
+        first = identity.load_or_create()
+        second = identity.load_or_create()
+
+        assert second["signing_private"] == first["signing_private"], (
+            "load_or_create minted a different identity on the second call -- "
+            "the corrupt file was never repaired on disk, so every boot mints "
+            "and discards a fresh identity"
+        )
