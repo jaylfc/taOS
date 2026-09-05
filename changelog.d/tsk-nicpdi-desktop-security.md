@@ -8,3 +8,6 @@
 - Lifecycle serialization: install, start, stop and status hold a per-agent lock across their state updates and container commands, so concurrent installs cannot both run apt and a stop cannot complete underneath an in-flight start
 - Stop failures: a non-zero result from the stop command records `error` and returns 500 instead of reporting `stopped` while desktop processes are still running
 - Docs: fixed literal `\n` sequences in `docs/routes.d/14-agent-desktop.md` and `docs/routes.md` that collapsed the agent-desktop section onto one physical line
+- VNC secret cleanup: a start whose in-container secret file could not be removed now fails closed with 500 and no `vnc_password` in the response, instead of returning the password while a copy of it might still be sitting in the container
+- Start exceptions: an exception raised while writing, pushing or reading the VNC secret is now caught, records `state = "error"` with `last_error`, and re-raises, instead of leaving the tracked state at `"starting"` forever (which 409'd every later start and could not be reset by `install`)
+- Status probe response: a failed probe now reports `running: null` (unknown) instead of `running: false`, since the latter contradicted a tracked `state` of `"running"` for any client reading either field

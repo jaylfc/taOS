@@ -655,6 +655,7 @@ class TestAgentDesktopPasswordNeverOnArgv:
     async def test_password_file_is_cleaned_up_when_setup_fails(self, client, monkeypatch):
         argvs: list[list[str]] = []
         locals_seen: list[str] = []
+        remotes_seen: list[str] = []
 
         async def fake_exec(name, cmd, timeout=300):
             argvs.append(list(cmd))
@@ -664,6 +665,7 @@ class TestAgentDesktopPasswordNeverOnArgv:
 
         async def fake_push(name, local_path, remote_path):
             locals_seen.append(local_path)
+            remotes_seen.append(remote_path)
             return (0, "")
 
         monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
@@ -677,8 +679,70 @@ class TestAgentDesktopPasswordNeverOnArgv:
         assert not os.path.exists(locals_seen[0]), (
             "a failed setup must still delete the host secret"
         )
-        assert any("rm" in argv and locals_seen for argv in argvs), (
+        assert any(remotes_seen[0] in " ".join(argv) for argv in argvs), (
             "a failed setup must still delete the in-container secret"
+        )
+
+    async def test_cleanup_failure_after_successful_setup_fails_closed(
+        self, client, monkeypatch
+    ):
+        """A secret that could not be removed from the container must never
+        be paired with a password handed back to the caller."""
+
+        async def fake_exec(name, cmd, timeout=300):
+            if cmd[0] == "rm":
+                return (1, "rm: cannot remove: Permission denied")
+            return (0, "READY")
+
+        async def fake_push(name, local_path, remote_path):
+            return (0, "")
+
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+        monkeypatch.setattr("tinyagentos.containers.push_file", fake_push)
+
+        await client.post("/api/agents/test-agent/desktop/install")
+        resp = await client.post("/api/agents/test-agent/desktop/start")
+
+        assert resp.status_code == 500
+        assert "vnc_password" not in resp.json(), (
+            "the password must never be returned when the secret could not "
+            "be removed from the container"
+        )
+        tracked = client._transport.app.state.agent_desktops["test-agent"]
+        assert tracked["state"] == "error"
+
+    async def test_start_exception_records_error_state_not_starting(
+        self, client, monkeypatch
+    ):
+        """An exception raised while pushing the secret must not leave the
+        desktop stuck in 'starting' forever -- every later start would 409
+        and install could not reset it because 'installed' stays True."""
+
+        async def fake_exec(name, cmd, timeout=300):
+            return (0, "READY")
+
+        async def fake_push_raises(name, local_path, remote_path):
+            raise RuntimeError("push_file exploded")
+
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+        monkeypatch.setattr("tinyagentos.containers.push_file", fake_push_raises)
+
+        await client.post("/api/agents/test-agent/desktop/install")
+
+        with pytest.raises(RuntimeError, match="push_file exploded"):
+            await client.post("/api/agents/test-agent/desktop/start")
+
+        tracked = client._transport.app.state.agent_desktops["test-agent"]
+        assert tracked["state"] == "error"
+        assert "push_file exploded" in tracked["last_error"]
+
+        async def fake_push_ok(name, local_path, remote_path):
+            return (0, "")
+
+        monkeypatch.setattr("tinyagentos.containers.push_file", fake_push_ok)
+        second = await client.post("/api/agents/test-agent/desktop/start")
+        assert second.status_code == 200, (
+            "a second start must not 409 with the stale 'starting' state"
         )
 
 
@@ -704,6 +768,10 @@ class TestAgentDesktopStatusProbeFailure:
             "'stopped' lets the next start launch a second Xvfb on :1"
         )
         assert resp.status_code == 500
+        assert resp.json()["running"] is None, (
+            "'state' still says running while 'running' would say false -- "
+            "the same payload can't answer both ways; null means unknown"
+        )
 
     async def test_probe_failure_does_not_reopen_the_start_path(self, client, monkeypatch):
         starts = []

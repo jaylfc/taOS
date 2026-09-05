@@ -199,45 +199,69 @@ async def start_desktop(request: Request, agent_name: str, user: CurrentUser = D
         # unlinked on both sides in the ``finally`` -- including when the push
         # or the setup command fails.
         remote_secret = f"/tmp/.taos-vnc-{secrets.token_hex(8)}"
-        fd, host_secret = tempfile.mkstemp(prefix="taos-vnc-")
         try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w") as handle:
-                handle.write(password)
-            push_rc, push_out = await push_file(container, host_secret, remote_secret)
-            if push_rc != 0:
-                setup_rc, setup_out = push_rc, push_out
-            else:
-                setup_rc, setup_out = await exec_in_container(
-                    container,
-                    [
-                        "bash", "-c",
-                        # ``incus file push`` has no mode of its own here, so the
-                        # pushed copy is narrowed before it is read. Its name is
-                        # unpredictable and it is unlinked straight after, so the
-                        # window between the push and this chmod is not one an
-                        # in-container process can aim at.
-                        "umask 077 && chmod 600 \"$1\" && mkdir -p ~/.vnc "
-                        "&& vncpasswd -f < \"$1\" > ~/.vnc/passwd "
-                        "&& chmod 600 ~/.vnc/passwd",
-                        "taos-desktop",
-                        remote_secret,
-                    ],
-                    timeout=30,
-                )
-        finally:
-            with contextlib.suppress(OSError):
-                os.unlink(host_secret)
-            rm_rc, rm_out = await exec_in_container(
-                container, ["rm", "-f", remote_secret], timeout=30,
-            )
-            if rm_rc != 0:
-                # Never log the secret itself; the path is enough to clean up by
-                # hand, and leaving the file behind is a finding of its own.
-                logger.error(
-                    "could not remove the VNC secret %s from %s: %s",
-                    remote_secret, container, rm_out,
-                )
+            fd, host_secret = tempfile.mkstemp(prefix="taos-vnc-")
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w") as handle:
+                    handle.write(password)
+                push_rc, push_out = await push_file(container, host_secret, remote_secret)
+                if push_rc != 0:
+                    setup_rc, setup_out = push_rc, push_out
+                else:
+                    setup_rc, setup_out = await exec_in_container(
+                        container,
+                        [
+                            "bash", "-c",
+                            # ``incus file push`` has no mode of its own here, so the
+                            # pushed copy is narrowed before it is read. Its name is
+                            # unpredictable and it is unlinked straight after, so the
+                            # window between the push and this chmod is not one an
+                            # in-container process can aim at.
+                            "umask 077 && chmod 600 \"$1\" && mkdir -p ~/.vnc "
+                            "&& vncpasswd -f < \"$1\" > ~/.vnc/passwd "
+                            "&& chmod 600 ~/.vnc/passwd",
+                            "taos-desktop",
+                            remote_secret,
+                        ],
+                        timeout=30,
+                    )
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(host_secret)
+                try:
+                    rm_rc, rm_out = await exec_in_container(
+                        container, ["rm", "-f", remote_secret], timeout=30,
+                    )
+                except Exception:
+                    # A cleanup failure must never mask the setup outcome (or,
+                    # via the outer handler below, a setup exception); log it
+                    # and treat it the same as a cleanup that ran and failed.
+                    logger.exception("could not remove the VNC secret from %s", container)
+                    rm_rc, rm_out = 1, "cleanup exec raised"
+                if rm_rc != 0:
+                    # Never log the secret itself; the path is enough to clean up
+                    # by hand, and leaving the file behind is a finding of its
+                    # own. A secret that could not be removed must fail the start
+                    # closed: the password is never handed out while a copy may
+                    # still be sitting in the container.
+                    logger.error(
+                        "could not remove the VNC secret %s from %s: %s",
+                        remote_secret, container, rm_out,
+                    )
+                    if setup_rc == 0:
+                        setup_rc, setup_out = rm_rc, (
+                            f"could not delete the VNC secret at {remote_secret} "
+                            f"inside {container}; refusing to return the password"
+                        )
+        except Exception as exc:
+            # mkstemp/fchmod/write/push_file, or the readiness exec above, can
+            # all raise. Left unhandled, the tracked state stays 'starting'
+            # forever: every later start 409s and install can't reset it
+            # because 'installed' is already True. Record the failure instead.
+            state["state"] = "error"
+            state["last_error"] = str(exc)
+            raise
 
         if setup_rc != 0:
             state["state"] = "error"
@@ -364,13 +388,15 @@ async def desktop_status(request: Request, agent_name: str, user: CurrentUser = 
         # start would bind a second Xvfb on :1 and a second x11vnc on 5900.
         # Leave the tracked state alone and report the failure, exactly as
         # stop_desktop separates a failed command from a stopped desktop.
+        # ``running`` is null rather than false here: false would contradict a
+        # ``state`` of "running" for any client that switches on either field.
         if code != 0:
             state["last_error"] = output
             return JSONResponse(
                 {
                     "agent_name": agent_name,
                     "state": current,
-                    "running": False,
+                    "running": None,
                     "error": f"desktop status probe failed: {output}",
                 },
                 status_code=500,
