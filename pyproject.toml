@@ -56,6 +56,11 @@ dependencies = [
     # startup via app.py. Previously only pulled in transitively through
     # pywebpush; declare it directly so the import is guaranteed.
     "cryptography>=50.0.0",
+    # PEP 440 version parsing/ordering for the worker update check
+    # (tinyagentos/worker/update_check.py) and the optional-app catalog
+    # (tinyagentos/routes/apps.py). Previously only reachable through the
+    # proxy extra and the dev group, so a bare `uv sync` did not install it.
+    "packaging>=24",
 ]
 
 [project.optional-dependencies]
