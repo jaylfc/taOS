@@ -75,6 +75,14 @@ class _DeclaredSizeBudget:
             raise ArchiveError(
                 f"{self.kind} has too many files ({self.count} > {self.max_members})"
             )
+        # A negative size is never legitimate, and ``size > cap`` is False for
+        # every negative value: unchecked, it would clear the per-member cap
+        # and pull the running total *down*, buying headroom under the
+        # cumulative cap for every member after it. CPython only rejects a
+        # negative size on members whose payload it has to skip; a directory
+        # or symlink header delivers one intact.
+        if size < 0:
+            raise ArchiveError(f"{self.kind} member size invalid: {name}")
         if size > self.max_member_bytes:
             raise ArchiveError(f"{self.kind} member too large: {name}")
         self.total_uncompressed += size

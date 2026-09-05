@@ -78,3 +78,71 @@ def test_a_within_limits_tarball_still_passes():
     with tarfile.open(fileobj=io.BytesIO(full), mode="r:gz") as tar:
         check_tar_limits(tar, kind="backup")
         assert [m.name for m in tar.getmembers()] == ["a.txt", "b.txt"]
+
+
+class _FakeTar:
+    """The one method check_tar_limits uses, fed from a canned member list."""
+
+    def __init__(self, members: list[tarfile.TarInfo]) -> None:
+        self._members = iter(members)
+
+    def next(self) -> tarfile.TarInfo | None:
+        return next(self._members, None)
+
+
+def _member(name: str, size: int, type_: bytes = tarfile.REGTYPE) -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.type = type_
+    info.size = size
+    return info
+
+
+def test_a_negative_member_size_is_rejected():
+    """``size > cap`` is False for every negative number, so without an explicit
+    sign check a ``-1`` member sails past the per-member cap and pulls the
+    running total *down*, disarming the cumulative cap for everything after it.
+    """
+    with pytest.raises(ArchiveError, match="member size invalid"):
+        check_tar_limits(_FakeTar([_member("neg.bin", -1)]), kind="backup")
+
+
+def test_a_negative_size_cannot_buy_headroom_under_the_cumulative_cap():
+    """A negative member must not offset later members against the total."""
+    tar = _FakeTar([_member("neg.bin", -1000), _member("a", 600), _member("b", 600)])
+    with pytest.raises(ArchiveError, match="member size invalid"):
+        check_tar_limits(tar, kind="backup", max_uncompressed_bytes=1000)
+
+
+def _poison_size(raw: bytearray, header_offset: int, size: int) -> bytearray:
+    """Rewrite one header's 12-byte size field (offset 124) and fix its checksum.
+
+    ``itn`` emits the GNU base-256 encoding for a negative value: a leading
+    ``0xFF`` byte, which ``nti`` decodes back to a negative int.
+    """
+    raw[header_offset + 124 : header_offset + 136] = tarfile.itn(
+        size, 12, tarfile.GNU_FORMAT
+    )
+    chksum = tarfile.calc_chksums(bytes(raw[header_offset : header_offset + 512]))[0]
+    raw[header_offset + 148 : header_offset + 156] = f"{chksum:06o}\0 ".encode()
+    return raw
+
+
+def test_a_real_tar_with_a_negative_directory_size_is_rejected():
+    """CPython only guards a negative size on members whose payload it has to
+    skip (``TarInfo._block`` in ``_proc_builtin``). A directory or symlink
+    header has no payload, so its size field is never looked at: a base-256
+    ``-1000`` there reaches ``check_tar_limits`` intact, and the two 600-byte
+    files after it would net out at 200 bytes against a 1000-byte cap.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        tar.addfile(_member("d", 0, tarfile.DIRTYPE))
+        for name in ("a.bin", "b.bin"):
+            tar.addfile(_member(name, 600), io.BytesIO(b"\0" * 600))
+    raw = _poison_size(bytearray(buf.getvalue()), 0, -1000)
+
+    with (
+        tarfile.open(fileobj=io.BytesIO(bytes(raw)), mode="r:") as tar,
+        pytest.raises(ArchiveError, match="member size invalid"),
+    ):
+        check_tar_limits(tar, kind="backup", max_uncompressed_bytes=1000)

@@ -107,3 +107,81 @@ async def test_an_upload_within_the_cap_still_installs(client):
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["theme_id"] == "matrix-terminal"
+
+
+@pytest.fixture
+def pulled(monkeypatch):
+    """Count every body byte the application pulls from the transport.
+
+    The middleware is the outermost layer, so wrapping the ``receive`` it is
+    handed measures exactly what the rest of the app asked for: a hop that
+    answers without touching the body pulls nothing.
+    """
+    from tinyagentos.middleware import upload_body_limit as ubl
+
+    counter = {"total": 0}
+    real_call = ubl.UploadBodyLimitMiddleware.__call__
+
+    async def counting_call(self, scope, receive, send):
+        async def counting_receive():
+            message = await receive()
+            if message["type"] == "http.request":
+                counter["total"] += len(message.get("body", b""))
+            return message
+
+        wrapped = counting_receive if scope["type"] == "http" else receive
+        await real_call(self, scope, wrapped, send)
+
+    monkeypatch.setattr(ubl.UploadBodyLimitMiddleware, "__call__", counting_call)
+    return counter
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/api/restore/", "/api//restore"],
+    ids=["trailing-slash", "doubled-slash"],
+)
+@pytest.mark.asyncio
+async def test_the_cap_keys_on_the_normalised_path(
+    client, monkeypatch, spooled, pulled, path
+):
+    """The cap is registered for ``/api/restore``; a variant the router would
+    normalise (or reject) must not slip an oversized body past the middleware
+    on the first hop. The status is asserted on this very request, not on any
+    redirect it might suggest: a client that does not follow a 307 (curl with
+    ``-X POST``) only ever sees the first hop.
+    """
+    import tinyagentos.routes.settings as settings_routes
+
+    monkeypatch.setattr(settings_routes, "_MAX_BACKUP_BYTES", _CAP)
+    resp = await client.post(
+        path, files={"file": ("backup.tar.gz", b"\0" * (4 * _MIB), "application/gzip")}
+    )
+    assert resp.status_code == 413, (
+        resp.status_code,
+        resp.headers.get("location"),
+        resp.text[:200],
+    )
+    assert spooled["total"] <= _CAP, (
+        f"{spooled['total']} bytes reached the upload spool"
+    )
+    assert pulled["total"] <= _CAP, (
+        f"{pulled['total']} body bytes were pulled from the transport"
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("/api/restore", "/api/restore"),
+        ("/api/restore/", "/api/restore"),
+        ("/api//restore", "/api/restore"),
+        ("//api///restore//", "/api/restore"),
+        ("/", "/"),
+        ("//", "/"),
+    ],
+)
+def test_normalise_path_folds_every_spelling_onto_one_key(raw, expected):
+    from tinyagentos.middleware.upload_body_limit import normalise_path
+
+    assert normalise_path(raw) == expected

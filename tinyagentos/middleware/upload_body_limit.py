@@ -22,19 +22,41 @@ defence in depth, and both move together.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-# path -> callable returning the cap in bytes, read fresh on every request.
+# normalised path -> callable returning the cap in bytes, read fresh on every
+# request.
 UPLOAD_BODY_CAPS: dict[str, Callable[[], int]] = {}
+
+_REPEATED_SLASHES = re.compile(r"/{2,}")
+
+
+def normalise_path(path: str) -> str:
+    """Reduce a request path to the one spelling the cap table is keyed on.
+
+    ``scope["path"]`` is the raw request path, and the cap must key on the
+    same shape for every spelling the router would later fold onto the
+    registered route -- or refuse. ``/api/restore/`` is what Starlette's
+    ``redirect_slashes`` turns into a 307 to ``/api/restore``; ``/api//restore``
+    it 404s. Either way the cap has to apply on *this* hop, because a client
+    that does not follow the redirect (``curl -X POST``) only ever sees this
+    one. Repeated slashes collapse and a trailing slash is dropped, except on
+    the root, which has nothing left to drop.
+    """
+    path = _REPEATED_SLASHES.sub("/", path)
+    if len(path) > 1:
+        path = path.rstrip("/") or "/"
+    return path
 
 
 def register_upload_cap(path: str, get_cap: Callable[[], int]) -> None:
     """Declare the request-body cap for one upload endpoint."""
-    UPLOAD_BODY_CAPS[path] = get_cap
+    UPLOAD_BODY_CAPS[normalise_path(path)] = get_cap
 
 
 class UploadBodyLimitMiddleware:
@@ -50,7 +72,7 @@ class UploadBodyLimitMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        get_cap = self.caps.get(scope.get("path", ""))
+        get_cap = self.caps.get(normalise_path(scope.get("path", "")))
         if get_cap is None:
             await self.app(scope, receive, send)
             return
