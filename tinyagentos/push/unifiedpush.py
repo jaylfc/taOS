@@ -30,13 +30,16 @@ class NullUnifiedPushSender:
 
 
 def build_unifiedpush_payload(
-    *, title: str, body: str, data: dict | None = None, actions: list[dict] | None = None
+    *, title: str, body: str, data: dict | None = None, actions: list[dict] | None = None,
+    image: str | None = None,
 ) -> dict:
     payload: dict = {"title": title, "body": body}
     if data:
         payload["data"] = data
     if actions:
         payload["actions"] = actions
+    if image:
+        payload["image"] = image
     return payload
 
 
