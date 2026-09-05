@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
+from slugify import slugify
 
 from tinyagentos.providers import ALL_TYPES as VALID_BACKEND_TYPES
 
@@ -247,6 +248,10 @@ def load_config(path: Path) -> AppConfig:
 
 AGENT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
+# Container names are ``taos-agent-<slug>``; 63 chars is the slug budget that
+# keeps the whole name inside the hostname limit.
+MAX_AGENT_SLUG_LEN = 63
+
 def validate_agent_name(name: str) -> str | None:
     """Validate agent display name. Accepts any non-empty string up to 64
     characters. The display name is what the user sees; for container and
@@ -267,18 +272,34 @@ def validate_agent_name(name: str) -> str | None:
 def slugify_agent_name(name: str) -> str:
     """Derive a container-safe slug from a free-form agent display name.
 
-    Lowercases, replaces any run of non-alphanumeric characters with a
-    single hyphen, trims leading/trailing hyphens, and truncates to 63
-    chars. Returns an empty string if nothing survives — callers should
-    handle that case.
+    This is the single slug implementation on the Python side; everything
+    that needs an agent slug (including
+    ``agent_registry_store._slugify``) routes through it.
+
+    Transliterates to ASCII first, then lowercases, replaces any run of
+    non-alphanumeric characters with a single hyphen, trims hyphens, and
+    truncates to :data:`MAX_AGENT_SLUG_LEN`. Returns an empty string if
+    nothing survives — callers should handle that case.
+
+    Transliteration is what lets a name written in a non-Latin script be
+    used at all: the previous ASCII-only character class deleted every
+    such code point *before* the emptiness check, so "我的代理" slugged to
+    "" and ``validate_agent_name`` rejected it as containing no letter or
+    number. It also stops accents being dropped rather than folded
+    ("résumé" was "r-sum", now "resume").
+
+    Only ever call this at creation time. Re-deriving the slug of an
+    existing row would change that agent's identity, since rows created
+    before this transliterates were slugged by the ASCII-only rule.
 
     Examples:
         "Mary's Coding Buddy" -> "mary-s-coding-buddy"
         "🚀 Alpha v2" -> "alpha-v2"
         "Agent_42!" -> "agent-42"
+        "我的代理" -> "wo-de-dai-li"
+        "Агент Иванов" -> "agent-ivanov"
     """
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-    return slug[:63]
+    return slugify(name, max_length=MAX_AGENT_SLUG_LEN)
 
 
 def unique_agent_slug(config: "AppConfig", display_name: str) -> str:
@@ -287,13 +308,18 @@ def unique_agent_slug(config: "AppConfig", display_name: str) -> str:
     Checks for collisions against config.agents by matching the ``name``
     field, mirroring the semantics of agent_db.find_agent.
 
+    The base is re-trimmed for every suffix so ``<base>-<n>`` still fits
+    :data:`MAX_AGENT_SLUG_LEN`; appending to an already-63-char slug would
+    overrun the very container-name limit the truncation exists to respect.
+
     Raises ValueError if no unique slug can be found within 100 attempts.
     """
     slug = slugify_agent_name(display_name)
     unique_slug = slug
     suffix = 2
     while any(a.get("name") == unique_slug for a in config.agents):
-        unique_slug = f"{slug}-{suffix}"
+        tail = f"-{suffix}"
+        unique_slug = slug[: MAX_AGENT_SLUG_LEN - len(tail)].rstrip("-") + tail
         suffix += 1
         if suffix > 100:
             raise ValueError("Could not generate a unique agent slug")

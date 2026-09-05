@@ -475,6 +475,24 @@ identity that reads as a person or as an internal taOS agent. The public
 register route returns 422. The admin-only internal mint/seed path is exempt -
 internal driver agents (`taos-dev`, ...) legitimately live under `taos-`.
 
+Slug derivation: `tinyagentos.config.slugify_agent_name` is the one Python
+implementation (`agent_registry_store._slugify` delegates to it). It
+transliterates to ASCII before slugifying, so a name in a non-Latin script gets
+a real slug of its own (`我的代理` -> `wo-de-dai-li`, `Агент Иванов` ->
+`agent-ivanov`) instead of reducing to nothing, and accents fold to their base
+letter rather than being dropped. The reserved-prefix guard runs on the
+transliterated slug, so a Cyrillic homoglyph of a reserved word (`усер` ->
+`user`) is caught, not waved through. When nothing survives at all - a name of
+pure emoji or punctuation - the slug is empty and
+`agent_registry_store.agent_slug_or_fallback` supplies a per-name
+`agent-<digest>` instead. There is deliberately **no constant fallback**: one
+would give every unslugifiable name the same slug and collide their identities
+in the table whose whole job is to keep them apart.
+
+Transliteration applies at CREATION time only. Never re-derive the slug of an
+existing row for a lookup: rows minted before this change were slugged by the
+old ASCII-only rule, and re-deriving would change their identity.
+
 The approve surface is the desktop `ConsentActions` component, driven by the
 `auth_requests` notification raised when a request is created. That notification's
 `data` payload carries `request_id`, `requested_scopes`, `identity_claim`,

@@ -362,6 +362,12 @@ export function ImportWizard({
                     <>
                       <div className="text-xs opacity-60 mt-1">
                         Slug: <code>{slug || "—"}</code>{" "}
+                        {!slug && (
+                          <span>
+                            (this name has no Latin letters, so taOS derives the
+                            slug for you){" "}
+                          </span>
+                        )}
                         <button
                           type="button"
                           onClick={() => {
