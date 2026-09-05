@@ -753,3 +753,113 @@ class TestOwnerScopedAgentReads:
             await _close_registry(app)
         assert resp.status_code == 200, resp.text
         assert [s["name"] for s in resp.json()] == ["MEMBER_SEC"]
+
+
+# ---------------------------------------------------------------------------
+# Cluster admin actions (scope extension): the six handlers in
+# tinyagentos/routes/cluster.py that mutate the fleet or execute on a worker
+# but carried no admin gate, unlike their revoke/block/unblock siblings.
+# Worker-facing paths (heartbeat, pairing, leases, capabilities) are HMAC /
+# possession gated and are deliberately NOT covered here.
+# ---------------------------------------------------------------------------
+
+
+def _stub_cluster(app, monkeypatch, *, online: bool = True):
+    """Replace the cluster manager + task router with call-recording stubs.
+
+    Every stubbed method is asserted NOT called when the gate rejects, which is
+    the proof that the handler body never ran (a 403 alone could also be the
+    remote-command allowlist check, hence the FORBIDDEN body assertion too)."""
+    worker = MagicMock()
+    worker.name = "w1"
+    worker.status = "online" if online else "offline"
+    worker.url = "http://worker.invalid:9000"
+    worker.models = ["llama3"]
+    worker.capabilities = ["chat"]
+    worker.hardware = {}
+    cluster = MagicMock()
+    cluster.get_worker = MagicMock(return_value=worker)
+    cluster.get_workers = MagicMock(return_value=[worker])
+    cluster.unregister_worker = AsyncMock(return_value=True)
+    task_router = MagicMock()
+    task_router.route_request = AsyncMock(return_value=({"ok": True}, "w1"))
+    monkeypatch.setattr(app.state, "cluster_manager", cluster, raising=False)
+    monkeypatch.setattr(app.state, "task_router", task_router, raising=False)
+    return cluster, task_router
+
+
+_CLUSTER_MEMBER_CASES = [
+    ("delete", "/api/cluster/workers/w1", None),
+    ("post", "/api/cluster/workers/w1/deploy", {"command": "install-llama-cpp"}),
+    ("post", "/api/cluster/workers/w1/remote", {"command": "systemctl status taos-worker"}),
+    ("post", "/api/cluster/move", {"item": "llama3", "from_worker": "w1", "to_worker": "w1"}),
+    ("post", "/api/cluster/route", {"capability": "chat", "method": "GET", "path": "/health"}),
+    ("post", "/api/cluster/promote-archived", None),
+]
+
+
+@pytest.mark.asyncio
+class TestClusterMemberRejected:
+    @pytest.mark.parametrize("method,path,body", _CLUSTER_MEMBER_CASES)
+    async def test_member_rejected_and_handler_not_run(
+        self, client, app, monkeypatch, method, path, body
+    ):
+        cluster, task_router = _stub_cluster(app, monkeypatch)
+        member = await _member_client(app)
+        try:
+            kwargs = {"json": body} if body is not None else {}
+            resp = await getattr(member, method)(path, **kwargs)
+        finally:
+            await member.aclose()
+        assert resp.status_code == 403, resp.text
+        assert resp.json() == FORBIDDEN
+        cluster.get_worker.assert_not_called()
+        cluster.get_workers.assert_not_called()
+        cluster.unregister_worker.assert_not_called()
+        task_router.route_request.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestClusterAdminAllowed:
+    """Single-user admin (and the local token) reach every handler body.  The
+    worker stub is offline for deploy/remote so the handler answers its own
+    400 'not online' -- proof it ran -- without any outbound HTTP."""
+
+    async def test_admin_reaches_handlers(self, client, app, monkeypatch):
+        assert app.state.auth.is_multi_user() is False
+        cluster, task_router = _stub_cluster(app, monkeypatch, online=False)
+        resp = await client.delete("/api/cluster/workers/w1")
+        assert resp.status_code == 200, resp.text
+        cluster.unregister_worker.assert_awaited_once_with("w1")
+        resp = await client.post(
+            "/api/cluster/route", json={"capability": "chat", "method": "GET", "path": "/health"}
+        )
+        assert resp.status_code == 200, resp.text
+        task_router.route_request.assert_awaited_once()
+        resp = await client.post(
+            "/api/cluster/workers/w1/deploy", json={"command": "install-llama-cpp"}
+        )
+        assert resp.status_code == 400 and "not online" in resp.text, resp.text
+        resp = await client.post(
+            "/api/cluster/workers/w1/remote", json={"command": "systemctl status taos-worker"}
+        )
+        assert resp.status_code == 400 and "not online" in resp.text, resp.text
+        resp = await client.post(
+            "/api/cluster/move", json={"item": "llama3", "to_worker": "w1"}
+        )
+        assert resp.status_code == 400 and "not online" in resp.text, resp.text
+        resp = await client.post("/api/cluster/promote-archived")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["workers_scanned"] == 0
+
+    async def test_local_token_reaches_handlers(self, client, app, monkeypatch):
+        cluster, task_router = _stub_cluster(app, monkeypatch)
+        bare = _local_token_client(app)
+        try:
+            resp = await bare.delete("/api/cluster/workers/w1")
+            assert resp.status_code == 200, resp.text
+            resp = await bare.post("/api/cluster/promote-archived")
+            assert resp.status_code == 200, resp.text
+        finally:
+            await bare.aclose()
+        cluster.unregister_worker.assert_awaited_once_with("w1")
