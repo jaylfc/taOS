@@ -1,3 +1,6 @@
+import os
+import stat
+
 import pytest
 
 
@@ -469,6 +472,12 @@ class TestAgentDesktopStartReadiness:
     async def test_password_is_never_interpolated_into_the_shell_script(
         self, client, monkeypatch
     ):
+        """The password reaches vncpasswd as a file, never as script text.
+
+        An argv element was the earlier fix for shell injection, but argv is
+        itself world-readable via /proc/<pid>/cmdline, so neither the script
+        text nor any argument may carry the secret.
+        """
         captured = []
 
         async def fake_exec(name, cmd, timeout=300):
@@ -484,9 +493,11 @@ class TestAgentDesktopStartReadiness:
         assert vncpasswd, "start must set a VNC password"
         script = vncpasswd[0][2]
         assert password not in script, (
-            "the password must be passed as an argv element, not interpolated into bash -c"
+            "the password must not be interpolated into the bash -c script"
         )
-        assert password in vncpasswd[0][3:]
+        assert all(password not in part for part in vncpasswd[0]), (
+            "the password must not be an argv element either"
+        )
 
 
 @pytest.mark.asyncio
@@ -552,3 +563,186 @@ class TestAgentDesktopInstallClearsStaleError:
         assert again.json()["state"] == "installed", (
             "install must not answer 200 with another call's error state"
         )
+
+
+# ---------------------------------------------------------------------------
+# Fold of the third #2700 review pass: the VNC password must never reach any
+# argv, and a status probe that could not run must not be recorded as a stop.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _stub_push_file(monkeypatch):
+    """Keep ``push_file`` off the real ``incus`` binary in every test here."""
+    async def fake_push(name, local_path, remote_path):
+        return (0, "")
+
+    monkeypatch.setattr("tinyagentos.containers.push_file", fake_push)
+
+
+@pytest.mark.asyncio
+class TestAgentDesktopPasswordNeverOnArgv:
+    """CWE-214: a secret on argv is world-readable via /proc/<pid>/cmdline."""
+
+    async def test_password_is_absent_from_every_argv(self, client, monkeypatch):
+        argvs: list[list[str]] = []
+        pushed: list[tuple[str, str, int]] = []
+
+        async def fake_exec(name, cmd, timeout=300):
+            argvs.append(list(cmd))
+            return (0, "READY")
+
+        async def fake_push(name, local_path, remote_path):
+            with open(local_path) as handle:
+                body = handle.read()
+            mode = stat.S_IMODE(os.stat(local_path).st_mode)
+            pushed.append((body, remote_path, mode))
+            return (0, "")
+
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+        monkeypatch.setattr("tinyagentos.containers.push_file", fake_push)
+
+        await client.post("/api/agents/test-agent/desktop/install")
+        resp = await client.post("/api/agents/test-agent/desktop/start")
+        assert resp.status_code == 200
+        password = resp.json()["vnc_password"]
+        assert password
+
+        leaked = [argv for argv in argvs if any(password in str(part) for part in argv)]
+        assert leaked == [], (
+            "the VNC password reached a command line and is readable from "
+            f"/proc/<pid>/cmdline: {leaked}"
+        )
+
+    async def test_password_travels_as_a_mode_600_file_that_is_cleaned_up(
+        self, client, monkeypatch
+    ):
+        argvs: list[list[str]] = []
+        pushed: list[tuple[str, str, int]] = []
+
+        async def fake_exec(name, cmd, timeout=300):
+            argvs.append(list(cmd))
+            return (0, "READY")
+
+        async def fake_push(name, local_path, remote_path):
+            with open(local_path) as handle:
+                body = handle.read()
+            mode = stat.S_IMODE(os.stat(local_path).st_mode)
+            pushed.append((body, remote_path, local_path, mode))
+            return (0, "")
+
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+        monkeypatch.setattr("tinyagentos.containers.push_file", fake_push)
+
+        await client.post("/api/agents/test-agent/desktop/install")
+        resp = await client.post("/api/agents/test-agent/desktop/start")
+        password = resp.json()["vnc_password"]
+
+        assert pushed, "the password must be pushed as a file, not passed on argv"
+        body, remote_path, local_path, mode = pushed[0]
+        assert body == password
+        assert mode == 0o600, f"host secret must be mode 600, got {oct(mode)}"
+        assert not os.path.exists(local_path), "the host copy must be deleted"
+
+        removals = [
+            argv for argv in argvs
+            if "rm" in argv[0] or any(remote_path in str(p) for p in argv[1:])
+        ]
+        assert any(remote_path in " ".join(argv) for argv in removals), (
+            "the in-container copy must be deleted after use"
+        )
+
+    async def test_password_file_is_cleaned_up_when_setup_fails(self, client, monkeypatch):
+        argvs: list[list[str]] = []
+        locals_seen: list[str] = []
+
+        async def fake_exec(name, cmd, timeout=300):
+            argvs.append(list(cmd))
+            if "vncpasswd" in " ".join(cmd):
+                return (1, "vncpasswd: boom")
+            return (0, "READY")
+
+        async def fake_push(name, local_path, remote_path):
+            locals_seen.append(local_path)
+            return (0, "")
+
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+        monkeypatch.setattr("tinyagentos.containers.push_file", fake_push)
+
+        await client.post("/api/agents/test-agent/desktop/install")
+        resp = await client.post("/api/agents/test-agent/desktop/start")
+        assert resp.status_code == 500
+
+        assert locals_seen, "the password must be pushed as a file"
+        assert not os.path.exists(locals_seen[0]), (
+            "a failed setup must still delete the host secret"
+        )
+        assert any("rm" in argv and locals_seen for argv in argvs), (
+            "a failed setup must still delete the in-container secret"
+        )
+
+
+@pytest.mark.asyncio
+class TestAgentDesktopStatusProbeFailure:
+    """A probe that could not run is not evidence that the desktop stopped."""
+
+    async def test_probe_failure_does_not_record_stopped(self, client, monkeypatch):
+        async def fake_exec(name, cmd, timeout=300):
+            if "pgrep" in " ".join(cmd):
+                return (1, "Error: Instance is not running")
+            return (0, "READY")
+
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+
+        await client.post("/api/agents/test-agent/desktop/install")
+        await client.post("/api/agents/test-agent/desktop/start")
+
+        resp = await client.get("/api/agents/test-agent/desktop/status")
+        tracked = client._transport.app.state.agent_desktops["test-agent"]["state"]
+        assert tracked == "running", (
+            "a failed probe must leave the tracked state alone; recording "
+            "'stopped' lets the next start launch a second Xvfb on :1"
+        )
+        assert resp.status_code == 500
+
+    async def test_probe_failure_does_not_reopen_the_start_path(self, client, monkeypatch):
+        starts = []
+
+        async def fake_exec(name, cmd, timeout=300):
+            cmd_str = " ".join(cmd)
+            if "x11vnc -display" in cmd_str:
+                starts.append(cmd_str)
+            if "pgrep" in cmd_str:
+                return (1, "Error: Instance is not running")
+            return (0, "READY")
+
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+
+        await client.post("/api/agents/test-agent/desktop/install")
+        await client.post("/api/agents/test-agent/desktop/start")
+        assert len(starts) == 1
+
+        await client.get("/api/agents/test-agent/desktop/status")
+        second = await client.post("/api/agents/test-agent/desktop/start")
+
+        assert second.status_code == 200
+        assert len(starts) == 1, (
+            "a failed probe must not let start bind a second Xvfb on :1 and a "
+            "second x11vnc on 5900"
+        )
+
+    async def test_a_genuine_stop_is_still_recorded(self, client, monkeypatch):
+        async def fake_exec(name, cmd, timeout=300):
+            if "pgrep" in " ".join(cmd):
+                return (0, "STOPPED")
+            return (0, "READY")
+
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+
+        await client.post("/api/agents/test-agent/desktop/install")
+        await client.post("/api/agents/test-agent/desktop/start")
+
+        resp = await client.get("/api/agents/test-agent/desktop/status")
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "stopped"
+        assert resp.json()["running"] is False

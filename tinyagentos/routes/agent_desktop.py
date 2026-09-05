@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
 import re
 import secrets
+import tempfile
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -159,7 +162,7 @@ async def start_desktop(request: Request, agent_name: str, user: CurrentUser = D
     response carries the freshly generated VNC password; it is issued once per
     start and is not readable from any other route.
     """
-    from tinyagentos.containers import exec_in_container
+    from tinyagentos.containers import exec_in_container, push_file
 
     _validate_agent_name(agent_name)
     await _authorize(request, user, agent_name)
@@ -184,21 +187,58 @@ async def start_desktop(request: Request, agent_name: str, user: CurrentUser = D
         container = _container_name(agent_name)
         state["state"] = "starting"
 
-        # A random VNC password per start call (no hardcoded 'testpass'). It is
-        # passed as an argv element, never interpolated into the script text, so
-        # no generator change can turn this into a shell-injection sink.
+        # A random VNC password per start call (no hardcoded 'testpass').
         password = secrets.token_urlsafe(12)
 
-        setup_rc, setup_out = await exec_in_container(
-            container,
-            [
-                "bash", "-c",
-                "mkdir -p ~/.vnc && printf '%s' \"$1\" | vncpasswd -f > ~/.vnc/passwd && chmod 600 ~/.vnc/passwd",
-                "taos-desktop",
-                password,
-            ],
-            timeout=30,
-        )
+        # The password never becomes an argv element. An argv is world-readable
+        # from /proc/<pid>/cmdline for as long as the process lives, and this
+        # command line would be exposed twice over: once on the host, where
+        # ``incus exec`` carries every element, and once inside the container on
+        # the ``bash -c`` line (CWE-214). It travels as a mode-600 file instead:
+        # written on the host, pushed in, read by vncpasswd from stdin, and
+        # unlinked on both sides in the ``finally`` -- including when the push
+        # or the setup command fails.
+        remote_secret = f"/tmp/.taos-vnc-{secrets.token_hex(8)}"
+        fd, host_secret = tempfile.mkstemp(prefix="taos-vnc-")
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                handle.write(password)
+            push_rc, push_out = await push_file(container, host_secret, remote_secret)
+            if push_rc != 0:
+                setup_rc, setup_out = push_rc, push_out
+            else:
+                setup_rc, setup_out = await exec_in_container(
+                    container,
+                    [
+                        "bash", "-c",
+                        # ``incus file push`` has no mode of its own here, so the
+                        # pushed copy is narrowed before it is read. Its name is
+                        # unpredictable and it is unlinked straight after, so the
+                        # window between the push and this chmod is not one an
+                        # in-container process can aim at.
+                        "umask 077 && chmod 600 \"$1\" && mkdir -p ~/.vnc "
+                        "&& vncpasswd -f < \"$1\" > ~/.vnc/passwd "
+                        "&& chmod 600 ~/.vnc/passwd",
+                        "taos-desktop",
+                        remote_secret,
+                    ],
+                    timeout=30,
+                )
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(host_secret)
+            rm_rc, rm_out = await exec_in_container(
+                container, ["rm", "-f", remote_secret], timeout=30,
+            )
+            if rm_rc != 0:
+                # Never log the secret itself; the path is enough to clean up by
+                # hand, and leaving the file behind is a finding of its own.
+                logger.error(
+                    "could not remove the VNC secret %s from %s: %s",
+                    remote_secret, container, rm_out,
+                )
+
         if setup_rc != 0:
             state["state"] = "error"
             state["last_error"] = setup_out
@@ -317,9 +357,26 @@ async def desktop_status(request: Request, agent_name: str, user: CurrentUser = 
              "&& echo RUNNING || echo STOPPED"],
             timeout=10,
         )
-        probe = "running" if code == 0 and "RUNNING" in output else "stopped"
+        # A non-zero rc means the probe never ran -- exec timeout, missing
+        # container, unreachable host -- so it says nothing about the desktop.
+        # Recording 'stopped' on that would be inventing an observation: the
+        # processes keep running, and because start accepts 'stopped', the next
+        # start would bind a second Xvfb on :1 and a second x11vnc on 5900.
+        # Leave the tracked state alone and report the failure, exactly as
+        # stop_desktop separates a failed command from a stopped desktop.
+        if code != 0:
+            state["last_error"] = output
+            return JSONResponse(
+                {
+                    "agent_name": agent_name,
+                    "state": current,
+                    "running": False,
+                    "error": f"desktop status probe failed: {output}",
+                },
+                status_code=500,
+            )
 
-        if probe == "stopped":
+        if "RUNNING" not in output:
             state["state"] = "stopped"
             return JSONResponse({
                 "agent_name": agent_name,

@@ -427,3 +427,7 @@ Run `python3 scripts/build-routes-doc.py` to compile these into `docs/routes.md`
 
 - Install is on demand, per agent, and retryable.
 - Owner or admin only. Start returns a one-shot VNC password.
+- The VNC password never reaches a command line: it travels as a mode-600
+  file that is pushed in, read by `vncpasswd -f`, and deleted on both sides.
+- `status` returns 500 and leaves the tracked state unchanged when the probe
+  itself could not run; it only records `stopped` on a probe that answered.
