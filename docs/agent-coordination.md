@@ -110,6 +110,41 @@ reach it, and write your pid to a pidfile. Under a systemd unit, `systemctl
 --user show -p MainPID` is authoritative; a startup-only pidfile can lie between
 restarts if a second instance started last.
 
+## Resume notes: context snapshot must be bounded
+
+A resume note's `context_snapshot` is carried through `POST /resume` and can grow
+without limit if the agent dumps its transcript or memory into it. An oversized
+snapshot saturates the framework's input window at wake, so the agent restarts
+into the same overflow every time and the recovery note is never consumed.
+
+`_cap_context_snapshot()` in `tinyagentos/restart_orchestrator.py` caps the
+snapshot by dropping the largest fields first until the serialized form fits
+within 32768 bytes. `agent_id` and `session_id` are never candidates while any
+other field remains - a note that cannot say which agent or session it belongs
+to is not worth resuming - and they are dropped only if they alone still breach
+the cap, because an over-limit note re-triggers the overflow the cap exists to
+prevent. Preservation is by name, not by size: ordering the drop by value size
+(or by serialized entry size) keeps a required field only while its value
+happens to be the smaller one.
+
+The dropped field names are recorded in a `_truncated` marker. The marker is
+size-budgeted and room for a bare one is held back before the drop loop stops,
+so a snapshot never goes out flush against the cap with no way to say what it
+lost; the name list is then filled from whatever room is left, down to
+`...and N more` and finally to an empty list. Payload fields are never dropped
+just to widen that list.
+
+**The snapshot is only an object by convention.** A framework that answers
+/prepare-for-shutdown writes `resume_note.json` itself, so `context_snapshot`
+can arrive as a string, a list or a number. There are no fields to drop from
+those, so an oversized non-object value is replaced wholesale by the marker
+(with `dropped_fields: ["context_snapshot"]`), which is bounded by construction
+and puts the note back in the documented object shape. A small non-object value
+is left exactly as it is - only the size is the cap's business.
+
+Do not bypass the guard: any code that writes a resume note by hand must still
+route it through it, lest a 32 KB transcript become a 32 KB failure.
+
 ## Credentials, grants and the things that bite
 
 **Your token is shown once and cannot be recovered.** Not by you, not by the
