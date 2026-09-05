@@ -711,7 +711,11 @@ that SAME canonical_id instead:
   never escalate an existing identity. The middleware allowlist exposes only the
   create path and the two READ paths below to a registry JWT -- approve/deny are
   POST with an extra trailing segment and match no pattern, so an agent can
-  never self-approve; the routes re-check identity == canonical_id.
+  never self-approve; the routes re-check identity == canonical_id. At most
+  `_SCOPE_REQUEST_PENDING_CAP` (10) requests may be pending per canonical_id;
+  further creates are 429. The cap is compared INSIDE the store's INSERT, not
+  counted by the route first, so a burst of concurrent self-requests cannot
+  slip past it and flood the approver's queue.
 - `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/approve`
   `{granted_scopes, project_id?}`: owner/admin only. The admin may narrow but
   never widen the requested scopes; each granted scope is added via
@@ -752,10 +756,9 @@ directions, and that is the point:
 - **Pending** rows are taken oldest-first and ahead of everything else. The
   oldest pending request is the one whose notification is long gone and whose
   id nobody holds any more -- the row these reads exist to recover -- so it is
-  the LAST thing a full page drops. This holds even if the ten-per-agent
-  pending cap is exceeded (that cap is a count-then-insert, so concurrent
-  creates can pass it together; the read path deliberately does not depend on
-  it holding).
+  the LAST thing a full page drops. The read path deliberately does not
+  depend on the ten-per-agent pending cap holding, so a page stays correct
+  however many pending rows an agent has.
 - **Decided** rows fill whatever is left of the page, newest-first, so a caller
   checking on a recent approval still sees it.
 
