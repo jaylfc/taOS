@@ -818,8 +818,10 @@ A project invite lets an external agent join without going through the consent
 UI. The mint dialog (admin, in the project's Members panel) creates the invite;
 the agent redeems it. Two endpoints are auth-EXEMPT (the PIN is the proof of
 possession), added method-sensitively to `tinyagentos/auth_middleware.py` exactly
-like `POST /api/cluster/pairing/claim`, and per-IP rate-limited (20 requests per
-10s, reusing the pairing throttle helper):
+like `POST /api/cluster/pairing/claim`, and per-IP rate-limited (at most 20
+requests in any 10s span, from the shared limiter in
+`tinyagentos/rate_limit.py` that the pairing throttle also uses). A throttled
+request gets a 429 carrying `Retry-After` in whole seconds:
 
 - `POST /api/projects/invites/redeem`: body `{invite_id, pin, harness, label?}`.
   Verifies the PIN (wrong PIN / expired / attempt-capped -> 403; already redeemed

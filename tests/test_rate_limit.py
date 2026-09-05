@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 
+from tinyagentos import auth_middleware
 from tinyagentos.rate_limit import RateLimiter, TokenBucket, make_should_rate_limit
 
 
@@ -66,3 +67,94 @@ class TestShouldRateLimit:
         pred = make_should_rate_limit(["/api/agents/", "/api/cluster/route"])
         assert pred("POST", "/api/cluster/route") is True
         assert pred("POST", "/api/cluster/workers") is False
+
+
+class TestBoundedMemory:
+    """No limiter registry may grow without bound.
+
+    The key is the client IP and some of the endpoints behind these limiters
+    are unauthenticated, so an attacker with an IPv6 /64 has 2^64 distinct
+    keys to spend. On a 4 GB board an unbounded registry is a reachable
+    memory-exhaustion DoS, so every registry evicts once it is full.
+    """
+
+    def test_token_bucket_registry_is_bounded(self):
+        r = RateLimiter(capacity=2, refill_per_second=1.0)
+        for i in range(50_000):
+            r.check(f"2001:db8::{i:x}")
+        assert len(r._buckets) <= 2000, (
+            f"expected len(_buckets) <= 2000, got {len(r._buckets)}"
+        )
+
+    def test_invite_window_registry_is_bounded(self):
+        auth_middleware._rate_limit_hits.clear()
+        try:
+            for i in range(50_000):
+                auth_middleware.rate_limit_ok(f"2001:db8::{i:x}")
+            tracked = len(auth_middleware._rate_limit_hits)
+            assert tracked <= 2000, (
+                f"expected len(_rate_limit_hits) <= 2000, got {tracked}"
+            )
+        finally:
+            auth_middleware._rate_limit_hits.clear()
+
+
+class TestWindowBoundary:
+    """The documented cap must hold over *any* span of one window.
+
+    A fixed window that resets its counter on the first request after the
+    window elapsed lets a caller land the full allowance just before the
+    boundary and the full allowance again just after — twice the documented
+    burst inside a fraction of a window. On an endpoint whose proof of
+    possession is an 8-digit PIN that halves the brute-force cost.
+    """
+
+    @staticmethod
+    def _freeze(monkeypatch, clock):
+        """Pin both clocks: the limiter may read either one."""
+        monkeypatch.setattr(time, "monotonic", lambda: clock["mono"])
+        monkeypatch.setattr(time, "time", lambda: clock["wall"])
+
+    def test_no_double_burst_across_the_window_edge(self, monkeypatch):
+        clock = {"mono": 1000.0, "wall": 1000.0}
+        self._freeze(monkeypatch, clock)
+        auth_middleware._rate_limit_hits.clear()
+        try:
+            # One request opens the window at t=0.
+            assert auth_middleware.rate_limit_ok("ip") is True
+
+            accepted = 0
+            clock["mono"] = clock["wall"] = 1009.9
+            for _ in range(19):
+                accepted += bool(auth_middleware.rate_limit_ok("ip"))
+            clock["mono"] = clock["wall"] = 1010.1
+            for _ in range(20):
+                accepted += bool(auth_middleware.rate_limit_ok("ip"))
+
+            assert accepted <= 20, (
+                "expected <= 20 requests accepted across t=9.9s..t=10.1s, "
+                f"got {accepted}"
+            )
+        finally:
+            auth_middleware._rate_limit_hits.clear()
+
+    def test_backward_wall_clock_step_does_not_freeze_the_window(self, monkeypatch):
+        # An NTP correction steps the wall clock backwards — routine on an
+        # RTC-less board after a cold boot. A limiter that measures elapsed
+        # time with time.time() then sees a negative delta, never reopens its
+        # window, and locks the caller out until the clock catches up.
+        clock = {"mono": 500.0, "wall": 1000.0}
+        self._freeze(monkeypatch, clock)
+        auth_middleware._rate_limit_hits.clear()
+        try:
+            for _ in range(20):
+                assert auth_middleware.rate_limit_ok("ip") is True
+            assert auth_middleware.rate_limit_ok("ip") is False
+
+            clock["wall"] -= 3600.0  # NTP steps back an hour
+            clock["mono"] += 11.0  # 11 real seconds pass; the window is over
+            assert auth_middleware.rate_limit_ok("ip") is True, (
+                "window frozen by a backward wall-clock step"
+            )
+        finally:
+            auth_middleware._rate_limit_hits.clear()

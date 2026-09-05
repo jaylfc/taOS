@@ -68,6 +68,23 @@ async def test_post_is_rate_limited_per_user(client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_rate_limited_post_carries_retry_after(client, monkeypatch):
+    """The 429 must carry Retry-After so a crash-looping page can back off
+    instead of retrying as fast as it can fail."""
+    from tinyagentos.rate_limit import RateLimiter
+
+    monkeypatch.setattr(
+        "tinyagentos.routes.client_logs._post_limiter",
+        RateLimiter(capacity=1, refill_per_second=0.5),
+    )
+    await client.post("/api/client-logs", json={"level": "error", "message": "flood"})
+    blocked = await client.post("/api/client-logs", json={"level": "error", "message": "flood"})
+    assert blocked.status_code == 429
+    # 1 token at 0.5/s is 2 seconds away, rounded up.
+    assert int(blocked.headers["retry-after"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_non_admin_can_post_but_not_read(app, client):
     app.dependency_overrides[current_user] = lambda: CurrentUser(user_id="bob", is_admin=False)
     try:
