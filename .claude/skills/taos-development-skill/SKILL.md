@@ -583,6 +583,14 @@ Routes reach stores ONLY via `request.app.state`, so an unwired store is unreach
 code. The check is name-level (the class name must appear in `app.py`) and polices only
 classes added by the PR - pre-existing orphans are skipped.
 
+A class that some other class under `tinyagentos/` subclasses **and** that declares no
+`SCHEMA` of its own is skipped too, and the gate prints the exemption. Such a base exists
+to be inherited from, never to be assigned to `app.state` - `ProjectsDBStore` in
+`tinyagentos/projects/tx.py` carries the shared `projects.db` transaction helper for the
+eight stores on that file, owns no tables and is never instantiated. A class that declares
+`SCHEMA` owns tables, so it is a store and stays policed however many subclasses it grows:
+subclassing an unwired store does not launder it past the gate.
+
 For a store genuinely constructed elsewhere (tests, CLI, workers), waive it with a PR-body
 trailer, which is logged by the gate:
 ```
