@@ -247,6 +247,63 @@ class TestCapContextSnapshot:
         # The smaller required field still fits, so it is still kept.
         assert capped["session_id"] == "b" * 100
 
+    def test_oversized_non_dict_snapshot_is_bounded(self):
+        """A framework writes resume_note.json itself, so context_snapshot can
+        come back as a string or a list. The cap returned early on anything
+        that was not a dict, so a 60 KB transcript stored as a bare string was
+        posted to /resume verbatim - the exact overflow the cap exists to
+        prevent, reached by the shape the guard did not check."""
+        for oversized in ["x" * 60000, ["y" * 600] * 100]:
+            note = {"context_snapshot": oversized}
+            ro._cap_context_snapshot(note)
+            capped = note["context_snapshot"]
+            encoded = json.dumps(capped, separators=(",", ":"))
+            assert len(encoded) <= ro._MAX_CONTEXT_SNAPSHOT_BYTES
+            # The replacement keeps the documented object shape and says what
+            # happened, so the agent is not left guessing at an empty snapshot.
+            assert isinstance(capped, dict)
+            assert capped["_truncated"]["dropped_fields"] == ["context_snapshot"]
+
+    def test_small_non_dict_snapshot_is_left_alone(self):
+        """Only the size is the cap's business: a small non-dict snapshot is
+        not the guard's to rewrite."""
+        for val in ["str", ["a", "b"], 42]:
+            note = {"context_snapshot": val}
+            ro._cap_context_snapshot(note)
+            assert note["context_snapshot"] == val
+
+    def test_marker_is_restored_after_the_safety_net_drops_it(self):
+        """The safety-net loop gives the marker up to make room, then drops
+        required fields. Dropping them frees the bytes the marker needed, so
+        the record of what was dropped must come back rather than be lost."""
+        snapshot = {
+            "agent_id": "a" * (ro._MAX_CONTEXT_SNAPSHOT_BYTES + 1000),
+            "session_id": "b" * 100,
+        }
+        note = {"context_snapshot": snapshot}
+        ro._cap_context_snapshot(note)
+        capped = note["context_snapshot"]
+        assert len(json.dumps(capped, separators=(",", ":"))) <= ro._MAX_CONTEXT_SNAPSHOT_BYTES
+        assert "agent_id" not in capped
+        assert "agent_id" in capped["_truncated"]["dropped_fields"]
+
+    def test_size_model_matches_json_dumps(self):
+        """The drop loop tests the cap arithmetically instead of re-serializing
+        the snapshot every iteration, so the arithmetic has to agree with
+        json.dumps exactly - an under-count would ship a snapshot over the cap
+        while every cap assertion still passed."""
+        for obj in [
+            {},
+            {"a": 1},
+            {"agent_id": "x" * 40, "n": [1, 2, 3], "d": {"k": "v"}},
+            {"_truncated": {"dropped_fields": ["a", "b"], "reason": "r"}},
+            {"quote\"key": "tab\tvalue", "unicode": "\u00e9\u00e8"},
+        ]:
+            entry_total = sum(ro._entry_bytes(k, v) for k, v in obj.items())
+            assert ro._object_bytes(entry_total, len(obj)) == len(
+                json.dumps(obj, separators=(",", ":"))
+            )
+
     def test_empty_snapshot_is_noop(self):
         for val in [{}, None, "", "str"]:
             note = {"context_snapshot": val}
@@ -298,3 +355,30 @@ class TestResumeRetryLoopCapsSnapshot:
                 posted["context_snapshot"], separators=(",", ":")
             )
             assert len(encoded) <= ro._MAX_CONTEXT_SNAPSHOT_BYTES
+
+
+class TestResumeBoundsNonDictSnapshot:
+    @pytest.mark.asyncio
+    async def test_boot_pass_bounds_non_dict_snapshot(self, tmp_path, monkeypatch):
+        """The on-disk note is written by the agent's own framework, so its
+        context_snapshot is not guaranteed to be an object. Whatever shape it
+        arrives in, what reaches _post_resume must be within the cap."""
+        agent = {"name": "loud", "host": "10.0.0.11", "port": 8080, "paused": True}
+        state = _app_state(tmp_path, [agent])
+        note_dir = tmp_path / "agent-memory" / "loud"
+        note_dir.mkdir(parents=True)
+        (note_dir / "resume_note.json").write_text(
+            json.dumps({"reason": "pause", "context_snapshot": "x" * 60000})
+        )
+
+        posted = {}
+
+        async def fake_post(host, port, note):
+            posted["note"] = dict(note)
+            return True
+
+        monkeypatch.setattr(ro, "_post_resume", fake_post)
+        await ro.resume_agents_from_notes(state)
+
+        encoded = json.dumps(posted["note"]["context_snapshot"], separators=(",", ":"))
+        assert len(encoded) <= ro._MAX_CONTEXT_SNAPSHOT_BYTES
