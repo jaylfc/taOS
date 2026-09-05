@@ -1532,7 +1532,10 @@ except m.PackageNotFoundError:
 
 if litellm_enterprise_present; then
     log "removing litellm-enterprise (LicenseRef-Proprietary) left in .venv by an earlier install"
-    ./.venv/bin/pip uninstall --quiet --yes litellm-enterprise
+    # `|| true` because of `set -e` above: pip's own non-zero exit would end the
+    # installer with pip's message before the re-probe below could give the
+    # by-hand command; the re-probe is the verdict, not pip's exit code.
+    ./.venv/bin/pip uninstall --quiet --yes litellm-enterprise || true
     # Fail closed: a warning that lets the installer succeed anyway ships the
     # proprietary package right along with it. Re-probe with the same check
     # pip uninstall itself consults, rather than trusting its exit code alone.
