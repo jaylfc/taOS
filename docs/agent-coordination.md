@@ -1094,6 +1094,10 @@ Route module `tinyagentos/routes/mcp.py`, backed by `tinyagentos/mcp/proxy.py`.
 Body: `{"server_id", "tool", "agent_name", "agent_groups"?, "arguments"?,
 "resource"?}`.
 
+Admin session or host local token only (`require_admin`): a non-admin member
+gets `403 {"detail": "forbidden"}` before any permission lookup, as do the
+server start/stop/restart/uninstall, config, env and permission-attach routes.
+
 **The JSON-RPC transport is NOT wired yet, and the route says so.** Three
 answers are possible today:
 

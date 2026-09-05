@@ -17,6 +17,7 @@ Run `python3 scripts/build-routes-doc.py` to compile these into `docs/routes.md`
 | `07-decisions-return.md` | What `GET /api/decisions/agent` returns (grant scoping) |
 | `08-config-save-restore.md` | Config save and restore (`/api/config`) |
 | `09-agent-memory.md` | Agent memory mode (deploy + PATCH memory) |
-| `10-cluster-admin.md` | Cluster node revoke, block and unblock (admin-only) |
+| `10-cluster-admin.md` | Cluster node revoke, block, unblock and fleet mutations (admin-only) |
 | `11-select-decision.md` | Answering a select decision with free text (`other_value`) |
 | `12-share-routes.md` | User resource sharing (share routes) |
+| `13-admin-gates.md` | Admin gates on global resources (secrets, system, providers, mcp, keys) |
