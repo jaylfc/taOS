@@ -202,6 +202,21 @@ def test_build_payload_sets_mutable_content_for_data_supplied_actions():
     assert payload["aps"]["mutable-content"] == 1
 
 
+def test_build_payload_explicit_empty_actions_overrides_data_actions():
+    # A caller that explicitly passes actions=[] is overriding stale/prior
+    # action data (e.g. re-sending a notification after a decision resolved).
+    # `actions or payload.get("actions")` treats [] the same as omitted, so the
+    # stale data actions would incorrectly become effective and set
+    # mutable-content; an explicit empty list must take precedence instead.
+    payload = build_apns_payload(
+        title="t",
+        body="b",
+        data={"actions": [{"id": "approve", "label": "Approve"}]},
+        actions=[],
+    )
+    assert "mutable-content" not in payload["aps"]
+
+
 def test_build_payload_data_cannot_replace_aps():
     # aps is Apple's reserved envelope built from the explicit arguments; a
     # stray data["aps"] must not overwrite the alert and flags just computed.

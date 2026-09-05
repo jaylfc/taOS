@@ -62,7 +62,7 @@ def build_apns_payload(
     # than trusting the arguments: mutable-content has to follow what the service
     # extension will actually be handed, not what this call was told about.
     effective_image = payload.get("image")
-    effective_actions = actions or payload.get("actions")
+    effective_actions = actions if actions is not None else payload.get("actions")
 
     aps: dict = {}
     if title or body:
