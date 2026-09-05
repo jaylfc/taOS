@@ -1,5 +1,5 @@
 ### Security
-- Rate limiters can no longer be made to exhaust memory. The per-IP registries
+- Rate limiters can no longer be made to exhaust memory. The per-key registries
   behind the unauthenticated project-invite redeem, the cluster manual-claim,
   the routine webhook, the client-log capture and the peer routes grew without
   bound, so a caller with a large address range (an IPv6 /64 is 2^64 keys)
