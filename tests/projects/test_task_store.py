@@ -464,6 +464,80 @@ async def test_checklist_item_event_delivered_at_project_scope(store_with_broker
     assert checklist_events[0].payload["task_id"] == t["id"]
 
 
+async def _delete_task_row(store, task_id: str) -> None:
+    """Drop a task row out from under its checklist items.
+
+    ``task_checklist_items.task_id`` declares ``REFERENCES project_tasks(id)``
+    but ProjectTaskStore never issues ``PRAGMA foreign_keys = ON``, so SQLite
+    does not enforce it and a live checklist item can outlive its task.
+    """
+    await store._db.execute("DELETE FROM project_tasks WHERE id = ?", (task_id,))
+    await store._db.commit()
+
+
+@pytest.mark.asyncio
+async def test_archive_checklist_item_refuses_when_task_is_gone(store_with_broker):
+    """Archiving an orphaned item must raise, not publish off-topic.
+
+    The fallback resolved the publish topic to something that is not a
+    project_id, so ``checklist.item.archived`` landed on a channel no
+    project subscriber listens to and the mutation was silently lost.
+    """
+    store, broker = store_with_broker
+    t = await store.create_task(project_id="proj-orphan", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="step one", created_by="u")
+    await store.update_checklist_item(item_id=item["id"], verified=True, reported=True)
+    await _delete_task_row(store, t["id"])
+
+    # Captured rather than asserted with pytest.raises so the topic assertion
+    # below is the one that reports the defect, not an unreached line after it.
+    raised: ValueError | None = None
+    try:
+        await store.archive_checklist_item(item_id=item["id"])
+    except ValueError as exc:
+        raised = exc
+
+    # Nothing may reach a non-project channel: "" is the current fallback
+    # topic, the task_id is the pre-#2622 one. Both are dead letter boxes.
+    for dead_topic in ("", t["id"]):
+        queue = await broker.subscribe(dead_topic)
+        stray = []
+        while not queue.empty():
+            stray.append(queue.get_nowait().kind)
+        assert not stray, f"event published to dead topic {dead_topic!r}: {stray}"
+
+    assert raised is not None and "task not found" in str(raised), (
+        f"archive must refuse an item whose task is gone, raised: {raised!r}"
+    )
+    # The refused archive must not have mutated the row either.
+    again = await store.get_checklist_item(item["id"])
+    assert again["archived"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_checklist_item_refuses_when_task_is_missing(store_with_broker):
+    """Same defect on the sibling create path — it must refuse, not orphan a row."""
+    store, broker = store_with_broker
+
+    raised: ValueError | None = None
+    try:
+        await store.create_checklist_item(task_id="tsk-ghost", text="step one", created_by="u")
+    except ValueError as exc:
+        raised = exc
+
+    for dead_topic in ("", "tsk-ghost"):
+        queue = await broker.subscribe(dead_topic)
+        stray = []
+        while not queue.empty():
+            stray.append(queue.get_nowait().kind)
+        assert not stray, f"event published to dead topic {dead_topic!r}: {stray}"
+
+    assert raised is not None and "task not found" in str(raised), (
+        f"create must refuse a missing task, raised: {raised!r}"
+    )
+    assert await store.list_checklist_items(task_id="tsk-ghost", include_archived=True) == []
+
+
 @pytest.mark.asyncio
 async def test_checklist_item_created_by_persists(store):
     """Acceptance 1: Round-trip test: create_checklist_item(created_by="u") -> list_checklist_items returns created_by == "u". RED on origin/dev (column absent), green on the fix."""

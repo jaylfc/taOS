@@ -17,15 +17,24 @@ preview) so a modified or bypassed client can never skip the scan.
 Detection approach
 -------------------
 Detection here is line-anchored regular expressions, not a full AST parse.
-A real JS/TS parser (e.g. acorn) would resolve some ambiguity more
-precisely -- a shadowed local variable named `eval`, multi-line template
-literals, minified one-line bundles -- but it would also pull a Node.js
-subprocess into the request path of a *security* module, adding an extra
-runtime dependency/attack surface and a poor fit for taOS's "install must
-just work" story on constrained hardware (Orange Pi etc). Every pattern
-below is anchored to a realistic call/attribute syntax boundary (word
-boundaries, required parens or quotes) to keep false positives low, and
-each detector's docstring calls out its known blind spots. Treat this as a
+A real JS/TS parser would resolve some ambiguity more precisely -- a
+shadowed local variable named `eval`, multi-line template literals,
+minified one-line bundles. A JS-hosted parser (e.g. acorn) is the wrong
+way to get one: it would pull a Node.js subprocess into the request path
+of a *security* module, adding runtime dependency and attack surface and
+fitting taOS's "install must just work" story on constrained hardware
+(Orange Pi etc) badly. An in-process parser with native wheels
+(tree-sitter + tree-sitter-javascript) has neither problem and is the
+right *additional* pass to add later -- never a replacement, because a
+false-negative regression in a security gate is worse than a known gap.
+Every pattern below is anchored to a realistic call/attribute syntax
+boundary (word boundaries, required parens or quotes) to keep false
+positives low, and each detector's docstring calls out its known blind
+spots. Two consequences of line-anchoring apply to every detector and are
+not repeated in each docstring: a construct split across lines is not
+matched, and the proximity heuristics (postMessage origin checks, storage
+exfiltration) degenerate on a minified single-line bundle, where every
+statement shares one line and so every window collapses. Treat this as a
 high-signal triage layer, not a soundness guarantee.
 """
 
@@ -133,6 +142,8 @@ def _iter_lines(content: str) -> list[str]:
 
 _EVAL_LIKE_PATTERNS = [
     (re.compile(r"(?<!\.)\beval\s*\("), "Use of eval() executes arbitrary strings as code."),
+    (re.compile(r"\b(?:window|globalThis|self)\.eval\s*\("),
+     "Indirect eval (window.eval/globalThis.eval/self.eval) executes arbitrary strings as code."),
     (re.compile(r"\bnew\s+Function\s*\("), "new Function(...) compiles a string into executable code, equivalent to eval()."),
     (re.compile(rf"\bset(?:Timeout|Interval)\s*\(\s*{_QUOTED}"),
      "setTimeout/setInterval called with a string first argument is an implied eval()."),
@@ -140,14 +151,25 @@ _EVAL_LIKE_PATTERNS = [
 
 
 def detect_eval_like(filename: str, content: str) -> list[Finding]:
-    """Flag eval(), new Function(...), and setTimeout/setInterval("string", ...).
+    """Flag eval() (direct and indirect), new Function(...), and setTimeout/setInterval("string", ...).
 
-    All three compile and execute a string as code at runtime, which is the
-    classic way an LLM-authored (or prompt-injected) app smuggles in
-    behaviour that a source review would otherwise catch. Blind spot: a
-    local variable literally named `eval` used as a plain function call
-    would false-positive; conversely `window["ev" + "al"]("...")` would be
-    missed since we don't evaluate string concatenation.
+    Direct `eval(...)` is matched with a negative lookbehind so a *method*
+    named `eval` (`mathObj.eval(expr)`) does not false-positive; the
+    indirect forms that lookbehind would otherwise swallow --
+    `window.eval(...)`, `globalThis.eval(...)`, `self.eval(...)` -- are
+    matched by their own pattern, since reaching eval through the global
+    object is ordinary indirect eval and trivially reachable from LLM
+    output. All of these compile and execute a string as code at runtime,
+    which is the classic way an LLM-authored (or prompt-injected) app
+    smuggles in behaviour that a source review would otherwise catch.
+    Blind spots: a local variable literally named `eval` used as a plain
+    function call would false-positive; conversely any shape that hides the
+    name from a regex is missed -- computed access
+    (`window["ev" + "al"]("...")`), an alias bound once and called later
+    (`const e = window.eval; e("...")`), reaching the global object through
+    a name we don't enumerate (`frames.eval(...)`,
+    `Object.getPrototypeOf(function(){})("...")`), or a call split across
+    lines, since matching is line-anchored.
     """
     findings: list[Finding] = []
     for i, line in enumerate(_iter_lines(content), start=1):
@@ -234,8 +256,14 @@ def detect_dom_xss_sink(filename: str, content: str) -> list[Finding]:
     return findings
 
 
+# Either a quoted literal (`href="javascript:..."`, `const u = "javascript:..."`)
+# or an unquoted HTML attribute value on one of the URL-bearing attributes
+# (`<a href=javascript:alert(1)>`), which is valid markup browsers navigate
+# happily and which a quote-anchored pattern alone would miss.
+_URL_ATTRS = r"href|src|xlink:href|formaction|action|poster|background|cite|data"
 _DANGEROUS_SCHEME_RE = re.compile(
-    rf"{_QUOTED}\s*(javascript:|data:text/html|vbscript:)", re.IGNORECASE,
+    rf"(?:{_QUOTED}|\b(?:{_URL_ATTRS})\s*=)\s*(javascript:|data:text/html|vbscript:)",
+    re.IGNORECASE,
 )
 
 
@@ -244,10 +272,13 @@ def detect_dangerous_url_scheme(filename: str, content: str) -> list[Finding]:
 
     These schemes execute script when navigated to or assigned as an href/
     location, and are a common way to smuggle script past markup-only
-    filtering. Matches any quoted string starting with one of these
-    schemes, regardless of surrounding context (href=, location=, a raw
-    string constant). Blind spot: a scheme built via concatenation
-    (`"java" + "script:"`) is not detected.
+    filtering. Matches any quoted string starting with one of these schemes
+    regardless of surrounding context (href=, location=, a raw string
+    constant), plus an unquoted value on a URL-bearing HTML attribute
+    (`<a href=javascript:alert(1)>`). Blind spots: a scheme built via
+    concatenation (`"java" + "script:"`) is not detected, nor is one that
+    is percent- or entity-encoded (`&#106;avascript:`), nor an unquoted
+    value on an attribute outside `_URL_ATTRS`.
     """
     findings: list[Finding] = []
     for i, line in enumerate(_iter_lines(content), start=1):
@@ -344,7 +375,7 @@ def detect_hardcoded_secrets(filename: str, content: str) -> list[Finding]:
 
 
 _SANDBOX_ESCAPE_PATTERNS = [
-    re.compile(r"\bwindow\.(parent|top|opener)\b"),
+    re.compile(r"\b(?:window|globalThis|self)\.(parent|top|opener)\b"),
     re.compile(r"(?<!\.)\btop\.location\b"),
     re.compile(r"(?<!\.)\bparent\.postMessage\b"),
     re.compile(r"(?<!\.)\bopener\.\w+"),
@@ -359,10 +390,15 @@ def detect_sandbox_escape(filename: str, content: str) -> list[Finding]:
     level, but source that reaches for them is unambiguously trying to
     break out of the sandbox (reach the host desktop, the opener window, or
     the top-level frame) and is worth blocking on sight rather than relying
-    solely on the browser boundary holding. Blind spot: `window.` prefix or
-    the specific bare-identifier shapes above are required to avoid
-    flagging an unrelated local variable named `parent`, `top`, or
-    `opener` -- other access shapes are not matched.
+    solely on the browser boundary holding. The bare-identifier patterns
+    carry a negative lookbehind so an unrelated local variable named
+    `parent`, `top`, or `opener` is not flagged; reaching the same
+    references through a global-object prefix (`window.`, `globalThis.`,
+    `self.`) is matched by the first pattern instead, so the lookbehind
+    does not create a hole there. Blind spot: only those prefixes and the
+    specific bare-identifier shapes above are matched -- computed access
+    (`window["top"]`), an alias bound to the reference first, or a bare
+    `parent.<anything-else>` are not.
     """
     findings: list[Finding] = []
     for i, line in enumerate(_iter_lines(content), start=1):
