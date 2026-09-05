@@ -7,7 +7,7 @@
 ### Device prefix matching
 
 - The passthrough matches only tokens carrying the device prefix (`taosdev_`)
-- Matching any bearer previously shadowed valid sessions: a logged-in user who happened to send an unrelated `Authorization` header got 401 on every one of these routes
+- Matching any bearer previously shadowed valid sessions: a logged-in user sending an unrelated `Authorization` header got 401 on these routes
 
 ### Allowlist is method-and-path anchored
 
@@ -22,13 +22,11 @@
 
 - Caller sends `Authorization: Bearer <scoped_token>` (issued at `POST /api/devices/register`)
 - Browser sessions and agent JWTs are not accepted
-- The path is listed in `EXEMPT_PATHS` in `tinyagentos/auth_middleware.py` so the session cookie gate does not apply
-- The middleware simply lets the request through with `user_id=None` so the route's own `current_user_or_device` dependency resolves the device
+- The path is in `EXEMPT_PATHS` (`tinyagentos/auth_middleware.py`): the middleware passes the request with `user_id=None` and the route's `current_user_or_device` dependency resolves the device
 
 ### CSRF
 
-- Registered on the router (`dependencies=_csrf`) so future unsafe-method routes inherit the double-submit check
-- The GET is exempt because safe methods always are
+- Registered on the router (`dependencies=_csrf`) so future unsafe-method routes inherit the double-submit check; the GET is exempt as a safe method
 
 ## Coverage
 

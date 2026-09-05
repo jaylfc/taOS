@@ -76,7 +76,7 @@ Files routes key on the project SLUG. `GET .../files/{path}`, `POST .../files/up
 ### Device prefix matching
 
 - The passthrough matches only tokens carrying the device prefix (`taosdev_`)
-- Matching any bearer previously shadowed valid sessions: a logged-in user who happened to send an unrelated `Authorization` header got 401 on every one of these routes
+- Matching any bearer previously shadowed valid sessions: a logged-in user sending an unrelated `Authorization` header got 401 on these routes
 
 ### Allowlist is method-and-path anchored
 
@@ -91,13 +91,11 @@ Files routes key on the project SLUG. `GET .../files/{path}`, `POST .../files/up
 
 - Caller sends `Authorization: Bearer <scoped_token>` (issued at `POST /api/devices/register`)
 - Browser sessions and agent JWTs are not accepted
-- The path is listed in `EXEMPT_PATHS` in `tinyagentos/auth_middleware.py` so the session cookie gate does not apply
-- The middleware simply lets the request through with `user_id=None` so the route's own `current_user_or_device` dependency resolves the device
+- The path is in `EXEMPT_PATHS` (`tinyagentos/auth_middleware.py`): the middleware passes the request with `user_id=None` and the route's `current_user_or_device` dependency resolves the device
 
 ### CSRF
 
-- Registered on the router (`dependencies=_csrf`) so future unsafe-method routes inherit the double-submit check
-- The GET is exempt because safe methods always are
+- Registered on the router (`dependencies=_csrf`) so future unsafe-method routes inherit the double-submit check; the GET is exempt as a safe method
 
 ## Coverage
 
@@ -143,12 +141,12 @@ Content-negotiated advert:
 
 ## Connection bundle
 
-- `controller.endpoints` — reachable addresses: non-loopback LAN IPv4s (priority ordered, operator override first) and the mesh (Tailscale) node IP when joined. No relay in Phase 1.
+- `controller.endpoints` — non-loopback LAN IPv4s (priority ordered, operator override first) and the mesh (Tailscale) node IP when joined. No relay in Phase 1.
 - `apis` — agent-JWT-reachable surface, scoped exactly to the granted scopes and mirroring the middleware canvas allowlist
 - `delivery` — timed-check contract (`poll_path`, `stream_path`, `check_interval_secs` from the invite, `cursor: ts`, `filter: mentions+project`)
-- `onboarding` + `guide_markdown` — personalized capability guide (repo link, agent manual links, scoped Projects/Canvas summary, the A2A authenticated-proxy contract, and explicit instructions)
+- `onboarding` + `guide_markdown` — personalized capability guide (repo link, agent manual links, scoped Projects/Canvas summary, the A2A authenticated-proxy contract)
 
-See `docs/design/external-agent-project-invite.md` (issue #1780) for the full design; the bundle advertises canvas routes only when the corresponding scope was actually granted.
+See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes are advertised only when that scope was granted.
 
 ---
 
@@ -157,11 +155,11 @@ See `docs/design/external-agent-project-invite.md` (issue #1780) for the full de
 ## SSE stream characteristics
 
 - `?kinds=a,b,c` — comma-separated allowlist of event kinds
-- Omitted, empty, or naming no kind at all (`?kinds=`, `?kinds=%20`, `?kinds=,`) means every kind: the allowlist is derived first and an empty one means "no filter", because a truthy-but-blank parameter otherwise built a set that matched nothing and the stream delivered silence
-- Filtering happens as events enter the per-connection buffer, not as they leave it, so an unrequested kind can never occupy a slot and evict something the subscriber did ask for
+- Omitted, empty, or naming no kind at all (`?kinds=`, `?kinds=%20`, `?kinds=,`) means every kind: an empty allowlist is "no filter", so a blank parameter can no longer build a set that matches nothing and deliver silence
+- Filtering happens as events enter the per-connection buffer, so an unrequested kind can never evict one the subscriber asked for
 - At most 256 events are buffered per connection. Past that the OLDEST buffered event is dropped and the client is sent `{"kind": "events.lagged", "dropped": N}` — its cue to refetch rather than assume it saw everything
 - A comment frame `:keepalive` is sent every 10 s so proxies do not close an idle stream
-- Frames deliberately carry **no** SSE `id:` line. An `id:` is what makes a browser send `Last-Event-ID` on reconnect, and this endpoint ignores that header: resume is best-effort through the EventBus replay buffer (the last 32 events per channel, delivered on subscribe)
+- Frames deliberately carry **no** SSE `id:` line (that is what makes a browser send `Last-Event-ID`, which this endpoint ignores): resume is best-effort through the EventBus replay buffer (last 32 events per channel, delivered on subscribe)
 - The payload never crosses the wire: `id` is the event's trace id, so a subscriber learns that something changed and must refetch to learn what
 
 ## Desktop integration
@@ -170,8 +168,7 @@ See `docs/design/external-agent-project-invite.md` (issue #1780) for the full de
 
 ## Technical details
 
-- Subscriptions and relay tasks are created INSIDE the response generator, not in the handler body
-- An async generator closed without ever being iterated never runs its body, so a `finally` there can only undo setup that also happened there; setting up in the handler leaked a subscription per client that disconnected before the stream started
+- Subscriptions and relay tasks are created INSIDE the response generator, not the handler body: a generator closed before iteration never runs, so its `finally` can only undo setup done there; handler-side setup leaked a subscription per client that disconnected before the stream started
 
 ---
 
@@ -281,47 +278,45 @@ See `docs/design/external-agent-project-invite.md` (issue #1780) for the full de
 
 ## Key points
 
-- `framework` is ADVISORY today, not enforced. The mode tells the agent runtime what to use; it does **not** yet stop the controller from involving taOSmd. A `framework`-mode deploy still registers the agent with taOSmd and still splices taOSmd rules into `AGENTS.md`. So a taOSmd outage can still block a `framework` deploy.
+- `framework` is ADVISORY today, not enforced: it tells the agent runtime what to use but does **not** yet stop the controller from involving taOSmd. A `framework`-mode deploy still registers with taOSmd and splices taOSmd rules into `AGENTS.md`, so a taOSmd outage can still block it.
 
 - `memory_mode` is OPTIONAL on `PATCH /api/agents/{slug}/memory` and omitting it leaves the stored value alone. Only `memory_plugin` is required.
 
-- Agents deployed before this field existed are backfilled to `both` by `config.py` when the config loads, so an older agent record without the key reads as the default rather than as empty.
+- Agents deployed before this field existed are backfilled to `both` by `config.py` on config load, so an older record reads as the default rather than as empty.
 
-- `POST /api/agents/deploy` takes `memory_mode` on the body, defaulting to `both`. It is persisted on the agent record and injected into the agent's environment as `TAOS_MEMORY_MODE` at deploy time, so the runtime honours it without a second push.
+- `POST /api/agents/deploy` takes `memory_mode` (default `both`); it is persisted on the agent record and injected into the agent's environment as `TAOS_MEMORY_MODE` at deploy time.
 
 - Deploy validates the pair before any side effect: an unknown `memory_mode` or `memory_plugin` answers `400` naming the valid set, and so does a contradictory pair such as `{"memory_plugin": "none", "memory_mode": "taosmd"}`.
 
 ---
 
-# Cluster node revoke, block and unblock (admin-only)
+# Cluster node revoke, block, unblock and fleet mutations (admin-only)
 
 ## API endpoints
 
 ### POST /api/cluster/workers/{name}/revoke
 
-- Kills the node's HMAC signing key
-- Subsequent register and heartbeat requests are rejected
-- The node may re-pair through the normal announce/confirm/claim flow to obtain a fresh key
+- Kills the node's HMAC signing key; subsequent register and heartbeat requests are rejected
+- The node may re-pair through announce/confirm/claim to obtain a fresh key
 - Answers `{"revoked": true, "changed": <bool>}`
 
 ### POST /api/cluster/workers/{name}/block
 
-- Revokes the key AND refuses re-pairing until an admin unblocks
-- The distinction from revoke: acts at the pairing gate, not merely at the auth gate
-- So it cannot come back on its own
+- Revokes the key AND refuses re-pairing until an admin unblocks (acts at the pairing gate, not merely the auth gate)
 
 ### POST /api/cluster/workers/{name}/unblock
 
-- Clears the blocked flag only
-- The old signing key stays dead, so the node still has to re-pair for a fresh one
-- Unblock is permission to return, not restoration of access
+- Clears the blocked flag only; the old signing key stays dead, so the node still has to re-pair
+
+### Other fleet mutations (same admin gate)
+
+`DELETE /api/cluster/workers/{name}`, `POST .../{name}/deploy`, `POST .../{name}/remote`, `POST /api/cluster/move`, `/route`, `/promote-archived`: `403 {"detail": "forbidden"}` unless admin session or host local token. Worker-facing paths (heartbeat, pairing, leases, capabilities) keep their HMAC / possession gates.
 
 ## Common behaviour
 
-- `404` when the node is absent from the PAIRING store (was never paired)
-- `503` when the pairing store is unavailable, kept distinct from `404`
+- `404` when the node is absent from the PAIRING store; `503` when the pairing store is unavailable
 - Revoke and block mark the in-memory worker **offline immediately** so the scheduler stops routing tasks to it
-- Blocked devices keep consuming a per-user slot: `list_for_user` returns rows where `revoked=0 OR blocked=1`, so a blocked device counts against `_MAX_DEVICES_PER_USER` until it is unblocked
+- Blocked devices keep consuming a per-user slot (`list_for_user` returns `revoked=0 OR blocked=1`) until unblocked
 
 ---
 
@@ -388,6 +383,20 @@ See `docs/design/external-agent-project-invite.md` (issue #1780) for the full de
 
 ---
 
+# Admin gates on global resources
+
+A session alone does not authorize these: a non-admin member gets `403 {"detail": "forbidden"}`; the host local token (`taosctl`, agents) passes. Single-user installs are unaffected.
+
+| Router | Gated | Open / owner-scoped |
+|---|---|---|
+| secrets | list, get, add, update, delete, `categories` | `GET /api/secrets/agent/{agent}`: the agent's owner (registry `user_id`) or admin |
+| system | `restart/prepare`, `ai-stack/restart`, non-loopback `prepare-shutdown` | loopback `prepare-shutdown`, `restart/status`, `hardware/refresh` |
+| providers | create, patch, delete, `start`, `stop` | `GET /api/providers` (model pickers) with `api_key` stripped for non-admins |
+| mcp | `start`/`stop`/`restart`, uninstall, `config` PUT, `env`, permission attach/detach, `/api/mcp/call` | list, logs, capabilities, permissions list, `config` GET |
+| agent-model-keys | `POST /api/agent-model-keys` mints only for agents the caller owns (admin: any) | |
+
+---
+
 # Routes Source Index
 
 ## Compile order
@@ -405,6 +414,7 @@ Run `python3 scripts/build-routes-doc.py` to compile these into `docs/routes.md`
 | `07-decisions-return.md` | What `GET /api/decisions/agent` returns (grant scoping) |
 | `08-config-save-restore.md` | Config save and restore (`/api/config`) |
 | `09-agent-memory.md` | Agent memory mode (deploy + PATCH memory) |
-| `10-cluster-admin.md` | Cluster node revoke, block and unblock (admin-only) |
+| `10-cluster-admin.md` | Cluster node revoke, block, unblock and fleet mutations (admin-only) |
 | `11-select-decision.md` | Answering a select decision with free text (`other_value`) |
 | `12-share-routes.md` | User resource sharing (share routes) |
+| `13-admin-gates.md` | Admin gates on global resources (secrets, system, providers, mcp, keys) |

@@ -40,6 +40,17 @@ async def app_client(tmp_path):
     from tinyagentos.secrets import SecretsStore
 
     mini_app = FastAPI()
+
+    # This bare app has no AuthMiddleware, so simulate an already-authenticated
+    # admin request (request.state.is_admin) -- these tests exercise the MCP
+    # handlers themselves, not the admin-or-local-token authz gate the mutating
+    # routes now enforce (see tests/test_global_routers_authz.py for that).
+    @mini_app.middleware("http")
+    async def _fake_admin_auth(request, call_next):
+        request.state.is_admin = True
+        request.state.via = "session"
+        return await call_next(request)
+
     mini_app.include_router(mcp_router)
 
     mcp_store = MCPServerStore(tmp_path / "mcp.db")
