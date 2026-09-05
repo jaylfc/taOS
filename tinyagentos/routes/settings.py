@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from tinyagentos.config import AppConfig, save_config_locked, validate_config
 from tinyagentos.auto_update import resolve_tracked_branch, is_valid_branch_name, PREF_NAMESPACE
 from tinyagentos.data_snapshot import snapshot_data_dir
+from tinyagentos.middleware.upload_body_limit import register_upload_cap
 from tinyagentos.safe_archive import ArchiveError, extract_tar_safely
 from tinyagentos.update_runner import switch_to_branch
 from tinyagentos.restart_orchestrator import write_pending_restart
@@ -309,6 +310,10 @@ async def create_backup(request: Request):
 # Cap the backup upload so a hostile body is never fully buffered; the archive's
 # own bomb limits then bound what the extraction can write into the data dir.
 _MAX_BACKUP_BYTES = 64 * 1024 * 1024
+
+# The read() below runs only after FastAPI has already spooled the multipart
+# body, so the cap also has to be enforced on the arriving request.
+register_upload_cap("/api/restore", lambda: _MAX_BACKUP_BYTES)
 
 
 @router.post("/api/restore")

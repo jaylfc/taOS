@@ -37,6 +37,54 @@ class ArchiveError(Exception):
     """Raised when an archive is unsafe to extract (bomb limits, unsafe member)."""
 
 
+class _DeclaredSizeBudget:
+    """The three caps, applied one member at a time.
+
+    Feeding members one by one rather than judging a finished list is what lets
+    a streaming caller stop at the first offending header instead of after the
+    whole archive has been walked. Limits default to the module constants and
+    are resolved here rather than in a signature so a test (or a caller wanting
+    a tighter cap) can override them by patching the module attribute.
+    """
+
+    def __init__(
+        self,
+        *,
+        kind: str,
+        max_members: int | None,
+        max_member_bytes: int | None,
+        max_uncompressed_bytes: int | None,
+    ) -> None:
+        self.kind = kind
+        self.max_members = MAX_MEMBERS if max_members is None else max_members
+        self.max_member_bytes = (
+            MAX_MEMBER_BYTES if max_member_bytes is None else max_member_bytes
+        )
+        self.max_uncompressed_bytes = (
+            MAX_UNCOMPRESSED_BYTES
+            if max_uncompressed_bytes is None
+            else max_uncompressed_bytes
+        )
+        self.count = 0
+        self.total_uncompressed = 0
+
+    def add(self, name: str, size: int) -> None:
+        """Account for one member; raise as soon as any cap is crossed."""
+        self.count += 1
+        if self.count > self.max_members:
+            raise ArchiveError(
+                f"{self.kind} has too many files ({self.count} > {self.max_members})"
+            )
+        if size > self.max_member_bytes:
+            raise ArchiveError(f"{self.kind} member too large: {name}")
+        self.total_uncompressed += size
+        if self.total_uncompressed > self.max_uncompressed_bytes:
+            raise ArchiveError(
+                f"{self.kind} uncompressed size too large "
+                f"({self.total_uncompressed} bytes)"
+            )
+
+
 def _check_declared_sizes(
     members: list[tuple[str, int]],
     *,
@@ -45,30 +93,15 @@ def _check_declared_sizes(
     max_member_bytes: int | None,
     max_uncompressed_bytes: int | None,
 ) -> None:
-    """Apply the three caps to `(name, declared_uncompressed_size)` pairs.
-
-    Limits default to the module constants and are resolved here rather than in
-    the signature so a test (or a caller wanting a tighter cap) can override
-    them by patching the module attribute.
-    """
-    if max_members is None:
-        max_members = MAX_MEMBERS
-    if max_member_bytes is None:
-        max_member_bytes = MAX_MEMBER_BYTES
-    if max_uncompressed_bytes is None:
-        max_uncompressed_bytes = MAX_UNCOMPRESSED_BYTES
-
-    if len(members) > max_members:
-        raise ArchiveError(f"{kind} has too many files ({len(members)} > {max_members})")
-    total_uncompressed = 0
+    """Apply the three caps to `(name, declared_uncompressed_size)` pairs."""
+    budget = _DeclaredSizeBudget(
+        kind=kind,
+        max_members=max_members,
+        max_member_bytes=max_member_bytes,
+        max_uncompressed_bytes=max_uncompressed_bytes,
+    )
     for name, size in members:
-        if size > max_member_bytes:
-            raise ArchiveError(f"{kind} member too large: {name}")
-        total_uncompressed += size
-    if total_uncompressed > max_uncompressed_bytes:
-        raise ArchiveError(
-            f"{kind} uncompressed size too large ({total_uncompressed} bytes)"
-        )
+        budget.add(name, size)
 
 
 def check_zip_limits(
@@ -79,7 +112,12 @@ def check_zip_limits(
     max_member_bytes: int | None = None,
     max_uncompressed_bytes: int | None = None,
 ) -> None:
-    """Reject a zip bomb from the central directory, before any member is read."""
+    """Reject a zip bomb from the central directory, before any member is read.
+
+    ``infolist()`` is the zip's own index and costs nothing to walk -- it never
+    touches a member's compressed payload -- so the whole list can be judged at
+    once. The tar equivalent below cannot.
+    """
     _check_declared_sizes(
         [(zi.filename, zi.file_size) for zi in zf.infolist()],
         kind=kind,
@@ -101,14 +139,23 @@ def check_tar_limits(
 
     A tar stores each member's size in its header and never yields more bytes
     than that, so the declared total bounds what an extraction can write.
+
+    Unlike a zip, a tar has no index: the headers are interleaved with the
+    payloads, so reaching header N+1 means walking past member N's data -- and
+    for the ``r:gz`` uploads taOS accepts, walking past data means decompressing
+    it. ``getmembers()`` would therefore inflate the whole archive before the
+    first cap could fire, handing an attacker exactly the CPU the caps exist to
+    deny. Stepping with ``next()`` and judging each header the moment it arrives
+    means an offending member's payload is never decompressed.
     """
-    _check_declared_sizes(
-        [(m.name, m.size) for m in tar.getmembers()],
+    budget = _DeclaredSizeBudget(
         kind=kind,
         max_members=max_members,
         max_member_bytes=max_member_bytes,
         max_uncompressed_bytes=max_uncompressed_bytes,
     )
+    while (member := tar.next()) is not None:
+        budget.add(member.name, member.size)
 
 
 def extract_tar_safely(

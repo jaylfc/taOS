@@ -51,7 +51,9 @@ def extract_theme_package(data: bytes, themes_root: Path) -> dict:
         if member.endswith("/"):
             continue
         dest = (theme_dir / member).resolve()
-        if not str(dest).startswith(str(theme_dir) + "/") and dest != theme_dir:
+        # dest must be a file strictly inside theme_dir -- reject traversals and
+        # members that resolve to theme_dir itself (e.g. "." -> IsADirectoryError)
+        if dest == theme_dir or not dest.is_relative_to(theme_dir):
             raise ThemePackageError(f"unsafe path in package: {member}")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(zf.read(member))

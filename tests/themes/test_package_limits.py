@@ -101,3 +101,19 @@ async def test_install_route_rejects_an_oversized_upload(client, monkeypatch):
     )
     assert resp.status_code == 413
     assert "too large" in resp.json()["error"]
+
+
+def test_rejects_a_member_that_resolves_to_the_theme_directory(tmp_path):
+    """A "." member must be refused, not handed to write_bytes().
+
+    The traversal guard only rejected paths outside the theme dir; a member
+    resolving to the directory itself slipped through and crashed the install
+    with an unhandled IsADirectoryError. userspace/package.py already rejects
+    this shape -- the theme extractor has to match it.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("theme.yaml", yaml.safe_dump(MANIFEST))
+        z.writestr(".", "x")
+    with pytest.raises(ThemePackageError, match="unsafe path in package"):
+        extract_theme_package(buf.getvalue(), themes_root=tmp_path)

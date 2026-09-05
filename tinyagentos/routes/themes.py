@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request, UploadFile, File
 from fastapi.responses import JSONResponse, FileResponse
 
+from tinyagentos.middleware.upload_body_limit import register_upload_cap
 from tinyagentos.themes.package import extract_theme_package, ThemePackageError
 
 router = APIRouter()
@@ -17,6 +18,10 @@ _THEME_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
 # a wallpaper and a handful of assets fit comfortably, an exhaustion attempt
 # does not. The archive's own bomb limits then apply inside extraction.
 _MAX_THEME_PACKAGE_BYTES = 32 * 1024 * 1024
+
+# The read() below runs only after FastAPI has already spooled the multipart
+# body, so the cap also has to be enforced on the arriving request.
+register_upload_cap("/api/themes/install", lambda: _MAX_THEME_PACKAGE_BYTES)
 
 
 def _valid_theme_id(theme_id: str) -> bool:

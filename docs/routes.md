@@ -258,7 +258,7 @@ See `docs/design/external-agent-project-invite.md` (issue #1780) for the full de
 
 - Multipart `file`, restores a backup tarball into the data dir
 - **The path is `/api/restore`, NOT `/api/settings/restore`**, even though the handler sits in `routes/settings.py` beside the `/api/settings/*` routes
-- Upload capped at 64 MB (`413` above it); the tarball goes through `tinyagentos/safe_archive.py`, so over the shared bomb caps (256 MB declared uncompressed, 64 MB per member, 10000 members) or carrying a member the path-safe tar filter rejects, the restore answers `400` and writes nothing
+- Upload capped at 64 MB, refused with `413` while the body is still arriving (`tinyagentos/middleware/upload_body_limit.py`, since FastAPI spools a multipart file before the handler runs); the tarball goes through `tinyagentos/safe_archive.py`, so over the shared bomb caps (256 MB declared uncompressed, 64 MB per member, 10000 members) or carrying a member the path-safe tar filter rejects, the restore answers `400` and writes nothing
 
 ## Important: both write paths REBUILD `AppConfig` field by field
 
