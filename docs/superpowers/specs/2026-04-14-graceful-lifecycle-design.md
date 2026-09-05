@@ -64,7 +64,7 @@ Two pieces:
 **1. Main service** (`tinyagentos.service`):
 ```
 ExecStop=/usr/local/bin/taos-graceful-stop
-TimeoutStopSec=360
+TimeoutStopSec=45
 ```
 
 **2. Pre-shutdown hook** (`/etc/systemd/system/taos-pre-shutdown.service`):
@@ -77,7 +77,7 @@ Before=shutdown.target reboot.target halt.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/taos-graceful-stop
-TimeoutStopSec=360
+TimeoutStopSec=60
 
 [Install]
 WantedBy=shutdown.target reboot.target halt.target
@@ -86,10 +86,10 @@ WantedBy=shutdown.target reboot.target halt.target
 The `taos-graceful-stop` script:
 ```bash
 #!/bin/bash
-curl -fsS -X POST --max-time 320 http://localhost:6969/api/system/prepare-shutdown || true
+curl -fsS -X POST --max-time 25 "http://localhost:${TAOS_PORT:-6969}/api/system/prepare-shutdown" || true
 ```
 
-As shipped it also honours `TAOS_PORT` and dedupes the two calls a reboot makes (unit `ExecStop`
+As shipped it also dedupes the two calls a reboot makes (unit `ExecStop`
 plus `taos-pre-shutdown.service`): a successful drain writes `prepare-shutdown.stamp`, and a second
 invocation within 60 s is a no-op. The stamp lives in the unit's `RuntimeDirectory=taos`
 (`/run/taos`, mode 0750; `$XDG_RUNTIME_DIR/taos` for the user unit, `$INSTALL_DIR/data` when there
