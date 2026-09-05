@@ -36,6 +36,13 @@ def _build_csp(frame_src_extra: str = "") -> str:
     )
 
 
+# Every response under these prefixes is per-user (account data, secrets
+# metadata, grants, project files), so it must never be stored by a shared
+# proxy cache or replayed from the browser's back/forward cache on the next
+# user of the machine.
+_NO_STORE_PREFIXES = ("/api/", "/agent/")
+
+
 def _strip_port(host: str) -> str:
     # A bracketed IPv6 host ("[::1]" or "[::1]:6969") is full of colons, so a
     # naive rsplit on ":" would corrupt it. Keep everything up to the closing
@@ -71,4 +78,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("Content-Security-Policy", csp)
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        if request.url.path.startswith(_NO_STORE_PREFIXES):
+            # setdefault, never a hard set: handlers that chose their own
+            # policy keep it -- SSE streams ship "no-cache" so proxies do not
+            # buffer them, and the browser proxy ships "public, max-age=..."
+            # for its immutable assets. Static files are mounted outside
+            # these prefixes and are untouched.
+            response.headers.setdefault("Cache-Control", "no-store")
         return response

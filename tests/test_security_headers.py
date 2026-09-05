@@ -64,3 +64,108 @@ class TestProxyFrameSrc:
         # A crafted Host header must not be interpolatable into the CSP.
         for h in ("evil.com; script-src *", "a b", "x'y", 'x"y', "a;b", "a,b"):
             assert not _SAFE_HOST_RE.fullmatch(h)
+
+
+class TestApiNoStore:
+    """Authenticated /api/* JSON must never be cacheable (tsk-piiqiw).
+
+    Without an explicit Cache-Control a shared proxy — or the browser's
+    back/forward cache on a shared machine — can hand one user's account
+    data, secrets metadata or project files to the next user.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["/api/secrets", "/api/agents", "/api/health"])
+    async def test_api_json_is_no_store(self, client, path):
+        resp = await client.get(path)
+        assert resp.status_code == 200
+        assert resp.headers.get("cache-control") == "no-store"
+
+    @pytest.mark.asyncio
+    async def test_agent_prefix_is_no_store(self, client):
+        # The /agent/ debugger surface is per-agent state, same rule.
+        resp = await client.get("/agent/does-not-exist/debug/status")
+        assert resp.headers.get("cache-control") == "no-store"
+
+    @pytest.mark.asyncio
+    async def test_handler_cache_control_not_clobbered(self, client):
+        # /api/userspace-apps/sdk.js sets its own "no-cache" so the SDK
+        # revalidates instead of being pinned; the middleware must not
+        # overwrite an explicit policy.
+        resp = await client.get("/api/userspace-apps/sdk.js")
+        assert resp.headers.get("cache-control") == "no-cache"
+
+    @pytest.mark.asyncio
+    async def test_static_assets_keep_long_cache(self, client):
+        # /static/ is mounted outside /api/ and stays cacheable.
+        resp = await client.get("/static/favicon.ico")
+        assert resp.status_code == 200
+        assert resp.headers.get("cache-control") == "public, max-age=86400"
+
+
+class TestNoStoreMiddlewareUnit:
+    """Middleware-level checks against a minimal app, so the SSE and
+    immutable-asset cases can be asserted without driving a live stream."""
+
+    @staticmethod
+    def _app():
+        from starlette.applications import Starlette
+        from starlette.responses import JSONResponse, StreamingResponse
+        from starlette.routing import Route
+
+        from tinyagentos.middleware.security_headers import SecurityHeadersMiddleware
+
+        async def json_route(request):
+            return JSONResponse({"ok": True})
+
+        async def sse_route(request):
+            async def gen():
+                yield "data: hi\n\n"
+
+            return StreamingResponse(
+                gen(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+        async def immutable_route(request):
+            return JSONResponse(
+                {"ok": True},
+                headers={"Cache-Control": "public, max-age=86400, immutable"},
+            )
+
+        app = Starlette(
+            routes=[
+                Route("/api/thing", json_route),
+                Route("/api/events/stream", sse_route),
+                Route("/api/asset.js", immutable_route),
+                Route("/other/thing", json_route),
+            ]
+        )
+        app.add_middleware(SecurityHeadersMiddleware)
+        return app
+
+    async def _get(self, path):
+        transport = ASGITransport(app=self._app())
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            return await ac.get(path)
+
+    @pytest.mark.asyncio
+    async def test_plain_api_json_gets_no_store(self):
+        resp = await self._get("/api/thing")
+        assert resp.headers.get("cache-control") == "no-store"
+
+    @pytest.mark.asyncio
+    async def test_sse_keeps_no_cache(self):
+        resp = await self._get("/api/events/stream")
+        assert resp.headers.get("cache-control") == "no-cache"
+
+    @pytest.mark.asyncio
+    async def test_immutable_asset_keeps_public_max_age(self):
+        resp = await self._get("/api/asset.js")
+        assert resp.headers.get("cache-control") == "public, max-age=86400, immutable"
+
+    @pytest.mark.asyncio
+    async def test_non_api_path_untouched(self):
+        resp = await self._get("/other/thing")
+        assert "cache-control" not in resp.headers
