@@ -342,6 +342,16 @@ A registered external agent authenticates with its registry JWT
 (`Authorization: Bearer`) and reaches exactly the routes its granted SCOPES
 allow, nothing else: the middleware allowlist is a closed set, no skeleton key.
 
+**A refused request says WHICH thing was wrong, and a dead credential is never
+flattered.** Off the allowlist the handler never runs, and the status code
+splits three ways: no route matches the path -> 404 (a live credential at a
+wrong URL); the route exists but this token is not authorised for it -> 401
+from the session gate (a right URL, an unauthorised credential); the credential
+itself is dead -- revoked, or superseded by `rotate-tokens` because its `iat`
+predates the identity's `token_min_iat` -> 401 on every path, existing or not.
+An anonymous caller gets 401 everywhere, so status codes cannot be used to
+enumerate routes.
+
 A SEPARATE credential class exists for the Agent-as-a-Model surface:
 `GET /v1/models` and `POST /v1/chat/completions` are reachable without a
 session using a CONSENT KEY (`Authorization: Bearer sk-taosagent-...`, minted
@@ -677,6 +687,12 @@ that SAME canonical_id instead:
   create path and the two READ paths below to a registry JWT -- approve/deny are
   POST with an extra trailing segment and match no pattern, so an agent can
   never self-approve; the routes re-check identity == canonical_id.
+  The bearer must also be LIVE: identity-only auth honours the identity's
+  `token_min_iat` rotation cutoff, so a token superseded by `rotate-tokens` can
+  no longer create a request (the route answers the same existence-hiding 404
+  it gives any other bad credential). This matters more here than anywhere
+  else -- it is the one route whose whole purpose is asking for MORE
+  privilege, and it needs no scope grant to reach.
 - `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/approve`
   `{granted_scopes, project_id?}`: owner/admin only. The admin may narrow but
   never widen the requested scopes; each granted scope is added via

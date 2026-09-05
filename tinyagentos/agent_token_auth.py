@@ -175,7 +175,8 @@ async def check_agent_identity(request: Request) -> Optional[str]:
 
     Raises:
       401 -- Authorization header present but the token is malformed, has a bad
-             signature, or is missing the sub claim.
+             signature, is missing the sub claim, or was superseded by a token
+             rotation on the identity.
       403 -- Token is valid but the agent is not active in the registry.
     """
     auth_header = request.headers.get("Authorization", "")
@@ -198,6 +199,18 @@ async def check_agent_identity(request: Request) -> Optional[str]:
     record = await registry.get(canonical_id)
     if record is None or record.get("status") != "active":
         raise HTTPException(status_code=403, detail="agent is not active in the registry")
+
+    # Reject tokens issued before the identity's token_min_iat cutoff (rotation),
+    # exactly as check_agent_scope and check_agent_scope_for_project do. Identity
+    # is the ONLY auth on the surfaces that do not need a grant -- creating a
+    # scope request, the agent decisions routes, container-provisioning requests,
+    # the auth-request flow -- so skipping it here would leave rotate-tokens
+    # unable to kill a leaked token on precisely the route that can widen its own
+    # privileges.
+    token_min_iat = record.get("token_min_iat") or 0
+    token_iat = payload.get("iat") or 0
+    if token_iat < token_min_iat:
+        raise HTTPException(status_code=401, detail="token superseded")
 
     return canonical_id
 
