@@ -1,0 +1,2 @@
+### Fixed
+- Backend catalog startup no longer blocks the :6969 main app on the first probe pass, so a cold boot with unreachable configured model backends serves the first request immediately instead of waiting the full per-backend connect timeout (tsk-xjwolt; measured at 100s+ on a Pi 4 with three unreachable local backends). The catalog still reconciles every configured backend in the background, and callers that need the post-probe view can await `BackendCatalog.wait_initial_probe()` explicitly.

@@ -34,18 +34,25 @@ import { withCsrf } from "@/lib/csrf";
  * so a request that named no project (or the wrong one) can still be assigned
  * the right project at approval time. The chosen project id is passed to the
  * approve endpoint, which mints the token bound to it.
+ *
+ * WHICH scopes those are is the server's answer, never ours. This file used to
+ * carry its own Set of them, and it fell six scopes behind the backend's
+ * `_PROJECT_SCOPES`: for `files_write` (and five others) the picker never
+ * rendered, approve was POSTed with no project_id, and the operator got a 400
+ * with no control on screen that could fix it. A refreshed copy would only
+ * postpone that until the next scope is added, so there is no copy here at all
+ * -- the vocabulary is fetched below and the picker renders from the response.
  */
-const PROJECT_SCOPES = new Set([
-  "project_tasks",
-  "canvas_read",
-  "canvas_write",
-  "project_tasks_create",
-  "project_tasks_update",
-  "project_lists",
-  "project_notes",
-  "files_read",
-  "files_write",
-]);
+
+/** Server-published scope vocabulary: every grantable scope, plus the subset
+ *  that is meaningless without a project binding. See
+ *  tinyagentos/routes/agent_auth_requests.py. */
+const SCOPE_VOCABULARY_URL = "/api/agents/scope-vocabulary";
+
+/** How long to wait for the vocabulary before treating silence as a failure.
+ *  A hung request must become a visible error, not an Allow button that is
+ *  disabled forever for no stated reason. */
+const VOCAB_TIMEOUT_MS = 10_000;
 
 interface ProjectOption {
   id: string;
@@ -145,12 +152,19 @@ export function ConsentActions({
   // asked) is unchanged; the prop exists so the Requested vs Granted contrast
   // is always explicit and a narrowing can never be silent.
   const granted = grantedScopes ?? scopes;
-  const needsProject = granted.some((s) => PROJECT_SCOPES.has(s));
   const { dropped, added } = computeScopeDiff(scopes, granted);
   const hasScopeDiff = dropped.length > 0 || added.length > 0;
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // null until the server's vocabulary has been read. There is deliberately no
+  // default value to fall back on: not knowing which scopes need a project is
+  // exactly the state that produced the unfixable 400, so it blocks Allow and
+  // says why rather than guessing from a stale list.
+  const [projectScopes, setProjectScopes] = useState<string[] | null>(null);
+  const [vocabError, setVocabError] = useState<string | null>(null);
+  const needsProject =
+    projectScopes !== null && granted.some((s) => projectScopes.includes(s));
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(false);
   // Start empty on purpose: a requestedProjectId is only adopted after it is
@@ -165,6 +179,57 @@ export function ConsentActions({
     useState<boolean>(false);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    // A request that never settles would leave Allow disabled forever with
+    // nothing on screen saying why -- the same "no remedy on screen" shape as
+    // the 400 this card removes. Bound it and report the timeout.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), VOCAB_TIMEOUT_MS);
+    fetch(SCOPE_VOCABULARY_URL, {
+      credentials: "include",
+      signal: controller.signal,
+    })
+      .then(async (r) => {
+        if (!r.ok) {
+          throw new Error(`the server answered ${r.status}`);
+        }
+        const d = (await r.json()) as { project_scopes?: unknown };
+        // Every entry must be a string. Filtering the bad ones out instead
+        // would hand back a SHORTER list that still looks valid, silently
+        // dropping a project scope and reopening the picker-never-renders bug.
+        if (
+          !Array.isArray(d?.project_scopes) ||
+          !d.project_scopes.every((v): v is string => typeof v === "string")
+        ) {
+          throw new Error("the server's answer was malformed");
+        }
+        return d.project_scopes;
+      })
+      .then((list) => {
+        if (cancelled) return;
+        setProjectScopes(list);
+        setVocabError(null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setProjectScopes(null);
+        setVocabError(
+          controller.signal.aborted
+            ? `no answer within ${Math.round(VOCAB_TIMEOUT_MS / 1000)}s`
+            : e instanceof Error
+              ? e.message
+              : "the request failed",
+        );
+      })
+      .finally(() => clearTimeout(timer));
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, []);
 
   useEffect(() => {
     if (!needsProject) return;
@@ -258,6 +323,17 @@ export function ConsentActions({
   async function decide(approved: boolean) {
     setBusy(true);
     setError(null);
+    // Approving without knowing whether these scopes are project-bound is the
+    // defect this surface exists to prevent; refuse rather than guess. Denying
+    // needs no vocabulary, so it is never blocked.
+    if (approved && projectScopes === null) {
+      setError(
+        vocabError ??
+          "Still reading the scope vocabulary from the server; try again in a moment.",
+      );
+      setBusy(false);
+      return;
+    }
     let projectId = selectedProjectId;
     // If approving with a project scope while mid-create, create the project first.
     if (approved && needsProject && creating && newName.trim()) {
@@ -319,11 +395,18 @@ export function ConsentActions({
 
   const allowDisabled =
     busy ||
+    projectScopes === null ||
     (needsProject &&
       (creating ? !newName.trim() : !selectedProjectId));
 
   return (
     <div className="mt-2" role="group" aria-label="Consent actions">
+      {vocabError && (
+        <p role="alert" className="mb-2 text-[11px] text-red-300">
+          Could not confirm which scopes need a project ({vocabError}), so this
+          request cannot be approved safely. Reload and try again.
+        </p>
+      )}
       {scopes.length > 0 && (
         <div className="mb-2">
           <div className="flex flex-wrap items-baseline gap-1">

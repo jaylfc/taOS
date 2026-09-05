@@ -9,6 +9,8 @@ routes and middleware.
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -20,6 +22,7 @@ from tinyagentos.agent_registry_store import (
 )
 from tinyagentos.agent_grants_store import AgentGrantsStore
 from tinyagentos.agent_scope_requests_store import AgentScopeRequestsStore
+from tinyagentos.base_store import PendingCapExceeded
 from taos_test_csrf import csrf_event_hooks
 
 
@@ -137,6 +140,48 @@ async def test_agent_can_self_request_with_own_token(client, monkeypatch, tmp_pa
         assert resp.status_code == 200, resp.text
         assert resp.json()["status"] == "pending"
         assert await env.scope_store.count_pending_for(cid) == 1
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_self_requests_cannot_bypass_pending_cap(
+    client, monkeypatch, tmp_path
+):
+    """A burst from ONE agent must not push it past the per-agent pending cap.
+
+    A count-then-insert cap is bypassable by exactly the traffic it exists to
+    stop: every request in a concurrent burst reads the same pre-insert count,
+    every one of them passes the check, and every one of them inserts — so the
+    agent floods the approver's queue with as many pending rows as it can open
+    connections for.
+    """
+    from tinyagentos.routes.agent_auth_requests import _SCOPE_REQUEST_PENDING_CAP as cap
+
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        app = client._transport.app
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            async def _create():
+                return await bare.post(
+                    f"/api/agents/registry/{cid}/scope-requests",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"requested_scopes": ["a2a_send"]},
+                )
+
+            # No return_exceptions: a server-side crash must fail the test, not
+            # shrink the status list into a vacuous pass.
+            results = await asyncio.gather(*[_create() for _ in range(2 * cap)])
+
+        statuses = sorted(r.status_code for r in results)
+        assert statuses == [200] * cap + [429] * cap, (
+            f"cap race: expected exactly {cap} accepted, got {statuses}"
+        )
+        assert await env.scope_store.count_pending_for(cid) == cap
     finally:
         await env.close()
 
@@ -763,3 +808,556 @@ async def test_create_scope_request_inactive_token_no_existence_oracle(
         assert await env.scope_store.count_pending_for(cid_target) == 0
     finally:
         await env.close()
+
+
+# ---------------------------------------------------------------------------
+# Read: list + get-by-id
+#
+# Without these routes a pending request is unobservable once the notification
+# carrying its request_id is dismissed -- the row stays in the store, keeps
+# consuming the pending cap, and is addressable by nobody. The reads are
+# authorized EXACTLY like create (the agent itself, or its owner/admin), and a
+# caller who is neither gets the same existence-hiding 404 the neighbouring
+# routes return.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_scope_request_by_id(client, monkeypatch, tmp_path):
+    """Create a request, then read it back by id and see it is still pending."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+
+        resp = await client.post(
+            f"/api/agents/registry/{cid}/scope-requests",
+            json={"requested_scopes": ["memory_read"], "reason": "need memory"},
+        )
+        assert resp.status_code == 200, resp.text
+        req_id = resp.json()["request_id"]
+
+        resp = await client.get(
+            f"/api/agents/registry/{cid}/scope-requests/{req_id}"
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["id"] == req_id
+        assert body["canonical_id"] == cid
+        assert body["status"] == "pending"
+        assert body["requested_scopes"] == ["memory_read"]
+        assert body["reason"] == "need memory"
+        assert body["granted_scopes"] is None
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_cannot_read_another_owners_scope_request(
+    client, monkeypatch, tmp_path
+):
+    """An authenticated non-owner reading someone else's agent's request must
+    get the same existence-hiding response as a nonexistent agent -- byte for
+    byte, so the route is not an existence oracle."""
+    app = client._transport.app
+    code = app.state.auth.add_user_invite("carol", "admin")
+    app.state.auth.complete_invite("carol", code, "Carol", "", "carpass123")
+    carol = app.state.auth.find_user("carol")
+    carol_session = app.state.auth.create_session(user_id=carol["id"], long_lived=True)
+
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)  # owned by admin, not carol
+        rec = await env.scope_store.create(
+            canonical_id=cid, requested_scopes=["memory_read"]
+        )
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": carol_session},
+        ) as carol_client:
+            resp_owned = await carol_client.get(
+                f"/api/agents/registry/{cid}/scope-requests/{rec['id']}"
+            )
+            resp_nonexistent = await carol_client.get(
+                "/api/agents/registry/does-not-exist/scope-requests/does-not-exist"
+            )
+            resp_list = await carol_client.get(
+                f"/api/agents/registry/{cid}/scope-requests"
+            )
+            resp_list_nonexistent = await carol_client.get(
+                "/api/agents/registry/does-not-exist/scope-requests"
+            )
+
+        assert resp_owned.status_code == 404
+        # The neighbouring routes' existence-hiding shape, not a bare 403 and
+        # not FastAPI's routing 404 -- carol must learn nothing about cid.
+        assert resp_owned.json() == {"detail": "agent not found or not active"}
+        assert resp_owned.status_code == resp_nonexistent.status_code
+        assert resp_owned.content == resp_nonexistent.content
+        assert resp_list.status_code == 404
+        assert resp_list.json() == {"detail": "agent not found or not active"}
+        assert resp_list.status_code == resp_list_nonexistent.status_code
+        assert resp_list.content == resp_list_nonexistent.content
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_list_scope_requests_filters_by_status(client, monkeypatch, tmp_path):
+    """The owner lists an agent's requests, decided ones included, and may
+    narrow to a single status."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        pending = await env.scope_store.create(
+            canonical_id=cid, requested_scopes=["memory_read"]
+        )
+        decided = await env.scope_store.create(
+            canonical_id=cid, requested_scopes=["a2a_send"]
+        )
+        await env.scope_store.set_decision(
+            decided["id"], "refused", decided_by=env.admin_uid
+        )
+
+        resp = await client.get(f"/api/agents/registry/{cid}/scope-requests")
+        assert resp.status_code == 200, resp.text
+        ids = [r["id"] for r in resp.json()["requests"]]
+        assert set(ids) == {pending["id"], decided["id"]}
+
+        resp = await client.get(
+            f"/api/agents/registry/{cid}/scope-requests", params={"status": "pending"}
+        )
+        assert resp.status_code == 200, resp.text
+        assert [r["id"] for r in resp.json()["requests"]] == [pending["id"]]
+
+        resp = await client.get(
+            f"/api/agents/registry/{cid}/scope-requests", params={"status": "refused"}
+        )
+        assert resp.status_code == 200, resp.text
+        assert [r["id"] for r in resp.json()["requests"]] == [decided["id"]]
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_reads_its_own_scope_requests_with_own_token(
+    client, monkeypatch, tmp_path
+):
+    """The agent's own registry token can list and read its own requests --
+    the same credential that is allowed to create them."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        app = client._transport.app
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            created = await bare.post(
+                f"/api/agents/registry/{cid}/scope-requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"requested_scopes": ["a2a_send"]},
+            )
+            assert created.status_code == 200, created.text
+            req_id = created.json()["request_id"]
+
+            listed = await bare.get(
+                f"/api/agents/registry/{cid}/scope-requests",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            one = await bare.get(
+                f"/api/agents/registry/{cid}/scope-requests/{req_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert listed.status_code == 200, listed.text
+        assert [r["id"] for r in listed.json()["requests"]] == [req_id]
+        assert one.status_code == 200, one.text
+        assert one.json()["status"] == "pending"
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_cannot_read_another_agents_scope_requests(
+    client, monkeypatch, tmp_path
+):
+    """Agent A's token must not list or read agent B's scope requests, even
+    though both agents share an owner."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid_a = await _register_active(env, handle="@a", display="a")
+        cid_b = await _register_active(env, handle="@b", display="b")
+        rec_b = await env.scope_store.create(
+            canonical_id=cid_b, requested_scopes=["memory_read"]
+        )
+        token_a = env.agent_token(cid_a)
+
+        app = client._transport.app
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            listed = await bare.get(
+                f"/api/agents/registry/{cid_b}/scope-requests",
+                headers={"Authorization": f"Bearer {token_a}"},
+            )
+            one = await bare.get(
+                f"/api/agents/registry/{cid_b}/scope-requests/{rec_b['id']}",
+                headers={"Authorization": f"Bearer {token_a}"},
+            )
+            missing = await bare.get(
+                "/api/agents/registry/does-not-exist/scope-requests",
+                headers={"Authorization": f"Bearer {token_a}"},
+            )
+
+        assert listed.status_code == 404, listed.text
+        assert one.status_code == 404, one.text
+        # The existence-hiding shape, not a bare 403 and not a middleware 401:
+        # agent A must not be able to tell agent B's id from a made-up one.
+        assert listed.json() == {"detail": "agent not found or not active"}
+        assert one.json() == {"detail": "agent not found or not active"}
+        assert listed.content == missing.content
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_get_scope_request_wrong_agent_path_404(client, monkeypatch, tmp_path):
+    """A request id that belongs to a DIFFERENT agent is not readable through
+    another agent's path, even for the owner of both."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid_a = await _register_active(env, handle="@a", display="a")
+        cid_b = await _register_active(env, handle="@b", display="b")
+        rec = await env.scope_store.create(
+            canonical_id=cid_a, requested_scopes=["memory_read"]
+        )
+
+        resp = await client.get(
+            f"/api/agents/registry/{cid_b}/scope-requests/{rec['id']}"
+        )
+        assert resp.status_code == 404, resp.text
+        # The route reached the store and rejected the mismatch; this is NOT
+        # FastAPI's "Not Found" from having no route at all.
+        assert resp.json() == {"detail": "scope request not found"}
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_list_scope_requests_rejects_unknown_status(
+    client, monkeypatch, tmp_path
+):
+    """An unknown status filter is a 400, not a silently-empty list."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        resp = await client.get(
+            f"/api/agents/registry/{cid}/scope-requests", params={"status": "bogus"}
+        )
+        assert resp.status_code == 400, resp.text
+        assert "bogus" in resp.text
+    finally:
+        await env.close()
+
+
+# ---------------------------------------------------------------------------
+# Read-route response shape and bounds (review fold)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_read_routes_do_not_leak_decided_by(client, monkeypatch, tmp_path):
+    """The read routes must not hand back the DECIDING USER'S id.
+
+    The stored row carries ``decided_by`` (the owner/admin user_id that
+    approved or denied). An agent holding only its own registry token is
+    allowed to read its own requests, so returning the raw row would hand that
+    agent its owner's internal user id -- an identifier it has no other route
+    to. Both reads must project an explicit public shape instead: the decision
+    stays observable through ``status`` / ``decided_ts`` / ``granted_scopes``,
+    only the deciding identity is withheld.
+    """
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        rec = await env.scope_store.create(
+            canonical_id=cid, requested_scopes=["memory_read"]
+        )
+        decided = await env.scope_store.set_decision(
+            rec["id"], "refused", decided_by=env.admin_uid
+        )
+        assert decided is not None
+        # The store still records it -- this is a response-shape defect, not a
+        # storage one, so the audit trail must survive the fix.
+        assert decided["decided_by"] == env.admin_uid
+
+        expected_keys = {
+            "id",
+            "canonical_id",
+            "requested_scopes",
+            "project_id",
+            "reason",
+            "status",
+            "granted_scopes",
+            "created_ts",
+            "decided_ts",
+        }
+
+        owner_one = await client.get(
+            f"/api/agents/registry/{cid}/scope-requests/{rec['id']}"
+        )
+        owner_list = await client.get(f"/api/agents/registry/{cid}/scope-requests")
+
+        token = env.agent_token(cid)
+        app = client._transport.app
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            agent_one = await bare.get(
+                f"/api/agents/registry/{cid}/scope-requests/{rec['id']}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            agent_list = await bare.get(
+                f"/api/agents/registry/{cid}/scope-requests",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        for resp in (owner_one, agent_one):
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert "decided_by" not in body
+            assert set(body) == expected_keys
+            # Redaction must not blind the caller to WHETHER it was decided,
+            # only to BY WHOM.
+            assert body["status"] == "refused"
+            assert body["decided_ts"] == decided["decided_ts"]
+
+        for resp in (owner_list, agent_list):
+            assert resp.status_code == 200, resp.text
+            rows = resp.json()["requests"]
+            assert len(rows) == 1
+            assert "decided_by" not in rows[0]
+            assert set(rows[0]) == expected_keys
+            assert rows[0]["status"] == "refused"
+
+        # And no serialisation of the id survives anywhere in the payloads.
+        for resp in (owner_one, agent_one, owner_list, agent_list):
+            assert env.admin_uid not in resp.text
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_list_scope_requests_is_bounded_and_keeps_pending(
+    client, monkeypatch, tmp_path
+):
+    """The list response is capped, and the cap never truncates a PENDING row.
+
+    Decided rows are never deleted, so an unbounded ``SELECT *`` grows with an
+    agent's whole decision history. Capping naively by "oldest first" would
+    drop the newest rows; capping by "newest first" would drop an OLD pending
+    request -- precisely the row these routes exist to recover. Pending rows
+    are therefore selected ahead of decided ones, and the page is still
+    returned oldest-first.
+    """
+    from tinyagentos import agent_scope_requests_store as srs
+
+    monkeypatch.setattr(srs, "DEFAULT_LIST_LIMIT", 3)
+
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        # Oldest row of all, and the only pending one.
+        pending = await env.scope_store.create(
+            canonical_id=cid, requested_scopes=["memory_read"]
+        )
+        decided_ids = []
+        for _ in range(5):
+            rec = await env.scope_store.create(
+                canonical_id=cid, requested_scopes=["a2a_send"]
+            )
+            await env.scope_store.set_decision(
+                rec["id"], "refused", decided_by=env.admin_uid
+            )
+            decided_ids.append(rec["id"])
+
+        resp = await client.get(f"/api/agents/registry/{cid}/scope-requests")
+        assert resp.status_code == 200, resp.text
+        rows = resp.json()["requests"]
+        ids = [r["id"] for r in rows]
+
+        assert len(rows) == 3, ids
+        assert pending["id"] in ids
+        # Newest decided survives; the oldest decided row is what got dropped.
+        assert decided_ids[-1] in ids
+        assert decided_ids[0] not in ids
+        # Still oldest-first within the page.
+        assert [r["created_ts"] for r in rows] == sorted(
+            r["created_ts"] for r in rows
+        )
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_list_scope_requests_status_filter_is_case_insensitive(
+    client, monkeypatch, tmp_path
+):
+    """``?status=Pending`` is a casing typo, not an unknown status.
+
+    The vocabulary is lowercase by convention; a mixed-case value from a script
+    must select the same rows rather than hard-400 an authorized caller.
+    """
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        pending = await env.scope_store.create(
+            canonical_id=cid, requested_scopes=["memory_read"]
+        )
+        decided = await env.scope_store.create(
+            canonical_id=cid, requested_scopes=["a2a_send"]
+        )
+        await env.scope_store.set_decision(
+            decided["id"], "refused", decided_by=env.admin_uid
+        )
+
+        resp = await client.get(
+            f"/api/agents/registry/{cid}/scope-requests", params={"status": "PENDING"}
+        )
+        assert resp.status_code == 200, resp.text
+        assert [r["id"] for r in resp.json()["requests"]] == [pending["id"]]
+
+        resp = await client.get(
+            f"/api/agents/registry/{cid}/scope-requests", params={"status": "Refused"}
+        )
+        assert resp.status_code == 200, resp.text
+        assert [r["id"] for r in resp.json()["requests"]] == [decided["id"]]
+
+        # A genuinely unknown status is still a 400, not a silent empty list.
+        resp = await client.get(
+            f"/api/agents/registry/{cid}/scope-requests", params={"status": "Bogus"}
+        )
+        assert resp.status_code == 400, resp.text
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_list_keeps_the_oldest_pending_even_past_the_route_cap(tmp_path):
+    """A full page drops the NEWEST pending rows, never the oldest.
+
+    The read path must not depend on the ten-per-agent pending cap holding,
+    however that cap is enforced: the oldest pending request is the one whose
+    notification is long gone and whose id nobody has any more, so it is the
+    last row a full page may drop. Newer pending rows are the ones the caller
+    just created and still holds ids for.
+    """
+    store = AgentScopeRequestsStore(tmp_path / "scope.db")
+    await store.init()
+    try:
+        pending_ids = []
+        for _ in range(5):
+            rec = await store.create(
+                canonical_id="agent-1", requested_scopes=["memory_read"]
+            )
+            pending_ids.append(rec["id"])
+
+        page = await store.list_for("agent-1", limit=3)
+        assert [r["id"] for r in page] == pending_ids[:3]
+
+        # Same guarantee through the status filter the desktop app uses.
+        page = await store.list_for("agent-1", "pending", limit=3)
+        assert [r["id"] for r in page] == pending_ids[:3]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_list_for_page_does_not_sort_the_whole_history(tmp_path, monkeypatch):
+    """The LIMIT must bound the DATABASE WORK, not just the response size.
+
+    Ordering by an expression SQLite cannot serve from an index forces
+    ``USE TEMP B-TREE FOR ORDER BY``: every retained row for the agent is read
+    and sorted before the LIMIT is applied, so read cost still tracks the
+    decision history the cap was meant to stop tracking. Assert on the plan of
+    the queries the store ACTUALLY issues rather than on a copy of them.
+    """
+    store = AgentScopeRequestsStore(tmp_path / "scope.db")
+    await store.init()
+    try:
+        for _ in range(3):
+            rec = await store.create(
+                canonical_id="agent-1", requested_scopes=["memory_read"]
+            )
+            await store.set_decision(rec["id"], "refused", decided_by="u1")
+        await store.create(canonical_id="agent-1", requested_scopes=["a2a_send"])
+
+        captured: list[tuple] = []
+        original = store._db.execute
+
+        async def _spy(sql, params=()):
+            captured.append((sql, params))
+            return await original(sql, params)
+
+        monkeypatch.setattr(store._db, "execute", _spy)
+        await store.list_for("agent-1")
+        await store.list_for("agent-1", "refused")
+        monkeypatch.undo()
+
+        assert captured, "list_for issued no queries"
+        for sql, params in captured:
+            rows = await (
+                await store._db.execute("EXPLAIN QUERY PLAN " + sql, params)
+            ).fetchall()
+            plan = " | ".join(str(r[-1]) for r in rows)
+            assert "TEMP B-TREE" not in plan, f"{sql!r} sorts the history: {plan}"
+            assert "idx_scope_requests_canonical_created" in plan, (
+                f"{sql!r} does not use the ordered index: {plan}"
+            )
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_store_create_enforces_pending_cap_atomically(tmp_path):
+    """``create(pending_cap=N)`` admits exactly N pending rows under a burst.
+
+    The guard lives in the INSERT itself, so it holds no matter how the
+    caller's awaits interleave — a caller that checked the count first would
+    hand every racer the same stale answer.
+    """
+    store = AgentScopeRequestsStore(tmp_path / "scope.db")
+    await store.init()
+    try:
+        results = await asyncio.gather(
+            *[
+                store.create(
+                    canonical_id="agent-1",
+                    requested_scopes=["memory_read"],
+                    pending_cap=3,
+                )
+                for _ in range(9)
+            ],
+            return_exceptions=True,
+        )
+        created = [r for r in results if isinstance(r, dict)]
+        refused = [r for r in results if isinstance(r, PendingCapExceeded)]
+        assert len(created) == 3, f"expected 3 inserts, got {results}"
+        assert len(refused) == 6, f"expected 6 refusals, got {results}"
+        assert await store.count_pending_for("agent-1") == 3
+        assert refused[0].cap == 3
+
+        # The cap counts PENDING rows only: deciding one frees a slot.
+        await store.set_decision(created[0]["id"], "refused", decided_by="u1")
+        rec = await store.create(
+            canonical_id="agent-1", requested_scopes=["a2a_send"], pending_cap=3
+        )
+        assert rec["status"] == "pending"
+
+        # A different agent has its own budget.
+        other = await store.create(
+            canonical_id="agent-2", requested_scopes=["a2a_send"], pending_cap=3
+        )
+        assert other["canonical_id"] == "agent-2"
+    finally:
+        await store.close()

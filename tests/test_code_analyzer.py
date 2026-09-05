@@ -11,8 +11,10 @@ and none of the "secrets" are real credentials.
 
 from __future__ import annotations
 
+from tinyagentos import code_analyzer
 from tinyagentos.code_analyzer import (
     Finding,
+    adversarial_verify,
     analyze_app_source,
     detect_dangerous_url_scheme,
     detect_dom_xss_sink,
@@ -45,6 +47,20 @@ class TestEvalLike:
 
     def test_settimeout_string_trips(self):
         findings = detect_eval_like("app.js", 'setTimeout("doEvil()", 100);')
+        assert len(findings) == 1
+
+    def test_window_eval_trips(self):
+        findings = detect_eval_like("app.js", "window.eval(userInput);")
+        assert len(findings) == 1
+        assert findings[0].rule_id == "eval-like-execution"
+        assert findings[0].severity == "critical"
+
+    def test_global_this_eval_trips(self):
+        findings = detect_eval_like("app.js", "globalThis.eval(userInput);")
+        assert len(findings) == 1
+
+    def test_self_eval_trips(self):
+        findings = detect_eval_like("app.js", "self.eval(userInput);")
         assert len(findings) == 1
 
     def test_clean_code_does_not_trip(self):
@@ -116,9 +132,27 @@ class TestDangerousUrlScheme:
         )
         assert len(findings) == 1
 
+    def test_unquoted_javascript_href_trips(self):
+        findings = detect_dangerous_url_scheme(
+            "index.html", "<a href=javascript:alert(1)>go</a>"
+        )
+        assert len(findings) == 1
+        assert findings[0].rule_id == "dangerous-url-scheme"
+        assert findings[0].severity == "critical"
+
+    def test_unquoted_data_text_html_iframe_src_trips(self):
+        findings = detect_dangerous_url_scheme(
+            "index.html", "<iframe src=data:text/html,<script>alert(1)</script>></iframe>"
+        )
+        assert len(findings) == 1
+
     def test_normal_url_does_not_trip(self):
         content = 'const link = "https://example.com";'
         assert detect_dangerous_url_scheme("app.js", content) == []
+
+    def test_unquoted_normal_attribute_does_not_trip(self):
+        content = "<a href=/about>about</a>"
+        assert detect_dangerous_url_scheme("index.html", content) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -182,6 +216,17 @@ class TestSandboxEscape:
 
     def test_window_parent_access_trips(self):
         findings = detect_sandbox_escape("app.js", "window.parent.postMessage(data, '*');")
+        assert len(findings) == 1
+
+    def test_global_this_top_access_trips(self):
+        findings = detect_sandbox_escape(
+            "app.js", 'globalThis.top.location = "http://evil.example.com";'
+        )
+        assert len(findings) == 1
+        assert findings[0].rule_id == "sandbox-escape-attempt"
+
+    def test_self_parent_access_trips(self):
+        findings = detect_sandbox_escape("app.js", "self.parent.postMessage(data, '*');")
         assert len(findings) == 1
 
     def test_unrelated_local_variable_does_not_trip(self):
@@ -290,3 +335,169 @@ class TestAnalyzeAppSource:
             "line": 3,
             "message": "msg",
         }
+
+
+# --------------------------------------------------------------------------- #
+# adversarial_verify
+# --------------------------------------------------------------------------- #
+
+
+class TestAdversarialVerify:
+    def test_comment_line_is_refuted(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": "// eval(userInput);"})
+        assert result == []
+
+    def test_block_comment_start_is_refuted(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": "/* eval(userInput); */"})
+        assert result == []
+
+    def test_string_literal_is_refuted(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": 'const msg = "eval() is bad";'})
+        assert result == []
+
+    def test_real_code_is_kept(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": "eval(userInput);"})
+        assert len(result) == 1
+
+    def test_known_example_key_is_refuted(self):
+        findings = [Finding("critical", "hardcoded-secret", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": 'const key = "AKIAIOSFODNN7EXAMPLE";'})
+        assert result == []
+
+    def test_multiple_findings_mixed(self):
+        findings = [
+            Finding("critical", "eval-like-execution", "app.js", 1, "msg"),
+            Finding("critical", "hardcoded-secret", "app.js", 2, "msg"),
+            Finding("critical", "eval-like-execution", "app.js", 3, "msg"),
+        ]
+        files = {
+            "app.js": (
+                "// eval(userInput);\n"
+                'const key = "AKIAIOSFODNN7EXAMPLE";\n'
+                "eval(userInput);\n"
+            ),
+        }
+        result = adversarial_verify(findings, files)
+        assert len(result) == 1
+        assert result[0].line == 3
+
+    def test_unknown_rule_id_is_kept(self):
+        findings = [Finding("critical", "unknown-rule", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": "some code here"})
+        assert len(result) == 1
+
+    def test_missing_file_line_drops_finding(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 99, "msg")]
+        result = adversarial_verify(findings, {"app.js": "eval(userInput);"})
+        assert result == []
+
+    def test_inline_comment_suppresses_eval_finding(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": "const note = 1; // eval(userInput);"})
+        assert result == []
+
+    def test_multiline_block_comment_continuation_suppresses_finding(self):
+        findings = [
+            Finding("critical", "eval-like-execution", "app.js", 2, "msg"),
+        ]
+        files = {
+            "app.js": (
+                "/* eval(userInput);\n"
+                "  more comment text\n"
+            ),
+        }
+        result = adversarial_verify(findings, files)
+        assert result == []
+
+    def test_hardcoded_secret_inside_string_is_kept(self):
+        findings = detect_hardcoded_secrets("app.js", 'const key = "AKIAABCDEFGHIJKLMNOP";')
+        result = adversarial_verify(findings, {"app.js": 'const key = "AKIAABCDEFGHIJKLMNOP";'})
+        assert len(result) == 1
+
+    def test_websocket_after_inert_fetch_is_kept(self):
+        content = 'const url = "fetch(\'http://example.com\')"; new WebSocket("wss://evil.example.com/ws");'
+        findings = detect_network_exfil("app.js", content)
+        result = adversarial_verify(findings, {"app.js": content})
+        assert len(result) == 1
+        assert result[0].rule_id == "network-exfil"
+
+    def test_eval_after_string_with_escaped_quote_is_kept(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": 'const label = "it\\\'s safe"; eval(userInput);'})
+        assert len(result) == 1
+
+    def test_eval_inside_backtick_is_dropped(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": 'const msg = `eval(userInput)`;'})
+        assert result == []
+
+    def test_eval_after_nested_quotes_is_kept(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": """const msg = "He said 'hello'"; eval(userInput);"""})
+        assert len(result) == 1
+
+    def test_eval_inside_block_comment_on_same_line_is_dropped(self):
+        findings = [Finding("critical", "eval-like-execution", "app.js", 1, "msg")]
+        result = adversarial_verify(findings, {"app.js": "const note = 1; /* eval(userInput) */;"})
+        assert result == []
+
+    def test_eval_after_closed_block_comment_on_same_line_is_kept(self):
+        content = "/* note */ eval(userInput);"
+        findings = detect_eval_like("app.js", content)
+        result = adversarial_verify(findings, {"app.js": content})
+        assert len(result) == 1
+
+    def test_eval_before_block_comment_on_same_line_is_kept(self):
+        content = "eval(userInput); /* end */"
+        findings = detect_eval_like("app.js", content)
+        result = adversarial_verify(findings, {"app.js": content})
+        assert len(result) == 1
+
+    def test_block_comment_open_inside_string_does_not_mask_later_lines(self):
+        content = 'const s = "/*";\neval(userInput);\n'
+        findings = detect_eval_like("app.js", content)
+        result = adversarial_verify(findings, {"app.js": content})
+        assert len(result) == 1
+        assert result[0].line == 2
+
+    def test_block_comment_open_after_line_comment_does_not_mask_later_lines(self):
+        content = "const n = 1; // /*\neval(userInput);\n"
+        findings = detect_eval_like("app.js", content)
+        result = adversarial_verify(findings, {"app.js": content})
+        assert len(result) == 1
+        assert result[0].line == 2
+
+    def test_block_comment_mask_is_built_once_per_file(self, monkeypatch):
+        calls: list[int] = []
+        real = code_analyzer._compute_block_comment_mask
+
+        def counting(lines):
+            calls.append(len(lines))
+            return real(lines)
+
+        monkeypatch.setattr(code_analyzer, "_compute_block_comment_mask", counting)
+        content = "eval(a);\neval(b);\neval(c);\n"
+        findings = detect_eval_like("app.js", content)
+        assert len(findings) == 3
+        code_analyzer.adversarial_verify(findings, {"app.js": content})
+        assert len(calls) == 1
+
+    def test_match_span_starting_at_column_zero_is_used(self):
+        # `new Function(` starts at offset 0; the trigger-token fallback finds
+        # the later `eval(` inside the line comment and refutes the finding.
+        content = "new Function(x); // eval(y)"
+        findings = [f for f in detect_eval_like("app.js", content) if f.match_start == 0]
+        assert len(findings) == 1
+        result = adversarial_verify(findings, {"app.js": content})
+        assert len(result) == 1
+
+    def test_real_key_beside_example_key_on_same_line_is_kept(self):
+        content = 'const demo = "AKIAIOSFODNN7EXAMPLE"; const real = "AKIAABCDEFGHIJKLMNOP";'
+        findings = detect_hardcoded_secrets("app.js", content)
+        result = adversarial_verify(findings, {"app.js": content})
+        assert len(result) == 1
+        assert content[result[0].match_start:result[0].match_end] == "AKIAABCDEFGHIJKLMNOP"

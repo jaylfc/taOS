@@ -26,16 +26,15 @@ def _row(r) -> dict:
 class StrikeStore(BaseStore):
     """Append-only log of verification strikes per task.
 
-    The dispatch host (taOS-dev) records a strike each time a card fails
-    verification.  When the count reaches ``STRIKE_THRESHOLD`` the task is
-    quarantined (see ``ProjectTaskStore.quarantine_task``) and the lead is
-    notified.  Strikes are auto-cleared when the task closes or its PR
-    merges (see ``ProjectTaskStore.close_task`` and the unquarantine route).
+    The dispatch host records a strike each time a card fails verification.
+    When the cumulative count reaches ``STRIKE_THRESHOLD`` the task is
+    permanently parked (see ``ProjectTaskStore.park_task``).  Strikes are
+    auto-cleared when the task closes (see ``ProjectTaskStore.close_task``).
     """
 
     SCHEMA = STRIKE_SCHEMA
 
-    # Number of failed verifications before a card is quarantined.
+    # Number of cumulative failed dispatches before a card is permanently parked.
     STRIKE_THRESHOLD = 3
 
     async def record_strike(
