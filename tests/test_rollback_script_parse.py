@@ -23,7 +23,13 @@ def _git(repo: Path, *args: str) -> str:
 
 @pytest.fixture()
 def repo(tmp_path: Path) -> Path:
-    """A tiny git checkout with two commits and one taos-pre-update-* tag."""
+    """A tiny git checkout with three commits and one taos-pre-update-* tag.
+
+    Three, not two: the recovery tag sits on the oldest commit and the recorded
+    rollback target on ``HEAD~1``, so every assertion about which of the two
+    routes ran is decided by a different sha. With two commits they coincide and
+    the tests pass either way.
+    """
     checkout = tmp_path / "install"
     checkout.mkdir()
     subprocess.check_call(
@@ -32,10 +38,12 @@ def repo(tmp_path: Path) -> Path:
     )
     _git(checkout, "config", "user.name", "taos test")
     _git(checkout, "config", "user.email", "test@example.invalid")
-    (checkout / "VERSION").write_text("old\n")
+    (checkout / "VERSION").write_text("oldest\n")
     _git(checkout, "add", "VERSION")
-    _git(checkout, "commit", "-qm", "old version")
+    _git(checkout, "commit", "-qm", "oldest version")
     _git(checkout, "tag", RECOVERY_TAG)
+    (checkout / "VERSION").write_text("old\n")
+    _git(checkout, "commit", "-qam", "old version")
     (checkout / "VERSION").write_text("new\n")
     _git(checkout, "commit", "-qam", "new version")
     return checkout
@@ -80,7 +88,7 @@ def test_payload_in_record_is_not_executed(repo, stub_bin, tmp_path):
         f"touch '{sentinel_cmd}'\n"
     )
 
-    _run_rollback(repo, stub_bin, tmp_path)
+    result = _run_rollback(repo, stub_bin, tmp_path)
 
     assert not sentinel_sub.exists(), (
         f"sentinel file {sentinel_sub} was created (expected: not created) -- "
@@ -89,6 +97,15 @@ def test_payload_in_record_is_not_executed(repo, stub_bin, tmp_path):
     assert not sentinel_cmd.exists(), (
         f"sentinel file {sentinel_cmd} was created (expected: not created) -- "
         "rollback.sh executed the record file"
+    )
+    # Absent sentinels alone would also be satisfied by the script dying before
+    # it ever read the record, so pin the path it actually took: the payload is
+    # not a commit, so the run must complete down the recovery-tag route.
+    combined = result.stdout + result.stderr
+    assert "recovery tag" in combined, combined
+    assert result.returncode == 0, combined
+    assert _git(repo, "rev-parse", "HEAD") == _git(repo, "rev-parse", RECOVERY_TAG), (
+        combined
     )
 
 
@@ -153,6 +170,68 @@ def test_wellformed_record_restores_branch_and_commit(repo, stub_bin, tmp_path):
     combined = result.stdout + result.stderr
     assert _git(repo, "rev-parse", "HEAD") == old_sha, combined
     assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD") == "main", combined
+
+
+def test_abbreviated_sha_falls_back_to_recovery_tag(repo, stub_bin, tmp_path):
+    """An abbreviated prev_sha is a truncated record, even when git resolves it.
+
+    The writer only ever records `git rev-parse HEAD`, so a 7-char prefix in the
+    record did not come from the writer. It still names a real commit here, which
+    is exactly why resolving it would be the wrong answer.
+    """
+    tag_sha = _git(repo, "rev-parse", RECOVERY_TAG)
+    old_sha = _git(repo, "rev-parse", "HEAD~1")
+    (repo / ".taos-rollback").write_text(
+        f"# taOS rollback target\nprev_branch='main'\nprev_sha='{old_sha[:7]}'\n"
+    )
+
+    result = _run_rollback(repo, stub_bin, tmp_path)
+
+    combined = result.stdout + result.stderr
+    assert _git(repo, "rev-parse", "HEAD") == tag_sha, (
+        f"expected the recovery tag {tag_sha[:12]}, not the abbreviated "
+        f"{old_sha[:7]}; output:\n{combined}"
+    )
+
+
+def test_unsafe_branch_restores_the_commit_detached(repo, stub_bin, tmp_path):
+    """A branch git would reject costs the branch, never the commit.
+
+    `git checkout -B 'feat/..evil'` fails, and both the plain and the --force
+    attempt failing aborts the whole script under `set -e` -- turning a
+    recoverable rollback into no rollback at all.
+    """
+    old_sha = _git(repo, "rev-parse", "HEAD~1")
+    (repo / ".taos-rollback").write_text(
+        f"# taOS rollback target\nprev_branch='feat/..evil'\nprev_sha='{old_sha}'\n"
+    )
+
+    result = _run_rollback(repo, stub_bin, tmp_path)
+
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert _git(repo, "rev-parse", "HEAD") == old_sha, combined
+
+
+def test_dash_leading_branch_is_not_passed_to_git(repo, stub_bin, tmp_path):
+    """`-B -x` would read the branch as an option; git calls the ref itself fine."""
+    old_sha = _git(repo, "rev-parse", "HEAD~1")
+    (repo / ".taos-rollback").write_text(
+        f"# taOS rollback target\nprev_branch='--force'\nprev_sha='{old_sha}'\n"
+    )
+
+    result = _run_rollback(repo, stub_bin, tmp_path)
+
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert _git(repo, "rev-parse", "HEAD") == old_sha, combined
+    # `git branch --list --force` would eat the name as an option, so ask for the
+    # ref by its full path instead.
+    made = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", "refs/heads/--force"],
+        capture_output=True,
+    )
+    assert made.returncode != 0, "a branch literally named --force was created"
 
 
 def test_explicit_target_still_wins(repo, stub_bin, tmp_path):

@@ -42,6 +42,24 @@ record_field(){
   printf '%s' "$val"
 }
 
+# A recorded commit is a FULL object name. The writer records `git rev-parse
+# HEAD`, which is 40 hex (64 in a sha256 checkout) and never abbreviated -- so a
+# short value in the record is a truncated or forged one, not a legitimate
+# prefix, even when git would happily resolve it.
+sha_safe(){
+  [[ "$1" =~ ^[0-9a-fA-F]{40}$ || "$1" =~ ^[0-9a-fA-F]{64}$ ]]
+}
+
+# A recorded branch is usable only if git itself calls it a valid ref name, and
+# only if it does not start with a dash: `git checkout -B --force <sha>` would
+# read the name as an option, and git considers `refs/heads/--force` a perfectly
+# valid ref. check-ref-format is the authority on the rest (no `..`, no leading
+# `.`, no trailing `.lock`, no `@{`, no control characters, space or ~^:?*[\) --
+# hand-rolling that grammar in a regex is how these checks drift out of date.
+ref_safe(){
+  [[ -n "$1" && "$1" != -* ]] && git check-ref-format "refs/heads/$1" 2>/dev/null
+}
+
 target_ref="${1:-}"
 prev_branch=""
 prev_sha=""
@@ -53,15 +71,15 @@ if [[ -n "$target_ref" ]]; then
 elif [[ -f .taos-rollback ]]; then
   prev_branch="$(record_field prev_branch)"
   prev_sha="$(record_field prev_sha)"
-  # A truncated or tampered record must not reach git: only a hex object name
-  # counts as a recorded commit, and a branch name must look like a ref (never
-  # a leading dash, which git would read as an option).
-  if [[ ! "$prev_sha" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+  # A truncated or tampered record must not reach git. An unusable commit sends
+  # the whole run to the recovery tag; an unusable branch costs only the branch,
+  # because getting the commit back still beats not rolling back at all.
+  if ! sha_safe "$prev_sha"; then
     log "record file has no usable commit; falling back to the recovery tag"
     prev_branch=""
     prev_sha=""
   else
-    if [[ ! "$prev_branch" =~ ^[A-Za-z0-9_][A-Za-z0-9._/-]*$ ]]; then
+    if ! ref_safe "$prev_branch"; then
       log "record file has no usable branch; restoring the commit only"
       prev_branch=""
     fi

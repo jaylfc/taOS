@@ -10,8 +10,8 @@ broken the app.
 The file is DATA, never code. It lives in the install dir, which the installer
 chowns to the ``taos`` service account, and ``scripts/rollback.sh`` escalates
 with ``sudo`` when it restarts the unit -- so both ends parse it line by line
-and accept ``prev_sha`` only when it is a hex object name. Anything else is
-treated as "no usable record", which sends the script to its recovery-tag
+and accept ``prev_sha`` only when it is a full hex object name. Anything else
+is treated as "no usable record", which sends the script to its recovery-tag
 fallback instead of dead-ending.
 
 File: ``<project_dir>/.taos-rollback`` (single record, overwritten each update).
@@ -24,9 +24,40 @@ from pathlib import Path
 
 ROLLBACK_FILE = ".taos-rollback"
 
-# A recorded commit is a git object name and nothing else. Kept in sync with the
-# same check in scripts/rollback.sh so both readers agree on what is usable.
-_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+# A recorded commit is a FULL git object name and nothing else: the writer
+# records ``git rev-parse HEAD``, which is 40 hex (64 in a sha256 checkout) and
+# never abbreviated. A short value is therefore a truncated or forged record,
+# not a legitimate prefix. Kept in sync with sha_safe() in scripts/rollback.sh.
+_SHA_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+
+# Characters git bans anywhere in a ref name: ASCII control characters, space,
+# and ~ ^ : ? * [ \ (git-check-ref-format(1)).
+_REF_BANNED = frozenset("~^:?*[\\ \x7f") | frozenset(chr(c) for c in range(0x20))
+
+
+def _ref_safe(name: str) -> bool:
+    """Would ``scripts/rollback.sh`` restore a branch by this name?
+
+    A reimplementation of ``git check-ref-format refs/heads/<name>`` plus the
+    one rule that is ours rather than git's: a name may not start with a dash,
+    because ``git checkout -B --force <sha>`` reads it as an option while git
+    itself calls ``refs/heads/--force`` a perfectly valid ref. The shell end
+    asks git directly; ``tests/test_rollback.py`` pins this copy to the same
+    answers so the two readers cannot drift apart.
+    """
+    if not name or name.startswith("-"):
+        return False
+    if ".." in name or "@{" in name or name.endswith("."):
+        return False
+    if any(ch in _REF_BANNED for ch in name):
+        return False
+    # Slash-separated components: none empty (which also covers a leading or
+    # trailing slash and a doubled one), none starting with '.', none ending
+    # in '.lock'.
+    return all(
+        part and not part.startswith(".") and not part.endswith(".lock")
+        for part in name.split("/")
+    )
 
 
 def _shq(value: str) -> str:
@@ -40,7 +71,7 @@ def record_pre_update(project_dir, *, branch: str, sha: str, ts: int) -> Path:
     Overwrites any prior record: rollback targets the state immediately before
     the most recent update, which is the one a user would want to undo.
 
-    Raises ``ValueError`` for a ``sha`` that is not a git object name or a
+    Raises ``ValueError`` for a ``sha`` that is not a full git object name or a
     ``branch`` carrying a newline (which would forge a second record line).
     The caller records best-effort, so a rejected write simply leaves the
     rollback script on its recovery-tag fallback rather than on a bad target.
@@ -65,8 +96,11 @@ def read_rollback_target(project_dir) -> dict | None:
 
     Returns ``{"branch": str, "sha": str, "ts": str}``. Parses the simple
     ``key='value'`` lines without sourcing (so it is safe to call on any input),
-    and rejects a truncated or tampered record whose ``prev_sha`` is not a hex
-    object name -- the same rule scripts/rollback.sh applies.
+    and applies exactly the rules scripts/rollback.sh applies to the same file:
+    a ``prev_sha`` that is not a full object name makes the whole record
+    unusable (None), while a ``prev_branch`` git would refuse costs only the
+    branch and comes back as ``""`` -- restoring the commit alone still beats
+    not rolling back.
     """
     path = Path(project_dir) / ROLLBACK_FILE
     if not path.is_file():
@@ -81,6 +115,11 @@ def read_rollback_target(project_dir) -> dict | None:
         if len(val) >= 2 and val[0] == val[-1] == "'":
             val = val[1:-1].replace("'\\''", "'")
         out[key.strip()] = val
-    if "prev_branch" not in out or not _SHA_RE.match(out.get("prev_sha", "")):
+    if not _SHA_RE.match(out.get("prev_sha", "")):
         return None
-    return {"branch": out["prev_branch"], "sha": out["prev_sha"], "ts": out.get("prev_ts", "")}
+    branch = out.get("prev_branch", "")
+    return {
+        "branch": branch if _ref_safe(branch) else "",
+        "sha": out["prev_sha"],
+        "ts": out.get("prev_ts", ""),
+    }
