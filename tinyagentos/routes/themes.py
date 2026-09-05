@@ -36,7 +36,7 @@ async def install_theme(request: Request, package: UploadFile = File(...)):
     # buffering the rest of it (same pattern as the userspace app installer).
     data = await package.read(_MAX_THEME_PACKAGE_BYTES + 1)
     if len(data) > _MAX_THEME_PACKAGE_BYTES:
-        return JSONResponse({"error": "theme package too large"}, status_code=413)
+        return JSONResponse({"error": "theme package too large (32 MB max)"}, status_code=413)
     try:
         manifest = extract_theme_package(data, themes_root=_themes_root(request))
     except ThemePackageError as exc:

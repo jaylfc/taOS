@@ -319,7 +319,7 @@ async def restore_backup(request: Request, file: UploadFile):
     # buffering the rest of it (same pattern as the package installers).
     content = await file.read(_MAX_BACKUP_BYTES + 1)
     if len(content) > _MAX_BACKUP_BYTES:
-        return JSONResponse({"error": "Backup file too large"}, status_code=413)
+        return JSONResponse({"error": "backup file too large (64 MB max)"}, status_code=413)
     buf = io.BytesIO(content)
     try:
         with tarfile.open(fileobj=buf, mode="r:gz") as tar:
