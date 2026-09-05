@@ -678,6 +678,88 @@ class TestMalformedWireData:
         assert conduit._wait_for_matching(TuiuiConduit._match_spawned)["Spawned"]["app"] == 5
 
 
+class TestAbsurdDeclaredGeometry:
+    """A declared geometry is a wire value, not an allocation budget."""
+
+    def test_flat_grid_geometry_far_larger_than_its_cells_is_refused(self):
+        """``cols * rows`` comes off the wire; padding to it must be bounded."""
+        with pytest.raises(TuiuiConduitError, match="declared geometry"):
+            _extract_grid({"cells": ["a"], "cols": 2048, "rows": 2048})
+
+    def test_row_list_geometry_far_larger_than_its_cells_is_refused(self):
+        """The rows_list path pads each row to ``cols``; same unbounded product."""
+        with pytest.raises(TuiuiConduitError, match="declared geometry"):
+            _extract_grid({"cols": 2048, "rows_list": [[] for _ in range(2048)]})
+
+    def test_the_reported_trillion_cell_payload_is_refused_without_allocating(self):
+        """The reported payload; at head this test could only be run as an OOM."""
+        started = time.monotonic()
+        with pytest.raises(TuiuiConduitError, match="declared geometry"):
+            _extract_grid({"cells": ["a"], "cols": 1000000, "rows": 1000000})
+        assert time.monotonic() - started < 1.0, "the guard must precede the allocation"
+
+    def test_a_grid_padded_within_the_bound_still_works(self):
+        cells, cols, rows, truncated = _extract_grid({"cells": list("ab"), "cols": 4, "rows": 2})
+        assert (cols, rows) == (4, 2)
+        assert truncated is True
+        assert len(cells) == 8
+
+
+class TestWireRecordShapes:
+    """A malformed record shape is a protocol error, not a KeyError."""
+
+    def test_roster_value_that_is_not_a_list_raises(self, paired_conduit):
+        conduit, peer = paired_conduit
+        conduit.connect()
+        peer.sendall(_line({"Roster": {"app": 1}}))
+        with pytest.raises(TuiuiConduitError, match="Roster"):
+            conduit.list_apps(timeout=5.0)
+
+    def test_roster_entry_that_is_not_a_dict_raises(self):
+        with pytest.raises(TuiuiConduitError, match="Roster"):
+            TuiuiConduit._parse_roster(["app"])
+
+    def test_roster_entry_without_app_raises(self):
+        with pytest.raises(TuiuiConduitError, match="Roster"):
+            TuiuiConduit._parse_roster({"cmd": "sh"})
+
+    def test_roster_args_that_are_not_a_list_raises(self):
+        with pytest.raises(TuiuiConduitError, match="Roster.args"):
+            TuiuiConduit._parse_roster({"app": 1, "args": 7})
+
+    def test_roster_meta_that_is_not_a_list_raises(self):
+        """``rebind_by_meta`` iterates ``entry.meta``; a scalar must not reach it."""
+        with pytest.raises(TuiuiConduitError, match="Roster.meta"):
+            TuiuiConduit._parse_roster({"app": 1, "meta": 7})
+
+    def test_spawned_payload_that_is_not_a_dict_never_matches(self):
+        """``"app" in [...]`` is True for a list, and spawn() then subscripts it."""
+        assert TuiuiConduit._match_spawned({"Spawned": ["app", "pid"]}) is False
+
+    def test_frame_payload_that_is_not_a_dict_raises(self):
+        with pytest.raises(TuiuiConduitError, match="Frame"):
+            TuiuiConduit._parse_frame("boom")
+
+    def test_frame_grid_that_is_not_a_dict_raises(self):
+        with pytest.raises(TuiuiConduitError, match="Frame.grid"):
+            TuiuiConduit._parse_frame({"grid": ["a", "b"]})
+
+    def test_frame_images_that_are_not_a_list_raises(self):
+        with pytest.raises(TuiuiConduitError, match="Frame.images"):
+            TuiuiConduit._parse_frame({"grid": {}, "images": 7})
+
+    def test_a_malformed_record_shape_does_not_kill_the_reader(self, paired_conduit):
+        """The shape guard must behave like the geometry guard already does."""
+        conduit, peer = paired_conduit
+        conduit.connect()
+        peer.sendall(_line({"Frame": {"grid": ["a"]}}))
+        peer.sendall(_line({"Spawned": {"app": 5, "pid": 55}}))
+        frames = conduit.iter_frames()
+        with pytest.raises(TuiuiConduitError, match="Frame.grid"):
+            next(frames)
+        assert conduit._wait_for_matching(TuiuiConduit._match_spawned)["Spawned"]["app"] == 5
+
+
 class TestBacklogAccounting:
     """A dropped event must be counted, never silently vanish."""
 

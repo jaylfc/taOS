@@ -44,6 +44,13 @@ _REPLY_BACKLOG = 256
 # struct ucred: pid, uid, gid as native ints.
 _UCRED = "3i"
 
+# Largest gap between a grid's declared geometry and the cells actually
+# delivered that is worth padding. ``cols`` and ``rows`` are wire values, so
+# their product is an attacker-chosen allocation: a one-cell frame declaring
+# 1000000x1000000 would otherwise materialise ~1e12 list entries in the
+# consumer thread. Beyond this gap the frame is malformed, not sparse.
+_MAX_GRID_PAD = 1 << 20
+
 
 def default_socket_path() -> str:
     """Return the default apphost socket path.
@@ -85,6 +92,25 @@ def _as_int(value: Any, field: str) -> int:
         ) from exc
 
 
+def _as_list(value: Any, field: str) -> list:
+    """Accept one wire value only if it really is a list.
+
+    ``list(value)`` on a scalar raises TypeError and on a string or dict
+    silently yields characters or keys, so every sequence read off the socket
+    is checked rather than coerced.
+    """
+    if not isinstance(value, list):
+        raise TuiuiConduitError(f"bad frame: {field}={value!r} is not a list")
+    return list(value)
+
+
+def _as_record(value: Any, field: str) -> dict[str, Any]:
+    """Accept one wire value only if it really is a JSON object."""
+    if not isinstance(value, dict):
+        raise TuiuiConduitError(f"bad frame: {field}={value!r} is not an object")
+    return value
+
+
 @dataclass
 class SpawnedApp:
     """Result of a successful :meth:`TuiuiConduit.spawn` call."""
@@ -120,7 +146,9 @@ class Frame:
     ``truncated`` is True when the wire grid did not match its own declared
     geometry (short rows padded with spaces, or surplus cells dropped), so
     a caller can tell missing data from genuinely blank cells instead of
-    having :meth:`TuiuiConduit.frame_lines` quietly strip the gap away.
+    having :meth:`TuiuiConduit.frame_lines` quietly strip the gap away. A
+    geometry too far beyond the delivered cells to be padding is refused
+    outright rather than materialised.
     """
 
     cells: list[str]
@@ -501,7 +529,10 @@ class TuiuiConduit:
 
     @staticmethod
     def _match_spawned(evt: dict[str, Any]) -> bool:
-        return "Spawned" in evt and "app" in evt["Spawned"] and "pid" in evt["Spawned"]
+        # isinstance first: ``"app" in ["app", "pid"]`` is also True, and
+        # spawn() would then subscript a list by name.
+        spawned = evt.get("Spawned")
+        return isinstance(spawned, dict) and "app" in spawned and "pid" in spawned
 
     def _wait_for_matching(
         self,
@@ -554,8 +585,14 @@ class TuiuiConduit:
         with self._lock:
             self._send({"ListApps": {}})
             evt = self._wait_for_matching(self._match_roster, timeout=timeout)
-        apps = evt.get("Roster") or evt.get("apps") or []
-        return [self._parse_roster(a) for a in apps]
+        apps = evt.get("Roster")
+        if apps is None:
+            apps = evt.get("apps")
+        if apps is None:
+            apps = []
+        # A dict or a string is iterable, so without this the roster would be
+        # parsed from its keys or its characters instead of being refused.
+        return [self._parse_roster(a) for a in _as_list(apps, "Roster")]
 
     @staticmethod
     def _match_roster(evt: dict[str, Any]) -> bool:
@@ -563,16 +600,22 @@ class TuiuiConduit:
 
     @staticmethod
     def _parse_roster(raw: dict[str, Any]) -> RosterEntry:
+        raw = _as_record(raw, "Roster entry")
+        if "app" not in raw:
+            raise TuiuiConduitError("bad frame: Roster entry has no app id")
+        meta = raw.get("meta")
         return RosterEntry(
             app=_as_int(raw["app"], "Roster.app"),
             cmd=str(raw.get("cmd", "")),
-            args=list(raw.get("args", [])),
+            args=_as_list(raw.get("args", []), "Roster.args"),
             pid=_as_int(raw.get("pid", 0), "Roster.pid"),
             cols=_as_int(raw.get("cols", 0), "Roster.cols"),
             rows=_as_int(raw.get("rows", 0), "Roster.rows"),
             age_secs=_as_int(raw.get("age_secs", 0), "Roster.age_secs"),
             alive=bool(raw.get("alive", True)),
-            meta=raw.get("meta"),
+            # rebind_by_meta() iterates this; a scalar or a string must not
+            # reach it as "iterate my characters".
+            meta=None if meta is None else _as_list(meta, "Roster.meta"),
         )
 
     def kill(self, app: int) -> None:
@@ -625,6 +668,7 @@ class TuiuiConduit:
 
     @classmethod
     def _parse_frame(cls, raw: dict[str, Any]) -> Frame:
+        raw = _as_record(raw, "Frame payload")
         grid = raw.get("grid") or {}
         cells, cols, rows, truncated = _extract_grid(grid)
         cursor = raw.get("cursor")
@@ -640,8 +684,8 @@ class TuiuiConduit:
             rows=rows,
             cursor=cur_pair,
             flags=_as_int(raw.get("flags", 0), "Frame.flags"),
-            images=list(raw.get("images", [])),
-            image_data=list(raw.get("image_data", [])),
+            images=_as_list(raw.get("images", []), "Frame.images"),
+            image_data=_as_list(raw.get("image_data", []), "Frame.image_data"),
             clear=bool(raw.get("clear", False)),
             switch_to=(
                 _as_int(raw["switch_to"], "Frame.switch_to")
@@ -705,12 +749,30 @@ def _ceil_div(numerator: int, denominator: int) -> int:
     return -(-numerator // denominator) if denominator > 0 else 0
 
 
+def _check_geometry(cols: int, rows: int, have: int) -> None:
+    """Refuse a declared geometry that no delivered grid could account for.
+
+    ``cols`` and ``rows`` arrive on the socket, so ``cols * rows`` is an
+    allocation an apphost -- or anything that got in front of one -- chooses
+    for this process. Padding a short grid is normal; padding a one-cell grid
+    out to a trillion entries is a malformed frame, and it has to be rejected
+    before the list is built rather than after.
+    """
+    want = cols * rows
+    if want > have + _MAX_GRID_PAD:
+        raise TuiuiConduitError(
+            f"bad frame: declared geometry {cols}x{rows} needs {want} cells "
+            f"but only {have} arrived"
+        )
+
+
 def _fit(cells: list[str], cols: int, rows: int) -> tuple[list[str], int, int, bool]:
     """Normalise ``cells`` to exactly ``rows * cols`` entries.
 
     Returns the ``truncated`` flag so a caller can tell a grid that did not
     match its declared geometry from one that is simply blank.
     """
+    _check_geometry(cols, rows, len(cells))
     want = cols * rows
     if len(cells) < want:
         return cells + [" "] * (want - len(cells)), cols, rows, True
@@ -731,9 +793,14 @@ def _extract_grid(grid: dict[str, Any]) -> tuple[list[str], int, int, bool]:
     read as a single row rather than assumed to be 80 wide, because an
     assumed width silently garbles every other width (a 132-column grid
     would be re-flowed into nonsense with no signal at all).
+
+    Nor is a declared geometry trusted as an allocation: both shapes run
+    through :func:`_check_geometry` before any padding, so ``cols`` and
+    ``rows`` off the wire cannot size a list this process then has to build.
     """
     if not grid:
         return [], 0, 0, False
+    grid = _as_record(grid, "Frame.grid")
     if isinstance(grid.get("cells"), list):
         cells = [_cell_char(c) for c in grid["cells"]]
         declared_cols = grid.get("cols")
@@ -768,6 +835,7 @@ def _extract_grid(grid: dict[str, Any]) -> tuple[list[str], int, int, bool]:
             cols = _as_int(declared_cols, "grid.cols")
         else:
             cols = max((len(r) for r in per_row), default=0)
+        _check_geometry(cols, len(per_row), sum(len(r) for r in per_row))
         cells: list[str] = []
         truncated = False
         for row_cells in per_row:
