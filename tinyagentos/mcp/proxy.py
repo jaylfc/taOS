@@ -30,16 +30,23 @@ async def call_tool(
         if not started:
             return {"error": "server_unavailable", "reason": f"could not start {server_id}", "status": 503}
 
+    # The JSON-RPC transport is not wired yet.  Fail explicitly rather than
+    # returning a success-shaped stub: a caller cannot tell `{"ok": True, ...}`
+    # from a real tool result, so a stub that reports success silently feeds
+    # made-up data into whatever asked for the call.
     logger.warning(
-        "mcp proxy: actual MCP JSON-RPC call not yet wired — returning stub "
+        "mcp proxy: MCP JSON-RPC transport not wired — refusing call "
         "(server=%s tool=%s agent=%s)",
         server_id,
         tool,
         agent_name,
     )
     return {
-        "ok": True,
-        "result": "stub — MCP JSON-RPC call not yet wired",
+        "error": "not_implemented",
+        "reason": (
+            "MCP JSON-RPC transport is not wired yet; no tool call was made"
+        ),
+        "server_id": server_id,
         "tool": tool,
-        "arguments": arguments,
+        "status": 501,
     }
