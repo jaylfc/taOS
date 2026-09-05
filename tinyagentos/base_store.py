@@ -9,6 +9,27 @@ class Engine(Enum):
     POSTGRES = "postgres"
 
 
+class PendingCapExceeded(Exception):
+    """A store refused an insert because a per-key pending cap is already full.
+
+    Raised by a ``create()`` that enforces the cap INSIDE its INSERT statement
+    rather than leaving the caller to count first.  A count-then-insert cap is
+    bypassable by exactly the traffic caps exist to stop: every request in a
+    concurrent burst reads the same pre-insert count, every one of them passes
+    the check, and every one of them inserts.
+
+    ``pending`` is read back after the refusal, so it is a description for the
+    error message, not the value the decision was made on -- that comparison
+    happened atomically in SQL.  Routes map this to 429.
+    """
+
+    def __init__(self, *, key: str, cap: int, pending: int):
+        self.key = key
+        self.cap = cap
+        self.pending = pending
+        super().__init__(f"{pending} pending at cap {cap} for {key!r}")
+
+
 class BaseStore:
     """Base class for all SQLite-backed stores.
 

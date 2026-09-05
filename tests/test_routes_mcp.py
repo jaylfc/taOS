@@ -185,6 +185,56 @@ class TestMCPGetConfig:
 
 
 @pytest.mark.asyncio
+class TestMCPProxyCall:
+    """`POST /api/mcp/call` is the real caller of `proxy.call_tool`.
+
+    The JSON-RPC transport is not wired yet, so the route has to surface that
+    as an explicit failure.  It used to answer 200 with `{"ok": true, "result":
+    "stub ..."}`, which no caller could tell from a real tool result.
+    """
+
+    async def test_call_without_transport_returns_501_not_a_stub(self, app_client):
+        client, app = app_client
+        mcp_store = app.state.mcp_store
+        await mcp_store.register_server(
+            "mcp-fetch", "1.0.0", "stdio", config={"cmd": ["sleep", "infinity"]}
+        )
+        await mcp_store.add_attachment("mcp-fetch", "all", None)
+
+        resp = await client.post(
+            "/api/mcp/call",
+            json={
+                "server_id": "mcp-fetch",
+                "tool": "fetch_url",
+                "agent_name": "weatherbot",
+                "arguments": {"url": "https://example.invalid"},
+            },
+        )
+        assert resp.status_code == 501
+        data = resp.json()
+        assert data["error"] == "not_implemented"
+        assert data.get("ok") is not True
+        assert "stub" not in str(data.get("result", ""))
+
+    async def test_call_denied_by_permissions_still_returns_403(self, app_client):
+        """The new 501 must not shadow the permission check that runs first."""
+        client, app = app_client
+        mcp_store = app.state.mcp_store
+        await mcp_store.register_server("mcp-fetch", "1.0.0", "stdio")
+
+        resp = await client.post(
+            "/api/mcp/call",
+            json={
+                "server_id": "mcp-fetch",
+                "tool": "fetch_url",
+                "agent_name": "weatherbot",
+            },
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "permission_denied"
+
+
+@pytest.mark.asyncio
 class TestMCPGetEnv:
     async def test_env_empty_when_no_secrets(self, app_client):
         client, app = app_client
