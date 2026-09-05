@@ -1,0 +1,3 @@
+### Fixed
+
+- Outbound inference and framework-adapter calls now retry the transient failures they were silently dropping: connect timeouts (what a backend still booting produces), pool timeouts, read errors and HTTP 429 — with `Retry-After` honoured. An exhausted 5xx now raises `httpx.HTTPStatusError` instead of an internal type no caller could catch, and the retry loop is bounded by a total-elapsed deadline so it can no longer keep running after the channel hub has given up on the request.

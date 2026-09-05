@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
 import httpx
+from tinyagentos.adapters.retry_policy import ROUTER_TIMEOUT_SECONDS
 from tinyagentos.channel_hub.message import IncomingMessage, OutgoingMessage, parse_inline_hints
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,9 @@ class MessageRouter:
         await self._archive_message(agent_name, message, direction="inbound")
 
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
+            # Same constant the adapters size their retry budget against, so
+            # neither side can drift into retrying past this deadline.
+            async with httpx.AsyncClient(timeout=ROUTER_TIMEOUT_SECONDS) as client:
                 resp = await client.post(
                     f"http://localhost:{port}/message",
                     json={
