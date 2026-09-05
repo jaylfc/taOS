@@ -24,12 +24,59 @@ logger = logging.getLogger(__name__)
 # runs up to PiB -- the old GiB/MiB/KiB-only pattern silently matched nothing
 # on a rootfs past 1 TiB, so the quota went unenforced.
 _SIZE_TOKEN_RE = re.compile(r"[\d.]+\s*[KMGTP]?i?B", re.IGNORECASE)
-_DISK_USAGE_RE = re.compile(rf"(?i)disk\s+usage.*?:\s*({_SIZE_TOKEN_RE.pattern})")
 
 
 def _to_gib(size: str) -> float:
     """Convert a size string ('1.50TiB', '412.50 MiB') to GiB. Raises ValueError."""
     return parse_size_bytes(size) / BYTES_PER_GIB
+
+
+def _find_disk_usage_token(out: str) -> tuple[str | None, str | None]:
+    """Pull the disk-usage size token out of ``incus info`` output.
+
+    incus renders the storage figures as a *section*: the header line
+    carries no size at all, the value sits on the following, more-indented
+    line(s)::
+
+        Resources:
+          Disk usage:
+            root: 1.50TiB
+
+    A single-line ``Disk usage: 1.50TiB`` is accepted too, because older
+    incus builds and the unit fixtures spell it that way.
+
+    Returns ``(token, None)`` when a size was found, ``(None, section)``
+    when a disk-usage section exists but carries no size token anywhere
+    (``section`` is the section text, for the log line), and
+    ``(None, None)`` when the output has no disk-usage section at all --
+    a container that simply reports no storage figures is not an error.
+    """
+    lines = out.splitlines()
+    for index, line in enumerate(lines):
+        if "disk usage" not in line.lower():
+            continue
+
+        # Single-line form: the size follows the colon on this same line.
+        _, _, tail = line.partition(":")
+        match = _SIZE_TOKEN_RE.search(tail)
+        if match is not None:
+            return match.group(0), None
+
+        # Section form: everything indented deeper than the header.
+        header_indent = len(line) - len(line.lstrip())
+        section = [line.strip()]
+        for following in lines[index + 1:]:
+            if not following.strip():
+                break
+            if len(following) - len(following.lstrip()) <= header_indent:
+                break
+            section.append(following.strip())
+            match = _SIZE_TOKEN_RE.search(following)
+            if match is not None:
+                return match.group(0), None
+        return None, " / ".join(section)
+
+    return None, None
 
 
 class DiskQuotaMonitor:
@@ -167,39 +214,53 @@ class DiskQuotaMonitor:
         rc, out = await _run(["incus", "info", container_name])
         if rc != 0:
             return None
-        for line in out.splitlines():
-            if "disk usage" not in line.lower():
-                continue
-            m = _DISK_USAGE_RE.search(line)
-            if m is not None:
-                try:
-                    return _to_gib(m.group(1))
-                except ValueError:
-                    pass
+
+        token, section = _find_disk_usage_token(out)
+        if token is None:
             # A quota monitor that cannot read its own input has to say so --
             # a bare `return None` is indistinguishable from "no disk usage",
-            # and the quota then goes unenforced without a trace.
+            # and the quota then goes unenforced without a trace. But say it
+            # only when a disk-usage section was actually there: warning on
+            # every container of every scan drowns the real failures out.
+            if section is not None:
+                logger.warning(
+                    "disk_quota: disk usage section for %s carried no size "
+                    "token: %s",
+                    container_name, section,
+                )
+            return None
+
+        try:
+            return _to_gib(token)
+        except ValueError:
+            # Distinct from the message above on purpose: "the section had
+            # no size" and "the size was garbage" are different faults, and
+            # an operator reading the log has to be able to tell them apart.
             logger.warning(
-                "disk_quota: unparsable disk usage line for %s: %s",
-                container_name, line.strip(),
+                "disk_quota: unparsable disk usage size for %s: %r",
+                container_name, token,
             )
-        return None
+            return None
 
     async def _sample_incus_info(self, container_name: str) -> float | None:
-        """Extract disk usage from incus info output line-by-line."""
+        """Second, silent read of ``incus info``.
+
+        Shares the section-aware scan with :meth:`_sample_btrfs_qgroup` --
+        the value line of the multi-line layout (``root: 1.50TiB``) does
+        not contain the word "disk", so a line filter never sees it. Kept
+        as a defensive fallback; it only runs when the first strategy
+        returned nothing, so it costs no extra subprocess on a good scan.
+        """
         rc, out = await _run(["incus", "info", container_name])
         if rc != 0:
             return None
-        for line in out.splitlines():
-            if "disk" not in line.lower():
-                continue
-            # The token pattern spans "1.50TiB" and the split "1.50 TiB" form.
-            for token in _SIZE_TOKEN_RE.findall(line):
-                try:
-                    return _to_gib(token)
-                except ValueError:
-                    continue
-        return None
+        token, _ = _find_disk_usage_token(out)
+        if token is None:
+            return None
+        try:
+            return _to_gib(token)
+        except ValueError:
+            return None
 
     async def _sample_df(self, container_name: str) -> float | None:
         """Fallback: exec df -BG / inside the container."""

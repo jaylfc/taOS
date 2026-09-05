@@ -19,8 +19,15 @@ Suffix conventions follow the producers:
 
 Parsing is case-insensitive, because incus accepts ``512m``, ``512MiB``
 and ``512MIB`` interchangeably.
+
+A size is a non-negative, finite count of bytes. ``-1GiB``, ``inf`` and
+``nan`` are rejected rather than propagated: every call site turns the
+result into a ``memory_mb``, a ``used_gib`` or a truncate(1) target, and
+none of them survive a negative or infinite one.
 """
 from __future__ import annotations
+
+from fractions import Fraction
 
 _UNITS: dict[str, int] = {
     "B": 1,
@@ -55,8 +62,9 @@ BYTES_PER_GIB = 1024 ** 3
 def parse_size_bytes(value: str) -> int:
     """Parse a size string into whole bytes.
 
-    Raises ``ValueError`` for an empty or unrecognised value. Callers that
-    must not fail on garbage use :func:`parse_size_bytes_or` instead.
+    Raises ``ValueError`` for an empty, unrecognised, negative or
+    non-finite value. Callers that must not fail on garbage use
+    :func:`parse_size_bytes_or` instead.
     """
     text = (value or "").strip().upper()
     if not text:
@@ -69,10 +77,20 @@ def parse_size_bytes(value: str) -> int:
             text = text[: -len(suffix)].strip()
             break
 
+    # Exact rational arithmetic, not float: a byte count past 2**53 loses
+    # its low bits in a float ("9007199254740993" came back one byte
+    # short), and float() turns "inf"/"1e309" into an infinity that int()
+    # then rejects with an OverflowError no caller catches. Fraction
+    # refuses the non-finite spellings outright.
     try:
-        return int(float(text) * factor)
-    except ValueError:
+        number = Fraction(text)
+    except (ValueError, ZeroDivisionError):
         raise ValueError(f"unparsable size: {value!r}") from None
+
+    if number < 0:
+        raise ValueError(f"unparsable size: {value!r}")
+
+    return int(number * factor)
 
 
 def parse_size_bytes_or(value: str, default: int = 0) -> int:
