@@ -12,24 +12,24 @@ import re
 import time
 from typing import TYPE_CHECKING
 
+from tinyagentos.size_units import BYTES_PER_GIB, parse_size_bytes
+
 if TYPE_CHECKING:
     from tinyagentos.config import AppConfig
     from tinyagentos.notifications import NotificationStore
 
 logger = logging.getLogger(__name__)
 
-_DISK_USAGE_RE = re.compile(r"(?i)disk\s+usage.*?:\s*([\d.]+)\s*(GiB?|MiB?|KiB?|B)", re.MULTILINE)
+# A size as incus renders it: "1.50TiB", "412.50 MiB", "0B". The suffix set
+# runs up to PiB -- the old GiB/MiB/KiB-only pattern silently matched nothing
+# on a rootfs past 1 TiB, so the quota went unenforced.
+_SIZE_TOKEN_RE = re.compile(r"[\d.]+\s*[KMGTP]?i?B", re.IGNORECASE)
+_DISK_USAGE_RE = re.compile(rf"(?i)disk\s+usage.*?:\s*({_SIZE_TOKEN_RE.pattern})")
 
 
-def _to_gib(value: float, unit: str) -> float:
-    unit = unit.upper()
-    if unit.startswith("G"):
-        return value
-    if unit.startswith("M"):
-        return value / 1024.0
-    if unit.startswith("K"):
-        return value / (1024.0 * 1024.0)
-    return value / (1024.0 ** 3)
+def _to_gib(size: str) -> float:
+    """Convert a size string ('1.50TiB', '412.50 MiB') to GiB. Raises ValueError."""
+    return parse_size_bytes(size) / BYTES_PER_GIB
 
 
 class DiskQuotaMonitor:
@@ -154,7 +154,10 @@ class DiskQuotaMonitor:
                 if result is not None:
                     return result
             except Exception:
-                pass
+                logger.warning(
+                    "disk_quota: %s failed for %s",
+                    strategy.__name__, container_name, exc_info=True,
+                )
         logger.warning("disk_quota: all sampling strategies failed for %s", container_name)
         return None
 
@@ -164,9 +167,22 @@ class DiskQuotaMonitor:
         rc, out = await _run(["incus", "info", container_name])
         if rc != 0:
             return None
-        m = _DISK_USAGE_RE.search(out)
-        if m:
-            return _to_gib(float(m.group(1)), m.group(2))
+        for line in out.splitlines():
+            if "disk usage" not in line.lower():
+                continue
+            m = _DISK_USAGE_RE.search(line)
+            if m is not None:
+                try:
+                    return _to_gib(m.group(1))
+                except ValueError:
+                    pass
+            # A quota monitor that cannot read its own input has to say so --
+            # a bare `return None` is indistinguishable from "no disk usage",
+            # and the quota then goes unenforced without a trace.
+            logger.warning(
+                "disk_quota: unparsable disk usage line for %s: %s",
+                container_name, line.strip(),
+            )
         return None
 
     async def _sample_incus_info(self, container_name: str) -> float | None:
@@ -175,22 +191,14 @@ class DiskQuotaMonitor:
         if rc != 0:
             return None
         for line in out.splitlines():
-            low = line.lower()
-            if "disk" not in low:
+            if "disk" not in line.lower():
                 continue
-            parts = line.split()
-            for i, p in enumerate(parts):
-                for suffix, mult in [("GiB", 1.0), ("MiB", 1.0/1024), ("KiB", 1.0/(1024**2))]:
-                    if p == suffix and i > 0:
-                        try:
-                            return float(parts[i - 1]) * mult
-                        except ValueError:
-                            pass
-                    if p.endswith(suffix):
-                        try:
-                            return float(p[:-len(suffix)]) * mult
-                        except ValueError:
-                            pass
+            # The token pattern spans "1.50TiB" and the split "1.50 TiB" form.
+            for token in _SIZE_TOKEN_RE.findall(line):
+                try:
+                    return _to_gib(token)
+                except ValueError:
+                    continue
         return None
 
     async def _sample_df(self, container_name: str) -> float | None:
@@ -204,12 +212,10 @@ class DiskQuotaMonitor:
         for line in out.splitlines()[1:]:
             parts = line.split()
             if len(parts) >= 3:
-                used_str = parts[2]
-                if used_str.endswith("G"):
-                    try:
-                        return float(used_str[:-1])
-                    except ValueError:
-                        pass
+                try:
+                    return _to_gib(parts[2])
+                except ValueError:
+                    continue
         return None
 
     async def _detect_pool_type(self, container_name: str) -> str:

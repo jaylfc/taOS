@@ -36,6 +36,7 @@ from tinyagentos.cluster.convert_to_lxc import (
     list_flat_mode_agents,
     redeploy_agents,
 )
+from tinyagentos.size_units import parse_size_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -107,13 +108,7 @@ def _dedup(args) -> int:
 def _parse_iec_bytes(s: str) -> int:
     """Parse '500G', '1T', '512M', or raw bytes into integer bytes.
     Accepts the same forms as truncate(1)."""
-    s = s.strip()
-    units = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
-    if not s:
-        raise ValueError("empty size")
-    if s[-1].upper() in units:
-        return int(float(s[:-1]) * units[s[-1].upper()])
-    return int(s)
+    return parse_size_bytes(s)
 
 
 def _resize_storage(args) -> int:
