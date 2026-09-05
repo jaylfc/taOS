@@ -1,4 +1,4 @@
 ### Added
 - Native decision push payloads now carry a rich image attachment and the full approve / reject / add-note action set so iPhone and Apple Watch can render the buttons and the native shell can wire the callback to the Decisions answer route (tsk-cf7wzc).
-- APNs payloads set `aps.category` and `aps.mutable-content` whenever an action set or image is present, so the iOS service extension can attach the image and surface the registered `UNNotificationCategory` buttons.
+- APNs payloads set `aps.category`, and set `aps.mutable-content` whenever an action set or image is present on a non-silent push, so the iOS service extension can attach the image and surface the registered `UNNotificationCategory` buttons. A silent (`content-available`) push keeps its background delivery and is left unmutated.
 - Web-push payloads now include the optional `image` on both the top-level `Notification.image` field and the inner `data.image`; clients that ignore `image` still receive a valid text notification.

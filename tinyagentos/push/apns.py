@@ -57,10 +57,12 @@ def build_apns_payload(
     payload: dict = dict(data or {})
     if image:
         payload["image"] = image
-    # `data` may still be the only source of an image, so read the merged value
-    # back rather than trusting the argument: mutable-content has to follow the
-    # image the service extension will actually fetch.
+    # `data` may still be the only source of an image or an action set (that is
+    # how notifications_push threads both), so read the merged values back rather
+    # than trusting the arguments: mutable-content has to follow what the service
+    # extension will actually be handed, not what this call was told about.
     effective_image = payload.get("image")
+    effective_actions = actions or payload.get("actions")
 
     aps: dict = {}
     if title or body:
@@ -78,7 +80,7 @@ def build_apns_payload(
     # extension to mutate the payload before display: download the image, attach
     # UNNotificationAttachment, and surface the action buttons. APNs only allows
     # that mutation when `mutable-content` is set.
-    if (effective_image or actions) and not content_available:
+    if (effective_image or effective_actions) and not content_available:
         aps["mutable-content"] = 1
     # `aps` is Apple's reserved envelope; assigning it last keeps a stray
     # data["aps"] from overwriting the alert and flags computed above.

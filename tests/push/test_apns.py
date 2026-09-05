@@ -190,6 +190,18 @@ def test_build_payload_sets_mutable_content_for_data_supplied_image():
     assert payload["aps"]["mutable-content"] == 1
 
 
+def test_build_payload_sets_mutable_content_for_data_supplied_actions():
+    # `actions` reaches the payload through `data` as well (that is how
+    # notifications_push threads it), so the flag has to follow the merged
+    # action set for the same reason it follows the merged image: without
+    # mutable-content the extension may not surface the button row.
+    payload = build_apns_payload(
+        title="t", body="b", data={"actions": [{"id": "approve", "label": "Approve"}]},
+    )
+    assert payload["actions"] == [{"id": "approve", "label": "Approve"}]
+    assert payload["aps"]["mutable-content"] == 1
+
+
 def test_build_payload_data_cannot_replace_aps():
     # aps is Apple's reserved envelope built from the explicit arguments; a
     # stray data["aps"] must not overwrite the alert and flags just computed.
