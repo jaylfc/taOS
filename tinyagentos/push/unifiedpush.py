@@ -7,7 +7,11 @@ from urllib.parse import urlparse
 
 import httpx
 
-from tinyagentos.routes.desktop_browser.ssrf import SsrfBlockedError, validate_url_or_raise
+from tinyagentos.routes.desktop_browser.ssrf import (
+    SsrfBlockedError,
+    guarded_async_client,
+    validate_url_or_raise,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +62,10 @@ def _actions_for_row(row: dict) -> list[dict] | None:
 
 class HttpUnifiedPushSender:
     def __init__(self, *, client: httpx.AsyncClient | None = None):
-        self._client = client or httpx.AsyncClient()
+        # Push tokens are user-supplied URLs, so the default client pins each
+        # connection to the address the guard checked. allow_private mirrors
+        # the send() validation: a LAN distributor is fine, loopback is not.
+        self._client = client or guarded_async_client(allow_private=True)
         self._owns_client = client is None
 
     async def send(self, push_token: str, payload: dict) -> bool:

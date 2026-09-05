@@ -82,6 +82,7 @@ async def pipeline(store, mock_http):
     p = IngestPipeline(
         store=store,
         http_client=mock_http,
+        fetch_client=mock_http,
         notifications=notif,
         category_engine=cat_engine,
         qmd_base_url="",  # QMD disabled for unit tests
@@ -200,6 +201,7 @@ async def test_summarise_called_when_llm_url_set(store):
     pipeline = IngestPipeline(
         store=store,
         http_client=mock_http,
+        fetch_client=mock_http,
         notifications=notif,
         category_engine=cat_engine,
         qmd_base_url="",  # disable embed for this test
@@ -240,6 +242,7 @@ async def test_embed_called_when_qmd_url_set(store):
     pipeline = IngestPipeline(
         store=store,
         http_client=mock_http,
+        fetch_client=mock_http,
         notifications=notif,
         category_engine=cat_engine,
         qmd_base_url="http://localhost:7832",
@@ -284,6 +287,7 @@ async def test_semaphore_custom_max_concurrent(store, mock_http):
     p = IngestPipeline(
         store=store,
         http_client=mock_http,
+        fetch_client=mock_http,
         notifications=notif,
         category_engine=cat_engine,
         max_concurrent=2,
@@ -301,6 +305,7 @@ async def test_max_concurrent_zero_raises(store, mock_http):
         IngestPipeline(
             store=store,
             http_client=mock_http,
+        fetch_client=mock_http,
             notifications=notif,
             category_engine=cat_engine,
             max_concurrent=0,
@@ -332,6 +337,7 @@ async def test_semaphore_limits_concurrent_tasks(store, mock_http):
     p = IngestPipeline(
         store=store,
         http_client=mock_http,
+        fetch_client=mock_http,
         notifications=notif,
         category_engine=cat_engine,
         max_concurrent=2,
@@ -373,6 +379,7 @@ async def test_categories_from_caller_are_preserved(store):
     pipeline = IngestPipeline(
         store=store,
         http_client=mock_http,
+        fetch_client=mock_http,
         notifications=notif,
         category_engine=cat_engine,
         qmd_base_url="",

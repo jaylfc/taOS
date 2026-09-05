@@ -480,6 +480,7 @@ class WebProcessor(Processor):
 
         from tinyagentos.routes.desktop_browser.ssrf import (
             SsrfBlockedError,
+            guarded_async_client,
             validate_url_or_raise,
         )
 
@@ -491,7 +492,7 @@ class WebProcessor(Processor):
             for _hop in range(self._MAX_WEB_REDIRECTS + 1):
                 validate_url_or_raise(current_url)
 
-                async with httpx.AsyncClient(
+                async with guarded_async_client(
                     timeout=httpx.Timeout(30),
                     follow_redirects=False,
                 ) as client:
