@@ -110,6 +110,41 @@ reach it, and write your pid to a pidfile. Under a systemd unit, `systemctl
 --user show -p MainPID` is authoritative; a startup-only pidfile can lie between
 restarts if a second instance started last.
 
+## Resume notes: context snapshot must be bounded
+
+A resume note's `context_snapshot` is carried through `POST /resume` and can grow
+without limit if the agent dumps its transcript or memory into it. An oversized
+snapshot saturates the framework's input window at wake, so the agent restarts
+into the same overflow every time and the recovery note is never consumed.
+
+`_cap_context_snapshot()` in `tinyagentos/restart_orchestrator.py` caps the
+snapshot by dropping the largest fields first until the serialized form fits
+within 32768 bytes. `agent_id` and `session_id` are never candidates while any
+other field remains - a note that cannot say which agent or session it belongs
+to is not worth resuming - and they are dropped only if they alone still breach
+the cap, because an over-limit note re-triggers the overflow the cap exists to
+prevent. Preservation is by name, not by size: ordering the drop by value size
+(or by serialized entry size) keeps a required field only while its value
+happens to be the smaller one.
+
+The dropped field names are recorded in a `_truncated` marker. The marker is
+size-budgeted and room for a bare one is held back before the drop loop stops,
+so a snapshot never goes out flush against the cap with no way to say what it
+lost; the name list is then filled from whatever room is left, down to
+`...and N more` and finally to an empty list. Payload fields are never dropped
+just to widen that list.
+
+**The snapshot is only an object by convention.** A framework that answers
+/prepare-for-shutdown writes `resume_note.json` itself, so `context_snapshot`
+can arrive as a string, a list or a number. There are no fields to drop from
+those, so an oversized non-object value is replaced wholesale by the marker
+(with `dropped_fields: ["context_snapshot"]`), which is bounded by construction
+and puts the note back in the documented object shape. A small non-object value
+is left exactly as it is - only the size is the cap's business.
+
+Do not bypass the guard: any code that writes a resume note by hand must still
+route it through it, lest a 32 KB transcript become a 32 KB failure.
+
 ## Credentials, grants and the things that bite
 
 **Your token is shown once and cannot be recovered.** Not by you, not by the
@@ -674,7 +709,9 @@ that SAME canonical_id instead:
   this is CREDENTIALLED: the caller must be the agent's OWN registry bearer token
   (`sub` == `canonical_id`) OR the owning user / an admin. An anonymous caller can
   never escalate an existing identity. The middleware allowlist exposes only the
-  create path to a registry JWT; the route re-checks identity == canonical_id.
+  create path and the two READ paths below to a registry JWT -- approve/deny are
+  POST with an extra trailing segment and match no pattern, so an agent can
+  never self-approve; the routes re-check identity == canonical_id.
 - `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/approve`
   `{granted_scopes, project_id?}`: owner/admin only. The admin may narrow but
   never widen the requested scopes; each granted scope is added via
@@ -683,11 +720,71 @@ that SAME canonical_id instead:
   new identity is created.
 - `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/deny`:
   owner/admin only.
+- `GET /api/agents/registry/{canonical_id}/scope-requests` (optional
+  `?status=pending|accepted|refused`): list an agent's scope requests, oldest
+  first. Authorized EXACTLY like create -- the agent's own registry bearer
+  token, or the owning user / an admin -- so nobody can enumerate another
+  user's agents' requests. The `status` filter is matched case-insensitively
+  (`?status=Pending` selects the pending rows); a value outside the vocabulary
+  is 400, never a silently empty list.
+- `GET /api/agents/registry/{canonical_id}/scope-requests/{req_id}`: read one
+  request (same gate). A `req_id` belonging to a different agent is 404 on this
+  path even for a caller who owns both, so the `{canonical_id}` segment is
+  load-bearing.
+
+Both reads return the same PUBLIC shape -- `{id, canonical_id,
+requested_scopes, project_id, reason, status, granted_scopes, created_ts,
+decided_ts}` -- projected explicitly from the stored row rather than returned
+raw. `decided_by` (the owner/admin user_id that approved or denied) is
+deliberately withheld: an agent's own registry token may read these routes, and
+no other agent-reachable route discloses its owner's internal user id. The
+store still records it, and the decision itself stays observable through
+`status` / `decided_ts` / `granted_scopes` -- only the deciding identity is
+hidden. The projection is a whitelist, so a column added to
+`agent_scope_requests` later has to be opted IN rather than leaking by default.
+
+The list is BOUNDED (`DEFAULT_LIST_LIMIT`, 200, in
+`tinyagentos/agent_scope_requests_store.py`). Decided rows are never deleted --
+there is no retention sweep -- so an unbounded list would grow with an agent's
+whole decision history. The two lifecycle groups truncate in OPPOSITE
+directions, and that is the point:
+
+- **Pending** rows are taken oldest-first and ahead of everything else. The
+  oldest pending request is the one whose notification is long gone and whose
+  id nobody holds any more -- the row these reads exist to recover -- so it is
+  the LAST thing a full page drops. This holds even if the ten-per-agent
+  pending cap is exceeded (that cap is a count-then-insert, so concurrent
+  creates can pass it together; the read path deliberately does not depend on
+  it holding).
+- **Decided** rows fill whatever is left of the page, newest-first, so a caller
+  checking on a recent approval still sees it.
+
+The page itself is returned oldest-first. Each group is a separate indexed
+query with its own `LIMIT` rather than one sort over the whole history, so
+`idx_scope_requests_canonical_created` lets SQLite stop reading once the page is
+full: the read cost is bounded by the page size, not by how much history the
+agent has accumulated. `tests/test_agent_scope_requests.py::test_list_for_page_does_not_sort_the_whole_history`
+asserts on the query plans the store actually issues and fails if a
+`TEMP B-TREE` sort reappears.
+
+The two reads exist because the `request_id` was otherwise handed out exactly
+once, inside the notification payload raised at create time. Dismiss that
+notification and the row stayed alive in `agent_scope_requests` -- still
+pending, still counting against `_SCOPE_REQUEST_PENDING_CAP` (10 per
+canonical_id, then 429), and addressable by nobody. A *failed* approval was
+therefore indistinguishable from a successful one, and a retry meant minting a
+duplicate request that pushed the agent closer to locking itself out. Agents
+should poll the list route rather than re-requesting a scope they cannot see.
+The desktop Agents app renders each active agent's pending requests inline
+(`PendingScopeRequests` in `desktop/src/apps/agents/RegistryPanel.tsx`, reusing
+the same `ConsentActions` Allow/Deny control the notification renders), so
+approval no longer depends on an ephemeral toast.
 
 All owner-gated registry routes are existence-hiding (#2106): an authenticated
 caller who is not the owner gets the same 404 body as a nonexistent
-`canonical_id`, on the scope-request create/approve/deny routes above and on
-registry PATCH, DELETE (revoke), rotate-tokens, and `PUT /api/agents/{id}/org`.
+`canonical_id`, on the scope-request create/read/approve/deny routes above and
+on registry PATCH, DELETE (revoke), rotate-tokens, and
+`PUT /api/agents/{id}/org`.
 Agents must not treat a 404 from these routes as proof an id does not exist,
 and must not expect a 403 to distinguish "exists, not yours". Admin-only
 lifecycle routes (approve/reject/suspend/reactivate) still 403 non-admins
