@@ -7,6 +7,19 @@ from tinyagentos.routes.providers import router
 from fastapi import FastAPI
 
 app = FastAPI()
+
+
+# This bare app has no AuthMiddleware, so simulate an already-authenticated
+# admin request (request.state.is_admin) -- these tests exercise the provider
+# handlers themselves, not the admin-or-local-token authz gate the mutating
+# routes now enforce (see tests/test_global_routers_authz.py for that).
+@app.middleware("http")
+async def _fake_admin_auth(request, call_next):
+    request.state.is_admin = True
+    request.state.via = "session"
+    return await call_next(request)
+
+
 app.include_router(router)
 
 

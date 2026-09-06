@@ -1,7 +1,7 @@
 """Unit tests for auth_middleware allow/deny logic."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.responses import JSONResponse
@@ -25,6 +25,7 @@ def _request(
     cookies: dict[str, str] | None = None,
     client_host: str | None = "203.0.113.5",
     auth_mgr: MagicMock | None = None,
+    routes: list | None = None,
 ) -> MagicMock:
     req = MagicMock()
     req.method = method
@@ -36,7 +37,15 @@ def _request(
     else:
         req.client = MagicMock(host=client_host)
     req.app.state.auth = auth_mgr or MagicMock()
+    req.app.routes = routes or []
     return req
+
+
+def _fake_route(path: str, methods: set[str] | None = None) -> MagicMock:
+    route = MagicMock()
+    route.path = path
+    route.methods = methods or {"GET"}
+    return route
 
 
 def _default_auth_mgr(*, configured: bool = True) -> MagicMock:
@@ -228,10 +237,12 @@ class TestAuthMiddlewareDispatch:
             path="/api/agents/registry/grants",
             headers={"authorization": "Bearer registry-jwt"},
             auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/agents/registry/grants", {"GET", "POST"})],
         )
         call_next = AsyncMock(return_value=JSONResponse({"grants": []}))
 
-        resp = await middleware.dispatch(req, call_next)
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
 
         assert resp.status_code == 200
         assert req.state.via == "registry_jwt_candidate"
@@ -333,10 +344,12 @@ class TestCanvasAgentTokenDispatch:
             path="/api/projects/proj-1/canvas/elements",
             headers={"authorization": "Bearer registry-jwt"},
             auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/projects/{pid}/canvas/elements", {"GET", "POST"})],
         )
         call_next = AsyncMock(return_value=JSONResponse({"elements": []}))
 
-        resp = await middleware.dispatch(req, call_next)
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
 
         assert resp.status_code == 200
         assert req.state.via == "registry_jwt_candidate"
@@ -352,10 +365,12 @@ class TestCanvasAgentTokenDispatch:
             path="/api/projects/proj-1/canvas/elements/el-1",
             headers={"authorization": "Bearer registry-jwt"},
             auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/projects/{pid}/canvas/elements/{eid}", {"PATCH", "DELETE"})],
         )
         call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
 
-        resp = await middleware.dispatch(req, call_next)
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
 
         assert resp.status_code == 200
         assert req.state.via == "registry_jwt_candidate"
@@ -364,33 +379,44 @@ class TestCanvasAgentTokenDispatch:
     @pytest.mark.asyncio
     async def test_canvas_permissions_patch_requires_session(self):
         middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
         req = _request(
             method="PATCH",
             path="/api/projects/proj-1/canvas/permissions/agent-1",
             headers={"authorization": "Bearer registry-jwt"},
-            auth_mgr=_default_auth_mgr(),
+            auth_mgr=auth_mgr,
+            routes=[
+                _fake_route("/api/projects/{pid}/canvas/elements", {"GET", "POST"}),
+                _fake_route("/api/projects/{pid}/canvas/permissions/{aid}", {"PATCH"}),
+            ],
         )
         call_next = AsyncMock()
 
-        resp = await middleware.dispatch(req, call_next)
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
 
         assert resp.status_code == 401
         call_next.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_canvas_extra_segment_requires_session(self):
+        """An extra path segment does not match any registered route, so a
+        valid registry JWT returns 404 (unknown route) rather than 401."""
         middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
         req = _request(
             method="GET",
             path="/api/projects/proj-1/canvas/elements/el-1/extra",
             headers={"authorization": "Bearer registry-jwt"},
-            auth_mgr=_default_auth_mgr(),
+            auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/projects/{pid}/canvas/elements", {"GET", "POST"})],
         )
         call_next = AsyncMock()
 
-        resp = await middleware.dispatch(req, call_next)
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
 
-        assert resp.status_code == 401
+        assert resp.status_code == 404
         call_next.assert_not_awaited()
 
 
@@ -434,10 +460,12 @@ class TestTaskChecklistAgentTokenDispatch:
             path="/api/projects/proj-1/tasks/tsk-1/checklist-items",
             headers={"authorization": "Bearer registry-jwt"},
             auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/projects/{pid}/tasks/{tid}/checklist-items", {"GET", "POST"})],
         )
         call_next = AsyncMock(return_value=JSONResponse({"items": []}))
 
-        resp = await middleware.dispatch(req, call_next)
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
 
         assert resp.status_code == 200
         assert req.state.via == "registry_jwt_candidate"
@@ -453,10 +481,12 @@ class TestTaskChecklistAgentTokenDispatch:
             path="/api/projects/proj-1/tasks/tsk-1/checklist-items",
             headers={"authorization": "Bearer registry-jwt"},
             auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/projects/{pid}/tasks/{tid}/checklist-items", {"GET", "POST"})],
         )
         call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
 
-        resp = await middleware.dispatch(req, call_next)
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
 
         assert resp.status_code == 200
         assert req.state.via == "registry_jwt_candidate"
@@ -464,34 +494,44 @@ class TestTaskChecklistAgentTokenDispatch:
 
     @pytest.mark.asyncio
     async def test_checklist_delete_requires_session(self):
+        """DELETE on the checklist-items path has no matching route, so a
+        valid registry JWT returns 404 (unknown route) rather than 401."""
         middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
         req = _request(
             method="DELETE",
             path="/api/projects/proj-1/tasks/tsk-1/checklist-items",
             headers={"authorization": "Bearer registry-jwt"},
-            auth_mgr=_default_auth_mgr(),
+            auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/projects/{pid}/tasks/{tid}/checklist-items", {"GET", "POST"})],
         )
         call_next = AsyncMock()
 
-        resp = await middleware.dispatch(req, call_next)
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
 
-        assert resp.status_code == 401
+        assert resp.status_code == 404
         call_next.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_checklist_item_subpath_requires_session(self):
+        """An extra path segment does not match any registered route, so a
+        valid registry JWT returns 404 (unknown route) rather than 401."""
         middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
         req = _request(
             method="GET",
             path="/api/projects/proj-1/tasks/tsk-1/checklist-items/chk-1",
             headers={"authorization": "Bearer registry-jwt"},
-            auth_mgr=_default_auth_mgr(),
+            auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/projects/{pid}/tasks/{tid}/checklist-items", {"GET", "POST"})],
         )
         call_next = AsyncMock()
 
-        resp = await middleware.dispatch(req, call_next)
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
 
-        assert resp.status_code == 401
+        assert resp.status_code == 404
         call_next.assert_not_awaited()
 
 
@@ -566,10 +606,12 @@ class TestAgentDecisionsDispatch:
             path="/api/decisions/dec-abc123/answer/agent",
             headers={"authorization": "Bearer registry-jwt"},
             auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/decisions/{did}/answer/agent", {"POST"})],
         )
         call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
 
-        resp = await middleware.dispatch(req, call_next)
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
 
         assert resp.status_code == 200
         assert req.state.via == "registry_jwt_candidate"
@@ -586,10 +628,12 @@ class TestAgentDecisionsDispatch:
             path="/api/decisions/agent",
             headers={"authorization": "Bearer registry-jwt"},
             auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/decisions/agent", {"GET"})],
         )
         call_next = AsyncMock(return_value=JSONResponse({"items": []}))
 
-        resp = await middleware.dispatch(req, call_next)
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
 
         assert resp.status_code == 200
         assert req.state.via == "registry_jwt_candidate"
@@ -606,10 +650,12 @@ class TestAgentDecisionsDispatch:
             path="/api/decisions/dec-abc123/agent",
             headers={"authorization": "Bearer registry-jwt"},
             auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/decisions/{did}/agent", {"GET"})],
         )
         call_next = AsyncMock(return_value=JSONResponse({"id": "dec-abc123"}))
 
-        resp = await middleware.dispatch(req, call_next)
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
 
         assert resp.status_code == 200
         assert req.state.via == "registry_jwt_candidate"
@@ -617,20 +663,23 @@ class TestAgentDecisionsDispatch:
 
     @pytest.mark.asyncio
     async def test_nested_path_requires_session(self):
-        """A path with extra segments must NOT be admitted -- stay with
-        the exact pattern, do not widen it."""
+        """A path with extra segments does not match any registered route,
+        so a valid registry JWT returns 404 (unknown route) rather than 401."""
         middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
         req = _request(
             method="POST",
             path="/api/decisions/a/b/answer/agent",
             headers={"authorization": "Bearer registry-jwt"},
-            auth_mgr=_default_auth_mgr(),
+            auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/decisions/{did}/answer/agent", {"POST"})],
         )
         call_next = AsyncMock()
 
-        resp = await middleware.dispatch(req, call_next)
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
 
-        assert resp.status_code == 401
+        assert resp.status_code == 404
         call_next.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -638,15 +687,18 @@ class TestAgentDecisionsDispatch:
         """POST /api/decisions/{id}/answer (human path) must NOT admit
         an agent token -- the allowlist must not widen."""
         middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
         req = _request(
             method="POST",
             path="/api/decisions/dec-abc123/answer",
             headers={"authorization": "Bearer registry-jwt"},
-            auth_mgr=_default_auth_mgr(),
+            auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/decisions/{did}/answer", {"POST"})],
         )
         call_next = AsyncMock()
 
-        resp = await middleware.dispatch(req, call_next)
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
 
         assert resp.status_code == 401
         call_next.assert_not_awaited()
@@ -661,12 +713,177 @@ class TestAgentDecisionsDispatch:
             path="/api/decisions/dec-abc123/answer/agent",
             headers={"accept": "application/json"},
             auth_mgr=_default_auth_mgr(),
+            routes=[_fake_route("/api/decisions/{did}/answer/agent", {"POST"})],
         )
         call_next = AsyncMock()
 
         resp = await middleware.dispatch(req, call_next)
 
         assert resp.status_code == 401
+        call_next.assert_not_awaited()
+
+
+class TestRegistryJwtRouteResolution:
+    """Acceptance tests for the registry-JWT 404-vs-401 fix.
+
+    (1) valid registry JWT + unknown route -> 404
+    (2) no token + unknown route -> 401 AND no token + real route -> 401 with IDENTICAL bodies
+    (3) valid registry JWT + allowlisted real route -> 2xx
+    (4) valid registry JWT + KNOWN non-allowlisted route -> 401
+    """
+
+    @pytest.mark.asyncio
+    async def test_valid_registry_jwt_unknown_route_returns_404(self):
+        middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
+        auth_mgr.validate_local_token.return_value = False
+        req = _request(
+            method="GET",
+            path="/api/definitely-not-a-route",
+            headers={"authorization": "Bearer valid-jwt"},
+            auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/system", {"GET"})],
+        )
+        call_next = AsyncMock()
+
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 404
+        assert resp.body == b'{"error":"Not Found"}'
+        call_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_token_unknown_and_real_route_return_identical_401(self):
+        middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
+        auth_mgr.validate_local_token.return_value = False
+        known_route = _fake_route("/api/system", {"GET"})
+        req_unknown = _request(
+            path="/api/definitely-not-a-route",
+            auth_mgr=auth_mgr,
+            routes=[known_route],
+        )
+        req_known = _request(
+            path="/api/system",
+            auth_mgr=auth_mgr,
+            routes=[known_route],
+        )
+        call_next = AsyncMock()
+
+        resp_unknown = await middleware.dispatch(req_unknown, call_next)
+        resp_known = await middleware.dispatch(req_known, call_next)
+
+        assert resp_unknown.status_code == 401
+        assert resp_known.status_code == 401
+        assert resp_unknown.body == resp_known.body
+        assert resp_unknown.body == b'{"error":"Authentication required"}'
+        call_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_valid_registry_jwt_allowlisted_route_passes(self):
+        middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
+        auth_mgr.validate_local_token.return_value = False
+        req = _request(
+            method="GET",
+            path="/api/agents/registry/grants",
+            headers={"authorization": "Bearer valid-jwt"},
+            auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/agents/registry/grants", {"GET", "POST"})],
+        )
+        call_next = AsyncMock(return_value=JSONResponse({"grants": []}))
+
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 200
+        assert req.state.via == "registry_jwt_candidate"
+        call_next.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_valid_registry_jwt_known_non_allowlisted_route_returns_401(self):
+        middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
+        auth_mgr.validate_local_token.return_value = False
+        req = _request(
+            method="GET",
+            path="/api/system",
+            headers={"authorization": "Bearer valid-jwt"},
+            auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/system", {"GET"})],
+        )
+        call_next = AsyncMock()
+
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 401
+        assert resp.body == b'{"error":"Authentication required"}'
+        call_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stale_non_device_bearer_does_not_shadow_valid_session(self):
+        """Regression for tsk-3hei4g CodeRabbit finding #3: a logged-in user
+        carrying a stale non-device Bearer header on a known non-allowlisted
+        route must keep their session instead of getting 401 before the
+        session cookie is even consulted."""
+        middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
+        auth_mgr.validate_session.return_value = "user-1"
+        auth_mgr.get_user_by_id.return_value = {"id": "user-1", "is_admin": False}
+        req = _request(
+            method="GET",
+            path="/api/system",
+            headers={"authorization": "Bearer stale-registry-jwt"},
+            cookies={"taos_session": "valid-session"},
+            auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/system", {"GET"})],
+        )
+        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 200
+        assert req.state.via == "session"
+        assert req.state.user_id == "user-1"
+        call_next.assert_awaited_once()
+
+
+class TestAnyRouteMatchesPathConverter:
+    def test_path_converter_matches_slash_bearing_value(self):
+        from tinyagentos.auth_middleware import _any_route_matches
+
+        route = _fake_route("/api/secrets/{name:path}", {"GET"})
+        assert _any_route_matches("GET", "/api/secrets/a2a/pi-token", [route]) is True
+
+    def test_plain_param_still_slash_free(self):
+        from tinyagentos.auth_middleware import _any_route_matches
+
+        route = _fake_route("/api/projects/{pid}/tasks/{tid}", {"GET"})
+        assert _any_route_matches("GET", "/api/projects/proj-1/tasks/tsk-1", [route]) is True
+        assert _any_route_matches("GET", "/api/projects/proj-1/tasks/tsk-1/extra", [route]) is False
+
+    @pytest.mark.asyncio
+    async def test_path_converter_route_returns_401_not_404_for_valid_jwt(self):
+        middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
+        auth_mgr.validate_local_token.return_value = False
+        req = _request(
+            method="GET",
+            path="/api/secrets/a2a/pi-token",
+            headers={"authorization": "Bearer valid-jwt"},
+            auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/secrets/{name:path}", {"GET"})],
+        )
+        call_next = AsyncMock()
+
+        with patch("tinyagentos.auth_middleware.check_agent_identity", AsyncMock(return_value="agent-1")):
+            resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 401
+        assert resp.body == b'{"error":"Authentication required"}'
         call_next.assert_not_awaited()
 
 

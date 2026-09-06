@@ -1,6 +1,7 @@
 import pytest
 import pytest_asyncio
 
+from tinyagentos.projects.events import ProjectEventBroker
 from tinyagentos.projects.task_store import ProjectTaskStore
 
 
@@ -9,6 +10,15 @@ async def store(tmp_path):
     s = ProjectTaskStore(tmp_path / "tasks.db")
     await s.init()
     yield s
+    await s.close()
+
+
+@pytest_asyncio.fixture
+async def store_with_broker(tmp_path):
+    broker = ProjectEventBroker()
+    s = ProjectTaskStore(tmp_path / "tasks.db", broker=broker)
+    await s.init()
+    yield s, broker
     await s.close()
 
 
@@ -204,11 +214,7 @@ async def test_ready_tasks_excludes_blocked(store):
     b = await store.create_task(project_id="p", title="B", created_by="u")
     # b blocks a
     await store.add_relationship(
-        project_id="p",
-        from_task_id=a["id"],
-        to_task_id=b["id"],
-        kind="blocks",
-        created_by="u",
+        project_id="p", from_task_id=a["id"], to_task_id=b["id"], kind="blocks", created_by="u"
     )
     ready = await store.list_ready_tasks(project_id="p")
     assert [t["id"] for t in ready] == [b["id"]]
@@ -373,8 +379,265 @@ async def test_get_task_context_project_falls_back_without_project_store(store):
     assert ctx["project"]["id"] == "p"
 
 
-# ── close_task ownership guard ──────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Checklist item tests
+# ---------------------------------------------------------------------------
 
+@pytest.mark.asyncio
+async def test_create_checklist_item(store):
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="First item", created_by="u")
+    assert item["id"].startswith("cki-")
+    assert item["text"] == "First item"
+    assert item["done"] is False
+    assert item["verified"] is False
+    assert item["reported"] is False
+    assert item["archived"] is False
+
+    items = await store.list_checklist_items(task_id=t["id"])
+    assert len(items) == 1
+    assert items[0]["id"] == item["id"]
+
+    all_items = await store.list_checklist_items(task_id=t["id"], include_archived=True)
+    assert len(all_items) == 1
+
+
+@pytest.mark.asyncio
+async def test_cannot_archive_unverified(store):
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Unverified item", created_by="u")
+    with pytest.raises(ValueError, match="item cannot be archived: not verified"):
+        await store.archive_checklist_item(item_id=item["id"])
+
+
+@pytest.mark.asyncio
+async def test_cannot_archive_unreported(store):
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Unreported item", created_by="u")
+    await store.update_checklist_item(item_id=item["id"], verified=True)
+    with pytest.raises(ValueError, match="item cannot be archived: not reported"):
+        await store.archive_checklist_item(item_id=item["id"])
+
+
+@pytest.mark.asyncio
+async def test_can_archive_after_verification_and_report(store):
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Complete item", created_by="u")
+    await store.update_checklist_item(item_id=item["id"], verified=True, reported=True)
+    archived = await store.archive_checklist_item(item_id=item["id"])
+    assert archived["archived"] is True
+    all_items = await store.list_checklist_items(task_id=t["id"], include_archived=True)
+    assert any(i["id"] == item["id"] for i in all_items)
+
+
+@pytest.mark.asyncio
+async def test_survives_agent_restart(store):
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Persistent item", created_by="u")
+    items = await store.list_checklist_items(task_id=t["id"])
+    assert len(items) == 1
+    assert items[0]["text"] == "Persistent item"
+    assert items[0]["archived"] is False
+    all_items = await store.list_checklist_items(task_id=t["id"], include_archived=True)
+    assert len(all_items) == 1
+
+
+@pytest.mark.asyncio
+async def test_checklist_item_event_delivered_at_project_scope(store_with_broker):
+    """Defect 1: checklist.item.created must be published under the PROJECT id
+    so project-scoped subscribers receive it.
+
+    On the BASE branch the event is published under the task_id, so the project
+    subscription never fires and this test fails.
+    """
+    store, broker = store_with_broker
+    t = await store.create_task(project_id="proj-red", title="Objective", created_by="u")
+    queue = await broker.subscribe("proj-red")
+    await store.create_checklist_item(task_id=t["id"], text="step one", created_by="u")
+    collected = []
+    while not queue.empty():
+        collected.append(queue.get_nowait())
+    checklist_events = [e for e in collected if e.kind == "checklist.item.created"]
+    assert checklist_events, (
+        f"expected checklist.item.created at project scope, got: {[e.kind for e in collected]}"
+    )
+    assert checklist_events[0].payload["task_id"] == t["id"]
+
+
+async def _delete_task_row(store, task_id: str) -> None:
+    """Drop a task row out from under its checklist items.
+
+    ``task_checklist_items.task_id`` declares ``REFERENCES project_tasks(id)``
+    but ProjectTaskStore never issues ``PRAGMA foreign_keys = ON``, so SQLite
+    does not enforce it and a live checklist item can outlive its task.
+    """
+    await store._db.execute("DELETE FROM project_tasks WHERE id = ?", (task_id,))
+    await store._db.commit()
+
+
+@pytest.mark.asyncio
+async def test_archive_checklist_item_refuses_when_task_is_gone(store_with_broker):
+    """Archiving an orphaned item must raise, not publish off-topic.
+
+    The fallback resolved the publish topic to something that is not a
+    project_id, so ``checklist.item.archived`` landed on a channel no
+    project subscriber listens to and the mutation was silently lost.
+    """
+    store, broker = store_with_broker
+    t = await store.create_task(project_id="proj-orphan", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="step one", created_by="u")
+    await store.update_checklist_item(item_id=item["id"], verified=True, reported=True)
+    await _delete_task_row(store, t["id"])
+
+    # Captured rather than asserted with pytest.raises so the topic assertion
+    # below is the one that reports the defect, not an unreached line after it.
+    raised: ValueError | None = None
+    try:
+        await store.archive_checklist_item(item_id=item["id"])
+    except ValueError as exc:
+        raised = exc
+
+    # Nothing may reach a non-project channel: "" is the current fallback
+    # topic, the task_id is the pre-#2622 one. Both are dead letter boxes.
+    for dead_topic in ("", t["id"]):
+        queue = await broker.subscribe(dead_topic)
+        stray = []
+        while not queue.empty():
+            stray.append(queue.get_nowait().kind)
+        assert not stray, f"event published to dead topic {dead_topic!r}: {stray}"
+
+    assert raised is not None and "task not found" in str(raised), (
+        f"archive must refuse an item whose task is gone, raised: {raised!r}"
+    )
+    # The refused archive must not have mutated the row either.
+    again = await store.get_checklist_item(item["id"])
+    assert again["archived"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_checklist_item_refuses_when_task_is_missing(store_with_broker):
+    """Same defect on the sibling create path — it must refuse, not orphan a row."""
+    store, broker = store_with_broker
+
+    raised: ValueError | None = None
+    try:
+        await store.create_checklist_item(task_id="tsk-ghost", text="step one", created_by="u")
+    except ValueError as exc:
+        raised = exc
+
+    for dead_topic in ("", "tsk-ghost"):
+        queue = await broker.subscribe(dead_topic)
+        stray = []
+        while not queue.empty():
+            stray.append(queue.get_nowait().kind)
+        assert not stray, f"event published to dead topic {dead_topic!r}: {stray}"
+
+    assert raised is not None and "task not found" in str(raised), (
+        f"create must refuse a missing task, raised: {raised!r}"
+    )
+    assert await store.list_checklist_items(task_id="tsk-ghost", include_archived=True) == []
+
+
+@pytest.mark.asyncio
+async def test_checklist_item_created_by_persists(store):
+    """Acceptance 1: Round-trip test: create_checklist_item(created_by="u") -> list_checklist_items returns created_by == "u". RED on origin/dev (column absent), green on the fix."""
+    t = await store.create_task(project_id="p", title="Objective", created_by="u")
+    item = await store.create_checklist_item(task_id=t["id"], text="Test item", created_by="user-123")
+    assert item["created_by"] == "user-123"
+
+    items = await store.list_checklist_items(task_id=t["id"])
+    assert len(items) == 1
+    assert items[0]["created_by"] == "user-123"
+    assert items[0]["text"] == "Test item"
+
+
+@pytest.mark.asyncio
+async def test_checklist_item_created_by_upgrade_from_pre_schema(tmp_path):
+    """Acceptance 2: Existing-DB upgrade test: build a db with the PRE-change schema (no created_by), run store init, then create_checklist_item succeeds and persists created_by."""
+    db_path = tmp_path / "old_schema.db"
+    await _create_old_schema_db(db_path)
+
+    s = ProjectTaskStore(db_path)
+    await s.init()
+
+    try:
+        t = await s.create_task(project_id="p", title="Objective", created_by="u")
+        item = await s.create_checklist_item(task_id=t["id"], text="Test item", created_by="upgraded-user")
+        assert item["created_by"] == "upgraded-user"
+
+        items = await s.list_checklist_items(task_id=t["id"])
+        assert len(items) == 1
+        assert items[0]["created_by"] == "upgraded-user"
+    finally:
+        await s.close()
+
+
+@pytest.mark.asyncio
+async def test_checklist_item_created_by_migration_failure(tmp_path, monkeypatch):
+    """Acceptance 3: a non-duplicate ALTER failure surfaces (raises); it is NOT
+    read as already-migrated. Fault-injects the ALTER statement itself so the
+    failure hits exactly the migration hunk -- a coarser fault (locking the
+    whole db) fails init before the migration runs and stays green even
+    against a blind except-pass."""
+    import sqlite3
+
+    import aiosqlite
+
+    db_path = tmp_path / "old_schema.db"
+    await _create_old_schema_db(db_path)
+
+    orig_execute = aiosqlite.Connection.execute
+
+    def _failing_execute(conn_self, sql, *args, **kwargs):
+        if isinstance(sql, str) and sql.lstrip().startswith(
+            "ALTER TABLE task_checklist_items ADD COLUMN created_by"
+        ):
+            raise sqlite3.OperationalError("disk I/O error")
+        return orig_execute(conn_self, sql, *args, **kwargs)
+
+    monkeypatch.setattr(aiosqlite.Connection, "execute", _failing_execute)
+    s = ProjectTaskStore(db_path)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+            await s.init()
+    finally:
+        monkeypatch.undo()
+        try:
+            await s.close()
+        except Exception:
+            pass
+
+
+async def _create_old_schema_db(db_path):
+    """Helper to create a database with the pre-change schema (without created_by column)."""
+    import aiosqlite
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute("""
+            CREATE TABLE task_checklist_items (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                text TEXT NOT NULL DEFAULT '',
+                done INTEGER NOT NULL DEFAULT 0,
+                verified INTEGER NOT NULL DEFAULT 0,
+                reported INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_archive_nonexistent_item_raises_value_error(store):
+    """Defect 2: archiving a missing checklist item should raise a clean
+    ValueError, not a TypeError from indexing None.
+    """
+    with pytest.raises(ValueError, match="not found"):
+        await store.archive_checklist_item(item_id="cki-nonexistent")
+
+
+# ── close_task ownership guard ──────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_close_by_claimer_passes(store):
@@ -421,3 +684,31 @@ async def test_close_unclaimed_unchanged(store):
     again = await store.get_task(t["id"])
     assert again["status"] == "closed"
     assert again["closed_by"] == "reviewer"
+
+
+@pytest.mark.asyncio
+async def test_park_task(store):
+    """park_task sets status to parked and records audit."""
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    ok = await store.park_task(t["id"], actor="system")
+    assert ok is True
+    back = await store.get_task(t["id"])
+    assert back["status"] == "parked"
+
+
+@pytest.mark.asyncio
+async def test_park_already_parked_is_noop(store):
+    """park_task on an already-parked task returns False."""
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    await store.park_task(t["id"], actor="system")
+    ok = await store.park_task(t["id"], actor="system")
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_park_closed_task_is_noop(store):
+    """park_task on a closed task returns False."""
+    t = await store.create_task(project_id="p", title="A", created_by="u")
+    await store.close_task(t["id"], closed_by="u")
+    ok = await store.park_task(t["id"], actor="system")
+    assert ok is False

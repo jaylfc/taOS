@@ -246,3 +246,64 @@ async def check_agent_scope_for_project(
     if not grant_ok:
         raise HTTPException(status_code=403, detail=PROJECT_SCOPE_MISMATCH_DETAIL)
     return canonical_id
+
+
+async def check_agent_project_grants(
+    request: Request, required_scope: str
+) -> tuple[Optional[str], dict[str, dict]]:
+    """Resolve an agent's project-bound grants with ONE grant-store read.
+
+    This is the cross-project sibling of ``check_agent_scope_for_project``: it
+    performs the SAME full identity chain (EdDSA signature, active registry
+    record, rotation cutoff) exactly once, then returns every ACTIVE grant of
+    ``required_scope`` keyed by ``project_id`` so a caller can authorize many
+    projects in O(1) per project instead of re-fetching ``list_grants`` and
+    re-verifying the token for each one (the N+1 that a multi-project aggregate
+    would otherwise pay).
+
+    Returns ``(canonical_id, {project_id: grant})``, or ``(None, {})`` when no
+    Authorization header is present (the caller falls through to its own
+    session/admin handling).
+
+    Raises:
+      401/403 -- exactly as ``check_agent_scope`` (bad/inactive/superseded token).
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None, {}
+
+    raw_token = auth_header[7:].strip()
+    _private_pem, public_pem = _get_keypair(request)
+    try:
+        payload = verify_registry_token(raw_token, public_pem)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="invalid or malformed registry token")
+
+    canonical_id: str = payload.get("sub", "")
+    if not canonical_id:
+        raise HTTPException(status_code=401, detail="token missing sub claim")
+
+    registry = _get_store(request)
+    record = await registry.get(canonical_id)
+    if record is None or record.get("status") != "active":
+        raise HTTPException(status_code=403, detail="agent is not active in the registry")
+
+    token_min_iat = record.get("token_min_iat") or 0
+    token_iat = payload.get("iat") or 0
+    if token_iat < token_min_iat:
+        raise HTTPException(status_code=401, detail="token superseded")
+
+    grants_store = _get_grants_store(request)
+    grants = await grants_store.list_grants(canonical_id)
+    now = datetime.now(timezone.utc)
+    by_project: dict[str, dict] = {}
+    for g in grants:
+        if g.get("scope") != required_scope:
+            continue
+        pid = g.get("project_id")
+        if not pid:
+            continue
+        if not _grant_unexpired(g.get("expires_at"), now):
+            continue
+        by_project[pid] = g
+    return canonical_id, by_project

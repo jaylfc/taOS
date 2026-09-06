@@ -47,6 +47,8 @@ import type {
   AgentSubscription,
   ListItemsParams,
 } from "@/lib/knowledge";
+import { listLibraryJobs, retryLibraryJob } from "@/lib/library";
+import type { LibraryJob } from "@/lib/library";
 import { useFocusTrap } from "@/hooks/use-focus-trap";
 import { useDragSource } from "@/shell/dnd/use-drag-source";
 
@@ -118,6 +120,30 @@ interface StorageViewData {
 }
 
 const STORAGE_CAP_BYTES = 50 * 1024 * 1024 * 1024;
+
+/* ------------------------------------------------------------------ */
+/*  Queue (ingest pipeline jobs)                                      */
+/* ------------------------------------------------------------------ */
+
+const POLL_INTERVAL_MS = 3000;
+const ACTIVE_JOB_STATES = new Set(["queued", "processing"]);
+const FAILED_JOB_STATE = "error";
+
+function isJobActive(state: string): boolean {
+  return ACTIVE_JOB_STATES.has(state);
+}
+
+function isJobActiveOrFailed(state: string): boolean {
+  return isJobActive(state) || state === FAILED_JOB_STATE;
+}
+
+function jobStateColor(state: string): string {
+  if (state === "queued") return "bg-blue-500/15 text-blue-400 border-blue-500/30";
+  if (state === "processing") return "bg-amber-500/15 text-amber-400 border-amber-500/30";
+  if (state === "error") return "bg-red-500/15 text-red-400 border-red-500/30";
+  if (state === "done" || state === "completed") return "bg-green-500/15 text-green-400 border-green-500/30";
+  return "bg-white/10 text-shell-text-tertiary border-white/10";
+}
 
 /* ------------------------------------------------------------------ */
 /*  Library Settings (mock contract until #2060)                       */
@@ -274,7 +300,14 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
     monitor: null,
   });
 
-  const [activeView, setActiveView] = useState<"items" | "storage" | "settings">("items");
+  const [activeView, setActiveView] = useState<"items" | "storage" | "settings" | "queue">("items");
+
+  /* ---------- queue (ingest jobs) ---------- */
+  const [jobs, setJobs] = useState<LibraryJob[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(false);
+  const [jobsUnavailable, setJobsUnavailable] = useState(false);
+  const queuePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const jobsLoadedRef = useRef(false);
 
   /* ---------- settings ---------- */
   const [settings, setSettings] = useState<LibrarySettings>(() => loadLibrarySettings());
@@ -379,6 +412,75 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
     const r = await listRules();
     setRules(r);
   }, []);
+
+  /* ---------- queue (ingest jobs) ---------- */
+
+  const queueActive = activeView === "queue";
+
+  const fetchJobs = useCallback(async () => {
+    const isInitial = !jobsLoadedRef.current;
+    if (isInitial) setJobsLoading(true);
+    try {
+      const data = await listLibraryJobs();
+      const next = Array.isArray(data?.jobs) ? data.jobs : [];
+      setJobs(next);
+      setJobsUnavailable(false);
+      jobsLoadedRef.current = true;
+      return next;
+    } catch {
+      setJobs([]);
+      setJobsUnavailable(true);
+      jobsLoadedRef.current = true;
+      return [];
+    } finally {
+      if (isInitial) setJobsLoading(false);
+    }
+  }, []);
+
+  // Poll every 3s while there are active jobs; stop once the queue is idle
+  // (no queued/processing jobs). Re-arming happens inside `tick` so the
+  // interval is created/destroyed deterministically as job state changes.
+  useEffect(() => {
+    if (!queueActive) {
+      if (queuePollRef.current) {
+        clearInterval(queuePollRef.current);
+        queuePollRef.current = null;
+      }
+      return;
+    }
+    let cancelled = false;
+
+    const tick = async () => {
+      const next = await fetchJobs();
+      if (cancelled) return;
+      const stillActive = next.some((j) => isJobActive(j.state));
+      if (stillActive && !queuePollRef.current) {
+        queuePollRef.current = setInterval(tick, POLL_INTERVAL_MS);
+      } else if (!stillActive && queuePollRef.current) {
+        clearInterval(queuePollRef.current);
+        queuePollRef.current = null;
+      }
+    };
+
+    void tick();
+    return () => {
+      cancelled = true;
+      if (queuePollRef.current) {
+        clearInterval(queuePollRef.current);
+        queuePollRef.current = null;
+      }
+    };
+  }, [queueActive, fetchJobs]);
+
+  const handleRetryJob = useCallback(
+    async (jobId: string) => {
+      const ok = await retryLibraryJob(jobId);
+      if (ok) {
+        void fetchJobs();
+      }
+    },
+    [fetchJobs],
+  );
 
   const openDetail = useCallback(
     async (item: KnowledgeItem) => {
@@ -768,7 +870,7 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
             </div>
           )}
           <div className="flex items-center gap-1 shrink-0" role="radiogroup" aria-label="View mode">
-            {(["items", "storage", "settings"] as const).map((v) => (
+            {(["items", "storage", "settings", "queue"] as const).map((v) => (
               <Button
                 key={v}
                 variant={activeView === v ? "secondary" : "ghost"}
@@ -1333,6 +1435,102 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
             </Button>
           </div>
         </section>
+      </div>
+    </main>
+  );
+
+  /* ------------------------------------------------------------------ */
+  /*  Queue View UI (ingest pipeline jobs)                               */
+  /* ------------------------------------------------------------------ */
+
+  const queuePolling = queueActive && jobs.some((j) => isJobActive(j.state));
+  const displayableJobs = jobs.filter((j) => isJobActiveOrFailed(j.state));
+
+  const queueViewUI = (
+    <main className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex flex-col gap-2 px-4 py-3 border-b border-white/5 shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium">Ingest Queue</span>
+        </div>
+        <div className="flex items-center gap-1.5 text-[11px] text-shell-text-tertiary">
+          {jobsUnavailable ? (
+            <>
+              <span className="w-2 h-2 rounded-full bg-red-500" aria-hidden="true" />
+              <span>Unavailable</span>
+            </>
+          ) : queuePolling ? (
+            <>
+              <span className="w-2 h-2 rounded-full bg-accent" aria-hidden="true" />
+              <span>Polling every 3s</span>
+            </>
+          ) : (
+            <>
+              <span className="w-2 h-2 rounded-full bg-shell-text-tertiary/50" aria-hidden="true" />
+              <span>Idle</span>
+            </>
+          )}
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-3">
+        {jobsLoading ? (
+          <p className="text-xs text-shell-text-tertiary">Loading queue...</p>
+        ) : jobsUnavailable ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-shell-text-tertiary">
+            <AlertCircle size={36} className="opacity-30" />
+            <p className="text-sm">Queue unavailable</p>
+          </div>
+        ) : displayableJobs.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-shell-text-tertiary">
+            <Clock size={36} className="opacity-30" />
+            <p className="text-sm">No active or failed jobs</p>
+          </div>
+        ) : (
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-shell-text-tertiary border-b border-white/5">
+                <th className="text-left pb-1.5 font-normal" scope="col">Stage</th>
+                <th className="text-left pb-1.5 font-normal" scope="col">Item</th>
+                <th className="text-left pb-1.5 font-normal" scope="col">State</th>
+                <th className="text-left pb-1.5 font-normal" scope="col">Error</th>
+                <th className="w-28 text-right pb-1.5 font-normal" scope="col">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {displayableJobs.map((job) => (
+                <tr key={job.id} className="border-t border-white/5">
+                  <td className="py-1.5 pr-2 text-shell-text-secondary font-mono">{job.stage || "—"}</td>
+                  <td className="py-1.5 pr-2 text-shell-text-tertiary truncate max-w-[140px]" title={job.item_id}>
+                    {job.item_id}
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded border ${jobStateColor(job.state)}`}
+                    >
+                      {job.state}
+                    </span>
+                  </td>
+                  <td className="py-1.5 pr-2 text-shell-text-secondary break-words max-w-xs">
+                    {job.error || "—"}
+                  </td>
+                  <td className="py-1.5 text-right">
+                    {job.state === FAILED_JOB_STATE && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-xs gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                        onClick={() => handleRetryJob(job.id)}
+                        aria-label={`Retry job ${job.id}`}
+                      >
+                        <RefreshCw size={11} />
+                        Retry
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </main>
   );
@@ -1924,6 +2122,8 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
             </div>
           ) : activeView === "settings" ? (
             settingsViewUI
+          ) : activeView === "queue" ? (
+            queueViewUI
           ) : (
             storageViewUI
           )

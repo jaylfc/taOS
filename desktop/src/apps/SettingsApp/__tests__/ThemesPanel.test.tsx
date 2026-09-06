@@ -26,4 +26,16 @@ describe("ThemesPanel", () => {
     expect(await screen.findByText("taOS Dark")).toBeInTheDocument();
     expect(screen.getByText("taOS Light")).toBeInTheDocument();
   });
+
+  it("announces a themes-fetch failure via role=alert", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500, statusText: "Internal Server Error" }));
+    render(<ThemesPanel />);
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+  });
+
+  it("does not render an alert when themes load successfully", async () => {
+    render(<ThemesPanel />);
+    await screen.findByText("Ocean Blue");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
 });

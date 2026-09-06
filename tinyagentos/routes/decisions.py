@@ -317,6 +317,11 @@ async def create_decision(
                 message=f"{from_agent} needs a decision: {body.question[:120]}",
                 level="warning" if body.priority == "blocking" else "info",
                 source="decisions",
+                data={
+                    "decision_type": body.type,
+                    "options": [o.model_dump() for o in body.options],
+                    "decision_id": decision["id"],
+                },
             )
         except Exception:
             pass

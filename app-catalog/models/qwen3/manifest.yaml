@@ -1,0 +1,30 @@
+id: qwen3
+name: Qwen3 1.7B Instruct
+type: model
+version: 3.0.0
+description: "Hailo-10H NPU-accelerated Qwen3 1.7B Instruct — runs on Raspberry Pi 5 + AI HAT+2 via hailo-ollama"
+homepage: https://huggingface.co/Qwen/Qwen3-1.7B
+license: Apache-2.0
+capabilities:
+- chat
+- tool-calling
+variants:
+- id: a8w4
+  name: A8W4 HEF (1.8GB, NPU)
+  format: hef
+  size_mb: 1790
+  min_ram_mb: 0
+  hef_h10h: cc9b9d1c92e35249b5a9b7bc31fbd652f03bba1232e99b9a8271845ad6f17821
+  ollama_name: qwen3:1.7b
+  requires:
+    backends:
+    - id: hailo-ollama
+      targets:
+      - hailo
+      min_ram_mb: 2048
+hardware_tiers:
+  arm-npu-8gb:
+    recommended: a8w4
+  arm-npu-16gb:
+    recommended: a8w4
+context_window: 2048

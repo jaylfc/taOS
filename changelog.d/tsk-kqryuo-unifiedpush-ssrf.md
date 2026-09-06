@@ -1,0 +1,2 @@
+### Security
+- UnifiedPush push-token endpoints now validate URLs against SSRF guards before storing or sending. Loopback, link-local, multicast, reserved, and unspecified addresses are refused at registration and again at send time. Decimal-encoded and IPv4-mapped IPv6 loopback forms are also blocked. RFC1918 ranges (and their IPv6 unique-local equivalent, `fc00::/7`) remain allowed for self-hosted LAN use cases; the CGNAT range `100.64.0.0/10` and deprecated IPv6 site-local `fec0::/10` are always blocked, because our own A2A bus lives in CGNAT space. (#tsk-kqryuo)

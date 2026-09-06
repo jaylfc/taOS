@@ -119,6 +119,27 @@ upgraded DBs lose the feature at runtime. Use the guarded `_post_init` pattern
 builds the PRE-change schema first. Fresh-DB tests are structurally blind to
 this class (#2043: `peer_fingerprint`).
 
+**19. Adding a column straight into SCHEMA bricks every existing install.**
+`CREATE TABLE IF NOT EXISTS` is a no-op on existing tables, so a new column
+slotted into the `CREATE TABLE` body is silently absent on upgrade; the first
+INSERT that touches it crashes with `table <t> has no column named <c>`. The
+two existing migration guards cannot see this because neither has a migration
+entry to inspect (both clean by vacuity), and CI cannot see it because tests
+build fresh databases. The fix is the same guarded `_post_init` pattern as
+pitfall 18; the check is `scripts/check_schema_column_migrations.py` (added
+tsk-hrzgip after PR #2416 proved both old guards passed on this exact brick).
+It compares the working tree against the PR's own base branch (`--base`,
+defaulting to `origin/dev`), and only a `_post_init` defined as a METHOD of
+the store class silences a column - a module-level helper of that name is not
+the hook `BaseStore.init()` calls. A `SCHEMA` the guard cannot resolve to a
+static string in its own file (an f-string with a runtime value, or a constant
+imported from another module) is reported on stderr as NOT checked rather than
+skipped silently; keep the SQL literal in the same file if you want the guard
+to cover your store.
+A brand-new table is not diffed at all - `CREATE TABLE IF NOT
+EXISTS` builds it in full on every install, so only columns added to a table
+that already exists on the base branch can brick an upgrade.
+
 ## Process
 
 **13. A fix and its test belong in one PR.**

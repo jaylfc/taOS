@@ -196,6 +196,31 @@ What this means when you write a test:
 - **A filename no longer changes behaviour.** The old carve-out was a substring match on the
   path, so renaming a file silently re-armed the bypass with no failure anywhere.
 
+### Test markers
+
+Every pytest marker is declared once, in `pyproject.toml` under
+`[tool.pytest.ini_options] markers`. Do NOT register one from a
+`pytest_configure` hook in `tests/conftest.py`: that file already defines the
+canonical hook, and a second module-level `def pytest_configure` is last-wins
+rebinding rather than additive registration, so the earlier body never runs and
+its next edit is a silent no-op in CI.
+
+- **`@pytest.mark.skip_if_no_embed_backend` skips a test that cannot run without
+  an embedding backend** — a reachable qmd service, or an installed
+  `onnxruntime`. There is no opt-out marker and no `-o` switch: not applying it
+  IS the opt-out, and that is the default for every test.
+- **Like `csrf_bypass`, nothing uses it, and
+  `tests/test_embed_backend_marker_debt.py` asserts the list stays EMPTY.**
+  Before adding it, check what the test actually calls. A test driving an
+  `AsyncMock(spec=httpx.AsyncClient)`, a hand-built `_snapshot`, or a patched
+  `_run_setup` never reaches a backend, so the marker does not protect it from
+  anything — it just deletes it from every CI row while the suite stays green.
+- **Probe the capability, not a proxy for it.** The backend check opens a socket
+  against the packaged default qmd URL and looks for `onnxruntime` (what executes a
+  model), not `onnx` (the model-format library taOS does not depend on) and not
+  an environment variable no module under `tinyagentos/` reads. A proxy answers
+  "no backend" on a box that works and "backend" for a host that does not exist.
+
 Patch timing matters if you ever stub it yourself: `register_all_routers` does
 `from ... import verify_csrf` and freezes the object into `Depends(...)` at `include_router`
 time, so patching the module attribute AFTER `create_app` does nothing.
@@ -300,7 +325,31 @@ The rate-limited no-op is now also machine-gated: `.github/workflows/bot-review-
 only CodeRabbit output on a PR is a rate-limit stub, and a companion `re-run-on-stub-comment`
 job re-runs the gate against the PR head SHA when a stub comment lands *after* the initial
 run went green. A red `bot-review-gate` check means the PR has no substantive CodeRabbit
-review yet — wait for (or retrigger) a real review; do not merge on the stub.
+review yet — wait for (or retrigger) a real review; do not merge on the
+stub. A lead may waive a known rate-limit/stub false positive by applying the
+`bot-review-allow` label (see below).
+
+Enforcement parity is a GitHub-side branch-protection setting, not in-repo config:
+`bot-review-gate` is REQUIRED on `master` but only ADVISORY on `dev` (absent from dev's
+`required_status_checks.contexts`), so a red check can merge through dev and block only at the
+dev->master promotion. The hardening target is to add `bot-review-gate` to dev's required
+contexts too; that edit is Jay's standing GitHub configuration (master is left unchanged) and
+is not performed by a repo commit.
+
+Two things to know before applying it (both recorded in the workflow header):
+
+- **An override label (`bot-review-allow`) ships first.** `scripts/check_bot_review.py` fails
+  on a CodeRabbit rate-limit stub, which is an infrastructure condition, not a code problem.
+  Making the context required on `dev` before there is an escape hatch would block every merge
+  to `dev` for the length of a rate-limit window. The `bot-review-allow` label (lead-applied,
+  never by automation) waives the stub-only FAIL verdict to exit 0 with an explicit WAIVED
+  message -- it covers only the stub verdict class (EXIT_STUB), not a cannot-fetch ERROR, so
+  fail-closed is preserved. The script reads the label from the API at run time (never a stale
+  event payload) and the workflow re-runs on `labeled`/`unlabeled` so the waiver is revokable.
+- **Use the right API shape.** The contexts endpoint takes a top-level `contexts` ARRAY. A
+  `-f required_status_checks='[...]'` string field is the wrong shape and the update silently
+  does not apply. Send `{"contexts":[...]}` via `gh api -X PATCH ... --input <file>`, carrying
+  the branch's existing contexts plus the new one -- the call replaces the whole list.
 
 ### Procedure
 
@@ -558,6 +607,14 @@ blocks PRs that add a new `BaseStore` subclass without wiring it into `tinyagent
 Routes reach stores ONLY via `request.app.state`, so an unwired store is unreachable dead
 code. The check is name-level (the class name must appear in `app.py`) and polices only
 classes added by the PR - pre-existing orphans are skipped.
+
+A class that some other class under `tinyagentos/` subclasses **and** that declares no
+`SCHEMA` of its own is skipped too, and the gate prints the exemption. Such a base exists
+to be inherited from, never to be assigned to `app.state` - `ProjectsDBStore` in
+`tinyagentos/projects/tx.py` carries the shared `projects.db` transaction helper for the
+eight stores on that file, owns no tables and is never instantiated. A class that declares
+`SCHEMA` owns tables, so it is a store and stays policed however many subclasses it grows:
+subclassing an unwired store does not launder it past the gate.
 
 For a store genuinely constructed elsewhere (tests, CLI, workers), waive it with a PR-body
 trailer, which is logged by the gate:

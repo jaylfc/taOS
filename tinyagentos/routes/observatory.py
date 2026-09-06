@@ -14,6 +14,7 @@ import json
 import os
 import tempfile
 import time
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,6 +29,8 @@ from tinyagentos.agent_token_auth import (
 )
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_STATE: dict = {"global": False, "lanes": {}}
 
@@ -73,12 +76,13 @@ def _atomic_write(p: Path, state: dict) -> None:
         with os.fdopen(fd, "w") as f:
             f.write(json.dumps(state))
         os.replace(tmp, p)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+        tmp = None
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _write_state(request: Request, state: dict) -> None:
@@ -403,7 +407,8 @@ async def get_fleet(request: Request):
 
     # Registered agents holding no card are idle; surface them so the fleet
     # shows the full active roster, not just the busy lanes. Best-effort: a
-    # missing or erroring registry must not break the working view.
+    # missing or erroring registry must not break the working view. Any
+    # registry exception is caught and logged; the working view still renders.
     registry = getattr(request.app.state, "agent_registry", None)
     registered: list[dict] = []
     if registry is not None:
@@ -413,6 +418,7 @@ async def get_fleet(request: Request):
             else:
                 registered = await registry.list_for_user(user_id, status="active") if user_id else []
         except Exception:
+            logger.exception("registry lookup failed for fleet view")
             registered = []
         for rec in registered:
             handle = (rec.get("handle") or "").strip()
@@ -456,3 +462,16 @@ async def get_fleet(request: Request):
         "status": "degraded" if stale_handles else ("active" if working_count else "idle"),
     }
     return {"agents": agents, "paused": _read_state(request), "health": health}
+
+
+@router.get("/api/observatory/wake-budget")
+async def get_wake_budget(request: Request):
+    """Per-agent wake budget, consumption, and next scheduled wake.
+
+    Admin or an agent holding ``observatory_control`` may read it.
+    """
+    await _authorize_observatory_read(request)
+    from tinyagentos.wake_budget import get_fleet_wake_info
+    data_dir = Path(request.app.state.data_dir)
+    info = await get_fleet_wake_info(data_dir, request.app.state.config, request.app.state.project_task_store)
+    return {"agents": info}

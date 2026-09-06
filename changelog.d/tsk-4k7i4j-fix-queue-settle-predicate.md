@@ -1,0 +1,2 @@
+### Fixed
+- `test_queue_position_global_for_loads` and `test_queue_position_per_model_for_inference` in `tests/test_gpu_arbiter_queue_ops.py` settled on a single task before asserting queue positions for all submitted tasks, racing the event loop when later coroutines had not yet enqueued. The settle predicates now wait for every asserted task_id to be non-None, eliminating the flaky `assert queue_position(t2.id) == 2` (None vs int) failure (#tsk-4k7i4j).

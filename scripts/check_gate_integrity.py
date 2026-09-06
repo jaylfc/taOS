@@ -32,9 +32,10 @@ file that drives it, which is why #1 is still required. This guard covers
 both, so #2 is redundant for the covered surface.
 
 Protected paths (the minimal gate surface a lane could corrupt):
-  - `.github/workflows/`        the required-check workflow YAML itself
-  - `.github/scripts/`          gate checkers collocated under `.github`
-  - `scripts/check_*.py`        every repo gate checker lives here by convention
+  - `.github/`                  the entire .github tree (workflows, composite
+                                actions, scripts, Dependabot config, etc.)
+  - `scripts/check_*.py`        every repo gate checker under scripts/ (flat
+                                or nested; auto-covers future gate checkers)
   - `docs/doc-gate.toml`        the doc-gate's rule DATA (a gate input, not code)
   - `pyproject.toml`            tool/test configuration the gates execute under
   - `tests/conftest.py`         fixture root every gate-adjacent test imports
@@ -69,8 +70,7 @@ DEFAULT_ALLOW_LABEL = "gate-integrity-allow"
 # silence or subvert a required check, so such edits are blocked unless the
 # allow label is set.
 PROTECTED_PREFIXES: tuple[str, ...] = (
-    ".github/workflows/",
-    ".github/scripts/",
+    ".github/",
     "docs/doc-gate.toml",
     "pyproject.toml",
     "tests/conftest.py",
@@ -150,16 +150,12 @@ def is_protected(path: str) -> bool:
     for prefix in PROTECTED_PREFIXES:
         if norm.startswith(prefix):
             return True
-    if (
-        norm.startswith(GATE_SCRIPT_PREFIX)
-        and norm.endswith(GATE_SCRIPT_SUFFIX)
-        and norm.count("/") == 1
-    ):
-        # `scripts/check_<x>.py` directly under scripts/ only; a nested file
-        # like scripts/platform/check_foo.py is not matched by the flat
-        # `scripts/check_*.py` convention.
-        return True
-    return False
+    basename = norm.rsplit("/", 1)[-1]
+    return (
+        norm.startswith("scripts/")
+        and basename.startswith(GATE_SCRIPT_PREFIX.removeprefix("scripts/"))
+        and basename.endswith(GATE_SCRIPT_SUFFIX)
+    )
 
 
 def collect_pr_files(
@@ -172,7 +168,7 @@ def collect_pr_files(
     truncation check must compare records against `changed_files`, or every
     rename would read as a truncated listing. None on infrastructure
     failure."""
-    data = _api_get(f"{API}/repos/{owner}/{repo}/pulls/{pr_number}/files", token)
+    data = _api_get(f"{API}/repos/{owner}/{repo}/pulls/{pr_number}/files?per_page=100", token)
     if data is None:
         return None
     records = [f for f in data if isinstance(f, dict)]
@@ -222,7 +218,7 @@ def classify(
         return CheckResult(
             EXIT_OK,
             "gate-integrity: PASS -- PR touches no protected gate paths "
-            f"({', '.join(PROTECTED_PREFIXES)} or {GATE_SCRIPT_PREFIX}*{GATE_SCRIPT_SUFFIX})",
+            f"({', '.join(PROTECTED_PREFIXES)} or scripts/check_*.py)",
         )
     if allow_label in label_set:
         return CheckResult(

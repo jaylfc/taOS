@@ -1,4 +1,5 @@
 from httpx import ASGITransport, AsyncClient
+from unittest.mock import patch
 
 import pytest
 
@@ -436,6 +437,16 @@ async def test_fleet_unregistered_working_agent_has_empty_framework(app, client)
     assert mine[0]["framework"] == ""
 
 
+@pytest.mark.asyncio
+async def test_fleet_does_not_break_when_registry_raises_non_runtime_error(app, client):
+    reg = app.state.agent_registry
+    if reg._db is None:
+        await reg.init()
+    with patch.object(reg, "list_all", side_effect=ValueError("registry boom")):
+        resp = await client.get("/api/observatory/fleet")
+    assert resp.status_code == 200
+
+
 class TestObservatoryAgentAuth:
     """Agent-token authentication for observatory routes.
 
@@ -606,3 +617,31 @@ class TestObservatoryAgentAuth:
         handles = [a["handle"] for a in agents]
         assert "@lane-a" in handles
         assert "@lane-b" not in handles
+
+
+@pytest.mark.asyncio
+class TestObservatoryWakeBudget:
+    async def test_fleet_wake_budget_admin(self, client):
+        resp = await client.get("/api/observatory/wake-budget")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "agents" in data
+        for row in data["agents"]:
+            assert "agent_id" in row
+            assert "budget" in row
+            assert "consumed" in row
+            assert "remaining" in row
+            assert "next_wake_epoch" in row
+
+    async def test_fleet_wake_budget_agent_token(self, app):
+        _cid, token = await _make_obs_agent_token(app, scopes=("observatory_control",))
+        from httpx import ASGITransport, AsyncClient
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            resp = await bare.get(
+                "/api/observatory/wake-budget",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "agents" in data

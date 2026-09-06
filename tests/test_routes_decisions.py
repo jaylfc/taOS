@@ -1,4 +1,6 @@
 import asyncio
+import json
+import time
 
 import pytest
 
@@ -1057,3 +1059,50 @@ async def test_second_answer_409_no_duplicate_event(client, monkeypatch):
         if ev.kind == "decision.answered":
             count += 1
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_dec_sfdooy_wake_budget_decision_created_and_closed(client, app):
+    """Create the dec-sfdooy decision card for wake-budget design and close it."""
+    store = app.state.decision_store
+    await store.init()
+    now = time.time()
+    await store._db.execute(
+        """INSERT INTO decisions
+           (id, from_agent, project_id, user_id, question, type, options, context,
+            priority, status, created_at, deadline, parent_decision_id,
+            checkpoint_ref, timeline_id, metadata)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)""",
+        (
+            "dec-sfdooy",
+            "@taOS-dev",
+            None,
+            "admin",
+            "Wake-budget config: per-agent + global default + per-project override, OS-enforced",
+            "approve_deny",
+            json.dumps([
+                {"label": "Approve", "value": "approve", "recommended": True, "rationale": "Matches Jay direction on dec-sfdooy"},
+                {"label": "Deny", "value": "deny"},
+            ]),
+            "Fleet default stays at 2/day until this ships. Most specific wins: per-project > per-agent > global_default. Mention wakes exempt but countable.",
+            "normal",
+            now,
+            None,
+            None,
+            None,
+            None,
+            json.dumps({"kind": "design_decision", "card": "dec-sfdooy"}),
+        ),
+    )
+    await store._db.commit()
+    decision = await store.get("dec-sfdooy")
+    assert decision is not None
+    assert decision["status"] == "pending"
+
+    updated = await store.answer("dec-sfdooy", "approve", answered_by="admin", source="in_app")
+    assert updated is not None
+    assert updated["status"] == "answered"
+    answer_value = updated["answer"]
+    if isinstance(answer_value, str):
+        answer_value = json.loads(answer_value)
+    assert answer_value["value"] == "approve"

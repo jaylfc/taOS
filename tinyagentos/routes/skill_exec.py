@@ -79,7 +79,8 @@ def _resolve_agent_workspace(request: Request, args: dict) -> Path:
     rebuild or framework swap. See ``docs/design/framework-agnostic-runtime.md``.
     """
     agent_name = (
-        args.get("agent_name")
+        getattr(request.state, "agent_name", None)
+        or args.get("agent_name")
         or request.query_params.get("agent_name")
         or "default"
     )
@@ -494,6 +495,12 @@ async def list_tools(request: Request, agent_name: str):
     format matches the OpenAI / MCP tool definition so adapters can pass it
     straight through to framework tool registries.
     """
+    credential_agent = getattr(request.state, "agent_name", None)
+    if credential_agent and agent_name != credential_agent:
+        return JSONResponse(
+            {"error": "forbidden: agent_name does not match credential"},
+            status_code=403,
+        )
     skill_store = request.app.state.skills
     skills = await skill_store.get_agent_skills(agent_name)
 
@@ -537,7 +544,10 @@ def _capture_tool_receipt(request: Request, skill_id: str, args: dict, result) -
         from tinyagentos.receipts import emit_tool_receipt
 
         store = getattr(request.app.state, "receipt_store", None)
-        agent = (args.get("agent_name") or "").strip()
+        agent = (
+            getattr(request.state, "agent_name", None)
+            or (args.get("agent_name") or "").strip()
+        )
         if store is None or not agent:
             return
         # agent_name is identity, not a tool argument; keep it out of tool_args.
@@ -696,10 +706,21 @@ async def execute_skill(skill_id: str, request: Request):
 
     body = await request.json()
     args = body.get("args", {})
-    # Propagate agent_name from the request body into args so file-read
-    # and file-write resolve the right per-agent workspace.
-    if "agent_name" in body and "agent_name" not in args:
-        args["agent_name"] = body["agent_name"]
+
+    # Agent identity must come from the CREDENTIAL, not the body.
+    # Local-token callers are bound to a single agent at deploy time; a
+    # deployed agent passing another agent's handle must be rejected.
+    credential_agent = getattr(request.state, "agent_name", None)
+    body_agent = body.get("agent_name")
+    if credential_agent:
+        if body_agent and body_agent != credential_agent:
+            return JSONResponse(
+                {"error": "forbidden: agent_name does not match credential"},
+                status_code=403,
+            )
+        args["agent_name"] = credential_agent
+    elif body_agent:
+        args["agent_name"] = body_agent
 
     skill_store = request.app.state.skills
     skill = await skill_store.get_skill(skill_id)

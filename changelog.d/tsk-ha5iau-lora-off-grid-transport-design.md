@@ -1,0 +1,2 @@
+### Added
+- LoRa off-grid transport design note (docs/specs/tsk-ha5iau/2026-08-28-lora-off-grid-transport-design.md): Security model for Meshtastic bridge, message schema fitting 237-byte LoRa payload, allowed A2A kinds, and concrete first milestone for point-to-point prototype with two Heltec V4 modules.

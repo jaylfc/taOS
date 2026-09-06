@@ -1,0 +1,2 @@
+### Fixed
+- Hailo-10H `.hef` model variants now enforce their `hef_h10h` content pin: the `OllamaInstaller` compares the digest reported by `hailo-ollama pull` against the manifest's `hef_h10h` and fails the install on mismatch, so the pin is no longer decorative. The fabricated-digest denylist now also covers `hef_h10h`, and the manifest integrity test rejects hailo-ollama variants that declare neither an enforced pin nor the documented delegation.

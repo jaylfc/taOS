@@ -22,6 +22,7 @@ const EMPTY_CONFIG: ThemeConfig = { tokens: {}, structure: {}, effects: [], requ
 
 export function ThemesPanel() {
   const [themes, setThemes] = useState<InstalledTheme[]>([]);
+  const [error, setError] = useState<string | null>(null);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [priorConfig, setPriorConfig] = useState<ThemeConfig>(EMPTY_CONFIG);
 
@@ -30,7 +31,12 @@ export function ThemesPanel() {
 
   useEffect(() => {
     fetch("/api/themes", { credentials: "include" })
-      .then((r) => (r.ok ? r.json() : []))
+      .then((r) => {
+        if (!r.ok) {
+          throw new Error(`${r.status} ${r.statusText}`);
+        }
+        return r.json();
+      })
       .then((data: InstalledTheme[]) => {
         const installed = Array.isArray(data) ? data : [];
         const builtinIds = new Set(BUILTIN_THEMES.map((b) => b.theme_id));
@@ -41,6 +47,7 @@ export function ThemesPanel() {
         setThemes(merged);
       })
       .catch(() => {
+        setError("Could not load installed themes. Showing built-in themes.");
         setThemes([...BUILTIN_THEMES]);
       });
   }, []);
@@ -84,6 +91,11 @@ export function ThemesPanel() {
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {error && (
+          <p role="alert" className="text-xs text-amber-400 col-span-full">
+            {error}
+          </p>
+        )}
         {themes.map((theme) => {
           const isActive = theme.theme_id === activeThemeId;
           const isPreviewing = theme.theme_id === previewId;

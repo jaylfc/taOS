@@ -1,0 +1,2 @@
+### Fixed
+- `test_guard_detects_stale_sniffio_namespace` now builds the stale-package condition using a real regular package directory (with `__init__.py`) on `sys.path` instead of an empty namespace directory. An empty directory is inert under PEP 420 and can never shadow an installed regular package, so the guard never saw the half-present module and the test passed unconditionally. The regular-package form actually shadows the install, so the guard has something genuine to detect.

@@ -54,6 +54,7 @@ from tinyagentos.routes.desktop_browser.profile import (
 from tinyagentos.routes.desktop_browser.rewriter import rewrite_html
 from tinyagentos.routes.desktop_browser.ssrf import (
     SsrfBlockedError,
+    guarded_async_client,
     validate_url_or_raise,
 )
 
@@ -307,7 +308,7 @@ async def proxy_get(
         hop_method = method
         hop_body = req_body
         _resp: httpx.Response | None = None
-        async with httpx.AsyncClient(
+        async with guarded_async_client(
             follow_redirects=False, timeout=_HOP_TIMEOUT,
         ) as http:
             for hop in range(_MAX_REDIRECTS + 1):
