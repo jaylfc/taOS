@@ -221,6 +221,7 @@ class DownloadManager:
     async def _validate_download(
         self,
         task: DownloadTask,
+        path: Path | None = None,
         expected_sha256: str | None = None,
         computed_sha256: str | None = None,
     ) -> str | None:
@@ -230,10 +231,16 @@ class DownloadManager:
         describing why it isn't. Applies to both the torrent and HTTP
         paths so neither can mark a task complete when nothing (or the
         wrong thing) was actually written to disk.
+
+        ``path`` is the file to inspect -- the ``.part`` stage file on the
+        HTTP path (validated before promotion) or ``task.dest`` on the
+        torrent path. Defaults to ``task.dest`` when omitted.
         """
-        if not task.dest.exists() or task.dest.stat().st_size == 0:
+        if path is None:
+            path = task.dest
+        if not path.exists() or path.stat().st_size == 0:
             return "download produced no data"
-        if task.total_bytes and task.dest.stat().st_size != task.total_bytes:
+        if task.total_bytes and path.stat().st_size != task.total_bytes:
             return "size mismatch"
         if expected_sha256:
             digest = computed_sha256
@@ -242,7 +249,7 @@ class DownloadManager:
                 # potentially multi-GB model is offloaded to a thread so it
                 # never blocks the event loop.
                 digest = await asyncio.to_thread(
-                    lambda: hashlib.sha256(task.dest.read_bytes()).hexdigest()
+                    lambda: hashlib.sha256(path.read_bytes()).hexdigest()
                 )
             # Hex digests are case-insensitive; a caller passing an uppercase
             # expected value must not be treated as a mismatch.
@@ -304,7 +311,7 @@ class DownloadManager:
                 # (and raised on mismatch), so re-hashing here would just re-read
                 # a multi-GB file to no benefit. Only the cheap non-empty / size
                 # floor is needed on this path.
-                error = await self._validate_download(task)
+                error = await self._validate_download(task, task.dest)
                 if error:
                     task.dest.unlink(missing_ok=True)
                     task.status = "error"
@@ -340,13 +347,12 @@ class DownloadManager:
         body is on disk, so a failure can never leave a corrupt weight sitting
         at the canonical path where every later "is this model installed?"
         existence check would take it for the real thing. The stage file
-        survives a failure on purpose: it is what the next attempt — this
-        process or the next boot — resumes from.
+        survives a failure on purpose: it is what the next attempt -- this
+        process or the next boot -- resumes from.
         """
         task.status = "downloading"
         task.started_at = time.time()
         part = task.dest.with_name(task.dest.name + ".part")
-        promoted = False
         try:
             task.dest.parent.mkdir(parents=True, exist_ok=True)
             digest = await with_retry(
@@ -356,28 +362,29 @@ class DownloadManager:
                 max_delay=DOWNLOAD_RETRY_MAX_DELAY,
                 retry_on=DOWNLOAD_RETRY_ON,
             )
-            part.replace(task.dest)
-            promoted = True
-            error = await self._validate_download(task, expected_sha256, computed_sha256=digest)
+            error = await self._validate_download(
+                task, part, expected_sha256, computed_sha256=digest
+            )
             if error:
-                # The bytes are wrong, so the promoted file is worthless: this
-                # attempt just replaced task.dest with a bad copy, and that
-                # copy (not the now-gone .part) is what has to go.
-                task.dest.unlink(missing_ok=True)
+                # The .part content failed validation; it is worthless and
+                # must never be promoted. Remove only the stage file;
+                # task.dest may hold a previously-verified model from an
+                # earlier install and is left untouched.
+                part.unlink(missing_ok=True)
                 task.status = "error"
                 task.error = error
             else:
+                part.replace(task.dest)
                 task.status = "complete"
                 task.completed_at = time.time()
         except Exception as e:
-            # Only clean up task.dest when THIS attempt is the one that put a
-            # (possibly bad) file there. _stream_to_part writes exclusively to
-            # `part`, so a failure before promotion leaves task.dest exactly as
-            # it was -- which, for a re-download of an already-installed model,
-            # is a perfectly good file. Deleting it here would destroy a valid
-            # install over a transient failure of the NEW attempt.
-            if promoted:
-                task.dest.unlink(missing_ok=True)
+            # _stream_to_part writes exclusively to `part`, so a failure
+            # during streaming leaves task.dest exactly as it was. For a
+            # re-download of an already-installed model, task.dest is a
+            # perfectly good file -- destroying it here would throw away a
+            # valid install over a transient failure of the NEW attempt.
+            # The .part stage file is preserved by design so the next
+            # attempt can resume from it.
             task.status = "error"
             task.error = str(e)
             logger.error("Download failed for %s: %s", task.id, e)
