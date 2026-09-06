@@ -454,6 +454,9 @@ class TestMergeAttributionReconciliation:
         # sha, not PR #41's number. The fixed pattern checks the PR-reference
         # token the checker actually prints (f"#{pr_num} {short}"), which
         # cannot collide with a hex sha substring the way a bare number can.
+        # First prove the collision is really present in the fixture, so this
+        # test cannot pass vacuously if the sha above is ever edited.
+        assert "41" in stdout
         assert "#41" not in stdout
 
     # ---- acceptance (c): checker enumerates from gh API, not git log ----
