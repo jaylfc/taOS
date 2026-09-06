@@ -7,6 +7,7 @@
 #   --python-version <PYVER>
 #   --container-cli-version <CLIVER>
 #   --output <DIR>
+#   TAOS_RELEASE=1 (or use version pattern [0-9]*.[0-9]*.[0-9]*) to trigger release mode
 set -euo pipefail
 
 VERSION=""
@@ -40,8 +41,9 @@ mkdir -p "$STAGING"
 echo "[build] (1/9) launcher"
 cd "$REPO_ROOT/mac/launcher"
 swift build -c release --arch arm64
-LAUNCHER_BINARY="$REPO_ROOT/mac/launcher/.build/arm64-apple-macosx/release/taOSLauncher"
 cd "$REPO_ROOT"
+
+LAUNCHER_BINARY="$REPO_ROOT/mac/launcher/.build/arm64-apple-macosx/release/taOSLauncher"
 
 echo "[build] (2/9) python"
 "$SCRIPT_DIR/build_python.sh" --version "$PYTHON_VER" --output "$STAGING"
@@ -55,12 +57,31 @@ echo "[build] (4/9) Sparkle.framework"
 echo "[build] (5/9) container CLI"
 "$SCRIPT_DIR/fetch_container_cli.sh" --version "$CLI_VER" --output "$STAGING"
 
+# Check if this is a release build
+TAOS_RELEASE="${TAOS_RELEASE:-0}"
+if [[ "$TAOS_RELEASE" = "1" || "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "[build] release mode"
+  RELEASE_MODE=1
+else
+  echo "[build] development mode"
+  RELEASE_MODE=0
+fi
+
 echo "[build] (6/9) assemble bundle"
-"$SCRIPT_DIR/assemble_bundle.sh" \
-    --version "$VERSION" \
-    --staging "$STAGING" \
-    --launcher-binary "$LAUNCHER_BINARY" \
-    --output "$REPO_ROOT/$OUTPUT"
+if [[ $RELEASE_MODE -eq 1 ]]; then
+  "$SCRIPT_DIR/assemble_bundle.sh" \
+      --version "$VERSION" \
+      --staging "$STAGING" \
+      --launcher-binary "$LAUNCHER_BINARY" \
+      --output "$REPO_ROOT/$OUTPUT" \
+      --release
+else
+  "$SCRIPT_DIR/assemble_bundle.sh" \
+      --version "$VERSION" \
+      --staging "$STAGING" \
+      --launcher-binary "$LAUNCHER_BINARY" \
+      --output "$REPO_ROOT/$OUTPUT"
+fi
 
 APP="$REPO_ROOT/$OUTPUT/taOS.app"
 
