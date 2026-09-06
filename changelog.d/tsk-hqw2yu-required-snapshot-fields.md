@@ -1,0 +1,6 @@
+### Fixed
+
+- `_cap_context_snapshot()` in `tinyagentos/restart_orchestrator.py` preserves `agent_id` and `session_id` by contract instead of by accident of value size: both drop paths now exclude them while any other field remains, so a resume note carrying a large `agent_id` beside many long-named fields no longer loses the identifiers the note exists to carry. They are still dropped if they alone breach the 32768-byte limit, which the capped snapshot never exceeds.
+- A `context_snapshot` that is not an object is bounded too. A framework writes its own resume note, so the snapshot can arrive as a string or a list; an oversized one used to be posted to `/resume` unchanged on both the boot pass and the retry loop, and is now replaced by a bounded `_truncated` marker. Small non-object values are left untouched.
+- The `_truncated` marker is no longer lost when the snapshot ends up flush against the limit: room for a bare marker is reserved before the drop loop stops, and the dropped field names are filled in from whatever room is left over.
+- Capping a large snapshot is no longer quadratic. The drop loop re-serialized the whole snapshot on every iteration to test the limit; it now tracks a running byte total, which takes a 5000-field snapshot from 63s to 56ms on the boot resume path.

@@ -18,18 +18,32 @@ vi.mock("@/registry/app-registry", () => {
     ]);
   }
   if (!g.__mockRedirects) {
-    g.__mockRedirects = {} as Record<string, { appId: string }>;
+    g.__mockRedirects = {} as Record<string, { appId: string; section?: string }>;
   }
   const apps = g.__mockApps as Map<string, { id: string }>;
-  const redirects = g.__mockRedirects as Record<string, { appId: string }>;
+  const redirects = g.__mockRedirects as Record<string, { appId: string; section?: string }>;
 
+  // These stand in for the real registry exports and must mirror their
+  // contracts exactly. A mock that kept returning a bare string after
+  // resolvePinnedId started returning `{ id, section }` is how a restore that
+  // dropped every pin still looked green (#2677).
   return {
     getApp: (id: string) => apps.get(id),
     prefetchApp: () => {},
     resolvePinnedId: (id: string) => {
       const redirect = redirects[id];
       const targetId = redirect?.appId ?? id;
-      return apps.has(targetId) ? targetId : undefined;
+      if (!apps.has(targetId)) return undefined;
+      return { id: targetId, ...(redirect?.section ? { section: redirect.section } : {}) };
+    },
+    pinnedAppId: (id: string) => {
+      const redirect = redirects[id];
+      const targetId = redirect?.appId ?? id;
+      return apps.has(targetId) ? targetId : id;
+    },
+    pinnedLaunchProps: (id: string) => {
+      const section = redirects[id]?.section;
+      return section ? { section } : undefined;
     },
     APP_REDIRECTS: redirects,
   };
@@ -60,7 +74,8 @@ function resetMockRegistry() {
   apps.set("agents", { id: "agents" });
   apps.set("store", { id: "store" });
   apps.set("settings", { id: "settings" });
-  const redirects = (globalThis as Record<string, Record<string, { appId: string }>>).__mockRedirects;
+  const redirects = (globalThis as Record<string, Record<string, { appId: string; section?: string }>>)
+    .__mockRedirects;
   Object.keys(redirects).forEach((k) => delete redirects[k]);
 }
 
@@ -132,26 +147,43 @@ describe("useSessionPersistence — dock settings restore (#1603)", () => {
     expect(useDockStore.getState().position).toBe("bottom");
   });
 
-  it("resolves pinned ids through APP_REDIRECTS and keeps unresolvable ids", async () => {
-    APP_REDIRECTS["legacy-pin"] = { appId: "agents" };
+  // Restore keeps saved pins exactly as the server stored them (#2668: it may
+  // drop nothing, not even an id no app claims yet). It also may not rewrite a
+  // redirect id to its target: the target alone cannot say which section the
+  // pin opened, and the dock auto-save would then persist the stripped id, so
+  // one reload would destroy the pin for good (#2677). Redirects are resolved
+  // where they are used — the dock icon and the launch — not here.
+  it("keeps every saved pin id verbatim, including redirect ids and ids no app claims yet", async () => {
+    APP_REDIRECTS["legacy-pin"] = { appId: "agents", section: "archive" };
+    const saved = ["legacy-pin", "nonexistent-app", "messages"];
 
     mockFetchWith({
-      "/api/desktop/dock": {
-        pinned: ["legacy-pin", "nonexistent-app", "messages"],
-        iconSize: "medium",
-        position: "bottom",
-      },
+      "/api/desktop/dock": { pinned: saved, iconSize: "medium", position: "bottom" },
     });
 
     render(<TestPersistence />);
 
     await waitFor(() => {
-      const pinned = useDockStore.getState().pinned;
-      expect(pinned).toContain("agents");
-      expect(pinned).toContain("messages");
-      expect(pinned).toContain("nonexistent-app");
-      expect(pinned).not.toContain("legacy-pin");
+      expect(useDockStore.getState().pinned).toEqual(saved);
     });
+
+    act(() => {
+      useDockStore.getState().setIconSize("large");
+    });
+
+    await waitFor(
+      () => {
+        const putCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
+          ([input, init]) =>
+            (typeof input === "string" ? input : input.toString()).includes("/api/desktop/dock") &&
+            (init as RequestInit | undefined)?.method === "PUT",
+        );
+        expect(putCalls.length).toBeGreaterThan(0);
+        const lastBody = JSON.parse((putCalls[putCalls.length - 1]![1] as RequestInit).body as string);
+        expect(lastBody.pinned).toEqual(saved);
+      },
+      { timeout: 2000 },
+    );
 
     delete APP_REDIRECTS["legacy-pin"];
   });
