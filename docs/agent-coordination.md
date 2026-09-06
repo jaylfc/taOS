@@ -371,6 +371,30 @@ Minted by `ensure_native_agent_identity()` in `tinyagentos/native_agent_identity
 - **The revocation feed covers agent identities only, and that is a decision rather than a gap.** `GET /api/agents/registry/revoked` reads `agent_registry` and returns `{canonical_id, revoked_at}` per entry. Human credential withdrawal is handled through the session/auth layer, so humans will never appear here. Decided 2026-08-13, after a downstream spec was written assuming the opposite. If you are building something that needs to learn a *human's* credential was withdrawn, this feed is the wrong source and the requirement should be raised rather than implemented against it -- `tests/test_agent_registry.py::test_revoked_feed_shape` fails if the feed is widened, deliberately.
 - **Nothing in the chat runtime reads the token yet.** The identity is minted; wiring it into what the agent sends is a separate change. It is deliberately absent from the agent manual until then -- the manual is injected into the agent's prompt and sits at its size ceiling, so it should not describe a capability the agent does not yet have.
 
+## Response caching (`Cache-Control: no-store` on `/api/` and `/agent/`)
+
+`SecurityHeadersMiddleware` (`tinyagentos/middleware/security_headers.py`) adds
+`Cache-Control: no-store` to every response whose path starts with `/api/` or
+`/agent/`. Those responses are per-user -- account data, secrets metadata,
+grants, project files -- and without the header a shared proxy, or the browser's
+back/forward cache on a shared machine, can hand one user's response to the
+next.
+
+It is a `setdefault`, never an overwrite, so a handler that picked its own
+policy keeps it:
+
+- SSE streams (`GET /api/os/events`, `GET /api/events/stream`, the per-project
+  and per-agent streams) keep `no-cache` plus `X-Accel-Buffering: no`, which is
+  what stops a reverse proxy buffering them.
+- `GET /api/userspace-apps/sdk.js` keeps `no-cache`, and the browser proxy's
+  own assets keep their `public, max-age=...`.
+
+Static files are mounted at `/static/` and `/data/workspace/`, outside both
+prefixes, so their long cache is unchanged.
+
+A client that caches `/api/` responses itself must therefore do so in memory for
+the life of the session, not on disk.
+
 ## Agent API surface (scoped registry JWT)
 
 A registered external agent authenticates with its registry JWT
