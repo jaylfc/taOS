@@ -4,10 +4,10 @@ import XCTest
 final class SparkleBridgeTests: XCTestCase {
     func testFeedURLReadFromBundle() {
         let bridge = SparkleBridge(infoDict: [
-            "SUFeedURL": "https://taos.app/appcast.xml",
+            "SUFeedURL": "https://taos.my/appcast.xml",
             "SUPublicEDKey": "fakekey=="
         ])
-        XCTAssertEqual(bridge.feedURL, URL(string: "https://taos.app/appcast.xml"))
+        XCTAssertEqual(bridge.feedURL, URL(string: "https://taos.my/appcast.xml"))
         XCTAssertEqual(bridge.publicKey, "fakekey==")
     }
 

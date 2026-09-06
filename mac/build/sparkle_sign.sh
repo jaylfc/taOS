@@ -54,7 +54,7 @@ cat > "$SNIPPET" <<XML
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
       <description><![CDATA[${NOTES}]]></description>
       <enclosure
-        url="https://taos.app/releases/$(basename "$DMG")"
+        url="https://taos.my/releases/$(basename "$DMG")"
         ${SIGNATURE_LINE}
         type="application/octet-stream"/>
     </item>
