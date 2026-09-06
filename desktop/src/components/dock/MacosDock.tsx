@@ -61,15 +61,23 @@ export function MacosDock({
 
       <div className={dividerClassName} />
 
-      {pinned.map((appId, i) => (
-        <DockIcon
-          key={appId}
-          appId={appId}
-          isRunning={runningAppIds.includes(pinnedAppIds[i]!)}
-          onClick={() => onAppClick(appId)}
-          size={iconSize}
-        />
-      ))}
+      {pinned.map((appId, i) => {
+        // pinnedAppIds is built from `pinned` by a straight positional map, so
+        // the two arrays are always the same length today -- but indexing one
+        // by the other's position is one refactor away from an out-of-bounds
+        // read (e.g. a future pre-filter on either side). Fall back to the
+        // pin id itself rather than asserting the lookup can't miss.
+        const targetId = pinnedAppIds[i] ?? appId;
+        return (
+          <DockIcon
+            key={appId}
+            appId={appId}
+            isRunning={runningAppIds.includes(targetId)}
+            onClick={() => onAppClick(appId)}
+            size={iconSize}
+          />
+        );
+      })}
 
       {runningNotPinned.length > 0 && <div className={dividerClassName} />}
 

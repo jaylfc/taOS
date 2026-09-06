@@ -329,8 +329,18 @@ describe("APP_REDIRECTS", () => {
   // outright, which made "carry the section as far as the dock store and no
   // further" look like a fix. The gate now asks for the stronger property it
   // was always after: a declared section must come out of the real
-  // launch-props path AND change what the target app shows. A field nothing
-  // reads still fails, and so does one that is read but never consumed.
+  // launch-props path and reach the exact prop the tab component renders as
+  // active. A field nothing reads still fails, and so does one that is read
+  // but never consumed.
+  //
+  // This runs against the mocked `Tabs` from the top of the file, so it
+  // proves NotificationsApp forwards `section` all the way to that prop for
+  // EVERY declared redirect -- it does not prove the real Radix Tabs renders
+  // that tab active in the DOM. That user-visible consequence is covered,
+  // for the one redirect that exists today, by
+  // NotificationsApp.legacy-pin.test.tsx (unmocked Radix, asserts
+  // data-state="active"). A new redirect needs the equivalent acceptance
+  // coverage before it can be trusted end to end.
   it("every declared redirect section becomes a launch prop the target app acts on", async () => {
     const mod = await import("@/registry/app-registry");
     const withSection = Object.entries(mod.APP_REDIRECTS).filter(([, entry]) => entry.section);
