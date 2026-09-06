@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { slugifyClient, isValidSlug, SLUG_REGEX } from "./slug";
+import { slugifyClient, slugifyWithFallback, isValidSlug, SLUG_REGEX } from "./slug";
 
 describe("slugifyClient", () => {
   it("lowercases and replaces spaces with hyphens", () => {
@@ -87,5 +87,53 @@ describe("SLUG_REGEX", () => {
 
   it("does not match an empty string", () => {
     expect(SLUG_REGEX.test("")).toBe(false);
+  });
+});
+
+describe("slugifyClient with non-ASCII input", () => {
+  it("folds accents onto their base letter instead of dropping them", () => {
+    expect(slugifyClient("naïve résumé")).toBe("naive-resume");
+    expect(slugifyClient("München")).toBe("munchen");
+  });
+
+  it("returns an empty string when no character folds to ASCII", () => {
+    // Transliteration is a server-side capability (python-slugify); the client
+    // only folds combining marks, so a CJK name has no client-derived slug.
+    expect(slugifyClient("我的代理")).toBe("");
+  });
+
+  it("does NOT transliterate letters with no NFKD decomposition (known gap)", () => {
+    // kilo-code-bot review on #2798: "ß" is not a combining mark, so it
+    // survives NFKD unchanged and is then dropped by the [^a-z0-9]+ strip.
+    // The server transliterates it (python-slugify: "straße" -> "strasse"),
+    // so this is a real, accepted client/server preview mismatch for this
+    // narrow set of characters -- pinned here so it stays a documented
+    // choice rather than a silent regression.
+    expect(slugifyClient("straße")).toBe("stra-e");
+  });
+});
+
+describe("slugifyWithFallback", () => {
+  it("returns the derived slug when there is one", () => {
+    expect(slugifyWithFallback("Hello World", "project")).toBe("hello-world");
+  });
+
+  it("returns a non-empty valid slug when nothing survives", () => {
+    expect(slugifyWithFallback("我的代理", "project")).not.toBe("");
+    expect(isValidSlug(slugifyWithFallback("我的代理", "project"))).toBe(true);
+  });
+
+  it("gives two different unslugifiable names two different slugs", () => {
+    expect(slugifyWithFallback("我的代理", "project")).not.toBe(
+      slugifyWithFallback("我的代理人", "project"),
+    );
+  });
+
+  it("is deterministic for the same name", () => {
+    expect(slugifyWithFallback("🚀", "agent")).toBe(slugifyWithFallback("🚀", "agent"));
+  });
+
+  it("uses the caller's prefix", () => {
+    expect(slugifyWithFallback("🚀", "project").startsWith("project-")).toBe(true);
   });
 });

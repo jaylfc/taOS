@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { CheckCircle, XCircle } from "lucide-react";
 import { withCsrf } from "@/lib/csrf";
+import { slugifyWithFallback } from "@/lib/slug";
 
 /**
  * Inline Allow / Deny actions for an external-agent access request.
@@ -73,16 +74,6 @@ export function computeScopeDiff(
     dropped: requested.filter((s) => !g.has(s)),
     added: granted.filter((s) => !r.has(s)),
   };
-}
-
-function slugify(name: string): string {
-  return (
-    name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 63) || "project"
-  );
 }
 
 function ScopeBadge({
@@ -288,7 +279,9 @@ export function ConsentActions({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ name, slug: slugify(name) }),
+        // A name in a non-Latin script derives no client-side slug, and the
+      // constant "project" this replaced gave every such name the same one.
+      body: JSON.stringify({ name, slug: slugifyWithFallback(name, "project") }),
       }),
     );
     if (!res.ok) {
