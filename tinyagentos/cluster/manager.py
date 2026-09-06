@@ -532,9 +532,16 @@ class ClusterManager:
         parsed = self._parse_resource_id(resource_id)
         if parsed is None:
             return None
-        worker_name, _ = parsed
+        worker_name, resource_name = parsed
         worker = self._workers.get(worker_name)
         if worker is None or worker.status not in ("online", "update-available"):
+            return None
+        # Validate that the resource half matches a backend registered to this worker
+        # This prevents workers from claiming leases on fabricated resources.
+        if not worker.backends:
+            return None
+        backend_names = [b.get("name") for b in worker.backends if b.get("name")]
+        if resource_name not in backend_names:
             return None
         return worker
 
