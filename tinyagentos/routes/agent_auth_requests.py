@@ -30,15 +30,18 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from aiosqlite import IntegrityError
-from tinyagentos.agent_registry_store import _slugify, mint_registry_token
+from tinyagentos.agent_registry_store import agent_slug_or_fallback, mint_registry_token
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
+from tinyagentos.base_store import PendingCapExceeded
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 # Maximum number of unresolved pending requests allowed from the same
-# identity_claim + framework before new submissions are rate-limited.
+# identity_claim + framework before new submissions are rate-limited. Handed to
+# the store's create(), which compares it inside the INSERT — never counted
+# here first (see create_auth_request).
 _PENDING_CAP = 5
 
 # Closed vocabulary of grantable scopes — surfaced to the user in the
@@ -284,27 +287,29 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
         )
 
     # Abuse cap: reject if too many pending requests from the same identity.
-    pending_count = await store.count_pending_for(
-        body.identity_claim, body.framework
-    )
-    if pending_count >= _PENDING_CAP:
+    # The cap is passed INTO create() and compared inside its INSERT rather
+    # than counted here first: this route takes no credentials, so a burst of
+    # concurrent posts is free, and a count-then-insert check hands every
+    # request in that burst the same pre-insert count.
+    try:
+        record = await store.create(
+            identity_claim=body.identity_claim,
+            framework=body.framework,
+            requested_scopes=body.requested_scopes,
+            requested_skills=body.requested_skills,
+            reason=body.reason,
+            duration_secs=body.duration_secs,
+            project_id=body.project_id,
+            pending_cap=_PENDING_CAP,
+        )
+    except PendingCapExceeded as exc:
         raise HTTPException(
             status_code=429,
             detail=(
                 f"too many pending requests from identity {body.identity_claim!r} "
-                f"({pending_count} pending; resolve existing requests first)"
+                f"({exc.pending} pending; resolve existing requests first)"
             ),
-        )
-
-    record = await store.create(
-        identity_claim=body.identity_claim,
-        framework=body.framework,
-        requested_scopes=body.requested_scopes,
-        requested_skills=body.requested_skills,
-        reason=body.reason,
-        duration_secs=body.duration_secs,
-        project_id=body.project_id,
-    )
+        ) from None
 
     # Surface the request as a non-blocking bell + toast notification. The
     # data payload carries everything the inline consent actions need to
@@ -498,7 +503,10 @@ async def approve_request_record(
     # back to the cleaned claim, then the framework name.
     display_name = (display_name or "").strip() or _claim or record["framework"]
 
-    handle = _slugify(_claim)
+    # The handle is an identity key, so it must never be empty and never be a
+    # constant shared with every other unslugifiable claim: fall back to the
+    # framework name first, then to the per-name digest.
+    handle = agent_slug_or_fallback(_claim or record["framework"])
     # The handle column is NOT uniformly slugified: internal driver agents are
     # seeded with their RAW sigilled spelling (@taOSmd-dev, @Hermes, ...) while
     # this path registers the slugified claim (`taosmd-dev`). An exact lookup on
@@ -1015,6 +1023,8 @@ async def list_auth_requests(
 # ---------------------------------------------------------------------------
 
 # Maximum unresolved scope requests per canonical_id before new ones are 429'd.
+# Handed to the store's create(), which compares it inside the INSERT — never
+# counted here first (see create_scope_request).
 _SCOPE_REQUEST_PENDING_CAP = 10
 
 # Closed vocabulary of scope-request lifecycle states, mirroring the store's
@@ -1113,23 +1123,27 @@ async def create_scope_request(
             detail=f"unknown scopes: {unknown}; valid: {sorted(VALID_SCOPES)}",
         )
 
+    # The cap is passed INTO create() and compared inside its INSERT rather
+    # than counted here first: an agent holds its own token, so it can fire a
+    # burst of self-requests that would all read the same pre-insert count and
+    # all insert — the approver-flood the cap exists to stop.
     store = _get_scope_requests_store(request)
-    pending_count = await store.count_pending_for(canonical_id)
-    if pending_count >= _SCOPE_REQUEST_PENDING_CAP:
+    try:
+        rec = await store.create(
+            canonical_id=canonical_id,
+            requested_scopes=body.requested_scopes,
+            project_id=body.project_id,
+            reason=body.reason,
+            pending_cap=_SCOPE_REQUEST_PENDING_CAP,
+        )
+    except PendingCapExceeded as exc:
         raise HTTPException(
             status_code=429,
             detail=(
                 f"too many pending scope requests for {canonical_id!r} "
-                f"({pending_count} pending; resolve existing requests first)"
+                f"({exc.pending} pending; resolve existing requests first)"
             ),
-        )
-
-    rec = await store.create(
-        canonical_id=canonical_id,
-        requested_scopes=body.requested_scopes,
-        project_id=body.project_id,
-        reason=body.reason,
-    )
+        ) from None
 
     # Surface the request as a bell + toast for the owner/admin. Best effort: a
     # notification failure must not fail the created request (mirrors the

@@ -224,6 +224,28 @@ async def test_webhook_trigger_rate_limited_after_burst(client):
     assert 429 in statuses
 
 
+@pytest.mark.asyncio
+async def test_webhook_429_carries_retry_after(client):
+    """A webhook sender that gets 429ed must be told when to try again."""
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    token = (await client.post(
+        f"/api/projects/{pid}/routines",
+        json={"title": "Inbound", "trigger_kind": "webhook"},
+    )).json()["webhook_token"]
+
+    last = None
+    for _ in range(8):
+        last = await client.post(f"/api/webhooks/routines/{token}")
+
+    assert last.status_code == 429
+    # Capacity 5 refilling at 0.1/s: one token is ~10 seconds away, rounded up.
+    # The 8-request burst itself takes some wall-clock time, so the advertised
+    # wait can be a little under 10 by the time the last response is built --
+    # assert the documented range rather than an exact value.
+    retry_after = int(last.headers["retry-after"])
+    assert 1 <= retry_after <= 10
+
+
 # ---------------------------------------------------------------------------
 # Ownership: a non-owner member must not see or manage another user's routines
 # ---------------------------------------------------------------------------

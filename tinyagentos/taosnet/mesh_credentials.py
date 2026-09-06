@@ -29,6 +29,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from tinyagentos.atomic_io import atomic_write_bytes
+
 logger = logging.getLogger(__name__)
 
 _FILENAME = "mesh_credentials.json"
@@ -62,9 +64,11 @@ def save_mesh_credentials(payload: dict) -> None:
 
     Keeps only the ``_FIELDS`` allowlist (drops the single-use preauth key and
     anything else). Requires at least ``controller_token`` + ``host_id``; raises
-    ``ValueError`` otherwise. Atomic (write temp + ``os.replace``) so a crash
-    mid-write never leaves a partial file. Idempotent: re-saving the same host's
-    payload just rewrites identical data.
+    ``ValueError`` otherwise. Written through ``tinyagentos.atomic_io``, which
+    fsyncs the temp file and the parent directory, so a crash mid-write leaves
+    the complete old file or the complete new one -- never a partial or
+    NUL-filled one. Idempotent: re-saving the same host's payload just rewrites
+    identical data.
     """
     if not isinstance(payload, dict):
         raise ValueError("payload must be a mapping")
@@ -79,17 +83,10 @@ def save_mesh_credentials(payload: dict) -> None:
     except OSError:  # pragma: no cover - best effort on odd filesystems
         pass
 
-    p = _path()
-    tmp = p.with_name(p.name + ".tmp")
-    data = json.dumps(creds).encode("utf-8")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
-    os.replace(tmp, p)
-    try:
-        os.chmod(p, 0o600)
-    except OSError:  # pragma: no cover
-        pass
+    # 0o600 is applied to the temp file before the rename, so the controller
+    # token is never briefly world-readable; the fsyncs mean a power cut cannot
+    # leave the file the right length and full of NULs.
+    atomic_write_bytes(_path(), json.dumps(creds).encode("utf-8"), mode=0o600)
 
 
 def _load() -> Optional[dict]:

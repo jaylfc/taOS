@@ -12,6 +12,7 @@ The public key is exposed via GET /api/agents/registry/pubkey so the A2A bus
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ from typing import Optional
 import aiosqlite
 
 from tinyagentos.base_store import BaseStore
+from tinyagentos.config import slugify_agent_name
 
 logger = logging.getLogger(__name__)
 
@@ -403,11 +405,36 @@ def verify_registry_token(token: str, public_key_pem: bytes) -> dict:
 # Canonical-ID minting
 # ---------------------------------------------------------------------------
 
-_SLUG_RE = re.compile(r"[^a-z0-9]+")
-
-
 def _slugify(text: str) -> str:
-    return _SLUG_RE.sub("-", text.lower().strip()).strip("-") or "agent"
+    """Slug for a registry handle or display name.
+
+    Delegates to :func:`tinyagentos.config.slugify_agent_name` so the OS has
+    one slug implementation rather than two that drift. Returns "" when
+    nothing survives; callers that must have a slug use
+    :func:`agent_slug_or_fallback`.
+    """
+    return slugify_agent_name(text)
+
+
+def agent_slug_or_fallback(name: str) -> str:
+    """Return ``_slugify(name)``, or a deterministic ``agent-<digest>`` when the
+    name (pure emoji, pure punctuation) leaves nothing behind.
+
+    The digest is taken over the raw name, so two unslugifiable names never
+    share a slug. The constant ``"agent"`` this replaces did the opposite: it
+    gave every such name the same slug, so agents registered in the same second
+    landed on neighbouring canonical ids under one shared identity prefix — a
+    collision in the table that exists to keep identities apart.
+    """
+    slug = _slugify(name)
+    if slug:
+        return slug
+    # 8 bytes (16 hex chars): a 4-byte digest is only a 32-bit collision space,
+    # and get_by_slug() resolves a slug to "the oldest matching record" -- two
+    # different unslugifiable names colliding into the same fallback would
+    # silently resolve a lookup (e.g. a DM channel member) to the wrong agent.
+    digest = hashlib.blake2s(name.encode("utf-8"), digest_size=8).hexdigest()
+    return f"agent-{digest}"
 
 
 def mint_canonical_id(slug: str, ts: datetime) -> str:
@@ -550,7 +577,7 @@ class AgentRegistryStore(BaseStore):
         capabilities = capabilities or []
         now_utc = datetime.now(timezone.utc)
         source_name = display_name if display_name else framework
-        slug = _slugify(source_name)
+        slug = agent_slug_or_fallback(source_name)
         if not allow_reserved:
             _check_reserved_prefix(slug, source_name)
         base_id = mint_canonical_id(slug, now_utc)

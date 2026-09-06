@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.projects.routine_runner import fire_routine
-from tinyagentos.rate_limit import RateLimiter
+from tinyagentos.rate_limit import RateLimiter, rate_limited_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -172,7 +172,9 @@ async def webhook_trigger_routine(token: str, request: Request):
     rather than distinguishing the reason, so the endpoint never leaks which
     routines exist. A per-token rate limit caps task-creation spam."""
     if not _webhook_limiter.check(token):
-        return JSONResponse({"error": "rate limited"}, status_code=429)
+        return rate_limited_response(
+            "rate limited", _webhook_limiter.retry_after(token)
+        )
     store = request.app.state.routine_store
     routine = await store.get_by_webhook_token(token)
     if routine is None:

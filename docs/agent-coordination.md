@@ -371,11 +371,45 @@ Minted by `ensure_native_agent_identity()` in `tinyagentos/native_agent_identity
 - **The revocation feed covers agent identities only, and that is a decision rather than a gap.** `GET /api/agents/registry/revoked` reads `agent_registry` and returns `{canonical_id, revoked_at}` per entry. Human credential withdrawal is handled through the session/auth layer, so humans will never appear here. Decided 2026-08-13, after a downstream spec was written assuming the opposite. If you are building something that needs to learn a *human's* credential was withdrawn, this feed is the wrong source and the requirement should be raised rather than implemented against it -- `tests/test_agent_registry.py::test_revoked_feed_shape` fails if the feed is widened, deliberately.
 - **Nothing in the chat runtime reads the token yet.** The identity is minted; wiring it into what the agent sends is a separate change. It is deliberately absent from the agent manual until then -- the manual is injected into the agent's prompt and sits at its size ceiling, so it should not describe a capability the agent does not yet have.
 
+## Response caching (`Cache-Control: no-store` on `/api/` and `/agent/`)
+
+`SecurityHeadersMiddleware` (`tinyagentos/middleware/security_headers.py`) adds
+`Cache-Control: no-store` to every response whose path starts with `/api/` or
+`/agent/`. Those responses are per-user -- account data, secrets metadata,
+grants, project files -- and without the header a shared proxy, or the browser's
+back/forward cache on a shared machine, can hand one user's response to the
+next.
+
+It is a `setdefault`, never an overwrite, so a handler that picked its own
+policy keeps it:
+
+- SSE streams (`GET /api/os/events`, `GET /api/events/stream`, the per-project
+  and per-agent streams) keep `no-cache` plus `X-Accel-Buffering: no`, which is
+  what stops a reverse proxy buffering them.
+- `GET /api/userspace-apps/sdk.js` keeps `no-cache`, and the browser proxy's
+  own assets keep their `public, max-age=...`.
+
+Static files are mounted at `/static/` and `/data/workspace/`, outside both
+prefixes, so their long cache is unchanged.
+
+A client that caches `/api/` responses itself must therefore do so in memory for
+the life of the session, not on disk.
+
 ## Agent API surface (scoped registry JWT)
 
 A registered external agent authenticates with its registry JWT
 (`Authorization: Bearer`) and reaches exactly the routes its granted SCOPES
 allow, nothing else: the middleware allowlist is a closed set, no skeleton key.
+
+**A refused request says WHICH thing was wrong, and a dead credential is never
+flattered.** Off the allowlist the handler never runs, and the status code
+splits three ways: no route matches the path -> 404 (a live credential at a
+wrong URL); the route exists but this token is not authorised for it -> 401
+from the session gate (a right URL, an unauthorised credential); the credential
+itself is dead -- revoked, or superseded by `rotate-tokens` because its `iat`
+predates the identity's `token_min_iat` -> 401 on every path, existing or not.
+An anonymous caller gets 401 everywhere, so status codes cannot be used to
+enumerate routes.
 
 A SEPARATE credential class exists for the Agent-as-a-Model surface:
 `GET /v1/models` and `POST /v1/chat/completions` are reachable without a
@@ -415,7 +449,15 @@ The registry-JWT surface, by scope:
   whitelisted fields (title, body, labels, priority), own-or-lead cards only.
   Also SEPARATE from project_tasks - a plain project_tasks token gets 403 on
   PATCH. The seeded internal lead (@taOS-dev) carries it by default so it can
-  edit its own board's cards; assignee_id and parent_task_id stay human-only.
+  edit its own board's cards; assignee_id and parent_task_id stay human-only -
+  the whitelist keys on which fields the body SENDS, so sending one of them as
+  `null` (a clear) is refused 403 like any other edit of it.
+  The route writes exactly the fields the body sends: an omitted field is left
+  unchanged, `assignee_id`/`parent_task_id`/`element_id` take `null` as a real
+  clear (`element_id` also takes the legacy `"none"` string), and anything the
+  route cannot write - a `null` on a non-nullable field, a misspelled key, a
+  read-only column such as `id`/`created_by`/`claimed_by` - is a 422 rather
+  than a 200 echoing a task it never changed.
 - **project_doc_review**: read and write doc-review stamps for a project.
   `GET /api/projects/{pid}/doc-reviews` (list), `GET /api/projects/{pid}/doc-review/{path}`
   (read one), and `PUT /api/projects/{pid}/doc-review/{path}` (set state).
@@ -509,6 +551,24 @@ punctuation obfuscations like `U s e r`), so an external agent cannot mint an
 identity that reads as a person or as an internal taOS agent. The public
 register route returns 422. The admin-only internal mint/seed path is exempt -
 internal driver agents (`taos-dev`, ...) legitimately live under `taos-`.
+
+Slug derivation: `tinyagentos.config.slugify_agent_name` is the one Python
+implementation (`agent_registry_store._slugify` delegates to it). It
+transliterates to ASCII before slugifying, so a name in a non-Latin script gets
+a real slug of its own (`我的代理` -> `wo-de-dai-li`, `Агент Иванов` ->
+`agent-ivanov`) instead of reducing to nothing, and accents fold to their base
+letter rather than being dropped. The reserved-prefix guard runs on the
+transliterated slug, so a Cyrillic homoglyph of a reserved word (`усер` ->
+`user`) is caught, not waved through. When nothing survives at all - a name of
+pure emoji or punctuation - the slug is empty and
+`agent_registry_store.agent_slug_or_fallback` supplies a per-name
+`agent-<digest>` instead. There is deliberately **no constant fallback**: one
+would give every unslugifiable name the same slug and collide their identities
+in the table whose whole job is to keep them apart.
+
+Transliteration applies at CREATION time only. Never re-derive the slug of an
+existing row for a lookup: rows minted before this change were slugged by the
+old ASCII-only rule, and re-deriving would change their identity.
 
 The approve surface is the desktop `ConsentActions` component, driven by the
 `auth_requests` notification raised when a request is created. That notification's
@@ -712,6 +772,16 @@ that SAME canonical_id instead:
   create path and the two READ paths below to a registry JWT -- approve/deny are
   POST with an extra trailing segment and match no pattern, so an agent can
   never self-approve; the routes re-check identity == canonical_id.
+  The bearer must also be LIVE: identity-only auth honours the identity's
+  `token_min_iat` rotation cutoff, so a token superseded by `rotate-tokens` can
+  no longer create a request (the route answers the same existence-hiding 404
+  it gives any other bad credential). This matters more here than anywhere
+  else -- it is the one route whose whole purpose is asking for MORE
+  privilege, and it needs no scope grant to reach. At most
+  `_SCOPE_REQUEST_PENDING_CAP` (10) requests may be pending per canonical_id;
+  further creates are 429. The cap is compared INSIDE the store's INSERT, not
+  counted by the route first, so a burst of concurrent self-requests cannot
+  slip past it and flood the approver's queue.
 - `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/approve`
   `{granted_scopes, project_id?}`: owner/admin only. The admin may narrow but
   never widen the requested scopes; each granted scope is added via
@@ -752,10 +822,9 @@ directions, and that is the point:
 - **Pending** rows are taken oldest-first and ahead of everything else. The
   oldest pending request is the one whose notification is long gone and whose
   id nobody holds any more -- the row these reads exist to recover -- so it is
-  the LAST thing a full page drops. This holds even if the ten-per-agent
-  pending cap is exceeded (that cap is a count-then-insert, so concurrent
-  creates can pass it together; the read path deliberately does not depend on
-  it holding).
+  the LAST thing a full page drops. The read path deliberately does not
+  depend on the ten-per-agent pending cap holding, so a page stays correct
+  however many pending rows an agent has.
 - **Decided** rows fill whatever is left of the page, newest-first, so a caller
   checking on a recent approval still sees it.
 
@@ -853,8 +922,10 @@ A project invite lets an external agent join without going through the consent
 UI. The mint dialog (admin, in the project's Members panel) creates the invite;
 the agent redeems it. Two endpoints are auth-EXEMPT (the PIN is the proof of
 possession), added method-sensitively to `tinyagentos/auth_middleware.py` exactly
-like `POST /api/cluster/pairing/claim`, and per-IP rate-limited (20 requests per
-10s, reusing the pairing throttle helper):
+like `POST /api/cluster/pairing/claim`, and per-IP rate-limited (at most 20
+requests in any 10s span, from the shared limiter in
+`tinyagentos/rate_limit.py` that the pairing throttle also uses). A throttled
+request gets a 429 carrying `Retry-After` in whole seconds:
 
 - `POST /api/projects/invites/redeem`: body `{invite_id, pin, harness, label?}`.
   Verifies the PIN (wrong PIN / expired / attempt-capped -> 403; already redeemed
@@ -954,10 +1025,71 @@ that also happened there; setting up in the handler leaked a subscription per
 client that disconnected before the stream started.
 
 The desktop side is `desktop/src/hooks/use-os-events.ts`:
-`useOsEvents(kinds, onEvent)` holds one connection, returns `connected` /
-`stale`, dedupes by event id, reconnects with exponential backoff, and reopens
-the stream when `kinds` changes (the URL is fixed for the life of a
-connection, so a widened list needs a new one).
+`useOsEvents(kinds, onEvent)` multiplexes one EventSource across all callers
+in the same window, returns `connected` / `stale`, dedupes by event id, and
+reconnects with exponential backoff.
+
+The stream is opened with `?kinds=` set to the UNION of every live
+subscriber's list, and each subscriber's own list is applied again in the
+browser so it only sees what it asked for. The union is what goes on the wire
+because the relay filters BEFORE its bounded queue (above): a kind nobody
+subscribed to must never occupy one of those 256 slots, evict an event
+somebody did ask for, and raise an `events.lagged` that from the subscriber's
+side never happened. A subscriber whose list is empty means "all kinds", which
+collapses the union to no filter at all.
+
+The union only ever GROWS while subscribers exist; it is never narrowed when
+one leaves. Narrowing would only buy another reopen the next time a subscriber
+asks for that kind again, so a monotone union converges instead: at most one
+reopen per distinct kind, and none when a subscriber widens into kinds the
+union already covers. That guarantee spans one continuous run of subscribers,
+not the whole page -- the last subscriber to unmount closes the stream and
+resets the union with it, so a later mount starts the count over.
+
+Coverage is tracked as what is SERVED, separately from what is wanted. A
+widening that fails must not look served: if it did, the union would already
+contain the kind it added, nothing would notice the shortfall, and that kind
+would stay filtered out server-side while its subscriber sat in silence. The
+mismatch is retried on the next mount or `kinds` change rather than on a timer.
+
+A reopen does not interrupt delivery. The widened stream is opened alongside
+the narrow one and the narrow one is closed only once the widened one fires
+`open`, so there is no window with nothing listening -- which matters because
+this endpoint has no resume. The overlap delivers some events twice; the
+per-subscriber dedup window below is what absorbs that. If the widened stream
+fails instead of opening, it is dropped and the narrow one stays: the next
+mount or `kinds` change retries the widening.
+
+While a widened stream is in flight it IS the reconnect. If the narrow stream
+dies during the handoff, no backoff is scheduled on top of it -- that would
+open a third stream the handoff then immediately closes -- and the backoff is
+scheduled only if the widened stream dies as well, leaving nothing listening.
+
+The stream is open exactly while the subscriber map is non-empty -- that map
+is the only thing consulted on teardown, and it is consulted a microtask after
+the last subscriber leaves, once the React commit has settled. React runs every
+effect cleanup in a commit before any setup, so the map is briefly empty in any
+commit that swaps one subscriber for another; reading it mid-teardown would
+close a stream someone is still listening to and immediately reopen it.
+A subscriber that mounts while a reconnect is already scheduled leaves that
+retry alone -- connecting immediately on every mount would let a view that
+mounts callers in a loop retry at mount frequency instead of the 5 s -> 30 s
+backoff.
+
+`connected` / `stale` come from a shared snapshot through
+`useSyncExternalStore`, replaced only on a real transition, so the repeated
+`error` events a browser fires while it retries do not re-render every
+subscriber. An `error` does mark the stream stale even while the browser is
+still retrying: the endpoint has no resume, so the gap is real and a
+subscriber must refetch once it reconnects.
+
+The 128-id dedup window is kept PER SUBSCRIBER, not once for the stream. One
+stream carries the union of every subscribed kind, and the replay buffer above
+is per channel, so a shared window would let a busy kind evict a quiet
+subscriber's ids and hand that subscriber a replayed event it already handled
+-- a refetch for nothing. Per subscriber, each caller keeps the window it had
+when it owned a stream of its own, and the same window is what makes the
+overlap during a filter widening invisible to callers.
 
 ## LoRA Studio routes (session-only, no agent scope)
 
@@ -1024,6 +1156,41 @@ Python**, so an agent holding grants on several projects and carrying more than
 500 decisions in total can still lose allowed-project rows to the limit. Same
 shape as the original bug, narrower blast radius.
 
+## MCP tool calls (`POST /api/mcp/call`)
+
+Route module `tinyagentos/routes/mcp.py`, backed by `tinyagentos/mcp/proxy.py`.
+Body: `{"server_id", "tool", "agent_name", "agent_groups"?, "arguments"?,
+"resource"?}`.
+
+Admin session or host local token only (`require_admin`): a non-admin member
+gets `403 {"detail": "forbidden"}` before any permission lookup, as do the
+server start/stop/restart/uninstall, config, env and permission-attach routes.
+
+**The JSON-RPC transport is NOT wired yet, and the route says so.** Three
+answers are possible today:
+
+| status | body | meaning |
+|---|---|---|
+| `403` | `{"error": "permission_denied", "reason": ...}` | the attachment does not grant this agent that tool/resource |
+| `503` | `{"error": "server_unavailable", ...}` | the server is not running and could not be started |
+| `501` | `{"error": "not_implemented", "reason": "MCP JSON-RPC transport is not wired yet; no tool call was made"}` | permissions passed, the server is up, and nothing was called |
+
+Until issue-time this route answered `200` with
+`{"ok": true, "result": "stub — MCP JSON-RPC call not yet wired"}`, which no
+caller could tell apart from a real tool result. **Do not write a caller that
+treats a 2xx from this route as proof a tool ran** — there is no success shape
+on this path yet. When the transport lands, the 501 becomes a real result; the
+403 and 503 arms keep their meaning.
+
+`MCPSupervisor` spawns stdio servers with both pipes captured and **drains
+both**. `GET /api/mcp/servers/{id}/logs` and its `/logs/stream` SSE tail carry
+entries tagged `"stream": "stdout"` or `"stream": "stderr"` so the two can be
+told apart; `level` stays `"error"`/`"info"` for the colour-coded tail. A
+server that writes more than a pipe buffer to stdout used to block in `write()`
+forever while `get_status()` still reported it `running` — for a
+stdio-transport server stdout is the JSON-RPC channel, so that was the primary
+data path, not an edge case.
+
 ## Config save and restore (`/api/config`, session-only)
 
 Route module `tinyagentos/routes/settings.py`. Owner routes behind the session
@@ -1035,7 +1202,16 @@ cookie plus the CSRF double-submit on writes; no registry scope reaches them.
 - `POST /api/restore` -- multipart `file`, restores a backup tarball into the
   data dir. **The path is `/api/restore`, NOT `/api/settings/restore`**, even
   though the handler sits in `routes/settings.py` beside the `/api/settings/*`
-  routes.
+  routes. The upload is capped at 64 MB and the tarball goes
+  through `tinyagentos/safe_archive.py`: over the shared bomb caps (256 MB
+  declared uncompressed, 64 MB per member, 10000 members) or carrying a member
+  the path-safe tar filter rejects, the whole restore answers `400` and writes
+  nothing. `POST /api/themes/install` is capped the same way at 32 MB and
+  `POST /api/userspace-apps/install` at 64 MB. The upload caps are enforced by
+  `tinyagentos/middleware/upload_body_limit.py` while the body is still
+  arriving -- a handler cannot do it, because FastAPI has already spooled a
+  multipart file part to temporary storage by the time it runs -- and answer
+  `413`.
 
 **Both write paths REBUILD `AppConfig` field by field**, and a field missing
 from either rebuild is silently dropped on the next save, wiping whatever the
@@ -1209,6 +1385,15 @@ Route module `tinyagentos/routes/projects.py`.
   another project is existence-hiding rather than merely forbidden.
 - Creating an item logs `checklist.item.created` to the project activity feed
   with the actor, task id, item id and text.
+- Both `checklist.item.created` and `checklist.item.archived` are published on
+  the broker under the task's **`project_id`**, because project subscribers
+  subscribe at project scope. The store therefore resolves the parent task
+  first and raises `ValueError: task not found: <task_id>` when it is gone —
+  create refuses before inserting the row, archive refuses before flipping
+  `archived`. `task_checklist_items.task_id` declares a foreign key but the
+  store never sets `PRAGMA foreign_keys = ON`, so an item can outlive its task;
+  without the guard the event went to a topic nobody listens to and was
+  silently lost.
 - Archiving is store-level only and refuses unless the item is both **verified**
   and **reported**; there is no archive route.
 - `DELETE` and per-item subpaths (`.../checklist-items/{item_id}`) stay

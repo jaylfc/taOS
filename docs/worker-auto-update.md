@@ -375,6 +375,29 @@ pattern but for the worker's install. Can either:
 
 The task (C1) will implement this; the design doc just defines the interface.
 
+### Version comparison and channels (`worker/update_check.py`)
+
+Version strings are parsed with `packaging` (PEP 440), never by hand. taOS ships release-train
+versions like `1.0.0-beta.50`, and the pre-release segment is part of the ordering:
+
+- `1.0.0-beta.51` is newer than `1.0.0-beta.50`, so a beta worker sees the next beta.
+- `1.0.0` (GA) is newer than `1.0.0-beta.50`, so a beta worker can cross to the GA of the
+  same release.
+- A pinned version is a ceiling over that same ordering, so pinning to `1.0.0-beta.40` blocks
+  `1.0.0-beta.99`.
+- A string that is not a version at all (`is_newer_version` on either side) yields "no update"
+  rather than an invented ordering.
+
+The channel of a version comes from its parsed pre-release segments, not from searching the raw
+string for the words: a dev release (`1.0.0.dev5`) is `dev`, an alpha/beta/rc is `beta`, anything
+else is `stable`. A GA release carrying local build metadata such as `1.0.0+devbuild` is therefore
+still `stable`. An unparseable version reports as `dev`, so only the catch-all channel accepts it
+— and the parse failure is logged at DEBUG, because a worker that quietly never updates and a
+worker with nothing to update look identical from the outside.
+
+Note that `packaging` normalises as it parses — `1.0.0-beta.50` becomes `1.0.0b50`. Compare
+`Version` objects; never compare the normalised text against a raw version string.
+
 ### `POST /api/worker/deploy {"command": "update-worker"}` (worker side, `worker/deploy.py`)
 
 Already exists and is the install+restart mechanism. The `update-worker` command runs

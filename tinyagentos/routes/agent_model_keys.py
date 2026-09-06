@@ -4,7 +4,8 @@ The companion to routes/agent_model_api.py: that module is the OpenAI-compatible
 /v1 surface an external caller hits with a consent key; THIS module is the
 authenticated owner surface where a taOS user mints, reviews, and revokes the
 keys that expose their own agent(s). The owner is the issuer, so authenticating
-the request IS the consent; an external third party requesting access is the
+the request plus proving ownership of every named agent (via the agent
+registry) IS the consent; an external third party requesting access is the
 richer Decisions-mediated flow built on top of this, not this slice.
 
 Keys are scoped to the calling user: list and revoke only ever touch keys the
@@ -20,7 +21,11 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from tinyagentos.auth_context import CurrentUser, current_user
+from tinyagentos.auth_context import (
+    CurrentUser,
+    current_user,
+    require_agent_owner_or_admin,
+)
 
 router = APIRouter()
 
@@ -58,13 +63,25 @@ async def list_keys(request: Request, user: CurrentUser = Depends(current_user))
 async def mint_key(
     body: MintIn, request: Request, user: CurrentUser = Depends(current_user)
 ):
-    """Mint a consent key exposing the caller's agent(s). Returns the token ONCE."""
+    """Mint a consent key exposing the caller's agent(s). Returns the token ONCE.
+
+    "The owner is the issuer" is enforced, not assumed: every ``agent_id`` is
+    resolved through the agent registry and must belong to the caller (or the
+    caller is an admin). One unowned id rejects the whole mint -- no key is
+    issued for the owned subset. An id the registry cannot attribute to anyone
+    is nobody's to expose, so a non-admin gets 403 for it rather than a key.
+    """
     store = request.app.state.agent_model_keys
     try:
         if not body.agent_ids:
             raise ValueError("at least one agent_id is required")
         for aid in body.agent_ids:
             _validate_agent_id(aid)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    for aid in body.agent_ids:
+        await require_agent_owner_or_admin(request, user, aid)
+    try:
         token, rec = await store.mint(
             user.user_id,
             body.agent_ids,

@@ -9,6 +9,9 @@ routes and middleware.
 """
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -20,6 +23,7 @@ from tinyagentos.agent_registry_store import (
 )
 from tinyagentos.agent_grants_store import AgentGrantsStore
 from tinyagentos.agent_scope_requests_store import AgentScopeRequestsStore
+from tinyagentos.base_store import PendingCapExceeded
 from taos_test_csrf import csrf_event_hooks
 
 
@@ -137,6 +141,88 @@ async def test_agent_can_self_request_with_own_token(client, monkeypatch, tmp_pa
         assert resp.status_code == 200, resp.text
         assert resp.json()["status"] == "pending"
         assert await env.scope_store.count_pending_for(cid) == 1
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_cannot_self_request_with_rotated_token(
+    client, monkeypatch, tmp_path
+):
+    """Rotating an identity's tokens must kill this route too.
+
+    Self-request is authorised by `check_agent_identity` alone -- no scope
+    grant is required, because the whole point is asking for a scope you do
+    not have.  So if that check skips the rotation cutoff, a leaked token
+    survives `rotate-tokens` on the one route that can widen its own
+    privileges.  Before the cutoff was enforced this returned 200 and left a
+    live `pending` request behind.
+
+    The status is 404, not 401: `_authorize_scope_request_creation`
+    deliberately folds every bad-credential outcome into the not-found body so
+    the pair (unknown target 404, existing target 401/403) cannot be used as an
+    existence oracle.  The load-bearing assertion is that nothing was created.
+    """
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        # Owner rotates: every token minted before now is superseded.
+        await env.registry.bump_token_min_iat(cid, int(time.time()) + 3600)
+
+        app = client._transport.app
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp = await bare.post(
+                f"/api/agents/registry/{cid}/scope-requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"requested_scopes": ["a2a_send"]},
+            )
+        assert resp.status_code == 404, resp.text
+        assert await env.scope_store.count_pending_for(cid) == 0
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_self_requests_cannot_bypass_pending_cap(
+    client, monkeypatch, tmp_path
+):
+    """A burst from ONE agent must not push it past the per-agent pending cap.
+
+    A count-then-insert cap is bypassable by exactly the traffic it exists to
+    stop: every request in a concurrent burst reads the same pre-insert count,
+    every one of them passes the check, and every one of them inserts — so the
+    agent floods the approver's queue with as many pending rows as it can open
+    connections for.
+    """
+    from tinyagentos.routes.agent_auth_requests import _SCOPE_REQUEST_PENDING_CAP as cap
+
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        app = client._transport.app
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            async def _create():
+                return await bare.post(
+                    f"/api/agents/registry/{cid}/scope-requests",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"requested_scopes": ["a2a_send"]},
+                )
+
+            # No return_exceptions: a server-side crash must fail the test, not
+            # shrink the status list into a vacuous pass.
+            results = await asyncio.gather(*[_create() for _ in range(2 * cap)])
+
+        statuses = sorted(r.status_code for r in results)
+        assert statuses == [200] * cap + [429] * cap, (
+            f"cap race: expected exactly {cap} accepted, got {statuses}"
+        )
+        assert await env.scope_store.count_pending_for(cid) == cap
     finally:
         await env.close()
 
@@ -1201,9 +1287,8 @@ async def test_list_scope_requests_status_filter_is_case_insensitive(
 async def test_list_keeps_the_oldest_pending_even_past_the_route_cap(tmp_path):
     """A full page drops the NEWEST pending rows, never the oldest.
 
-    The route's ten-per-agent pending cap is enforced with a count-then-insert,
-    so concurrent creates can push an agent past it. The read path must not
-    depend on that cap holding: the oldest pending request is the one whose
+    The read path must not depend on the ten-per-agent pending cap holding,
+    however that cap is enforced: the oldest pending request is the one whose
     notification is long gone and whose id nobody has any more, so it is the
     last row a full page may drop. Newer pending rows are the ones the caller
     just created and still holds ids for.
@@ -1270,5 +1355,50 @@ async def test_list_for_page_does_not_sort_the_whole_history(tmp_path, monkeypat
             assert "idx_scope_requests_canonical_created" in plan, (
                 f"{sql!r} does not use the ordered index: {plan}"
             )
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_store_create_enforces_pending_cap_atomically(tmp_path):
+    """``create(pending_cap=N)`` admits exactly N pending rows under a burst.
+
+    The guard lives in the INSERT itself, so it holds no matter how the
+    caller's awaits interleave — a caller that checked the count first would
+    hand every racer the same stale answer.
+    """
+    store = AgentScopeRequestsStore(tmp_path / "scope.db")
+    await store.init()
+    try:
+        results = await asyncio.gather(
+            *[
+                store.create(
+                    canonical_id="agent-1",
+                    requested_scopes=["memory_read"],
+                    pending_cap=3,
+                )
+                for _ in range(9)
+            ],
+            return_exceptions=True,
+        )
+        created = [r for r in results if isinstance(r, dict)]
+        refused = [r for r in results if isinstance(r, PendingCapExceeded)]
+        assert len(created) == 3, f"expected 3 inserts, got {results}"
+        assert len(refused) == 6, f"expected 6 refusals, got {results}"
+        assert await store.count_pending_for("agent-1") == 3
+        assert refused[0].cap == 3
+
+        # The cap counts PENDING rows only: deciding one frees a slot.
+        await store.set_decision(created[0]["id"], "refused", decided_by="u1")
+        rec = await store.create(
+            canonical_id="agent-1", requested_scopes=["a2a_send"], pending_cap=3
+        )
+        assert rec["status"] == "pending"
+
+        # A different agent has its own budget.
+        other = await store.create(
+            canonical_id="agent-2", requested_scopes=["a2a_send"], pending_cap=3
+        )
+        assert other["canonical_id"] == "agent-2"
     finally:
         await store.close()

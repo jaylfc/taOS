@@ -19,7 +19,9 @@ Design notes
 * The whole send path is strictly best-effort: a missing VAPID key, no
   subscriptions, or any push error must never raise back into add().
 * A 404/410 from the push service means the subscription is permanently gone,
-  so its row is pruned.
+  so its row is pruned. The device-push path does the same for APNs 410
+  Unregistered: the dead push token is cleared from the device row (the row
+  itself stays, so the device remains paired and visible to its owner).
 * Secrets (auth, p256dh, private PEM) are never logged.
 """
 from __future__ import annotations
@@ -194,9 +196,21 @@ def _build_payload(row: dict) -> dict:
     JSON data, else the desktop shell. ``tag`` collapses re-notifies for the
     same source+id so a newer push replaces the older banner.
 
-    Routing fields (``source``, ``id``, and ``target`` when present) are copied
-    into the inner ``data`` dict so the service worker can route on them. The
-    SW only reads ``event.notification.data``, not the top-level payload.
+    Routing fields (``source``, ``id``, and ``target`` when present) are
+    copied into the inner ``data`` dict so the service worker can route on
+    them from ``event.notification.data`` after a click.
+
+    ``image`` (when present) is copied to BOTH the inner ``data`` dict and
+    the top level. This repo's own SW (``desktop/src/sw.ts`` /
+    ``tinyagentos/routes/desktop_browser/sw.js``) does not currently wire
+    either shape into ``showNotification``'s ``options.image``, so neither
+    copy renders a rich image today; the top-level copy matches the standard
+    Notification API's ``options.image`` field so a SW implementation that
+    reads it directly (as this file's native APNs/UnifiedPush payload
+    builders already do for their own top-level ``image``) still sees it,
+    without every consumer having to know to look inside ``data``. Non-native
+    clients that ignore ``image`` entirely still get a valid text
+    notification.
     """
     data = row.get("data") if isinstance(row.get("data"), dict) else {}
     url = _safe_url(data.get("url"))
@@ -205,16 +219,22 @@ def _build_payload(row: dict) -> dict:
         payload_data["source"] = row["source"]
     if "id" in row:
         payload_data["id"] = row["id"]
+    image = data.get("image")
+    if isinstance(image, str) and image:
+        payload_data["image"] = image
     target = data.get("target")
     if isinstance(target, dict):
         payload_data["target"] = target
-    return {
+    payload: dict = {
         "title": row.get("title") or "taOS",
         "body": row.get("message") or "",
         "tag": f"{row.get('source', 'system')}:{row.get('id', '')}",
         "source": row.get("source", "system"),
         "data": payload_data,
     }
+    if isinstance(image, str) and image:
+        payload["image"] = image
+    return payload
 
 
 def _vapid_signing_key(private_pem: str) -> str:
@@ -332,20 +352,51 @@ def _build_device_push_payload(row: dict) -> tuple[dict, list[dict] | None]:
     body = row.get("message") or ""
     data = row.get("data") if isinstance(row.get("data"), dict) else {}
     actions: list[dict] | None = None
+    category: str | None = None
     decision_type = data.get("decision_type")
     if decision_type == "approve_deny":
-        actions = [{"id": "approve", "label": "Approve"}, {"id": "deny", "label": "Deny"}]
+        # The native shell maps a category id to a registered UNNotificationCategory;
+        # tsk-cf7wzc pins the button set to approve / reject / add-note on both
+        # iPhone and Apple Watch.
+        category = "DECISION_APPROVE_DENY"
+        actions = [
+            {"id": "approve", "label": "Approve"},
+            {"id": "reject", "label": "Reject"},
+            {"id": "add_note", "label": "Add note"},
+        ]
     elif decision_type in ("single_select", "multi_select"):
+        category = "DECISION_OPTIONS"
         opts = data.get("options") or []
         actions = [{"id": o.get("value", o.get("label", "")), "label": o.get("label", "")} for o in opts]
     elif decision_type == "free_text":
+        category = "DECISION_FREE_TEXT"
         actions = [{"id": "quick_reply", "label": "Reply"}]
+    payload_data = dict(data)
+    image = data.get("image")
+    if isinstance(image, str) and image:
+        payload_data["image"] = image
     if actions:
-        payload_data = dict(data)
         payload_data["actions"] = actions
-    else:
-        payload_data = data
-    return {"title": title, "body": body, "data": payload_data}, actions
+    payload: dict = {"title": title, "body": body, "data": payload_data}
+    if category:
+        payload["category"] = category
+    if isinstance(image, str) and image:
+        payload["image"] = image
+    return payload, actions
+
+
+async def _clear_dead_push_token(device_store, device_id: str, push_token: str) -> None:
+    """Drop a push token the push service reported as permanently gone.
+
+    Best-effort like the rest of the fan-out: a store failure is logged and the
+    send is still counted as removed, because the token is dead either way.
+    """
+    if device_store is None or not device_id:
+        return
+    try:
+        await device_store.clear_push_token(device_id, push_token)
+    except Exception:  # noqa: BLE001 - best-effort, never propagate
+        logger.warning("notif-push: failed to clear dead push token", exc_info=True)
 
 
 async def _send_one_device(
@@ -354,7 +405,10 @@ async def _send_one_device(
     actions: list[dict] | None,
     apns_sender,
     up_sender,
+    device_store=None,
 ) -> str:
+    from tinyagentos.push.apns import ApnsUnregistered
+
     platform = device.get("platform", "")
     push_token = device.get("push_token", "")
     if not push_token:
@@ -366,6 +420,9 @@ async def _send_one_device(
                 title=payload["title"],
                 body=payload["body"],
                 data=payload.get("data"),
+                category=payload.get("category"),
+                actions=actions,
+                image=payload.get("image"),
             )
             ok = await apns_sender.send(push_token, apns_payload)
         elif platform == "android":
@@ -375,10 +432,21 @@ async def _send_one_device(
                 body=payload["body"],
                 data=payload.get("data"),
                 actions=actions,
+                image=payload.get("image"),
             )
             ok = await up_sender.send(push_token, up_payload)
         else:
             return "skipped"
+    except ApnsUnregistered as exc:
+        # 410 is permanent, not a retryable failure: keep counting it as such
+        # and the dead token is pushed to forever. Prune it instead, exactly as
+        # the web-push path prunes a 404/410 endpoint.
+        logger.info(
+            "notif-push: APNs token gone for device %s (reason=%s); clearing",
+            device.get("device_id"), exc.reason or "unknown",
+        )
+        await _clear_dead_push_token(device_store, device.get("device_id", ""), push_token)
+        return "removed"
     except Exception:  # noqa: BLE001 - best-effort, never propagate
         logger.warning("notif-push: device send failed for platform=%s token=%s", platform, push_token[:8], exc_info=True)
         return "failed"
@@ -397,26 +465,32 @@ async def send_device_push(
     Looks up devices for ``row["user_id"]`` via ``device_store.list_for_user``.
     When ``user_id`` is None (broadcast), returns a no-op because device push
     is strictly per-user. For each device, dispatches to APNs or UnifiedPush
-    based on the ``platform`` column. Returns {"sent", "failed", "skipped"}
-    counts. Never raises.
+    based on the ``platform`` column. Returns {"sent", "failed", "skipped",
+    "removed"} counts, where "removed" is a device whose push token the service
+    reported as permanently gone and which was therefore pruned (the same shape
+    send_web_push reports). Never raises.
     """
+    empty = {"sent": 0, "failed": 0, "skipped": 0, "removed": 0}
     user_id = row.get("user_id")
     if not user_id:
-        return {"sent": 0, "failed": 0, "skipped": 0}
+        return empty
     try:
         devices = await device_store.list_for_user(user_id)
     except Exception:  # noqa: BLE001 - store read must never break add()
         logger.warning("notif-push: failed to list devices", exc_info=True)
-        return {"sent": 0, "failed": 0, "skipped": 0}
+        return empty
     if not devices:
-        return {"sent": 0, "failed": 0, "skipped": 0}
+        return empty
 
     payload, actions = _build_device_push_payload(row)
     results = await asyncio.gather(
-        *[_send_one_device(d, payload, actions, apns_sender, up_sender) for d in devices],
+        *[
+            _send_one_device(d, payload, actions, apns_sender, up_sender, device_store)
+            for d in devices
+        ],
         return_exceptions=True,
     )
-    sent = failed = skipped = 0
+    sent = failed = skipped = removed = 0
     for r in results:
         if isinstance(r, Exception):
             failed += 1
@@ -424,6 +498,8 @@ async def send_device_push(
             sent += 1
         elif r == "skipped":
             skipped += 1
+        elif r == "removed":
+            removed += 1
         else:
             failed += 1
-    return {"sent": sent, "failed": failed, "skipped": skipped}
+    return {"sent": sent, "failed": failed, "skipped": skipped, "removed": removed}

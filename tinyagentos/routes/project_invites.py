@@ -10,9 +10,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-from tinyagentos.agent_registry_store import _slugify
+from tinyagentos.agent_registry_store import _slugify, agent_slug_or_fallback
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
-from tinyagentos.auth_middleware import rate_limit_ok
+from tinyagentos.auth_middleware import rate_limit_ok, rate_limit_retry_after
 from tinyagentos.projects.invite_store import (
     InviteAlreadyRedeemedError,
     InviteExpiredError,
@@ -20,6 +20,7 @@ from tinyagentos.projects.invite_store import (
     InvitePendingCapError,
     InviteRevokedError,
 )
+from tinyagentos.rate_limit import rate_limited_response
 from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
 
 logger = logging.getLogger(__name__)
@@ -110,16 +111,26 @@ def _derive_os_handle(display_name: str | None, harness: str, label: str | None)
     primary name, falling back to the harness. An optional label disambiguates,
     as in the project path. Each component is slugified independently.
 
-    ``_slugify`` returns the sentinel ``"agent"`` for empty input, so only
-    slugify a non-empty alias; otherwise the harness fallback never fires."""
+    ``_slugify`` returns "" when nothing survives (an alias written only in
+    emoji or punctuation), so the harness fallback covers both an absent alias
+    and an unslugifiable one, and ``agent_slug_or_fallback`` guarantees the
+    result is never the empty handle."""
     alias = (display_name or "").strip()
     base = _slugify(alias) if alias else _slugify(harness)
+    # An alias that is present but unslugifiable (pure emoji/punctuation) must
+    # still fall back to the harness here, not just when parts joins to "":
+    # a slugifiable label would otherwise make the joined string non-empty on
+    # its own and skip the fallback below entirely, silently dropping the
+    # harness component and colliding two different harnesses on the same
+    # label-only handle.
+    if not base:
+        base = agent_slug_or_fallback(harness)
     parts = [base]
     if label:
         lbl = _slugify(label)
         if lbl:
             parts.append(lbl)
-    return "-".join(p for p in parts if p) or _slugify(harness)
+    return "-".join(p for p in parts if p)
 
 
 async def _dedupe_handle(request: Request, base_handle: str) -> str:
@@ -1084,9 +1095,9 @@ async def redeem_invite(request: Request, body: RedeemInviteIn):
     """
     client_ip = request.client.host if request.client else "unknown"
     if not rate_limit_ok(client_ip):
-        return JSONResponse(
-            {"error": "too many redeem attempts; slow down and retry"},
-            status_code=429,
+        return rate_limited_response(
+            "too many redeem attempts; slow down and retry",
+            rate_limit_retry_after(client_ip),
         )
 
     store = request.app.state.project_invites

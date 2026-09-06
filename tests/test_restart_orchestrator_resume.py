@@ -315,6 +315,24 @@ class TestCapContextSnapshot:
         ro._cap_context_snapshot(note)
         assert "context_snapshot" not in note
 
+    def test_many_long_keys_small_values_stays_under_limit(self):
+        big = {f"k{i:04d}_" + "x" * 53: "v" for i in range(600)}
+        note = {"context_snapshot": big}
+        ro._cap_context_snapshot(note)
+        capped_size = len(json.dumps(note["context_snapshot"], separators=(",", ":")))
+        assert capped_size <= ro._MAX_CONTEXT_SNAPSHOT_BYTES, (
+            f"cap returned {capped_size} bytes"
+        )
+
+    def test_many_short_keys_small_values_stays_under_limit(self):
+        big = {f"k{i}": i for i in range(4000)}
+        note = {"context_snapshot": big}
+        ro._cap_context_snapshot(note)
+        capped_size = len(json.dumps(note["context_snapshot"], separators=(",", ":")))
+        assert capped_size <= ro._MAX_CONTEXT_SNAPSHOT_BYTES, (
+            f"cap returned {capped_size} bytes"
+        )
+
 
 class TestResumeRetryLoopCapsSnapshot:
     @pytest.mark.asyncio

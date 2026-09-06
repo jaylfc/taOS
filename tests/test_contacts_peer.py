@@ -587,6 +587,38 @@ class TestPeerRoutes:
 
         assert 429 in statuses, f"expected 429 in statuses, got: {set(statuses)}"
 
+    async def test_inbox_429_carries_retry_after(
+        self, client_with_contacts, app_with_contacts
+    ):
+        """A throttled peer must be told when its window reopens."""
+        from tinyagentos.routes import peer as peer_routes
+
+        store = app_with_contacts.state.contacts_store
+        await store.add_contact(
+            contact_id="hub:retry", hub_username="retry", display_name="R",
+            ed25519_pub="pk", x25519_pub="ek",
+        )
+        inbound = generate_peer_token()
+        await store.establish_peer_link(
+            contact_id="hub:retry",
+            inbound_token=inbound,
+            outbound_token=generate_peer_token(),
+        )
+        headers = {"Authorization": f"Bearer {inbound}"}
+
+        peer_routes._rate_hits.clear()
+        try:
+            last = None
+            for _ in range(peer_routes._RATE_MAX_PER_WINDOW + 1):
+                last = await client_with_contacts.post(
+                    "/api/peer/inbox", json={"envelope": {}}, headers=headers,
+                )
+            assert last.status_code == 429
+            retry_after = int(last.headers["retry-after"])
+            assert 1 <= retry_after <= int(peer_routes._RATE_WINDOW_SECS)
+        finally:
+            peer_routes._rate_hits.clear()
+
     async def test_inbox_envelope_too_large(self, client_with_contacts, app_with_contacts):
         store = app_with_contacts.state.contacts_store
         await store.add_contact(

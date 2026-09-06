@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.agent_registry_store import mint_registry_token
-from tinyagentos.agent_token_auth import check_agent_scope
+from tinyagentos.agent_token_auth import check_agent_identity, check_agent_scope
 from taos_test_csrf import csrf_event_hooks
 
 
@@ -49,6 +49,32 @@ class _FakeRequest:
         self.headers = {}
         if token is not None:
             self.headers["Authorization"] = f"Bearer {token}"
+
+
+async def _rotation_fixture(app, *, scopes=("a2a_receive",)):
+    """Register one ACTIVE agent with *scopes* and return (canonical_id, priv).
+
+    The caller mints its own tokens so it controls whether they are minted
+    before or after a ``bump_token_min_iat``.
+    """
+    for attr in ("agent_registry", "agent_grants"):
+        store = getattr(app.state, attr, None)
+        if store is not None and store._db is None:
+            await store.init()
+
+    registry = app.state.agent_registry
+    grants = app.state.agent_grants
+    priv, _pub = app.state.agent_registry_keypair
+
+    rec = await registry.register(
+        framework="test", display_name="TestAgent",
+        origin="external-selfjoin", handle="@test",
+    )
+    cid = rec["canonical_id"]
+    await registry.set_status(cid, "active")
+    for scope in scopes:
+        await grants.add_grant(cid, scope)
+    return cid, priv
 
 
 async def _register_and_mint(app, *, user_id="u", owner_user_id=None, scopes=("a2a_receive",)):
@@ -205,6 +231,49 @@ class TestTokenMinIatAuth:
         assert result == cid
 
 
+class TestTokenMinIatIdentity:
+    """`check_agent_identity` must honour the SAME rotation cutoff as
+    `check_agent_scope` and `check_agent_scope_for_project`.
+
+    It proves only WHO the caller is, so it is the auth for every surface an
+    agent may reach without holding a scope yet: creating a scope request,
+    the agent decisions routes, the container-provisioning requests, and the
+    auth-request flow.  If it skips the cutoff then rotation -- the one
+    mechanism for killing a leaked token without deleting the identity --
+    does not actually revoke anything on those routes.
+    """
+
+    @pytest.mark.asyncio
+    async def test_rotated_token_rejected(self, app):
+        """A token minted before the bump must not prove identity afterwards."""
+        cid, priv = await _rotation_fixture(app)
+        old_token = mint_registry_token(cid, priv, user_id="u", framework="test")
+        await app.state.agent_registry.bump_token_min_iat(cid, int(time.time()) + 3600)
+
+        with pytest.raises(HTTPException) as exc:
+            await check_agent_identity(_FakeRequest(app, old_token))
+        assert exc.value.status_code == 401
+        assert exc.value.detail == "token superseded"
+
+    @pytest.mark.asyncio
+    async def test_token_minted_after_bump_still_proves_identity(self, app):
+        """Control: rotation must not lock out the replacement token."""
+        cid, priv = await _rotation_fixture(app)
+        await app.state.agent_registry.bump_token_min_iat(cid, int(time.time()))
+        new_token = mint_registry_token(cid, priv, user_id="u", framework="test")
+
+        assert await check_agent_identity(_FakeRequest(app, new_token)) == cid
+
+    @pytest.mark.asyncio
+    async def test_default_zero_cutoff_keeps_identity_valid(self, app):
+        """Control: the migration default (0) must not lock out live tokens."""
+        cid, priv = await _rotation_fixture(app)
+        assert (await app.state.agent_registry.get(cid))["token_min_iat"] == 0
+        token = mint_registry_token(cid, priv, user_id="u", framework="test")
+
+        assert await check_agent_identity(_FakeRequest(app, token)) == cid
+
+
 # ---------------------------------------------------------------------------
 # Route-level tests
 # ---------------------------------------------------------------------------
@@ -295,3 +364,42 @@ class TestRotateTokensRoute:
             "/api/agents/registry/no-such-agent-20260101-000000/rotate-tokens"
         )
         assert resp.status_code == 404
+
+class TestEnforceRotationCutoffHelper:
+    """Unit tests for the shared rotation-cutoff check.
+
+    The same four-line token_min_iat comparison used to be copy-pasted into
+    _verify_agent_scope, check_agent_identity, and check_agent_project_grants
+    (kilo-code-bot review on #2799): any future change to the cutoff
+    semantics had to be applied in three places or one would silently
+    disagree. It is now a single helper all three call.
+    """
+
+    def test_iat_at_or_after_cutoff_passes(self):
+        from tinyagentos.agent_token_auth import _enforce_rotation_cutoff
+
+        _enforce_rotation_cutoff({"token_min_iat": 100}, {"iat": 100})
+        _enforce_rotation_cutoff({"token_min_iat": 100}, {"iat": 200})
+
+    def test_iat_before_cutoff_raises_401(self):
+        from tinyagentos.agent_token_auth import _enforce_rotation_cutoff
+
+        with pytest.raises(HTTPException) as exc_info:
+            _enforce_rotation_cutoff({"token_min_iat": 100}, {"iat": 99})
+        assert exc_info.value.status_code == 401
+
+    def test_missing_token_min_iat_defaults_to_zero(self):
+        """No rotation has ever happened -- any real iat clears the cutoff."""
+        from tinyagentos.agent_token_auth import _enforce_rotation_cutoff
+
+        _enforce_rotation_cutoff({}, {"iat": 1})
+
+    def test_missing_iat_is_treated_as_ancient_and_rejected_once_rotated(self):
+        """A token with no iat claim is collapsed to 0 (documented
+        safe-by-default policy), so it is superseded by ANY cutoff a caller
+        has ever set."""
+        from tinyagentos.agent_token_auth import _enforce_rotation_cutoff
+
+        with pytest.raises(HTTPException) as exc_info:
+            _enforce_rotation_cutoff({"token_min_iat": 1}, {})
+        assert exc_info.value.status_code == 401
