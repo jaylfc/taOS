@@ -249,7 +249,7 @@ class NotificationStore(BaseStore):
                 "COALESCE(nus.read_at, n.read) as read, n.source, n.data, n.user_id "
                 "FROM notifications n "
                 "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
-                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND n.archived = 0"
+                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND n.archived = 0 AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL)"
                 + (" AND COALESCE(nus.read_at, n.read) = 0" if unread_only else "") +
                 " ORDER BY n.timestamp DESC LIMIT ?"
             )
@@ -307,9 +307,9 @@ class NotificationStore(BaseStore):
             # For per-user notifications, include both own notifications and broadcasts
             # Read state for broadcasts is stored in notification_user_state
             sql = (
-                "SELECT COUNT(*) FROM notifications "
+                "SELECT COUNT(*) FROM notifications n "
                 "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
-                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND archived = 0 AND COALESCE(nus.read_at, n.read) = 0"
+                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL) AND COALESCE(nus.read_at, n.read) = 0"
             )
             params = (user_id, user_id)
         else:

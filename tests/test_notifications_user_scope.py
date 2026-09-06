@@ -111,6 +111,67 @@ class TestNotificationStoreUserScope:
         assert affected == 1
         assert len(await notif_store.list_archived(user_id="u1")) == 1
 
+    async def test_broadcast_mark_read_per_user(self, notif_store):
+        await notif_store.add("broadcast", "for everyone")
+        await notif_store.add("a", "a msg", user_id="u1")
+        # Before marking read: u1 sees both, u2 sees only broadcast
+        assert await notif_store.unread_count(user_id="u1") == 2
+        assert await notif_store.unread_count(user_id="u2") == 1
+
+        broadcast_id = _id_by_title(await notif_store.list(), "broadcast")
+        await notif_store.mark_read(broadcast_id, user_id="u1")
+
+        # u1's unread count drops, u2's does not
+        assert await notif_store.unread_count(user_id="u1") == 1
+        assert await notif_store.unread_count(user_id="u2") == 1
+
+        # u2 still lists it unread
+        u2_items = await notif_store.list(user_id="u2")
+        assert _row_by_title(u2_items, "broadcast")["read"] is False
+
+    async def test_broadcast_archive_per_user(self, notif_store):
+        await notif_store.add("broadcast", "for everyone")
+        await notif_store.add("a", "a msg", user_id="u1")
+
+        broadcast_id = _id_by_title(await notif_store.list(), "broadcast")
+        await notif_store.archive(broadcast_id, user_id="u1")
+
+        # Hidden from u1's list
+        u1_items = await notif_store.list(user_id="u1")
+        assert not any(i["title"] == "broadcast" for i in u1_items)
+
+        # Still in u2's list
+        u2_items = await notif_store.list(user_id="u2")
+        assert _row_by_title(u2_items, "broadcast")["read"] is False
+
+        # u1 sees it in archived
+        u1_archived = await notif_store.list_archived(user_id="u1")
+        assert any(h["title"] == "broadcast" for h in u1_archived)
+
+        # u2 doesn't see it in archived
+        u2_archived = await notif_store.list_archived(user_id="u2")
+        assert not any(h["title"] == "broadcast" for h in u2_archived)
+
+    async def test_owned_row_mark_read_behavior(self, notif_store):
+        await notif_store.add("a", "a msg", user_id="u1")
+        await notif_store.add("b", "b msg", user_id="u2")
+
+        u1_id = _id_by_title(await notif_store.list(user_id="u1"), "a")
+        await notif_store.mark_read(u1_id, user_id="u1")
+
+        assert await notif_store.unread_count(user_id="u1") == 0
+        assert (await notif_store.list(user_id="u1"))[0]["read"] is True
+
+    async def test_owned_row_archive_behavior(self, notif_store):
+        await notif_store.add("a", "a msg", user_id="u1")
+        await notif_store.add("b", "b msg", user_id="u2")
+
+        u1_id = _id_by_title(await notif_store.list(user_id="u1"), "a")
+        await notif_store.archive(u1_id, user_id="u1")
+
+        assert len(await notif_store.list(user_id="u1")) == 0
+        assert len(await notif_store.list_archived(user_id="u1")) == 1
+
 
 @pytest_asyncio.fixture
 async def two_user_app(tmp_path):

@@ -209,7 +209,10 @@ async def test_notification_api_mark_read(client):
     notif_id = items[0]["id"]
     resp = await client.post(f"/api/notifications/{notif_id}/read")
     assert resp.status_code == 200
-    assert await store.unread_count() == 0
+    user_id = client._transport.app.state.auth.find_user("admin")["id"]
+    assert await store.unread_count(user_id=user_id) == 0
+    items = await store.list(user_id=user_id)
+    assert items[0]["read"] is True
 
 
 @pytest.mark.asyncio
@@ -230,8 +233,9 @@ async def test_notification_api_archive(client):
     resp = await client.post(f"/api/notifications/{notif_id}/archive")
     assert resp.status_code == 200
     # Gone from the active feed, present in history.
-    assert (await store.list()) == []
-    history = await store.list_archived()
+    user_id = client._transport.app.state.auth.find_user("admin")["id"]
+    assert await store.list(user_id=user_id) == []
+    history = await store.list_archived(user_id=user_id)
     assert len(history) == 1
     assert history[0]["id"] == notif_id
 
