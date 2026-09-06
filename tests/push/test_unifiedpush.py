@@ -262,7 +262,7 @@ async def test_send_device_push_broadcast_noop_broadcast():
         apns_sender=FakeApns(),
         up_sender=FakeUP(),
     )
-    assert result == {"sent": 0, "failed": 0, "skipped": 0}
+    assert result == {"sent": 0, "failed": 0, "skipped": 0, "removed": 0}
 
 
 @pytest.mark.asyncio

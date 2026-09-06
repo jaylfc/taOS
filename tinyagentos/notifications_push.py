@@ -19,7 +19,9 @@ Design notes
 * The whole send path is strictly best-effort: a missing VAPID key, no
   subscriptions, or any push error must never raise back into add().
 * A 404/410 from the push service means the subscription is permanently gone,
-  so its row is pruned.
+  so its row is pruned. The device-push path does the same for APNs 410
+  Unregistered: the dead push token is cleared from the device row (the row
+  itself stays, so the device remains paired and visible to its owner).
 * Secrets (auth, p256dh, private PEM) are never logged.
 """
 from __future__ import annotations
@@ -383,13 +385,30 @@ def _build_device_push_payload(row: dict) -> tuple[dict, list[dict] | None]:
     return payload, actions
 
 
+async def _clear_dead_push_token(device_store, device_id: str, push_token: str) -> None:
+    """Drop a push token the push service reported as permanently gone.
+
+    Best-effort like the rest of the fan-out: a store failure is logged and the
+    send is still counted as removed, because the token is dead either way.
+    """
+    if device_store is None or not device_id:
+        return
+    try:
+        await device_store.clear_push_token(device_id, push_token)
+    except Exception:  # noqa: BLE001 - best-effort, never propagate
+        logger.warning("notif-push: failed to clear dead push token", exc_info=True)
+
+
 async def _send_one_device(
     device: dict,
     payload: dict,
     actions: list[dict] | None,
     apns_sender,
     up_sender,
+    device_store=None,
 ) -> str:
+    from tinyagentos.push.apns import ApnsUnregistered
+
     platform = device.get("platform", "")
     push_token = device.get("push_token", "")
     if not push_token:
@@ -418,6 +437,16 @@ async def _send_one_device(
             ok = await up_sender.send(push_token, up_payload)
         else:
             return "skipped"
+    except ApnsUnregistered as exc:
+        # 410 is permanent, not a retryable failure: keep counting it as such
+        # and the dead token is pushed to forever. Prune it instead, exactly as
+        # the web-push path prunes a 404/410 endpoint.
+        logger.info(
+            "notif-push: APNs token gone for device %s (reason=%s); clearing",
+            device.get("device_id"), exc.reason or "unknown",
+        )
+        await _clear_dead_push_token(device_store, device.get("device_id", ""), push_token)
+        return "removed"
     except Exception:  # noqa: BLE001 - best-effort, never propagate
         logger.warning("notif-push: device send failed for platform=%s token=%s", platform, push_token[:8], exc_info=True)
         return "failed"
@@ -436,26 +465,32 @@ async def send_device_push(
     Looks up devices for ``row["user_id"]`` via ``device_store.list_for_user``.
     When ``user_id`` is None (broadcast), returns a no-op because device push
     is strictly per-user. For each device, dispatches to APNs or UnifiedPush
-    based on the ``platform`` column. Returns {"sent", "failed", "skipped"}
-    counts. Never raises.
+    based on the ``platform`` column. Returns {"sent", "failed", "skipped",
+    "removed"} counts, where "removed" is a device whose push token the service
+    reported as permanently gone and which was therefore pruned (the same shape
+    send_web_push reports). Never raises.
     """
+    empty = {"sent": 0, "failed": 0, "skipped": 0, "removed": 0}
     user_id = row.get("user_id")
     if not user_id:
-        return {"sent": 0, "failed": 0, "skipped": 0}
+        return empty
     try:
         devices = await device_store.list_for_user(user_id)
     except Exception:  # noqa: BLE001 - store read must never break add()
         logger.warning("notif-push: failed to list devices", exc_info=True)
-        return {"sent": 0, "failed": 0, "skipped": 0}
+        return empty
     if not devices:
-        return {"sent": 0, "failed": 0, "skipped": 0}
+        return empty
 
     payload, actions = _build_device_push_payload(row)
     results = await asyncio.gather(
-        *[_send_one_device(d, payload, actions, apns_sender, up_sender) for d in devices],
+        *[
+            _send_one_device(d, payload, actions, apns_sender, up_sender, device_store)
+            for d in devices
+        ],
         return_exceptions=True,
     )
-    sent = failed = skipped = 0
+    sent = failed = skipped = removed = 0
     for r in results:
         if isinstance(r, Exception):
             failed += 1
@@ -463,6 +498,8 @@ async def send_device_push(
             sent += 1
         elif r == "skipped":
             skipped += 1
+        elif r == "removed":
+            removed += 1
         else:
             failed += 1
-    return {"sent": sent, "failed": failed, "skipped": skipped}
+    return {"sent": sent, "failed": failed, "skipped": skipped, "removed": removed}

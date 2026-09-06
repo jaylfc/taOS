@@ -1,3 +1,4 @@
+import base64
 import json
 import httpx
 import pytest
@@ -107,6 +108,226 @@ async def test_http_sender_does_not_close_injected_client():
 async def test_null_sender_aclose_is_noop():
     # NullApnsSender exposes a no-op aclose so shutdown can call it uniformly.
     assert await NullApnsSender().aclose() is None
+
+
+# ---------------------------------------------------------------------------
+# tsk-42q2qf: provider-token reuse + 410 Unregistered handling
+# ---------------------------------------------------------------------------
+
+
+def _test_key_pem() -> str:
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives import serialization
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+
+
+def _counting_mint(monkeypatch) -> list[int]:
+    """Replace build_apns_jwt with a counting passthrough; returns the counter."""
+    from tinyagentos.push import apns as apns_mod
+
+    real = apns_mod.build_apns_jwt
+    mints = [0]
+
+    def counted(**kwargs):
+        mints[0] += 1
+        return real(**kwargs)
+
+    monkeypatch.setattr(apns_mod, "build_apns_jwt", counted)
+    return mints
+
+
+def _decode_iat(jwt: str) -> int:
+    """Decode the `iat` claim out of a JWT built by build_apns_jwt."""
+    payload_b64 = jwt.split(".")[1]
+    padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+    return json.loads(base64.urlsafe_b64decode(padded))["iat"]
+
+
+def _sender_with(handler, pem: str):
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    sender = HttpApnsSender(
+        key_pem=pem, key_id="KID", team_id="TID", bundle_id="com.taos.app",
+        host="api.push.apple.com", client=client,
+    )
+    return sender, client
+
+
+@pytest.mark.asyncio
+async def test_provider_token_is_reused_across_pushes(monkeypatch):
+    # Apple caps provider-token GENERATION: minting one per push earns
+    # 403 TooManyProviderTokenUpdates and refuses pushes account-wide, so a
+    # burst must reuse one cached token rather than mint per request.
+    mints = _counting_mint(monkeypatch)
+    auths = set()
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        auths.add(req.headers.get("authorization"))
+        return httpx.Response(200)
+
+    sender, client = _sender_with(handler, _test_key_pem())
+    for _ in range(50):
+        assert await sender.send("devtoken", {"aps": {}}) is True
+    assert mints[0] == 1, f"expected 1 JWT mint across 50 pushes, got {mints[0]}"
+    assert len(auths) == 1
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_provider_token_refreshes_after_the_window(monkeypatch):
+    # The cached token must still be refreshed on a timer: Apple expires a
+    # provider token after an hour, so a long-lived process that never reminted
+    # would eventually push with a dead token.
+    from tinyagentos.push import apns as apns_mod
+
+    mints = _counting_mint(monkeypatch)
+    clock = [1_700_000_000.0]
+    monkeypatch.setattr(apns_mod.time, "time", lambda: clock[0])
+
+    sender, client = _sender_with(lambda req: httpx.Response(200), _test_key_pem())
+    await sender.send("devtoken", {"aps": {}})
+    clock[0] += 10 * 60
+    await sender.send("devtoken", {"aps": {}})
+    assert mints[0] == 1, f"expected 1 mint 10 minutes in, got {mints[0]}"
+
+    clock[0] += 55 * 60
+    await sender.send("devtoken", {"aps": {}})
+    assert mints[0] == 2, f"expected a refresh past the window, got {mints[0]} mints"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_410_raises_unregistered_carrying_reason_and_apns_id():
+    # 410 Unregistered is Apple's permanent "this device token is dead" signal.
+    # Collapsing it into a plain False means the token is retried forever, so
+    # the sender must raise a distinguishable error the caller can prune on.
+    from tinyagentos.push.apns import ApnsUnregistered
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            410,
+            json={"reason": "Unregistered", "timestamp": 1700000000000},
+            headers={"apns-id": "AAAA-BBBB"},
+        )
+
+    sender, client = _sender_with(handler, _test_key_pem())
+    with pytest.raises(ApnsUnregistered) as excinfo:
+        await sender.send("deadtoken", {"aps": {}})
+    assert excinfo.value.reason == "Unregistered"
+    assert excinfo.value.apns_id == "AAAA-BBBB"
+    assert excinfo.value.push_token == "deadtoken"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_failure_reason_is_surfaced_in_logs(caplog):
+    # Neither apns-id nor Apple's own `reason` was ever logged, so a refusal was
+    # indistinguishable from any other non-200 and could not be diagnosed.
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            410, json={"reason": "Unregistered"}, headers={"apns-id": "AAAA-BBBB"},
+        )
+
+    sender, client = _sender_with(handler, _test_key_pem())
+    with caplog.at_level("WARNING", logger="tinyagentos.push.apns"):
+        try:
+            await sender.send("deadtoken", {"aps": {}})
+        except Exception:
+            pass
+    assert "Unregistered" in caplog.text
+    assert "AAAA-BBBB" in caplog.text
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_non_410_refusal_logs_reason_and_returns_false(caplog):
+    # A retryable refusal (bad payload, bad topic) stays a plain False, but the
+    # reason must still reach the log.
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"reason": "BadDeviceToken"})
+
+    sender, client = _sender_with(handler, _test_key_pem())
+    with caplog.at_level("WARNING", logger="tinyagentos.push.apns"):
+        assert await sender.send("devtoken", {"aps": {}}) is False
+    assert "BadDeviceToken" in caplog.text
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_expired_provider_token_forces_a_remint(monkeypatch):
+    # Caching introduces a new failure mode: if the cached token expires early
+    # (clock skew), every push would be refused until the refresh timer fired.
+    # Apple's ExpiredProviderToken must therefore invalidate the cache at once.
+    mints = _counting_mint(monkeypatch)
+    statuses = [403, 200, 200]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if statuses.pop(0) == 403:
+            return httpx.Response(403, json={"reason": "ExpiredProviderToken"})
+        return httpx.Response(200)
+
+    sender, client = _sender_with(handler, _test_key_pem())
+    assert await sender.send("devtoken", {"aps": {}}) is False
+    assert await sender.send("devtoken", {"aps": {}}) is True
+    assert await sender.send("devtoken", {"aps": {}}) is True
+    # Exactly one extra mint: the expiry invalidates the cache once, and the
+    # replacement token is then reused like any other.
+    assert mints[0] == 2, f"expected exactly one remint after ExpiredProviderToken, got {mints[0]}"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_invalid_provider_token_forces_a_remint(monkeypatch):
+    # InvalidProviderToken is just as permanent as ExpiredProviderToken (a
+    # rotated signing key, or a cached token that is otherwise unparseable):
+    # every push would be refused for the rest of the 50-minute cache window
+    # unless this also invalidates the cache immediately.
+    mints = _counting_mint(monkeypatch)
+    statuses = [403, 200, 200]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if statuses.pop(0) == 403:
+            return httpx.Response(403, json={"reason": "InvalidProviderToken"})
+        return httpx.Response(200)
+
+    sender, client = _sender_with(handler, _test_key_pem())
+    assert await sender.send("devtoken", {"aps": {}}) is False
+    assert await sender.send("devtoken", {"aps": {}}) is True
+    assert await sender.send("devtoken", {"aps": {}}) is True
+    assert mints[0] == 2, f"expected exactly one remint after InvalidProviderToken, got {mints[0]}"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_provider_token_iat_never_regresses_after_backward_clock_step(monkeypatch):
+    # A wall clock that steps backward (a bad NTP correction) must not pin the
+    # next token's iat to the regressed time. Apple checks iat against its OWN
+    # correct clock: a regressed iat combined with a full fresh 50-minute local
+    # cache window can let this cache keep reusing the token until Apple's real
+    # elapsed-since-iat time is already past the true one-hour limit, well
+    # before the local refresh timer would ever fire.
+    from tinyagentos.push import apns as apns_mod
+
+    clock = [1_700_000_000.0]
+    monkeypatch.setattr(apns_mod.time, "time", lambda: clock[0])
+
+    sender, client = _sender_with(lambda req: httpx.Response(200), _test_key_pem())
+    await sender.send("devtoken", {"aps": {}})
+    iat1 = _decode_iat(sender._jwt)
+    assert iat1 == int(clock[0])
+
+    # The clock steps backward by 15 minutes and never corrects (a permanent
+    # skew), forcing an immediate remint (age goes negative).
+    clock[0] -= 15 * 60
+    await sender.send("devtoken", {"aps": {}})
+    iat2 = _decode_iat(sender._jwt)
+    assert iat2 >= iat1, f"iat regressed from {iat1} to {iat2} after a backward clock step"
+    await client.aclose()
 
 
 # ---------------------------------------------------------------------------

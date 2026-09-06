@@ -735,7 +735,7 @@ class TestSendDevicePush:
             apns_sender=FakeApns(),
             up_sender=FakeUP(),
         )
-        assert result == {"sent": 0, "failed": 0, "skipped": 0}
+        assert result == {"sent": 0, "failed": 0, "skipped": 0, "removed": 0}
 
     async def test_no_push_token_device_is_skipped(self):
         class FakeApns:
@@ -769,6 +769,93 @@ class TestSendDevicePush:
         assert result["sent"] == 1
         assert result["skipped"] == 1
 
+    # -----------------------------------------------------------------------
+    # tsk-42q2qf: a 410 Unregistered must delete the dead device token
+    # -----------------------------------------------------------------------
+
+    async def test_apns_410_clears_the_dead_push_token(self, tmp_path):
+        # 410 Unregistered is permanent: the token must be dropped from the
+        # store, otherwise every later notification retries a dead device
+        # forever. Uses the real DeviceStore so the SQL is exercised.
+        from tinyagentos.device_store import DeviceStore
+        from tinyagentos.push.apns import ApnsUnregistered
+
+        store = DeviceStore(tmp_path / "devices.db")
+        await store.init()
+        try:
+            dev = await store.register(
+                user_id="u1", platform="ios", push_token="deadtoken"
+            )
+
+            class FakeApns:
+                async def send(self, push_token, payload, *, topic=None):
+                    raise ApnsUnregistered(push_token, apns_id="AAAA", reason="Unregistered")
+
+                async def aclose(self):
+                    pass
+
+            class FakeUP:
+                async def send(self, *args, **kwargs):
+                    return True
+
+                async def aclose(self):
+                    pass
+
+            row = {
+                "id": 1, "title": "Hi", "message": "", "source": "system",
+                "user_id": "u1", "data": {},
+            }
+            result = await send_device_push(
+                row, device_store=store, apns_sender=FakeApns(), up_sender=FakeUP(),
+            )
+            assert result["removed"] == 1
+            assert result["failed"] == 0
+            after = await store.get(dev["device_id"])
+            assert after is not None, "the device row itself must survive"
+            assert after["push_token"] == "", "expected the dead token removed from the store"
+        finally:
+            await store.close()
+
+    async def test_apns_410_leaves_a_freshly_re_registered_token_alone(self, tmp_path):
+        # A device that re-registered between fan-out and the 410 response must
+        # keep its NEW token: the prune is scoped to the token that actually
+        # failed, so a live registration is not collateral damage.
+        from tinyagentos.device_store import DeviceStore
+        from tinyagentos.push.apns import ApnsUnregistered
+
+        store = DeviceStore(tmp_path / "devices.db")
+        await store.init()
+        try:
+            dev = await store.register(
+                user_id="u1", platform="ios", push_token="oldtoken"
+            )
+
+            class FakeApns:
+                async def send(self, push_token, payload, *, topic=None):
+                    await store.update_push_token(dev["device_id"], "freshtoken")
+                    raise ApnsUnregistered(push_token, apns_id="AAAA", reason="Unregistered")
+
+                async def aclose(self):
+                    pass
+
+            class FakeUP:
+                async def send(self, *args, **kwargs):
+                    return True
+
+                async def aclose(self):
+                    pass
+
+            row = {
+                "id": 1, "title": "Hi", "message": "", "source": "system",
+                "user_id": "u1", "data": {},
+            }
+            await send_device_push(
+                row, device_store=store, apns_sender=FakeApns(), up_sender=FakeUP(),
+            )
+            after = await store.get(dev["device_id"])
+            assert after["push_token"] == "freshtoken"
+        finally:
+            await store.close()
     async def test_ios_decision_sets_category_mutable_content_and_actions(self):
         # tsk-cf7wzc: an approve_deny decision must reach iOS with the
         # DECISION_APPROVE_DENY category so the native shell maps it to a

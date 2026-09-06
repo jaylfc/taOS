@@ -25,6 +25,12 @@ async def send_device_push(
     apns_sender: "ApnsSender",
     up_sender: "UnifiedPushSender",
 ) -> bool:
+    """Send one payload to one device. True when the push service accepted it.
+
+    Propagates ApnsUnregistered: a 410 means the token is permanently dead, and
+    a single-device caller has to prune it rather than read it as a plain False.
+    The fan-out in notifications_push.send_device_push handles that pruning.
+    """
     platform = device.get("platform", "")
     push_token = device.get("push_token", "")
     if not push_token:

@@ -110,6 +110,23 @@ class DeviceStore(BaseStore):
         await self._db.commit()
         return await self.get(device_id)
 
+    async def clear_push_token(self, device_id: str, push_token: str) -> bool:
+        """Drop a push token the push service reported as permanently dead.
+
+        Scoped to the exact token that failed, so a device that re-registered a
+        fresh token between the fan-out and the 410 response keeps the new one.
+        The device row itself is kept: the device is still paired and still
+        visible to its owner, it simply has no deliverable push token until it
+        registers another. Returns True when a row was cleared.
+        """
+        assert self._db is not None
+        cur = await self._db.execute(
+            "UPDATE devices SET push_token = '' WHERE device_id = ? AND push_token = ?",
+            (device_id, push_token),
+        )
+        await self._db.commit()
+        return cur.rowcount > 0
+
     async def touch(self, device_id: str) -> None:
         assert self._db is not None
         await self._db.execute(
