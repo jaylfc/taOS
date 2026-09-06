@@ -37,7 +37,10 @@ _node_ok() {
 }
 if ! _node_ok; then
   echo "[openclaw] installing Node >=22.19 via NodeSource"
-  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  NODESOURCE_VERSION="22.x"
+  curl -fsSL -o /tmp/nodesource-setup_22.x https://deb.nodesource.com/setup_22.x \
+    && echo "575583bbac2fccc0b5edd0dbc03e222d9f9dc8d724da996d22754d6411104fd1  /tmp/nodesource-setup_22.x" | sha256sum -c - \
+    && bash /tmp/nodesource-setup_22.x
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs
 fi
 if ! command -v git >/dev/null 2>&1; then

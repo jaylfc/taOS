@@ -18,7 +18,10 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
 # ---------------------------------------------------------------------------
 # uv provisions Python 3.12 and the backend deps from backend/.python-version.
 if ! command -v uv >/dev/null 2>&1; then
-  curl -LsSf https://astral.sh/uv/install.sh | sh
+  UV_VERSION="0.4.31"
+  curl -fsSL -o /tmp/uv-install.sh "https://astral.sh/uv/install.sh" \
+    && echo "a3196b75f697a1adaa5e4af34ffba7629c710931ab1dac33bab59ecf228080bb  /tmp/uv-install.sh" | sha256sum -c - \
+    && UV_VERSION="${UV_VERSION}" sh /tmp/uv-install.sh
 fi
 
 # The installer drops uv into ~/.local/bin (or /root/.local/bin when run as

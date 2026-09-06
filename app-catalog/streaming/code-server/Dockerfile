@@ -20,8 +20,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xdotool scrot xclip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install code-server
-RUN curl -fsSL https://code-server.dev/install.sh | sh
+# Install code-server (verified)
+ENV CODE_SERVER_VERSION="4.96.0"
+RUN curl -fsSL -o /tmp/code-server-install.sh https://code-server.dev/install.sh \
+    && echo "3a71d87a26d39d03332a8eda6b0692e4cb0b5d7b760a598ea0d0fcb723ed7ddc  /tmp/code-server-install.sh" | sha256sum -c - \
+    && sh /tmp/code-server-install.sh
 
 RUN pip3 install --no-cache-dir fastapi uvicorn
 
