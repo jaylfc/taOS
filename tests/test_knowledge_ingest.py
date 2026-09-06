@@ -453,3 +453,89 @@ async def test_fetch_client_must_be_guarded(store, mock_http):
             await pipeline._download_article("https://example.com/a", "", {})
     finally:
         await unguarded_client.aclose()
+
+
+# ------------------------------------------------------------------
+# S2-19: size cap and content-type gate on knowledge fetches
+# ------------------------------------------------------------------
+
+class _TrackedResponse:
+    """Mock response that tracks how many bytes are consumed."""
+
+    def __init__(self, chunks, content_type="text/html"):
+        self._chunks = list(chunks)
+        self._all_text = b"".join(self._chunks).decode("utf-8", errors="replace")
+        self.status_code = 200
+        self.headers = {"content-type": content_type}
+        self.is_redirect = False
+        self.bytes_read = 0
+
+    def raise_for_status(self):
+        pass
+
+    async def aiter_bytes(self, chunk_size=8192):
+        for chunk in self._chunks:
+            self.bytes_read += len(chunk)
+            yield chunk
+
+    @property
+    def text(self):
+        self.bytes_read = len(self._all_text.encode("utf-8"))
+        return self._all_text
+
+    @property
+    def encoding(self):
+        return "utf-8"
+
+
+@pytest.mark.asyncio
+async def test_download_article_rejects_oversized_body(store):
+    """A body larger than the cap must not be fully buffered."""
+    chunk_size = 8192
+    num_chunks = 2000  # ~15 MB total, over the 10 MB default cap
+    chunks = [b"x" * chunk_size] * num_chunks
+    resp = _TrackedResponse(chunks, content_type="text/html")
+
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(return_value=resp)
+
+    notif = AsyncMock()
+    cat_engine = AsyncMock()
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+    )
+
+    with pytest.raises(ValueError, match="exceeds"):
+        await pipeline._download_article("https://example.com/large", "", {})
+
+    assert resp.bytes_read <= 10 * 1024 * 1024 + chunk_size, (
+        f"Oversized body should not be fully buffered, but {resp.bytes_read} bytes were read"
+    )
+
+
+@pytest.mark.asyncio
+async def test_download_article_rejects_non_text_content_type(store):
+    """Non-text content-type must be rejected before buffering."""
+    resp = _TrackedResponse([b"binary data"], content_type="application/octet-stream")
+
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(return_value=resp)
+
+    notif = AsyncMock()
+    cat_engine = AsyncMock()
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+    )
+
+    with pytest.raises(ValueError, match="Non-text"):
+        await pipeline._download_article("https://example.com/bin", "", {})
+
+    assert resp.bytes_read == 0, "Non-text response should not be buffered at all"

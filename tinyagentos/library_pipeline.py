@@ -502,36 +502,20 @@ class WebProcessor(Processor):
 
                     async with client.stream("GET", current_url) as resp:
                         status_code = resp.status_code
-                        content_type = resp.headers.get("content-type", "")
 
-                        # Content-type gate: non-text responses end in error.
-                        ct_base = content_type.split(";")[0].strip().lower()
                         if status_code >= 400:
                             resp.raise_for_status()
-                        if ct_base and not ct_base.startswith("text/"):
-                            raise ValueError(
-                                f"Non-text content-type {content_type!r} "
-                                f"for {source_url!r} — only text/* is supported"
-                            )
 
                         # Redirect: grab Location, update URL, continue loop.
                         if status_code in (301, 302, 303, 307, 308) and resp.headers.get("location"):
                             current_url = urljoin(current_url, resp.headers["location"])
                             # fall through → exit with → _hop advances
                         else:
-                            # Read body with size cap — streaming, so the cap stops OOM.
-                            body_chunks: list[bytes] = []
-                            total = 0
-                            async for chunk in resp.aiter_bytes(8192):
-                                total += len(chunk)
-                                if total > self._MAX_WEB_BYTES:
-                                    raise ValueError(
-                                        f"Response body exceeds {self._MAX_WEB_BYTES} bytes "
-                                        f"for {source_url!r}"
-                                    )
-                                body_chunks.append(chunk)
-                            encoding = resp.encoding or "utf-8"
-                            return content_type, encoding, b"".join(body_chunks)
+                            from tinyagentos.web_fetch import stream_text_response
+                            content_type, encoding, body = await stream_text_response(
+                                resp, max_bytes=self._MAX_WEB_BYTES,
+                            )
+                            return content_type, encoding, body
                 else:
                     raise SsrfBlockedError(
                         f"too many redirects fetching {source_url!r}"

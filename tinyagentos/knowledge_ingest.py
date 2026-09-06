@@ -344,7 +344,9 @@ class IngestPipeline:
                 raise SsrfBlockedError(f"too many redirects fetching {url!r}")
 
         resp.raise_for_status()
-        html = resp.text
+        from tinyagentos.web_fetch import stream_text_response
+        _, _, html_bytes = await stream_text_response(resp)
+        html = html_bytes.decode("utf-8", errors="replace")
         content = _extract_text_readability(html)
         if len(content) < _MIN_CONTENT_CHARS:
             logger.warning("Readability extraction returned short content for %s (%d chars)", url, len(content))

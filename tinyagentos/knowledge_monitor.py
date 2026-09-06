@@ -176,7 +176,9 @@ class MonitorService:
                 item["source_url"], timeout=30, follow_redirects=True
             )
             resp.raise_for_status()
-            new_content = resp.text
+            from tinyagentos.web_fetch import stream_text_response
+            _, _, text_bytes = await stream_text_response(resp)
+            new_content = text_bytes.decode("utf-8", errors="replace")
             old_content = item.get("content", "")
             changed = new_content.strip() != old_content.strip()
             return new_content, changed
