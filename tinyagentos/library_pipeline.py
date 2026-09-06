@@ -693,8 +693,9 @@ def _extract_readable_text(html: str, source_url: str = "") -> str:
         import re
         text = re.sub(r"<[^>]+>", " ", content)
         text = re.sub(r"\s+", " ", text).strip()
-        if len(text) >= 100:
-            return text
+        # Always return the text, don't filter by length
+        import html as _html_mod
+        return _html_mod.unescape(text)
     except ImportError:
         logger.debug("readability-lxml not installed — using simple extractor")
     except Exception:

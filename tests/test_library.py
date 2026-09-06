@@ -19,6 +19,7 @@ from tinyagentos.library_pipeline import (
     YouTubeProcessor,
     detect_kind,
     run_pipeline,
+    _extract_readable_text,
 )
 from tinyagentos.library_store import LibraryStore
 from tinyagentos.library_collections import handoff_to_collections
@@ -830,6 +831,33 @@ class TestWebProcessor:
             )
             with _pytest.raises(ValueError, match="Non-text content-type"):
                 await proc.process(item)
+
+
+# ---------------------------------------------------------------------------
+# Readability extraction (R2-13)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractReadableText:
+    """Verify _extract_readable_text handles entities, `>` in attributes,
+    and short articles (no length threshold)."""
+
+    def test_gt_in_attribute_is_handled(self):
+        """`>` inside an HTML attribute must not break tag stripping."""
+        html = '<a title="x > y">text</a>'
+        assert _extract_readable_text(html) == "text"
+
+    def test_html_entities_are_unescaped(self):
+        """HTML entities like &amp; must be unescaped to their character form."""
+        assert _extract_readable_text("&amp;") == "&"
+
+    def test_short_article_not_dropped_by_length_threshold(self):
+        """A 50-char article must be kept, not dropped by a length threshold."""
+        article = "Tom &amp; Jerry have exactly fifty chars in text end!!"
+        assert len(article.replace("&amp;", "&")) == 50
+        html = f"<html><body><article>{article}</article></body></html>"
+        result = _extract_readable_text(html)
+        assert result == "Tom & Jerry have exactly fifty chars in text end!!"
 
 
 # ---------------------------------------------------------------------------

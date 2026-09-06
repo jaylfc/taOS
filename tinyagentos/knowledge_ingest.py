@@ -11,6 +11,10 @@ if TYPE_CHECKING:
     from tinyagentos.knowledge_categories import CategoryEngine
     from tinyagentos.notifications import NotificationStore
 
+# Import readability for extraction
+from readability import Document
+import html as _html_mod
+
 logger = logging.getLogger(__name__)
 
 # Quality threshold: minimum chars for readability extraction to count as success
@@ -54,19 +58,31 @@ def resolve_source_type(url: str) -> str:
 
 
 def _extract_text_readability(html: str) -> str:
-    """Very lightweight readability extraction: strip tags, collapse whitespace.
-
-    A proper implementation would use a library like ``readability-lxml``.
-    This stub is sufficient for unit-tested pipeline flow; swap in a real
-    extractor in production without changing the interface.
+    """Extract readable text from HTML using readability-lxml.
+    
+    Uses readability-lxml when available; falls back to simple tag-stripping.
+    Handles HTML entities properly.
     """
-    # Remove script and style blocks
-    html = re.sub(r"<(script|style)[^>]*>.*?</(script|style)>", "", html, flags=re.DOTALL | re.IGNORECASE)
-    # Strip tags
-    text = re.sub(r"<[^>]+>", " ", html)
-    # Collapse whitespace
+    try:
+        doc = Document(html)
+        content = doc.summary()
+        # Strip remaining HTML from readability output
+        text = re.sub(r"<[^>]+>", " ", content)
+        text = re.sub(r"\s+", " ", text).strip()
+        return _html_mod.unescape(text)
+    except ImportError:
+        logger.debug("readability-lxml not installed — using simple extractor")
+    except Exception:
+        logger.warning("readability extraction failed", exc_info=True)
+
+    # Fallback: simple tag-stripping
+    cleaned = re.sub(
+        r"<(script|style)[^>]*>.*?</(script|style)>", "", html,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    text = re.sub(r"<[^>]+>", " ", cleaned)
     text = re.sub(r"\s+", " ", text).strip()
-    return text
+    return _html_mod.unescape(text)
 
 
 class IngestPipeline:

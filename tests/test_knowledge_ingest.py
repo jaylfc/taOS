@@ -4,7 +4,7 @@ import pytest_asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from tinyagentos.knowledge_store import KnowledgeStore
-from tinyagentos.knowledge_ingest import IngestPipeline, resolve_source_type
+from tinyagentos.knowledge_ingest import IngestPipeline, resolve_source_type, _extract_text_readability
 
 
 # --- URL resolution ---
@@ -32,6 +32,33 @@ def test_resolve_github():
 def test_resolve_article_fallback():
     assert resolve_source_type("https://news.ycombinator.com/item?id=123") == "article"
     assert resolve_source_type("https://blog.example.com/some-post") == "article"
+
+
+# ---------------------------------------------------------------------------
+# Readability extraction (R2-13)
+# ---------------------------------------------------------------------------
+
+
+class TestReadabilityExtraction:
+    """Verify _extract_text_readability handles entities, `>` in attributes,
+    and short articles (no length threshold)."""
+
+    def test_gt_in_attribute_is_handled(self):
+        """`>` inside an HTML attribute must not break tag stripping."""
+        html = '<a title="x > y">text</a>'
+        assert _extract_text_readability(html) == "text"
+
+    def test_html_entities_are_unescaped(self):
+        """HTML entities like &amp; must be unescaped to their character form."""
+        assert _extract_text_readability("&amp;") == "&"
+
+    def test_short_article_is_kept(self):
+        """A 50-char article must be kept, not dropped by a length threshold."""
+        article = "Tom &amp; Jerry have exactly fifty chars in text end!!"
+        assert len(article.replace("&amp;", "&")) == 50
+        html = f"<html><body><article>{article}</article></body></html>"
+        result = _extract_text_readability(html)
+        assert result == "Tom & Jerry have exactly fifty chars in text end!!"
 
 
 # --- IngestPipeline ---
