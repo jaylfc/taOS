@@ -38,22 +38,72 @@ class RebuildResult:
     message: str
 
 
+def _is_desktop_build_input(rel_path: str) -> bool:
+    """Return True if a repo-relative path is an input to the desktop build.
+
+    The set mirrors what scripts/rebuild-desktop.sh compares against the
+    bundle: everything under desktop/src plus the dependency and build-tool
+    config (package.json, the lock-files, vite.config.*, tsconfig*.json).
+    Installed dependencies are not inputs -- node_modules/ is a build *output*
+    of the lock-file, and npm rewrites thousands of package.json files in there
+    on every install.
+    """
+    prefix = "desktop/"
+    if not rel_path.startswith(prefix):
+        return False
+    tail = rel_path[len(prefix):]
+    if tail.startswith("node_modules/") or "/node_modules/" in tail:
+        return False
+    if tail == "" or tail.startswith("src/"):
+        return True  # the whole tree, or anything under src/
+    name = tail.rsplit("/", 1)[-1]
+    return (
+        name == "package.json"
+        or name.startswith("vite.config.")
+        or (name.startswith("tsconfig") and name.endswith(".json"))
+        or "-lock." in name
+    )
+
+
+def _newest_build_input_mtime(desktop_dir: Path) -> float:
+    """Newest mtime across the desktop build inputs (0.0 when there are none)."""
+    newest = 0.0
+    src_dir = desktop_dir / "src"
+    if src_dir.is_dir():
+        for path in src_dir.rglob("*"):
+            if path.is_file():
+                newest = max(newest, path.stat().st_mtime)
+    # Dependency + build-tool config can live anywhere under desktop/, not
+    # just at the top level (a workspace-style nested package.json or
+    # tsconfig) -- walk the whole subtree, pruning node_modules/ and the
+    # already-covered src/, mirroring the `find ... -prune` in
+    # scripts/rebuild-desktop.sh.
+    for path in desktop_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        rel_parts = path.relative_to(desktop_dir).parts
+        if rel_parts[0] == "src" or "node_modules" in rel_parts:
+            continue
+        if _is_desktop_build_input("desktop/" + "/".join(rel_parts)):
+            newest = max(newest, path.stat().st_mtime)
+    return newest
+
+
 def _is_bundle_stale(project_root: Path) -> bool:
-    """Return True if any file under desktop/src is newer than the built bundle."""
+    """Return True if any desktop build input is newer than the built bundle.
+
+    "Build input" means desktop/src/** plus the dependency and build-tool
+    config, matching scripts/rebuild-desktop.sh -- a bumped package.json,
+    lock-file, vite.config.* or tsconfig*.json changes the output just as a
+    source edit does.
+    """
     desktop_dir = project_root / "desktop"
     if not desktop_dir.is_dir():
         return False  # nothing to build
     index_html = project_root / "static" / "desktop" / "index.html"
     if not index_html.is_file():
         return True  # never built
-    bundle_mtime = index_html.stat().st_mtime
-    src_dir = desktop_dir / "src"
-    if not src_dir.is_dir():
-        return False
-    for path in src_dir.rglob("*"):
-        if path.is_file() and path.stat().st_mtime > bundle_mtime:
-            return True
-    return False
+    return _newest_build_input_mtime(desktop_dir) > index_html.stat().st_mtime
 
 
 def _lockfile_hash(desktop_dir: Path) -> str | None:
@@ -93,6 +143,227 @@ def _record_deps_install(desktop_dir: Path) -> None:
         (desktop_dir / _DEPS_MARKER).write_text(current)
     except OSError as exc:  # node_modules vanished mid-build, read-only fs, etc.
         logger.warning("Could not write deps marker (%s) — next update reinstalls.", exc)
+
+
+async def _get_desktop_tree_sha(project_root: Path) -> str | None:
+    """Return the git tree SHA of desktop/, or None if git is unavailable."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "-C",
+            str(project_root),
+            "rev-parse",
+            "HEAD:desktop",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        if proc.returncode == 0:
+            return out.decode(errors="replace").strip()
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def _porcelain_paths(out: bytes) -> tuple[str, ...]:
+    """Repo-relative paths from ``git status --porcelain`` output.
+
+    Handles the rename form (``R  old -> new``) by keeping the destination and
+    strips the quoting git applies to paths with unusual characters.
+    """
+    paths: list[str] = []
+    for line in out.decode(errors="replace").splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:]
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        paths.append(path.strip().strip('"'))
+    return tuple(paths)
+
+
+# A single `rebuild_desktop_bundle_if_stale` call may need the desktop/
+# working-tree status twice -- once to decide whether the provenance marker
+# is still trustworthy, once to look for a dirty build input the mtime
+# heuristic would miss. Both ask the identical `git status` question; a
+# cache keyed by project_root, scoped to one call, lets the second asker
+# reuse the first answer instead of spending another subprocess on it.
+_TreeStatusCache = dict[Path, tuple[bool, tuple[str, ...]]]
+
+
+async def _desktop_tree_status(
+    project_root: Path, *, cache: "_TreeStatusCache | None" = None,
+) -> tuple[bool, tuple[str, ...]]:
+    """Return ``(verified, dirty_paths)`` for the desktop/ working tree.
+
+    ``verified`` is False when git could not answer (not installed, no/broken
+    .git, unreadable index); callers must not read anything into the empty
+    path list in that case.
+    """
+    if cache is not None and project_root in cache:
+        return cache[project_root]
+
+    async def _compute() -> tuple[bool, tuple[str, ...]]:
+        desktop_dir = project_root / "desktop"
+        if not desktop_dir.is_dir():
+            return False, ()
+        try:
+            # --untracked-files=normal (the default) is deliberate: an untracked
+            # file always shows up -- as itself or as its untracked parent
+            # directory -- so "all" would descend into every untracked directory
+            # under desktop/ for no extra signal, which is real I/O on SD-card
+            # hosts (Pi 4).
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "-C",
+                str(project_root),
+                "status",
+                "--porcelain",
+                "--untracked-files=normal",
+                "--",
+                "desktop",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await proc.communicate()
+            if proc.returncode != 0:
+                return False, ()
+            return True, _porcelain_paths(out)
+        except FileNotFoundError:
+            return False, ()
+
+    result = await _compute()
+    if cache is not None:
+        cache[project_root] = result
+    return result
+
+
+async def _is_desktop_working_tree_clean(
+    project_root: Path, *, cache: "_TreeStatusCache | None" = None,
+) -> bool:
+    """Return True if the desktop/ tree has no tracked edits or untracked build inputs.
+
+    Provenance is only a reliable proof of freshness when the working tree
+    matches the committed HEAD:desktop. A dirty tree (tracked modifications or
+    new build inputs the user has not committed) means the recorded marker
+    could predate local edits and would skip a needed rebuild.  An unverifiable
+    tree (no git) is treated as dirty for the same reason.
+    """
+    verified, dirty = await _desktop_tree_status(project_root, cache=cache)
+    return verified and not dirty
+
+
+async def _dirty_desktop_build_inputs(
+    project_root: Path, *, cache: "_TreeStatusCache | None" = None,
+) -> tuple[str, ...]:
+    """Return the modified/untracked desktop *build inputs*, if git can tell us.
+
+    Rejecting the provenance marker is not enough on its own: the mtime
+    fallback then decides, and a dirty build input can easily be *older* than
+    the bundle (restored from a backup or an archive that preserved mtimes, or
+    written on a clock-skewed host -- the very unreliability this marker
+    exists to work around).  A dirty build input therefore forces the rebuild.
+
+    An unverifiable tree returns () on purpose: git-less deployments (installed
+    from a tarball) would otherwise run a full npm rebuild on every single
+    service start, which is the failure this whole check exists to prevent.
+    Their marker is already distrusted, so they keep the mtime heuristic that
+    predates provenance.
+
+    ``cache``, when passed, lets this reuse a ``git status`` already run by
+    ``_is_bundle_provenance_current`` earlier in the same staleness check
+    instead of spending a second, identical subprocess on it.
+    """
+    verified, dirty = await _desktop_tree_status(project_root, cache=cache)
+    if not verified:
+        return ()
+    return tuple(path for path in dirty if _is_desktop_build_input(path))
+
+
+async def _is_bundle_provenance_current(
+    project_root: Path, *, cache: "_TreeStatusCache | None" = None,
+) -> bool:
+    """Return True if the bundle provenance marker matches the current desktop tree.
+
+    A marker written by a successful prebuilt-bundle install or local build
+    records the ``git rev-parse HEAD:desktop`` SHA at build time.  If the
+    current tree SHA matches, the bundle is known-good regardless of
+    filesystem mtimes (which can be misleading after a fetch or on hosts
+    with clock skew).
+
+    Also requires a clean desktop working tree and a present bundle
+    (``static/desktop/index.html``): provenance can only prove freshness
+    against the committed tree, so a matching marker with local edits or
+    untracked build inputs must fall through to the mtime check, and a
+    matching marker with no bundle must not report success.
+
+    ``cache``, when passed, is where the ``git status`` this may run gets
+    stored, so a caller that also needs ``_dirty_desktop_build_inputs`` right
+    after a False return here doesn't pay for the identical status check twice.
+    """
+    index_html = project_root / "static" / "desktop" / "index.html"
+    if not index_html.is_file():
+        return False  # marker surviving but bundle missing -> rebuild
+    marker = project_root / "static" / "desktop" / ".taos-bundle-provenance"
+    if not marker.is_file():
+        return False
+    try:
+        recorded = marker.read_text().strip()
+    except OSError:
+        return False
+    current = await _get_desktop_tree_sha(project_root)
+    if not (current and current == recorded):
+        return False
+    return await _is_desktop_working_tree_clean(project_root, cache=cache)
+
+
+def _record_bundle_provenance(project_root: Path, tree_sha: str) -> None:
+    """Record the desktop tree SHA that the current bundle was built from.
+
+    The marker records a *committed* tree SHA (``HEAD:desktop``), so callers
+    must only write it when the bundle really was built from that tree: the
+    prebuilt-bundle install (which is keyed by that SHA) or a local build from
+    a clean desktop working tree.  ``_is_bundle_provenance_current`` relies on
+    that invariant and re-checks the working tree before trusting the marker.
+
+    The SHA is normalized (no trailing whitespace) so the read path's
+    ``.strip()`` is symmetric and tolerant of future git wrappers that
+    might not emit a trailing newline.
+
+    Marker failures are never fatal: a missing marker only costs the next
+    invocation a fall-through to the mtime check, so a freshly built bundle
+    must not be reported as a failed rebuild because the marker could not be
+    written -- the mkdir is inside the try for exactly that reason.
+    """
+    marker = project_root / "static" / "desktop" / ".taos-bundle-provenance"
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(tree_sha.strip() + "\n")
+    except OSError as exc:
+        logger.warning(
+            "Could not write bundle provenance marker (%s); next update may "
+            "fall through to the mtime path.", exc,
+        )
+
+
+def _clear_bundle_provenance(project_root: Path) -> None:
+    """Drop the provenance marker when the bundle cannot be attributed to HEAD.
+
+    A bundle built from a dirty desktop/ tree does not correspond to any
+    committed tree SHA.  Leaving an older marker in place would let a later
+    revert back to that SHA present a clean tree plus a matching marker in
+    front of a bundle that was built from the edited source.
+    """
+    marker = project_root / "static" / "desktop" / ".taos-bundle-provenance"
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning(
+            "Could not remove stale bundle provenance marker (%s); it may "
+            "skip a needed rebuild once the working tree is clean again.", exc,
+        )
 
 
 _BUNDLE_BASE = "https://github.com/jaylfc/taOS/releases/download/bundle-latest"
@@ -182,8 +453,10 @@ async def _try_prebuilt_desktop_bundle(project_root: Path) -> bool:
         staged.rename(target)  # atomic rename (same filesystem)
         # The tarball preserves the CI build mtime, which can predate the local
         # source and make _is_bundle_stale treat the bundle as perpetually stale
-        # (re-downloading on every check). Stamp index.html fresh.
+        # (re-downloading on every check). Stamp index.html fresh and record
+        # provenance so the rebuild trigger can compare content hashes instead.
         (target / "index.html").touch()
+        _record_bundle_provenance(project_root, local_tree)
         logger.info("Prebuilt desktop bundle installed into static/desktop/.")
         return True
     except Exception as exc:
@@ -213,12 +486,37 @@ async def rebuild_desktop_bundle_if_stale(
     staleness heuristic isn't trustworthy — committed bundles can lie about
     their freshness when a PR landed source-only.
     """
-    if not force and not _is_bundle_stale(project_root):
-        return RebuildResult(
-            rebuilt=False,
-            success=True,
-            message="Desktop bundle is current — skipping rebuild.",
-        )
+    if not force:
+        # Shared for this one staleness check: if the provenance check below
+        # runs `git status` (marker present, SHA matches) and then falls
+        # through dirty, the dirty-build-input check right after it reuses
+        # that same answer instead of running the identical `git status` again.
+        _tree_status_cache: _TreeStatusCache = {}
+        # Provenance check first: a fetched (or locally built) bundle whose
+        # recorded tree SHA matches the current desktop/ source is always
+        # current, regardless of filesystem mtimes.
+        if await _is_bundle_provenance_current(project_root, cache=_tree_status_cache):
+            return RebuildResult(
+                rebuilt=False,
+                success=True,
+                message="Desktop bundle provenance is current — skipping rebuild.",
+            )
+        if not _is_bundle_stale(project_root):
+            # mtime says "fresh", but mtimes cannot see a build input whose
+            # content differs from what was built while its timestamp does not
+            # (backup/archive restore, clock skew). If git can name dirty build
+            # inputs, they win over the heuristic.
+            dirty_inputs = await _dirty_desktop_build_inputs(project_root, cache=_tree_status_cache)
+            if not dirty_inputs:
+                return RebuildResult(
+                    rebuilt=False,
+                    success=True,
+                    message="Desktop bundle is current — skipping rebuild.",
+                )
+            logger.info(
+                "Desktop build inputs are modified but not newer than the bundle "
+                "(%s) — rebuilding.", ", ".join(dirty_inputs[:5]),
+            )
 
     desktop_dir = project_root / "desktop"
     if not (desktop_dir / "package.json").is_file():
@@ -312,6 +610,16 @@ async def rebuild_desktop_bundle_if_stale(
             return RebuildResult(rebuilt=True, success=False, message=msg)
 
         logger.info("Desktop bundle rebuilt successfully.")
+        # Record provenance so future checks use content hash, not mtime.
+        # The marker names HEAD:desktop, which only describes the artefacts we
+        # just built when the tree that was built is clean.  After a build from
+        # a dirty tree we invalidate the marker instead of writing a SHA the
+        # bundle does not correspond to.
+        tree_sha = await _get_desktop_tree_sha(project_root)
+        if tree_sha and await _is_desktop_working_tree_clean(project_root):
+            _record_bundle_provenance(project_root, tree_sha)
+        else:
+            _clear_bundle_provenance(project_root)
         return RebuildResult(rebuilt=True, success=True, message="Desktop bundle rebuilt successfully.")
 
     except asyncio.TimeoutError:

@@ -3,7 +3,6 @@ from __future__ import annotations
 import ipaddress
 import logging
 import re
-import time
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -13,6 +12,7 @@ from starlette.responses import HTMLResponse, RedirectResponse
 from tinyagentos.agent_token_auth import check_agent_identity
 from tinyagentos.auth import AuthStoreCorruptError
 from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
+from tinyagentos.rate_limit import MovingWindowLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -441,33 +441,35 @@ def _is_loopback_client(request: Request) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Per-IP fixed-window rate limiter (shared by unauthenticated proof-of-
-# possession endpoints: cluster pairing manual-claim and project-invite redeem).
+# Per-IP moving-window rate limiter for the unauthenticated project-invite
+# redeem. The cluster pairing manual-claim runs the same 20-per-10s cap from
+# its own instance of the shared limiter (see routes/cluster.py), so the two
+# endpoints share one implementation instead of two copies kept in step by a
+# comment.
 # ---------------------------------------------------------------------------
 _INVITE_RATE_WINDOW_SECS = 10.0
 _INVITE_RATE_MAX_PER_WINDOW = 20
-# ip -> (window_start_ts, count). In-memory is sufficient: the controller is a
-# single process and the cap only needs to bound a brute-force burst.
-_rate_limit_hits: dict[str, tuple[float, int]] = {}
+_invite_limiter = MovingWindowLimiter(
+    _INVITE_RATE_MAX_PER_WINDOW, _INVITE_RATE_WINDOW_SECS
+)
+# ip -> the request timestamps still inside its window. Aliased here so tests
+# and an operator can reset a window; the limiter mutates it in place.
+_rate_limit_hits = _invite_limiter.hits
 
 
-def rate_limit_ok(key: str, *, window_secs: float = _INVITE_RATE_WINDOW_SECS,
-                  max_per_window: int = _INVITE_RATE_MAX_PER_WINDOW) -> bool:
-    """Fixed-window per-key limiter. Returns False when the key has exceeded
-    ``max_per_window`` requests in the current window. The pairing
-    ``_manual_claim_rate_ok`` helper in cluster.py uses the identical contract;
-    this shared copy keeps the cluster and invite paths from drifting and lets
-    both pass the same ``20 per 10s`` cap the design specifies.
+def rate_limit_ok(key: str) -> bool:
+    """Moving-window per-key limiter for the invite-redeem endpoint.
 
-    Mirrors ``_manual_claim_rate_ok`` exactly so behaviour is identical.
+    Returns False when the key has already made ``_INVITE_RATE_MAX_PER_WINDOW``
+    requests inside the last ``_INVITE_RATE_WINDOW_SECS``. Pair a False with
+    ``rate_limit_retry_after`` so the 429 carries ``Retry-After``.
     """
-    now = time.time()
-    window_start, count = _rate_limit_hits.get(key, (now, 0))
-    if now - window_start >= window_secs:
-        window_start, count = now, 0
-    count += 1
-    _rate_limit_hits[key] = (window_start, count)
-    return count <= max_per_window
+    return _invite_limiter.check(key)
+
+
+def rate_limit_retry_after(key: str) -> int:
+    """Seconds until ``key`` regains capacity, for the 429's ``Retry-After``."""
+    return _invite_limiter.retry_after(key)
 
 
 def _is_exempt(method: str, path: str) -> bool:

@@ -1,6 +1,7 @@
 import type { WindowState } from "@/stores/process-store";
 import type { DockIconSize, DockPosition } from "@/stores/dock-store";
 import { DockIcon } from "../DockIcon";
+import { pinnedAppId } from "@/registry/app-registry";
 
 export interface DockVariantProps {
   pinned: string[];
@@ -20,7 +21,11 @@ export function MacosDock({
   position = "bottom",
 }: DockVariantProps) {
   const runningAppIds = windows.map((w) => w.appId);
-  const runningNotPinned = runningAppIds.filter((id) => !pinned.includes(id));
+  // A pin is matched by the app it launches, not by its own id: a legacy pin
+  // id is not an app id, so comparing the two directly would leave its icon
+  // un-dotted and list its own window again as a second, unpinned icon.
+  const pinnedAppIds = pinned.map(pinnedAppId);
+  const runningNotPinned = runningAppIds.filter((id) => !pinnedAppIds.includes(id));
   const isLeft = position === "left";
   const dividerClassName = isLeft ? "h-px w-8 bg-shell-border my-1" : "w-px h-8 bg-shell-border mx-1";
 
@@ -56,15 +61,23 @@ export function MacosDock({
 
       <div className={dividerClassName} />
 
-      {pinned.map((appId) => (
-        <DockIcon
-          key={appId}
-          appId={appId}
-          isRunning={runningAppIds.includes(appId)}
-          onClick={() => onAppClick(appId)}
-          size={iconSize}
-        />
-      ))}
+      {pinned.map((appId, i) => {
+        // pinnedAppIds is built from `pinned` by a straight positional map, so
+        // the two arrays are always the same length today -- but indexing one
+        // by the other's position is one refactor away from an out-of-bounds
+        // read (e.g. a future pre-filter on either side). Fall back to the
+        // pin id itself rather than asserting the lookup can't miss.
+        const targetId = pinnedAppIds[i] ?? appId;
+        return (
+          <DockIcon
+            key={appId}
+            appId={appId}
+            isRunning={runningAppIds.includes(targetId)}
+            onClick={() => onAppClick(appId)}
+            size={iconSize}
+          />
+        );
+      })}
 
       {runningNotPinned.length > 0 && <div className={dividerClassName} />}
 

@@ -19,10 +19,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
+
+from tinyagentos.atomic_io import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +198,6 @@ class BeadsBridge:
         beads_dir = self._data_root / slug / ".beads"
         beads_dir.mkdir(parents=True, exist_ok=True)
         target = beads_dir / "tasks.jsonl"
-        tmp = beads_dir / f"tasks.jsonl.{os.getpid()}.tmp"
 
         tasks = await self._task_store.list_tasks(project_id=project_id)
         from tinyagentos.projects.beads_format import (
@@ -226,8 +226,28 @@ class BeadsBridge:
                 json.dumps(task_to_jsonl_dict(t, outbound, ready), separators=(",", ":"))
             )
 
-        tmp.write_text("\n".join(lines) + ("\n" if lines else ""))
-        os.replace(tmp, target)
+        # fsync of the file and of the parent dir are blocking syscalls; this
+        # renders on a background tick, so keep them off the shared event loop.
+        write_task = asyncio.ensure_future(
+            asyncio.to_thread(
+                atomic_write_text, target, "\n".join(lines) + ("\n" if lines else "")
+            )
+        )
+        try:
+            await asyncio.shield(write_task)
+        except asyncio.CancelledError:
+            # atomic_write_text does two blocking fsyncs on a thread-pool
+            # worker that cancellation cannot stop -- the write keeps
+            # running after this await raises. The per-project lock (in
+            # export_now/_writer_loop) would be released as soon as this
+            # coroutine unwinds; a newer render for the same project could
+            # then acquire it, write, and finish before this orphaned write's
+            # later os.replace lands, silently clobbering the newer content
+            # with this stale one. Wait for the real write to land before
+            # the cancellation propagates and the lock is released.
+            if not write_task.done():
+                await asyncio.wait([write_task])
+            raise
 
     async def _find_a2a_channel(self, project_id: str) -> dict | None:
         """Resolve the project's A2A channel. None if missing/archived."""
