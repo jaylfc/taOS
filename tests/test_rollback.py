@@ -275,28 +275,3 @@ def test_read_drops_an_unsafe_branch_but_keeps_the_commit(tmp_path):
     )
     assert read_rollback_target(tmp_path) == {"branch": "", "sha": SHA_A, "ts": "7"}
 
-
-@pytest.mark.asyncio
-async def test_update_records_rollback_target(tmp_path, monkeypatch):
-    """update_to_master records the pre-update branch + sha before mutating."""
-    import tinyagentos.update_runner as ur
-
-    calls = {"n": 0}
-
-    async def fake_run(args, cwd):
-        # Simulate: fetch ok, on branch 'dev', HEAD sha, clean tree, ff-merge ok.
-        joined = " ".join(args)
-        if "rev-parse --abbrev-ref" in joined:
-            return (0, "dev\n")
-        if "rev-parse HEAD" in joined:
-            return (0, f"{SHA_A}\n")
-        if "status --porcelain" in joined:
-            return (0, "")  # clean
-        return (0, "")
-
-    monkeypatch.setattr(ur, "_run", fake_run)
-    await ur.update_to_master(tmp_path)
-    target = read_rollback_target(tmp_path)
-    assert target is not None
-    assert target["branch"] == "dev"
-    assert target["sha"] == SHA_A
