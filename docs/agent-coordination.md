@@ -401,15 +401,24 @@ A registered external agent authenticates with its registry JWT
 (`Authorization: Bearer`) and reaches exactly the routes its granted SCOPES
 allow, nothing else: the middleware allowlist is a closed set, no skeleton key.
 
-**A refused request says WHICH thing was wrong, and a dead credential is never
-flattered.** Off the allowlist the handler never runs, and the status code
-splits three ways: no route matches the path -> 404 (a live credential at a
-wrong URL); the route exists but this token is not authorised for it -> 401
-from the session gate (a right URL, an unauthorised credential); the credential
-itself is dead -- revoked, or superseded by `rotate-tokens` because its `iat`
-predates the identity's `token_min_iat` -> 401 on every path, existing or not.
-An anonymous caller gets 401 everywhere, so status codes cannot be used to
-enumerate routes.
+**What a refused request looks like.** Off the allowlist, the request never
+reaches a route handler, and the status code says WHICH thing was wrong:
+
+- **The URL does not exist** (no route in the app matches the path, whatever
+  the method) and the token is a live registry JWT -> **404 `{"error": "Not
+  Found"}`**, straight from the middleware. Routing is never invoked, so this
+  is not a way to reach an unlisted route -- it only tells a correctly
+  credentialled agent that it typed the wrong path.
+- **The URL exists but the token is not authorised for it** -- e.g.
+  `GET /api/agents/registry`, or `POST .../scope-requests/{id}/(approve|deny)`,
+  which are deliberately owner/admin session-only -- -> **401 `{"error":
+  "Authentication required"}`** from the session gate. A correct URL is never
+  reported as missing.
+- **The credential is dead** (revoked, or rotated so its `iat` predates the
+  identity's `token_min_iat`) -> **401**, on any path. A dead credential is
+  never dressed up as a wrong URL.
+- **No credential at all** -> **401** on every path, existing or not, so an
+  anonymous caller cannot enumerate routes by status code.
 
 A SEPARATE credential class exists for the Agent-as-a-Model surface:
 `GET /v1/models` and `POST /v1/chat/completions` are reachable without a

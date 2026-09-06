@@ -248,7 +248,7 @@ def _is_device_bearer_path(method: str, path: str) -> bool:
     return any(m == method and rx.match(path) for m, rx in _DEVICE_BEARER_PATHS)
 
 
-def _any_route_matches(method: str, path: str, routes) -> bool:
+def _any_route_matches(method: str, path: str, routes, *, match_method: bool = True) -> bool:
     """Return True if any registered route matches the given method + path.
 
     FastAPI path parameters (``{pid}``) are treated as ``[^/]+`` for the
@@ -260,7 +260,7 @@ def _any_route_matches(method: str, path: str, routes) -> bool:
         route_path = getattr(route, "path", None)
         if route_path is None:
             continue
-        if route_methods is not None and method.upper() not in {m.upper() for m in route_methods}:
+        if match_method and route_methods is not None and method.upper() not in {m.upper() for m in route_methods}:
             continue
         parts = route_path.split("/")
         pattern = "^" + "/".join(
@@ -675,7 +675,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # credential authenticates the request. Unknown-route handling
                 # (the 404/401 split for valid registry JWT) is handled
                 # immediately below so it does not interact with session.
-                if not _any_route_matches(request.method, path, request.app.routes):
+                if not _any_route_matches(request.method, path, request.app.routes, match_method=False):
                     try:
                         await check_agent_identity(request)
                         return JSONResponse({"error": "Not Found"}, status_code=404)

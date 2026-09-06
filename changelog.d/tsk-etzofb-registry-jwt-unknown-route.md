@@ -1,0 +1,2 @@
+### Fixed
+- Auth middleware now distinguishes unknown paths from known paths with the wrong HTTP method when a registry JWT is presented: a live credential on a truly unknown URL returns 404, while a wrong verb on an existing URL falls through to the session gate's 401. This closes the gap where `check_agent_identity` + `_any_route_matches` could be bypassed by a wrong-method request, and ports the `TestRegistryJwtUnknownRouteDispatch` regression suite from #2792 onto dev's mechanism.
