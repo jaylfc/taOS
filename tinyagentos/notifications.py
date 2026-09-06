@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS notification_prefs (
     event_type TEXT PRIMARY KEY,
     muted INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS notification_user_state (
+    notification_id INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    read_at INTEGER,
+    archived_at INTEGER,
+    PRIMARY KEY (notification_id, user_id)
+);
 """
 
 
@@ -147,6 +154,24 @@ class NotificationStore(BaseStore):
             "CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id)"
         )
         await self._db.commit()
+        # Ensure the notification_user_state table exists for per-user broadcast state.
+        await self._db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notification_user_state (
+                notification_id INTEGER NOT NULL,
+                user_id TEXT NOT NULL,
+                read_at INTEGER,
+                archived_at INTEGER,
+                PRIMARY KEY (notification_id, user_id)
+            );
+            """
+        )
+        await self._db.commit()
+        # Create an index on notification_id for efficient lookups.
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notif_state_notif ON notification_user_state(notification_id)"
+        )
+        await self._db.commit()
 
     async def add(
         self,
@@ -217,80 +242,155 @@ class NotificationStore(BaseStore):
         unread_only: bool = False,
         user_id: str | None = None,
     ) -> list[dict]:
-        # Active feed: archived (dismissed) notifications are excluded.
-        conds = ["archived = 0"]
         if user_id is not None:
-            conds.append("(user_id IS NULL OR user_id = ?)")
-        if unread_only:
-            conds.append("read = 0")
-        params: tuple = (user_id, limit) if user_id is not None else (limit,)
-        sql = (
-            "SELECT id, timestamp, level, title, message, read, source, data, user_id FROM notifications"
-            f" WHERE {' AND '.join(conds)} ORDER BY timestamp DESC LIMIT ?"
-        )
-        async with self._db.execute(sql, params) as cursor:
-            rows = await cursor.fetchall()
-        return [_serialize_row(r) for r in rows]
+            # Per-user notifications: include both own notifications and broadcasts
+            sql = (
+                "SELECT n.id, n.timestamp, n.level, n.title, n.message, "
+                "COALESCE(nus.read_at, n.read) as read, n.source, n.data, n.user_id "
+                "FROM notifications n "
+                "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
+                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND n.archived = 0 AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL)"
+                + (" AND COALESCE(nus.read_at, n.read) = 0" if unread_only else "") +
+                " ORDER BY n.timestamp DESC LIMIT ?"
+            )
+            params: tuple = (user_id, user_id, limit)
+            async with self._db.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+            return [_serialize_row(r) for r in rows]
+        else:
+            # Internal/system caller: unfiltered by user
+            conds = ["archived = 0"]
+            if unread_only:
+                conds.append("read = 0")
+            sql = (
+                "SELECT id, timestamp, level, title, message, read, source, data, user_id FROM notifications"
+                f" WHERE {' AND '.join(conds)} ORDER BY timestamp DESC LIMIT ?"
+            )
+            params: tuple = (limit,)
+            async with self._db.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+            return [_serialize_row(r) for r in rows]
 
     async def list_archived(
         self,
         limit: int = 50,
         user_id: str | None = None,
     ) -> list[dict]:
-        # History view: the dismissed notifications, newest first. Nothing is
-        # deleted, so this is the durable record (#62 / append-only #103).
-        conds = ["archived = 1"]
         if user_id is not None:
-            conds.append("(user_id IS NULL OR user_id = ?)")
-        params: tuple = (user_id, limit) if user_id is not None else (limit,)
-        async with self._db.execute(
-            "SELECT id, timestamp, level, title, message, read, source, data, user_id FROM notifications"
-            f" WHERE {' AND '.join(conds)} ORDER BY timestamp DESC LIMIT ?",
-            params,
-        ) as cursor:
-            rows = await cursor.fetchall()
-        return [_serialize_row(r) for r in rows]
+            # Per-user notifications: include both own notifications and broadcasts
+            # Archive state for broadcasts is stored in notification_user_state
+            sql = (
+                "SELECT n.id, n.timestamp, n.level, n.title, n.message, "
+                "COALESCE(nus.read_at, n.read) as read, n.source, n.data, n.user_id "
+                "FROM notifications n "
+                "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
+                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND (n.archived = 1 OR nus.archived_at IS NOT NULL)"
+                " ORDER BY n.timestamp DESC LIMIT ?"
+            )
+            params = (user_id, user_id, limit)
+            async with self._db.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+            return [_serialize_row(r) for r in rows]
+        else:
+            # Internal/system caller: unfiltered by user
+            sql = (
+                "SELECT id, timestamp, level, title, message, read, source, data, user_id FROM notifications"
+                " WHERE archived = 1 ORDER BY timestamp DESC LIMIT ?"
+            )
+            params = (limit,)
+            async with self._db.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+            return [_serialize_row(r) for r in rows]
 
     async def unread_count(self, user_id: str | None = None) -> int:
-        conds = ["read = 0", "archived = 0"]
         if user_id is not None:
-            conds.append("(user_id IS NULL OR user_id = ?)")
-        params: tuple = (user_id,) if user_id is not None else ()
-        async with self._db.execute(
-            f"SELECT COUNT(*) FROM notifications WHERE {' AND '.join(conds)}",
-            params,
-        ) as cursor:
+            # For per-user notifications, include both own notifications and broadcasts
+            # Read state for broadcasts is stored in notification_user_state
+            sql = (
+                "SELECT COUNT(*) FROM notifications n "
+                "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
+                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL) AND COALESCE(nus.read_at, n.read) = 0"
+            )
+            params = (user_id, user_id)
+        else:
+            # Internal/system caller: unfiltered by user
+            sql = (
+                "SELECT COUNT(*) FROM notifications "
+                "WHERE read = 0 AND archived = 0"
+            )
+            params = ()
+        async with self._db.execute(sql, params) as cursor:
             row = await cursor.fetchone()
         return row[0] if row else 0
 
     async def mark_read(self, notif_id: int, user_id: str | None = None) -> int:
         if user_id is not None:
+            # Per-user or broadcast notification for a specific user:
+            # Update shared columns if it's a per-user notification
+            # For broadcast notifications, update per-user state
+            ts = int(time.time())
             cursor = await self._db.execute(
-                "UPDATE notifications SET read = 1 WHERE id = ? AND (user_id IS NULL OR user_id = ?)",
-                (notif_id, user_id),
+                "SELECT user_id FROM notifications WHERE id = ?", (notif_id,)
             )
+            row = await cursor.fetchone()
+            
+            if row and row[0] is None:
+                # This is a broadcast notification - upsert into per-user state
+                await self._db.execute(
+                    "INSERT OR REPLACE INTO notification_user_state (notification_id, user_id, read_at) VALUES (?, ?, ?)",
+                    (notif_id, user_id, ts),
+                )
+                await self._db.commit()
+                return 1
+            else:
+                # This is a per-user notification - update shared columns
+                cursor = await self._db.execute(
+                    "UPDATE notifications SET read = 1 WHERE id = ? AND (user_id IS NULL OR user_id = ?)",
+                    (notif_id, user_id),
+                )
+                await self._db.commit()
+                return cursor.rowcount
         else:
-            # Internal/system caller: unfiltered update.
+            # System/internal caller: update shared columns for broadcast notifications
             cursor = await self._db.execute(
                 "UPDATE notifications SET read = 1 WHERE id = ?", (notif_id,)
             )
-        await self._db.commit()
-        return cursor.rowcount
+            await self._db.commit()
+            return cursor.rowcount
 
     async def archive(self, notif_id: int, user_id: str | None = None) -> int:
-        # Dismiss = archive. The row stays; the History view still shows it.
         if user_id is not None:
+            # Check if this is a broadcast notification
             cursor = await self._db.execute(
-                "UPDATE notifications SET archived = 1 WHERE id = ? AND (user_id IS NULL OR user_id = ?)",
-                (notif_id, user_id),
+                "SELECT user_id FROM notifications WHERE id = ?", (notif_id,)
             )
+            row = await cursor.fetchone()
+            
+            if row and row[0] is None:
+                # This is a broadcast notification
+                ts = int(time.time())
+                await self._db.execute(
+                    "INSERT OR REPLACE INTO notification_user_state (notification_id, user_id, archived_at) VALUES (?, ?, ?)",
+                    (notif_id, user_id, ts),
+                )
+                await self._db.commit()
+                # Do NOT update the shared archived column for broadcasts
+                return 1
+            else:
+                # This is a per-user notification
+                cursor = await self._db.execute(
+                    "UPDATE notifications SET archived = 1 WHERE id = ? AND (user_id IS NULL OR user_id = ?)",
+                    (notif_id, user_id),
+                )
+                await self._db.commit()
+                return cursor.rowcount
         else:
-            # Internal/system caller: unfiltered update.
+            # Internal/system caller: unfiltered update
             cursor = await self._db.execute(
                 "UPDATE notifications SET archived = 1 WHERE id = ?", (notif_id,)
             )
-        await self._db.commit()
-        return cursor.rowcount
+            await self._db.commit()
+            return cursor.rowcount
 
     async def archive_by_source_ref(self, source: str, request_id) -> int:
         """Archive active notifications whose JSON `data.request_id` matches.
@@ -331,15 +431,27 @@ class NotificationStore(BaseStore):
 
     async def mark_all_read(self, user_id: str | None = None) -> int:
         if user_id is not None:
+            # Mark all per-user notifications (both user-specific and broadcasts for that user) as read
             cursor = await self._db.execute(
                 "UPDATE notifications SET read = 1 WHERE read = 0 AND (user_id IS NULL OR user_id = ?)",
                 (user_id,),
             )
+            await self._db.commit()
+            
+            # Also mark any per-user state as read for this user
+            await self._db.execute(
+                "UPDATE notification_user_state SET read_at = ? WHERE user_id = ?",
+                (int(time.time()), user_id),
+            )
+            await self._db.commit()
+            
+            return cursor.rowcount
         else:
-            # Internal/system caller: unfiltered update.
+            # System/internal caller: mark all notifications as read
+            # This updates the shared read column for both per-user and broadcast notifications
             cursor = await self._db.execute("UPDATE notifications SET read = 1 WHERE read = 0")
-        await self._db.commit()
-        return cursor.rowcount
+            await self._db.commit()
+            return cursor.rowcount
 
     async def cleanup(self, max_age_days: int = 30) -> int:
         # Age out only old UNdismissed notifications. Archived rows are the
