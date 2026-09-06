@@ -485,6 +485,7 @@ def _is_exempt(method: str, path: str) -> bool:
       GET  /api/cluster/workers               — public worker list
       POST /api/cluster/workers               — session-exempt, HMAC gate at route level
       POST /api/cluster/workers/{n}/incus-enroll — session-exempt, HMAC gate at route level
+      POST /api/cluster/workers/{n}/update-outcome — session-exempt, HMAC gate at route level
       POST /api/cluster/heartbeat             — session-exempt, HMAC gate at route level
     """
     if path in EXEMPT_PATHS or any(path.startswith(p) for p in EXEMPT_PREFIXES):
@@ -512,12 +513,17 @@ def _is_exempt(method: str, path: str) -> bool:
         return True
     if method == "POST" and path == _CLUSTER_HEARTBEAT:
         return True
-    # POST /api/cluster/workers/<name>/incus-enroll — session-exempt; the route
-    # verifies the worker's HMAC signature (see tinyagentos.worker.enroll).
+    # POST /api/cluster/workers/<name>/incus-enroll and
+    # POST /api/cluster/workers/<name>/update-outcome — session-exempt; the
+    # route verifies the worker's HMAC signature itself (see
+    # tinyagentos.worker.enroll and the worker self-update outcome signal).
+    # A worker holds no session cookie, so the session gate would otherwise
+    # refuse these before the route's HMAC gate could run — the same pattern
+    # as /api/cluster/heartbeat.
     if (
         method == "POST"
         and path.startswith(_CLUSTER_WORKERS + "/")
-        and path.endswith("/incus-enroll")
+        and path.endswith(("/incus-enroll", "/update-outcome"))
     ):
         return True
     # Project-invite redeem: POST /api/projects/invites/redeem is

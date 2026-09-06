@@ -575,7 +575,21 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
     if not ok:
         return JSONResponse({"error": "Worker not registered"}, status_code=404)
     cluster = request.app.state.cluster_manager
-    return {"status": "ok", "generation": cluster.generation}
+
+    # Include drain status in the response so the worker's self-update
+    # orchestrator can detect when in-flight leases are all released and
+    # proceed with the update without waiting the full timeout (taOS #890 C3).
+    worker_obj = cluster.get_worker(body.name)
+    drain_complete = False
+    if worker_obj is not None and worker_obj.status == "draining":
+        active = [
+            lid for lid, lease in cluster._leases.items()
+            if (parsed := cluster._parse_resource_id(lease.resource_id))
+            and parsed[0] == body.name
+        ]
+        drain_complete = len(active) == 0
+
+    return {"status": "ok", "generation": cluster.generation, "drain_complete": drain_complete}
 
 
 @router.delete("/api/cluster/workers/{name}")
@@ -1025,6 +1039,12 @@ REMOTE_EXEC_ALLOWLIST = [
 ]
 
 
+# Per-worker deploy locks -- prevents concurrent install/restart on the
+# same worker (CodeRabbit finding on PR #1910).
+import collections
+_worker_deploy_locks: dict[str, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
+
+
 @router.post("/api/cluster/workers/{name}/deploy")
 async def deploy_backend(request: Request, name: str, body: DeployRequest):
     """Trigger a backend install on a remote worker.
@@ -1032,6 +1052,14 @@ async def deploy_backend(request: Request, name: str, body: DeployRequest):
     The controller proxies this to the worker's deploy endpoint. The
     worker runs taos-deploy-helper.sh via passwordless sudo. Only
     commands in the fixed allowlist are accepted.
+
+    Operator action: gated by the operator session in AuthMiddleware (this
+    route is not session-exempt).  A worker holds no session cookie, so it is
+    already refused at the middleware; there is no HMAC gate here because the
+    only legitimate caller is the session-authenticated operator.
+
+    Per-worker asyncio.Lock prevents concurrent install/restart calls on
+    the same worker from double-installing.
     """
     cluster = request.app.state.cluster_manager
     worker = cluster.get_worker(name)
@@ -1045,16 +1073,19 @@ async def deploy_backend(request: Request, name: str, body: DeployRequest):
             status_code=400,
         )
 
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=620) as client:
-            resp = await client.post(
-                f"{worker.url}/api/worker/deploy",
-                json={"command": body.command},
-            )
-            return resp.json()
-    except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=502)
+    # Serialise deploys per worker -- concurrent calls can double-install.
+    lock = _worker_deploy_locks[name]
+    async with lock:
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=620) as client:
+                resp = await client.post(
+                    f"{worker.url}/api/worker/deploy",
+                    json={"command": body.command},
+                )
+                return resp.json()
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
 
 
 @router.post("/api/cluster/workers/{name}/remote")
@@ -1347,7 +1378,20 @@ async def _do_single_worker_update(cluster, worker) -> dict:
     On success: ``{"success": True, "worker": ..., "status": "updating", ...}``.
     On failure: ``{"success": False, "worker": ..., "error": "..."}``.
     Never raises -- all exceptions are caught and converted into error dicts.
+
+    Per-worker asyncio.Lock prevents concurrent update calls on the same
+    worker from double-draining or double-deploying (CodeRabbit, PR #1910).
     """
+    name = worker.name
+
+    # Serialise updates per worker -- concurrent calls can double-drain/deploy.
+    lock = _worker_deploy_locks[name]
+    async with lock:
+        return await _do_single_worker_update_locked(cluster, worker)
+
+
+async def _do_single_worker_update_locked(cluster, worker) -> dict:
+    """Inner implementation of _do_single_worker_update (lock held)."""
     name = worker.name
 
     # Step 1: Begin draining (with exception isolation -- drain_worker
@@ -1571,4 +1615,112 @@ async def update_all_workers(request: Request):
         "failed": failed,
         "skipped": skipped,
         "total_targets": len(targets),
+    }
+
+
+# ── Worker self-update outcome reporting (taOS #890 C3) ──────────────────
+
+
+class UpdateOutcomeBody(BaseModel):
+    """Payload for the worker to report its update outcome."""
+    name: str
+    outcome: str  # "success" | "rollback"
+    from_version: str = ""
+    to_version: str = ""
+    failure_reason: str = ""
+    rollback_to: str = ""
+
+
+@router.post("/api/cluster/workers/{name}/update-outcome")
+async def report_update_outcome(request: Request, name: str, body: UpdateOutcomeBody):
+    """Record the outcome of a worker self-update.
+
+    Called by the worker after restart + health-check, or on rollback.
+
+    HMAC-signed: the worker's signing key validates that the outcome
+    came from the actual worker, not a spoofed request.
+    """
+    try:
+        await require_worker_hmac(request)
+    except _HMACError as exc:
+        return exc.response
+
+    # Verify the HMAC-authenticated worker matches the body name.
+    # Without this, worker A could spoof an outcome report for
+    # worker B (the HMAC only proves the caller IS a paired worker,
+    # not WHICH worker).
+    if getattr(request.state, "hmac_worker_name", None) != name:
+        return JSONResponse(
+            {"error": "Worker name in header does not match path"},
+            status_code=403,
+        )
+
+    cluster = request.app.state.cluster_manager
+    worker = cluster.get_worker(name)
+    if not worker:
+        return JSONResponse({"error": f"Worker '{name}' not found"}, status_code=404)
+
+    outcome = body.outcome
+    logger.info(
+        "worker '%s' reported update outcome: %s (from=%s to=%s)",
+        name, outcome, body.from_version[:8], body.to_version[:8],
+    )
+
+    notifications = getattr(request.app.state, "notifications", None)
+
+    if outcome == "success":
+        # Worker is already back online via re-registration.
+        # Nothing to do — the heartbeat loop handles it.
+        logger.info("worker '%s' self-update SUCCESS", name)
+        # Emit a success notification so the operator has an audit trail.
+        if notifications:
+            try:
+                await notifications.emit_event(
+                    "worker.update-success",
+                    f"Worker '{name}' self-update succeeded",
+                    (
+                        f"Updated from {body.from_version[:8] or 'unknown'} "
+                        f"to {body.to_version[:8] or 'unknown'}."
+                    ),
+                    level="info",
+                )
+            except Exception:
+                logger.exception(
+                    "notification emit failed for update success"
+                )
+
+    elif outcome == "rollback":
+        # Worker rolled back after a failed health-check.
+        logger.warning(
+            "worker '%s' self-update ROLLBACK: %s (from %s to %s, rolled back to %s)",
+            name,
+            body.failure_reason or "unknown failure",
+            body.from_version[:8],
+            body.to_version[:8],
+            body.rollback_to[:8] or "checkpoint",
+        )
+        if notifications:
+            try:
+                await notifications.emit_event(
+                    "worker.update-rollback",
+                    f"Worker '{name}' rolled back after failed update",
+                    (
+                        f"Update from {body.from_version[:8]} to {body.to_version[:8]} "
+                        f"failed: {body.failure_reason or 'health check failed'}. "
+                        f"Rolled back to {body.rollback_to[:8] or 'checkpoint'}."
+                    ),
+                    level="warning",
+                )
+            except Exception:
+                logger.exception("notification emit failed for update rollback")
+
+    else:
+        return JSONResponse(
+            {"error": f"unknown outcome: {outcome}"}, status_code=400
+        )
+
+    return {
+        "worker": name,
+        "outcome": outcome,
+        "acknowledged": True,
     }

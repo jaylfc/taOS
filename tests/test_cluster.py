@@ -578,3 +578,211 @@ class TestWorkerDrain:
         result = mgr.get_workers_for_capability("chat")
         assert len(result) == 1
         assert result[0].name == "online-gpu"
+
+
+# ── Update-outcome endpoint (taOS #890 C3) ───────────────────────────
+
+
+@pytest.mark.asyncio
+class TestUpdateOutcomeEndpoint:
+    async def test_update_outcome_success(self, client, app):
+        """Worker reports successful self-update."""
+        from unittest.mock import patch
+
+        # Register a worker so the endpoint can find it
+        mgr = app.state.cluster_manager
+        w = _make_worker("gpu-box")
+        await mgr.register_worker(w)
+
+        payload = {
+            "name": "gpu-box",
+            "outcome": "success",
+            "from_version": "abc1234def",
+            "to_version": "def5678abc",
+        }
+
+        # Bypass HMAC for the test — we test HMAC separately.
+        # The side_effect must also set hmac_worker_name so the route-level
+        # name cross-check in report_update_outcome passes.
+        with patch(
+            "tinyagentos.routes.cluster.require_worker_hmac",
+            side_effect=lambda r: setattr(r.state, "hmac_worker_name", "gpu-box"),
+        ):
+            resp = await client.post(
+                "/api/cluster/workers/gpu-box/update-outcome",
+                json=payload,
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["worker"] == "gpu-box"
+            assert data["outcome"] == "success"
+            assert data["acknowledged"] is True
+
+    async def test_update_outcome_rollback(self, client, app):
+        """Worker reports a rollback after failed update."""
+        from unittest.mock import patch
+
+        mgr = app.state.cluster_manager
+        w = _make_worker("gpu-box")
+        await mgr.register_worker(w)
+
+        payload = {
+            "name": "gpu-box",
+            "outcome": "rollback",
+            "from_version": "abc1234def",
+            "to_version": "def5678abc",
+            "failure_reason": "health-check: port not listening",
+            "rollback_to": "abc1234def",
+        }
+
+        with patch(
+            "tinyagentos.routes.cluster.require_worker_hmac",
+            side_effect=lambda r: setattr(r.state, "hmac_worker_name", "gpu-box"),
+        ):
+            resp = await client.post(
+                "/api/cluster/workers/gpu-box/update-outcome",
+                json=payload,
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["outcome"] == "rollback"
+            assert data["acknowledged"] is True
+
+    async def test_update_outcome_worker_not_found(self, client):
+        """404 when the worker is not registered."""
+        from unittest.mock import patch
+
+        payload = {
+            "name": "nonexistent",
+            "outcome": "success",
+            "from_version": "aaa",
+            "to_version": "bbb",
+        }
+
+        with patch(
+            "tinyagentos.routes.cluster.require_worker_hmac",
+            side_effect=lambda r: setattr(r.state, "hmac_worker_name", "nonexistent"),
+        ):
+            resp = await client.post(
+                "/api/cluster/workers/nonexistent/update-outcome",
+                json=payload,
+            )
+            assert resp.status_code == 404
+
+    async def test_update_outcome_unknown_outcome(self, client, app):
+        """400 when the outcome is not 'success' or 'rollback'."""
+        from unittest.mock import patch
+
+        mgr = app.state.cluster_manager
+        w = _make_worker("gpu-box")
+        await mgr.register_worker(w)
+
+        payload = {
+            "name": "gpu-box",
+            "outcome": "unknown-status",
+        }
+
+        with patch(
+            "tinyagentos.routes.cluster.require_worker_hmac",
+            side_effect=lambda r: setattr(r.state, "hmac_worker_name", "gpu-box"),
+        ):
+            resp = await client.post(
+                "/api/cluster/workers/gpu-box/update-outcome",
+                json=payload,
+            )
+            assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+class TestDeployEndpointOperatorAccess:
+    async def test_operator_can_trigger_deploy_without_hmac(self, client, app):
+        """BLOCKER 1 regression: deploy is a session-gated operator action.
+
+        An operator (session cookie, no worker HMAC headers) must reach the
+        route.  The old code layered ``require_worker_hmac`` plus a name
+        cross-check on top of the session gate, so the operator (session, no
+        HMAC) 401'd at the HMAC gate and the worker (HMAC, no session) 401'd
+        at the middleware — nobody could call it.
+        """
+        from unittest.mock import patch
+
+        mgr = app.state.cluster_manager
+        w = _make_worker("gpu-box")
+        await mgr.register_worker(w)
+
+        fake_resp = MagicMock()
+        fake_resp.json.return_value = {"status": "deployed"}
+
+        class _FakeClientCtx:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, *args, **kwargs):
+                return fake_resp
+
+        with patch("httpx.AsyncClient", return_value=_FakeClientCtx()):
+            resp = await client.post(
+                "/api/cluster/workers/gpu-box/deploy",
+                json={"command": "status"},
+            )
+
+        # 200 (proxied through to the worker), not 401/403 — the operator's
+        # session alone satisfies the gate and the request reached the proxy.
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"status": "deployed"}
+
+
+@pytest.mark.asyncio
+class TestUpdateOutcomeRealCaller:
+    async def test_worker_can_report_outcome_without_session(
+        self, client, app, pair_and_register_worker,
+    ):
+        """BLOCKER 2 regression: the worker's real caller is HMAC + no cookie.
+
+        ``signal_update_outcome()`` sends the three HMAC headers and no session
+        cookie.  Before the fix, ``/update-outcome`` was not session-exempt, so
+        the request died at AuthMiddleware (401 ``Authentication required``)
+        before the route's own HMAC gate ever ran — outcomes fell into a black
+        hole.  The route-level HMAC gate is now the only auth, matching
+        heartbeat / incus-enroll.
+        """
+        import json as _json
+
+        from tinyagentos.worker.pairing import sign_request_headers
+
+        # Pair + register a worker; this stores its signing key on the controller.
+        await pair_and_register_worker(
+            client, app,
+            {"name": "gpu-box", "url": "http://localhost:9000"},
+        )
+        signing_key = await app.state.cluster_pairing.get_signing_key("gpu-box")
+        assert signing_key is not None
+
+        payload = {
+            "name": "gpu-box",
+            "outcome": "success",
+            "from_version": "abc1234def",
+            "to_version": "def5678abc",
+        }
+        body = _json.dumps(payload).encode()
+        path = "/api/cluster/workers/gpu-box/update-outcome"
+        headers = sign_request_headers(signing_key, "gpu-box", "POST", path, body)
+        headers["content-type"] = "application/json"
+
+        # A *separate* cookie-less client: ``client.post(cookies={})`` does NOT
+        # clear the fixture's cookie jar (httpx deprecates per-request cookies),
+        # so reusing the fixture would carry the admin session and prove nothing.
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test",
+        ) as c:
+            assert not c.cookies  # control: the worker holds no session
+            resp = await c.post(path, content=body, headers=headers)
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["outcome"] == "success"
+        assert data["acknowledged"] is True
