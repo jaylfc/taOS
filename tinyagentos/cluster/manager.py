@@ -68,6 +68,8 @@ class ClusterManager:
         self._failure_tracker: FailureTracker | None = failure_tracker
         self._generation: int = 1  # incremented in start() when store is wired
         self._fenced: bool = False  # True when another controller has advanced generation
+        # Maximum number of leases a single worker can hold (prevents DoS)
+        self._max_leases_per_worker = 10
 
     async def start(self):
         # taOS #640: increment generation on each controller start (split-brain
@@ -528,14 +530,26 @@ class ClusterManager:
     def _worker_for_resource(self, resource_id: str) -> WorkerInfo | None:
         """Return the WorkerInfo for a resource_id, or None.
 
-        Excludes draining and offline workers (taOS #890)."""
+        Excludes draining and offline workers (taOS #890). Validates that the
+        resource part of the resource_id matches one of the worker's registered
+        backends to prevent a compromised worker from fabricating arbitrary
+        resources (S2-24)."""
         parsed = self._parse_resource_id(resource_id)
         if parsed is None:
             return None
-        worker_name, _ = parsed
+        worker_name, resource_part = parsed
         worker = self._workers.get(worker_name)
         if worker is None or worker.status not in ("online", "update-available"):
             return None
+        
+        # Validate that the resource part matches one of the worker's registered backends
+        # The resource_id format is "worker-name:backend-name"
+        # Check if the worker has any backends with this name
+        valid_backends = worker.backends or []
+        if not any(backend.get("name") == resource_part for backend in valid_backends):
+            # Resource not registered for this worker
+            return None
+            
         return worker
 
     def find_existing_lease(self, resource_id: str) -> GpuLease | None:
@@ -595,6 +609,20 @@ class ClusterManager:
                 logger.debug(
                     "claim_lease: %s needs %d MiB VRAM but %s has %d MiB free",
                     caller, required_vram_mb, worker.name, worker.free_vram_mb,
+                )
+                return None
+
+            # Enforce lease cap per worker to prevent DoS (S2-24)
+            # Count existing leases for this worker
+            worker_lease_count = 0
+            for lid, lease in self._leases.items():
+                if (parsed := self._parse_resource_id(lease.resource_id)) and parsed[0] == worker.name:
+                    worker_lease_count += 1
+            
+            if worker_lease_count >= self._max_leases_per_worker:
+                logger.debug(
+                    "claim_lease: worker %s has reached max leases (%d), rejecting new claim",
+                    worker.name, self._max_leases_per_worker,
                 )
                 return None
 
