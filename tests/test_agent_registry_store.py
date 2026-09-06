@@ -74,6 +74,12 @@ class TestSlugify:
         assert _slugify("我的代理") == "wo-de-dai-li"
         assert _slugify("Агент Иванов") == "agent-ivanov"
 
+    def test_leading_trailing_dashes(self):
+        assert _slugify("  hello  ") == "hello"
+
+    def test_multiple_spaces(self):
+        assert _slugify("a  b  c") == "a-b-c"
+
 
 class TestAgentSlugOrFallback:
     def test_returns_the_slug_when_there_is_one(self):
@@ -99,12 +105,6 @@ class TestAgentSlugOrFallback:
         """
         digest = agent_slug_or_fallback("🚀").removeprefix("agent-")
         assert len(digest) == 16
-
-    def test_leading_trailing_dashes(self):
-        assert _slugify("  hello  ") == "hello"
-
-    def test_multiple_spaces(self):
-        assert _slugify("a  b  c") == "a-b-c"
 
 
 class TestMintCanonicalId:
