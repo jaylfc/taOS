@@ -49,10 +49,13 @@ echo "[build] (2/9) python"
 echo "[build] (3/9) frontend"
 "$SCRIPT_DIR/build_frontend.sh" --output "$STAGING"
 
-echo "[build] (4/9) container CLI"
+echo "[build] (4/9) Sparkle.framework"
+"$SCRIPT_DIR/fetch_sparkle.sh" --output "$STAGING"
+
+echo "[build] (5/9) container CLI"
 "$SCRIPT_DIR/fetch_container_cli.sh" --version "$CLI_VER" --output "$STAGING"
 
-echo "[build] (5/9) assemble bundle"
+echo "[build] (6/9) assemble bundle"
 "$SCRIPT_DIR/assemble_bundle.sh" \
     --version "$VERSION" \
     --staging "$STAGING" \
@@ -61,17 +64,17 @@ echo "[build] (5/9) assemble bundle"
 
 APP="$REPO_ROOT/$OUTPUT/taOS.app"
 
-echo "[build] (6/9) sign"
+echo "[build] (7/10) sign"
 "$SCRIPT_DIR/sign.sh" --app "$APP"
 
-echo "[build] (7/9) package DMG"
+echo "[build] (8/10) package DMG"
 "$SCRIPT_DIR/package_dmg.sh" --app "$APP" --version "$VERSION" --output "$REPO_ROOT/$OUTPUT"
 DMG="$REPO_ROOT/$OUTPUT/taOS-$VERSION.dmg"
 
-echo "[build] (8/9) notarize"
+echo "[build] (9/10) notarize"
 "$SCRIPT_DIR/notarize.sh" --dmg "$DMG"
 
-echo "[build] (9/9) sparkle-sign"
+echo "[build] (10/10) sparkle-sign"
 SPARKLE_KEY="${SPARKLE_ED_PRIVATE_KEY:-$HOME/.taos/sparkle_ed_private.pem}"
 if [[ -f "$SPARKLE_KEY" ]]; then
   "$SCRIPT_DIR/sparkle_sign.sh" --dmg "$DMG" --version "$VERSION" --output "$REPO_ROOT/$OUTPUT"

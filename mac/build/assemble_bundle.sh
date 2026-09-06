@@ -36,6 +36,12 @@ else
   echo "[assemble_bundle] no ed_public.pem — Sparkle will be disabled in this build"
   SU_PUBLIC_ED_KEY=""
 fi
+# Exit 1 in a release build when ed_public.pem is missing
+# Check if this is a release build by looking for a version in the bundle or similar indicator
+if [[ -z "$SU_PUBLIC_ED_KEY" ]] && [[ "${VERSION:-}" == "[0-9]*"* ]]; then
+  echo "[assemble_bundle] ed_public.pem missing in release build — exiting" >&2
+  exit 1
+fi
 sed -e "s|\${VERSION}|$VERSION|g" \
     -e "s|\${SU_PUBLIC_ED_KEY}|$SU_PUBLIC_ED_KEY|g" \
     "$REPO_ROOT/mac/launcher/Sources/taOSLauncher/Resources/Info.plist.in" \
@@ -98,7 +104,16 @@ if [[ -d "$STAGING/libexec/container" ]]; then
 fi
 
 # Sparkle.framework — fetched/extracted by build.sh prior
-if [[ -d "$STAGING/Sparkle.framework" ]]; then
+if [[ ! -d "$STAGING/Sparkle.framework" ]]; then
+  # Exit 1 in a release build when Sparkle.framework is missing
+  # Check if this is a release build by looking for a version in the bundle or similar indicator
+  if [[ "${VERSION:-}" == "[0-9]*"* ]]; then
+    echo "[assemble_bundle] Sparkle.framework missing in release build — exiting" >&2
+    exit 1
+  else
+    echo "[assemble_bundle] Sparkle.framework missing — skipping" >&2
+  fi
+else
   cp -R "$STAGING/Sparkle.framework" "$CONTENTS/Frameworks/Sparkle.framework"
 fi
 
