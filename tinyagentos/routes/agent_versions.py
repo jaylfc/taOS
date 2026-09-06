@@ -180,12 +180,12 @@ async def revert_version(request: Request, name: str, sha: str):
 
     try:
         container = _container_name(agent)
-        head_sha = (await git_rev_parse(container, "HEAD")).strip()
         resolved_sha = await git_rev_parse(container, sha)
-        if resolved_sha != head_sha:
-            status = await git_revert(container, resolved_sha)
-            return {"agent": name, "sha": resolved_sha, "status": status}
-        return {"agent": name, "sha": sha, "status": "noop"}
+        # The noop-vs-reverted decision is made inside git_revert, under the
+        # container's state lock, so it stays correct even if a committer
+        # creates a new commit between sha resolution and lock acquisition.
+        status = await git_revert(container, resolved_sha)
+        return {"agent": name, "sha": resolved_sha, "status": status}
     except InvalidRemoteError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except DirtyTreeError as exc:

@@ -161,23 +161,28 @@ async def git_diff(container: str, sha: str) -> str:
 
 
 async def git_revert(container: str, sha: str) -> str:
-    head_rc, head_out = await _git(container, ["rev-parse", "HEAD"])
-    if head_rc != 0:
-        raise RuntimeError(f"git rev-parse HEAD failed: {head_out}")
-    head_sha = head_out.strip()
-    if sha == head_sha:
-        return "noop"
     await git_rev_parse(container, sha)
     if not await git_merge_base_is_ancestor(container, sha):
         raise NotAncestorError(f"{sha} is not an ancestor of HEAD")
+    # The no-op decision (sha already == HEAD) must be made atomically with
+    # the reset, under the same lock: a committer can create a new commit
+    # after any pre-lock HEAD read and before this returns, which would make
+    # a pre-lock comparison stale and falsely report "noop" without actually
+    # restoring the requested sha. rc 3 is reserved to signal "noop" from
+    # inside the locked script; rc 0 is a successful reset; anything else is
+    # a dirty working tree.
     script = (
+        "head=$(git -C /root rev-parse HEAD); "
+        f'[ "$head" = {sha} ] && exit 3; '
         "dirty=$(git -C /root status --porcelain); "
         'test -z "$dirty" && git -C /root reset --hard ' + sha
     )
-    rc, out = await exec_in_container(
+    rc, _out = await exec_in_container(
         container,
         ["bash", "-c", f"flock {_STATE_LOCK_PATH} -c {script!r}"],
     )
+    if rc == 3:
+        return "noop"
     if rc != 0:
         raise DirtyTreeError("dirty_tree: working tree has uncommitted changes")
     return "reverted"

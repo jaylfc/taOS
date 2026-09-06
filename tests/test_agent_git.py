@@ -8,9 +8,12 @@ from unittest.mock import AsyncMock, patch
 
 from tinyagentos.agent_git import (
     ContainerUnreachableError,
+    DirtyTreeError,
+    NotAncestorError,
     _GITIGNORE_CONTENTS,
     git_diff,
     git_rev_parse,
+    git_revert,
 )
 
 
@@ -91,3 +94,72 @@ class TestGitignoreCoversEnvVariants:
         assert ".env.local" not in staged
         assert ".env.production" not in staged
         assert "keep.txt" in staged
+
+
+@pytest.mark.asyncio
+class TestGitRevertNoopUnderLock:
+    async def test_locked_script_rc3_is_noop(self):
+        calls = []
+
+        async def fake_exec(container, cmd, timeout=60):
+            calls.append(cmd)
+            if cmd[:2] == ["git", "-C"] and cmd[3:5] == ["rev-parse", "--verify"]:
+                return (0, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+            if cmd[:2] == ["git", "-C"] and cmd[3] == "merge-base":
+                return (0, "")
+            if cmd[0] == "bash":
+                return (3, "")
+            return (0, "ok")
+
+        with patch("tinyagentos.agent_git.exec_in_container", new=fake_exec):
+            status = await git_revert("some-container", "deadbeef")
+        assert status == "noop"
+        # The noop decision must be made inside the locked script, not by a
+        # separate pre-lock "rev-parse HEAD" call.
+        bare_head_reads = [
+            c for c in calls
+            if c[:2] == ["git", "-C"] and c[3:5] == ["rev-parse", "HEAD"]
+        ]
+        assert bare_head_reads == []
+
+    async def test_locked_script_rc0_is_reverted(self):
+        async def fake_exec(container, cmd, timeout=60):
+            if cmd[:2] == ["git", "-C"] and cmd[3:5] == ["rev-parse", "--verify"]:
+                return (0, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+            if cmd[:2] == ["git", "-C"] and cmd[3] == "merge-base":
+                return (0, "")
+            if cmd[0] == "bash":
+                return (0, "")
+            return (0, "ok")
+
+        with patch("tinyagentos.agent_git.exec_in_container", new=fake_exec):
+            status = await git_revert("some-container", "deadbeef")
+        assert status == "reverted"
+
+    async def test_locked_script_other_rc_raises_dirty_tree(self):
+        async def fake_exec(container, cmd, timeout=60):
+            if cmd[:2] == ["git", "-C"] and cmd[3:5] == ["rev-parse", "--verify"]:
+                return (0, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+            if cmd[:2] == ["git", "-C"] and cmd[3] == "merge-base":
+                return (0, "")
+            if cmd[0] == "bash":
+                return (1, "")
+            return (0, "ok")
+
+        with patch("tinyagentos.agent_git.exec_in_container", new=fake_exec):
+            with pytest.raises(DirtyTreeError):
+                await git_revert("some-container", "deadbeef")
+
+    async def test_non_ancestor_raises_before_lock(self):
+        async def fake_exec(container, cmd, timeout=60):
+            if cmd[:2] == ["git", "-C"] and cmd[3:5] == ["rev-parse", "--verify"]:
+                return (0, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+            if cmd[:2] == ["git", "-C"] and cmd[3] == "merge-base":
+                return (1, "")
+            if cmd[0] == "bash":
+                pytest.fail("locked script should not run when sha is not an ancestor")
+            return (0, "ok")
+
+        with patch("tinyagentos.agent_git.exec_in_container", new=fake_exec):
+            with pytest.raises(NotAncestorError):
+                await git_revert("some-container", "deadbeef")

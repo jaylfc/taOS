@@ -219,6 +219,49 @@ class TestAgentVersionsRoutes:
         assert resp.status_code == 200
         assert resp.json()["status"] == "noop"
 
+    async def test_revert_racing_commit_before_lock_is_not_falsely_noop(self, tmp_path, client):
+        # Regression for the noop decision being made outside the lock: a
+        # committer can create a new commit after the route resolves the
+        # target sha (which, at that instant, equals HEAD) but before the
+        # revert actually acquires the state lock. The decision must be made
+        # fresh, under the lock, or this would wrongly report "noop" and
+        # leave the racing commit's content in place instead of reverting.
+        fixture = tmp_path / "repo"
+        fixture.mkdir()
+        _init_fixture_repo(fixture)
+        target_sha = subprocess.run(
+            ["git", "-C", str(fixture), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        base_fake = _fake_exec_for_repo(fixture)
+        raced = {"done": False}
+
+        async def racing_fake(container, cmd, timeout=60):
+            result = await base_fake(container, cmd, timeout=timeout)
+            if (
+                not raced["done"]
+                and cmd[0] == "git" and cmd[1] == "-C" and cmd[2] == "/root"
+                and cmd[3:5] == ["rev-parse", "--verify"]
+            ):
+                raced["done"] = True
+                (fixture / "race.txt").write_text("racing commit")
+                subprocess.run(
+                    ["git", "-C", str(fixture), "add", "race.txt"],
+                    check=True, capture_output=True,
+                )
+                subprocess.run(
+                    ["git", "-C", str(fixture), "commit", "-m", "race commit"],
+                    check=True, capture_output=True,
+                )
+            return result
+
+        with patch("tinyagentos.agent_git.exec_in_container", new=racing_fake):
+            resp = await client.post(f"/api/agents/test-agent/versions/{target_sha}/revert")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "reverted"
+        assert not (fixture / "race.txt").exists()
+
     async def test_revert_non_ancestor_returns_409(self, tmp_path, client):
         fixture = tmp_path / "repo"
         fixture.mkdir()
