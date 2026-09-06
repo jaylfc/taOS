@@ -843,18 +843,18 @@ class TestStderrLogHandling:
         rotated_mode = stat.S_IMODE(rotated_path.stat().st_mode)
         assert rotated_mode == 0o600, f"rotated log expected 0600, got {oct(rotated_mode)}"
         rotated_content = rotated_path.read_text()
-        assert rotated_content == stale_content, f"rotated log must preserve original content"
+        assert rotated_content == stale_content, "rotated log must preserve original content"
 
         # (d) reader fd still points to old inode and doesn't see new output
         old_fstat_ino = os_mod.fstat(rfd).st_ino
-        assert old_fstat_ino == old_ino, f"reader fd should still point to old inode"
+        assert old_fstat_ino == old_ino, "reader fd should still point to old inode"
 
         # Write a marker to the new log
         log_path.open("a").write("post-restart secret\n")
 
         # Reader fd should not see this marker (it's on the old inode)
         content_from_old_fd = os_mod.read(rfd, 4096).decode()
-        assert "post-restart secret" not in content_from_old_fd, f"reader on old inode must not see new output"
+        assert "post-restart secret" not in content_from_old_fd, "reader on old inode must not see new output"
 
         os_mod.close(rfd)
 
@@ -893,7 +893,7 @@ class TestStderrLogHandling:
         assert rotated_path.read_text() == current_content, ".1 must hold the old .log content"
         # And no .2 should exist
         log_2_path = log_path.with_name("litellm.stderr.log.2")
-        assert not log_2_path.exists(), f"no .2 generation should exist"
+        assert not log_2_path.exists(), "no .2 generation should exist"
 
     @pytest.mark.asyncio
     async def test_stderr_handle_closed_after_successful_start(self, tmp_path, monkeypatch):
