@@ -362,6 +362,13 @@ export function ImportWizard({
                     <>
                       <div className="text-xs opacity-60 mt-1">
                         Slug: <code>{slug || "—"}</code>{" "}
+                        {!slug && (
+                          <span>
+                            (this name has no Latin letters -- click "edit" to
+                            set a slug yourself, or the agent name will be
+                            rejected){" "}
+                          </span>
+                        )}
                         <button
                           type="button"
                           onClick={() => {

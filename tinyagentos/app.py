@@ -1081,8 +1081,38 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             ),
             name="local-heartbeat",
         )
+        # After the first probe, mark auto-managed backends that are not
+        # currently reachable as "stopped" so the scheduler knows to start
+        # them on demand rather than treating them as permanently broken.
+        # tsk-xjwolt: BackendCatalog.start() no longer blocks on the first
+        # probe, so this reconcile runs once via a one-shot subscriber
+        # instead of reading the (still-empty) entries dict immediately after
+        # start() returns. It has to be defined HERE, above the subscribe()
+        # call: a nested def is a local binding of lifespan(), so naming it
+        # any earlier raises UnboundLocalError and fails app startup.
+        _lifecycle_reconciled = {"done": False}
+
+        async def _reconcile_auto_manage_lifecycle() -> None:
+            """Reconcile auto-managed backend lifecycle state, once, against
+            the first completed probe pass."""
+            if _lifecycle_reconciled["done"]:
+                return
+            _lifecycle_reconciled["done"] = True
+            for _entry in backend_catalog.backends():
+                _b_conf = next(
+                    (b for b in config.backends if b["name"] == _entry.name), {}
+                )
+                if _b_conf.get("auto_manage") and _entry.status != "ok":
+                    backend_catalog.set_lifecycle_state(_entry.name, "stopped")
+
         # Start the live backend catalog — everything that asks "what's
         # available?" reads from this rather than the filesystem.
+        # tsk-xjwolt: start() does NOT block on the first probe anymore.
+        # Unreachable backends would otherwise stack their connect timeouts
+        # before :6969 can accept a single request. Probes run in the
+        # background; subscribe() is registered before start() so the very
+        # first probe pass cannot fire past an unregistered subscriber.
+        backend_catalog.subscribe(_reconcile_auto_manage_lifecycle)
         try:
             await backend_catalog.start()
         except Exception:
@@ -1131,16 +1161,6 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             archive=getattr(app.state, "archive", None),
         )
         app.state.bridge_sessions._router = app.state.agent_chat_router
-
-        # After the first probe, mark auto-managed backends that are not
-        # currently reachable as "stopped" so the scheduler knows to start
-        # them on demand rather than treating them as permanently broken.
-        for _entry in backend_catalog.backends():
-            _b_conf = next(
-                (b for b in config.backends if b["name"] == _entry.name), {}
-            )
-            if _b_conf.get("auto_manage") and _entry.status != "ok":
-                backend_catalog.set_lifecycle_state(_entry.name, "stopped")
 
         # Joined view of the registry cache + live catalog probes.
         # Used by the Store / Dashboard / Models routes instead of
@@ -1657,6 +1677,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             return await call_next(request)
 
     app.add_middleware(_StartupGuardMiddleware)
+
+    # Upload body caps — added last so it is the outermost layer and the cap is
+    # armed before anything downstream (FastAPI's multipart parsing included)
+    # pulls a byte of the body. See the module docstring for why a route-level
+    # read(cap + 1) is too late to stop the spooling.
+    from tinyagentos.middleware.upload_body_limit import UploadBodyLimitMiddleware
+    app.add_middleware(UploadBodyLimitMiddleware)
 
     # _background_tasks collects all fire-and-forget asyncio.Task handles so
     # they can be cancelled on shutdown and exceptions can be logged.

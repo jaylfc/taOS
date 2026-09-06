@@ -1,11 +1,14 @@
 import asyncio
 import hashlib
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 import pytest_asyncio
 
+from tinyagentos import download_manager
 from tinyagentos.download_manager import DownloadManager, DownloadTask
 
 
@@ -639,3 +642,389 @@ class TestStartInstallerTask:
         assert task.status == "complete"
         assert task.downloaded_bytes == 0
         assert task.total_bytes == 0
+
+
+# ---------------------------------------------------------------------------
+# _download: timeouts, resume, retry and cleanup
+# ---------------------------------------------------------------------------
+
+class _FakeHttpServer:
+    """A stand-in httpx.AsyncClient that honours the transport contract the
+    real client documents, so a test can drive the failure modes a home
+    internet connection actually produces without opening a socket.
+
+    It reproduces the two behaviours that matter here:
+
+    * ``timeout=None`` disables the read timeout, so a server that stops
+      sending mid-body leaves the stream awaiting forever. A finite
+      ``read`` raises ``httpx.ReadTimeout`` instead.
+    * A request carrying ``Range: bytes=N-`` is answered with 206 and the
+      remaining bytes, exactly as a CDN that supports resume does.
+    """
+
+    def __init__(self, body: bytes, *, stall_after: int | None = None,
+                 fail_attempts: int = 0, failure=None, supports_range: bool = True):
+        self.body = body
+        self.stall_after = stall_after
+        self.fail_attempts = fail_attempts
+        self.failure = failure or httpx.ReadError("connection reset")
+        self.supports_range = supports_range
+        self.requests: list[dict] = []
+        self.timeouts: list[object] = []
+
+    def __call__(self, *args, **kwargs):
+        self.timeouts.append(kwargs.get("timeout"))
+        return _FakeClient(self, kwargs.get("timeout"))
+
+
+class _FakeClient:
+    def __init__(self, server: "_FakeHttpServer", timeout):
+        self._server = server
+        self._timeout = timeout
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def stream(self, method, url, headers=None, **kwargs):
+        headers = dict(headers or {})
+        self._server.requests.append(headers)
+        return _FakeStream(self._server, self._timeout, headers)
+
+
+class _FakeStream:
+    def __init__(self, server: "_FakeHttpServer", timeout, headers: dict):
+        self._server = server
+        self._timeout = timeout
+        self._attempt = len(server.requests)
+        rng = headers.get("Range")
+        self._offset = 0
+        self.status_code = 200
+        self.headers: dict[str, str] = {}
+        if rng and server.supports_range:
+            self._offset = int(rng.removeprefix("bytes=").rstrip("-"))
+            if self._offset >= len(server.body):
+                self.status_code = 416
+            else:
+                self.status_code = 206
+                self.headers["content-range"] = (
+                    f"bytes {self._offset}-{len(server.body) - 1}/{len(server.body)}"
+                )
+        self._payload = server.body[self._offset:]
+        if self.status_code != 416:
+            self.headers["content-length"] = str(len(self._payload))
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}",
+                request=httpx.Request("GET", "http://example.com/f.bin"),
+                response=httpx.Response(self.status_code),
+            )
+
+    async def aiter_bytes(self, chunk_size=65536):
+        failing = self._attempt <= self._server.fail_attempts
+        # A dropped connection cuts the body off part-way through; a failure
+        # that arrives only after every byte has been delivered would leave a
+        # complete stage file and never exercise resume.
+        limit = len(self._payload) // 2 if failing else None
+        sent = 0
+        for i in range(0, len(self._payload), chunk_size):
+            if self._server.stall_after is not None and sent >= self._server.stall_after:
+                break
+            chunk = self._payload[i:i + chunk_size]
+            if limit is not None and sent + len(chunk) > limit:
+                chunk = chunk[:limit - sent]
+                if chunk:
+                    yield chunk
+                break
+            yield chunk
+            sent += len(chunk)
+        if failing:
+            raise self._server.failure
+        if self._server.stall_after is not None:
+            read = getattr(self._timeout, "read", self._timeout)
+            if read is None:
+                # Half-open connection: the peer stops sending and never
+                # closes. With no read timeout the stream waits forever.
+                await asyncio.Event().wait()
+            # Stand-in for the real `read`-second wait; what is under test is
+            # that a finite read timeout turns the stall into an error at all,
+            # not how long that error takes to arrive.
+            await asyncio.sleep(0.01)
+            raise httpx.ReadTimeout("timed out reading response body")
+
+
+@pytest.fixture
+def fast_retries():
+    """Collapse the production backoff so a retry test costs milliseconds.
+
+    ``create=True`` so the fixture still applies against a build with no
+    retry at all — the red run then shows the download defect under test
+    rather than an AttributeError from the fixture.
+    """
+    with patch.object(download_manager, "DOWNLOAD_RETRY_BASE_DELAY", 0.001, create=True), \
+         patch.object(download_manager, "DOWNLOAD_RETRY_MAX_DELAY", 0.001, create=True):
+        yield
+
+
+class TestDownloadTimeoutResumeAndCleanup:
+    @pytest_asyncio.fixture
+    def dm(self):
+        return DownloadManager()
+
+    @pytest.mark.asyncio
+    async def test_stalled_connection_errors_instead_of_hanging(self, dm, tmp_path, fast_retries):
+        """A server that stops sending mid-body must surface as an error.
+        With timeout=None the task sits at status="downloading" forever and
+        the user watches a progress bar frozen at 63%."""
+        dest = tmp_path / "out.bin"
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        server = _FakeHttpServer(b"x" * 200_000, stall_after=65536)
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", server):
+            await asyncio.wait_for(dm._download(task, expected_sha256=None), timeout=10)
+
+        assert task.status == "error"
+        assert task.error
+
+    @pytest.mark.asyncio
+    async def test_client_is_built_with_finite_timeouts(self, dm, tmp_path):
+        dest = tmp_path / "out.bin"
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        server = _FakeHttpServer(b"payload")
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", server):
+            await dm._download(task, expected_sha256=None)
+
+        assert server.timeouts, "no AsyncClient was constructed"
+        timeout = server.timeouts[0]
+        assert isinstance(timeout, httpx.Timeout)
+        # The read timeout is the one that turns a half-open connection into
+        # an error; the others keep a dead peer from wedging connect/pool.
+        assert timeout.read is not None and timeout.read > 0
+        assert timeout.connect is not None and timeout.connect > 0
+        assert timeout.write is not None and timeout.write > 0
+        assert timeout.pool is not None and timeout.pool > 0
+
+    @pytest.mark.asyncio
+    async def test_interrupted_download_resumes_from_byte_offset(self, dm, tmp_path):
+        """Bytes already on disk from an interrupted transfer are asked for
+        with a Range header instead of being thrown away — a 40 GB model that
+        died at 39 GB must not restart from zero."""
+        body = bytes(i % 256 for i in range(4096))
+        dest = tmp_path / "out.bin"
+        part = tmp_path / "out.bin.part"
+        part.write_bytes(body[:3000])
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        server = _FakeHttpServer(body)
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", server):
+            await dm._download(task, expected_sha256=hashlib.sha256(body).hexdigest())
+
+        assert server.requests[0].get("Range") == "bytes=3000-"
+        assert task.status == "complete", task.error
+        assert dest.read_bytes() == body
+        assert not part.exists()
+
+    @pytest.mark.asyncio
+    async def test_server_ignoring_range_restarts_cleanly(self, dm, tmp_path):
+        """A mirror that answers 200 to a Range request is sending the whole
+        file again; appending it to the stub would double the bytes."""
+        body = b"abcdefghij" * 100
+        dest = tmp_path / "out.bin"
+        part = tmp_path / "out.bin.part"
+        part.write_bytes(b"stale bytes")
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        server = _FakeHttpServer(body, supports_range=False)
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", server):
+            await dm._download(task, expected_sha256=hashlib.sha256(body).hexdigest())
+
+        assert task.status == "complete", task.error
+        assert dest.read_bytes() == body
+
+    @pytest.mark.asyncio
+    async def test_completed_stub_answered_with_416_restarts_from_zero(self, dm, tmp_path, fast_retries):
+        """A .part left behind holding every byte of the file gets a 416 to
+        its Range request. Treating that as a hard 4xx would wedge the model
+        permanently: it must fall back to a clean full fetch."""
+        body = b"complete already"
+        dest = tmp_path / "out.bin"
+        part = tmp_path / "out.bin.part"
+        part.write_bytes(body)
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        server = _FakeHttpServer(body)
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", server):
+            await dm._download(task, expected_sha256=hashlib.sha256(body).hexdigest())
+
+        assert task.status == "complete", task.error
+        assert dest.read_bytes() == body
+
+    @pytest.mark.asyncio
+    async def test_failed_download_leaves_no_file_at_destination(self, dm, tmp_path, fast_retries):
+        """A partial file at the canonical path is read as a present, valid
+        model by every later "is this installed?" existence check."""
+        dest = tmp_path / "out.bin"
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        server = _FakeHttpServer(b"y" * 200_000, fail_attempts=99)
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", server):
+            await dm._download(task, expected_sha256=None)
+
+        assert task.status == "error"
+        assert not dest.exists()
+
+    @pytest.mark.asyncio
+    async def test_transient_failure_is_retried(self, dm, tmp_path, fast_retries):
+        """A single dropped connection from a mirror must not kill a
+        multi-gigabyte pull."""
+        body = b"retry me" * 500
+        dest = tmp_path / "out.bin"
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        server = _FakeHttpServer(body, fail_attempts=1)
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", server):
+            await dm._download(task, expected_sha256=hashlib.sha256(body).hexdigest())
+
+        assert task.status == "complete", task.error
+        assert len(server.requests) == 2
+        assert dest.read_bytes() == body
+
+    @pytest.mark.asyncio
+    async def test_retry_resumes_rather_than_restarting(self, dm, tmp_path, fast_retries):
+        body = b"z" * 200_000
+        dest = tmp_path / "out.bin"
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        server = _FakeHttpServer(body, fail_attempts=1)
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", server):
+            await dm._download(task, expected_sha256=hashlib.sha256(body).hexdigest())
+
+        assert task.status == "complete", task.error
+        assert server.requests[1].get("Range") == "bytes=100000-"
+        assert dest.read_bytes() == body
+
+    @pytest.mark.asyncio
+    async def test_server_5xx_is_retried_but_404_is_not(self, dm, tmp_path, fast_retries):
+        """4xx is the server saying the URL is wrong; retrying it just delays
+        the error the user needs to see."""
+        dest = tmp_path / "out.bin"
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        server = _FakeHttpServer(
+            b"never sent",
+            fail_attempts=99,
+            failure=httpx.HTTPStatusError(
+                "HTTP 404",
+                request=httpx.Request("GET", "http://example.com/f.bin"),
+                response=httpx.Response(404),
+            ),
+        )
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", server):
+            await dm._download(task, expected_sha256=None)
+
+        assert task.status == "error"
+        assert len(server.requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_server_5xx_is_retried(self, dm, tmp_path, fast_retries):
+        """5xx is retried (unlike 4xx above); with_retry's own status branch
+        handles it, but nothing exercised that path -- a regression that
+        stopped retrying 5xx would leave every other test here green."""
+        body = b"eventually served"
+        dest = tmp_path / "out.bin"
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        server = _FakeHttpServer(
+            body,
+            fail_attempts=1,
+            failure=httpx.HTTPStatusError(
+                "HTTP 503",
+                request=httpx.Request("GET", "http://example.com/f.bin"),
+                response=httpx.Response(503),
+            ),
+        )
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", server):
+            await dm._download(task, expected_sha256=hashlib.sha256(body).hexdigest())
+
+        assert len(server.requests) > 1
+        assert task.status == "complete", task.error
+
+    @pytest.mark.asyncio
+    async def test_failed_redownload_does_not_delete_an_existing_valid_file(
+        self, dm, tmp_path, fast_retries
+    ):
+        """A re-download of an already-installed model must not destroy the
+        good copy just because the NEW attempt failed before ever promoting
+        anything to task.dest. _stream_to_part writes only to the .part
+        stage file; if with_retry exhausts its attempts, task.dest still
+        holds whatever a PRIOR successful download put there and that must
+        survive this attempt's failure."""
+        dest = tmp_path / "out.bin"
+        existing = b"a previously installed, valid model"
+        dest.write_bytes(existing)
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        server = _FakeHttpServer(b"new bytes that never arrive", fail_attempts=99)
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", server):
+            await dm._download(task, expected_sha256=None)
+
+        assert task.status == "error"
+        assert dest.exists(), "a failed re-download must not delete the existing file"
+        assert dest.read_bytes() == existing
+
+
+class TestTaskPruning:
+    """self._tasks grew for the lifetime of the process: every model the user
+    ever downloaded stayed resident, and /api/models/downloads listed them
+    all."""
+
+    @pytest.mark.asyncio
+    async def test_old_finished_tasks_are_pruned(self, tmp_path):
+        dm = DownloadManager()
+        stale = DownloadTask(id="old", url="u", dest=tmp_path / "old.bin")
+        stale.status = "complete"
+        stale.completed_at = time.time() - (download_manager.TASK_RETENTION_SECONDS + 60)
+        dm._tasks["old"] = stale
+        dm._running["old"] = MagicMock()
+
+        async def _install():
+            return {"success": True}
+
+        dm.start_installer_task("fresh", _install())
+        await dm._running["fresh"]
+
+        assert "old" not in dm._tasks
+        assert "old" not in dm._running
+        assert "fresh" in dm._tasks
+
+    @pytest.mark.asyncio
+    async def test_recent_and_active_tasks_are_kept(self, tmp_path):
+        dm = DownloadManager()
+        recent = DownloadTask(id="recent", url="u", dest=tmp_path / "r.bin")
+        recent.status = "complete"
+        recent.completed_at = time.time()
+        running = DownloadTask(id="running", url="u", dest=tmp_path / "s.bin")
+        running.status = "downloading"
+        running.started_at = time.time() - (download_manager.TASK_RETENTION_SECONDS + 60)
+        dm._tasks["recent"] = recent
+        dm._tasks["running"] = running
+
+        async def _install():
+            return {"success": True}
+
+        dm.start_installer_task("fresh", _install())
+        await dm._running["fresh"]
+
+        assert dm.get_progress("recent") is recent
+        assert dm.get_progress("running") is running

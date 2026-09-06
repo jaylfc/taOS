@@ -1,0 +1,4 @@
+### Fixed
+
+- **bot-review-gate false-red on automatic CodeRabbit clean reviews**: `scripts/check_bot_review.py` now recognises a completed CodeRabbit review that found zero findings using the three-marker rule (no-actionable + Run ID + Files selected N>=1) instead of the prior quota-line discriminator. The quota line appears only on manually-triggered reviews (`@coderabbitai full review`), so requiring it left every automatic PR-open review red. The PASS message prints the Run ID and N.
+- **bot-review-gate could not be spoofed by a rate-limit stub**: the zero-finding predicate now rejects a rate-limit stub outright, ahead of the three markers. CodeRabbit's real rate-limit comment already carries the auto-summary marker, a Run ID and a non-zero selected-file list, so only the absence of one phrase separated it from a genuine clean review.

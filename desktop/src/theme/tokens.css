@@ -87,7 +87,7 @@
 :root[data-scheme="light"] [class~="bg-white/10"] { background-color: rgba(0, 0, 0, 0.06); }
 :root[data-scheme="light"] [class~="bg-white/15"] { background-color: rgba(0, 0, 0, 0.08); }
 :root[data-scheme="light"] [class~="bg-white/20"] { background-color: rgba(0, 0, 0, 0.10); }
-:root[data-scheme="light"] [class~="bg-white/8"]  { background-color: rgba(0, 0, 0, 0.08); }
+:root[data-scheme="light"] [class~="bg-white/8"]  { background-color: rgba(0, 0, 0, 0.05); }
 
 :root[data-scheme="light"] [class~="border-white/5"]  { border-color: rgba(0, 0, 0, 0.08); }
 :root[data-scheme="light"] [class~="border-white/8"]  { border-color: rgba(0, 0, 0, 0.10); }
@@ -175,7 +175,7 @@
 :root[data-scheme="light"] [class~="hover:bg-white/5"]:hover  { background-color: rgba(0, 0, 0, 0.05); }
 :root[data-scheme="light"] [class~="hover:bg-white/10"]:hover { background-color: rgba(0, 0, 0, 0.07); }
 :root[data-scheme="light"] [class~="hover:bg-white/3"]:hover  { background-color: rgba(0, 0, 0, 0.03); }
-:root[data-scheme="light"] [class~="hover:bg-white/8"]:hover  { background-color: rgba(0, 0, 0, 0.08); }
+:root[data-scheme="light"] [class~="hover:bg-white/8"]:hover  { background-color: rgba(0, 0, 0, 0.06); }
 :root[data-scheme="light"] [class~="hover:bg-white/15"]:hover { background-color: rgba(0, 0, 0, 0.08); }
 :root[data-scheme="light"] [class~="hover:bg-white/20"]:hover { background-color: rgba(0, 0, 0, 0.10); }
 /* Arbitrary-value hover overlays — same 1:1 inversion as the base rules above,
@@ -195,7 +195,7 @@
 /* Focus and active overlays: re-assert the inverted fill on :focus/:active so
    the affordance survives the light-scheme flip. */
 :root[data-scheme="light"] [class~="focus:bg-white/5"]:focus { background-color: rgba(0, 0, 0, 0.04); }
-:root[data-scheme="light"] [class~="focus:bg-white/8"]:focus { background-color: rgba(0, 0, 0, 0.08); }
+:root[data-scheme="light"] [class~="focus:bg-white/8"]:focus { background-color: rgba(0, 0, 0, 0.05); }
 :root[data-scheme="light"] [class~="focus:border-white/25"]:focus { border-color: rgba(0, 0, 0, 0.16); }
 :root[data-scheme="light"] [class~="focus:border-white/30"]:focus { border-color: rgba(0, 0, 0, 0.18); }
 :root[data-scheme="light"] [class~="focus:ring-white/20"]:focus { --tw-ring-color: rgba(0, 0, 0, 0.2); }

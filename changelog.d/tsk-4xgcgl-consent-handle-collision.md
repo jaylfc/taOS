@@ -1,0 +1,2 @@
+### Fixed
+- Consent-approve handle collision guard is no longer blind to internal driver identities: `POST /api/agents/auth-requests/{request_id}/approve` now chains an exact-then-normalised handle lookup, and an external-selfjoin claim that collides (via normalised handle) with a `taos-internal` or `taos-deployed` active identity fails closed with 409 instead of minting a duplicate identity or reusing the foreign identity's `canonical_id`.

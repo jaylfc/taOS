@@ -15,6 +15,7 @@ errors. Terminal states are ``provisioned`` and ``failed``; all others are
 non-terminal (an active/in-progress request that still consumes quota).
 """
 
+import asyncio
 import json
 import time
 
@@ -23,8 +24,8 @@ from tinyagentos.projects.ids import new_id
 
 # Open set of states. Stored as strings so they are inspectable in raw SQL and
 # can be added to without a schema migration in early slices.
-STATES = ("requested", "approved", "pending-approval", "provisioned", "failed")
-TERMINAL_STATES = ("provisioned", "failed")
+STATES = ("requested", "approved", "pending-approval", "provisioned", "failed", "rejected")
+TERMINAL_STATES = ("provisioned", "failed", "rejected")
 
 CONTAINER_REQUESTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS container_requests (
@@ -60,6 +61,10 @@ def _row_to_request(row, description) -> dict:
 
 class ContainerRequestStore(BaseStore):
     SCHEMA = CONTAINER_REQUESTS_SCHEMA
+
+    def __init__(self, db_path, engine=None):
+        super().__init__(db_path, engine)
+        self._create_lock = asyncio.Lock()
 
     async def create(
         self,
@@ -121,7 +126,7 @@ class ContainerRequestStore(BaseStore):
         """Count non-terminal requests for an agent (quota-consuming)."""
         async with self._db.execute(
             """SELECT COUNT(*) FROM container_requests
-               WHERE canonical_id = ? AND status NOT IN ('provisioned', 'failed')""",
+               WHERE canonical_id = ? AND status NOT IN ('provisioned', 'failed', 'rejected')""",
             (canonical_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -170,3 +175,44 @@ class ContainerRequestStore(BaseStore):
         if cur.rowcount != 1:
             return None
         return await self.get(request_id)
+
+    async def destroy(self, request_id: str) -> bool:
+        """Delete a request row entirely, releasing its quota.
+
+        Returns True if the row existed and was deleted.
+        """
+        cur = await self._db.execute(
+            "DELETE FROM container_requests WHERE id = ?",
+            (request_id,),
+        )
+        await self._db.commit()
+        return cur.rowcount == 1
+
+    async def create_with_policy_check(
+        self,
+        canonical_id: str,
+        policy,
+        *,
+        image: str = "",
+        reason: str = "",
+        config: dict | None = None,
+    ) -> tuple[dict, str, int]:
+        """Atomically count active requests and create a new one.
+
+        The count and insert are serialized by an asyncio lock so that
+        concurrent callers cannot both observe the same quota headroom
+        and both get approved when the quota is 1. The record is always
+        created inside the lock so non-approve verdicts are also persisted
+        atomically.
+        """
+        from tinyagentos.containers.provisioning_policy import APPROVE
+        async with self._create_lock:
+            active_count = await self.count_active_for_agent(canonical_id)
+            verdict = policy.evaluate(canonical_id, active_count)
+            record = await self.create(
+                canonical_id,
+                image=image,
+                reason=reason,
+                config=config,
+            )
+            return record, verdict, active_count

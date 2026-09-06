@@ -34,6 +34,7 @@ from tinyagentos.agent_image import (
     ensure_image_present,
     is_prefetch_enabled,
 )
+from tinyagentos.size_units import parse_size_bytes_or
 
 logger = logging.getLogger(__name__)
 
@@ -107,31 +108,7 @@ def _parse_size_bytes(size: str) -> int:
     Best-effort: returns 0 for an unrecognised value so the aggregate total
     never crashes on an unexpected format.
     """
-    units = {
-        "B": 1,
-        "KIB": 1024,
-        "MIB": 1024 ** 2,
-        "GIB": 1024 ** 3,
-        "TIB": 1024 ** 4,
-        "KB": 1000,
-        "MB": 1000 ** 2,
-        "GB": 1000 ** 3,
-        "TB": 1000 ** 4,
-    }
-    s = size.strip().upper()
-    # Longest suffix first so "MIB" matches before the "B" substring.
-    for suffix in sorted(units, key=len, reverse=True):
-        factor = units[suffix]
-        if s.endswith(suffix):
-            num = s[: -len(suffix)].strip()
-            try:
-                return int(float(num) * factor)
-            except ValueError:
-                return 0
-    try:
-        return int(float(s))
-    except ValueError:
-        return 0
+    return parse_size_bytes_or(size, 0)
 
 
 async def _incus_image_delete(alias: str) -> tuple[int, str]:

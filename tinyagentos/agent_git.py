@@ -139,6 +139,7 @@ _UNKNOWN_REV_MARKERS = (
     "unknown revision",
     "ambiguous argument",
     "bad object",
+    "needed a single revision",
 )
 
 

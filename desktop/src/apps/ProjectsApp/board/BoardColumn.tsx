@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import styles from "./BoardColumn.module.css";
 
 export interface BoardColumnProps {
-  status: "ready" | "claimed" | "closed" | "quarantined";
+  status: "ready" | "claimed" | "closed" | "quarantined" | "parked";
   count: number;
   showAllClosed?: boolean;
   onShowAllClosed?: () => void;
@@ -10,7 +10,7 @@ export interface BoardColumnProps {
   children: ReactNode;
 }
 
-const NAME = { ready: "Ready", claimed: "Claimed", closed: "Closed · 7d", quarantined: "Quarantined" } as const;
+const NAME = { ready: "Ready", claimed: "Claimed", closed: "Closed · 7d", quarantined: "Quarantined", parked: "Parked" } as const;
 
 export function BoardColumn(p: BoardColumnProps) {
   const onDropTask = p.onDropTask;
