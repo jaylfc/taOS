@@ -645,3 +645,41 @@ class TestObservatoryWakeBudget:
         assert resp.status_code == 200
         data = resp.json()
         assert "agents" in data
+
+
+@pytest.mark.asyncio
+async def test_state_write_runs_off_the_event_loop(tmp_path, monkeypatch):
+    """A durable write must not block the shared event loop.
+
+    ``atomic_write_text`` fsyncs the temp file and the parent directory. On a
+    slow disk (an SD card on a Pi, say) that is tens of milliseconds during
+    which no other request, dispatch tick or heartbeat can run -- the pause
+    switch stalls the very fleet it is steering. The write belongs on a worker
+    thread; ``_write_lock`` still serialises the read-modify-write.
+    """
+    import asyncio
+    from pathlib import Path
+
+    from tinyagentos.routes import observatory
+
+    on_loop: list[bool] = []
+
+    def recording_write(path, text, **kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_loop.append(False)
+        else:
+            on_loop.append(True)
+        Path(path).write_text(text)
+
+    monkeypatch.setattr(observatory, "atomic_write_text", recording_write)
+
+    await observatory._atomic_write(
+        tmp_path / "observatory_pause.json", {"global": True, "lanes": {}}
+    )
+
+    assert on_loop == [False], (
+        "atomic_write_text ran on the event loop thread -- its fsyncs block "
+        "every other coroutine for the duration of the write"
+    )
