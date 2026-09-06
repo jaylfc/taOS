@@ -124,7 +124,12 @@ def _seat_block() -> str:
 
 
 def _run_seat_block(
-    tmp_path: Path, *, seatd_present: bool, usermod_rc: int = 0
+    tmp_path: Path,
+    *,
+    seatd_present: bool,
+    usermod_rc: int = 0,
+    getent_rc: int = 0,
+    groupadd_rc: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     """Execute the seat block with stub binaries and report what it called."""
     stub_dir = tmp_path / "bin"
@@ -141,8 +146,8 @@ def _run_seat_block(
     stub("apt-get", f'echo "apt-get $*" >> "{log}"; exit 0')
     stub("usermod", f'echo "usermod $*" >> "{log}"; exit {usermod_rc}')
     stub("systemctl", f'echo "systemctl $*" >> "{log}"; exit 0')
-    stub("getent", f'echo "getent $*" >> "{log}"; exit 0')
-    stub("groupadd", f'echo "groupadd $*" >> "{log}"; exit 0')
+    stub("getent", f'echo "getent $*" >> "{log}"; exit {getent_rc}')
+    stub("groupadd", f'echo "groupadd $*" >> "{log}"; exit {groupadd_rc}')
 
     script = tmp_path / "block.sh"
     script.write_text("set -e\nTAOS_USER=kioskuser\n" + _seat_block())
@@ -174,6 +179,31 @@ class TestSeatGroupConfiguration:
         assert proc.returncode != 0, (
             "kiosk-setup.sh continued after usermod failed, so it reports success "
             "while the kiosk user has no seat access"
+        )
+
+    def test_groupadd_failure_aborts_setup_with_its_own_message(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed group creation must be reported as its own failure.
+
+        `set -e` inside an `if` condition's body is suppressed, so a `groupadd`
+        that fails there does not stop the script -- it falls through to
+        `usermod`, which then aborts with "Failed to add ... to the seat group",
+        misreporting a group-creation failure as a usermod failure.
+        """
+        proc = _run_seat_block(
+            tmp_path, seatd_present=True, getent_rc=1, groupadd_rc=1
+        )
+        assert proc.returncode != 0, (
+            "kiosk-setup.sh continued after groupadd failed, so it reports "
+            "success while the seat group was never created"
+        )
+        assert "Failed to create" in proc.stderr, (
+            "groupadd failure must be reported with its own message, not "
+            f"misattributed to usermod; stderr was:\n{proc.stderr}"
+        )
+        assert "usermod" not in proc.calls, (  # type: ignore[attr-defined]
+            "usermod ran after groupadd failed; the group was never created"
         )
 
     def test_seatd_service_is_enabled(self, tmp_path: Path) -> None:

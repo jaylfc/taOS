@@ -46,7 +46,10 @@ if command -v seatd &>/dev/null; then
     fi
     if ! getent group seat >/dev/null; then
         echo "Creating missing seat group..."
-        groupadd -r seat
+        if ! groupadd -r seat; then
+            echo "Failed to create seat group" >&2
+            exit 1
+        fi
     fi
     echo "Adding user $TAOS_USER to seat group..."
     if ! usermod -a -G seat "$TAOS_USER"; then

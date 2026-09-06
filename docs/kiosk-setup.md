@@ -25,7 +25,7 @@ This script will:
 5. Generate `/etc/systemd/system/taos-kiosk.service` with the seatd dependency declared
 6. Create the `taos-kiosk` convenience script
 
-Steps 3 and 4 run whenever `seatd` is available, including when it was already installed before the script ran. If enabling `seatd` or the group update fails, the script exits non-zero rather than reporting a successful setup.
+Seat configuration (step 3) runs whenever `seatd` is available, including when it was already installed before the script ran; Chromium installation (step 4) does not depend on `seatd`. If enabling `seatd`, creating the `seat` group, or the group update fails, the script exits non-zero rather than reporting a successful setup.
 
 ## Service
 
