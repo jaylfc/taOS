@@ -36,24 +36,34 @@
 # Portable (no GNU-only `stat`): a directory we can write into that neither the
 # group nor other users can write to.
 #
-# Known gap: this only reads the POSIX mode bits `ls -ld` prints. A directory
-# whose numeric mode is 0750 but which also carries a filesystem ACL granting
-# write to a group or "other" (systemd's RuntimeDirectoryMode does not strip
-# pre-existing ACLs, and some hardening profiles set default ACLs on /run)
-# renders as `drwxr-x---+` here -- the trailing `+` is ignored and the ACL
-# grant is invisible to this check. We don't shell out to `getfacl`/`setfacl`
-# to close that gap because neither is guaranteed installed on every target
-# (minimal container/embedded images in particular), and a missing-binary
-# failure here must not silently fall through to a worse default. If a
-# platform is known to set default ACLs on RuntimeDirectory, that must be
-# fixed at the installer/systemd-unit level, not detected here.
-stamp_dir_is_private() {
-    [ -d "$1" ] && [ -w "$1" ] || return 1
-    # drwxr-x---: chars 5-7 are the group bits, 8-10 the other bits.
-    case "$(ls -ld "$1" 2>/dev/null | awk '{print $1}')" in
+# ls -ld appends a trailing `+` to the mode string when the entry carries a
+# POSIX ACL (systemd's RuntimeDirectoryMode does not strip a pre-existing one,
+# and some hardening profiles set default ACLs on /run), so a directory whose
+# numeric mode is 0750 can still grant write to a group or "other" through an
+# ACL entry the plain mode bits don't show -- it would render as
+# `drwxr-x---+` here. We reject any `+`-marked mode outright rather than
+# shelling out to `getfacl` to inspect which grants: that binary isn't
+# guaranteed installed on every target (minimal container/embedded images in
+# particular), and a missing-binary failure here must not silently fall
+# through to a worse default. This is coarser than strictly necessary -- a
+# directory with only a restrictive ACL is rejected too -- but a false
+# negative on this check is the CWE-732 DoS; a false positive just means the
+# candidate loop drains twice, which the script already tolerates. If a
+# platform is known to set default ACLs on RuntimeDirectory, the durable fix
+# is still at the installer/systemd-unit level, not detected here.
+stamp_mode_is_private() {
+    case "$1" in
+        # drwxr-x---: chars 5-7 are the group bits, 8-10 the other bits.
         ?????w*|????????w*) return 1 ;;
+        # trailing '+' marks a POSIX ACL on the entry -- see comment above.
+        *+) return 1 ;;
     esac
     return 0
+}
+
+stamp_dir_is_private() {
+    [ -d "$1" ] && [ -w "$1" ] || return 1
+    stamp_mode_is_private "$(ls -ld "$1" 2>/dev/null | awk '{print $1}')"
 }
 
 # systemd hands over a colon-separated list when several RuntimeDirectory= are

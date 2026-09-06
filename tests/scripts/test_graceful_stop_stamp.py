@@ -10,6 +10,7 @@ the drain.
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 import time
@@ -19,6 +20,44 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "taos-graceful-stop.sh"
+
+# Everything before the script picks a stamp directory and calls curl: just
+# the shebang, comments, and helper-function definitions. Sourcing only this
+# preamble lets a test call a helper directly without the sourcing process
+# also making a real HTTP call or touching a real stamp directory.
+_PREAMBLE = SCRIPT.read_text().split("\nSTAMP_FILE=", 1)[0]
+
+
+def _call_shell_function(func_name: str, *args: str) -> subprocess.CompletedProcess:
+    """Invoke one helper function from the script in isolation."""
+    return subprocess.run(
+        ["bash", "-c", f'{_PREAMBLE}\n{func_name} "$@"', func_name, *args],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+def _is_eligible_candidate(path: str) -> bool:
+    """Mirror the script's own candidate check: a real directory that passes
+    the same private-mode predicate the candidate loop uses. `os.access(...,
+    os.W_OK)` alone is not equivalent -- it is also true for a world-writable
+    directory or a writable non-directory, either of which the script itself
+    rejects, so a bare-W_OK skip condition can skip a test the script would
+    not actually treat /run/taos as winning."""
+    if not os.path.isdir(path):
+        return False
+    try:
+        result = _call_shell_function("stamp_dir_is_private", path)
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
+# Evaluated once at collection time: whether a real /run/taos on this host
+# would win the script's own candidate lookup ahead of the hostile directory
+# these tests construct.
+_RUN_TAOS_IS_ELIGIBLE_CANDIDATE = _is_eligible_candidate("/run/taos")
 
 # Where the stamp used to live: /run when writable, else /tmp. Both are shared
 # with every other account on the box and /tmp is world-writable (1777), so a
@@ -191,6 +230,41 @@ def test_future_dated_stamp_does_not_suppress_forever(host: FakeHost) -> None:
     )
 
 
+def test_stamp_mode_rejects_acl_marker() -> None:
+    """`ls -ld` appends '+' when the entry carries a POSIX ACL; a mode string
+    that reads as private (0750) but carries that marker must still be
+    rejected, since RuntimeDirectoryMode does not strip a pre-existing ACL
+    that could grant group/other write (CWE-732)."""
+    result = _call_shell_function("stamp_mode_is_private", "drwxr-x---+")
+    assert result.returncode != 0, (
+        f"an ACL-marked mode string must be rejected: {result.stdout!r} {result.stderr!r}"
+    )
+
+
+def test_stamp_mode_accepts_plain_private_mode() -> None:
+    """Positive control: a private mode string with no ACL marker is still accepted."""
+    result = _call_shell_function("stamp_mode_is_private", "drwxr-x---")
+    assert result.returncode == 0, (
+        f"a plain private mode string must be accepted: {result.stdout!r} {result.stderr!r}"
+    )
+
+
+def test_stamp_dir_with_default_acl_is_rejected(tmp_path: Path) -> None:
+    if shutil.which("setfacl") is None:
+        pytest.skip("setfacl not available on this runner")
+    target = tmp_path / "acl-dir"
+    target.mkdir()
+    target.chmod(0o750)
+    subprocess.run(
+        ["setfacl", "-d", "-m", "o::rwx", str(target)], check=True, capture_output=True
+    )
+    result = _call_shell_function("stamp_dir_is_private", str(target))
+    assert result.returncode != 0, (
+        f"a directory with a default ACL granting other write must not be private: "
+        f"{result.stdout!r} {result.stderr!r}"
+    )
+
+
 def test_second_run_within_60s_is_deduped(host: FakeHost) -> None:
     host.run()
     host.run()
@@ -200,7 +274,7 @@ def test_second_run_within_60s_is_deduped(host: FakeHost) -> None:
 
 
 @pytest.mark.skipif(
-    os.access("/run/taos", os.W_OK),
+    _RUN_TAOS_IS_ELIGIBLE_CANDIDATE,
     reason="an eligible /run/taos on this host wins the candidate lookup before hostile",
 )
 def test_world_writable_runtime_dir_is_refused(host: FakeHost, tmp_path: Path) -> None:
@@ -216,7 +290,7 @@ def test_world_writable_runtime_dir_is_refused(host: FakeHost, tmp_path: Path) -
 
 
 @pytest.mark.skipif(
-    os.access("/run/taos", os.W_OK), reason="a real /run/taos on this host wins the lookup"
+    _RUN_TAOS_IS_ELIGIBLE_CANDIDATE, reason="a real /run/taos on this host wins the lookup"
 )
 def test_nohup_install_stamps_under_the_data_dir(host: FakeHost) -> None:
     """No systemd, so no RuntimeDirectory: fall back to data/, installed 0700."""
