@@ -313,3 +313,40 @@ class TestPortAllocator:
         host_side, _, container_side = port_mappings[0].partition(":")
         assert int(host_side) == host_port
         assert int(container_side) == 8080
+
+    
+
+
+
+@pytest.mark.asyncio
+async def test_manifests_have_no_changeme_secrets(tmp_path):
+    """RED: assert no manifest env value equals "changeme" and every
+    *_SECRET env uses a placeholder (e.g. {secret_key})."""
+    from pathlib import Path
+    import yaml
+
+    services_dir = Path("app-catalog") / "services"
+    manifests = sorted(services_dir.rglob("manifest.yaml"))
+    has_issue = False
+    for manifest_path in manifests:
+        data = yaml.safe_load(manifest_path.read_text())
+        if data.get("type") != "service":
+            continue
+        env = data.get("install", {}).get("env") or {}
+        for key, value in env.items():
+            if value == "changeme":
+                has_issue = True
+                print(
+                    f"FAIL: {manifest_path}: {key}='changeme' "
+                    f"in {manifest_path}"
+                )
+            if key.endswith("_SECRET") and "{secret_key}" not in str(value):
+                has_issue = True
+                print(
+                    f"FAIL: {manifest_path}: {key}={value!r} "
+                    f"missing placeholder in {manifest_path}"
+                )
+    assert not has_issue, (
+        "Manifest audit: some manifests have static secrets or "
+        "changeme values"
+    )

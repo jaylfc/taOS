@@ -19,9 +19,8 @@ install:
     - data:/data/data
   ports: [3000]
   env:
-    NEXTAUTH_SECRET: "changeme"
+    NEXTAUTH_SECRET: "{secret_key}"
     NEXTAUTH_URL: "http://localhost:3000"
-    DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/linkwarden"
 
 lifecycle:
   health_check: "curl -sf http://localhost:3000"
