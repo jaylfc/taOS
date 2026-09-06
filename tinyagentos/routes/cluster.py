@@ -5,7 +5,7 @@ import logging
 import subprocess
 from dataclasses import asdict
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -17,9 +17,17 @@ from tinyagentos.cluster.capabilities import hardware_to_targets, potential_capa
 from tinyagentos.cluster.optimiser import ClusterOptimiser
 from tinyagentos.cluster.worker_auth import _HMACError, require_worker_hmac
 from tinyagentos.cluster.worker_protocol import WorkerInfo
+from tinyagentos.auth_context import require_admin
 from tinyagentos.routes.auth import _require_admin
 
 router = APIRouter()
+
+# Admin-only fleet mutations / worker execution (tsk-exyzu4). Same gate as
+# revoke/block/unblock but as a dependency so the host local token (taosctl,
+# the taOS agent) is honoured as well as an admin session. Worker-facing
+# paths (heartbeat, pairing, leases, capabilities) keep their HMAC /
+# possession gates and are deliberately not covered by this.
+_ADMIN = [Depends(require_admin)]
 
 
 # ---------------------------------------------------------------------------
@@ -578,7 +586,7 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
     return {"status": "ok", "generation": cluster.generation}
 
 
-@router.delete("/api/cluster/workers/{name}")
+@router.delete("/api/cluster/workers/{name}", dependencies=_ADMIN)
 async def unregister_worker(request: Request, name: str):
     cluster = request.app.state.cluster_manager
     removed = await cluster.unregister_worker(name)
@@ -727,7 +735,7 @@ async def cluster_backends(request: Request):
     return cluster.aggregate_catalog()
 
 
-@router.post("/api/cluster/route")
+@router.post("/api/cluster/route", dependencies=_ADMIN)
 async def route_task(request: Request, body: RouteRequest):
     task_router = request.app.state.task_router
     data, worker_name = await task_router.route_request(
@@ -863,7 +871,7 @@ async def list_install_targets(request: Request):
     return targets
 
 
-@router.post("/api/cluster/move")
+@router.post("/api/cluster/move", dependencies=_ADMIN)
 async def move_model(request: Request, body: MoveRequest):
     cluster = request.app.state.cluster_manager
     to_worker = cluster.get_worker(body.to_worker)
@@ -1025,7 +1033,7 @@ REMOTE_EXEC_ALLOWLIST = [
 ]
 
 
-@router.post("/api/cluster/workers/{name}/deploy")
+@router.post("/api/cluster/workers/{name}/deploy", dependencies=_ADMIN)
 async def deploy_backend(request: Request, name: str, body: DeployRequest):
     """Trigger a backend install on a remote worker.
 
@@ -1057,7 +1065,7 @@ async def deploy_backend(request: Request, name: str, body: DeployRequest):
         return JSONResponse({"error": str(exc)}, status_code=502)
 
 
-@router.post("/api/cluster/workers/{name}/remote")
+@router.post("/api/cluster/workers/{name}/remote", dependencies=_ADMIN)
 async def worker_remote_command(request: Request, name: str, body: WorkerRemoteRequest):
     """Run an allowlisted command on a remote worker for debugging.
 
@@ -1092,7 +1100,7 @@ async def worker_remote_command(request: Request, name: str, body: WorkerRemoteR
         return JSONResponse({"error": str(exc)}, status_code=502)
 
 
-@router.post("/api/cluster/promote-archived")
+@router.post("/api/cluster/promote-archived", dependencies=_ADMIN)
 async def promote_archived_models(request: Request):
     """Manual trigger: scan all online workers and promote any archived
     models that are now compatible with cluster hardware.

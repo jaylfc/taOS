@@ -1509,10 +1509,39 @@ log "installing controller python deps into .venv (pip install -e '.[proxy]')"
 ./.venv/bin/pip install --quiet --upgrade pip
 ./.venv/bin/pip install --quiet -e ".[proxy]"
 
-# yt-dlp is needed for YouTube and X content ingestion (runs as subprocess)
-if ! command -v yt-dlp &>/dev/null; then
-    log "installing yt-dlp for YouTube/X content ingestion"
-    ./.venv/bin/pip install --quiet yt-dlp || log "WARN: yt-dlp install failed — YouTube ingest will not work"
+# The proxy extra no longer routes through litellm[proxy], so the proprietary
+# litellm-enterprise wheel is no longer part of the install set. A FRESH install
+# therefore never lands it -- but pip does not prune what an EARLIER install put
+# in the venv, so upgrading an existing box would silently keep redistributing
+# it. Nothing in taOS imports it (grep -rn litellm_enterprise tinyagentos/ is
+# empty), so removing it is inert; and it is the shipped venv, not the source
+# tree, that a commercial licensee redistributes.
+#
+# Probed with importlib.metadata.distribution(), not importlib.util.find_spec():
+# that is exactly what `pip uninstall` itself consults, so the probe and the
+# uninstall it gates can no longer disagree about whether the package is there.
+litellm_enterprise_present() {
+    ./.venv/bin/python -c "
+import importlib.metadata as m, sys
+try:
+    m.distribution('litellm-enterprise')
+except m.PackageNotFoundError:
+    sys.exit(1)
+" 2>/dev/null
+}
+
+if litellm_enterprise_present; then
+    log "removing litellm-enterprise (LicenseRef-Proprietary) left in .venv by an earlier install"
+    # `|| true` because of `set -e` above: pip's own non-zero exit would end the
+    # installer with pip's message before the re-probe below could give the
+    # by-hand command; the re-probe is the verdict, not pip's exit code.
+    ./.venv/bin/pip uninstall --quiet --yes litellm-enterprise || true
+    # Fail closed: a warning that lets the installer succeed anyway ships the
+    # proprietary package right along with it. Re-probe with the same check
+    # pip uninstall itself consults, rather than trusting its exit code alone.
+    if litellm_enterprise_present; then
+        die "litellm-enterprise (LicenseRef-Proprietary) is still present in .venv after uninstall -- remove it by hand: ./.venv/bin/pip uninstall -y litellm-enterprise"
+    fi
 fi
 
 log "verifying controller import"
