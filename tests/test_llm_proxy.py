@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+import stat
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -785,3 +789,76 @@ class TestProxySelfHeal:
         monkeypatch.setattr(sys, "executable", str(tmp_path / ".venv" / "bin" / "python"))
 
         assert await LLMProxy()._selfheal_proxy_extra() is False
+
+
+class TestConfigDirPermissions:
+    """S2-10: LiteLLM config dir and files must not be world-readable.
+
+    The master key, backend API keys, and callback shim .py files must live
+    under <data_dir>/litellm (not /tmp), with the directory at 0700 and every
+    file at 0600.
+    """
+
+    @pytest.mark.asyncio
+    async def test_config_dir_under_data_dir(self, tmp_path):
+        """When data_dir is set, config_dir must be <data_dir>/litellm, not /tmp."""
+        proxy = LLMProxy(port=14010, data_dir=tmp_path)
+        assert proxy.config_dir == tmp_path / "litellm"
+
+    @pytest.mark.asyncio
+    async def test_config_dir_not_tmp_default(self, tmp_path):
+        """With data_dir set, config_dir must not be the old /tmp/taos-litellm default."""
+        proxy = LLMProxy(port=14011, data_dir=tmp_path)
+        assert str(proxy.config_dir) != "/tmp/taos-litellm"
+        assert not str(proxy.config_dir).startswith("/tmp/taos-litellm")
+
+    @pytest.mark.asyncio
+    async def test_config_dir_default_still_tmp_when_no_data_dir(self):
+        """Without data_dir, the legacy /tmp fallback is retained (e.g. ad-hoc tests)."""
+        proxy = LLMProxy(port=14012)
+        assert proxy.config_dir == Path("/tmp/taos-litellm")
+
+    @pytest.mark.asyncio
+    async def test_config_dir_mode_0700(self, tmp_path):
+        """Config directory must be created with mode 0700."""
+        proxy = LLMProxy(port=14013, data_dir=tmp_path)
+        await proxy.write_config([])
+        mode = stat.S_IMODE(proxy.config_dir.stat().st_mode)
+        assert mode == 0o700
+
+    @pytest.mark.asyncio
+    async def test_config_files_mode_0600(self, tmp_path):
+        """Every file written by write_config must have mode 0600."""
+        proxy = LLMProxy(port=14014, data_dir=tmp_path, inhouse_keys=True)
+        await proxy.write_config([])
+        expected_files = ["litellm_config.yaml", "taos_callback.py", "taos_auth.py"]
+        for name in expected_files:
+            f = proxy.config_dir / name
+            assert f.exists(), f"{name} was not written"
+            mode = stat.S_IMODE(f.stat().st_mode)
+            assert mode == 0o600, f"{name} has mode {oct(mode)}, expected 0o600"
+
+    @pytest.mark.asyncio
+    async def test_config_contents_include_master_key(self, tmp_path):
+        """The master key is embedded in the generated yaml (regression guard for
+        the permission fix — the key must still be present, just unreadable by others)."""
+        key = get_litellm_master_key(tmp_path)
+        proxy = LLMProxy(port=14015, data_dir=tmp_path)
+        await proxy.write_config([])
+        import yaml
+        yaml_text = (proxy.config_dir / "litellm_config.yaml").read_text()
+        assert key in yaml_text
+
+
+class TestSystemdUnitPermissions:
+    """S2-10: the systemd unit template must enable PrivateTmp and UMask."""
+
+    _UNIT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "systemd" / "tinyagentos.service"
+
+    def test_unit_has_private_tmp(self):
+        text = self._UNIT_PATH.read_text()
+        assert "PrivateTmp=yes" in text
+
+    def test_unit_has_umask(self):
+        text = self._UNIT_PATH.read_text()
+        assert "UMask=0077" in text

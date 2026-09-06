@@ -365,12 +365,17 @@ fi
 
 log "[7/8] starting tinyagentos.service..."
 # Clear any stale root-owned LiteLLM config dir from the previous install.
-# The controller writes its LiteLLM config to /tmp/taos-litellm at startup;
-# if that directory was created by the old root process the non-root taos user
-# cannot write to it, causing LiteLLM to fail on first boot after migration.
+# S2-10: the config dir moved from /tmp/taos-litellum into <data_dir>/litellm
+# (0700). Remove any leftover at the old /tmp location, and clear any stale
+# <data_dir>/litellm so the non-root taos user can recreate it cleanly on first
+# boot instead of inheriting root-owned files it cannot overwrite.
 if [[ -d /tmp/taos-litellm ]]; then
     rm -rf /tmp/taos-litellm
-    log "  cleared stale /tmp/taos-litellm (will be recreated by taos user on startup)"
+    log "  cleared stale /tmp/taos-litellm (superseded by data_dir/litellm)"
+fi
+if [[ -d "$NEW_TAOS_DIR/data/litellm" ]]; then
+    rm -rf "$NEW_TAOS_DIR/data/litellm"
+    log "  cleared stale $NEW_TAOS_DIR/data/litellm (will be recreated by taos user on startup)"
 fi
 if command -v systemctl >/dev/null 2>&1 && [[ "$_os_name" == "Linux" ]]; then
     systemctl start tinyagentos \

@@ -90,7 +90,16 @@ class LLMProxy:
         inhouse_keys: bool = False,
     ):
         self.port = port
-        self.config_dir = config_dir or Path("/tmp/taos-litellm")
+        # S2-10: config lives under <data_dir>/litellm (0700) so the master key,
+        # backend keys and callback shims are not world-readable in a shared
+        # /tmp. Fall back to /tmp/taos-litellm only when data_dir is unknown
+        # (ad-hoc tests, routing-only mode without a data dir).
+        if config_dir is not None:
+            self.config_dir = config_dir
+        elif data_dir is not None:
+            self.config_dir = Path(data_dir) / "litellm"
+        else:
+            self.config_dir = Path("/tmp/taos-litellm")
         self.database_url = database_url
         # In-house key mode: mint/scope per-agent keys in a local SQLite store
         # and authorize them via the custom_auth hook, instead of LiteLLM's
@@ -170,7 +179,13 @@ class LLMProxy:
         from the installed ``tinyagentos`` package — keeping the real
         callback code in one place.
         """
-        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # mkdir's mode is masked by umask; chmod ensures 0700 even if the
+        # directory already existed from a prior (insecure) run.
+        try:
+            os.chmod(self.config_dir, 0o700)
+        except OSError:
+            pass
         discovered = await _discover_ollama_backends_concurrent(backends)
         config = generate_litellm_config(
             backends,
@@ -182,18 +197,27 @@ class LLMProxy:
         config_path = self.config_dir / "litellm_config.yaml"
 
         import yaml
-        config_path.write_text(yaml.dump(config, default_flow_style=False))
+        from tinyagentos.atomic_io import atomic_write_text
+        atomic_write_text(
+            config_path,
+            yaml.dump(config, default_flow_style=False),
+            mode=0o600,
+        )
 
         shim_path = self.config_dir / "taos_callback.py"
-        shim_path.write_text(
+        atomic_write_text(
+            shim_path,
             "from tinyagentos.litellm_callback import taos_callback "
-            "as proxy_handler_instance\n"
+            "as proxy_handler_instance\n",
+            mode=0o600,
         )
         if self.inhouse_keys:
             # Sibling shim so LiteLLM's config-dir-relative importer can load
             # the custom_auth hook (general_settings.custom_auth: taos_auth...).
-            (self.config_dir / "taos_auth.py").write_text(
-                "from tinyagentos.litellm_auth import user_api_key_auth\n"
+            atomic_write_text(
+                self.config_dir / "taos_auth.py",
+                "from tinyagentos.litellm_auth import user_api_key_auth\n",
+                mode=0o600,
             )
         return config_path
 
@@ -486,7 +510,10 @@ class LLMProxy:
         # are visible instead of silently discarded. stdout stays on
         # DEVNULL — it's mostly noisy per-request logs we don't need.
         stderr_log_path = config_path.parent / "litellm.stderr.log"
-        stderr_handle = stderr_log_path.open("a", buffering=1)
+        # S2-10: log at 0600 so error output (which may carry backend key material
+        # in LiteLLM's error text) is not world-readable alongside the config.
+        stderr_fd = os.open(str(stderr_log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        stderr_handle = os.fdopen(stderr_fd, "a", buffering=1)
         try:
             self._process = subprocess.Popen(
                 [
