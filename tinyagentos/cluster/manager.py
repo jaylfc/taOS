@@ -32,15 +32,22 @@ def _format_hw(hw) -> str:
     if not isinstance(hw, dict):
         return "Unknown hardware"
     parts = []
-    ram = hw.get("ram_mb", 0)
+
+    def _safe_int(val) -> int:
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return 0
+
+    ram = _safe_int(hw.get("ram_mb", 0))
     if ram:
         parts.append(f"{ram // 1024}GB RAM")
     gpu = hw.get("gpu", {})
-    if gpu.get("type") not in (None, "none", ""):
-        vram = gpu.get("vram_mb", 0)
+    if isinstance(gpu, dict) and gpu.get("type") not in (None, "none", ""):
+        vram = _safe_int(gpu.get("vram_mb", 0))
         parts.append(f"{gpu.get('model', gpu['type'])}" + (f" {vram // 1024}GB" if vram else ""))
     npu = hw.get("npu", {})
-    if npu.get("type", "none") != "none":
+    if isinstance(npu, dict) and npu.get("type", "none") != "none":
         parts.append(f"{npu['type']} {npu.get('tops', 0)} TOPS")
     return ", ".join(parts) if parts else "CPU only"
 
@@ -96,6 +103,19 @@ class ClusterManager:
                 await self._monitor_task
             except asyncio.CancelledError:
                 pass
+        if self._background_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        *self._background_tasks, return_exceptions=True
+                    ),
+                    timeout=10,
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                logger.warning(
+                    "Timed out waiting for %d background tasks to complete",
+                    len(self._background_tasks),
+                )
 
     async def register_worker(
         self, info: WorkerInfo, generation: int | None = None
@@ -114,13 +134,12 @@ class ClusterManager:
             caps_before = {k for k, v in self._capabilities.get_all_capabilities().items() if v["available"]}
 
         is_first_time = info.name not in self._ever_seen
-        self._ever_seen.add(info.name)
 
-        # taOS #640: controller fence — if this instance has been superseded
+        # taOS #640: controller fence -- if this instance has been superseded
         # by another controller, reject all registrations (CodeRabbit PR #1928).
         if self._fenced:
             return (False, "fenced")
-        # taOS #640: split-brain protection — reject registration from a
+        # taOS #640: split-brain protection -- reject registration from a
         # worker that echoes a different generation (another active controller).
         # Legacy workers that don't send generation get a pass (None).
         if generation is not None and generation != self._generation:
@@ -129,6 +148,7 @@ class ClusterManager:
                 info.name, generation, self._generation,
             )
             return (False, "stale_generation")
+        self._ever_seen.add(info.name)
 
         prev_status = self._workers[info.name].status if info.name in self._workers else None
 

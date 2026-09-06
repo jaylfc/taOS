@@ -390,6 +390,9 @@ async def register_worker(request: Request, body: WorkerRegister):
     if hw.get("ram_mb") is None:
         hw = dict(hw)
         hw.pop("ram_mb", None)
+    bad = _bad_hardware(hw)
+    if bad:
+        return JSONResponse({"error": bad}, status_code=400)
     info = WorkerInfo(
         name=body.name,
         url=body.url,
@@ -479,7 +482,7 @@ async def _surface_storage_backup(app, worker_name: str, marker: dict) -> None:
         f"renamed it to '{backed_up}' before creating a fresh pool. "
         f"No data was deleted — see your workspace inbox for the full note."
     )
-    notif = getattr(app.state, "notif_store", None)
+    notif = getattr(app.state, "notifications", None)
     if notif is not None:
         try:
             await notif.add(title, short_msg, level="warning", source=f"worker:{worker_name}")
@@ -535,6 +538,21 @@ async def _surface_storage_backup(app, worker_name: str, marker: dict) -> None:
         logger.warning("storage-backup notify: failed to write workspace inbox file")
 
 
+def _bad_hardware(hw: dict | None) -> str | None:
+    """Return an error string if hardware carries non-int ram_mb/vram_mb, else None."""
+    if not hw:
+        return None
+    ram = hw.get("ram_mb")
+    if ram is not None and not isinstance(ram, int):
+        return "hardware.ram_mb must be an integer"
+    gpu = hw.get("gpu")
+    if isinstance(gpu, dict):
+        vram = gpu.get("vram_mb")
+        if vram is not None and not isinstance(vram, int):
+            return "hardware.gpu.vram_mb must be an integer"
+    return None
+
+
 @router.post("/api/cluster/heartbeat")
 async def worker_heartbeat(request: Request, body: HeartbeatBody):
     # HMAC gate — only paired, registered workers may heartbeat.
@@ -548,6 +566,9 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
             {"error": "Worker name in header does not match body"},
             status_code=403,
         )
+    bad_hw = _bad_hardware(body.hardware)
+    if bad_hw:
+        return JSONResponse({"error": bad_hw}, status_code=400)
     cluster = request.app.state.cluster_manager
     ok = cluster.heartbeat(
         body.name,
