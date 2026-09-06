@@ -9,12 +9,17 @@ from collections import OrderedDict
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 import taosmd.agents as tm_agents
 
 from tinyagentos.agent_db import find_agent, get_agent_summaries
-from tinyagentos.config import save_config_locked, validate_agent_name, unique_agent_slug
+from tinyagentos.config import (
+    save_config_locked,
+    slugify_agent_name,
+    unique_agent_slug,
+    validate_agent_name,
+)
 from tinyagentos.routes import agent_archive
 from tinyagentos.routes import agent_deploy
 from tinyagentos.routes import agent_import
@@ -1143,9 +1148,27 @@ async def export_agent(request: Request, name: str):
     }
 
 
+class AgentImportData(BaseModel):
+    """Explicit field allowlist for the per-agent dict in a JSON import bundle.
+
+    Only user-facing configuration fields survive import. Operational keys
+    such as ``llm_key``, ``permitted_models``, ``registry_canonical_id`` and
+    ``can_read_user_memory`` are stripped (``extra="ignore"``) so an exported
+    or third-party bundle cannot silently inject secrets or grant privileges.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+    name: str
+    host: str | None = None
+    qmd_index: str | None = None
+    color: str | None = None
+    emoji: str | None = None
+    display_name: str | None = None
+
+
 class AgentImport(BaseModel):
     version: int = 1
-    agent: dict
+    agent: AgentImportData
     channels: list[dict] = []
     groups: list[str] = []
 
@@ -1193,27 +1216,40 @@ async def import_agent(request: Request):
 
 
 async def _import_agent_json(request: Request, body: AgentImport):
-    """Import an agent from an exported JSON config."""
+    """Import an agent from an exported JSON config.
+
+    Reuses the create path's name validation and slugification so the
+    imported agent lands under the same container-safe slug a fresh
+    ``POST /api/agents`` would produce. The ``AgentImportData`` allowlist
+    ensures privileged keys never reach ``config.yaml``.
+    """
     config = request.app.state.config
 
-    agent_data = body.agent
-    name = agent_data.get("name", "")
+    agent_in = body.agent
+    name = agent_in.name.strip()
     if not name:
         return JSONResponse({"error": "Agent name is required in export data"}, status_code=400)
     name_error = validate_agent_name(name)
     if name_error:
         return JSONResponse({"error": name_error}, status_code=400)
-    if find_agent(config, name):
-        return JSONResponse({"error": f"Agent '{name}' already exists"}, status_code=409)
+    # Slugify with the same rule the create route uses (unique_agent_slug
+    # delegates to slugify_agent_name). Collisions keep the 409 behaviour.
+    slug = slugify_agent_name(name)
+    if find_agent(config, slug):
+        return JSONResponse({"error": f"Agent '{slug}' already exists"}, status_code=409)
 
-    # Create the agent
-    config.agents.append(agent_data)
+    # Build the persisted agent from the allowlisted model only, then
+    # rewrite name/display_name exactly as the create route does.
+    agent = agent_in.model_dump(exclude_unset=True)
+    agent["name"] = slug
+    agent["display_name"] = name
+    config.agents.append(agent)
     await save_config_locked(config, config.config_path)
 
     # Restore channel assignments
     channel_store = request.app.state.channels
     for ch in body.channels:
-        await channel_store.add(name, ch.get("type", ""), ch.get("config", {}))
+        await channel_store.add(slug, ch.get("type", ""), ch.get("config", {}))
 
     # Restore group memberships
     relationship_mgr = request.app.state.relationships
@@ -1221,9 +1257,9 @@ async def _import_agent_json(request: Request, body: AgentImport):
     group_map = {g["name"]: g["id"] for g in existing_groups}
     for group_name in body.groups:
         if group_name in group_map:
-            await relationship_mgr.add_member(group_map[group_name], name)
+            await relationship_mgr.add_member(group_map[group_name], slug)
 
-    return {"status": "imported", "name": name}
+    return {"status": "imported", "name": slug}
 
 
 @router.delete("/api/agents/{name}/destroy")

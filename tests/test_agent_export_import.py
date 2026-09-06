@@ -1,6 +1,9 @@
 """Tests for agent export/import endpoints."""
 import pytest
 
+from tinyagentos.agent_db import find_agent
+from tinyagentos.config import load_config
+
 
 @pytest.mark.asyncio
 class TestAgentExport:
@@ -136,3 +139,43 @@ class TestAgentImport:
         # Verify cloned agent has channels
         channels = await channel_store.list_for_agent("cloned-agent")
         assert len(channels) >= 1
+
+    async def test_import_strips_privileged_keys_and_slugifies_name(
+        self, client, tmp_data_dir
+    ):
+        """S2-18: an import bundle must not persist privileged keys and the
+        agent name must be slugified to a container-safe identifier."""
+        payload = {
+            "version": 1,
+            "agent": {
+                "name": "My Agent",
+                "host": "10.0.0.50",
+                "color": "#ff0000",
+                "llm_key": "super-secret-key",
+                "can_read_user_memory": True,
+                "registry_canonical_id": "evil-canonical-id",
+                "permitted_models": ["gpt-4"],
+            },
+            "channels": [],
+            "groups": [],
+        }
+        resp = await client.post("/api/agents/import", json=payload)
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "my-agent"
+
+        config = load_config(tmp_data_dir / "config.yaml")
+        imported = find_agent(config, "my-agent")
+        assert imported is not None, "agent name was not slugified"
+        assert imported["name"] == "my-agent"
+        assert imported["display_name"] == "My Agent"
+
+        for key in (
+            "llm_key",
+            "can_read_user_memory",
+            "registry_canonical_id",
+            "permitted_models",
+        ):
+            assert key not in imported, f"privileged key persisted: {key}"
+
+        assert imported["host"] == "10.0.0.50"
+        assert imported["color"] == "#ff0000"
