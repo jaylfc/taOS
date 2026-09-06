@@ -770,6 +770,37 @@ async def test_park_claimed_task_records_from_status_claimed(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_park_quarantined_task_records_from_status_quarantined(tmp_path):
+    """The audit row must name the status the card actually came from.
+
+    Parking accepts any row that is not closed, cancelled or parked, so a
+    quarantined card can be parked -- and quarantine keeps `claimed_by`.
+    Inferring the source status from the claimer logs that card as coming from
+    'claimed', which sends anyone reading the history after a dispatch
+    incident to the wrong story.
+    """
+    audit = BoardAuditLog(tmp_path / "audit.db")
+    await audit.init()
+    s = ProjectTaskStore(tmp_path / "tasks.db", audit=audit)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        await s.claim_task(task["id"], "worker-1")
+        assert await s.quarantine_task(task["id"], "system") is True
+        assert (await s.get_task(task["id"]))["claimed_by"] == "worker-1"
+
+        assert await s.park_task(task["id"], "system") is True
+
+        history = await audit.history(task["id"])
+        parked = [h for h in history if h["event"] == "task.parked"]
+        assert len(parked) == 1
+        assert parked[0]["from_status"] == "quarantined"
+    finally:
+        await s.close()
+        await audit.close()
+
+
+@pytest.mark.asyncio
 async def test_park_is_permanent(tmp_path):
     s = await _store(tmp_path)
     task = await s.create_task("prj-1", "Task", "alice")
@@ -836,6 +867,57 @@ async def test_update_task_cannot_unpark(tmp_path):
     assert fetched["status"] == "parked"
     assert fetched["title"] == "Renamed"
     await s.close()
+
+
+@pytest.mark.asyncio
+async def test_update_refused_by_the_parked_guard_publishes_nothing(tmp_path):
+    """An edit the parked predicate refuses must not announce itself.
+
+    The guard closes the read-then-write gap by matching zero rows when the
+    task was parked after the pre-read.  Nothing commits in that case, so a
+    `task.updated` event would tell every consumer to apply a patch the
+    database never took.
+    """
+    mock_broker = AsyncMock()
+    s = ProjectTaskStore(tmp_path / "tasks.db", broker=mock_broker)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        mock_broker.reset_mock()
+
+        real_execute = s._db.execute
+        state = {"raced": False}
+
+        def racing_execute(sql, *args, **kwargs):
+            # Park the task in the last moment before the guarded UPDATE runs:
+            # the window the predicate exists to cover.  Stays a plain function
+            # so every other statement hands back aiosqlite's cursor unchanged.
+            if (
+                not state["raced"]
+                and sql.lstrip().upper().startswith("UPDATE")
+                and "status != 'parked'" in sql
+            ):
+                state["raced"] = True
+
+                async def _park_then_execute():
+                    assert await s.park_task(task["id"], "system") is True
+                    return await real_execute(sql, *args, **kwargs)
+
+                return _park_then_execute()
+            return real_execute(sql, *args, **kwargs)
+
+        s._db.execute = racing_execute
+        await s.update_task(task["id"], status="closed")
+        s._db.execute = real_execute
+
+        assert state["raced"] is True
+        assert (await s.get_task(task["id"]))["status"] == "parked"
+        published = [
+            call.args[1].kind for call in mock_broker.publish.call_args_list
+        ]
+        assert "task.updated" not in published
+    finally:
+        await s.close()
 
 
 @pytest.mark.asyncio
