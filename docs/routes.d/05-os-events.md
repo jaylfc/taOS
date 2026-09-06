@@ -5,17 +5,17 @@
 ## SSE stream characteristics
 
 - `?kinds=a,b,c` — comma-separated allowlist of event kinds
-- Omitted, empty, or naming no kind at all (`?kinds=`, `?kinds=%20`, `?kinds=,`) means every kind: an empty allowlist is "no filter", so a blank parameter can no longer build a set that matches nothing and deliver silence
+- Omitted, empty, or naming no kind at all (`?kinds=`, `?kinds=%20`, `?kinds=,`) means every kind (empty allowlist = no filter, not silence)
 - Filtering happens as events enter the per-connection buffer, so an unrequested kind can never evict one the subscriber asked for
-- At most 256 events are buffered per connection; past that the OLDEST is dropped and the client gets `{"kind": "events.lagged", "dropped": N}` — its cue to refetch rather than assume it saw everything
+- At most 256 events are buffered per connection; past that the OLDEST is dropped and the client gets `{"kind": "events.lagged", "dropped": N}` as a cue to refetch
 - A `:keepalive` comment frame every 10 s keeps proxies from closing an idle stream
-- Frames deliberately carry **no** SSE `id:` line (that is what makes a browser send `Last-Event-ID`, which this endpoint ignores): resume is best-effort through the EventBus replay buffer (last 32 events per channel, delivered on subscribe)
-- The payload never crosses the wire: `id` is the event's trace id; a subscriber learns that something changed and refetches to learn what
+- Frames carry **no** SSE `id:` line; resume is best-effort via the EventBus replay buffer (last 32 events per channel, delivered on subscribe)
+- The payload never crosses the wire: `id` is just the trace id, so a subscriber refetches to learn what changed
 
 ## Desktop integration
 
-- `desktop/src/hooks/use-os-events.ts`: `useOsEvents(kinds, onEvent)` holds one connection, returns `connected` / `stale`, dedupes by event id, reconnects with exponential backoff, and reopens the stream when `kinds` changes (the URL is fixed per connection)
+- `desktop/src/hooks/use-os-events.ts`: `useOsEvents(kinds, onEvent)` holds one connection, returns `connected` / `stale`, dedupes by event id, reconnects with backoff, and reopens the stream when `kinds` changes
 
 ## Technical details
 
-- Subscriptions and relay tasks are created INSIDE the response generator, not the handler body: a generator closed before iteration never runs, so its `finally` can only undo setup done there; handler-side setup leaked a subscription per client that disconnected before the stream started
+- Subscriptions and relay tasks are created INSIDE the response generator, not the handler body: a generator closed before iteration never runs its `finally`; handler-side setup leaked a subscription per client that disconnected before the stream started

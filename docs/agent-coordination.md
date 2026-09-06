@@ -415,7 +415,15 @@ The registry-JWT surface, by scope:
   whitelisted fields (title, body, labels, priority), own-or-lead cards only.
   Also SEPARATE from project_tasks - a plain project_tasks token gets 403 on
   PATCH. The seeded internal lead (@taOS-dev) carries it by default so it can
-  edit its own board's cards; assignee_id and parent_task_id stay human-only.
+  edit its own board's cards; assignee_id and parent_task_id stay human-only -
+  the whitelist keys on which fields the body SENDS, so sending one of them as
+  `null` (a clear) is refused 403 like any other edit of it.
+  The route writes exactly the fields the body sends: an omitted field is left
+  unchanged, `assignee_id`/`parent_task_id`/`element_id` take `null` as a real
+  clear (`element_id` also takes the legacy `"none"` string), and anything the
+  route cannot write - a `null` on a non-nullable field, a misspelled key, a
+  read-only column such as `id`/`created_by`/`claimed_by` - is a 422 rather
+  than a 200 echoing a task it never changed.
 - **project_doc_review**: read and write doc-review stamps for a project.
   `GET /api/projects/{pid}/doc-reviews` (list), `GET /api/projects/{pid}/doc-review/{path}`
   (read one), and `PUT /api/projects/{pid}/doc-review/{path}` (set state).
@@ -1134,7 +1142,16 @@ cookie plus the CSRF double-submit on writes; no registry scope reaches them.
 - `POST /api/restore` -- multipart `file`, restores a backup tarball into the
   data dir. **The path is `/api/restore`, NOT `/api/settings/restore`**, even
   though the handler sits in `routes/settings.py` beside the `/api/settings/*`
-  routes.
+  routes. The upload is capped at 64 MB and the tarball goes
+  through `tinyagentos/safe_archive.py`: over the shared bomb caps (256 MB
+  declared uncompressed, 64 MB per member, 10000 members) or carrying a member
+  the path-safe tar filter rejects, the whole restore answers `400` and writes
+  nothing. `POST /api/themes/install` is capped the same way at 32 MB and
+  `POST /api/userspace-apps/install` at 64 MB. The upload caps are enforced by
+  `tinyagentos/middleware/upload_body_limit.py` while the body is still
+  arriving -- a handler cannot do it, because FastAPI has already spooled a
+  multipart file part to temporary storage by the time it runs -- and answer
+  `413`.
 
 **Both write paths REBUILD `AppConfig` field by field**, and a field missing
 from either rebuild is silently dropped on the next save, wiping whatever the

@@ -196,6 +196,31 @@ What this means when you write a test:
 - **A filename no longer changes behaviour.** The old carve-out was a substring match on the
   path, so renaming a file silently re-armed the bypass with no failure anywhere.
 
+### Test markers
+
+Every pytest marker is declared once, in `pyproject.toml` under
+`[tool.pytest.ini_options] markers`. Do NOT register one from a
+`pytest_configure` hook in `tests/conftest.py`: that file already defines the
+canonical hook, and a second module-level `def pytest_configure` is last-wins
+rebinding rather than additive registration, so the earlier body never runs and
+its next edit is a silent no-op in CI.
+
+- **`@pytest.mark.skip_if_no_embed_backend` skips a test that cannot run without
+  an embedding backend** — a reachable qmd service, or an installed
+  `onnxruntime`. There is no opt-out marker and no `-o` switch: not applying it
+  IS the opt-out, and that is the default for every test.
+- **Like `csrf_bypass`, nothing uses it, and
+  `tests/test_embed_backend_marker_debt.py` asserts the list stays EMPTY.**
+  Before adding it, check what the test actually calls. A test driving an
+  `AsyncMock(spec=httpx.AsyncClient)`, a hand-built `_snapshot`, or a patched
+  `_run_setup` never reaches a backend, so the marker does not protect it from
+  anything — it just deletes it from every CI row while the suite stays green.
+- **Probe the capability, not a proxy for it.** The backend check opens a socket
+  against the packaged default qmd URL and looks for `onnxruntime` (what executes a
+  model), not `onnx` (the model-format library taOS does not depend on) and not
+  an environment variable no module under `tinyagentos/` reads. A proxy answers
+  "no backend" on a box that works and "backend" for a host that does not exist.
+
 Patch timing matters if you ever stub it yourself: `register_all_routers` does
 `from ... import verify_csrf` and freezes the object into `Depends(...)` at `include_router`
 time, so patching the module attribute AFTER `create_app` does nothing.

@@ -11,7 +11,7 @@
 
 ### POST /api/cluster/workers/{name}/block
 
-- Revokes the key AND refuses re-pairing until an admin unblocks (acts at the pairing gate, not merely the auth gate)
+- Revokes the key AND refuses re-pairing until an admin unblocks (acts at the pairing gate, not the auth gate)
 
 ### POST /api/cluster/workers/{name}/unblock
 

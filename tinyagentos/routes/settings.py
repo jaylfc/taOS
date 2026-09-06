@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import tarfile
+import tempfile
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -20,6 +21,8 @@ from pydantic import BaseModel
 from tinyagentos.config import AppConfig, save_config_locked, validate_config
 from tinyagentos.auto_update import resolve_tracked_branch, is_valid_branch_name, PREF_NAMESPACE
 from tinyagentos.data_snapshot import snapshot_data_dir
+from tinyagentos.middleware.upload_body_limit import register_upload_cap
+from tinyagentos.safe_archive import ArchiveError, extract_tar_safely
 from tinyagentos.update_runner import switch_to_branch
 from tinyagentos.restart_orchestrator import write_pending_restart
 
@@ -304,29 +307,47 @@ async def create_backup(request: Request):
     )
 
 
+# Cap the backup upload so a hostile body is never fully buffered; the archive's
+# own bomb limits then bound what the extraction can write into the data dir.
+_MAX_BACKUP_BYTES = 64 * 1024 * 1024
+
+# The read() below runs only after FastAPI has already spooled the multipart
+# body, so the cap also has to be enforced on the arriving request.
+register_upload_cap("/api/restore", lambda: _MAX_BACKUP_BYTES)
+
+
 @router.post("/api/restore")
 async def restore_backup(request: Request, file: UploadFile):
     """Restore configuration from a backup tarball."""
     data_dir = request.app.state.config_path.parent
-    content = await file.read()
+    # Read one byte past the cap so an oversized upload is detected without
+    # buffering the rest of it (same pattern as the package installers).
+    content = await file.read(_MAX_BACKUP_BYTES + 1)
+    if len(content) > _MAX_BACKUP_BYTES:
+        return JSONResponse({"error": "backup file too large (64 MB max)"}, status_code=413)
     buf = io.BytesIO(content)
     try:
         with tarfile.open(fileobj=buf, mode="r:gz") as tar:
-            for member in tar.getmembers():
-                # Strip the leading "backup/" prefix when extracting
-                if not member.name.startswith("backup/"):
-                    continue
-                relative = member.name[len("backup/"):]
-                if not relative:
-                    continue
-                rel_path = Path(relative)
-                if rel_path.is_absolute() or ".." in rel_path.parts:
-                    continue
-                dest = data_dir / relative
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                f = tar.extractfile(member)
-                if f is not None:
-                    dest.write_bytes(f.read())
+            # Stage inside data_dir (same filesystem, so the moves are renames).
+            # extract_tar_safely applies the shared bomb caps before anything is
+            # written and PEP 706's "data" filter while it writes, so the
+            # "backup/" prefix can be stripped by relocating real files rather
+            # than by trusting a member name.
+            staging = Path(tempfile.mkdtemp(prefix=".taos-restore-", dir=str(data_dir)))
+            try:
+                extract_tar_safely(tar, staging, kind="backup")
+                root = staging / "backup"
+                if root.is_dir():
+                    for src in sorted(root.rglob("*")):
+                        if src.is_symlink() or not src.is_file():
+                            continue
+                        dest = data_dir / src.relative_to(root)
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(src), str(dest))
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+    except ArchiveError as e:
+        return JSONResponse({"error": f"Invalid backup file: {e}"}, status_code=400)
     except tarfile.TarError as e:
         return JSONResponse({"error": f"Invalid backup file: {e}"}, status_code=400)
     # Reload config if config.yaml was restored

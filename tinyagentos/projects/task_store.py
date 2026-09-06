@@ -126,11 +126,11 @@ def _row_to_checklist_item(row, description) -> dict:
     return c
 
 
-# Sentinels for update_task's element_id:
-#   _ELEMENT_UNCHANGED -> leave the task's element tag untouched (PATCH omitted)
-#   _ELEMENT_CLEAR     -> explicitly clear the tag to NULL ("none" sentinel)
-_ELEMENT_UNCHANGED: object = object()
-_ELEMENT_CLEAR: object = object()
+# Sentinel for update_task's nullable columns (assignee_id, parent_task_id,
+# element_id).  For those three, ``None`` is a VALUE -- "clear this to NULL" --
+# so "the caller did not mention this field" needs a marker of its own.  The
+# non-nullable columns keep the simpler ``None means unchanged`` convention.
+_UNCHANGED: object = object()
 
 
 class ProjectTaskStore(ProjectsDBStore):
@@ -357,9 +357,9 @@ class ProjectTaskStore(ProjectsDBStore):
         priority: int | None = None,
         labels: list[str] | None = None,
         status: str | None = None,
-        assignee_id: str | None = None,
-        parent_task_id: str | None = None,
-        element_id: object = _ELEMENT_UNCHANGED,
+        assignee_id: str | None | object = _UNCHANGED,
+        parent_task_id: str | None | object = _UNCHANGED,
+        element_id: str | None | object = _UNCHANGED,
     ) -> None:
         # Reject generic status transitions from parked: parked is permanent
         # and such a transition would clear claim fields and return the task
@@ -377,8 +377,6 @@ class ProjectTaskStore(ProjectsDBStore):
             ("priority", priority, priority),
             ("labels", labels, json.dumps(labels) if labels is not None else None),
             ("status", status, status),
-            ("assignee_id", assignee_id, assignee_id),
-            ("parent_task_id", parent_task_id, parent_task_id),
         ]
         sets: list[str] = []
         params: list = []
@@ -388,16 +386,20 @@ class ProjectTaskStore(ProjectsDBStore):
                 sets.append(f"{col} = ?")
                 params.append(serialised)
                 patch[col] = raw
-        # element_id is handled separately so None can mean "unchanged" while an
-        # explicit clear sets the tag to NULL.
-        if element_id is not _ELEMENT_UNCHANGED:
-            sets.append("element_id = ?")
-            if element_id is _ELEMENT_CLEAR:
-                params.append(None)
-                patch["element_id"] = None
-            else:
-                params.append(element_id)
-                patch["element_id"] = element_id
+        # The nullable columns are keyed on the _UNCHANGED sentinel instead, so
+        # an explicit None clears them to NULL rather than being read as "field
+        # omitted" (tsk-5xq2mw: a clear that is silently dropped answers the
+        # caller as if it had been written).
+        for col, value in (
+            ("assignee_id", assignee_id),
+            ("parent_task_id", parent_task_id),
+            ("element_id", element_id),
+        ):
+            if value is _UNCHANGED:
+                continue
+            sets.append(f"{col} = ?")
+            params.append(value)
+            patch[col] = value
         if not sets:
             return
         # A generic edit back to 'open' must also clear the claimer (as the

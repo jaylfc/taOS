@@ -4,17 +4,9 @@
 
 ## Grant shaping which decisions come back
 
-### Global (null-project) grant
-
-- **null-project decisions ONLY**
-
-### Exactly one project grant
-
-- That project's decisions, filtered in the store query
-
-### Two or more projects
-
-- Fetched by agent, filtered in Python
+- **Global (null-project) grant**: null-project decisions ONLY
+- **Exactly one project grant**: that project's decisions, filtered in the store query
+- **Two or more projects**: fetched by agent, filtered in Python
 
 ### Limit interaction
 
