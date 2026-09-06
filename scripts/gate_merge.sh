@@ -89,19 +89,35 @@ if [ "$rc" -eq 0 ]; then
     # For a squash merge this is the new commit on the base branch.
     # `gh --jq` prints the string "null" for an absent field, so an empty
     # result and a literal "null" both mean "not read".
+    # Captures the failing call's stderr into the given file rather than
+    # discarding it. A silent failure here used to leave the operator with
+    # only "returned no OID" and no way to tell an auth failure, rate-limit,
+    # network error or missing PR apart. The error goes to a file, not a
+    # variable the function would set: `X="$(_read_field ...)"` runs the
+    # function in a subshell, so any plain variable it assigned would vanish
+    # with that subshell -- a file is the one thing that survives it.
     _read_field() {
-        local _v
-        _v="$("$@" 2>/dev/null || true)"
+        local _v _errfile="$1"
+        shift
+        _v="$("$@" 2>"$_errfile" || true)"
         if [ "$_v" = "null" ]; then
             _v=""
         fi
         printf '%s' "$_v"
     }
 
-    MERGE_COMMIT="$(_read_field gh pr view "$PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid')"
-    REPO="$(_read_field gh repo view --json nameWithOwner --jq '.nameWithOwner')"
-    PR_NUM="$(_read_field gh pr view "$PR_NUMBER" --json number --jq '.number')"
-    MERGED_BY="$(_read_field gh pr view "$PR_NUMBER" --json mergedBy --jq '.mergedBy.login')"
+    MERGE_COMMIT_ERRFILE="$(mktemp 2>/dev/null || echo "/tmp/gate_merge.$$.mc.err")"
+    MERGE_COMMIT="$(_read_field "$MERGE_COMMIT_ERRFILE" gh pr view "$PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid')"
+    MERGE_COMMIT_ERR="$(head -n 1 "$MERGE_COMMIT_ERRFILE" 2>/dev/null)"
+    rm -f "$MERGE_COMMIT_ERRFILE"
+
+    REPO_ERRFILE="$(mktemp 2>/dev/null || echo "/tmp/gate_merge.$$.repo.err")"
+    REPO="$(_read_field "$REPO_ERRFILE" gh repo view --json nameWithOwner --jq '.nameWithOwner')"
+    REPO_ERR="$(head -n 1 "$REPO_ERRFILE" 2>/dev/null)"
+    rm -f "$REPO_ERRFILE"
+
+    PR_NUM="$(_read_field /dev/null gh pr view "$PR_NUMBER" --json number --jq '.number')"
+    MERGED_BY="$(_read_field /dev/null gh pr view "$PR_NUMBER" --json mergedBy --jq '.mergedBy.login')"
     [ -n "$PR_NUM" ] || PR_NUM="$PR_NUMBER"
     [ -n "$MERGED_BY" ] || MERGED_BY="unknown"
     TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -117,9 +133,11 @@ if [ "$rc" -eq 0 ]; then
         echo "ERROR: PR #${PR_NUMBER} merged, but its audit entry is INCOMPLETE:" >&2
         if [ -z "$MERGE_COMMIT" ]; then
             echo "       gh pr view --json mergeCommit returned no OID." >&2
+            [ -n "$MERGE_COMMIT_ERR" ] && echo "       gh said: $MERGE_COMMIT_ERR" >&2
         fi
         if [ -z "$REPO" ]; then
             echo "       gh repo view --json nameWithOwner returned no slug." >&2
+            [ -n "$REPO_ERR" ] && echo "       gh said: $REPO_ERR" >&2
         fi
         echo "       check_merge_attribution.py will report PR #${PR_NUMBER} as an" >&2
         echo "       unattributed merge until this entry is completed by hand." >&2

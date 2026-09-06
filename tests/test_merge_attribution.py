@@ -799,6 +799,11 @@ class TestMergeAttributionReconciliation:
         assert gate_result.returncode != 0, gate_result.stdout + gate_result.stderr
         assert "42" in gate_result.stderr
         assert "mergeCommit" in gate_result.stderr
+        # _read_field used to discard gh's own stderr (2>/dev/null), so the
+        # operator saw only "returned no OID" with the actual cause -- auth
+        # failure, rate-limit, missing PR -- thrown away. The stub's stderr
+        # is the underlying reason; it must reach the operator too.
+        assert "gh: could not resolve PR" in gate_result.stderr
 
         # Whatever was written must not be able to stand in as attribution:
         # `sha` is the reconciliation key, so it must be empty rather than a
@@ -870,7 +875,7 @@ class TestMergeAttributionReconciliation:
         # live on this host.
         bare_bin = tmp_path / "bare-bin"
         bare_bin.mkdir()
-        for tool in ("basename", "dirname", "mkdir", "date", "git", "cat", "sh"):
+        for tool in ("basename", "dirname", "mkdir", "date", "git", "cat", "sh", "mktemp", "head", "rm"):
             for candidate in (Path("/usr/bin") / tool, Path("/bin") / tool):
                 if candidate.exists():
                     (bare_bin / tool).symlink_to(candidate)
