@@ -49,6 +49,20 @@ class TestEvalLike:
         findings = detect_eval_like("app.js", 'setTimeout("doEvil()", 100);')
         assert len(findings) == 1
 
+    def test_window_eval_trips(self):
+        findings = detect_eval_like("app.js", "window.eval(userInput);")
+        assert len(findings) == 1
+        assert findings[0].rule_id == "eval-like-execution"
+        assert findings[0].severity == "critical"
+
+    def test_global_this_eval_trips(self):
+        findings = detect_eval_like("app.js", "globalThis.eval(userInput);")
+        assert len(findings) == 1
+
+    def test_self_eval_trips(self):
+        findings = detect_eval_like("app.js", "self.eval(userInput);")
+        assert len(findings) == 1
+
     def test_clean_code_does_not_trip(self):
         content = (
             "function evaluate(x) { return x * 2; }\n"
@@ -118,9 +132,27 @@ class TestDangerousUrlScheme:
         )
         assert len(findings) == 1
 
+    def test_unquoted_javascript_href_trips(self):
+        findings = detect_dangerous_url_scheme(
+            "index.html", "<a href=javascript:alert(1)>go</a>"
+        )
+        assert len(findings) == 1
+        assert findings[0].rule_id == "dangerous-url-scheme"
+        assert findings[0].severity == "critical"
+
+    def test_unquoted_data_text_html_iframe_src_trips(self):
+        findings = detect_dangerous_url_scheme(
+            "index.html", "<iframe src=data:text/html,<script>alert(1)</script>></iframe>"
+        )
+        assert len(findings) == 1
+
     def test_normal_url_does_not_trip(self):
         content = 'const link = "https://example.com";'
         assert detect_dangerous_url_scheme("app.js", content) == []
+
+    def test_unquoted_normal_attribute_does_not_trip(self):
+        content = "<a href=/about>about</a>"
+        assert detect_dangerous_url_scheme("index.html", content) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -184,6 +216,17 @@ class TestSandboxEscape:
 
     def test_window_parent_access_trips(self):
         findings = detect_sandbox_escape("app.js", "window.parent.postMessage(data, '*');")
+        assert len(findings) == 1
+
+    def test_global_this_top_access_trips(self):
+        findings = detect_sandbox_escape(
+            "app.js", 'globalThis.top.location = "http://evil.example.com";'
+        )
+        assert len(findings) == 1
+        assert findings[0].rule_id == "sandbox-escape-attempt"
+
+    def test_self_parent_access_trips(self):
+        findings = detect_sandbox_escape("app.js", "self.parent.postMessage(data, '*');")
         assert len(findings) == 1
 
     def test_unrelated_local_variable_does_not_trip(self):

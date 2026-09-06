@@ -16,6 +16,17 @@ async def app_client(tmp_path):
     from fastapi import FastAPI
 
     mini_app = FastAPI()
+
+    # This bare app has no AuthMiddleware, so simulate an already-authenticated
+    # admin request (request.state.is_admin) -- these tests exercise the MCP
+    # handlers themselves, not the admin-or-local-token authz gate the mutating
+    # routes now enforce (see tests/test_global_routers_authz.py for that).
+    @mini_app.middleware("http")
+    async def _fake_admin_auth(request, call_next):
+        request.state.is_admin = True
+        request.state.via = "session"
+        return await call_next(request)
+
     mini_app.include_router(mcp_router)
 
     mcp_store = MCPServerStore(tmp_path / "mcp.db")
@@ -182,6 +193,56 @@ class TestMCPGetConfig:
         data = get_resp.json()
         assert data["config"]["timeout"] == 60
         assert data["config"]["max_retries"] == 3
+
+
+@pytest.mark.asyncio
+class TestMCPProxyCall:
+    """`POST /api/mcp/call` is the real caller of `proxy.call_tool`.
+
+    The JSON-RPC transport is not wired yet, so the route has to surface that
+    as an explicit failure.  It used to answer 200 with `{"ok": true, "result":
+    "stub ..."}`, which no caller could tell from a real tool result.
+    """
+
+    async def test_call_without_transport_returns_501_not_a_stub(self, app_client):
+        client, app = app_client
+        mcp_store = app.state.mcp_store
+        await mcp_store.register_server(
+            "mcp-fetch", "1.0.0", "stdio", config={"cmd": ["sleep", "infinity"]}
+        )
+        await mcp_store.add_attachment("mcp-fetch", "all", None)
+
+        resp = await client.post(
+            "/api/mcp/call",
+            json={
+                "server_id": "mcp-fetch",
+                "tool": "fetch_url",
+                "agent_name": "weatherbot",
+                "arguments": {"url": "https://example.invalid"},
+            },
+        )
+        assert resp.status_code == 501
+        data = resp.json()
+        assert data["error"] == "not_implemented"
+        assert data.get("ok") is not True
+        assert "stub" not in str(data.get("result", ""))
+
+    async def test_call_denied_by_permissions_still_returns_403(self, app_client):
+        """The new 501 must not shadow the permission check that runs first."""
+        client, app = app_client
+        mcp_store = app.state.mcp_store
+        await mcp_store.register_server("mcp-fetch", "1.0.0", "stdio")
+
+        resp = await client.post(
+            "/api/mcp/call",
+            json={
+                "server_id": "mcp-fetch",
+                "tool": "fetch_url",
+                "agent_name": "weatherbot",
+            },
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "permission_denied"
 
 
 @pytest.mark.asyncio
