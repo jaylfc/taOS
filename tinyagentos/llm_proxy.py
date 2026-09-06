@@ -90,7 +90,16 @@ class LLMProxy:
         inhouse_keys: bool = False,
     ):
         self.port = port
-        self.config_dir = config_dir or Path("/tmp/taos-litellm")
+        # S2-10: config lives under <data_dir>/litellm (0700) so the master key,
+        # backend keys and callback shims are not world-readable in a shared
+        # /tmp. Fall back to /tmp/taos-litellm only when data_dir is unknown
+        # (ad-hoc tests, routing-only mode without a data dir).
+        if config_dir is not None:
+            self.config_dir = config_dir
+        elif data_dir is not None:
+            self.config_dir = Path(data_dir) / "litellm"
+        else:
+            self.config_dir = Path("/tmp/taos-litellm")
         self.database_url = database_url
         # In-house key mode: mint/scope per-agent keys in a local SQLite store
         # and authorize them via the custom_auth hook, instead of LiteLLM's
@@ -170,7 +179,18 @@ class LLMProxy:
         from the installed ``tinyagentos`` package — keeping the real
         callback code in one place.
         """
-        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # mkdir's mode is masked by umask; chmod ensures 0700 even if the
+        # directory already existed from a prior (insecure) run. Fail closed:
+        # a local user who controls a still-insecure directory could plant or
+        # read the generated config/shims before LiteLLM loads them, so raise
+        # before writing anything rather than continuing into the write.
+        try:
+            os.chmod(self.config_dir, 0o700)
+        except OSError as exc:
+            raise PermissionError(
+                f"LiteLLM config directory must be 0700: {self.config_dir}"
+            ) from exc
         discovered = await _discover_ollama_backends_concurrent(backends)
         config = generate_litellm_config(
             backends,
@@ -182,18 +202,27 @@ class LLMProxy:
         config_path = self.config_dir / "litellm_config.yaml"
 
         import yaml
-        config_path.write_text(yaml.dump(config, default_flow_style=False))
+        from tinyagentos.atomic_io import atomic_write_text
+        atomic_write_text(
+            config_path,
+            yaml.dump(config, default_flow_style=False),
+            mode=0o600,
+        )
 
         shim_path = self.config_dir / "taos_callback.py"
-        shim_path.write_text(
+        atomic_write_text(
+            shim_path,
             "from tinyagentos.litellm_callback import taos_callback "
-            "as proxy_handler_instance\n"
+            "as proxy_handler_instance\n",
+            mode=0o600,
         )
         if self.inhouse_keys:
             # Sibling shim so LiteLLM's config-dir-relative importer can load
             # the custom_auth hook (general_settings.custom_auth: taos_auth...).
-            (self.config_dir / "taos_auth.py").write_text(
-                "from tinyagentos.litellm_auth import user_api_key_auth\n"
+            atomic_write_text(
+                self.config_dir / "taos_auth.py",
+                "from tinyagentos.litellm_auth import user_api_key_auth\n",
+                mode=0o600,
             )
         return config_path
 
@@ -486,7 +515,18 @@ class LLMProxy:
         # are visible instead of silently discarded. stdout stays on
         # DEVNULL — it's mostly noisy per-request logs we don't need.
         stderr_log_path = config_path.parent / "litellm.stderr.log"
-        stderr_handle = stderr_log_path.open("a", buffering=1)
+        # S2-10: On every start, rotate the existing log to .1 (if it exists) and
+        # open a fresh 0600 inode via O_EXCL. This ensures that a reader holding
+        # a descriptor to the old inode cannot observe new LiteLLM output, and the
+        # old log's content (which may carry backend key material) is no longer
+        # 0644 from pre-fix installs. Keeping one previous generation (.1) preserves
+        # the last boot's errors for diagnosis.
+        if os.path.lexists(stderr_log_path):
+            rotated = stderr_log_path.with_name("litellm.stderr.log.1")
+            os.replace(stderr_log_path, rotated)
+            os.chmod(rotated, 0o600)
+        stderr_fd = os.open(str(stderr_log_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND, 0o600)
+        stderr_handle = os.fdopen(stderr_fd, "a", buffering=1)
         try:
             self._process = subprocess.Popen(
                 [
@@ -499,26 +539,32 @@ class LLMProxy:
                 stderr=stderr_handle,
                 env=env,
             )
-            # Wait for startup. LiteLLM on a fresh Pi DB runs
-            # ``prisma migrate deploy`` against an empty database before
-            # opening its HTTP port — that can take 45-60s on ARM.
-            # Poll ``/health/readiness`` (public) rather than ``/health``
-            # (requires master key → 401 for the polling client).
-            for _ in range(120):
-                await asyncio.sleep(1)
-                try:
-                    async with httpx.AsyncClient(timeout=3) as client:
-                        resp = await client.get(f"{self.url}/health/readiness")
-                        if resp.status_code == 200:
-                            logger.info(f"LiteLLM proxy started on port {self.port}")
-                            return True
-                except Exception:
-                    pass
-            logger.error("LiteLLM proxy failed to start within 120s")
-            return False
         except FileNotFoundError:
             logger.warning("LiteLLM not installed — proxy disabled. Install with: pip install litellm[proxy]")
             return False
+        finally:
+            # The child inherited its own copy of the fd via Popen(); the
+            # parent's handle must be closed on both the success and the
+            # failed-spawn path, or every start() attempt leaks one fd.
+            stderr_handle.close()
+
+        # Wait for startup. LiteLLM on a fresh Pi DB runs
+        # ``prisma migrate deploy`` against an empty database before
+        # opening its HTTP port — that can take 45-60s on ARM.
+        # Poll ``/health/readiness`` (public) rather than ``/health``
+        # (requires master key → 401 for the polling client).
+        for _ in range(120):
+            await asyncio.sleep(1)
+            try:
+                async with httpx.AsyncClient(timeout=3) as client:
+                    resp = await client.get(f"{self.url}/health/readiness")
+                    if resp.status_code == 200:
+                        logger.info(f"LiteLLM proxy started on port {self.port}")
+                        return True
+            except Exception:
+                pass
+        logger.error("LiteLLM proxy failed to start within 120s")
+        return False
 
     def stop(self):
         """Stop the LiteLLM proxy."""

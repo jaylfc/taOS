@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+import re
+import stat
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -785,3 +790,278 @@ class TestProxySelfHeal:
         monkeypatch.setattr(sys, "executable", str(tmp_path / ".venv" / "bin" / "python"))
 
         assert await LLMProxy()._selfheal_proxy_extra() is False
+
+
+class TestStderrLogHandling:
+    """S2-10: the LiteLLM stderr log must stay 0600 across restarts, and the
+    parent process must not leak the log's file descriptor."""
+
+    @pytest.mark.asyncio
+    async def test_stale_stderr_log_rotated_to_fresh_0600_inode(self, tmp_path, monkeypatch):
+        """On start, a stale log (0644 or any permissions) is rotated to .1
+        and a fresh 0600 inode opened. A reader holding a descriptor to the
+        old inode cannot observe new output."""
+        import os as os_mod
+        import shutil
+        import tinyagentos.llm_proxy as mod
+
+        monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
+        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+
+        class _FakePopen:
+            def __init__(self, *a, **kw):
+                raise FileNotFoundError("stubbed to skip real spawn")
+
+        monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
+
+        p = mod.LLMProxy(port=14017, data_dir=tmp_path)
+        config_dir = tmp_path / "litellm"
+        config_dir.mkdir(parents=True)
+        log_path = config_dir / "litellm.stderr.log"
+        stale_content = "stale log from a pre-fix install\n"
+        log_path.write_text(stale_content)
+        os_mod.chmod(log_path, 0o644)
+
+        # Record the old inode and open a reader fd before start
+        old_ino = log_path.stat().st_ino
+        rfd = os_mod.open(str(log_path), os_mod.O_RDONLY)
+
+        await p.start(backends=[])
+
+        # After start:
+        # (a) log_path has a different inode (rotated away)
+        new_ino = log_path.stat().st_ino
+        assert new_ino != old_ino, f"Expected different inode after rotation; old={old_ino}, new={new_ino}"
+
+        # (b) new log has mode 0o600
+        mode = stat.S_IMODE(log_path.stat().st_mode)
+        assert mode == 0o600, f"expected 0600, got {oct(mode)}"
+
+        # (c) .1 exists with mode 0o600 and the stale content
+        rotated_path = log_path.with_name("litellm.stderr.log.1")
+        assert rotated_path.exists(), f"rotated log {rotated_path} must exist"
+        rotated_mode = stat.S_IMODE(rotated_path.stat().st_mode)
+        assert rotated_mode == 0o600, f"rotated log expected 0600, got {oct(rotated_mode)}"
+        rotated_content = rotated_path.read_text()
+        assert rotated_content == stale_content, "rotated log must preserve original content"
+
+        # (d) reader fd still points to old inode and doesn't see new output
+        old_fstat_ino = os_mod.fstat(rfd).st_ino
+        assert old_fstat_ino == old_ino, "reader fd should still point to old inode"
+
+        # Write a marker to the new log
+        log_path.open("a").write("post-restart secret\n")
+
+        # Reader fd should not see this marker (it's on the old inode)
+        content_from_old_fd = os_mod.read(rfd, 4096).decode()
+        assert "post-restart secret" not in content_from_old_fd, "reader on old inode must not see new output"
+
+        os_mod.close(rfd)
+
+    @pytest.mark.asyncio
+    async def test_stderr_log_rotation_keeps_only_one_previous_generation(self, tmp_path, monkeypatch):
+        """When .log and .log.1 both exist, rotation replaces .log.1 with the
+        old .log, keeping only one previous generation."""
+        import os as os_mod
+        import shutil
+        import tinyagentos.llm_proxy as mod
+
+        monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
+        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+
+        class _FakePopen:
+            def __init__(self, *a, **kw):
+                raise FileNotFoundError("stubbed to skip real spawn")
+
+        monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
+
+        p = mod.LLMProxy(port=14020, data_dir=tmp_path)
+        config_dir = tmp_path / "litellm"
+        config_dir.mkdir(parents=True)
+        log_path = config_dir / "litellm.stderr.log"
+        rotated_path = log_path.with_name("litellm.stderr.log.1")
+
+        # Pre-create both .log and .log.1
+        current_content = "current log content\n"
+        previous_content = "previous log content\n"
+        log_path.write_text(current_content)
+        rotated_path.write_text(previous_content)
+
+        await p.start(backends=[])
+
+        # After start, .1 must hold the former .log content
+        assert rotated_path.read_text() == current_content, ".1 must hold the old .log content"
+        # And no .2 should exist
+        log_2_path = log_path.with_name("litellm.stderr.log.2")
+        assert not log_2_path.exists(), "no .2 generation should exist"
+
+    @pytest.mark.asyncio
+    async def test_stderr_handle_closed_after_successful_start(self, tmp_path, monkeypatch):
+        """The parent keeps stdio piped to the child via the inherited fd;
+        it must close its own copy right after Popen() succeeds, or a
+        repeated start() leaks one descriptor per attempt."""
+        import os as os_mod
+        import shutil
+        import tinyagentos.llm_proxy as mod
+
+        class _FakeResp:
+            status_code = 200
+
+        class _FakeClient:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *exc): return False
+            async def get(self, url): return _FakeResp()
+
+        monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
+        monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
+        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+
+        class _FakePopen:
+            def __init__(self, *a, **kw):
+                pass
+
+        monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
+
+        captured_handles = []
+        orig_fdopen = os_mod.fdopen
+
+        def _tracking_fdopen(fd, *a, **kw):
+            handle = orig_fdopen(fd, *a, **kw)
+            captured_handles.append(handle)
+            return handle
+
+        monkeypatch.setattr(mod.os, "fdopen", _tracking_fdopen)
+
+        p = mod.LLMProxy(port=14018, data_dir=tmp_path)
+        result = await p.start(backends=[])
+
+        assert result is True
+        assert len(captured_handles) == 1
+        assert captured_handles[0].closed, "parent must close its stderr log handle"
+
+    @pytest.mark.asyncio
+    async def test_stderr_handle_closed_when_popen_raises(self, tmp_path, monkeypatch):
+        """Same cleanup is required on the failed-spawn path (litellm binary
+        missing) — the handle must not leak just because Popen() failed."""
+        import os as os_mod
+        import shutil
+        import tinyagentos.llm_proxy as mod
+
+        monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
+        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+
+        class _FakePopen:
+            def __init__(self, *a, **kw):
+                raise FileNotFoundError("stubbed")
+
+        monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
+
+        captured_handles = []
+        orig_fdopen = os_mod.fdopen
+
+        def _tracking_fdopen(fd, *a, **kw):
+            handle = orig_fdopen(fd, *a, **kw)
+            captured_handles.append(handle)
+            return handle
+
+        monkeypatch.setattr(mod.os, "fdopen", _tracking_fdopen)
+
+        p = mod.LLMProxy(port=14019, data_dir=tmp_path)
+        result = await p.start(backends=[])
+
+        assert result is False
+        assert len(captured_handles) == 1
+        assert captured_handles[0].closed, "parent must close its stderr log handle even on failed spawn"
+
+
+class TestConfigDirPermissions:
+    """S2-10: LiteLLM config dir and files must not be world-readable.
+
+    The master key, backend API keys, and callback shim .py files must live
+    under <data_dir>/litellm (not /tmp), with the directory at 0700 and every
+    file at 0600.
+    """
+
+    @pytest.mark.asyncio
+    async def test_config_dir_under_data_dir(self, tmp_path):
+        """When data_dir is set, config_dir must be <data_dir>/litellm, not /tmp."""
+        proxy = LLMProxy(port=14010, data_dir=tmp_path)
+        assert proxy.config_dir == tmp_path / "litellm"
+
+    @pytest.mark.asyncio
+    async def test_config_dir_not_tmp_default(self, tmp_path):
+        """With data_dir set, config_dir must not be the old /tmp/taos-litellm default."""
+        proxy = LLMProxy(port=14011, data_dir=tmp_path)
+        assert str(proxy.config_dir) != "/tmp/taos-litellm"
+        assert not str(proxy.config_dir).startswith("/tmp/taos-litellm")
+
+    @pytest.mark.asyncio
+    async def test_config_dir_default_still_tmp_when_no_data_dir(self):
+        """Without data_dir, the legacy /tmp fallback is retained (e.g. ad-hoc tests)."""
+        proxy = LLMProxy(port=14012)
+        assert proxy.config_dir == Path("/tmp/taos-litellm")
+
+    @pytest.mark.asyncio
+    async def test_config_dir_mode_0700(self, tmp_path):
+        """Config directory must be created with mode 0700."""
+        proxy = LLMProxy(port=14013, data_dir=tmp_path)
+        await proxy.write_config([])
+        mode = stat.S_IMODE(proxy.config_dir.stat().st_mode)
+        assert mode == 0o700
+
+    @pytest.mark.asyncio
+    async def test_config_files_mode_0600(self, tmp_path):
+        """Every file written by write_config must have mode 0600."""
+        proxy = LLMProxy(port=14014, data_dir=tmp_path, inhouse_keys=True)
+        await proxy.write_config([])
+        expected_files = ["litellm_config.yaml", "taos_callback.py", "taos_auth.py"]
+        for name in expected_files:
+            f = proxy.config_dir / name
+            assert f.exists(), f"{name} was not written"
+            mode = stat.S_IMODE(f.stat().st_mode)
+            assert mode == 0o600, f"{name} has mode {oct(mode)}, expected 0o600"
+
+    @pytest.mark.asyncio
+    async def test_config_contents_include_master_key(self, tmp_path):
+        """The master key is embedded in the generated yaml (regression guard for
+        the permission fix — the key must still be present, just unreadable by others)."""
+        key = get_litellm_master_key(tmp_path)
+        proxy = LLMProxy(port=14015, data_dir=tmp_path)
+        await proxy.write_config([])
+        import yaml
+        yaml_text = (proxy.config_dir / "litellm_config.yaml").read_text()
+        assert key in yaml_text
+
+    @pytest.mark.asyncio
+    async def test_write_config_fails_closed_when_chmod_fails(self, tmp_path):
+        """If hardening the config dir to 0700 fails, write_config must raise
+        BEFORE writing any generated file — otherwise a local user who
+        controls the (still-insecure) directory could plant or read the
+        config/shims before LiteLLM ever loads them."""
+        proxy = LLMProxy(port=14016, data_dir=tmp_path)
+        with patch("os.chmod", side_effect=OSError("boom")):
+            with pytest.raises(PermissionError):
+                await proxy.write_config([])
+        assert not (proxy.config_dir / "litellm_config.yaml").exists()
+        assert not (proxy.config_dir / "taos_callback.py").exists()
+
+
+class TestSystemdUnitPermissions:
+    """S2-10: the systemd unit template must enable PrivateTmp. It must NOT
+    set a global UMask: the model store under <data_dir>/models is read by
+    backend units (llama-cpp, hailo, rk*) that install-*.sh runs as a
+    different user (the human $SUDO_USER), so a controller-wide umask would
+    make every freshly downloaded model unreadable by those units. Per-file
+    modes (mkdir 0700 / atomic_write_text 0o600 / os.open 0o600) are the
+    hardening mechanism for this PR's secrets, not a global umask."""
+
+    _UNIT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "systemd" / "tinyagentos.service"
+
+    def test_unit_has_private_tmp(self):
+        text = self._UNIT_PATH.read_text()
+        assert re.search(r"(?m)^\s*PrivateTmp\s*=\s*yes\s*$", text)
+
+    def test_unit_has_no_umask(self):
+        text = self._UNIT_PATH.read_text()
+        assert re.search(r"(?m)^\s*UMask\s*=", text) is None

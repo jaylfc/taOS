@@ -52,6 +52,7 @@ TimeoutStopSec=45
 RuntimeDirectory=taos
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
+PrivateTmp=yes
 Environment=PYTHONUNBUFFERED=1
 Environment=TAOS_PREFETCH_BASE_IMAGE=__TAOS_PREFETCH_VALUE__
 
