@@ -260,12 +260,15 @@ async def deliver_handshake(
 
     from tinyagentos.routes.desktop_browser.ssrf import (
         SsrfBlockedError,
+        guarded_async_client,
         validate_url_or_raise,
     )
 
     own_client = http_client is None
     if own_client:
-        http_client = httpx.AsyncClient(timeout=15.0)
+        # Guarded: the endpoint URL is peer-supplied, so the address that
+        # passed the blocklist must be the address the POST connects to.
+        http_client = guarded_async_client(timeout=15.0)
 
     try:
         for ep in peer_endpoints:

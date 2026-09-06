@@ -20,6 +20,10 @@ dependencies = [
     "fastapi>=0.115.0,<0.137",
     "uvicorn[standard]>=0.52.1",
     "httpx>=0.27.0",
+    # Retry loop behind tinyagentos/clients/retry.py — every outbound inference
+    # call and every adapter /message proxy runs through it. Apache-2.0, pure
+    # py3-none-any wheel with no runtime dependencies of its own.
+    "tenacity>=9.1.4",
     "jinja2>=3.1.0",
     "pyyaml>=6.0",
     "aiosqlite>=0.20.0",
@@ -56,11 +60,77 @@ dependencies = [
     # startup via app.py. Previously only pulled in transitively through
     # pywebpush; declare it directly so the import is guaranteed.
     "cryptography>=50.0.0",
+    # YouTube/X knowledge ingestion shells out to the yt-dlp CLI
+    # (tinyagentos/knowledge_fetchers/{youtube,x}.py). install-server.sh used to
+    # `pip install yt-dlp` after the editable install, which put a package on
+    # every production box that uv.lock had never resolved — so an upstream
+    # relicence or CVE reached users without tripping any gate. Declared here so
+    # it goes through the lockfile like everything else.
+    "yt-dlp>=2025.1.15",
 ]
 
 [project.optional-dependencies]
 worker = ["pystray>=0.19.0", "Pillow>=10.0"]
-proxy = ["litellm[proxy]>=1.94.0", "prisma>=0.11.0"]
+# The LiteLLM proxy, WITHOUT litellm's own `[proxy]` extra.
+#
+# `litellm[proxy]` lists `litellm-enterprise` as a plain member, and that wheel
+# carries `License-Expression: LicenseRef-Proprietary` (BerriAI). Nothing in
+# taOS imports it — `grep -rn litellm_enterprise tinyagentos/` is empty — but a
+# licence governs *distribution*, not import: every server install landed it in
+# the shipped venv, so a commercial taOS licensee redistributing that venv was
+# redistributing BerriAI proprietary code. litellm itself is MIT and is fine.
+#
+# pip cannot subtract one member of someone else's extra, so litellm's proxy
+# requirements are inlined below, verbatim from litellm 1.94.2's own
+# `[project.optional-dependencies].proxy`, minus `litellm-enterprise`. Verified
+# by booting the proxy the way llm_proxy.start() does (master-key mode and the
+# in-house-key custom_auth mode) against this exact set: /health/readiness,
+# /health, /v1/models, /v1/chat/completions and /v1/embeddings all serve with no
+# litellm_enterprise in the venv.
+#
+# litellm is capped to the minor this list mirrors. `pip install -e ".[proxy]"`
+# resolves fresh — it does NOT read uv.lock — so an uncapped floor would let a
+# fresh install pull a newer litellm whose proxy extra has grown requirements
+# this list does not carry. Concretely: litellm 1.99.0 adds `hiredis` and makes
+# `expression` an eager import, and a venv built from the 1.94 subset dies at
+# startup with ModuleNotFoundError. Bumping the cap means re-reading upstream's
+# proxy extra and re-syncing this list; tests/test_install_licences.py holds the
+# rule and scripts/check_install_licences.py re-checks the resolved licences.
+proxy = [
+    "litellm>=1.94.2,<1.95",
+    "prisma>=0.11.0",
+    # --- litellm 1.94.2 [proxy], minus litellm-enterprise ---
+    "apscheduler>=3.11.2,<4.0",
+    "azure-identity>=1.25.2,<2.0",
+    "azure-storage-blob>=12.28.0,<13.0",
+    "backoff>=2.2.1,<3.0",
+    "boto3>=1.43.1,<2.0",
+    "cryptography>=49.0.0,<51.0",
+    "expression>=5.6.0,<6.0",
+    "fastapi>=0.136.3,<1.0",
+    "fastapi-sso>=0.19.0,<1.0",
+    "granian>=2.7.4,<3.0",
+    "gunicorn>=23.0.0,<24.0",
+    "inquirerpy>=0.3.4,<1.0",
+    "litellm-proxy-extras>=0.4.79.post2",
+    "mcp>=1.28.1,<2.0",
+    "orjson>=3.11.6,<4.0",
+    "polars>=1.38.1,<2.0",
+    "pydantic-settings>=2.14.1,<3.0",
+    "pyjwt>=2.13.0,<3.0",
+    "pynacl>=1.6.2,<2.0",
+    "pyroscope-io>=0.8.16,<1.0; sys_platform != 'win32'",
+    "python-multipart>=0.0.27,<1.0",
+    "pyyaml>=6.0.3,<7.0",
+    "restrictedpython>=8.1,<9.0",
+    "rich>=13.9.4,<14.0",
+    "rq>=2.7.0,<3.0",
+    "soundfile>=0.12.1,<1.0",
+    "starlette>=1.0.1,<2.0",
+    "uvicorn>=0.33.0,<1.0",
+    "uvloop>=0.21.0,<1.0; sys_platform != 'win32'",
+    "websockets>=15.0.1,<16.0",
+]
 # Model torrent mesh (optional): libtorrent has no PyPI wheel on most platforms
 # (OS-level libtorrent-rasterbar / python3-libtorrent), so it must not be a core
 # dependency or fresh installs abort. torrent_downloader guards the import and
@@ -113,6 +183,7 @@ markers = [
     # it, and every module carrying it is inventoried in
     # tests/test_csrf_bypass_debt.py so the list cannot grow unnoticed.
     "csrf_bypass: run this test with verify_csrf stubbed to a no-op (legacy debt)",
+    "skip_if_no_embed_backend: skip when no embed backend can serve the test (qmd unreachable and onnxruntime absent)",
 ]
 filterwarnings = [
     # Asyncio teardown emits unraisable RuntimeError("Event loop is closed")
