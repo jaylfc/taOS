@@ -25,11 +25,19 @@ _PWA_APPS: dict[str, dict] = {
 
 
 @router.get("/manifest")
-async def get_manifest(app: str) -> JSONResponse:
+async def get_manifest(app: str | None = None) -> JSONResponse:
     """Return a Web App Manifest for a PWA-enabled app.
 
     Returns 404 for unknown or non-PWA app ids.
+    Returns 400 when the ``app`` query parameter is absent or empty, avoiding
+    the FastAPI 422 validation schema that would otherwise leak the route's
+    parameter contract to unauthenticated callers.
     """
+    if not app:
+        return JSONResponse(
+            {"detail": "Query parameter 'app' is required"},
+            status_code=400,
+        )
     meta = _PWA_APPS.get(app)
     if not meta:
         raise HTTPException(status_code=404, detail="App not found or not PWA-enabled")

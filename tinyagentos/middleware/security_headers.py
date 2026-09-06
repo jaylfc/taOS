@@ -84,6 +84,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("Content-Security-Policy", csp)
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "geolocation=(), camera=(), microphone=(), payment=(), usb=(), "
+            "accelerometer=(), gyroscope=(), magnetometer=(), sync-xhr=()",
+        )
         if request.url.path.startswith(_NO_STORE_PREFIXES):
             # setdefault, never a hard set: handlers that chose their own
             # policy keep it -- SSE streams ship "no-cache" so proxies do not
