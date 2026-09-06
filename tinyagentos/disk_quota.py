@@ -190,10 +190,16 @@ class DiskQuotaMonitor:
         }
 
     async def _sample_usage(self, container_name: str) -> float | None:
-        """Priority: btrfs qgroup > incus info > exec df."""
+        """Priority: btrfs qgroup (via incus info) > exec df.
+
+        There used to be a third, "incus info" strategy between these two,
+        but it parsed the exact same `incus info` output with the exact
+        same section-aware scan as `_sample_btrfs_qgroup` -- it could never
+        return a different result, only spend a second identical subprocess
+        call proving that whenever the first strategy came up empty.
+        """
         for strategy in (
             self._sample_btrfs_qgroup,
-            self._sample_incus_info,
             self._sample_df,
         ):
             try:
@@ -240,26 +246,6 @@ class DiskQuotaMonitor:
                 "disk_quota: unparsable disk usage size for %s: %r",
                 container_name, token,
             )
-            return None
-
-    async def _sample_incus_info(self, container_name: str) -> float | None:
-        """Second, silent read of ``incus info``.
-
-        Shares the section-aware scan with :meth:`_sample_btrfs_qgroup` --
-        the value line of the multi-line layout (``root: 1.50TiB``) does
-        not contain the word "disk", so a line filter never sees it. Kept
-        as a defensive fallback; it only runs when the first strategy
-        returned nothing, so it costs no extra subprocess on a good scan.
-        """
-        rc, out = await _run(["incus", "info", container_name])
-        if rc != 0:
-            return None
-        token, _ = _find_disk_usage_token(out)
-        if token is None:
-            return None
-        try:
-            return _to_gib(token)
-        except ValueError:
             return None
 
     async def _sample_df(self, container_name: str) -> float | None:

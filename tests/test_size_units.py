@@ -207,17 +207,6 @@ async def test_btrfs_qgroup_reads_the_sectioned_incus_info_shape(caplog):
 
 
 @pytest.mark.asyncio
-async def test_incus_info_strategy_reads_the_sectioned_shape():
-    """`root: 1.50TiB` has no 'disk' in it; the strategy must still see it."""
-    monitor = _quota_monitor()
-    with patch("tinyagentos.disk_quota._run",
-               AsyncMock(return_value=(0, _INCUS_INFO_SECTIONED))):
-        used_gib = await monitor._sample_incus_info("taos-agent-alice")
-
-    assert used_gib == pytest.approx(1.5 * 1024)
-
-
-@pytest.mark.asyncio
 async def test_disk_usage_section_without_a_size_token_warns_once(caplog):
     monitor = _quota_monitor()
     out = "Resources:\n  Disk usage:\n    root: lots\n  CPU usage:\n    CPU usage (in seconds): 3\n"
