@@ -1,0 +1,23 @@
+id: mcp-redis
+name: MCP Redis
+type: plugin
+version: 0.1.0
+description: "Official Redis MCP server for cache and data structure operations"
+homepage: https://github.com/redis/mcp-redis
+license: MIT
+
+requires:
+  ram_mb: 64
+
+install:
+  method: pip
+  package: mcp-redis
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

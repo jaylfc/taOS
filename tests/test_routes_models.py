@@ -1,0 +1,662 @@
+import pytest
+import pytest_asyncio
+import yaml
+import httpx
+from httpx import AsyncClient, ASGITransport
+from unittest.mock import AsyncMock, patch, MagicMock
+from tinyagentos.app import create_app
+from tinyagentos.installers.model_paths import models_root
+from tinyagentos.routes.models import (
+    DEFAULT_MODELS_DIR,
+    _estimated_vram_mb,
+    get_downloaded_models,
+)
+from tinyagentos.vram_reservation import VramReservationManager
+from taos_test_csrf import csrf_event_hooks
+
+
+class TestDefaultModelsDir:
+    """DEFAULT_MODELS_DIR must track the install dir (via models_root()),
+    not a hardcoded /opt/tinyagentos literal — so an existing install at
+    /opt/tinyagentos and a fresh one at /opt/taos both resolve correctly.
+    """
+
+    def test_tracks_models_root(self):
+        assert DEFAULT_MODELS_DIR == models_root()
+
+    def test_is_not_hardcoded_opt_tinyagentos(self):
+        assert str(DEFAULT_MODELS_DIR) != "/opt/tinyagentos/models"
+
+    def test_honours_env_override(self, monkeypatch, tmp_path):
+        # models_root() reads TAOS_MODELS_ROOT at call time, so no module reload
+        # is needed; DEFAULT_MODELS_DIR is bound to models_root() (see
+        # test_tracks_models_root). Avoids the global-state race of reload.
+        monkeypatch.setenv("TAOS_MODELS_ROOT", str(tmp_path / "alt-models"))
+        assert models_root() == tmp_path / "alt-models"
+
+
+@pytest.fixture
+def catalog_with_models(tmp_path):
+    models_dir = tmp_path / "catalog" / "models" / "test-model"
+    models_dir.mkdir(parents=True)
+    (models_dir / "manifest.yaml").write_text(yaml.dump({
+        "id": "test-model", "name": "Test Model", "type": "model",
+        "version": "1.0.0", "description": "A test model for unit tests",
+        "capabilities": ["chat", "tool-calling"],
+        "variants": [
+            {"id": "small", "name": "Small GGUF", "format": "gguf", "size_mb": 100,
+             "min_ram_mb": 512, "download_url": "https://example.com/small.gguf",
+             "backend": ["ollama", "llama-cpp"]},
+            # Catalog-faithful rkllm shape: variant min_ram_mb is 0; the real
+            # floor lives on requires.backends[].min_ram_mb (#1766 MEDIUM).
+            {"id": "npu", "name": "NPU RKLLM", "format": "rkllm", "size_mb": 200,
+             "min_ram_mb": 0, "download_url": "https://example.com/npu.rkllm",
+             "backend": ["rkllama"], "requires_npu": ["rk3588"],
+             "requires": {"backends": [
+                 {"id": "rkllama", "targets": ["rockchip"], "min_ram_mb": 2048},
+             ]}},
+            {"id": "multi", "name": "Multi-file HF", "format": "safetensors",
+             "size_mb": 500, "download_url": "https://huggingface.co/a/b/resolve/main/model-00001-of-00002.safetensors",
+             "hf_repo": "a/b", "hf_revision": "main", "multi_file": True,
+             "include_patterns": ["*.safetensors", "*.json"],
+             "backend": ["transformers"]},
+        ],
+        "hardware_tiers": {"arm-npu-16gb": {"recommended": "npu", "fallback": "small"}},
+        "install": {"method": "download"},
+    }))
+
+    another = tmp_path / "catalog" / "models" / "another-model"
+    another.mkdir(parents=True)
+    (another / "manifest.yaml").write_text(yaml.dump({
+        "id": "another-model", "name": "Another Model", "type": "model",
+        "version": "2.0.0", "description": "Another test model",
+        "capabilities": ["embedding"],
+        "variants": [
+            {"id": "default", "name": "Default", "format": "gguf", "size_mb": 50,
+             "min_ram_mb": 256, "download_url": "https://example.com/another.gguf",
+             "backend": ["ollama"]},
+        ],
+        "hardware_tiers": {},
+        "install": {"method": "download"},
+    }))
+
+    return tmp_path / "catalog"
+
+
+@pytest.fixture
+def models_app(tmp_data_dir, catalog_with_models, tmp_path, monkeypatch):
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    # Sandbox the new shared layout root so scans don't pick up files
+    # in the test runner's real home directory.
+    shared_root = tmp_path / "models-shared"
+    monkeypatch.setenv("TAOS_MODELS_ROOT", str(shared_root))
+    app = create_app(data_dir=tmp_data_dir, catalog_dir=catalog_with_models)
+    app.state.models_dir = models_dir
+    app.state.models_root = shared_root
+    return app
+
+
+@pytest_asyncio.fixture
+async def models_client(models_app):
+    store = models_app.state.metrics
+    if store._db is not None:
+        await store.close()
+    await store.init()
+    await models_app.state.qmd_client.init()
+    models_app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    _rec = models_app.state.auth.find_user("admin")
+    _token = models_app.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
+    transport = ASGITransport(app=models_app)
+    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}, event_hooks=csrf_event_hooks()) as c:
+        yield c
+    await store.close()
+    await models_app.state.qmd_client.close()
+    await models_app.state.http_client.aclose()
+
+
+@pytest.mark.asyncio
+class TestModelsAPI:
+    async def test_list_models(self, models_client):
+        resp = await models_client.get("/api/models")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "models" in data
+        assert "downloaded_files" in data
+        assert "hardware_profile_id" in data
+        assert len(data["models"]) == 2
+        ids = {m["id"] for m in data["models"]}
+        assert "test-model" in ids
+        assert "another-model" in ids
+
+    async def test_model_variants_included(self, models_client):
+        resp = await models_client.get("/api/models")
+        data = resp.json()
+        test_model = next(m for m in data["models"] if m["id"] == "test-model")
+        assert len(test_model["variants"]) == 3
+        assert test_model["variants"][0]["id"] == "small"
+        assert test_model["variants"][2]["id"] == "multi"
+
+    async def test_model_compatibility_field(self, models_client):
+        resp = await models_client.get("/api/models")
+        data = resp.json()
+        for model in data["models"]:
+            assert model["compatibility"] in ("green", "yellow", "red")
+            for v in model["variants"]:
+                assert v["compatibility"] in ("green", "yellow", "red")
+
+    async def test_get_model_detail(self, models_client):
+        resp = await models_client.get("/api/models/test-model")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == "test-model"
+        assert data["name"] == "Test Model"
+        assert len(data["variants"]) == 3
+        assert "capabilities" in data
+        assert "chat" in data["capabilities"]
+
+    async def test_get_nonexistent_model(self, models_client):
+        resp = await models_client.get("/api/models/nonexistent")
+        assert resp.status_code == 404
+        assert "error" in resp.json()
+
+    async def test_get_non_model_type_returns_404(self, models_client):
+        """Requesting an app_id that exists but is not type=model should 404."""
+        resp = await models_client.get("/api/models/nonexistent")
+        assert resp.status_code == 404
+
+    async def test_downloaded_files_empty_initially(self, models_client):
+        resp = await models_client.get("/api/models")
+        data = resp.json()
+        assert data["downloaded_files"] == []
+        for m in data["models"]:
+            assert m["has_downloaded_variant"] is False
+
+    async def test_downloaded_file_carries_model_id(self, models_app, models_client):
+        """A downloaded file whose name matches the
+        {manifest.id}-{variant.id}.{format} convention used by
+        POST /api/models/download must carry that manifest id in
+        downloaded_files, so the frontend can wire per-file Delete to
+        DELETE /api/models/{model_id} without reverse-engineering the
+        naming convention itself (#1581)."""
+        models_dir = models_app.state.models_dir
+        (models_dir / "test-model-small.gguf").write_bytes(b"x" * 100)
+
+        resp = await models_client.get("/api/models")
+        data = resp.json()
+        entry = next(f for f in data["downloaded_files"] if f["filename"] == "test-model-small.gguf")
+        assert entry["model_id"] == "test-model"
+
+    async def test_downloaded_file_without_manifest_match_has_no_model_id(
+        self, models_app, models_client
+    ):
+        """A file that doesn't match any manifest's naming convention (e.g. a
+        legacy/manually-placed file) must not get a fabricated model_id."""
+        models_dir = models_app.state.models_dir
+        (models_dir / "some-legacy-file.gguf").write_bytes(b"x" * 100)
+
+        resp = await models_client.get("/api/models")
+        data = resp.json()
+        entry = next(f for f in data["downloaded_files"] if f["filename"] == "some-legacy-file.gguf")
+        assert "model_id" not in entry
+
+    async def test_registry_installed_with_disk_evidence_marks_downloaded(
+        self, models_client, models_app, tmp_path
+    ):
+        """Backend-installed models (e.g. rk-llama.cpp GGUFs at
+        ~/models/rk-llama.cpp/<family>/<manifest_id>/) leave nothing in
+        data/models and don't show up in the live BackendCatalog, so
+        /api/models needs to fall back to the install registry —
+        provided there's at least one corroborating signal that the
+        install really happened.
+        """
+        registry = models_app.state.registry
+        registry.mark_installed("test-model", "1.0.0")
+
+        # Drop a file under the new shared layout that the rglob scan
+        # picks up — its path contains the manifest id.
+        shared = models_app.state.models_root
+        target_dir = shared / "rk-llama.cpp" / "test" / "test-model"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / "test-model-q4_k_m.gguf").write_bytes(b"x" * 100)
+
+        resp = await models_client.get("/api/models")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        installed = next(m for m in data["models"] if m["id"] == "test-model")
+        assert installed["has_downloaded_variant"] is True
+
+        # Other manifests untouched.
+        not_installed = next(m for m in data["models"] if m["id"] == "another-model")
+        assert not_installed["has_downloaded_variant"] is False
+
+    async def test_registry_installed_without_evidence_is_not_downloaded(
+        self, models_client, models_app
+    ):
+        """Stale registry entry with no disk file and no live backend
+        match should NOT count as downloaded. johny saw the catalog
+        showing models as installed when nothing was actually on disk —
+        registry breadcrumbs from earlier sessions leaking through. This
+        is the bypass the corroboration check closes.
+        """
+        registry = models_app.state.registry
+        registry.mark_installed("test-model", "1.0.0")
+        # No file written, no live backend — registry breadcrumb only.
+
+        resp = await models_client.get("/api/models")
+        data = resp.json()
+        installed = next(m for m in data["models"] if m["id"] == "test-model")
+        assert installed["has_downloaded_variant"] is False, (
+            f"stale registry entry should not mark downloaded: {installed}"
+        )
+
+
+@pytest.mark.asyncio
+class TestModelsDelete:
+    async def test_delete_nonexistent_model(self, models_client):
+        resp = await models_client.delete("/api/models/nonexistent")
+        assert resp.status_code == 404
+
+    async def test_delete_model_no_files(self, models_client):
+        resp = await models_client.delete("/api/models/test-model")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "deleted"
+        assert data["deleted_files"] == []
+
+    async def test_delete_using_model_id_surfaced_in_list(self, models_app, models_client):
+        """End-to-end: the model_id GET /api/models attaches to a downloaded
+        file is exactly the id DELETE /api/models/{model_id} needs to remove
+        it — this is the wiring the frontend Delete button now relies on."""
+        models_dir = models_app.state.models_dir
+        (models_dir / "test-model-small.gguf").write_bytes(b"x" * 100)
+
+        list_resp = await models_client.get("/api/models")
+        entry = next(
+            f for f in list_resp.json()["downloaded_files"]
+            if f["filename"] == "test-model-small.gguf"
+        )
+        model_id = entry["model_id"]
+
+        delete_resp = await models_client.delete(f"/api/models/{model_id}")
+        assert delete_resp.status_code == 200
+        assert "test-model-small.gguf" in delete_resp.json()["deleted_files"]
+        assert not (models_dir / "test-model-small.gguf").exists()
+
+
+@pytest.mark.asyncio
+class TestModelDownload:
+    """POST /api/models/download must route variants that declare
+    requires.backends: [{id: rkllama}] through rkllama's own /api/pull
+    (RkllamaInstaller) instead of the generic byte-download path — a raw
+    file dump is invisible to the running rkllama server, so it can never
+    be selected as an agent model or deployed (#1599 / #1600).
+    """
+
+    async def test_generic_variant_still_uses_download_manager(self, models_app, models_client):
+        resp = await models_client.post(
+            "/api/models/download",
+            json={"app_id": "test-model", "variant_id": "small"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["download_id"] == "test-model-small"
+        task = models_app.state.download_manager.get_progress("test-model-small")
+        assert task is not None
+        assert task.url == "https://example.com/small.gguf"
+
+    async def test_multi_file_variant_routes_through_hf_multi_installer(self, models_app, models_client):
+        with patch(
+            "tinyagentos.installers.hf_multi_installer.HFMultiInstaller.install",
+            new=AsyncMock(return_value={"success": True, "app_id": "test-model"}),
+        ) as mock_install:
+            resp = await models_client.post(
+                "/api/models/download",
+                json={"app_id": "test-model", "variant_id": "multi"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        download_id = data["download_id"]
+        assert download_id == "test-model-multi"
+        mock_install.assert_awaited_once()
+        assert mock_install.await_args.args[0] == "test-model"
+        assert mock_install.await_args.kwargs.get("variant", {}).get("id") == "multi"
+
+        task = models_app.state.download_manager.get_progress(download_id)
+        await models_app.state.download_manager._running[download_id]
+        assert task.status == "complete"
+
+    async def test_rkllama_variant_routes_through_installer(self, models_app, models_client):
+        with patch(
+            "tinyagentos.installers.rkllama_installer.RkllamaInstaller.install",
+            new=AsyncMock(return_value={"success": True, "app_id": "test-model"}),
+        ) as mock_install:
+            resp = await models_client.post(
+                "/api/models/download",
+                json={"app_id": "test-model", "variant_id": "npu"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        download_id = data["download_id"]
+        assert download_id == "test-model-npu"
+        mock_install.assert_awaited_once()
+        assert mock_install.await_args.args[0] == "test-model"
+
+        # Drain the background task so the tracked DownloadTask settles.
+        task = models_app.state.download_manager.get_progress(download_id)
+        await models_app.state.download_manager._running[download_id]
+        assert task.status == "complete"
+
+    async def test_rkllama_variant_install_failure_marks_task_error(self, models_app, models_client):
+        with patch(
+            "tinyagentos.installers.rkllama_installer.RkllamaInstaller.install",
+            new=AsyncMock(return_value={"success": False, "error": "pull failed"}),
+        ):
+            resp = await models_client.post(
+                "/api/models/download",
+                json={"app_id": "test-model", "variant_id": "npu"},
+            )
+        assert resp.status_code == 200
+        download_id = resp.json()["download_id"]
+        task = models_app.state.download_manager.get_progress(download_id)
+        await models_app.state.download_manager._running[download_id]
+        assert task.status == "error"
+        assert task.error == "pull failed"
+
+    async def test_rkllama_variant_success_records_registry_and_refreshes_catalog(
+        self, models_app, models_client
+    ):
+        """rkllama pulls the weight into its own model store, not
+        models_dir, so a successful install must leave a breadcrumb (the
+        install registry) and force an immediate catalog refresh -- otherwise
+        the model would show as not-downloaded until the next 30s poll tick
+        (#1648).
+        """
+        fake_catalog = MagicMock()
+        fake_catalog.refresh = AsyncMock()
+        # Live evidence for the manifest id only (not the full variant id) so
+        # this exercises registry_corroborated's has_live_evidence path
+        # rather than the pre-existing _matches_live_backend exact match.
+        fake_catalog.all_models = MagicMock(return_value=[{"name": "test-model:latest"}])
+        models_app.state.backend_catalog = fake_catalog
+
+        with patch(
+            "tinyagentos.installers.rkllama_installer.RkllamaInstaller.install",
+            new=AsyncMock(return_value={"success": True, "app_id": "test-model"}),
+        ):
+            resp = await models_client.post(
+                "/api/models/download",
+                json={"app_id": "test-model", "variant_id": "npu"},
+            )
+        download_id = resp.json()["download_id"]
+        await models_app.state.download_manager._running[download_id]
+
+        fake_catalog.refresh.assert_awaited_once()
+        installed = models_app.state.registry.list_installed()
+        assert any(row["id"] == "test-model" for row in installed)
+
+        list_resp = await models_client.get("/api/models")
+        model = next(m for m in list_resp.json()["models"] if m["id"] == "test-model")
+        npu_variant = next(v for v in model["variants"] if v["id"] == "npu")
+        assert npu_variant["downloaded"] is True
+
+    async def test_rkllama_variant_failure_skips_registry_and_catalog_refresh(
+        self, models_app, models_client
+    ):
+        fake_catalog = MagicMock()
+        fake_catalog.refresh = AsyncMock()
+        models_app.state.backend_catalog = fake_catalog
+
+        with patch(
+            "tinyagentos.installers.rkllama_installer.RkllamaInstaller.install",
+            new=AsyncMock(return_value={"success": False, "error": "pull failed"}),
+        ):
+            resp = await models_client.post(
+                "/api/models/download",
+                json={"app_id": "test-model", "variant_id": "npu"},
+            )
+        download_id = resp.json()["download_id"]
+        await models_app.state.download_manager._running[download_id]
+
+        fake_catalog.refresh.assert_not_awaited()
+        installed = models_app.state.registry.list_installed()
+        assert not any(row["id"] == "test-model" for row in installed)
+
+    async def test_rkllama_no_probe_backend_min_ram_no_503(
+        self, models_app, models_client
+    ):
+        """Acceptance (#1766): no nvidia-smi + real backend-level min_ram_mb
+        proceeds with bookkeeping and does not 503.
+        """
+        mgr = VramReservationManager()
+        mgr._probe_vram = staticmethod(lambda: None)  # type: ignore[method-assign]
+        models_app.state.vram_reservation = mgr
+
+        with patch(
+            "tinyagentos.installers.rkllama_installer.RkllamaInstaller.install",
+            new=AsyncMock(return_value={"success": True, "app_id": "test-model"}),
+        ):
+            resp = await models_client.post(
+                "/api/models/download",
+                json={"app_id": "test-model", "variant_id": "npu"},
+            )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["status"] == "started"
+        # While the installer is in flight the reservation is held.
+        # Drain it so release runs in the finally block.
+        download_id = data["download_id"]
+        await models_app.state.download_manager._running[download_id]
+        # After success the reservation is released.
+        assert mgr.pending_count == 0
+
+    async def test_rkllama_insufficient_vram_503_on_nvidia(
+        self, models_app, models_client
+    ):
+        """On measurable NVIDIA VRAM the atomic check still denies when
+        free capacity cannot cover the backend min_ram_mb floor.
+        """
+        mgr = VramReservationManager()
+        mgr._probe_vram = staticmethod(lambda: (1024, 8192))  # type: ignore[method-assign]
+        models_app.state.vram_reservation = mgr
+
+        with patch(
+            "tinyagentos.installers.rkllama_installer.RkllamaInstaller.install",
+            new=AsyncMock(return_value={"success": True, "app_id": "test-model"}),
+        ) as mock_install:
+            resp = await models_client.post(
+                "/api/models/download",
+                json={"app_id": "test-model", "variant_id": "npu"},
+            )
+        assert resp.status_code == 503
+        body = resp.json()
+        assert "Insufficient VRAM" in body["error"]
+        assert "2048" in body["error"]
+        mock_install.assert_not_awaited()
+        assert mgr.pending_count == 0
+
+
+class TestEstimatedVramMb:
+    """Unit coverage for the #1766 backend-level min_ram_mb gate."""
+
+    def test_reads_backend_min_ram_when_variant_is_zero(self):
+        variant = {
+            "min_ram_mb": 0,
+            "requires": {
+                "backends": [
+                    {"id": "rkllama", "min_ram_mb": 2048},
+                ],
+            },
+        }
+        assert _estimated_vram_mb(variant) == 2048
+
+    def test_max_across_backends(self):
+        variant = {
+            "min_ram_mb": 0,
+            "requires": {
+                "backends": [
+                    {"id": "a", "min_ram_mb": 1024},
+                    {"id": "b", "min_ram_mb": 4096},
+                ],
+            },
+        }
+        assert _estimated_vram_mb(variant) == 4096
+
+    def test_falls_back_to_variant_key(self):
+        variant = {"min_ram_mb": 512, "requires": {"backends": [{"id": "ollama"}]}}
+        assert _estimated_vram_mb(variant) == 512
+
+    def test_missing_requires_uses_variant_only(self):
+        assert _estimated_vram_mb({"min_ram_mb": 256}) == 256
+        assert _estimated_vram_mb({}) == 0
+
+
+@pytest.mark.asyncio
+class TestModelRecommendations:
+    async def test_recommended_models(self, models_client):
+        resp = await models_client.get("/api/models/recommended")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "profile_id" in data
+        assert "recommended" in data
+        assert "compatible" in data
+        assert isinstance(data["recommended"], list)
+        assert isinstance(data["compatible"], list)
+
+
+class TestGetDownloadedModels:
+    def test_empty_dir(self, tmp_path):
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        assert get_downloaded_models(models_dir) == []
+
+    def test_nonexistent_dir(self, tmp_path):
+        assert get_downloaded_models(tmp_path / "nope") == []
+
+    def test_finds_model_files(self, tmp_path):
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        (models_dir / "test-model-small.gguf").write_bytes(b"x" * 2048)
+        (models_dir / "test-model-npu.rkllm").write_bytes(b"y" * 4096)
+        (models_dir / "readme.txt").write_text("ignore me")
+
+        results = get_downloaded_models(models_dir)
+        assert len(results) == 2
+        filenames = {r["filename"] for r in results}
+        assert "test-model-small.gguf" in filenames
+        assert "test-model-npu.rkllm" in filenames
+        # txt file excluded
+        assert all(r["format"] in ("gguf", "rkllm", "bin") for r in results)
+
+    def test_size_and_format(self, tmp_path):
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        (models_dir / "m.bin").write_bytes(b"x" * (1024 * 1024 * 3))
+
+        results = get_downloaded_models(models_dir)
+        assert len(results) == 1
+        assert results[0]["size_mb"] == 3
+        assert results[0]["format"] == "bin"
+
+
+@pytest.fixture
+def app_with_sd_cpp_backend(tmp_path):
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [
+            {"name": "sd-cpp-cpu", "type": "sd-cpp", "url": "http://localhost:7864", "priority": 1}
+        ],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config))
+    (tmp_path / ".setup_complete").touch()
+    return create_app(data_dir=tmp_path)
+
+
+async def _make_auth_client(app):
+    store = app.state.metrics
+    if store._db is not None:
+        await store.close()
+    await store.init()
+    await app.state.qmd_client.init()
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    _rec = app.state.auth.find_user("admin")
+    _token = app.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
+    transport = ASGITransport(app=app)
+    return AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}, event_hooks=csrf_event_hooks())
+
+
+@pytest.mark.asyncio
+class TestLoadedModelsImageBackends:
+    async def test_sd_cpp_never_appears_in_loaded(self, app_with_sd_cpp_backend):
+        """sd-cpp: /sdapi/v1/options doesn't expose load state; backend is skipped entirely."""
+        app = app_with_sd_cpp_backend
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "sd_model_checkpoint": "v1-5-pruned-emaonly.safetensors",
+        }
+
+        async with await _make_auth_client(app) as c:
+            with patch.object(app.state, "http_client") as mock_http:
+                mock_http.get = AsyncMock(return_value=mock_response)
+                resp = await c.get("/api/models/loaded")
+        await app.state.metrics.close()
+        await app.state.qmd_client.close()
+        await app.state.http_client.aclose()
+
+        assert resp.status_code == 200
+        data = resp.json()
+        sd_entries = [e for e in data["loaded"] if e["backend_type"] == "sd-cpp"]
+        assert sd_entries == []
+
+    async def test_sd_cpp_offline_skipped(self, app_with_sd_cpp_backend):
+        """sd-cpp backend: ConnectError is swallowed; loaded list is empty."""
+        app = app_with_sd_cpp_backend
+
+        async with await _make_auth_client(app) as c:
+            with patch.object(app.state, "http_client") as mock_http:
+                mock_http.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
+                resp = await c.get("/api/models/loaded")
+        await app.state.metrics.close()
+        await app.state.qmd_client.close()
+        await app.state.http_client.aclose()
+
+        assert resp.status_code == 200
+        assert resp.json()["loaded"] == []
+
+
+@pytest.mark.asyncio
+class TestDeleteModel:
+    async def test_delete_removes_all_model_suffixes(self, models_app, models_client):
+        """DELETE removes every recognised model suffix (incl .safetensors/.onnx
+        and uppercase) but leaves non-model files alone. Regression: the old
+        hardcoded (.gguf,.rkllm,.bin) list orphaned .safetensors/.onnx files."""
+        models_dir = models_app.state.models_dir
+        # NB: use uppercase .GGUF only (no lowercase twin) — it proves both the
+        # .gguf suffix match AND case-insensitivity, and avoids a case-insensitive
+        # filesystem (macOS) collapsing .gguf/.GGUF into one file.
+        for fn in (
+            "test-model.GGUF",      # uppercase → exercises case-insensitive match
+            "test-model.safetensors",
+            "test-model.onnx",
+        ):
+            (models_dir / fn).write_bytes(b"x")
+        (models_dir / "test-model.txt").write_bytes(b"x")  # non-model, must survive
+
+        resp = await models_client.delete("/api/models/test-model")
+        assert resp.status_code == 200
+        deleted = set(resp.json()["deleted_files"])
+        assert {
+            "test-model.GGUF",
+            "test-model.safetensors",
+            "test-model.onnx",
+        } <= deleted
+        assert not (models_dir / "test-model.safetensors").exists()
+        assert not (models_dir / "test-model.onnx").exists()
+        assert (models_dir / "test-model.txt").exists()

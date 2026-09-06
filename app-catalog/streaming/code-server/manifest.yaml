@@ -1,0 +1,51 @@
+id: code-server-streaming
+name: Code Server (Streaming)
+type: streaming-app
+version: 4.96.0
+description: "VS Code in the browser with AI agent pair programming"
+homepage: https://github.com/coder/code-server
+license: MIT
+
+streaming:
+  backend: kasmvnc
+  port: 6901
+  resolution: 1920x1080
+  audio: false
+
+mcp:
+  server: vscode-native-mcp
+  install: "built-in"
+  capabilities:
+    - edit_file
+    - create_file
+    - search
+    - terminal
+    - debug
+
+agent_bridge:
+  port: 9100
+  computer_use: optional
+  exec_enabled: true
+  keyboard_enabled: true
+
+expert_agent:
+  name: "Code Expert"
+  system_prompt: "You are a Code Expert assistant. Help users write, debug, and refactor code in VS Code. Use MCP tools to edit files, search across the codebase, run terminal commands, and navigate the project. Offer guidance on debugging strategies, git workflows, code architecture, testing, and language-specific best practices. Suggest relevant VS Code extensions and keyboard shortcuts when appropriate."
+  model: qwen3-4b
+  color: "#007ACC"
+
+requires:
+  ram_mb: 512
+  gpu_recommended: false
+
+install:
+  method: docker
+  image: taos-app-code-server
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  arm-npu-16gb: full
+  apple-silicon: full
+  cpu-only: full

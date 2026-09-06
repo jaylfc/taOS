@@ -1,0 +1,24 @@
+id: diffusers
+name: HuggingFace Diffusers
+type: service
+category: image-runtime
+version: latest
+description: "HuggingFace Diffusers library — runs diffusion models in safetensors/diffusers format."
+homepage: https://github.com/huggingface/diffusers
+license: Apache-2.0
+
+requires:
+  ram_mb: 4096
+  disk_mb: 1000
+  ports: []
+
+install:
+  method: pip
+  package: diffusers
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-vulkan-8gb: full
+  apple-silicon: full
+  arm-cpu-16gb: degraded
+  cpu-only: degraded

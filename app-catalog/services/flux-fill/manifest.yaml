@@ -1,0 +1,37 @@
+id: flux-fill
+name: FLUX.1-Fill
+type: service
+category: image-runtime
+version: 1.0.0
+description: "FLUX.1-Fill quality inpaint/outpaint tier - GPU image editing via an A1111-compatible sd.cpp server. Runs on-demand on a shared NVIDIA GPU."
+homepage: https://github.com/leejet/stable-diffusion.cpp
+license: MIT
+# The sd.cpp server is MIT, but this tier pulls the FLUX.1-dev weights,
+# which ship under the FLUX.1-dev non-commercial license.
+weights_license: "flux-1-dev-non-commercial-license"
+license_class: non-commercial
+
+requires:
+  ram_mb: 8192
+  disk_mb: 12000
+  # Deterministic high-pool slot for app_id "flux-fill" (see port_allocator).
+  # Maps host -> container 7864 (the sd-server internal listen port).
+  ports: [38298]
+
+install:
+  method: script
+  script: scripts/install-flux-fill.sh
+
+lifecycle:
+  backend_type: flux-fill
+  default_url: http://127.0.0.1:38298
+
+# GPU / CUDA only. The encoders run on CPU so a 12GB card fits the model with
+# headroom; smaller cards and non-CUDA hosts use the iopaint editing tier.
+hardware_tiers:
+  arm-npu-16gb: unsupported
+  arm-npu-32gb: unsupported
+  x86-cuda-8gb: unsupported
+  x86-cuda-12gb: full
+  x86-cuda-24gb: full
+  cpu-only: unsupported

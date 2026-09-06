@@ -1,0 +1,43 @@
+id: controlnet-openpose-sdxl
+name: ControlNet OpenPose (SDXL)
+type: model
+version: 1.0.0
+description: OpenPose ControlNet for SDXL — pose-controlled generation with SDXL models
+homepage: https://huggingface.co/thibaud/controlnet-openpose-sdxl-1.0
+license: OpenRAIL++
+capabilities:
+- controlnet
+- image-generation
+variants:
+- id: safetensors
+  name: Safetensors (4.8GB)
+  format: safetensors
+  size_mb: 4800
+  min_ram_mb: 6144
+  download_url: https://huggingface.co/thibaud/controlnet-openpose-sdxl-1.0/resolve/main/OpenPoseXL2.safetensors
+  requires:
+    backends:
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 6144
+    - id: sd-webui
+      targets:
+      - cpu
+      min_ram_mb: 6144
+    - id: diffusers
+      targets:
+      - cpu
+      min_ram_mb: 6144
+  sha256: 5a4b928cb1e93748217900cb66d4135bf70d932d2924232f925910fad9e43a92
+hardware_tiers:
+  x86-cuda-8gb:
+    recommended: safetensors
+  x86-cuda-12gb:
+    recommended: safetensors
+  cpu-only: unsupported
+  x86-cuda-6gb:
+    recommended: safetensors
+context_window: 77

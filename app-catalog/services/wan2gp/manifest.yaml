@@ -1,0 +1,27 @@
+id: wan2gp
+name: WanGP Video Generator
+type: service
+category: video-gen
+version: 0.1.0
+description: "AI video generation — supports Wan 2.1/2.2, HunyuanVideo, LTX Video, Flux. As low as 6GB VRAM."
+homepage: https://github.com/deepbeepmeep/Wan2GP
+license: Apache-2.0
+
+requires:
+  ram_mb: 4096
+  disk_mb: 15000
+  ports: [33109]
+
+install:
+  method: script
+  script: scripts/install-wan2gp.sh
+
+hardware_tiers:
+  arm-npu-16gb: unsupported
+  arm-npu-32gb: degraded
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-cuda-24gb: full
+  x86-vulkan-8gb: degraded
+  x86-rocm-12gb: full
+  cpu-only: unsupported

@@ -1,0 +1,31 @@
+id: piper-en-lessac
+name: Piper TTS EN-US Lessac (Medium)
+type: model
+version: 1.0.0
+description: Fast CPU TTS voice — Piper Lessac medium voice, natural English US
+homepage: https://huggingface.co/rhasspy/piper-voices
+license: MIT
+capabilities:
+- text-to-speech
+variants:
+- id: onnx-medium
+  name: ONNX Medium (63MB)
+  format: onnx
+  size_mb: 63
+  min_ram_mb: 512
+  download_url: https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx
+  requires:
+    backends:
+    - id: piper
+      targets:
+      - cpu
+      min_ram_mb: 512
+  sha256: 5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f
+hardware_tiers:
+  arm-cpu-8gb:
+    recommended: onnx-medium
+  arm-npu-16gb:
+    recommended: onnx-medium
+  cpu-only:
+    recommended: onnx-medium
+context_window: 4096

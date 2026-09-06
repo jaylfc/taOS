@@ -1,0 +1,45 @@
+id: bge-large-en-v1.5
+name: BGE Large EN v1.5
+type: model
+version: 1.5.0
+description: BAAI's English embedding model — 1024 dimensions, strong MTEB ranking
+homepage: https://huggingface.co/BAAI/bge-large-en-v1.5
+license: MIT
+capabilities:
+- embedding
+variants:
+- id: q4_k_m
+  name: Q4_K_M GGUF (200MB)
+  format: gguf
+  size_mb: 200
+  min_ram_mb: 1024
+  download_url: https://huggingface.co/CompendiumLabs/bge-large-en-v1.5-gguf/resolve/main/bge-large-en-v1.5-q4_k_m.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
+  sha256: c55f590f8e557ae698a6ecfdbe0bf62ce292f0db94c861d0dfd177e4bd01f700
+hardware_tiers:
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-vulkan-4gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+  x86-vulkan-2gb:
+    recommended: q4_k_m
+context_window: 512

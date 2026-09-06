@@ -1,0 +1,23 @@
+id: mcp-filesystem
+name: MCP Filesystem
+type: plugin
+version: 0.1.0
+description: "Official MCP filesystem server — read, write, and search files on the local filesystem"
+homepage: https://github.com/modelcontextprotocol/servers
+license: MIT
+
+requires:
+  ram_mb: 32
+
+install:
+  method: npm
+  package: "@modelcontextprotocol/server-filesystem"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

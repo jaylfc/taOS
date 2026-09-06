@@ -1,0 +1,169 @@
+# Documentation-drift gate configuration.
+#
+# Read by scripts/check_doc_gate.py. Rules are data: add more [[rules]]
+# entries here to cover new feature areas without touching the script.
+#
+# Two trigger modes:
+#   when_changed  -- fires on structural add/delete by default; set
+#                    `on_modify = true` to also count plain modifications.
+#   require_doc   -- any changed file matching these globs satisfies the rule.
+#
+# Test paths (test_*.py, *.test.*, *.spec.*, __tests__/) are never structural
+# and are always excluded from triggering.
+#
+# The Docs-Reviewed: trailer is an explicit escape hatch: when present in a
+# commit message, the gate prints which commit used it and who authored it,
+# then passes all rules for that PR.
+
+[gate]
+trailer = "Docs-Reviewed:"
+
+[invariants]
+# Globs are expanded against the working tree, so new manual pages, runbooks
+# and skills are scanned without a config edit. Nested READMEs under app
+# trees are deliberately NOT scanned: their relative `scripts/` links point
+# inside their own directory and would false-positive against the repo root.
+referenced_paths_scan = [
+    "README.md",
+    "CONTRIBUTING.md",
+    "docs/agent-coordination.md",
+    "docs/AGENT_HANDOFF.md",
+    "docs/RELEASING.md",
+    "docs/contributor-pitfalls.md",
+    "docs/agent-manual/*.md",
+    "docs/runbooks/*.md",
+    ".claude/skills/*/SKILL.md",
+    "tinyagentos/worker/README.md",
+]
+# Deliberate tombstones: docs that explain a file was REMOVED must be able to
+# name it without failing the gate forever.
+ignore_tokens = ["docs/STATUS.md"]
+
+[[invariants.required_sections]]
+doc = "docs/agent-coordination.md"
+headings = [
+    "Agent API surface (scoped registry JWT)",
+    "Device bearer self-service (second, narrower passthrough)",
+    "Share destinations (device bearer)",
+    "Requesting more scope for an existing identity (scope requests)",
+    "User resource sharing (share routes)",
+    "Project invite redeem route (link + PIN)",
+    "OS change-event stream (`GET /api/os/events`, session-only)",
+    "LoRA Studio routes (session-only, no agent scope)",
+    "What `GET /api/decisions/agent` returns (grant scoping)",
+    "Agent memory mode (deploy + `PATCH /api/agents/{slug}/memory`, session-only)",
+]
+
+[[rules]]
+name = "apps"
+when_changed = ["desktop/src/apps/*/**"]
+require_doc = ["README.md"]
+hint = "a desktop app was added or removed"
+
+[[rules]]
+name = "routes"
+on_modify = true
+when_changed = ["tinyagentos/routes/*.py"]
+require_doc = ["docs/agent-coordination.md"]
+hint = "an API route module was added, removed, or modified"
+
+[[rules]]
+name = "installers"
+on_modify = true
+when_changed = ["tinyagentos/installers/*", "scripts/install*"]
+require_doc = ["README.md"]
+hint = "an installer was added, removed, or modified"
+
+[[rules]]
+# The repo's catalog tree is app-catalog/, not catalog/ (there is no
+# catalog/ directory in this repo). Scoped to the real path so the rule can
+# actually fire instead of being permanently dead config.
+name = "catalog"
+on_modify = true
+when_changed = ["app-catalog/**"]
+require_doc = ["README.md"]
+hint = "a catalog manifest was added, removed, or modified"
+
+[[rules]]
+name = "agent-api"
+on_modify = true
+when_changed = ["tinyagentos/auth_middleware.py"]
+require_doc = ["docs/agent-coordination.md"]
+hint = "the agent-token route allowlist changed; update the agent-facing API surface (or add a Docs-Reviewed trailer explaining why not)"
+
+# User-visible behaviour needs a changelog line.
+#
+# EITHER a CHANGELOG.md edit OR a new fragment under changelog.d/ satisfies
+# this; prefer the fragment. Every PR editing CHANGELOG.md writes at the same
+# [Unreleased] anchor, so concurrent PRs conflict there by construction and each
+# merge re-conflicts the next - N open PRs cost O(N^2) rebases touching no real
+# code. A fragment is a new file with a unique name and cannot conflict.
+# scripts/collate_changelog.py folds them in at release time.
+#
+# NOTE the glob is deliberately `changelog.d/*.md` and the directory holds
+# NOTHING but fragments: the convention doc lives at docs/changelog-fragments.md,
+# because a README.md inside changelog.d/ would ITSELF match this glob and let a
+# PR that merely touched the README satisfy the rule. Verified by probe: with the
+# doc inside the directory the gate went green on a change carrying no changelog
+# at all.
+#
+# Broadened to cover every NON-TEST change under tinyagentos/ or desktop/src/,
+# not only code: a doc or asset under those trees triggers it too (the test
+# suite pins tinyagentos/README.md as a trigger). Any such change requires a
+# CHANGELOG.md edit or a new changelog.d/ fragment in the same PR.
+[[rules]]
+name = "user-visible-changelog"
+on_modify = true
+when_changed = ["tinyagentos/**", "desktop/src/**"]
+require_doc = ["CHANGELOG.md", "changelog.d/*.md"]
+hint = "user-visible behaviour changed; add a changelog.d/<pr>-<slug>.md fragment (preferred) or a CHANGELOG.md line (or add a Docs-Reviewed trailer explaining why not)"
+
+# Agent-facing behaviour needs the compiled agent manual reviewed.
+[[rules]]
+name = "agent-manual"
+on_modify = true
+when_changed = ["tinyagentos/agent_registry*.py", "tinyagentos/agent_token_auth.py", "tinyagentos/agent_scope_requests_store.py", "tinyagentos/routes/agent_*.py", "tinyagentos/mcp/**"]
+require_doc = ["docs/agent-manual/*.md", "docs/agent-coordination.md"]
+hint = "agent-facing behaviour changed; review the agent manual or coordination doc (or add a Docs-Reviewed trailer explaining why not)"
+
+# The contributor skill documents how to contribute, test and ship. When CI,
+# packaging or the contribution rules move, it goes stale silently because
+# nothing imports it.
+# A workflow-file change that bumps only `uses: <action>@<ref>` pins (a
+# dependency-bot version update) is detected by scripts/check_doc_gate.py and
+# treated as non-structural, so it does NOT trip this rule and dependency-update
+# PRs for GitHub Actions can pass without a trailer the bot cannot author. The
+# exemption is content-based: a substantive workflow edit by any author still does.
+[[rules]]
+name = "contributor-skill"
+on_modify = true
+when_changed = [".github/workflows/*.yml", "pyproject.toml", "CONTRIBUTING.md"]
+require_doc = [".claude/skills/taos-development-skill/*.md", "docs/*.md"]
+hint = "CI, packaging or contribution rules changed; review the contributor skill and docs (or add a Docs-Reviewed trailer explaining why not)"
+
+# The OS-native agent drives the desktop ONLY through the surfaces the
+# taos-agent skill and the OS-control manual page describe. When those routes
+# change shape, an undocumented agent surface is a broken agent.
+[[rules]]
+name = "taos-agent-skill"
+on_modify = true
+when_changed = ["tinyagentos/routes/desktop.py", "tinyagentos/routes/desktop_control.py", "tinyagentos/routes/taos_agent.py"]
+require_doc = [".claude/skills/taos-agent/*.md", "docs/agent-manual/*.md"]
+hint = "the agent-facing desktop-driving surface changed; review the taos-agent skill and the OS-control manual pages (or add a Docs-Reviewed trailer explaining why not)"
+
+# Update/release machinery drifts from its runbooks silently: the beta.48
+# promotion (2026-08-12) needed a sync-branch pattern RELEASING.md did not
+# describe, and pi_update-style tooling broke against a moved deploy path.
+[[rules]]
+name = "release-runbook"
+on_modify = true
+when_changed = ["tinyagentos/update_runner.py", "tinyagentos/auto_update.py", "tinyagentos/restart_orchestrator.py", "scripts/collate_changelog.py"]
+require_doc = ["docs/RELEASING.md", "docs/runbooks/*.md", "docs/UPDATE_BREAKAGE_LOG.md", "docs/*.md"]
+hint = "update/release machinery changed; review docs/RELEASING.md and the runbooks (or add a Docs-Reviewed trailer explaining why not)"
+
+# The worker README is the operator-facing contract for worker nodes.
+[[rules]]
+name = "worker-readme"
+when_changed = ["tinyagentos/worker/**"]
+require_doc = ["tinyagentos/worker/README.md"]
+hint = "a worker component was added or removed; update tinyagentos/worker/README.md (or add a Docs-Reviewed trailer explaining why not)"

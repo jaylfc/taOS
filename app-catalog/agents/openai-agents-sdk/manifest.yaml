@@ -1,0 +1,33 @@
+id: openai-agents-sdk
+name: OpenAI Agents SDK
+type: agent-framework
+verification_status: alpha
+version: 0.1.0
+description: "Provider-agnostic multi-agent framework with tracing, guardrails, and 100+ LLM support"
+homepage: https://github.com/openai/openai-agents-python
+license: MIT
+
+requires:
+  ram_mb: 256
+  python: ">=3.10"
+
+install:
+  method: pip
+  package: openai-agents
+
+config_schema:
+  - name: model
+    type: model-select
+    label: LLM Model
+    required: true
+  - name: tools
+    type: multiselect
+    label: Available Tools
+    options: [web_search, file_read, code_exec, memory_search]
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

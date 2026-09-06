@@ -1,0 +1,24 @@
+id: chatterbox-tts
+name: Chatterbox TTS
+type: service
+category: voice
+version: 0.1.0
+description: "Real-time speech generation — natural quality voice synthesis, lightweight inference"
+homepage: https://github.com/resemble-ai/chatterbox
+license: MIT
+
+requires:
+  ram_mb: 512
+  disk_mb: 1000
+  ports: [30145]
+
+install:
+  method: pip
+  package: chatterbox-tts
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: degraded

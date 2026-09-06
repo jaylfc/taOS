@@ -1,0 +1,23 @@
+id: dbhub
+name: DBHub
+type: plugin
+version: 0.1.0
+description: "Zero-dependency database MCP server for Postgres, MySQL, and SQLite"
+homepage: https://github.com/bytebase/dbhub
+license: MIT
+
+requires:
+  ram_mb: 64
+
+install:
+  method: npm
+  package: dbhub
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

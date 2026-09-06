@@ -1,0 +1,22 @@
+id: image-generation-tool
+name: Image Generation Tool
+type: plugin
+version: 0.1.0
+description: "MCP tool for agents to generate images via Stable Diffusion on the local NPU/GPU"
+homepage: https://github.com/jaylfc/tinyagentos
+license: MIT
+
+requires:
+  ram_mb: 0
+
+install:
+  method: pip
+  package: tinyagentos
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: degraded

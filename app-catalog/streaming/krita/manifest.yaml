@@ -1,0 +1,51 @@
+id: krita-streaming
+name: Krita (Streaming)
+type: streaming-app
+version: 5.3.0
+description: "Digital painting and illustration with AI agent assistance"
+homepage: https://krita.org
+license: GPL-3.0
+
+streaming:
+  backend: kasmvnc
+  port: 6901
+  resolution: 1920x1080
+  audio: false
+
+mcp:
+  server: krita-mcp
+  install: "pip install krita-mcp"
+  capabilities:
+    - create_layer
+    - set_brush
+    - fill_color
+    - apply_filter
+    - export_image
+
+agent_bridge:
+  port: 9100
+  computer_use: optional
+  exec_enabled: true
+  keyboard_enabled: true
+
+expert_agent:
+  name: "Krita Expert"
+  system_prompt: "You are a Krita digital painting expert. Help users with layers, brushes, colors, masks, filters, and illustration techniques. Use MCP tools for layer management and color operations. Suggest keyboard shortcuts (B=brush, E=eraser, Ctrl+Z=undo, Shift+N=new layer). When stuck, offer to use computer use mode to inspect the canvas directly."
+  model: qwen3-4b
+  color: "#3BABFF"
+
+requires:
+  ram_mb: 1024
+  gpu_recommended: false
+
+install:
+  method: docker
+  image: taos-app-krita
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  arm-npu-16gb: full
+  apple-silicon: full
+  cpu-only: full

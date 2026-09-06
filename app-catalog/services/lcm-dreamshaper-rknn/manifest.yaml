@@ -1,0 +1,25 @@
+id: lcm-dreamshaper-rknn
+name: LCM Dreamshaper (RKNN Rust)
+type: service
+category: image-gen
+version: 0.1.0
+description: "Fast text-to-image on RK3588 NPU — Rust implementation, 512x512 in seconds, no GPU needed"
+homepage: https://github.com/darkautism/LCM-Dreamshaper-V7-rs
+license: MIT
+
+requires:
+  ram_mb: 1024
+  disk_mb: 2000
+  ports: [32275]
+
+install:
+  method: script
+  script: scripts/install-lcm-dreamshaper.sh
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  arm-npu-64gb: full
+  x86-cuda-12gb: unsupported
+  x86-vulkan-8gb: unsupported
+  cpu-only: unsupported

@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+import json
+import time
+
+from tinyagentos.base_store import BaseStore
+from tinyagentos.userspace.capabilities import default_provenance_for_trust
+
+
+class UserspaceAppStore(BaseStore):
+    """Registry of installed userspace apps (sandboxed .taosapp packages).
+    Distinct from InstalledAppsStore (catalog services). Userspace apps are
+    web (iframe) or container; never in-process 'native'.
+
+    BaseStore.init() runs SCHEMA and sets self._db -- do NOT override init().
+    """
+
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS userspace_apps (
+        app_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        version TEXT NOT NULL DEFAULT '',
+        app_type TEXT NOT NULL,
+        entry TEXT NOT NULL DEFAULT 'index.html',
+        icon TEXT NOT NULL DEFAULT '',
+        permissions_requested TEXT NOT NULL DEFAULT '[]',
+        permissions_granted TEXT NOT NULL DEFAULT '[]',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        installed_at INTEGER NOT NULL,
+        container_host TEXT,
+        container_port INTEGER
+    );
+    """
+
+    async def _post_init(self) -> None:
+        """Add the trust/provenance columns to databases created before they existed.
+
+        SQLite has no IF NOT EXISTS for ADD COLUMN prior to 3.37, so we check
+        PRAGMA table_info for broad compatibility (same pattern used by
+        knowledge_store and agent_registry_store).
+        """
+        existing_cols = {
+            row[1]
+            for row in await (
+                await self._db.execute("PRAGMA table_info(userspace_apps)")
+            ).fetchall()
+        }
+        if "trust" not in existing_cols:
+            await self._db.execute(
+                "ALTER TABLE userspace_apps ADD COLUMN trust TEXT NOT NULL DEFAULT 'community'"
+            )
+            await self._db.commit()
+        if "provenance" not in existing_cols:
+            # Empty default (rather than a real tier) so the backfill below can
+            # tell "never classified" apart from an explicitly-set tier, then
+            # derive a sensible value per row from its existing trust column.
+            # Commit the ALTER before the backfill UPDATE, matching the trust
+            # column's pattern above (keep DDL and DML in separate transactions).
+            await self._db.execute(
+                "ALTER TABLE userspace_apps ADD COLUMN provenance TEXT NOT NULL DEFAULT ''"
+            )
+            await self._db.commit()
+            await self._db.execute(
+                "UPDATE userspace_apps SET provenance = CASE "
+                "WHEN trust = 'first-party' THEN 'first-party' ELSE 'user-uploaded' END "
+                "WHERE provenance = ''"
+            )
+            await self._db.commit()
+
+    async def install(self, app_id, name, version, app_type, entry, icon,
+                      permissions_requested, *, trust: str = "community",
+                      provenance: str | None = None):
+        assert self._db is not None
+        if provenance is None:
+            provenance = default_provenance_for_trust(trust)
+        await self._db.execute(
+            """INSERT INTO userspace_apps
+               (app_id, name, version, app_type, entry, icon,
+                permissions_requested, permissions_granted, enabled, installed_at, trust, provenance)
+               VALUES (?,?,?,?,?,?,?,'[]',1,?,?,?)
+               ON CONFLICT(app_id) DO UPDATE SET
+                 name=excluded.name, version=excluded.version,
+                 app_type=excluded.app_type, entry=excluded.entry,
+                 icon=excluded.icon,
+                 permissions_requested=excluded.permissions_requested,
+                 trust=excluded.trust,
+                 provenance=excluded.provenance""",
+            (app_id, name, version, app_type, entry, icon,
+             json.dumps(permissions_requested), int(time.time()), trust, provenance),
+        )
+        await self._db.commit()
+
+    def _row_to_dict(self, row) -> dict:
+        trust = row[12] if len(row) > 12 else "community"
+        return {
+            "app_id": row[0], "name": row[1], "version": row[2],
+            "app_type": row[3], "entry": row[4], "icon": row[5],
+            "permissions_requested": json.loads(row[6]),
+            "permissions_granted": json.loads(row[7]),
+            "enabled": row[8], "installed_at": row[9],
+            "container_host": row[10], "container_port": row[11],
+            "trust": trust,
+            "provenance": row[13] if len(row) > 13 and row[13] else default_provenance_for_trust(trust),
+        }
+
+    async def get(self, app_id) -> dict | None:
+        assert self._db is not None
+        cur = await self._db.execute("SELECT * FROM userspace_apps WHERE app_id=?", (app_id,))
+        row = await cur.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    async def list_installed(self) -> list[dict]:
+        assert self._db is not None
+        cur = await self._db.execute("SELECT * FROM userspace_apps ORDER BY installed_at")
+        return [self._row_to_dict(r) for r in await cur.fetchall()]
+
+    async def set_permissions_granted(self, app_id, perms):
+        assert self._db is not None
+        await self._db.execute("UPDATE userspace_apps SET permissions_granted=? WHERE app_id=?",
+                               (json.dumps(perms), app_id))
+        await self._db.commit()
+
+    async def set_enabled(self, app_id, enabled: bool):
+        assert self._db is not None
+        await self._db.execute("UPDATE userspace_apps SET enabled=? WHERE app_id=?",
+                               (1 if enabled else 0, app_id))
+        await self._db.commit()
+
+    async def set_runtime_location(self, app_id, host: str, port: int):
+        assert self._db is not None
+        await self._db.execute(
+            "UPDATE userspace_apps SET container_host=?, container_port=? WHERE app_id=?",
+            (host, port, app_id),
+        )
+        await self._db.commit()
+
+    async def uninstall(self, app_id) -> bool:
+        assert self._db is not None
+        cur = await self._db.execute("DELETE FROM userspace_apps WHERE app_id=?", (app_id,))
+        await self._db.commit()
+        return cur.rowcount > 0

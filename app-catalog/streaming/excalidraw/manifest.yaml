@@ -1,0 +1,51 @@
+id: excalidraw-streaming
+name: Excalidraw (Streaming)
+type: streaming-app
+version: 0.17.0
+description: "Collaborative diagramming and whiteboard with AI agent assistance"
+homepage: https://excalidraw.com
+license: MIT
+
+streaming:
+  backend: kasmvnc
+  port: 6901
+  resolution: 1920x1080
+  audio: false
+
+mcp:
+  server: mcp_excalidraw
+  install: "pip install mcp-excalidraw"
+  capabilities:
+    - create_shape
+    - add_text
+    - draw_arrow
+    - group_elements
+    - export_png
+
+agent_bridge:
+  port: 9100
+  computer_use: optional
+  exec_enabled: false
+  keyboard_enabled: true
+
+expert_agent:
+  name: "Excalidraw Expert"
+  system_prompt: "You are an Excalidraw diagramming expert. Help users create flowcharts, architecture diagrams, wireframes, and mind maps. Use MCP tools to add shapes, text, and connectors. Suggest diagram patterns for system design, user flows, and concept maps. When stuck, offer to use computer use mode to see the whiteboard directly."
+  model: qwen3-4b
+  color: "#6965DB"
+
+requires:
+  ram_mb: 512
+  gpu_recommended: false
+
+install:
+  method: docker
+  image: taos-app-excalidraw
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  arm-npu-16gb: full
+  apple-silicon: full
+  cpu-only: full

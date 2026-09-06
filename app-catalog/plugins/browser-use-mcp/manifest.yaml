@@ -1,0 +1,23 @@
+id: browser-use-mcp
+name: Browser Use
+type: plugin
+version: 0.1.0
+description: "AI agent web browsing — natural language browser automation with built-in MCP server. 87k GitHub stars"
+homepage: https://github.com/browser-use/browser-use
+license: MIT
+
+requires:
+  ram_mb: 256
+
+install:
+  method: pip
+  package: "browser-use[cli]"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

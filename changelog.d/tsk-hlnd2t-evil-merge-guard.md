@@ -1,0 +1,3 @@
+### Added
+- `scripts/check_evil_merge.py`: gate that detects evil merges in test files by comparing the merge result blob against the `git merge-tree --write-tree` baseline and failing when the resolution differs from what git would have produced automatically. Runs on pull requests targeting `master` or `dev` via `.github/workflows/evil-merge-gate.yml`.
+- `scripts/check_evil_merge.py`: hardened against an octopus merge (3+ parents), which now refuses to pass instead of silently comparing only the first two parents, and against a merge that deletes a test file both parents kept, which is now flagged as a violation instead of being invisible because it is scoped to paths present at head.

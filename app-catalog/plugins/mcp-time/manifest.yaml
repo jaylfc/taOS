@@ -1,0 +1,23 @@
+id: mcp-time
+name: MCP Time
+type: plugin
+version: 0.1.0
+description: "Timezone conversion and current time lookup for agents"
+homepage: https://github.com/modelcontextprotocol/servers
+license: MIT
+
+requires:
+  ram_mb: 32
+
+install:
+  method: npm
+  package: "@modelcontextprotocol/server-time"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

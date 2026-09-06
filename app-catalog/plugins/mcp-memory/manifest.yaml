@@ -1,0 +1,23 @@
+id: mcp-memory
+name: MCP Memory
+type: plugin
+version: 0.1.0
+description: "Official MCP knowledge graph memory server for persistent agent context"
+homepage: https://github.com/modelcontextprotocol/servers
+license: MIT
+
+requires:
+  ram_mb: 64
+
+install:
+  method: npm
+  package: "@modelcontextprotocol/server-memory"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

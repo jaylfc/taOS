@@ -1,0 +1,23 @@
+id: aws-mcp
+name: AWS MCP
+type: plugin
+version: 0.1.0
+description: "AWS services integration — S3, Lambda, CDK, and more"
+homepage: https://github.com/awslabs/mcp
+license: Apache-2.0
+
+requires:
+  ram_mb: 64
+
+install:
+  method: npm
+  package: "@aws/mcp"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

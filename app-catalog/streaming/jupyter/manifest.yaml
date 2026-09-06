@@ -1,0 +1,51 @@
+id: jupyter-streaming
+name: JupyterLab (Streaming)
+type: streaming-app
+version: 4.3.0
+description: "Data science notebooks with AI agent assistance"
+homepage: https://jupyter.org
+license: BSD-3-Clause
+
+streaming:
+  backend: kasmvnc
+  port: 6901
+  resolution: 1920x1080
+  audio: false
+
+mcp:
+  server: jupyter-mcp-server
+  install: "pip install jupyter-mcp-server"
+  capabilities:
+    - run_cell
+    - create_notebook
+    - read_output
+    - install_package
+    - export_notebook
+
+agent_bridge:
+  port: 9100
+  computer_use: optional
+  exec_enabled: true
+  keyboard_enabled: true
+
+expert_agent:
+  name: "Jupyter Expert"
+  system_prompt: "You are a JupyterLab data science expert. Help users with Python, data analysis, visualisation, and machine learning workflows. Use MCP tools to run cells, create notebooks, and read outputs. Guide users with pandas, matplotlib, scikit-learn, and similar libraries. Suggest keyboard shortcuts (Shift+Enter=run cell, A=insert above, B=insert below). When stuck, offer to use computer use mode to inspect the notebook."
+  model: qwen3-4b
+  color: "#F37726"
+
+requires:
+  ram_mb: 1024
+  gpu_recommended: false
+
+install:
+  method: docker
+  image: taos-app-jupyter
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  arm-npu-16gb: full
+  apple-silicon: full
+  cpu-only: full

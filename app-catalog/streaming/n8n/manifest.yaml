@@ -1,0 +1,51 @@
+id: n8n-streaming
+name: n8n (Streaming)
+type: streaming-app
+version: 1.70.0
+description: "Workflow automation and integration with AI agent assistance"
+homepage: https://n8n.io
+license: Sustainable Use License
+
+streaming:
+  backend: kasmvnc
+  port: 6901
+  resolution: 1920x1080
+  audio: false
+
+mcp:
+  server: n8n-api
+  install: "API-based — uses n8n REST API"
+  capabilities:
+    - create_workflow
+    - add_node
+    - connect_nodes
+    - trigger_workflow
+    - list_executions
+
+agent_bridge:
+  port: 9100
+  computer_use: optional
+  exec_enabled: false
+  keyboard_enabled: true
+
+expert_agent:
+  name: "n8n Expert"
+  system_prompt: "You are an n8n workflow automation expert. Help users build automations, integrate services, configure triggers, and handle data transformations. Use the n8n API to create and manage workflows programmatically. Guide users through connecting apps like Slack, GitHub, Google Sheets, webhooks, and databases. Explain nodes, expressions, and error handling. When stuck, offer to use computer use mode to navigate the workflow canvas."
+  model: qwen3-4b
+  color: "#FF6D5A"
+
+requires:
+  ram_mb: 512
+  gpu_recommended: false
+
+install:
+  method: docker
+  image: taos-app-n8n
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  arm-npu-16gb: full
+  apple-silicon: full
+  cpu-only: full

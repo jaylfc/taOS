@@ -1,0 +1,34 @@
+id: mailserver
+name: Docker Mailserver
+type: service
+category: infrastructure
+version: 14.0.0
+description: "Simple full-stack mail server — agents can send and receive email"
+homepage: https://github.com/docker-mailserver/docker-mailserver
+license: MIT
+
+requires:
+  ram_mb: 512
+  disk_mb: 2000
+  ports: [25, 143, 587, 993]
+
+install:
+  method: docker
+  image: ghcr.io/docker-mailserver/docker-mailserver:latest
+  volumes:
+    - mail-data:/var/mail
+    - mail-state:/var/mail-state
+    - mail-logs:/var/log/mail
+    - config:/tmp/docker-mailserver
+  ports: [25, 143, 587, 993]
+  env:
+    ENABLE_SPAMASSASSIN: "0"
+    ENABLE_CLAMAV: "0"
+    ENABLE_FAIL2BAN: "0"
+    SSL_TYPE: ""
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  cpu-only: full

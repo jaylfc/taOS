@@ -1,0 +1,25 @@
+id: kokoro-tts-server
+name: Kokoro TTS Server
+type: service
+category: voice
+version: 0.9.0
+description: "Ultra-lightweight text-to-speech — 82M parameters, runs on CPU, 96x real-time speed. Apache 2.0."
+homepage: https://github.com/hexgrad/kokoro
+license: Apache-2.0
+
+requires:
+  ram_mb: 256
+  disk_mb: 500
+  ports: [36195]
+
+install:
+  method: pip
+  package: kokoro
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  x86-vulkan-4gb: full
+  cpu-only: full

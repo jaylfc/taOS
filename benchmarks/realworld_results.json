@@ -1,0 +1,37 @@
+{
+  "benchmark": "taOSmd Real-World Agent Benchmarks",
+  "version": "1.0",
+  "results": [
+    {
+      "name": "Business Agent",
+      "sessions": 5,
+      "questions": 10,
+      "vector_recall": 100.0,
+      "combined_recall": 100.0,
+      "kg_entities": 20,
+      "kg_triples": 10,
+      "ingest_time": 0.9475123882293701
+    },
+    {
+      "name": "Personal Assistant",
+      "sessions": 5,
+      "questions": 10,
+      "vector_recall": 100.0,
+      "combined_recall": 100.0,
+      "kg_entities": 16,
+      "kg_triples": 8,
+      "ingest_time": 0.47008657455444336
+    },
+    {
+      "name": "Developer Agent",
+      "sessions": 5,
+      "questions": 10,
+      "vector_recall": 100.0,
+      "combined_recall": 100.0,
+      "kg_entities": 6,
+      "kg_triples": 3,
+      "ingest_time": 1.1578037738800049
+    }
+  ],
+  "average_combined": 100.0
+}

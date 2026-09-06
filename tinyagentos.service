@@ -1,0 +1,27 @@
+[Unit]
+Description=TinyAgentOS Web GUI
+After=network.target
+
+[Service]
+Type=simple
+User=jay
+WorkingDirectory=/home/jay/tinyagentos
+# Grant read access to Rockchip debugfs monitoring files (NPU per-core, RGA, Mali)
+# The `+` prefix runs these as root regardless of User= so debugfs can be made readable.
+ExecStartPre=+/bin/sh -c '\
+  chmod o+x /sys/kernel/debug 2>/dev/null || true; \
+  chmod o+rx /sys/kernel/debug/rknpu 2>/dev/null || true; \
+  chmod o+r /sys/kernel/debug/rknpu/load 2>/dev/null || true; \
+  chmod o+r /sys/kernel/debug/rknpu/version 2>/dev/null || true; \
+  chmod o+rx /sys/kernel/debug/rkrga 2>/dev/null || true; \
+  chmod o+r /sys/kernel/debug/rkrga/load 2>/dev/null || true; \
+  chmod o+rx /sys/kernel/debug/mali0 2>/dev/null || true; \
+  chmod o+r /sys/kernel/debug/mali0/dvfs_utilization 2>/dev/null || true'
+ExecStart=/home/jay/tinyagentos/.venv/bin/python -m uvicorn tinyagentos.app:create_app --factory --host 0.0.0.0 --port 6969
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

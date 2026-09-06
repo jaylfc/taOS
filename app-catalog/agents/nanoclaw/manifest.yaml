@@ -1,0 +1,24 @@
+id: nanoclaw
+name: nanoclaw
+type: agent-framework
+verification_status: alpha
+version: 1.0.0
+description: "Lightweight OpenClaw — minimal footprint agent framework"
+homepage: https://github.com/openclaw/nanoclaw
+license: MIT
+
+requires:
+  ram_mb: 128
+  python: ">=3.10"
+
+install:
+  method: pip
+  package: nanoclaw
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  x86-vulkan-4gb: full
+  cpu-only: full

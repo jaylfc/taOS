@@ -1,0 +1,45 @@
+# QMD serve — shared model provider for TinyAgentOS and any other tool on
+# the host that wants embed / rerank / query-expansion. Runs as its own
+# systemd unit (not a TinyAgentOS subprocess) so the model provider layer
+# survives a TinyAgentOS restart and can be reused by anything else on
+# the box.
+#
+# See docs/design/framework-agnostic-runtime.md: this is the host-side
+# model service that replaces the per-agent QMD that used to live inside
+# each agent container.
+#
+# Install:
+#     sudo cp scripts/systemd/qmd.service /etc/systemd/system/qmd.service
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable --now qmd.service
+#
+# Configuration: edit /etc/default/qmd to change the backend URL or
+# bind address without touching this unit. Defaults below target the
+# local rkllama NPU server on an Orange Pi 5 Plus.
+[Unit]
+Description=QMD shared model provider (embed / rerank / expand)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+# User=/Group= are substituted by install-server.sh based on $SUDO_USER
+# (or left as 'root' if the script ran as a real root login). Edit
+# /etc/systemd/system/qmd.service directly to change.
+User=__TAOS_USER__
+Group=__TAOS_GROUP__
+EnvironmentFile=-/etc/default/qmd
+Environment=QMD_PORT=7832
+Environment=QMD_BIND=0.0.0.0
+# Backend defaults: empty for CPU-only fallback (node-llama-cpp). Edit
+# /etc/default/qmd to point at a remote backend like rkllama on a Pi NPU
+# or an Ollama server elsewhere on the LAN.
+Environment=QMD_BACKEND=
+ExecStart=__TAOS_QMD_BIN__ serve \
+    --port ${QMD_PORT} \
+    --bind ${QMD_BIND}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

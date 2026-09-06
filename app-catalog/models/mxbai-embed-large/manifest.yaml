@@ -1,0 +1,42 @@
+id: mxbai-embed-large
+name: MixedBread mxbai-embed-large v1
+type: model
+version: 1.0.0
+description: 1024-dim English embedding — strong MTEB performance, Apache 2.0
+homepage: https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1
+license: Apache-2.0
+capabilities:
+- embedding
+variants:
+- id: safetensors
+  name: Safetensors (1.3GB)
+  format: safetensors
+  size_mb: 1300
+  min_ram_mb: 2048
+  download_url: https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1/resolve/main/model.safetensors
+  requires:
+    backends:
+    - id: transformers
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2048
+    - id: sentence-transformers
+      targets:
+      - cpu
+      min_ram_mb: 2048
+  sha256: 36bfa45da00eb762ef9feebe4cff315ec779efadd08da11846bef5ba5b59b8f8
+hardware_tiers:
+  arm-cpu-8gb:
+    recommended: safetensors
+  arm-npu-16gb:
+    recommended: safetensors
+  x86-cuda-8gb:
+    recommended: safetensors
+  cpu-only:
+    recommended: safetensors
+  x86-cuda-2gb:
+    recommended: safetensors
+context_window: 512

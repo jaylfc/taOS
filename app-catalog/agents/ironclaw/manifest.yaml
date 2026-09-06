@@ -1,0 +1,18 @@
+id: ironclaw
+name: IronClaw
+type: agent-framework
+verification_status: alpha
+version: 0.1.0
+description: "Hardened agent framework — security-focused with sandboxing and audit trails"
+homepage: https://github.com/nicholasgasior/ironclaw
+license: MIT
+requires:
+  ram_mb: 128
+install:
+  method: pip
+  package: ironclaw
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-cpu-8gb: full
+  x86-cuda-12gb: full
+  cpu-only: full

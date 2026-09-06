@@ -1,0 +1,30 @@
+id: iopaint
+name: IOPaint
+type: service
+category: image-gen
+version: 1.6.0
+description: "AI image editing — erase objects, inpaint, remove backgrounds and upscale. Runs on CPU including ARM."
+homepage: https://github.com/Sanster/IOPaint
+license: Apache-2.0
+
+requires:
+  ram_mb: 2048
+  disk_mb: 4000
+  # Deterministic high-pool slot for app_id "iopaint" (see port_allocator).
+  ports: [30493]
+
+install:
+  method: script
+  script: scripts/install-iopaint.sh
+
+lifecycle:
+  backend_type: iopaint
+  default_url: http://127.0.0.1:30493
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: degraded
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-cuda-24gb: full
+  cpu-only: full

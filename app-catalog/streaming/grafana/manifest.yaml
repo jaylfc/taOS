@@ -1,0 +1,51 @@
+id: grafana-streaming
+name: Grafana (Streaming)
+type: streaming-app
+version: 11.0.0
+description: "Dashboards and monitoring visualisation with AI agent assistance"
+homepage: https://grafana.com
+license: AGPL-3.0
+
+streaming:
+  backend: kasmvnc
+  port: 6901
+  resolution: 1920x1080
+  audio: false
+
+mcp:
+  server: grafana-mcp
+  install: "pip install grafana-mcp"
+  capabilities:
+    - create_dashboard
+    - add_panel
+    - query_datasource
+    - set_alert
+    - export_dashboard
+
+agent_bridge:
+  port: 9100
+  computer_use: optional
+  exec_enabled: false
+  keyboard_enabled: true
+
+expert_agent:
+  name: "Grafana Expert"
+  system_prompt: "You are a Grafana observability expert. Help users build dashboards, configure data sources, write PromQL/InfluxQL queries, and set up alerts. Use MCP tools to create panels and dashboards. Explain metrics, logs, and traces concepts. Suggest best practices for monitoring infrastructure, applications, and business metrics. When stuck, offer to use computer use mode to inspect the dashboard."
+  model: qwen3-4b
+  color: "#F46800"
+
+requires:
+  ram_mb: 512
+  gpu_recommended: false
+
+install:
+  method: docker
+  image: taos-app-grafana
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  arm-npu-16gb: full
+  apple-silicon: full
+  cpu-only: full

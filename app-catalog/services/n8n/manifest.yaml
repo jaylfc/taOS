@@ -1,0 +1,29 @@
+id: n8n
+name: n8n
+type: service
+category: automation
+version: 1.80.0
+description: "Workflow automation with 400+ integrations — connect agents to external services"
+homepage: https://github.com/n8n-io/n8n
+license: Sustainable Use License
+
+requires:
+  ram_mb: 384
+  disk_mb: 500
+  ports: [5678]
+
+install:
+  method: docker
+  image: n8nio/n8n:latest
+  volumes:
+    - data:/home/node/.n8n
+  ports: [5678]
+  env:
+    N8N_SECURE_COOKIE: "false"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

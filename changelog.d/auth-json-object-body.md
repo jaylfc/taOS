@@ -1,0 +1,2 @@
+### Fixed
+- Auth routes now answer `400` instead of `500` when a JSON request body parses but is not an object. `request.json()` accepts `null`, `[]`, `1` and `"x"` as valid JSON, and the subsequent `body.get()` raised `AttributeError`. All six affected routes (`POST /auth/login`, `/auth/setup`, `/auth/complete`, `/auth/users`, `/auth/users/{username}/profile`, `/auth/users/{username}/password`) now share one `_json_object()` helper. Three of them are session-exempt, so the fault was reachable without credentials.

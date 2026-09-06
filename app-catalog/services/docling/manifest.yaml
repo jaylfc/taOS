@@ -1,0 +1,19 @@
+id: docling
+name: Docling
+type: service
+category: productivity
+version: 2.0.0
+description: "IBM's document conversion — PDF/DOCX/PPTX to clean Markdown or JSON with layout preservation"
+homepage: https://github.com/DS4SD/docling
+license: MIT
+requires:
+  ram_mb: 1024
+  python: ">=3.10"
+install:
+  method: pip
+  package: docling
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-cpu-8gb: degraded
+  x86-cuda-12gb: full
+  cpu-only: degraded

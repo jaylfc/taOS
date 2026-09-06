@@ -1,0 +1,30 @@
+id: anything-llm
+name: AnythingLLM
+type: service
+category: ai-app
+version: 1.7.0
+description: "Self-hosted ChatGPT for any LLM + any document — privacy-first, multi-user, agent skills, runs against any OpenAI-compatible API or local model."
+homepage: https://github.com/Mintplex-Labs/anything-llm
+license: MIT
+
+requires:
+  ram_mb: 1024
+  disk_mb: 3000
+  ports: [3001]
+
+install:
+  method: docker
+  image: mintplexlabs/anythingllm:latest
+  volumes:
+    - storage:/app/server/storage
+  ports: [3001]
+  env:
+    STORAGE_DIR: "/app/server/storage"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

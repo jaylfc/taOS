@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodic firewall-rule re-assertion (belt-and-braces for Docker chain churn)
+
+[Timer]
+# First run 5 minutes after boot to give Docker time to create DOCKER-USER,
+# then every 5 minutes thereafter.  The oneshot service is idempotent, so
+# if the rules are already present this is a no-op with a log message.
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=tinyagentos-host-firewall.service
+
+[Install]
+WantedBy=timers.target

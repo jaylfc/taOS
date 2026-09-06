@@ -1,0 +1,74 @@
+# taos-rk3588-perf.service — Rockchip RK3588 Performance Mode
+#
+# Applies SoC-level performance tuning on boot so the RK3588 NPU runs at
+# full throughput without manual intervention after every power cycle.
+# Without this, rkllama degrades to ~20% of rated tok/s because the
+# kernel defaults all devfreq governors to 'simple_ondemand' (#361).
+#
+# Scope: RK3588 / RK3576 / RK3568 only. The ConditionPathExists check
+# gates this to boards with an NPU devfreq entry; the service is a
+# silent no-op on x86, Raspberry Pi, and other non-Rockchip hardware.
+#
+# Install (done automatically by install-server.sh):
+#     sudo cp scripts/systemd/taos-rk3588-perf.service /etc/systemd/system/
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable taos-rk3588-perf.service
+#
+# Disable (settings UI toggle):
+#     sudo systemctl disable --now taos-rk3588-perf.service
+[Unit]
+Description=Rockchip RK3588 performance mode — devfreq governors + NPU tuning
+Documentation=https://github.com/jaylfc/tinyagentos/issues/361
+# Gate: only activate on boards that expose an NPU devfreq entry. The
+# ExecStart script does a second-level check to avoid false positives
+# on RK3588 boards running kernels without the NPU driver loaded.
+ConditionPathExists=/sys/class/devfreq
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '\
+  # Confirm this is actually a Rockchip board before touching governors.\n\
+  compat=""\n\
+  if [ -r /proc/device-tree/compatible ]; then\n\
+    compat="$(tr -d \"\\000\" </proc/device-tree/compatible)"\n\
+  fi\n\
+  if ! echo "$compat" | grep -qE "rockchip,rk(3588|3576|3568)"; then\n\
+    echo "taos-rk3588-perf: not a Rockchip board — exiting"\n\
+    exit 0\n\
+  fi\n\
+  echo "taos-rk3588-perf: setting performance governors for Rockchip NPU"\n\
+  # ---- devfreq governors to performance ----\n\
+  # NPU: rknn_server / rkllama throughput drops 5x on simple_ondemand.\n\
+  # GPU (Mali): Vulkan compute for LLM offload benefits from fixed clock.\n\
+  # DMC (memory controller): LPDDR bandwidth is the bottleneck for large\n\
+  #   models;  performance governor prevents latency spikes on context\n\
+  #   switches between NPU and GPU compute.\n\
+  # CPU: RK3588 big.LITTLE — performance on the big cluster (cpu4-7)\n\
+  #   where rkllama.cpp pins its threads via taskset.\n\
+  for domain in /sys/class/devfreq/*.npu /sys/class/devfreq/*.gpu \\\n\
+                /sys/class/devfreq/*.dmc \\\n\
+                /sys/devices/system/cpu/cpufreq/policy0 \\\n\
+                /sys/devices/system/cpu/cpufreq/policy4; do\n\
+    if [ -w "$domain/governor" ]; then\n\
+      gov=$(cat "$domain/governor" 2>/dev/null || true)\n\
+      echo "performance" > "$domain/governor" 2>/dev/null || true\n\
+      new_gov=$(cat "$domain/governor" 2>/dev/null || true)\n\
+      echo "  $domain: $gov -> $new_gov"\n\
+    fi\n\
+  done\n\
+  echo "taos-rk3588-perf: governors applied"'
+ExecStop=/bin/sh -c '\
+  echo "taos-rk3588-perf: restoring ondemand governors"\n\
+  for domain in /sys/class/devfreq/*.npu /sys/class/devfreq/*.gpu \\\n\
+                /sys/class/devfreq/*.dmc \\\n\
+                /sys/devices/system/cpu/cpufreq/policy0 \\\n\
+                /sys/devices/system/cpu/cpufreq/policy4; do\n\
+    if [ -w "$domain/governor" ]; then\n\
+      echo "simple_ondemand" > "$domain/governor" 2>/dev/null || true\n\
+    fi\n\
+  done\n\
+  echo "taos-rk3588-perf: governors restored"'
+
+[Install]
+WantedBy=multi-user.target

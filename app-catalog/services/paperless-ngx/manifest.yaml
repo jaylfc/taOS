@@ -1,0 +1,22 @@
+id: paperless-ngx
+name: Paperless-ngx
+type: service
+category: productivity
+version: 2.14.0
+description: "Document management system — scan, OCR, tag, and search paper documents. Agents manage your paperwork."
+homepage: https://github.com/paperless-ngx/paperless-ngx
+license: GPL-3.0
+requires:
+  ram_mb: 512
+  disk_mb: 2000
+  ports: [8000]
+install:
+  method: docker
+  image: ghcr.io/paperless-ngx/paperless-ngx:latest
+  volumes: [data:/usr/src/paperless/data, media:/usr/src/paperless/media]
+  ports: [8000]
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-cpu-8gb: full
+  x86-cuda-12gb: full
+  cpu-only: full

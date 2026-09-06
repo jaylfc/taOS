@@ -1,0 +1,31 @@
+id: fooocus
+name: Fooocus
+type: service
+category: image-gen
+version: 2.5.0
+description: "Simple AI image generation — Midjourney-like UX, minimal setup, just works"
+homepage: https://github.com/lllyasviel/Fooocus
+license: GPL-3.0
+
+requires:
+  ram_mb: 2048
+  disk_mb: 8000
+  ports: [7865]
+
+install:
+  method: docker
+  image: ghcr.io/lllyasviel/fooocus:latest
+  volumes:
+    - data:/content/data
+    - outputs:/content/outputs
+  ports: [7865]
+
+hardware_tiers:
+  arm-npu-16gb: unsupported
+  arm-npu-32gb: unsupported
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-cuda-24gb: full
+  x86-vulkan-8gb: degraded
+  x86-rocm-12gb: full
+  cpu-only: unsupported

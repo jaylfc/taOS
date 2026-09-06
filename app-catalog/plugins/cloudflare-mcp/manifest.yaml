@@ -1,0 +1,23 @@
+id: cloudflare-mcp
+name: Cloudflare MCP
+type: plugin
+version: 0.1.0
+description: "Cloudflare Workers, KV, R2, D1, and DNS management via MCP"
+homepage: https://github.com/cloudflare/mcp-server-cloudflare
+license: Apache-2.0
+
+requires:
+  ram_mb: 64
+
+install:
+  method: npm
+  package: "@cloudflare/mcp-server-cloudflare"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

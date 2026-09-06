@@ -1,0 +1,29 @@
+id: perplexica
+name: Perplexica
+type: service
+category: ai-app
+version: 1.9.0
+description: "Self-hosted AI search engine — open source Perplexity alternative with citations"
+homepage: https://github.com/ItzCrazyKns/Perplexica
+license: MIT
+
+requires:
+  ram_mb: 512
+  disk_mb: 1000
+  ports: [3001]
+
+install:
+  method: docker
+  image: itzcrazykns/perplexica:latest
+  volumes:
+    - data:/home/perplexica/data
+  ports: [3001]
+  env:
+    SEARXNG_URL: "http://host.docker.internal:8888"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

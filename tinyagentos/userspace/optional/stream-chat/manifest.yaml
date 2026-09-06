@@ -1,0 +1,10 @@
+id: stream-chat
+name: Stream Chat
+version: 1.0.0
+app_type: web
+entry: index.html
+icon: ""
+permissions:
+  - app.kv
+  - network:https://io.socialstream.ninja
+  - network:wss://io.socialstream.ninja

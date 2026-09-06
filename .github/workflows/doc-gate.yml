@@ -1,0 +1,58 @@
+name: Doc drift gate
+
+# Authoritative documentation-drift gate. Blocks PRs that change feature code
+# (a desktop app, an API route module, an installer, a catalog manifest)
+# without touching the doc that covers it, unless a commit in the PR carries
+# a "Docs-Reviewed: <why>" trailer. See docs/doc-gate.toml for the rules and
+# scripts/check_doc_gate.py for the implementation. This job is authoritative
+# regardless of local hooks (--no-verify does not skip it).
+
+on:
+  pull_request:
+    branches: [master, dev]
+
+# This gate only reads the checkout; nothing here writes to the repo, so do not
+# inherit whatever the repository or org default happens to grant GITHUB_TOKEN.
+permissions:
+  contents: read
+
+jobs:
+  doc-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch origin "$BASE_REF"
+
+      - name: Invariants (Layer A)
+        run: python scripts/check_doc_gate.py invariants
+
+      - name: Schema-migration guard (#1865)
+        run: python scripts/check_schema_migrations.py
+
+      - name: Retrofit-migration guard (#2188)
+        run: python scripts/check_retrofit_migrations.py
+
+      - name: Schema-column guard (tsk-hrzgip)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_schema_column_migrations.py --base "origin/$BASE_REF"
+
+      - name: Diff gate (Layer B)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_doc_gate.py diff-gate --base "origin/$BASE_REF"
+
+      - name: Managed backend manifest lint
+        run: |
+          python -m pip install --quiet pyyaml
+          python scripts/check_manifests.py managed-lint

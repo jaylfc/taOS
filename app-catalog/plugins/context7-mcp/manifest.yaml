@@ -1,0 +1,23 @@
+id: context7-mcp
+name: Context7 MCP
+type: plugin
+version: 0.1.0
+description: "Fetch up-to-date library and framework documentation for agents"
+homepage: https://github.com/upstash/context7
+license: MIT
+
+requires:
+  ram_mb: 32
+
+install:
+  method: npm
+  package: context7-mcp
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

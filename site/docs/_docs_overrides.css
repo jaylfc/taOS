@@ -1,0 +1,21 @@
+/* docs.tinyagentos.com, MkDocs Material colour overrides
+   Matches the landing page palette (tinyagentos.com). */
+
+:root {
+    --md-primary-fg-color:        #1a3a2f;
+    --md-primary-fg-color--light: #2e5e4a;
+    --md-primary-fg-color--dark:  #0f221c;
+    --md-accent-fg-color:         #3d7a60;
+    --md-accent-fg-color--transparent: rgba(61,122,96,0.1);
+}
+
+/* Code block background closer to landing page */
+.md-typeset code {
+    background-color: #1a1a1e;
+    color: #e8e4d8;
+}
+
+.md-typeset pre code {
+    background-color: transparent;
+    color: inherit;
+}

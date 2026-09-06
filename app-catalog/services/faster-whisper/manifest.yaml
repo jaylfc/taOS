@@ -1,0 +1,25 @@
+id: faster-whisper
+name: faster-whisper
+type: service
+category: voice
+version: 1.0.3
+description: "CTranslate2-backed Whisper — 4-8× faster than openai/whisper at the same accuracy. Streaming and batched inference, runs on CPU + CUDA + Apple Silicon."
+homepage: https://github.com/SYSTRAN/faster-whisper
+license: MIT
+
+requires:
+  ram_mb: 2048
+  python: ">=3.9"
+
+install:
+  method: pip
+  package: faster-whisper
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  arm-cpu-8gb: degraded
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: degraded
+  cpu-only: degraded
+  apple-silicon: full

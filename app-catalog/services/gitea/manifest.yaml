@@ -1,0 +1,34 @@
+id: gitea
+name: Gitea
+type: service
+category: dev-tool
+version: 1.22.0
+description: "Self-hosted Git server — auto-creates accounts for deployed agents"
+homepage: https://gitea.io
+license: MIT
+
+requires:
+  ram_mb: 256
+  disk_mb: 500
+  ports: [3000]
+
+install:
+  method: docker
+  image: gitea/gitea:1.22
+  volumes:
+    - data:/data
+    - config:/etc/gitea
+  ports: [3000]
+  env:
+    GITEA__server__ROOT_URL: "http://localhost:3000"
+    GITEA__server__SSH_PORT: "2222"
+
+lifecycle:
+  health_check: "curl -sf http://localhost:3000/api/healthz"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

@@ -1,0 +1,4 @@
+{"timestamp": 1776099004.3810477, "event_type": "system", "agent_name": null, "app_id": null, "summary": "Started taOSmd v0.2 development session", "data": {"event": "session_start"}}
+{"timestamp": 1776099004.384726, "event_type": "conversation", "agent_name": null, "app_id": null, "summary": "Major development: 3 specs, 7 implementations", "data": {"content": "Implemented session catalog, retrieval pipeline, memory management app"}}
+{"timestamp": 1776099004.387152, "event_type": "system", "agent_name": null, "app_id": null, "summary": "Running LongMemEval-S benchmark on Fedora RTX 3060", "data": {"event": "benchmark_started", "config": "LLM extraction with qwen3:4b"}}
+{"timestamp": 1776099004.3894875, "event_type": "system", "agent_name": null, "app_id": null, "summary": "Clean separation: taosmd is standalone, scheduling in taOS", "data": {"event": "refactor", "detail": "Moved platform modules to tinyagentos/scheduling"}}

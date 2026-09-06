@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+    <title>taOS</title>
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/icon-16.png" />
+
+    <!-- PWA -->
+    <link rel="manifest" href="/static/manifest-desktop.json" />
+    <meta name="theme-color" content="#141415" />
+
+    <!-- iOS PWA — full screen, hide native status bar -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="taOS" />
+    <link rel="apple-touch-icon" href="/static/icon-180.png" />
+
+    <!-- Android -->
+    <meta name="mobile-web-app-capable" content="yes" />
+
+    <!-- Prevent text selection on long-press (OS feel) -->
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        height: 100vh;
+        width: 100vw;
+        /* Dark document canvas so Safari tints its top/bottom chrome and the
+           safe-area strips with the theme, not the browser-default white.
+           Theme-aware once tokens.css loads; graphite fallback before it. */
+        background: var(--color-shell-bg, #141415);
+        color-scheme: dark;
+        overscroll-behavior: none;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      input, textarea, [contenteditable="true"] {
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      #root {
+        height: 100vh;
+        width: 100vw;
+      }
+    </style>
+
+    <!-- Reduce-effects: apply the saved choice before first paint so a low-end
+         device never flashes the full effects on load (#58). First-run GPU
+         auto-detect happens in-app via a frame-rate probe. -->
+    <script>
+      (function () {
+        try {
+          if (localStorage.getItem("taos-reduce-effects") === "on") {
+            document.documentElement.setAttribute("data-perf", "reduced");
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

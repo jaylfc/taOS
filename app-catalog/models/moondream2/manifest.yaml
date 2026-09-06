@@ -1,0 +1,56 @@
+id: moondream2
+name: Moondream 2
+type: model
+version: 2.0.0
+description: Tiny 2B vision model — fast image captioning and Q&A, runs on CPU
+homepage: https://huggingface.co/vikhyatk/moondream2
+license: Apache-2.0
+capabilities:
+- chat
+- vision
+variants:
+- id: safetensors
+  name: Safetensors (3.7GB)
+  format: safetensors
+  size_mb: 3700
+  min_ram_mb: 4096
+  download_url: https://huggingface.co/vikhyatk/moondream2/resolve/main/model.safetensors
+  requires:
+    backends:
+    - id: transformers
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
+  sha256: 70a7d94c0c8349eb58ed2d9e636ef2d0916960f321ecabeac6354b8ba3d7403f
+- id: gguf-f16
+  name: GGUF F16 (2.8GB)
+  format: gguf
+  size_mb: 2800
+  min_ram_mb: 4096
+  download_url: https://huggingface.co/moondream/moondream2-gguf/resolve/main/moondream2-text-model-f16.gguf
+  requires:
+    backends:
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
+  sha256: 4e17e9107fb8781629b3c8ce177de57ffeae90fe14adcf7b99f0eef025889696
+hardware_tiers:
+  arm-cpu-8gb:
+    recommended: gguf-f16
+  arm-cpu-16gb:
+    recommended: gguf-f16
+  arm-npu-16gb:
+    recommended: gguf-f16
+  x86-cuda-8gb:
+    recommended: safetensors
+  cpu-only:
+    recommended: gguf-f16
+  x86-cuda-4gb:
+    recommended: safetensors
+context_window: 4096

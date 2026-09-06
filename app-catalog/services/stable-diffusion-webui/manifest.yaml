@@ -1,0 +1,32 @@
+id: stable-diffusion-webui
+name: Stable Diffusion Web UI
+type: service
+category: image-gen
+version: 1.10.0
+description: "AUTOMATIC1111's web UI for Stable Diffusion — the most popular image generation interface"
+homepage: https://github.com/AUTOMATIC1111/stable-diffusion-webui
+license: AGPL-3.0
+
+requires:
+  ram_mb: 2048
+  disk_mb: 10000
+  ports: [7860]
+
+install:
+  method: docker
+  image: ghcr.io/ai-dock/stable-diffusion-webui:latest
+  volumes:
+    - data:/workspace
+    - models:/workspace/stable-diffusion-webui/models
+    - outputs:/workspace/stable-diffusion-webui/outputs
+  ports: [7860]
+
+hardware_tiers:
+  arm-npu-16gb: unsupported
+  arm-npu-32gb: unsupported
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-cuda-24gb: full
+  x86-vulkan-8gb: degraded
+  x86-rocm-12gb: full
+  cpu-only: unsupported

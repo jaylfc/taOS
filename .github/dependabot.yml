@@ -1,0 +1,46 @@
+version: 2
+updates:
+  # Python (controller + worker) -- managed by uv (pyproject.toml + uv.lock)
+  - package-ecosystem: "uv"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      python-deps:
+        patterns:
+          - "*"
+    ignore:
+      # fastapi 0.137 regressed include_router so sub-router routes are not
+      # registered (#903); pyproject pins fastapi<0.137. Stop dependabot
+      # proposing the cap-raise until the regression is fixed upstream.
+      - dependency-name: "fastapi"
+        versions: [">=0.137"]
+
+  # Desktop SPA (Vite/React)
+  - package-ecosystem: "npm"
+    directory: "/desktop"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      spa-deps:
+        patterns:
+          - "*"
+    ignore:
+      # Major bumps of the heavy UI libs (tldraw 4->5, lucide-react 0->1,
+      # tsparticles 3->4, etc.) carry breaking API changes and must be migrated
+      # deliberately (e.g. the tldraw engine migration, #75), not auto-merged.
+      # Minor/patch bumps still flow through normally.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # GitHub Actions workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

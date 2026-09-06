@@ -1,0 +1,22 @@
+id: sentence-transformers
+name: Sentence Transformers
+type: service
+category: embed-runtime
+version: latest
+description: "Python library for dense vector embeddings — wraps HuggingFace models for semantic search."
+homepage: https://github.com/UKPLab/sentence-transformers
+license: Apache-2.0
+
+requires:
+  ram_mb: 1024
+  disk_mb: 500
+  ports: []
+
+install:
+  method: pip
+  package: sentence-transformers
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  arm-cpu-8gb: full
+  cpu-only: full

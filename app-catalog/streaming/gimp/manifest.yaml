@@ -1,0 +1,52 @@
+id: gimp-streaming
+name: GIMP (Streaming)
+type: streaming-app
+version: 3.0.0
+description: "Image editing and manipulation with AI agent assistance"
+homepage: https://www.gimp.org
+license: GPL-3.0
+
+streaming:
+  backend: kasmvnc
+  port: 6901
+  resolution: 1920x1080
+  audio: false
+
+mcp:
+  server: gimp-mcp
+  install: "pip install gimp-mcp"
+  capabilities:
+    - layer_operations
+    - drawing_tools
+    - selection_tools
+    - color_management
+    - filter_operations
+    - export
+
+agent_bridge:
+  port: 9100
+  computer_use: optional
+  exec_enabled: true
+  keyboard_enabled: true
+
+expert_agent:
+  name: "GIMP Expert"
+  system_prompt: "You are a GIMP expert assistant. Help users edit and manipulate images using GIMP's powerful tools. Use MCP tools (via the Python-Fu API) to perform layer operations, apply filters, manage selections, adjust colors, and export to various formats. Guide users on retouching techniques, color correction, compositing, drawing tools, and non-destructive editing workflows."
+  model: qwen3-4b
+  color: "#76AE5B"
+
+requires:
+  ram_mb: 1024
+  gpu_recommended: false
+
+install:
+  method: docker
+  image: taos-app-gimp
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  arm-npu-16gb: full
+  apple-silicon: full
+  cpu-only: full

@@ -1,0 +1,23 @@
+id: mcp-email-server
+name: MCP Email Server
+type: plugin
+version: 0.1.0
+description: "IMAP and SMTP email integration for agents"
+homepage: https://github.com/ergut/mcp-email-server
+license: BSD-3-Clause
+
+requires:
+  ram_mb: 64
+
+install:
+  method: pip
+  package: mcp-email-server
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

@@ -1,0 +1,28 @@
+id: ltx-video
+name: LTX Video
+type: service
+category: video-gen
+version: 0.9.0
+description: "Lightweight AI video generation by Lightricks — fastest open source video model, 6GB VRAM minimum"
+homepage: https://github.com/Lightricks/LTX-Video
+license: Apache-2.0
+
+requires:
+  ram_mb: 4096
+  disk_mb: 10000
+  ports: [36909]
+
+install:
+  method: script
+  script: scripts/install-ltx-video.sh
+
+hardware_tiers:
+  arm-npu-16gb: unsupported
+  arm-npu-32gb: degraded
+  x86-cuda-6gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-cuda-24gb: full
+  x86-vulkan-8gb: degraded
+  x86-rocm-12gb: full
+  cpu-only: unsupported

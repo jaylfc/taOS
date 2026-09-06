@@ -1,0 +1,59 @@
+{
+  "schema_version": 2,
+  "run_id": "2026-05-01T13:00:00Z",
+  "status": "in_progress",
+  "phase": "creative_loop",
+  "started_at": "2026-05-01T13:00:00Z",
+  "last_session_ended_at": null,
+  "session_count": 0,
+  "completed_steps": [],
+  "project": {
+    "name": "Dumby the Dumbo",
+    "id": null,
+    "slug": null,
+    "synopsis": "A clumsy, ditsy young elephant called Dumby learns that being yourself is enough, by accidentally saving a flock of flamingos one giggle at a time.",
+    "url_path": null
+  },
+  "agents": {
+    "john":   { "id": null, "framework": "openclaw",          "role": "writer",      "attached_to_project": false, "last_artifact": null },
+    "tom":    { "id": null, "framework": "hermes",            "role": "editor",      "attached_to_project": false, "last_artifact": null },
+    "don":    { "id": null, "framework": "smolagents",        "role": "illustrator", "attached_to_project": false, "last_artifact": null },
+    "linus":  { "id": null, "framework": "langroid",          "role": "web",         "attached_to_project": false, "last_artifact": null },
+    "pat":    { "id": null, "framework": "pocketflow",        "role": "marketing",   "attached_to_project": false, "last_artifact": null },
+    "olive":  { "id": null, "framework": "openai-agents-sdk", "role": "producer",    "attached_to_project": false, "last_artifact": null }
+  },
+  "artifacts": {
+    "story": {
+      "chapter_1_draft": null,
+      "chapter_1_critique": null,
+      "chapter_1_revision": null,
+      "chapter_2_draft": null,
+      "chapter_2_critique": null,
+      "chapter_2_revision": null,
+      "chapter_3_draft": null,
+      "chapter_3_critique": null,
+      "chapter_3_revision": null
+    },
+    "images": {
+      "cover": null,
+      "scene_1": null,
+      "scene_2": null,
+      "scene_3": null
+    },
+    "web": {
+      "index_html": null
+    },
+    "marketing": {
+      "strategy_md": null,
+      "social_md": null
+    },
+    "cross_review": {
+      "john_on_web": null,
+      "don_on_social": null,
+      "olive_final_note": null
+    }
+  },
+  "blocks": [],
+  "transcript": "transcript.log",
+  "screenshots": "screenshots/"
+}

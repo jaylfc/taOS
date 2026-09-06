@@ -1,0 +1,64 @@
+id: llama-3.2-3b
+name: Llama 3.2 3B
+type: model
+version: 3.2.0
+description: Meta's edge model — explicit ARM support, tool calling, 6GB RAM. Great
+  for mobile/Pi workers.
+homepage: https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct
+license: llama3.2
+capabilities:
+- chat
+- tool-calling
+variants:
+- id: q4_k_m
+  name: Q4_K_M (2GB)
+  format: gguf
+  size_mb: 2000
+  min_ram_mb: 4096
+  download_url: https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
+  sha256: 6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff
+- id: a8w4
+  name: A8W4 HEF (3.2GB, NPU)
+  format: hef
+  size_mb: 3214
+  min_ram_mb: 0
+  hef_h10h: 7fc9c7723282482cc3acf08244212668f8b7684deb792b791504ab7f68a83708
+  ollama_name: llama3.2:3b
+  requires:
+    backends:
+    - id: hailo-ollama
+      targets:
+      - hailo
+      min_ram_mb: 3072
+hardware_tiers:
+  arm-npu-8gb:
+    recommended: a8w4
+  arm-npu-16gb:
+    recommended: a8w4
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  x86-cuda-8gb:
+    recommended: q4_k_m
+  x86-vulkan-4gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+  x86-cuda-4gb:
+    recommended: q4_k_m
+context_window: 131072

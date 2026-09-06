@@ -1,0 +1,20 @@
+.scrim { position: fixed; inset: 0; background: rgba(10,10,12,.6); backdrop-filter: blur(14px); display: flex; align-items: stretch; z-index: 50; }
+.frame { flex: 1; background: var(--board-bg); display: flex; flex-direction: column; }
+.bar { display: flex; align-items: center; gap: 8px; padding: 11px 16px; border-bottom: 1px solid var(--board-hair); }
+.bar button { background: transparent; border: 1px solid var(--board-hair); color: #d2d2d7; width: 28px; height: 28px; border-radius: 7px; cursor: pointer; font: 12px -apple-system; }
+.bar button:hover { background: rgba(255,255,255,.06); border-color: var(--board-hair-strong); }
+.crumb { color: #86868b; font: 11.5px -apple-system; }
+.crumb b { color: #d2d2d7; font-weight: 600; }
+.grow { flex: 1; }
+.body { padding: 22px 28px; overflow-y: auto; flex: 1; color: #d2d2d7; }
+.title { font: 700 22px -apple-system; letter-spacing: -.02em; margin: 0 0 14px; color: #f5f5f7; }
+.bodyText { font: 13.5px -apple-system; line-height: 1.6; margin: 0; }
+.loading { color: #86868b; font: 12px -apple-system; }
+.layout { display: grid; grid-template-columns: 1fr 260px; gap: 24px; align-items: start; }
+.main { min-width: 0; }
+.layout > aside { background: rgba(255,255,255,.025); border: 1px solid var(--board-hair); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 12px; font: 12px -apple-system; color: #d2d2d7; }
+.layout > aside h4 { font: 600 10.5px -apple-system; color: #86868b; margin: 0 0 4px; text-transform: uppercase; letter-spacing: .5px; }
+.layout > aside input { background: rgba(255,255,255,.05); border: 1px solid var(--board-hair); color: #f5f5f7; border-radius: 6px; padding: 4px 8px; font: 12px -apple-system; width: 100%; outline: none; }
+.layout > aside input:focus { border-color: rgba(34,211,238,.5); }
+.layout > aside [role="button"] { cursor: pointer; }
+.layout > aside [role="button"]:hover { color: #fff; }

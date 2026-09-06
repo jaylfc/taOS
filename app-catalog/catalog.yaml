@@ -1,0 +1,718 @@
+version: 1
+updated: 2026-04-05T20:00:00Z
+apps:
+  # Agent Frameworks
+  - id: smolagents
+    type: agent-framework
+    version: 1.0.0
+    name: SmolAgents
+    description: "HuggingFace's code-based agent framework — 30% fewer LLM calls"
+  - id: pocketflow
+    type: agent-framework
+    version: 0.1.0
+    name: PocketFlow
+    description: "100-line LLM framework — zero deps, graph-based agents"
+  - id: openclaw
+    type: agent-framework
+    version: 1.0.0
+    name: OpenClaw
+    description: "Full-featured agent with multi-channel support"
+  - id: swarm
+    type: agent-framework
+    version: 0.1.0
+    name: Swarm
+    description: "OpenAI's lightweight multi-agent with sequential handoffs"
+  - id: openai-agents-sdk
+    type: agent-framework
+    version: 0.1.0
+    name: OpenAI Agents SDK
+    description: "Provider-agnostic multi-agent with tracing and guardrails"
+  - id: langroid
+    type: agent-framework
+    version: 0.30.0
+    name: Langroid
+    description: "Multi-agent message-passing with built-in vector store"
+  - id: nanoclaw
+    type: agent-framework
+    version: 1.0.0
+    name: nanoclaw
+    description: "Lightweight OpenClaw — minimal footprint"
+  - id: picoclaw
+    type: agent-framework
+    version: 1.0.0
+    name: picoclaw
+    description: "Micro OpenClaw — smallest possible agent"
+  - id: tinyagent
+    type: agent-framework
+    version: 1.0.0
+    name: TinyAgent
+    description: "Edge tool calling — 1-3B models with LLMCompiler (UC Berkeley)"
+  - id: hermes
+    type: agent-framework
+    version: 1.0.0
+    name: Hermes Function Calling
+    description: "Nous Research structured tool use with Hermes models"
+  - id: agent-zero
+    type: agent-framework
+    version: 0.8.0
+    name: Agent Zero
+    description: "Autonomous agent — self-correcting workflows, tool creation"
+
+  # Models
+  - id: qwen3-embedding-0.6b
+    type: model
+    version: 3.0.0
+    name: Qwen 3 Embedding 0.6B
+    description: "Fast embedding model — 1024 dimensions"
+  - id: qwen3-reranker-0.6b
+    type: model
+    version: 3.0.0
+    name: Qwen 3 Reranker 0.6B
+    description: "Cross-encoder reranker for search scoring"
+  - id: qwen3-8b
+    type: model
+    version: 3.0.0
+    name: Qwen 3 8B
+    description: "General-purpose chat with strong tool calling"
+  - id: qwen3-4b
+    type: model
+    version: 3.0.0
+    name: Qwen 3 4B
+    description: "Compact chat model — good balance of capability and resources"
+  - id: qwen3-1.7b
+    type: model
+    version: 3.0.0
+    name: Qwen 3 1.7B
+    description: "Tiny chat — ideal for setup agent and low-power devices"
+  - id: lcm-dreamshaper-v7
+    type: image-model
+    version: 7.0.0
+    name: LCM Dreamshaper V7
+    description: "Fast image generation — 4-step LCM acceleration, 512x512 in seconds on RK3588 NPU"
+  - id: sd-v1.5-lcm
+    type: image-model
+    version: 1.5.0
+    name: Stable Diffusion 1.5 LCM
+    description: "Stable Diffusion 1.5 with Latent Consistency Model — fewer steps, faster generation"
+  - id: sdxl-turbo
+    type: image-model
+    version: 1.0.0
+    name: SDXL Turbo
+    description: "Real-time image generation — single-step SDXL distillation, fast on GPU"
+
+  # --- Added: LLM text models ---
+  - id: llama-3.1-8b
+    type: model
+    version: 3.1.0
+    name: Llama 3.1 8B Instruct
+    description: "Meta's 8B — tool calling, 128K context, multilingual"
+  - id: llama-3.3-70b
+    type: model
+    version: 3.3.0
+    name: Llama 3.3 70B Instruct
+    description: "Meta flagship 70B — matches 405B on many benchmarks"
+  - id: gemma-2-2b
+    type: model
+    version: 2.0.0
+    name: Gemma 2 2B Instruct
+    description: "Google's compact 2B — strong quality for size"
+  - id: gemma-2-9b
+    type: model
+    version: 2.0.0
+    name: Gemma 2 9B Instruct
+    description: "Google's 9B — competitive with larger models"
+  - id: gemma-3-1b
+    type: model
+    version: 3.0.0
+    name: Gemma 3 1B Instruct
+    description: "Smallest Gemma 3 — fast on any hardware"
+  - id: gemma-3-4b
+    type: model
+    version: 3.0.0
+    name: Gemma 3 4B Instruct
+    description: "Gemma 3 4B — multimodal, 128K context"
+  - id: gemma-3-12b
+    type: model
+    version: 3.0.0
+    name: Gemma 3 12B Instruct
+    description: "Gemma 3 12B — multimodal, strong benchmarks"
+  - id: phi-3.5-mini
+    type: model
+    version: 3.5.0
+    name: Phi 3.5 Mini Instruct
+    description: "Microsoft 3.8B — strong reasoning, 128K context"
+  - id: phi-4
+    type: model
+    version: 4.0.0
+    name: Phi 4 (14B)
+    description: "Microsoft 14B — strong reasoning and math"
+  - id: phi-4-mini
+    type: model
+    version: 4.0.0
+    name: Phi 4 Mini Instruct
+    description: "Microsoft 3.8B Phi-4 Mini — next-gen edge reasoning"
+  - id: mistral-7b-v0.3
+    type: model
+    version: 0.3.0
+    name: Mistral 7B Instruct v0.3
+    description: "Classic 7B with function calling, Apache 2.0"
+  - id: mistral-nemo-12b
+    type: model
+    version: 24.07.0
+    name: Mistral Nemo 12B Instruct
+    description: "Mistral/NVIDIA 12B — 128K context, strong multilingual"
+  - id: mixtral-8x7b
+    type: model
+    version: 0.1.0
+    name: Mixtral 8x7B Instruct v0.1
+    description: "Sparse MoE — 12.9B active params, competitive with 70B dense"
+  - id: ministral-3b
+    type: model
+    version: 25.12.0
+    name: Ministral 3B Instruct
+    description: "Mistral edge-optimized 3B — function calling, vision"
+  - id: qwen2.5-0.5b
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 0.5B Instruct
+    description: "Tiny 0.5B — runs anywhere"
+  - id: qwen2.5-1.5b
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 1.5B Instruct
+    description: "Small 1.5B model — balance of capability and speed"
+  - id: qwen2.5-3b
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 3B Instruct
+    description: "Compact 3B with tool calling — excellent edge model"
+  - id: qwen2.5-7b
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 7B Instruct
+    description: "General-purpose 7B — strong tool calling"
+  - id: qwen2.5-14b
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 14B Instruct
+    description: "High-capability 14B — reasoning, tool calling"
+  - id: qwen2.5-32b
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 32B Instruct
+    description: "Premium 32B — near-frontier quality"
+  - id: qwen2.5-72b
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 72B Instruct
+    description: "Flagship 72B — GPT-4 class"
+  - id: qwen2.5-coder-7b
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 Coder 7B Instruct
+    description: "Best open coding model at 7B"
+  - id: qwen2.5-coder-14b
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 Coder 14B Instruct
+    description: "Higher-capacity code model"
+  - id: deepseek-coder-v2-lite
+    type: model
+    version: 2.0.0
+    name: DeepSeek Coder V2 Lite Instruct
+    description: "16B MoE code model with strong FIM"
+  - id: smollm2-135m
+    type: model
+    version: 2.0.0
+    name: SmolLM2 135M Instruct
+    description: "Ultra-tiny 135M — microcontroller-ready"
+  - id: smollm2-360m
+    type: model
+    version: 2.0.0
+    name: SmolLM2 360M Instruct
+    description: "Tiny 360M — classifier/router workloads"
+  - id: tinyllama-1.1b
+    type: model
+    version: 1.0.0
+    name: TinyLlama 1.1B Chat v1.0
+    description: "Lightweight Llama clone — pipeline testing"
+  - id: nemotron-mini-4b
+    type: model
+    version: 1.0.0
+    name: Nemotron Mini 4B Instruct
+    description: "NVIDIA 4B — function calling, roleplay"
+  - id: command-r-35b
+    type: model
+    version: 1.0.0
+    name: Command-R 35B
+    description: "Cohere's RAG and tool-use specialist"
+  - id: granite-3.1-2b
+    type: model
+    version: 3.1.0
+    name: IBM Granite 3.1 2B Instruct
+    description: "IBM enterprise 2B — Apache 2.0, 128K context"
+  - id: granite-3.1-8b
+    type: model
+    version: 3.1.0
+    name: IBM Granite 3.1 8B Instruct
+    description: "IBM enterprise 8B — Apache 2.0, 128K context"
+
+  # --- Added: Vision / Multimodal ---
+  - id: qwen2-vl-7b
+    type: model
+    version: 2.0.0
+    name: Qwen 2 VL 7B Instruct
+    description: "Vision model — OCR, image understanding"
+  - id: qwen2.5-vl-7b
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 VL 7B Instruct
+    description: "Next-gen Qwen vision — document and video"
+  - id: minicpm-v-2.6
+    type: model
+    version: 2.6.0
+    name: MiniCPM-V 2.6
+    description: "8B vision-language — rivals GPT-4V"
+  - id: moondream2
+    type: model
+    version: 2.0.0
+    name: Moondream 2
+    description: "Tiny 2B vision model — CPU-friendly"
+  - id: florence-2-base
+    type: model
+    version: 2.0.0
+    name: Florence-2 Base
+    description: "Microsoft unified vision — 0.23B caption/OCR/detect/segment"
+  - id: llava-1.6-mistral-7b
+    type: model
+    version: 1.6.0
+    name: LLaVA 1.6 Mistral 7B
+    description: "Vision-language on Mistral 7B"
+  - id: llava-phi-3-mini
+    type: model
+    version: 1.0.0
+    name: LLaVA Phi 3 Mini
+    description: "Compact Phi-3 vision model"
+
+  # --- Added: Embeddings / rerankers ---
+  - id: nomic-embed-text-v1.5
+    type: model
+    version: 1.5.0
+    name: Nomic Embed Text v1.5
+    description: "768-dim embedding, beats OpenAI ada-002"
+  - id: bge-large-en-v1.5
+    type: model
+    version: 1.5.0
+    name: BGE Large EN v1.5
+    description: "BAAI 1024-dim English embedding"
+  - id: bge-small-en-v1.5
+    type: model
+    version: 1.5.0
+    name: BGE Small EN v1.5
+    description: "Tiny 384-dim English embedding"
+  - id: bge-m3
+    type: model
+    version: 1.0.0
+    name: BGE M3 (Multilingual)
+    description: "100+ language embedding — dense, sparse, multi-vector"
+  - id: snowflake-arctic-embed-s
+    type: model
+    version: 1.0.0
+    name: Snowflake Arctic Embed S
+    description: "33M English embedding, 384-dim, CPU-friendly — taOSmd recommended default"
+  - id: mxbai-embed-large
+    type: model
+    version: 1.0.0
+    name: MixedBread mxbai-embed-large v1
+    description: "1024-dim English embedding, Apache 2.0"
+  - id: snowflake-arctic-embed-m
+    type: model
+    version: 1.5.0
+    name: Snowflake Arctic Embed M v1.5
+    description: "110M embedding — fast, strong retrieval"
+  - id: bge-reranker-v2-m3
+    type: model
+    version: 2.0.0
+    name: BGE Reranker v2 M3
+    description: "Multilingual cross-encoder reranker"
+
+  # --- Added: Audio / speech ---
+  - id: whisper-tiny
+    type: voice
+    version: 1.0.0
+    name: Whisper Tiny (ggml)
+    description: "39M Whisper — real-time on CPU"
+  - id: whisper-base
+    type: voice
+    version: 1.0.0
+    name: Whisper Base (ggml)
+    description: "74M Whisper — good quality/speed"
+  - id: whisper-small
+    type: voice
+    version: 1.0.0
+    name: Whisper Small (ggml)
+    description: "244M Whisper — multilingual"
+  - id: whisper-medium
+    type: voice
+    version: 1.0.0
+    name: Whisper Medium (ggml)
+    description: "769M Whisper — near-large quality"
+  - id: whisper-large-v3
+    type: voice
+    version: 3.0.0
+    name: Whisper Large v3 (ggml)
+    description: "1550M Whisper v3 — best quality"
+  - id: whisper-large-v3-turbo
+    type: voice
+    version: 3.0.0
+    name: Whisper Large v3 Turbo (ggml)
+    description: "Distilled Whisper Large — 8x faster"
+  - id: kokoro-tts
+    type: voice
+    version: 1.0.0
+    name: Kokoro 82M TTS
+    description: "Compact Apache 2.0 TTS — CPU-friendly"
+  - id: piper-en-lessac
+    type: voice
+    version: 1.0.0
+    name: Piper TTS EN-US Lessac (Medium)
+    description: "Fast CPU TTS voice — Piper Lessac"
+  - id: parakeet-tdt-0.6b
+    type: voice
+    version: 2.0.0
+    name: NVIDIA Parakeet TDT 0.6B v2
+    description: "600M ASR — tops Open ASR leaderboard"
+
+  # --- Added: Image generation ---
+  - id: dreamshaper-8-lcm
+    type: image-model
+    version: 8.0
+    name: Dreamshaper 8 LCM
+    description: "Photorealistic LCM-distilled, 4-step generation"
+  - id: flux-schnell-gguf
+    type: image-model
+    version: 1.0
+    name: Flux.1 Schnell (GGUF)
+    description: "SOTA-quality images in 4 steps, Apache 2.0"
+  - id: flux-schnell-unsloth
+    type: image-model
+    version: 1.0.0
+    name: Flux.1 Schnell (Unsloth GGUF)
+    description: "Unsloth Flux Schnell GGUFs — wide quant coverage"
+  - id: flux-dev-gguf
+    type: image-model
+    version: 1.0.0
+    name: Flux.1 Dev (GGUF)
+    description: "Flux Dev GGUF — higher quality than Schnell"
+  - id: sd3.5-large-turbo-gguf
+    type: image-model
+    version: 3.5.0
+    name: Stable Diffusion 3.5 Large Turbo (GGUF)
+    description: "SD3.5 Large Turbo in GGUF — 4-step generation"
+  - id: pixart-sigma-512
+    type: image-model
+    version: 1.0
+    name: PixArt-Σ 512
+    description: "Efficient DiT model — 0.6B params, commercial-safe"
+  - id: playground-v2.5
+    type: image-model
+    version: 2.5.0
+    name: Playground v2.5 1024px
+    description: "Photorealistic SDXL-compatible aesthetic model"
+  - id: kolors
+    type: image-model
+    version: 1.0.0
+    name: Kolors
+    description: "Kuaishou bilingual (EN/ZH) text-to-image"
+  - id: auraflow-v0.3
+    type: image-model
+    version: 0.3.0
+    name: AuraFlow v0.3
+    description: "Fal's fully open flow-matching — Apache 2.0"
+  - id: stable-cascade
+    type: image-model
+    version: 1.0.0
+    name: Stable Cascade
+    description: "Stability 3-stage cascade — efficient high quality"
+  - id: sdxl-lightning
+    type: image-model
+    version: 1.0.0
+    name: SDXL Lightning
+    description: "ByteDance SDXL distillation — 2/4-step"
+  - id: sdxs-512
+    type: image-model
+    version: 0.9
+    name: SDXS 512 (1-step)
+    description: "Single-step generation — sub-second on x86 CPU"
+
+  # --- Added: Image tools (background, upscale, face, controlnet) ---
+  - id: rmbg-1.4
+    type: image-model
+    version: 1.4.0
+    name: RMBG 1.4 (Background Removal)
+    description: "BRIA state-of-the-art background removal"
+  - id: birefnet
+    type: image-model
+    version: 1.0.0
+    name: BiRefNet (Background Removal)
+    description: "High-quality matting and segmentation"
+  - id: real-esrgan-x4
+    type: image-model
+    version: 1.0.0
+    name: Real-ESRGAN x4
+    description: "4x super-resolution upscaler"
+  - id: 4x-ultrasharp
+    type: image-model
+    version: 1.0.0
+    name: 4x-UltraSharp
+    description: "Community ESRGAN upscaler"
+  - id: gfpgan-v1.4
+    type: image-model
+    version: 1.4.0
+    name: GFPGAN v1.4 (Face Restoration)
+    description: "Tencent ARC face restoration"
+  - id: codeformer
+    type: image-model
+    version: 0.1.0
+    name: CodeFormer (Face Restoration)
+    description: "Robust face restoration with codebook lookup"
+  - id: controlnet-canny
+    type: image-model
+    version: 1.0.0
+    name: ControlNet Canny (SD 1.5)
+    description: "Canny edge ControlNet"
+  - id: controlnet-depth
+    type: image-model
+    version: 1.0.0
+    name: ControlNet Depth (SD 1.5)
+    description: "Depth-map ControlNet"
+  - id: controlnet-openpose
+    type: image-model
+    version: 1.0.0
+    name: ControlNet OpenPose (SD 1.5)
+    description: "Pose skeleton ControlNet"
+  - id: controlnet-openpose-sdxl
+    type: image-model
+    version: 1.0.0
+    name: ControlNet OpenPose (SDXL)
+    description: "Pose ControlNet for SDXL"
+
+  # --- Added: RKLLM NPU-accelerated (RK3588) ---
+  - id: pelochus-qwen-1.8b-rkllm
+    type: model
+    version: 1.0.0
+    name: Qwen 1.8B Chat (Pelochus RKLLM)
+    description: "Classic Pelochus ezrknpu Qwen 1.8B port"
+  - id: qwen2.5-1.5b-rkllm
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 1.5B Instruct (RKLLM)
+    description: "NPU-accelerated Qwen 2.5 1.5B on RK3588"
+  - id: qwen2.5-3b-rkllm
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 3B Instruct (RKLLM)
+    description: "NPU-accelerated Qwen 2.5 3B on RK3588"
+  - id: qwen2.5-7b-rkllm
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 7B Instruct (RKLLM)
+    description: "NPU-accelerated Qwen 2.5 7B on RK3588"
+  - id: qwen2.5-14b-rkllm
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 14B Instruct (RKLLM)
+    description: "NPU-accelerated Qwen 2.5 14B on RK3588 32GB"
+
+  # --- Added: Hailo-10H NPU-accelerated (Hailo) ---
+  - id: qwen2-1.5b
+    type: model
+    version: 2.0.0
+    name: Qwen2 1.5B Instruct (HEF)
+    description: "Hailo-10H NPU-accelerated Qwen2 1.5B — Pi 5 + AI HAT+2"
+  - id: qwen2.5-coder-1.5b
+    type: model
+    version: 2.5.0
+    name: Qwen 2.5 Coder 1.5B Instruct (HEF)
+    description: "Hailo-10H NPU-accelerated Qwen 2.5 Coder 1.5B — Pi 5 + AI HAT+2"
+  - id: deepseek-r1-1.5b
+    type: model
+    version: 1.5.0
+    name: DeepSeek R1 1.5B (HEF)
+    description: "Hailo-10H NPU-accelerated DeepSeek R1 1.5B — Pi 5 + AI HAT+2"
+
+  # --- Existing (re-registered for completeness) ---
+  - id: deepseek-r1-14b
+    type: model
+    version: 1.0.0
+    name: DeepSeek R1 14B
+    description: "DeepSeek reasoning distilled to 14B"
+  - id: llama-3.2-1b
+    type: model
+    version: 3.2.0
+    name: Llama 3.2 1B
+    description: "Meta's lightest model — Pi and mobile"
+  - id: llama-3.2-3b
+    type: model
+    version: 3.2.0
+    name: Llama 3.2 3B
+    description: "Meta edge model — ARM optimized, tool calling"
+  - id: llama-3-70b
+    type: model
+    version: 3.0.0
+    name: Llama 3 70B
+    description: "Meta's flagship open model"
+  - id: qwen3-14b
+    type: model
+    version: 3.0.0
+    name: Qwen 3 14B
+    description: "High-capability Qwen 3 with reasoning"
+  - id: qwen3-30b-a3b
+    type: model
+    version: 3.0.0
+    name: Qwen 3 30B-A3B (MoE)
+    description: "MoE with 3B active — best quality/size"
+  - id: qwen3-32b
+    type: model
+    version: 3.0.0
+    name: Qwen 3 32B
+    description: "Premium Qwen 3 reasoning model"
+  - id: smollm2
+    type: model
+    version: 2.0.0
+    name: SmolLM2 1.7B
+    description: "Quality leader among small LLMs"
+
+  # Services
+  - id: gitea
+    type: service
+    category: dev-tool
+    version: 1.22.0
+    name: Gitea
+    description: "Self-hosted Git server with agent access"
+  - id: gitea-lxc
+    type: service
+    category: dev-tool
+    version: 1.22.0
+    name: Gitea (LXC)
+    description: "Self-hosted Git server in an isolated LXC container"
+  - id: code-server
+    type: dev-tool
+    version: 4.96.0
+    name: Code Server
+    description: "VS Code in the browser — web IDE"
+  - id: open-webui
+    type: service
+    category: ai-app
+    version: 0.5.0
+    name: Open WebUI
+    description: "Self-hosted ChatGPT-style interface for any LLM"
+  - id: n8n
+    type: service
+    category: automation
+    version: 1.80.0
+    name: n8n
+    description: "Workflow automation with 400+ integrations"
+  - id: dify
+    type: service
+    category: ai-app
+    version: 0.15.0
+    name: Dify
+    description: "RAG + agent builder with visual workflow editor"
+
+  # AI Search
+  - id: perplexica
+    type: service
+    category: ai-app
+    version: 1.9.0
+    name: Perplexica
+    description: "Self-hosted AI search engine — open source Perplexity alternative"
+  - id: searxng
+    type: service
+    category: infrastructure
+    version: 2024.12.0
+    name: SearXNG
+    description: "Privacy-respecting metasearch engine — powers AI search tools"
+
+  # AI Image Generation
+  - id: comfyui
+    type: image-gen
+    version: 0.3.0
+    name: ComfyUI
+    description: "Node-based AI image generation — advanced Stable Diffusion workflows"
+  - id: fooocus
+    type: image-gen
+    version: 2.5.0
+    name: Fooocus
+    description: "Simple AI image generation — Midjourney-like UX, just works"
+  - id: stable-diffusion-webui
+    type: image-gen
+    version: 1.10.0
+    name: Stable Diffusion Web UI
+    description: "AUTOMATIC1111's popular image generation interface"
+  - id: stable-diffusion-cpp
+    type: image-gen
+    version: 0.2.0
+    name: Stable Diffusion.cpp
+    description: "Pure C/C++ image generation — runs on CPU including ARM"
+  - id: fastsdcpu
+    type: image-gen
+    version: 1.0.0
+    name: FastSD CPU
+    description: "Fast Stable Diffusion on CPU — optimized for ARM and devices without GPU"
+  - id: lcm-dreamshaper-rknn
+    type: image-gen
+    version: 0.1.0
+    name: LCM Dreamshaper (RKNN Rust)
+    description: "Fast Rust-based text-to-image on RK3588 NPU — optimized LCM pipeline"
+  # Home Automation & Monitoring
+  - id: home-assistant
+    type: home
+    version: stable
+    name: Home Assistant
+    description: "Home automation platform — agents can control smart home devices and automations"
+  - id: uptime-kuma
+    type: monitoring
+    version: 1.0.0
+    name: Uptime Kuma
+    description: "Self-hosted uptime monitoring — track agent and service availability with alerts"
+
+  # File Management
+  - id: filebrowser
+    type: service
+    category: productivity
+    version: latest
+    name: File Browser
+    description: "Web file manager — browse and manage agent workspaces through a clean browser UI"
+
+  # Collaboration & Notes
+  - id: excalidraw
+    type: service
+    category: productivity
+    version: latest
+    name: Excalidraw
+    description: "Collaborative whiteboard — agents can generate and share diagrams and sketches"
+  - id: memos
+    type: service
+    category: productivity
+    version: stable
+    name: Memos
+    description: "Lightweight note-taking and knowledge base — agents can store and retrieve notes"
+  - id: linkwarden
+    type: service
+    category: productivity
+    version: latest
+    name: Linkwarden
+    description: "Bookmark and link manager — agents save and organize research links with archiving"
+
+  # Voice / Speech
+  - id: whisper
+    type: voice
+    version: latest
+    name: Whisper ASR
+    description: "Speech-to-text via OpenAI Whisper — agents can transcribe audio files and streams"
+  - id: piper-tts
+    type: voice
+    version: latest
+    name: Piper TTS
+    description: "Fast local text-to-speech via Wyoming Piper — agents can generate natural voice audio"

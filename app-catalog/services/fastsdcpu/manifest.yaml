@@ -1,0 +1,25 @@
+id: fastsdcpu
+name: FastSD CPU
+type: service
+category: image-gen
+version: 1.0.0
+description: "Fast Stable Diffusion on CPU — optimized for devices without GPU, works on ARM"
+homepage: https://github.com/rupeshs/fastsdcpu
+license: MIT
+
+requires:
+  ram_mb: 2048
+  disk_mb: 4000
+  ports: [37120]
+
+install:
+  method: pip
+  package: fastsdcpu
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: degraded

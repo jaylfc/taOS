@@ -1,0 +1,244 @@
+name: CI
+
+on:
+  push:
+    branches: [master, dev]
+  pull_request:
+    branches: [master, dev]
+  schedule:
+    # 06:00 UTC daily run keeps the 3.11 leg honest without making every
+    # PR wait 14 extra minutes on it. 3.11 is consistently ~2x slower
+    # than 3.12/3.13 due to per-test asyncio overhead — investigated
+    # with per-test timing and the gap is distributed (not a single
+    # slow test), so a kernel-level interpreter perf issue rather than
+    # something we can fix in our suite.
+    - cron: "0 6 * * *"
+  release:
+    # Publishing a version release attaches its own prebuilt desktop bundle, so
+    # each release is a self-contained packaged download (see spa-build below).
+    types: [published]
+
+# Cancel superseded runs of the same ref so a rapid series of pushes to a PR
+# branch does not stack up and starve the small self-hosted runner pool (this
+# bit us once: three superseded runs queued behind each other on two runners).
+# A PR push event carries ref refs/pull/<n>/merge, so successive pushes to the
+# same PR share a group and the older run is cancelled. master/dev are excluded
+# from cancellation: every promotion's CI (and its bundle publish) must finish.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/dev' }}
+
+jobs:
+  # The test matrix runs on GitHub-hosted runners. taOS is a public repo, so
+  # hosted Actions are free with high concurrency (~20 parallel jobs); many PRs
+  # run at once instead of queueing behind the 2 self-hosted boxes. The VPS +
+  # Fedora runners stay free for the kilo lane and GPU/bench work.
+
+  # Renamed from "test" to "shards" because sharding changes the check-run names
+  # this job reports. Branch protection matches required checks by NAME, so the
+  # sharded jobs report "test (3.12, 1)" etc and the required contexts
+  # "test (3.12)" / "test (3.13)" would never be reported again. Protection then
+  # waits forever on checks that cannot exist and blocks every PR, including the
+  # one that would fix it. The aggregate "test" job below keeps reporting those
+  # two exact names, so no protection change is needed and there is no window
+  # where dev is wedged.
+  shards:
+    runs-on: ubuntu-latest
+    # Measured 2026-07-26 over the last 12 job records: 3.13 runs 31-35 min and
+    # 3.12 runs 38-41 min. The previous comment claimed "~16 min", which had
+    # stopped being true, so the 45 min cap sat about 4 minutes above the slowest
+    # normal run and 3.12 kept crossing it.
+    #
+    # A cap that close to the median does not catch hangs, it manufactures red
+    # PRs: two of those 12 records were killed mid-suite with nothing wrong. That
+    # is worse than no cap, because a timeout kill looks exactly like a genuine
+    # failure until you check the clock.
+    #
+    # 75 leaves real headroom while still bounding a truly hung job. The suite
+    # growing from ~16 to ~40 min is a separate problem worth fixing on its own
+    # merits; raising this stops it corrupting merge decisions in the meantime.
+    timeout-minutes: 75
+    strategy:
+      matrix:
+        # PR + push runs cover the latest two; the daily cron run
+        # below adds 3.11 so the minimum-supported version stays tested.
+        python-version: ${{ github.event_name == 'schedule' && fromJSON('["3.11", "3.12", "3.13"]') || fromJSON('["3.12", "3.13"]') }}
+        # Shard the suite across parallel jobs. xdist parallelises WITHIN a job,
+        # but a hosted runner is 2 vCPU, so -n auto caps at 2 workers however
+        # many tests exist -- and the suite has grown 4845 -> 10250 (#2135).
+        # Cores per job were the bottleneck, not the tests.
+        #
+        # A public repo gets ~20 concurrent jobs free and we were using 2, so
+        # this costs nothing. 2 versions x 4 shards = 8 jobs on PR/push, and
+        # 12 on the scheduled run that adds 3.11.
+        shard: [1, 2, 3, 4]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # No actions/setup-python: it only ships prebuilt CPython for GitHub's
+      # ubuntu image, so on the self-hosted Fedora runner it fails with
+      # "version X not found for Fedora". uv provisions Python itself from
+      # distro-agnostic standalone builds, which works on Fedora, the Ubuntu
+      # VPS, and GitHub-hosted runners alike.
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Provision Python via uv
+        run: uv python install ${{ matrix.python-version }}
+
+      # Install the exact versions recorded in uv.lock (--frozen errors out
+      # if the lock is stale rather than silently re-resolving). This is the
+      # reproducibility guarantee: dependency versions come from the lock,
+      # not from a fresh unpinned resolve that can pull in a regressed
+      # release (see the fastapi 0.137 incident, #903).
+      - name: Install dependencies
+        run: uv sync --frozen --python ${{ matrix.python-version }}
+
+      # SPA bundle is stubbed by tests/conftest.py — see pytest_configure.
+      # The real build is exercised in the spa-build job below.
+
+      - name: Run tests (shard ${{ matrix.shard }}/4)
+        # --splits/--group partition the suite deterministically and exactly:
+        # verified that the 4 groups union to all 10250 collected tests with no
+        # duplicates and, critically, no drops. A sharding bug that silently
+        # skipped tests would leave CI green while testing less, which is the
+        # one failure mode worth checking rather than assuming.
+        #
+        # -n auto still uses both cores inside each shard.
+        run: >-
+          uv run --no-sync pytest tests/ --tb=short --ignore=tests/e2e
+          -n auto --splits 4 --group ${{ matrix.shard }}
+
+      # Import smoke check: identical in every shard, so run it once per Python
+      # version (shard 1 only) rather than in all 4 shards.
+      - name: Verify app starts
+        if: matrix.shard == 1
+        run: uv run --no-sync python -c "from tinyagentos.app import create_app; print('OK')"
+
+  # Aggregate gate. Reports the exact check names branch protection requires
+  # ("test (3.12)", "test (3.13)") so the required-context list does not have to
+  # change when the shard count does. An explicit `name:` is used verbatim by
+  # GitHub rather than having the matrix values appended, which is what makes
+  # reproducing the old names possible at all.
+  #
+  # `if: always()` is load-bearing. Without it this job is SKIPPED when the
+  # shards fail, and GitHub treats a skipped required check as satisfied -- so a
+  # red suite would report a green gate. It must run and fail explicitly.
+  test:
+    name: test (${{ matrix.python-version }})
+    needs: shards
+    if: always()
+    runs-on: ubuntu-latest
+    strategy:
+      # Both gates must report their own conclusion. With the default
+      # fail-fast, the first gate to fail CANCELS its sibling, so a red suite
+      # reported "test (3.12) failure, test (3.13) cancelled" -- observed on a
+      # deliberate-failure branch. Cancelled is not success so protection still
+      # blocks, but which version broke becomes a coin flip, and a required
+      # check whose conclusion depends on scheduling order is not a gate worth
+      # trusting.
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - name: Gate on shard results
+        run: |
+          echo "shards concluded: ${{ needs.shards.result }}"
+          if [ "${{ needs.shards.result }}" != "success" ]; then
+            echo "::error::test shards did not all pass"
+            exit 1
+          fi
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+
+      - name: Check for syntax errors
+        run: uv run --no-sync python -m compileall tinyagentos/ -q
+
+  spa-build:
+    runs-on: ubuntu-latest
+    # Needs write access to manage the rolling 'bundle-latest' release below.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install + build SPA
+        run: |
+          cd desktop
+          npm ci --silent
+          npm run build
+
+      # Gate the desktop vitest suite (~1,900 tests, ~25s). A small set of
+      # suites that drift against in-progress redesigns (#59, #66) or are
+      # order-dependent are quarantined in vite.config.ts (test.exclude, tagged
+      # #114); un-exclude each as its owning work lands.
+      - name: Run desktop tests (vitest)
+        env:
+          # Headroom for the jsdom suite so a worker is not OOM-killed on the
+          # 2-core runner (the fork children also get this via poolOptions in
+          # vite.config.ts). One automatic retry absorbs a rare transient
+          # worker death so a flake never blocks a release.
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          cd desktop
+          npx vitest run || (echo "vitest failed once, retrying..." && npx vitest run)
+
+      # On master, publish the freshly-built SPA as a prebuilt bundle so the
+      # installer can download it instead of running the memory-heavy vite build
+      # locally (which OOMs on small machines like an 8GB WSL and used to leave
+      # installs silently stuck on the old UI). The bundle is keyed by the git
+      # tree SHA of desktop/, so it stays valid across every commit that doesn't
+      # touch the frontend. Rolling 'bundle-latest' prerelease, assets clobbered.
+      - name: Publish prebuilt desktop bundle
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tree=$(git rev-parse HEAD:desktop)
+          tar -C static -czf desktop-bundle.tar.gz desktop
+          printf '%s\n' "$tree" > desktop-tree.txt
+          # Integrity digest the installer verifies before extracting.
+          sha256sum desktop-bundle.tar.gz | awk '{print $1}' > desktop-bundle.sha256
+          notes="Auto-built SPA bundle, matching desktop/ tree ${tree}. The installer downloads this when the tree matches, verifies desktop-bundle.sha256, then skips the local vite build."
+          # Always keep the rolling 'bundle-latest' current (this is what the
+          # installer fetches by default).
+          if gh release view bundle-latest >/dev/null 2>&1; then
+            gh release upload bundle-latest desktop-bundle.tar.gz desktop-tree.txt desktop-bundle.sha256 --clobber
+            gh release edit bundle-latest --notes "$notes"
+          else
+            gh release create bundle-latest --prerelease \
+              --title "Prebuilt desktop bundle (rolling)" --notes "$notes" \
+              desktop-bundle.tar.gz desktop-tree.txt desktop-bundle.sha256
+          fi
+          # On a version release, also attach the bundle to that release tag so
+          # each published version is a self-contained packaged download.
+          if [ "${{ github.event_name }}" = "release" ]; then
+            gh release upload "${{ github.event.release.tag_name }}" \
+              desktop-bundle.tar.gz desktop-tree.txt desktop-bundle.sha256 --clobber
+          fi

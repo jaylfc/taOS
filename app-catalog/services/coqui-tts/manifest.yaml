@@ -1,0 +1,24 @@
+id: coqui-tts
+name: Coqui TTS
+type: service
+category: voice
+version: 0.22.0
+description: "Mozilla TTS fork — multi-speaker, multi-lingual, voice cloning. 1100+ pretrained models. The community baseline for self-hosted TTS."
+homepage: https://github.com/coqui-ai/TTS
+license: MPL-2.0
+
+requires:
+  ram_mb: 2048
+  python: ">=3.9,<3.12"
+
+install:
+  method: pip
+  package: TTS
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: degraded
+  cpu-only: degraded
+  apple-silicon: full

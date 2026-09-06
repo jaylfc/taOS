@@ -1,0 +1,51 @@
+id: freecad-streaming
+name: FreeCAD (Streaming)
+type: streaming-app
+version: 1.0.0
+description: "Parametric 3D CAD modelling with AI agent assistance"
+homepage: https://www.freecad.org
+license: LGPL-2.0
+
+streaming:
+  backend: kasmvnc
+  port: 6901
+  resolution: 1920x1080
+  audio: false
+
+mcp:
+  server: freecad-mcp
+  install: "pip install freecad-mcp"
+  capabilities:
+    - create_sketch
+    - add_constraint
+    - extrude
+    - create_assembly
+    - export_step
+
+agent_bridge:
+  port: 9100
+  computer_use: optional
+  exec_enabled: true
+  keyboard_enabled: true
+
+expert_agent:
+  name: "FreeCAD Expert"
+  system_prompt: "You are a FreeCAD parametric CAD expert. Help users with sketches, constraints, part modelling, assemblies, and technical drawings. Use MCP tools for creating and modifying geometry. Explain parametric modelling concepts and guide users through the Part Design and Sketcher workbenches. When stuck, offer to use computer use mode to inspect the model."
+  model: qwen3-4b
+  color: "#D42B2C"
+
+requires:
+  ram_mb: 1536
+  gpu_recommended: true
+
+install:
+  method: docker
+  image: taos-app-freecad
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  arm-npu-16gb: full
+  apple-silicon: full
+  cpu-only: limited

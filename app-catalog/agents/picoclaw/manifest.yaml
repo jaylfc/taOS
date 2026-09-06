@@ -1,0 +1,19 @@
+id: picoclaw
+name: PicoClaw
+type: agent-framework
+verification_status: alpha
+version: 1.0.0
+description: "NPU-aware micro agent by Sipeed — under 10MB RAM, designed for $10 ARM boards with NPU acceleration"
+homepage: https://github.com/sipeed/picoclaw
+license: MIT
+requires:
+  ram_mb: 10
+install:
+  method: script
+  script: scripts/install-picoclaw.sh
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-cpu-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-4gb: full
+  cpu-only: full

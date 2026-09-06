@@ -1,0 +1,249 @@
+"""Agent-facing handler functions for project canvases.
+
+These are the in-process equivalents of the MCP tools described in
+docs/superpowers/specs/2026-04-28-projects-canvas-board-design.md §4.
+A real MCP server registration is a follow-up; for v1, agents that
+run inside the same process can call these directly. Each function
+returns either {"element": ...} / {"elements": ...} on success or
+{"error": <code>, "message": <str>} on failure.
+"""
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+from tinyagentos.projects.canvas.store import (
+    CanvasPermissionError,
+    ProjectCanvasStore,
+)
+from tinyagentos.projects.canvas.unfurl import fetch_link_metadata
+from tinyagentos.projects.canvas.render import render_snapshot_png
+from tinyagentos.projects.canvas.snapshotter import CanvasSnapshotter
+
+
+@dataclass
+class CanvasToolContext:
+    project_store: object
+    canvas_store: ProjectCanvasStore
+    snapshotter: CanvasSnapshotter
+    data_root: Path
+
+
+async def canvas_list_elements(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str
+) -> dict:
+    """List canvas elements an agent can read, gated by can_read_canvas (D3).
+
+    Surfaces the read-permission floor as a clean error, mirroring the other
+    in-process canvas tools so an agent without read access is told what to do
+    instead of silently receiving another principal's board contents."""
+    try:
+        await ctx.canvas_store.check_read_permission(
+            project_id, "agent", agent_id
+        )
+    except CanvasPermissionError:
+        return {
+            "error": "permission_denied",
+            "message": (
+                "This agent does not have read permission on the canvas. "
+                "Ask the user to enable it in project settings, or message "
+                "them to grant access."
+            ),
+        }
+    elements = await ctx.canvas_store.list_elements(project_id)
+    return {"elements": elements}
+
+
+async def _add_agent_element(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str, element: dict
+) -> dict:
+    """Add an element authored by an agent, surfacing the edit-permission gate
+    as a clean error (mirrors canvas_update_element / canvas_delete_element)."""
+    try:
+        el = await ctx.canvas_store.add_element(
+            project_id=project_id,
+            author_kind="agent", author_id=agent_id,
+            element=element,
+        )
+    except CanvasPermissionError:
+        return {
+            "error": "permission_denied",
+            "message": (
+                "This agent does not have edit permission on the canvas. "
+                "Ask the user to enable it in project settings, or message "
+                "them to make the change."
+            ),
+        }
+    return {"element": el}
+
+
+async def canvas_add_note(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str,
+    text: str, x: float, y: float, color: str = "yellow",
+) -> dict:
+    return await _add_agent_element(
+        ctx, project_id=project_id, agent_id=agent_id,
+        element={
+            "kind": "note", "x": float(x), "y": float(y),
+            "w": 200.0, "h": 100.0,
+            "payload": {"text": text, "color": color, "font_size": 14},
+        },
+    )
+
+
+async def canvas_add_link(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str,
+    url: str, x: float, y: float,
+) -> dict:
+    meta = await fetch_link_metadata(url)
+    return await _add_agent_element(
+        ctx, project_id=project_id, agent_id=agent_id,
+        element={
+            "kind": "link", "x": float(x), "y": float(y),
+            "w": 320.0, "h": 120.0, "payload": meta,
+        },
+    )
+
+
+async def canvas_add_image(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str,
+    file_id: str, x: float, y: float, alt: str = "",
+) -> dict:
+    return await _add_agent_element(
+        ctx, project_id=project_id, agent_id=agent_id,
+        element={
+            "kind": "image", "x": float(x), "y": float(y),
+            "w": 240.0, "h": 240.0,
+            "payload": {"file_id": file_id, "alt": alt, "mime": "image/png"},
+        },
+    )
+
+
+async def canvas_add_text(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str,
+    text: str, x: float, y: float, font_size: int = 16,
+) -> dict:
+    return await _add_agent_element(
+        ctx, project_id=project_id, agent_id=agent_id,
+        element={
+            "kind": "text", "x": float(x), "y": float(y),
+            "w": 220.0, "h": 80.0,
+            "payload": {"text": text, "font_size": int(font_size)},
+        },
+    )
+
+
+async def canvas_add_mermaid(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str,
+    source: str, x: float, y: float,
+) -> dict:
+    return await _add_agent_element(
+        ctx, project_id=project_id, agent_id=agent_id,
+        element={
+            "kind": "mermaid", "x": float(x), "y": float(y),
+            "w": 320.0, "h": 240.0, "payload": {"source": source},
+        },
+    )
+
+
+async def canvas_add_flowchart(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str,
+    source: str, x: float, y: float,
+) -> dict:
+    return await _add_agent_element(
+        ctx, project_id=project_id, agent_id=agent_id,
+        element={
+            "kind": "flowchart", "x": float(x), "y": float(y),
+            "w": 320.0, "h": 240.0, "payload": {"source": source},
+        },
+    )
+
+
+async def canvas_add_mindmap_edge(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str,
+    from_id: str, to_id: str,
+) -> dict:
+    # An edge connects two existing elements by id. Reject dangling edges at
+    # creation rather than discovering them at render time, and span the edge's
+    # own bbox across the endpoints so it does not drag the snapshot bounds to
+    # the origin.
+    a = await ctx.canvas_store.get_element(from_id, project_id=project_id)
+    b = await ctx.canvas_store.get_element(to_id, project_id=project_id)
+    if a is None or b is None:
+        missing = from_id if a is None else to_id
+        return {
+            "error": "not_found",
+            "message": f"endpoint element {missing} not found in project {project_id}",
+        }
+    ax, ay = a["x"] + a["w"] / 2, a["y"] + a["h"] / 2
+    bx, by = b["x"] + b["w"] / 2, b["y"] + b["h"] / 2
+    return await _add_agent_element(
+        ctx, project_id=project_id, agent_id=agent_id,
+        element={
+            "kind": "mindmap_edge",
+            "x": min(ax, bx), "y": min(ay, by),
+            "w": max(1.0, abs(ax - bx)), "h": max(1.0, abs(ay - by)),
+            "payload": {"from": from_id, "to": to_id},
+        },
+    )
+
+
+async def canvas_update_element(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str,
+    element_id: str, patch: dict,
+) -> dict:
+    try:
+        el = await ctx.canvas_store.update_element(
+            project_id=project_id, element_id=element_id, patch=patch,
+            author_kind="agent", author_id=agent_id,
+        )
+    except CanvasPermissionError:
+        return {
+            "error": "permission_denied",
+            "message": (
+                "This agent does not have edit permission on the canvas. "
+                "Ask the user to enable it in project settings, or message "
+                "them to make the change."
+            ),
+        }
+    except ValueError as e:
+        return {"error": "not_found", "message": str(e)}
+    return {"element": el}
+
+
+async def canvas_delete_element(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str, element_id: str,
+) -> dict:
+    try:
+        await ctx.canvas_store.delete_element(
+            project_id=project_id, element_id=element_id,
+            author_kind="agent", author_id=agent_id,
+        )
+    except CanvasPermissionError:
+        return {
+            "error": "permission_denied",
+            "message": (
+                "This agent does not have edit permission on the canvas. "
+                "Ask the user to enable it in project settings, or message "
+                "them to make the change."
+            ),
+        }
+    return {"ok": True}
+
+
+async def canvas_get_snapshot_png(
+    ctx: CanvasToolContext, *, project_id: str,
+) -> dict:
+    project = await ctx.project_store.get_project(project_id)
+    if project is None:
+        return {"error": "not_found", "message": "project not found"}
+    out_dir = ctx.data_root / project["slug"] / "files" / "canvas"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / f"snapshot-{int(time.time())}.png"
+    elements = await ctx.canvas_store.list_elements(project_id)
+    render_snapshot_png(elements=elements, output_path=target)
+    return {
+        "file_path": str(target),
+        "byte_size": target.stat().st_size,
+    }

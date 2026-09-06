@@ -1,0 +1,44 @@
+id: rkllama
+name: rkllama (RK3588 NPU LLM)
+type: service
+category: llm-runtime
+version: 0.1.0
+description: "Ollama-compatible LLM server on Rockchip NPU — run RKNN models natively on RK3588"
+homepage: https://github.com/NotByAI/rkllama
+license: Apache-2.0
+
+# taOS default port is 7833 (see scripts/install-rknpu.sh, RKLLAMA_PORT).
+# 8080 is the upstream rkllama default and is only kept as a legacy
+# fallback probe (rkllama_is_running() checks both) for pre-existing
+# installs that predate the 7833 switch — new installs land on 7833.
+requires:
+  ram_mb: 512
+  disk_mb: 500
+  ports: [7833]
+
+install:
+  method: script
+  script: scripts/install-rkllama.sh
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  arm-npu-64gb: full
+  x86-cuda-12gb: unsupported
+  cpu-only: unsupported
+
+lifecycle:
+  backend_type: rkllama
+  default_url: http://localhost:7833
+  auto_manage: true
+  # Managed as a systemd service (see scripts/install-rknpu.sh install_systemd_unit).
+  # taOS manages the unit per node: start/stop/restart default to `systemctl <verb> <unit>`.
+  unit: rkllama.service
+  scope: system
+  health:
+    url: "http://localhost:7833/api/tags"
+    expect: '"models"'
+  keep_alive_minutes: 0
+  start_cmd: "systemctl start rkllama"
+  stop_cmd: "systemctl stop rkllama"
+  startup_timeout_seconds: 60

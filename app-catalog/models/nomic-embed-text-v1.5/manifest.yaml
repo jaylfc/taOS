@@ -1,0 +1,69 @@
+id: nomic-embed-text-v1.5
+name: Nomic Embed Text v1.5
+type: model
+version: 1.5.0
+description: Open embedding model — 768 dimensions, Matryoshka, outperforms OpenAI
+  text-embedding-ada-002
+homepage: https://huggingface.co/nomic-ai/nomic-embed-text-v1.5
+license: Apache-2.0
+capabilities:
+- embedding
+variants:
+- id: q4_k_m
+  name: Q4_K_M GGUF (84MB)
+  format: gguf
+  size_mb: 84
+  min_ram_mb: 512
+  download_url: https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 512
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 512
+  sha256: d4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac
+- id: f32
+  name: F32 GGUF (548MB)
+  format: gguf
+  size_mb: 548
+  min_ram_mb: 1024
+  download_url: https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.f32.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
+  sha256: ed3a84b570c5513bfd6bfe0ed4cdc8d5a5de5c6b5029fbbc2822d59fc893c1f8
+hardware_tiers:
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-vulkan-4gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+  x86-vulkan-2gb:
+    recommended: q4_k_m
+context_window: 2048

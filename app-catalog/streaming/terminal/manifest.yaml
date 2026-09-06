@@ -1,0 +1,51 @@
+id: terminal-streaming
+name: Terminal (Streaming)
+type: streaming-app
+version: 1.0.0
+description: "Full shell access via XFCE Terminal with AI agent assistance"
+homepage: https://gitlab.xfce.org/apps/xfce4-terminal
+license: GPL-2.0
+
+streaming:
+  backend: kasmvnc
+  port: 6901
+  resolution: 1920x1080
+  audio: false
+
+mcp:
+  server: desktop-commander-mcp
+  install: "npx @wonderwhy-er/desktop-commander"
+  capabilities:
+    - run_command
+    - read_file
+    - write_file
+    - list_directory
+    - search_files
+
+agent_bridge:
+  port: 9100
+  computer_use: optional
+  exec_enabled: true
+  keyboard_enabled: true
+
+expert_agent:
+  name: "Terminal Expert"
+  system_prompt: "You are a Linux terminal and shell scripting expert. Help users run commands, write shell scripts, manage files, debug processes, and navigate the filesystem. Use Desktop Commander MCP to execute commands and read output. Suggest efficient command-line workflows and explain output. Guide users with common tools like git, docker, systemctl, and package managers. When stuck, offer to use computer use mode to see what is on screen."
+  model: qwen3-4b
+  color: "#2E3440"
+
+requires:
+  ram_mb: 256
+  gpu_recommended: false
+
+install:
+  method: docker
+  image: taos-app-terminal
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  arm-npu-16gb: full
+  apple-silicon: full
+  cpu-only: full

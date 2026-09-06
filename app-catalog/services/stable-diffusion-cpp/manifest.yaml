@@ -1,0 +1,27 @@
+id: stable-diffusion-cpp
+name: Stable Diffusion.cpp
+type: service
+category: image-gen
+version: 0.2.0
+description: "Pure C/C++ image generation — runs on CPU including ARM. Like llama.cpp but for images."
+homepage: https://github.com/leejet/stable-diffusion.cpp
+license: MIT
+
+requires:
+  ram_mb: 2048
+  disk_mb: 4000
+  ports: [30450]
+
+install:
+  method: script
+  script: scripts/install-sd-cpp.sh
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-cuda-24gb: full
+  x86-vulkan-8gb: full
+  x86-rocm-12gb: full
+  cpu-only: degraded

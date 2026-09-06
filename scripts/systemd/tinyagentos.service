@@ -1,0 +1,59 @@
+[Unit]
+Description=TinyAgentOS Controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# User/WorkingDirectory/ExecStart are rewritten by install-server.sh at install time.
+User=TAOS_USER
+Group=TAOS_GROUP
+WorkingDirectory=TAOS_INSTALL_DIR
+# Grant read access to Rockchip debugfs files (NPU, RGA, Mali) so the controller
+# can report hardware stats without running as root. The `+` prefix runs this
+# ExecStartPre as root regardless of User= above.
+ExecStartPre=+/bin/sh -c '\
+  chmod o+x /sys/kernel/debug 2>/dev/null || true; \
+  chmod o+rx /sys/kernel/debug/rknpu 2>/dev/null || true; \
+  chmod o+r /sys/kernel/debug/rknpu/load 2>/dev/null || true; \
+  chmod o+r /sys/kernel/debug/rknpu/version 2>/dev/null || true; \
+  chmod o+rx /sys/kernel/debug/rkrga 2>/dev/null || true; \
+  chmod o+r /sys/kernel/debug/rkrga/load 2>/dev/null || true; \
+  chmod o+rx /sys/kernel/debug/mali0 2>/dev/null || true; \
+  chmod o+r /sys/kernel/debug/mali0/dvfs_utilization 2>/dev/null || true'
+# Desktop bundle rebuild moved to tinyagentos-rebuild-desktop.service (taOS #807)
+# to avoid blocking service startup with a ~50s npm install + vite build.
+#
+# If you git-pull new desktop source and restart the controller, the rebuild
+# runs asynchronously — the UI stays responsive while the build completes.
+
+# Launch via the module entrypoint (not uvicorn directly) so the dual-port
+# browser-proxy origin starts. __main__.main() reads TAOS_HOST/TAOS_PORT and
+# TAOS_BROWSER_PROXY_PORT from the Environment block injected by install-server.sh.
+ExecStart=TAOS_PYTHON -m tinyagentos
+ExecStop=TAOS_STOP_SCRIPT
+# Reload sends SIGHUP to the main process, causing uvicorn to re-exec in-place.
+# Used by the in-app "Restart Server" button when systemctl restart requires auth.
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=3
+# Slow boot on low-end ARM SBCs (Pi ~58s) sits too close to systemd's 90s default.
+TimeoutStartSec=180
+# Bounded so a hung graceful-stop hook can never strand the service in
+# `deactivating` (which also breaks the in-app Update). Paired with the short
+# --max-time in taos-graceful-stop.sh.
+TimeoutStopSec=45
+# Private scratch dir for taos-graceful-stop's dedupe stamp: /run/taos for this
+# system unit, $XDG_RUNTIME_DIR/taos for the user-unit fallback, owned by the
+# service user either way. Without it the stamp fell back to world-writable
+# /tmp, where any local user could plant the file and silently suppress the
+# agent drain on every restart and reboot. Preserved across a restart so the
+# ExecStop stamp still dedupes the second call from taos-pre-shutdown.service.
+RuntimeDirectory=taos
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+Environment=PYTHONUNBUFFERED=1
+Environment=TAOS_PREFETCH_BASE_IMAGE=__TAOS_PREFETCH_VALUE__
+
+[Install]
+WantedBy=multi-user.target

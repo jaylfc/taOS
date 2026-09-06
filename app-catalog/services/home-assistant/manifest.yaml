@@ -1,0 +1,32 @@
+id: home-assistant
+name: Home Assistant
+type: service
+category: home
+version: stable
+description: "Home automation platform — agents can control smart home devices and automations"
+homepage: https://www.home-assistant.io
+license: Apache-2.0
+
+requires:
+  ram_mb: 512
+  disk_mb: 1000
+  ports: [8123]
+
+install:
+  method: docker
+  image: ghcr.io/home-assistant/home-assistant:stable
+  volumes:
+    - config:/config
+  ports: [8123]
+  env:
+    TZ: "UTC"
+
+lifecycle:
+  health_check: "curl -sf http://localhost:8123/api/"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

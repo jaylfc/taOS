@@ -1,0 +1,25 @@
+id: dify
+name: Dify
+type: service
+category: ai-app
+version: 0.15.0
+description: "RAG + agent builder with visual workflow editor — self-hosted LLMOps platform"
+homepage: https://github.com/langgenius/dify
+license: Apache-2.0
+
+requires:
+  ram_mb: 1024
+  disk_mb: 3000
+  ports: [35444]
+
+install:
+  method: script
+  script: scripts/install-dify.sh
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  x86-vulkan-4gb: degraded
+  cpu-only: degraded

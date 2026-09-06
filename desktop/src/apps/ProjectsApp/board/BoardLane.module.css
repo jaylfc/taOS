@@ -1,0 +1,8 @@
+.row { display: grid; grid-template-columns: 200px 1fr 1fr 1fr 1fr; gap: 10px; padding: 12px 0; border-top: 1px solid var(--board-hair); }
+.row:first-child { border-top: 0; }
+.head { display: flex; align-items: center; gap: 10px; padding: 4px 8px; }
+.av { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg,#0891b2,#06b6d4); display: flex; align-items: center; justify-content: center; color: white; font: 600 13px -apple-system; }
+.name { font: 600 12.5px -apple-system; }
+.sub { font: 10px -apple-system; color: #86868b; margin-top: 2px; }
+.cell { display: flex; flex-direction: column; gap: 8px; min-height: 80px; position: relative; }
+.cell:empty::after { content: "Drop here to claim or assign"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #5a5a60; font: 10.5px -apple-system; border: 1px dashed var(--board-hair); border-radius: 8px; pointer-events: none; }

@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stream Chat</title>
+  <script src="/api/userspace-apps/sdk.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #1a1d27;
+      --surface2:  #20243a;
+      --border:    #2d3150;
+      --fg:        #e4e6eb;
+      --muted:     #6b7280;
+      --accent:    #818cf8;
+      --success:   #34d399;
+      --warn:      #fbbf24;
+      --danger:    #f87171;
+      --twitch:    #9146ff;
+      --youtube:   #ff0000;
+      --kick:      #53fc18;
+      --tiktok:    #e9405a;
+      --facebook:  #1877f2;
+      --donation-bg: rgba(251,191,36,0.08);
+      --donation-border: rgba(251,191,36,0.35);
+      --radius:    0.5rem;
+      --font: system-ui, -apple-system, sans-serif;
+      --font-mono: "SF Mono", "Fira Mono", monospace;
+    }
+
+    html, body {
+      height: 100%;
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--fg);
+      font-size: 14px;
+      line-height: 1.5;
+      overflow: hidden;
+    }
+
+    /* ---------- Layout ---------- */
+    #root {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    /* ---------- Header ---------- */
+    #header {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    #header-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--fg);
+      letter-spacing: 0.01em;
+    }
+
+    #status-pill {
+      font-size: 0.7rem;
+      font-weight: 500;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+      white-space: nowrap;
+    }
+    #status-pill.connected    { background: rgba(52,211,153,0.12); color: var(--success); border-color: rgba(52,211,153,0.3); }
+    #status-pill.reconnecting { background: rgba(251,191,36,0.12); color: var(--warn);    border-color: rgba(251,191,36,0.3); }
+    #status-pill.disconnected { background: rgba(248,113,113,0.12); color: var(--danger); border-color: rgba(248,113,113,0.3); }
+    #status-pill.unconfigured { background: rgba(107,114,128,0.12); color: var(--muted);  border-color: rgba(107,114,128,0.3); }
+
+    #header-spacer { flex: 1; }
+
+    #new-msg-badge {
+      font-size: 0.7rem;
+      font-weight: 600;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      display: none;
+      white-space: nowrap;
+    }
+
+    #settings-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: var(--radius);
+      width: 1.8rem;
+      height: 1.8rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex: none;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #settings-btn:hover { border-color: var(--accent); color: var(--accent); }
+    #settings-btn svg { width: 0.9rem; height: 0.9rem; }
+
+    /* ---------- Settings Panel ---------- */
+    #settings-panel {
+      display: none;
+      flex: none;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0.75rem;
+      gap: 0.5rem;
+      flex-direction: column;
+    }
+    #settings-panel.open { display: flex; }
+
+    .settings-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .settings-label {
+      font-size: 0.72rem;
+      font-weight: 500;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      white-space: nowrap;
+      width: 6rem;
+      flex: none;
+    }
+
+    .settings-input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--fg);
+      font-size: 0.8rem;
+      font-family: var(--font-mono);
+      padding: 0.3rem 0.5rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .settings-input:focus { border-color: var(--accent); }
+
+    #settings-actions {
+      display: flex;
+      gap: 0.5rem;
+      justify-content: flex-end;
+    }
+
+    .btn {
+      font-size: 0.78rem;
+      font-weight: 500;
+      padding: 0.3rem 0.75rem;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .btn-primary:hover { opacity: 0.85; }
+    .btn-ghost {
+      background: none;
+      color: var(--muted);
+    }
+    .btn-ghost:hover { border-color: var(--muted); color: var(--fg); }
+
+    /* ---------- Chat list ---------- */
+    #chat-scroll {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scroll-behavior: auto;
+    }
+    #chat-scroll::-webkit-scrollbar { width: 4px; }
+    #chat-scroll::-webkit-scrollbar-track { background: transparent; }
+    #chat-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    #chat-list {
+      padding: 0.25rem 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ---------- Empty / error states ---------- */
+    #empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.75rem;
+      padding: 2.5rem 1.5rem;
+      text-align: center;
+      color: var(--muted);
+      min-height: 180px;
+    }
+    #empty-state .empty-icon {
+      width: 2.5rem;
+      height: 2.5rem;
+      opacity: 0.35;
+    }
+    #empty-state .empty-title {
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--fg);
+      opacity: 0.7;
+    }
+    #empty-state .empty-desc {
+      font-size: 0.78rem;
+      line-height: 1.5;
+      max-width: 280px;
+    }
+
+    #reconnect-btn {
+      font-size: 0.78rem;
+      padding: 0.35rem 0.9rem;
+    }
+
+    /* ---------- Chat message row ---------- */
+    .msg-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      padding: 0.35rem 0.75rem;
+      border-bottom: 1px solid transparent;
+      transition: background 0.1s;
+    }
+    .msg-row:hover { background: rgba(255,255,255,0.025); }
+    .msg-row.donation-row {
+      background: var(--donation-bg);
+      border-bottom-color: var(--donation-border);
+    }
+    .msg-row.donation-row:hover { background: rgba(251,191,36,0.12); }
+
+    /* Platform badge */
+    .platform-badge {
+      flex: none;
+      width: 0.35rem;
+      align-self: stretch;
+      border-radius: 999px;
+      margin-top: 0.15rem;
+    }
+
+    /* Avatar */
+    .avatar {
+      flex: none;
+      width: 1.75rem;
+      height: 1.75rem;
+      border-radius: 50%;
+      object-fit: cover;
+      background: var(--surface2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: var(--muted);
+      overflow: hidden;
+      border: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    /* Content */
+    .msg-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .msg-meta {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.1rem;
+    }
+
+    .msg-name {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--fg);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 140px;
+    }
+
+    .mod-badge {
+      font-size: 0.6rem;
+      font-weight: 700;
+      padding: 0.05rem 0.3rem;
+      border-radius: 3px;
+      background: rgba(129,140,248,0.2);
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .donation-pill {
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 0.1rem 0.4rem;
+      border-radius: 3px;
+      background: rgba(251,191,36,0.2);
+      color: var(--warn);
+      white-space: nowrap;
+    }
+
+    .msg-text {
+      font-size: 0.82rem;
+      line-height: 1.45;
+      color: var(--fg);
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+
+    /* Inline emote images from SSN */
+    .msg-text img {
+      height: 1.1em;
+      vertical-align: middle;
+    }
+
+    /* ---------- Jump-to-latest button ---------- */
+    #jump-btn {
+      position: sticky;
+      bottom: 0.75rem;
+      left: 50%;
+      transform: translateX(-50%);
+      display: none;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.35rem 0.85rem;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+      white-space: nowrap;
+      width: fit-content;
+      margin: 0 auto;
+    }
+    #jump-btn:hover { opacity: 0.85; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+<div id="root">
+  <!-- Header -->
+  <div id="header">
+    <span id="header-title">Stream Chat</span>
+    <span id="status-pill" class="unconfigured">Not configured</span>
+    <div id="header-spacer"></div>
+    <button id="new-msg-badge" aria-label="Jump to latest messages"></button>
+    <button id="settings-btn" aria-label="Settings" aria-expanded="false" aria-controls="settings-panel">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- Settings panel -->
+  <div id="settings-panel" role="region" aria-label="Connection settings">
+    <div class="settings-row">
+      <label class="settings-label" for="input-base-url">Relay URL</label>
+      <input class="settings-input" id="input-base-url" type="url" placeholder="https://io.socialstream.ninja" autocomplete="off" spellcheck="false" title="Custom relay URLs require network permissions for that origin to be declared in the app manifest." />
+    </div>
+    <div class="settings-row">
+      <label class="settings-label" for="input-session-id">Session ID</label>
+      <input class="settings-input" id="input-session-id" type="text" placeholder="Paste your SSN session ID here" autocomplete="off" spellcheck="false" />
+    </div>
+    <div id="settings-actions">
+      <button class="btn btn-ghost" id="settings-cancel-btn">Cancel</button>
+      <button class="btn btn-primary" id="settings-save-btn">Connect</button>
+    </div>
+  </div>
+
+  <!-- Chat scroll area -->
+  <div id="chat-scroll" role="log" aria-label="Chat messages" aria-live="polite" aria-relevant="additions">
+    <div id="chat-list"></div>
+
+    <!-- Empty / not-configured state (shown initially) -->
+    <div id="empty-state">
+      <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+      <div class="empty-title">No session configured</div>
+      <div class="empty-desc" id="empty-desc">
+        Open settings (gear icon) and paste your Social Stream Ninja session ID to start watching chat.
+      </div>
+      <button class="btn btn-ghost reconnect-btn" id="reconnect-btn" style="display:none" aria-label="Reconnect">Reconnect</button>
+    </div>
+
+    <button id="jump-btn" aria-label="Jump to latest messages"></button>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---- Constants ----
+  var KV_BASE = 'ssn_base_url';
+  var KV_SESSION = 'ssn_session_id';
+  var DEFAULT_BASE = 'https://io.socialstream.ninja';
+  var MAX_MESSAGES = 200;
+  var RECONNECT_DELAY_MS = 2000;
+  var RECONNECT_MAX_MS = 30000;
+
+  // ---- State ----
+  var baseUrl = DEFAULT_BASE;
+  var sessionId = '';
+  var es = null;
+  var reconnectTimer = null;
+  var reconnectDelay = RECONNECT_DELAY_MS;
+  var userScrolled = false;
+  var newMsgCount = 0;
+  var settingsOpen = false;
+
+  // ---- DOM refs ----
+  var header = document.getElementById('header');
+  var statusPill = document.getElementById('status-pill');
+  var settingsBtn = document.getElementById('settings-btn');
+  var settingsPanel = document.getElementById('settings-panel');
+  var inputBase = document.getElementById('input-base-url');
+  var inputSession = document.getElementById('input-session-id');
+  var saveBtn = document.getElementById('settings-save-btn');
+  var cancelBtn = document.getElementById('settings-cancel-btn');
+  var chatScroll = document.getElementById('chat-scroll');
+  var chatList = document.getElementById('chat-list');
+  var emptyState = document.getElementById('empty-state');
+  var emptyDesc = document.getElementById('empty-desc');
+  var reconnectBtn = document.getElementById('reconnect-btn');
+  var jumpBtn = document.getElementById('jump-btn');
+  var newMsgBadge = document.getElementById('new-msg-badge');
+
+  // ---- Platform colors ----
+  var PLATFORM_COLORS = {
+    twitch:   '#9146ff',
+    youtube:  '#ff0000',
+    kick:     '#53fc18',
+    tiktok:   '#e9405a',
+    facebook: '#1877f2',
+  };
+
+  function platformColor(type) {
+    if (!type) return '#6b7280';
+    var key = String(type).toLowerCase();
+    return PLATFORM_COLORS[key] || '#6b7280';
+  }
+
+  // ---- Build safe DOM nodes from SSN chatmessage HTML ----
+  // SSN messages may contain inline emote <img> tags and basic formatting.
+  // We parse into an inert template, then walk the tree constructing real DOM
+  // nodes -- never assigning untrusted HTML via innerHTML (eliminates mXSS risk).
+  var ALLOWED_INLINE_TAGS = { b: true, i: true, em: true, strong: true, span: true, br: true };
+  var ALLOWED_IMG_ATTRS   = { src: true, alt: true, title: true, width: true, height: true };
+
+  function buildSafeNodes(html) {
+    if (!html) return [];
+    var tmpl = document.createElement('template');
+    tmpl.innerHTML = html;
+    return buildFromFragment(tmpl.content);
+  }
+
+  function buildFromFragment(fragment) {
+    var nodes = [];
+    fragment.childNodes.forEach(function (child) {
+      var built = buildSafeNode(child);
+      if (built !== null) nodes.push(built);
+    });
+    return nodes;
+  }
+
+  function buildSafeNode(child) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      return document.createTextNode(child.textContent);
+    }
+    if (child.nodeType !== Node.ELEMENT_NODE) return null;
+    var tag = child.tagName.toLowerCase();
+    if (tag === 'img') {
+      var src = child.getAttribute('src') || '';
+      // Block javascript: and data: URIs on img src
+      if (/^\s*(javascript|data):/i.test(src)) return null;
+      var imgEl = document.createElement('img');
+      imgEl.src = src;
+      imgEl.alt = child.getAttribute('alt') || '';
+      if (child.hasAttribute('title'))  imgEl.title  = child.getAttribute('title');
+      if (child.hasAttribute('width'))  imgEl.width  = parseInt(child.getAttribute('width'), 10) || 0;
+      if (child.hasAttribute('height')) imgEl.height = parseInt(child.getAttribute('height'), 10) || 0;
+      return imgEl;
+    }
+    if (ALLOWED_INLINE_TAGS[tag]) {
+      var el = document.createElement(tag);
+      buildFromFragment(child).forEach(function (n) { el.appendChild(n); });
+      return el;
+    }
+    // Unknown tag: descend, returning children directly
+    var wrapper = document.createDocumentFragment();
+    buildFromFragment(child).forEach(function (n) { wrapper.appendChild(n); });
+    return wrapper;
+  }
+
+  // ---- Status pill ----
+  function setStatus(state, text) {
+    statusPill.className = 'unconfigured';
+    if (state === 'connected')    statusPill.className = 'connected';
+    if (state === 'reconnecting') statusPill.className = 'reconnecting';
+    if (state === 'disconnected') statusPill.className = 'disconnected';
+    statusPill.textContent = text;
+  }
+
+  // ---- Empty state ----
+  function showEmptyState(mode) {
+    emptyState.style.display = 'flex';
+    reconnectBtn.style.display = 'none';
+    if (mode === 'unconfigured') {
+      emptyDesc.textContent = 'Open settings (gear icon) and paste your Social Stream Ninja session ID to start watching chat.';
+      setStatus('unconfigured', 'Not configured');
+    } else if (mode === 'disconnected') {
+      emptyDesc.textContent = 'Lost connection to the stream. Check your session ID and network, then reconnect.';
+      setStatus('disconnected', 'Disconnected');
+      reconnectBtn.style.display = 'inline-flex';
+    }
+  }
+
+  function hideEmptyState() {
+    emptyState.style.display = 'none';
+    reconnectBtn.style.display = 'none';
+  }
+
+  // ---- Scroll tracking ----
+  chatScroll.addEventListener('scroll', function () {
+    var distFromBottom = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight;
+    if (distFromBottom > 80) {
+      userScrolled = true;
+    } else {
+      userScrolled = false;
+      newMsgCount = 0;
+      updateJumpBtn();
+    }
+  });
+
+  function scrollToBottom() {
+    chatScroll.scrollTop = chatScroll.scrollHeight;
+  }
+
+  function updateJumpBtn() {
+    if (userScrolled && newMsgCount > 0) {
+      jumpBtn.textContent = newMsgCount + ' new message' + (newMsgCount === 1 ? '' : 's');
+      jumpBtn.style.display = 'block';
+      newMsgBadge.textContent = newMsgCount + ' new';
+      newMsgBadge.style.display = 'inline-flex';
+    } else {
+      jumpBtn.style.display = 'none';
+      newMsgBadge.style.display = 'none';
+    }
+  }
+
+  jumpBtn.addEventListener('click', function () {
+    userScrolled = false;
+    newMsgCount = 0;
+    scrollToBottom();
+    updateJumpBtn();
+  });
+
+  newMsgBadge.addEventListener('click', function () {
+    userScrolled = false;
+    newMsgCount = 0;
+    scrollToBottom();
+    updateJumpBtn();
+  });
+
+  // ---- Render a message ----
+  function appendMessage(data) {
+    hideEmptyState();
+
+    var chatname = data.chatname || data.userid || 'Anonymous';
+    var chatmessage = data.chatmessage || '';
+    var chatimg = data.chatimg || '';
+    var type = data.type || '';
+    var isMod = !!data.moderator;
+    var hasDon = data.hasDonation;
+    var donation = (typeof hasDon === 'string' && hasDon) ? hasDon : '';
+
+    // Build row
+    var row = document.createElement('div');
+    row.className = 'msg-row' + (donation ? ' donation-row' : '');
+    row.setAttribute('role', 'listitem');
+
+    // Platform bar
+    var badge = document.createElement('div');
+    badge.className = 'platform-badge';
+    badge.style.background = platformColor(type);
+    badge.setAttribute('aria-label', type ? 'Platform: ' + type : 'Unknown platform');
+    row.appendChild(badge);
+
+    // Avatar
+    var avatarEl = document.createElement('div');
+    avatarEl.className = 'avatar';
+    avatarEl.setAttribute('aria-hidden', 'true');
+    if (chatimg) {
+      var img = document.createElement('img');
+      img.src = chatimg;
+      img.alt = chatname;
+      img.onerror = function () {
+        avatarEl.removeChild(img);
+        avatarEl.textContent = initials(chatname);
+      };
+      avatarEl.appendChild(img);
+    } else {
+      avatarEl.textContent = initials(chatname);
+    }
+    row.appendChild(avatarEl);
+
+    // Content
+    var content = document.createElement('div');
+    content.className = 'msg-content';
+
+    // Meta line
+    var meta = document.createElement('div');
+    meta.className = 'msg-meta';
+
+    var nameEl = document.createElement('span');
+    nameEl.className = 'msg-name';
+    nameEl.textContent = chatname;
+    meta.appendChild(nameEl);
+
+    if (isMod) {
+      var modEl = document.createElement('span');
+      modEl.className = 'mod-badge';
+      modEl.textContent = 'MOD';
+      meta.appendChild(modEl);
+    }
+
+    if (donation) {
+      var donEl = document.createElement('span');
+      donEl.className = 'donation-pill';
+      donEl.textContent = donation;
+      meta.appendChild(donEl);
+    }
+
+    content.appendChild(meta);
+
+    // Message text (DOM-built from SSN which may include emote <img> tags)
+    if (chatmessage) {
+      var textEl = document.createElement('div');
+      textEl.className = 'msg-text';
+      buildSafeNodes(chatmessage).forEach(function (n) { textEl.appendChild(n); });
+      content.appendChild(textEl);
+    }
+
+    row.appendChild(content);
+
+    // Cap DOM size
+    while (chatList.children.length >= MAX_MESSAGES) {
+      chatList.removeChild(chatList.firstChild);
+    }
+
+    chatList.appendChild(row);
+
+    if (userScrolled) {
+      newMsgCount++;
+      updateJumpBtn();
+    } else {
+      scrollToBottom();
+    }
+  }
+
+  function initials(name) {
+    var s = String(name || '?');
+    var parts = s.trim().split(/\s+/);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    return s.slice(0, 2).toUpperCase();
+  }
+
+  // ---- SSE connection ----
+  function connectSSE() {
+    if (!sessionId) {
+      showEmptyState('unconfigured');
+      return;
+    }
+
+    if (es) {
+      es.close();
+      es = null;
+    }
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+
+    var url = baseUrl.replace(/\/$/, '') + '/sse/' + encodeURIComponent(sessionId);
+    setStatus('reconnecting', 'Connecting...');
+
+    try {
+      es = new EventSource(url);
+    } catch (err) {
+      setStatus('disconnected', 'Failed to connect');
+      scheduleReconnect();
+      return;
+    }
+
+    es.onopen = function () {
+      reconnectDelay = RECONNECT_DELAY_MS;
+      setStatus('connected', 'Connected');
+    };
+
+    es.onmessage = function (event) {
+      try {
+        var data = JSON.parse(event.data);
+        if (data && typeof data === 'object') {
+          appendMessage(data);
+        }
+      } catch (_) {
+        // Non-JSON frames (e.g. keepalive comments) -- ignore
+      }
+    };
+
+    es.onerror = function () {
+      setStatus('reconnecting', 'Reconnecting...');
+      es.close();
+      es = null;
+      scheduleReconnect();
+    };
+  }
+
+  function scheduleReconnect() {
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(function () {
+      reconnectTimer = null;
+      if (sessionId) connectSSE();
+    }, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
+  }
+
+  function disconnect() {
+    if (es) { es.close(); es = null; }
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    reconnectDelay = RECONNECT_DELAY_MS;
+  }
+
+  // ---- Settings panel ----
+  function openSettings() {
+    settingsOpen = true;
+    inputBase.value = baseUrl;
+    inputSession.value = sessionId;
+    settingsPanel.classList.add('open');
+    settingsBtn.setAttribute('aria-expanded', 'true');
+    inputSession.focus();
+  }
+
+  function closeSettings() {
+    settingsOpen = false;
+    settingsPanel.classList.remove('open');
+    settingsBtn.setAttribute('aria-expanded', 'false');
+  }
+
+  settingsBtn.addEventListener('click', function () {
+    if (settingsOpen) closeSettings();
+    else openSettings();
+  });
+
+  cancelBtn.addEventListener('click', closeSettings);
+
+  saveBtn.addEventListener('click', applySettings);
+
+  inputSession.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') applySettings();
+    if (e.key === 'Escape') closeSettings();
+  });
+
+  function applySettings() {
+    var newBase = inputBase.value.trim() || DEFAULT_BASE;
+    var newSession = inputSession.value.trim();
+
+    baseUrl = newBase;
+    sessionId = newSession;
+
+    // Persist
+    window.taos.kv.set(KV_BASE, baseUrl);
+    window.taos.kv.set(KV_SESSION, sessionId);
+
+    closeSettings();
+    disconnect();
+
+    if (sessionId) {
+      connectSSE();
+    } else {
+      showEmptyState('unconfigured');
+    }
+  }
+
+  // Reconnect button (shown in disconnected empty state)
+  reconnectBtn.addEventListener('click', function () {
+    reconnectDelay = RECONNECT_DELAY_MS;
+    connectSSE();
+  });
+
+  // ---- Boot: load persisted settings then connect ----
+  async function boot() {
+    try {
+      var storedBase = await window.taos.kv.get(KV_BASE);
+      var storedSession = await window.taos.kv.get(KV_SESSION);
+      if (storedBase) baseUrl = storedBase;
+      if (storedSession) sessionId = storedSession;
+    } catch (_) {
+      // KV not available yet -- use defaults
+    }
+
+    if (sessionId) {
+      connectSSE();
+    } else {
+      showEmptyState('unconfigured');
+    }
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>

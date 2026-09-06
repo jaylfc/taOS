@@ -1,0 +1,24 @@
+[Unit]
+Description=Rebuild TinyAgentOS desktop SPA when source is newer than bundle
+After=tinyagentos.service
+PartOf=tinyagentos.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# User/Group/WorkingDirectory/ExecStart are rewritten by install-server.sh at
+# install time, matching the controller unit.
+User=TAOS_USER
+Group=TAOS_GROUP
+WorkingDirectory=TAOS_INSTALL_DIR
+ExecStart=/usr/local/bin/taos-rebuild-desktop
+# Slow builds on low-end SBCs can take a while.  Give plenty of headroom
+# but not infinite — a hung npm install shouldn't linger forever.
+TimeoutStartSec=300
+# Oneshot services don't get automatic retry — failures are surfaced via
+# systemctl status and journalctl.  To check the last-run outcome:
+#   systemctl status tinyagentos-rebuild-desktop
+#   journalctl -u tinyagentos-rebuild-desktop
+
+[Install]
+WantedBy=tinyagentos.service

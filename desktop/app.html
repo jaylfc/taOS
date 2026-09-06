@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+    <title>taOS</title>
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/icon-16.png" />
+
+    <!-- PWA manifest is injected at runtime by app-standalone-main.tsx -->
+    <meta name="theme-color" content="#141415" />
+
+    <!-- iOS PWA -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="taOS" />
+    <link rel="apple-touch-icon" href="/static/icon-180.png" />
+
+    <!-- iOS splash screens (reuse 512 icon on #141415 background; iOS scales it) -->
+    <link rel="apple-touch-startup-image" href="/static/icon-512.png" />
+
+    <meta name="mobile-web-app-capable" content="yes" />
+
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        height: 100%;
+        width: 100%;
+        /* Theme-aware dark canvas so Safari tints its chrome + safe areas dark. */
+        background: var(--color-shell-bg, #141415);
+        color-scheme: dark;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      input, textarea, [contenteditable="true"] {
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      #root { height: 100%; width: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/app-standalone-main.tsx"></script>
+  </body>
+</html>

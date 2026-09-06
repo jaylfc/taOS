@@ -1,0 +1,23 @@
+id: mcp-grafana
+name: MCP Grafana
+type: plugin
+version: 0.1.0
+description: "Query Grafana dashboards, alerts, and datasources via MCP"
+homepage: https://github.com/grafana/mcp-grafana
+license: Apache-2.0
+
+requires:
+  ram_mb: 64
+
+install:
+  method: script
+  package: "go install github.com/grafana/mcp-grafana@latest"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

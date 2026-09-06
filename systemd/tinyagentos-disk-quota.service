@@ -1,0 +1,12 @@
+[Unit]
+Description=taos agent disk quota scanner
+After=tinyagentos.service
+Wants=tinyagentos.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/tinyagentos/scripts/disk-quota-scan.sh
+EnvironmentFile=-/etc/tinyagentos/local-token.env
+
+[Install]
+WantedBy=multi-user.target

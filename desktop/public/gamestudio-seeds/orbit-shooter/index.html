@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Orbit Shooter</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #05060a; overflow: hidden; font-family: -apple-system, system-ui, sans-serif; color: #fff; cursor: crosshair; }
+      #scene { position: absolute; inset: 0; }
+      #scene canvas { display: block; }
+      #hud { position: absolute; top: 12px; left: 12px; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+      #hud div { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+      #help { position: absolute; bottom: 12px; left: 12px; font-size: 13px; opacity: 0.75; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+      #overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; background: rgba(5, 6, 10, 0.75); }
+      #overlay h1 { font-size: 32px; margin: 0 0 16px; }
+      #overlay button { font-size: 16px; padding: 10px 22px; border-radius: 8px; border: none; background: #ff5533; color: #fff; cursor: pointer; font-weight: 600; }
+      #overlay button:hover { background: #ff7755; }
+    </style>
+  </head>
+  <body>
+    <div id="scene"></div>
+    <div id="hud">
+      <div id="score">Score: 0</div>
+      <div id="lives">Lives: 3</div>
+    </div>
+    <div id="help">Move mouse to aim &middot; Click or Space to fire</div>
+    <div id="overlay">
+      <h1>Game Over</h1>
+      <button id="restartBtn">Restart</button>
+    </div>
+    <script type="module" src="./game.js"></script>
+  </body>
+</html>

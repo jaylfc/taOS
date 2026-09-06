@@ -1,0 +1,178 @@
+name: Bot review gate
+
+# Blocks merges when the only CodeRabbit output on a PR is a rate-limit stub —
+# a comment that only announces the plan quota was exhausted instead of
+# producing an actual review. This catches the "fake-green" condition where
+# 33 PRs merged with nothing but a CodeRabbit rate-limit notice in one week
+# (see the 2026-08-16 bot-review retrospective audit). CodeRabbit's own
+# "Review rate limited" check passes by design, so it cannot catch this --
+# this gate inspects the comment body instead.
+#
+# See scripts/check_bot_review.py for the implementation.
+#
+# Workflow structure:
+#   bot-review-gate          -- runs on pull_request (incl. opened, synchronize,
+#                              reopened, labeled, unlabeled) and
+#                              pull_request_review events, gated to the PR head
+#                              SHA so branch protection sees a red check on
+#                              fake-green. Skipped on issue_comment events
+#                              (DEFECT 1 fix: those payloads lack
+#                              pull_request.number, which made argparse crash
+#                              with exit 2 on every comment).
+#   re-run-on-stub-comment   -- runs on issue_comment events but ONLY when a
+#                              CodeRabbit bot posts a stub comment on a PR.
+#                              It re-runs bot-review-gate for the PR's head
+#                              SHA, closing the timing hole (DEFECT 2) where
+#                              a stub lands after the initial green run.
+#
+# ENFORCEMENT CONTRACT (branch-protection parity):
+# `bot-review-gate` blocks merges only where a branch-protection rule lists it
+# in `required_status_checks.contexts`. That list is a GitHub-side setting -- NOT
+# in-repo config (no IaC manages branch protection here), so a repo commit can
+# record it but cannot change it.
+#
+#   master -- REQUIRED. `bot-review-gate` is in master's required_status_checks
+#              contexts (Jay's standing GitHub configuration; this repo never
+#              mutates it).
+#   dev    -- ADVISORY only. The job still runs on PRs to dev and turns red, but
+#              `bot-review-gate` is NOT in dev's required_status_checks contexts,
+#              so a red check still merges through dev.
+#
+# This asymmetry is the defect: a red `bot-review-gate` can merge through dev
+# and block only at the dev->master promotion, unreviewed on the way (PR #2548
+# merged with the red check, 2916e5e15). Same class as the gate-integrity-on-dev
+# defect.
+#
+# Recommended direction (hardening): bring dev into parity by adding
+# `bot-review-gate` to dev's required_status_checks contexts so red is caught on
+# dev too; master stays as-is. Branch protection is Jay's standing GitHub-side
+# configuration, so no repo commit can change it -- this header only records the
+# command. Jay signed this direction off on 2026-08-28, with the condition that an
+# override label ship FIRST: `check_bot_review.py` fails on a CodeRabbit rate-limit
+# stub, so requiring the context on dev before there is an escape hatch would block
+# every dev merge for the length of a rate-limit window. Sequence: override label
+# (now shipped as `bot-review-allow`, see scripts/check_bot_review.py), then this
+# PATCH.
+#
+# Override label (`bot-review-allow`): applied by a lead (NOT automation) when
+# the only CodeRabbit output is a rate-limit stub or auto-generated scaffolding
+# -- an infrastructural condition, not a PR defect. The script reads the label
+# fresh from the GitHub API at run time (never a stale event payload) and, when
+# present on a stub-only verdict, waives FAIL to exit 0 with an explicit WAIVED
+# message. The waiver covers only the stub verdict class (EXIT_STUB), not a
+# cannot-fetch infrastructure error (EXIT_ERROR), so fail-closed is preserved.
+# Applying or removing the label fires the `labeled`/`unlabeled` activities
+# above, re-running the gate so the waiver is revokable in practice.
+#   cat > /tmp/dev-contexts.json <<'JSON'
+#   {"contexts":["test (3.12)","test (3.13)","spa-build","lint","doc-gate",
+#                "shards (3.12, 1)","shards (3.12, 2)","shards (3.12, 3)","shards (3.12, 4)",
+#                "shards (3.13, 1)","shards (3.13, 2)","shards (3.13, 3)","shards (3.13, 4)",
+#                "bot-review-gate"]}
+#   JSON
+#   gh api -X PATCH repos/jaylfc/taOS/branches/dev/protection/required_status_checks \
+#     --input /tmp/dev-contexts.json
+# The endpoint takes a top-level `contexts` ARRAY; a `-f required_status_checks='[...]'`
+# string field is silently the wrong shape and the update does not apply. The PATCH
+# replaces the whole list, so it must carry dev's existing contexts plus the new one.
+# Shape verified against the live endpoint with a no-op (dev's own 13 contexts in, 13 out).
+# NOTE: editing `.github/workflows/*.yml` trips the `Gate integrity` gate; this
+# change needs the human-set `gate-integrity-allow` label to merge.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches: [master, dev]
+  pull_request_review:
+  issue_comment:
+
+jobs:
+  bot-review-gate:
+    # Skip issue_comment events: the bot-review-gate job must run only on
+    # pull_request and pull_request_review events where
+    # github.event.pull_request.number resolves. On issue_comment payloads
+    # there is no pull_request key, so the script's argparse(type=int) would
+    # crash on the empty string (exit 2), which previously fired on every
+    # comment across the entire repo.
+    if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Check for rate-limited CodeRabbit stub
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # The check exits 1 (FAIL) when the only CodeRabbit output is a
+          # rate-limit stub. Exiting non-zero fails the workflow, blocking
+          # the merge on the PR's branch protection rule.
+          #
+          # When the PR carries the `bot-review-allow` label (lead-applied),
+          # the script waives the stub verdict to exit 0 with a WAIVED
+          # message instead. See scripts/check_bot_review.py for the label
+          # contract.
+          #
+          # --head-sha anchors the bot-review-gate check run to the PR head SHA
+          # so a later SUCCESS supersedes a stale FAILURE on the same SHA.
+          # Without this, a self-heal leaves the stale run coexisting with the
+          # new success and mergeStateStatus stays UNSTABLE forever (DEFECT 3 /
+          # #2493). The script reconciles (PATCH stale, POST when absent) when
+          # the verdict is terminal.
+          python scripts/check_bot_review.py "${{ github.event.pull_request.number }}" --head-sha "${PR_HEAD}"
+
+  re-run-on-stub-comment:
+    # Closes the timing hole (DEFECT 2): issue_comment events run against the
+    # default-branch commit, not the PR head SHA, so they cannot gate
+    # directly. When CodeRabbit posts a stub comment on a PR AFTER the
+    # pull_request run of bot-review-gate went green, this job re-runs
+    # bot-review-gate for the PR's head SHA so the stub is caught and the
+    # check turns red on the commit that branch protection actually
+    # evaluates.
+    #
+    # Guards (both must hold):
+    #   github.event.issue.pull_request           -- skip plain issues
+    #                                                (the issue object has no
+    #                                                 pull_request sub-object
+    #                                                 when the comment is on a
+    #                                                 non-PR issue)
+    #   github.event.comment.user.login ==
+    #     'coderabbitai[bot]'                        -- skip non-CodeRabbit
+    #                                                comments
+    if: github.event.issue.pull_request && github.event.comment.user.login == 'coderabbitai[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Re-run bot-review-gate workflow for PR head SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          PR_NUMBER="${{ github.event.issue.number }}"
+
+          # Resolve the PR's head SHA -- the commit branch protection gates on.
+          HEAD_SHA="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha')"
+          echo "PR #${PR_NUMBER} head SHA: ${HEAD_SHA}"
+
+          # Find the most recent bot-review-gate workflow run for this head SHA.
+          RUN_ID="$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}" \
+            --jq '.workflow_runs[] | select(.name=="Bot review gate") | .id' \
+            2>/dev/null | head -n1 || true)"
+
+          if [ -z "${RUN_ID}" ]; then
+            echo "No bot-review-gate workflow run found for head SHA ${HEAD_SHA}; nothing to re-run."
+            exit 0
+          fi
+
+          echo "Re-running bot-review-gate workflow run ${RUN_ID} for PR #${PR_NUMBER}"
+          gh api -X POST "repos/${REPO}/actions/runs/${RUN_ID}/rerun"

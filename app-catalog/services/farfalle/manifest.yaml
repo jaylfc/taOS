@@ -1,0 +1,26 @@
+id: farfalle
+name: Farfalle
+type: service
+category: ai-app
+version: 1.0.0
+description: "Self-hosted Perplexity clone — answers questions with web-search + citations. Plays well with local models via Ollama or any OpenAI-compatible API."
+homepage: https://github.com/rashadphz/farfalle
+license: Apache-2.0
+
+requires:
+  ram_mb: 1024
+  disk_mb: 1500
+  ports: [3002]
+
+install:
+  method: docker
+  image: ghcr.io/rashadphz/farfalle:latest
+  ports: [3002]
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

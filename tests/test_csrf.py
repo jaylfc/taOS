@@ -1,0 +1,165 @@
+"""Tests for CSRF double-submit cookie protection (#648)."""
+from __future__ import annotations
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+
+class TestCSRFMiddleware:
+    """CSRFMiddleware sets a csrf_token cookie on every response."""
+
+    @pytest.mark.asyncio
+    async def test_csrf_cookie_set_on_response(self, client):
+        resp = await client.get("/api/health")
+        assert resp.status_code == 200
+        # The middleware must have set a csrf_token cookie.
+        assert "csrf_token" in resp.cookies or "csrf_token" in resp.headers.get("set-cookie", "")
+
+    @pytest.mark.asyncio
+    async def test_csrf_cookie_not_httponly(self, client):
+        """JavaScript must be able to read the csrf_token cookie (not HttpOnly)."""
+        resp = await client.get("/api/health")
+        set_cookie = resp.headers.get("set-cookie", "")
+        if "csrf_token" in set_cookie:
+            # The cookie header must NOT contain HttpOnly for the csrf_token.
+            parts = [p.strip().lower() for p in set_cookie.split(";")]
+            assert "httponly" not in parts
+
+
+class TestVerifyCSRF:
+    """verify_csrf dependency enforces double-submit on authenticated mutating routes."""
+
+    @pytest.mark.asyncio
+    async def test_logout_without_csrf_token_forbidden(self, app):
+        """Authenticated logout without X-CSRF-Token header returns 403."""
+        app.state.auth.setup_user("admin2", "Admin", "", "pass1234!")
+        record = app.state.auth.find_user("admin2")
+        token = app.state.auth.create_session(user_id=record["id"], long_lived=False)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            cookies={"taos_session": token, "csrf_token": "abc123"},
+        ) as c:
+            # Has session cookie AND csrf_token cookie but NO X-CSRF-Token header.
+            resp = await c.post("/auth/logout", follow_redirects=False)
+        assert resp.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_logout_with_csrf_token_succeeds(self, app):
+        """Authenticated logout with matching X-CSRF-Token header succeeds."""
+        app.state.auth.setup_user("admin3", "Admin", "", "pass1234!")
+        record = app.state.auth.find_user("admin3")
+        token = app.state.auth.create_session(user_id=record["id"], long_lived=False)
+        csrf_val = "test-csrf-value-xyz"
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            cookies={"taos_session": token, "csrf_token": csrf_val},
+        ) as c:
+            resp = await c.post(
+                "/auth/logout",
+                headers={"X-CSRF-Token": csrf_val},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+
+    @pytest.mark.asyncio
+    async def test_logout_with_mismatched_csrf_token_forbidden(self, app):
+        """Mismatched X-CSRF-Token header returns 403."""
+        app.state.auth.setup_user("admin4", "Admin", "", "pass1234!")
+        record = app.state.auth.find_user("admin4")
+        token = app.state.auth.create_session(user_id=record["id"], long_lived=False)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            cookies={"taos_session": token, "csrf_token": "real-token"},
+        ) as c:
+            resp = await c.post(
+                "/auth/logout",
+                headers={"X-CSRF-Token": "wrong-token"},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_todo_mutation_without_csrf_token_forbidden(self, app):
+        """Todo list creation without matching X-CSRF-Token returns 403."""
+        from tinyagentos.todo.todo_store import TodoStore
+
+        todo_store = TodoStore(app.state.data_dir / "todo.db")
+        await todo_store.init()
+        app.state.todo_store = todo_store
+
+        app.state.auth.setup_user("csrftest", "CSRF Test", "", "pass1234!")
+        record = app.state.auth.find_user("csrftest")
+        token = app.state.auth.create_session(user_id=record["id"], long_lived=False)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            cookies={"taos_session": token, "csrf_token": "real-token"},
+        ) as c:
+            resp = await c.post(
+                "/api/todo",
+                json={"title": "x"},
+                headers={"X-CSRF-Token": "wrong-token"},
+            )
+        assert resp.status_code == 403
+
+        await todo_store.close()
+
+    @pytest.mark.asyncio
+    async def test_share_create_without_csrf_token_forbidden(self, app):
+        """POST /api/shares without matching X-CSRF-Token returns 403."""
+        from tinyagentos.user_shares_store import UserSharesStore
+
+        share_store = UserSharesStore(app.state.data_dir / "user_shares.db")
+        await share_store.init()
+        app.state.user_shares = share_store
+
+        app.state.auth.setup_user("csrftest2", "CSRF Test2", "", "pass1234!")
+        record = app.state.auth.find_user("csrftest2")
+        token = app.state.auth.create_session(user_id=record["id"], long_lived=False)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            cookies={"taos_session": token, "csrf_token": "real-token"},
+        ) as c:
+            resp = await c.post(
+                "/api/shares",
+                json={
+                    "resource_type": "project",
+                    "resource_id": "proj-1",
+                    "to_username": "csrftest2",
+                    "permission": "read",
+                },
+                headers={"X-CSRF-Token": "wrong-token"},
+            )
+        assert resp.status_code == 403
+
+        await share_store.close()
+
+
+def test_verify_csrf_is_noop_for_websocket_scope():
+    # verify_csrf is typed HTTPConnection so FastAPI injects it on BOTH http and
+    # websocket routes (a router-level dep also runs on @router.websocket routes).
+    # A websocket scope carries no HTTP method, so verify_csrf must skip rather
+    # than raise a TypeError that rejects the socket with a 500 (the /ws/chat
+    # "Offline" regression). WS handshakes are cookie-authenticated in-handler
+    # and are not susceptible to form-based CSRF.
+    from starlette.requests import HTTPConnection
+
+    from tinyagentos.middleware.csrf import verify_csrf
+
+    ws_conn = HTTPConnection({"type": "websocket", "headers": []})
+    assert getattr(ws_conn, "method", None) is None
+    assert verify_csrf(ws_conn) is None

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Welcome to taOS</title>
+  <script src="/api/userspace-apps/sdk.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font-sans, system-ui, sans-serif);
+      background: var(--color-bg, #0f1117);
+      color: var(--color-fg, #e4e6eb);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 2rem;
+      gap: 1.5rem;
+    }
+    h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--color-accent, #818cf8);
+      letter-spacing: -0.5px;
+    }
+    .app-id {
+      font-size: 0.75rem;
+      font-family: var(--font-mono, monospace);
+      color: var(--color-muted, #6b7280);
+      background: var(--color-surface, #1e2130);
+      padding: 0.25rem 0.75rem;
+      border-radius: 999px;
+    }
+    .card {
+      background: var(--color-surface, #1e2130);
+      border: 1px solid var(--color-border, #2d3150);
+      border-radius: 0.75rem;
+      padding: 1.25rem 1.5rem;
+      width: 100%;
+      max-width: 360px;
+    }
+    .card-title {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--color-muted, #6b7280);
+      margin-bottom: 0.5rem;
+    }
+    .status { font-size: 0.95rem; }
+    .status.ok { color: var(--color-success, #34d399); }
+    .status.pending { color: var(--color-muted, #6b7280); }
+  </style>
+</head>
+<body>
+  <h1>Welcome to taOS</h1>
+  <span class="app-id" id="app-id-label">loading...</span>
+
+  <div class="card">
+    <div class="card-title">SDK checks</div>
+    <div class="status pending" id="status-kv">kv round-trip: pending</div>
+    <div class="status pending" id="status-notify">notify: pending</div>
+  </div>
+
+  <script>
+    // Apply theme tokens from the shell, then subscribe to future updates.
+    function applyTheme(tokens) {
+      const root = document.documentElement;
+      for (const [k, v] of Object.entries(tokens)) {
+        root.style.setProperty(k, v);
+      }
+    }
+
+    applyTheme(window.taos.theme.get());
+    window.taos.theme.subscribe(applyTheme);
+
+    // Show the app id.
+    document.getElementById("app-id-label").textContent = window.taos.appId || "taos-welcome";
+
+    // kv round-trip.
+    async function runChecks() {
+      const kvStatus = document.getElementById("status-kv");
+      const notifyStatus = document.getElementById("status-notify");
+
+      try {
+        await window.taos.kv.set("ping", "pong");
+        const val = await window.taos.kv.get("ping");
+        if (val === "pong") {
+          kvStatus.textContent = "kv round-trip: ok";
+          kvStatus.className = "status ok";
+        } else {
+          kvStatus.textContent = "kv round-trip: unexpected value " + JSON.stringify(val);
+        }
+      } catch (err) {
+        kvStatus.textContent = "kv round-trip: error -- " + err;
+      }
+
+      try {
+        await window.taos.notify("taOS", "Welcome app loaded successfully.");
+        notifyStatus.textContent = "notify: sent";
+        notifyStatus.className = "status ok";
+      } catch (err) {
+        notifyStatus.textContent = "notify: error -- " + err;
+      }
+    }
+
+    runChecks();
+  </script>
+</body>
+</html>

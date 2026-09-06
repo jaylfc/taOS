@@ -1,0 +1,34 @@
+id: playwriter
+name: Playwriter
+type: plugin
+version: 1.0.0
+description: "Let agents control your Chrome browser — your logins, extensions, and cookies already there. Full Playwright API via MCP."
+homepage: https://github.com/remorses/playwriter
+license: MIT
+
+requires:
+  ram_mb: 128
+  node: ">=18"
+
+install:
+  method: script
+  command: "npm install -g playwriter"
+
+config_schema:
+  - name: port
+    type: number
+    label: WebSocket Port
+    default: 19988
+  - name: remote_access
+    type: boolean
+    label: Enable Remote Access
+    default: false
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

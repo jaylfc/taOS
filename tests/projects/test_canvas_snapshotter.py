@@ -1,0 +1,101 @@
+import asyncio
+import json
+from pathlib import Path
+
+import pytest
+import pytest_asyncio
+
+from tinyagentos.projects.events import ProjectEventBroker
+from tinyagentos.projects.project_store import ProjectStore
+from tinyagentos.projects.canvas.store import ProjectCanvasStore
+from tinyagentos.projects.canvas.snapshotter import CanvasSnapshotter
+from tinyagentos.projects.folders import ensure_project_layout
+
+
+@pytest_asyncio.fixture
+async def env(tmp_path):
+    db = tmp_path / "db.sqlite"
+    data_root = tmp_path / "data"
+    broker = ProjectEventBroker()
+    ps = ProjectStore(db); await ps.init()
+    cs = ProjectCanvasStore(db, broker=broker); await cs.init()
+    p = await ps.create_project(name="Alpha", slug="alpha", created_by="u")
+    ensure_project_layout(data_root, p["slug"], p["name"])
+    snap = CanvasSnapshotter(
+        project_store=ps, canvas_store=cs, broker=broker,
+        data_root=data_root, debounce_seconds=0.05,
+    )
+    await snap.start()
+    yield ps, cs, snap, p, data_root
+    await snap.stop()
+    await cs.close()
+    await ps.close()
+
+
+@pytest.mark.asyncio
+async def test_add_element_writes_tldr_within_debounce(env):
+    ps, cs, snap, p, data_root = env
+    # Ensure subscribed before the publish so the dirty flag is set
+    await snap._ensure_subscribed(p["id"])
+    await cs.add_element(
+        project_id=p["id"], author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 100, "h": 50,
+                 "payload": {"text": "hi", "color": "yellow", "font_size": 14}},
+    )
+    target = data_root / p["slug"] / "canvas" / "board.tldr"
+    for _ in range(20):
+        if target.exists():
+            break
+        await asyncio.sleep(0.05)
+    assert target.exists()
+    body = json.loads(target.read_text())
+    # A .tldr file is {tldrawFileFormatVersion, schema, records[]}. The old
+    # {schema, store{}} shape asserted here was an in-memory store snapshot,
+    # which tldraw rejects outright as notATldrawFile.
+    assert body["tldrawFileFormatVersion"] == 1
+    shapes = [r for r in body["records"] if r["typeName"] == "shape"]
+    assert len(shapes) == 1
+
+
+@pytest.mark.asyncio
+async def test_export_now_synchronous(env):
+    ps, cs, snap, p, data_root = env
+    await cs.add_element(
+        project_id=p["id"], author_kind="user", author_id="u",
+        element={"kind": "note", "x": 1, "y": 1, "w": 10, "h": 10,
+                 "payload": {"text": "x"}},
+    )
+    path = await snap.export_now(p["id"])
+    assert path is not None
+    assert path.exists()
+
+
+@pytest.mark.asyncio
+async def test_tldr_render_writes_off_the_event_loop(env, monkeypatch):
+    """The .tldr snapshot write must not stall the loop.
+
+    ``atomic_write_text`` fsyncs the file and the parent directory; a board
+    snapshot is the largest of these writes, so it is the worst offender.
+    """
+    import tinyagentos.projects.canvas.snapshotter as sn
+
+    _ps, _cs, snap, p, _data_root = env
+    on_loop: list[bool] = []
+
+    def recording_write(path, text, **kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_loop.append(False)
+        else:
+            on_loop.append(True)
+        Path(path).write_text(text)
+
+    monkeypatch.setattr(sn, "atomic_write_text", recording_write)
+
+    await snap._render_tldr(p["id"])
+
+    assert on_loop == [False], (
+        "atomic_write_text ran on the event loop thread — its fsyncs block "
+        "every other coroutine for the duration of the write"
+    )

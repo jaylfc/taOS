@@ -1,0 +1,31 @@
+name: Dependabot auto-merge
+
+# Auto-merges grouped patch/minor Dependabot PRs once required checks pass.
+# Majors and Python (uv) updates are left for manual review.
+on: pull_request_target
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge for npm / actions patch & minor
+        if: >-
+          (steps.meta.outputs.package-ecosystem == 'npm' ||
+           steps.meta.outputs.package-ecosystem == 'github_actions') &&
+          (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+           steps.meta.outputs.update-type == 'version-update:semver-minor')
+        run: gh pr merge --auto --merge "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

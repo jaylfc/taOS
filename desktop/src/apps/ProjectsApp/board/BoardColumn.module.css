@@ -1,0 +1,7 @@
+.col { background: linear-gradient(180deg, rgba(255,255,255,.025), rgba(255,255,255,.01)); border: 1px solid var(--board-hair); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 600px; }
+.head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 8px; border-bottom: 1px solid var(--board-hair); }
+.name { font: 600 12.5px -apple-system; }
+.count { margin-left: auto; font: 600 11px -apple-system; background: rgba(255,255,255,.07); padding: 2px 8px; border-radius: 8px; color: #d2d2d7; }
+.body { display: flex; flex-direction: column; gap: 10px; }
+.showMore { background: transparent; border: 1px dashed var(--board-hair); color: #86868b; padding: 6px; border-radius: 8px; cursor: pointer; font: 11px -apple-system; }
+.ready, .claimed, .closed, .quarantined {} /* status modifiers reserved for future glow */

@@ -1,0 +1,26 @@
+id: ollama
+name: Ollama
+type: service
+category: llm-runtime
+version: latest
+description: "Local LLM runner — serves GGUF models via OpenAI-compatible API. Cross-platform."
+homepage: https://github.com/ollama/ollama
+license: MIT
+
+requires:
+  ram_mb: 1024
+  disk_mb: 500
+  ports: [11434]
+
+install:
+  method: script
+  script: scripts/install-ollama.sh
+
+hardware_tiers:
+  apple-silicon: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-cuda-24gb: full
+  x86-vulkan-8gb: full
+  arm-vulkan-8gb: full
+  cpu-only: full

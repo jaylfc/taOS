@@ -1,0 +1,28 @@
+id: ddns
+name: Dynamic DNS
+type: service
+category: infrastructure
+version: 1.0.0
+description: "Automatic DNS updates — access your TinyAgentOS from a custom domain even with a changing IP"
+homepage: https://github.com/qdm12/ddns-updater
+license: MIT
+
+requires:
+  ram_mb: 32
+  disk_mb: 50
+  ports: [8000]
+
+install:
+  method: docker
+  image: qmcgaw/ddns-updater:latest
+  volumes:
+    - data:/updater/data
+  ports: [8000]
+  env:
+    PERIOD: "5m"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  cpu-only: full

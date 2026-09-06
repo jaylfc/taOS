@@ -1,0 +1,3 @@
+# Per-run output is local-only. Each run is a transcript, screenshots, and
+# whatever the in-taOS agents produced — none of it belongs in git.
+runs/

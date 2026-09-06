@@ -1,0 +1,22 @@
+id: libretranslate
+name: LibreTranslate
+type: service
+category: productivity
+version: 1.6.0
+description: "Self-hosted translation API — 30+ languages, no cloud, agents can translate content"
+homepage: https://github.com/LibreTranslate/LibreTranslate
+license: AGPL-3.0
+requires:
+  ram_mb: 1024
+  disk_mb: 2000
+  ports: [5000]
+install:
+  method: docker
+  image: libretranslate/libretranslate:latest
+  volumes: [data:/home/libretranslate/.local]
+  ports: [5000]
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-cpu-8gb: degraded
+  x86-cuda-12gb: full
+  cpu-only: degraded

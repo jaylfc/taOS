@@ -1,0 +1,35 @@
+[Unit]
+Description=TinyAgentOS stable-diffusion.cpp image generation server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=TAOS_USER
+WorkingDirectory=TAOS_INSTALL_DIR
+
+# sd-server binary from leejet/stable-diffusion.cpp build.
+# Model path is passed via environment so it can be changed without
+# editing this unit.
+Environment=SDCPP_MODEL=TAOS_INSTALL_DIR/data/models/dreamshaper-8-lcm-iq4_nl-gguf.gguf
+Environment=SDCPP_HOST=127.0.0.1
+Environment=SDCPP_PORT=7864
+Environment=SDCPP_THREADS=6
+
+ExecStart=TAOS_HOME/.local/bin/sd-server \
+  --listen-ip ${SDCPP_HOST} \
+  --listen-port ${SDCPP_PORT} \
+  -m ${SDCPP_MODEL} \
+  -t ${SDCPP_THREADS}
+
+Restart=always
+RestartSec=5
+StandardOutput=append:TAOS_INSTALL_DIR/data/sd-server.log
+StandardError=inherit
+
+# Runtime hygiene: cap memory and dump core only on serious faults
+MemoryHigh=6G
+MemoryMax=8G
+
+[Install]
+WantedBy=multi-user.target

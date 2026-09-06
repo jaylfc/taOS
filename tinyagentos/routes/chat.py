@@ -1,0 +1,855 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+from pathlib import Path
+
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, Response
+
+from tinyagentos.chat.reactions import maybe_trigger_semantic
+
+router = APIRouter()
+
+
+_SLASH_GROUP_GUARD_ERROR = (
+    "slash commands in group channels must address an agent: "
+    "use @<agent> /<cmd> or @all /<cmd>"
+)
+
+
+def _validate_slash_target(content: str, channel: dict | None) -> str | None:
+    """Return an error message if a /cmd message is unaddressed in a non-DM,
+    non-A2A group channel; otherwise None.
+
+    Otherwise a framework slash command would broadcast to every agent in
+    the channel, producing N different /help outputs and (in some
+    frameworks) triggering destructive side effects like /clear on
+    unaddressed agents. Applies to HTTP /api/chat/messages and the
+    WS "message" branch — the safety must not be transport-dependent (#268).
+    """
+    if not content.lstrip().startswith("/"):
+        return None
+    if not channel or channel.get("type") == "dm":
+        return None
+    if ((channel.get("settings") or {}).get("kind")) == "a2a":
+        return None
+    from tinyagentos.chat.mentions import parse_mentions
+    members = list(channel.get("members") or [])
+    mentions = parse_mentions(content, members)
+    if mentions.explicit or mentions.all:
+        return None
+    return _SLASH_GROUP_GUARD_ERROR
+logger = logging.getLogger(__name__)
+
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background(coro) -> asyncio.Task:
+    """Schedule a fire-and-forget coroutine, retaining a reference so it
+    cannot be GC'd before completion (RUF006)."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+async def _capture_user_memory(
+    user_memory,
+    *,
+    content: str,
+    title: str,
+    collection: str,
+    metadata: dict,
+    setting_key: str,
+    user_id: str = "user",
+) -> None:
+    """Fire-and-forget user memory capture. Never raises."""
+    if not user_memory or not content:
+        return
+    try:
+        settings = await user_memory.get_settings(user_id)
+        if not settings.get(setting_key):
+            return
+        await user_memory.save_chunk(
+            user_id,
+            content=content,
+            title=title,
+            collection=collection,
+            metadata=metadata,
+        )
+    except Exception as e:  # pragma: no cover - capture is best-effort
+        logger.debug(f"user memory capture failed: {e}")
+
+
+async def _beads_on_chat_message(app, channel: dict, message: dict) -> None:
+    """Best-effort hand-off to the Beads bridge. Never raises."""
+    bridge = getattr(app.state, "beads_bridge", None)
+    if bridge is None:
+        return
+    project_id = channel.get("project_id")
+    if not project_id:
+        return
+    try:
+        await bridge.on_chat_message(project_id, channel["id"], message)
+    except Exception:
+        logger.warning("beads on_chat_message failed", exc_info=True)
+
+
+@router.get("/api/docs/chat-guide")
+async def get_chat_guide():
+    from pathlib import Path as _Path
+    guide = _Path(__file__).resolve().parent.parent.parent / "docs" / "chat-guide.md"
+    if not guide.exists():
+        return JSONResponse({"error": "guide not found"}, status_code=404)
+    return JSONResponse({"markdown": guide.read_text(encoding="utf-8")})
+
+
+@router.websocket("/ws/chat")
+async def chat_ws(websocket: WebSocket):
+    auth_mgr = websocket.app.state.auth
+    token = websocket.cookies.get("taos_session", "")
+    user_id = (
+        auth_mgr.validate_session(
+            token, user_agent=websocket.headers.get("user-agent", "")
+        )
+        if token
+        else None
+    )
+    if user_id is None:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    hub = websocket.app.state.chat_hub
+    hub.connect(websocket, user_id)
+    try:
+        while True:
+            data = json.loads(await websocket.receive_text())
+            msg_type = data.get("type")
+
+            if msg_type == "join":
+                hub.join(websocket, data["channel_id"])
+
+            elif msg_type == "leave":
+                hub.leave(websocket, data["channel_id"])
+
+            elif msg_type == "message":
+                msg_store = websocket.app.state.chat_messages
+                ch_store = websocket.app.state.chat_channels
+                _ws_channel = await ch_store.get_channel(data["channel_id"])
+                _ws_guard_err = _validate_slash_target(data.get("content", ""), _ws_channel)
+                if _ws_guard_err:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "channel_id": data["channel_id"],
+                        "error": _ws_guard_err,
+                    }))
+                    continue
+                _ws_ttl = None
+                if _ws_channel and _ws_channel.get("settings"):
+                    _ws_ttl = _ws_channel["settings"].get("ephemeral_ttl_seconds")
+                import time as _time
+                _ws_expires_at = (_time.time() + _ws_ttl) if isinstance(_ws_ttl, (int, float)) and _ws_ttl > 0 else None
+                message = await msg_store.send_message(
+                    channel_id=data["channel_id"],
+                    author_id=user_id,
+                    author_type="user",
+                    content=data.get("content", ""),
+                    content_type=data.get("content_type", "text"),
+                    thread_id=data.get("thread_id"),
+                    embeds=data.get("embeds"),
+                    components=data.get("components"),
+                    attachments=data.get("attachments"),
+                    content_blocks=data.get("content_blocks"),
+                    metadata=data.get("metadata"),
+                    expires_at=_ws_expires_at,
+                )
+                await ch_store.update_last_message_at(data["channel_id"])
+                await hub.broadcast(data["channel_id"], {"type": "message", "seq": hub.next_seq(), **message})
+
+                router_svc = getattr(websocket.app.state, "agent_chat_router", None)
+                if _ws_channel is not None:
+                    if router_svc is not None:
+                        router_svc.dispatch(message, _ws_channel)
+                    _spawn_background(
+                        _beads_on_chat_message(websocket.app, _ws_channel, message)
+                    )
+
+                # Capture user message into user memory (async, non-blocking)
+                user_memory = getattr(websocket.app.state, "user_memory", None)
+                if user_memory:
+                    asyncio.create_task(_capture_user_memory(
+                        user_memory,
+                        content=data.get("content", ""),
+                        title=f"Message in {data['channel_id']}",
+                        collection="conversations",
+                        metadata={
+                            "channel_id": data["channel_id"],
+                            "message_id": message.get("id"),
+                            "timestamp": message.get("created_at"),
+                        },
+                        setting_key="capture_conversations",
+                        user_id=user_id,
+                    ))
+
+            elif msg_type == "typing":
+                hub.set_typing(data["channel_id"], user_id)
+                await hub.broadcast(data["channel_id"], {
+                    "type": "typing",
+                    "seq": hub.next_seq(),
+                    "channel_id": data["channel_id"],
+                    "user_id": user_id,
+                    "user_type": "user",
+                })
+
+            elif msg_type == "reaction":
+                msg_store = websocket.app.state.chat_messages
+                if data.get("action") == "remove":
+                    await msg_store.remove_reaction(data["message_id"], data["emoji"], user_id)
+                else:
+                    await msg_store.add_reaction(data["message_id"], data["emoji"], user_id)
+                msg = await msg_store.get_message(data["message_id"])
+                if msg:
+                    await hub.broadcast(msg["channel_id"], {
+                        "type": "reaction_update",
+                        "seq": hub.next_seq(),
+                        "message_id": data["message_id"],
+                        "reactions": msg["reactions"],
+                    })
+
+            elif msg_type == "edit":
+                msg_store = websocket.app.state.chat_messages
+                edit_msg_id = data.get("message_id")
+                edit_content = data.get("content")
+                if not edit_msg_id or not isinstance(edit_content, str):
+                    continue
+                msg = await msg_store.get_message(edit_msg_id)
+                if msg is None or msg.get("deleted_at"):
+                    continue
+                if msg["author_id"] != user_id:
+                    continue
+                # Only truncate subsequent messages in DM channels —
+                # editing in a multi-human group must not delete other
+                # people's messages.  The agent is only re-triggered in
+                # DM channels for the same reason.
+                ch_store = websocket.app.state.chat_channels
+                channel = await ch_store.get_channel(msg["channel_id"])
+                channel_type = channel.get("type") if channel else None
+                updated, truncated_ids = await msg_store.edit_and_truncate_branch(
+                    edit_msg_id, edit_content,
+                    channel_type=channel_type,
+                    thread_id=msg.get("thread_id"),
+                )
+                if updated:
+                    await hub.broadcast(updated["channel_id"], {
+                        "type": "message_edit",
+                        "seq": hub.next_seq(),
+                        "message_id": edit_msg_id,
+                        "content": edit_content,
+                        "edited_at": updated["edited_at"],
+                    })
+                    for tid in truncated_ids:
+                        await hub.broadcast(msg["channel_id"], {
+                            "type": "message_delete",
+                            "seq": hub.next_seq(),
+                            "message_id": tid,
+                            "channel_id": msg["channel_id"],
+                        })
+                    # Re-trigger the agent only in DM channels.
+                    if channel_type == "dm":
+                        router_svc = getattr(
+                            websocket.app.state, "agent_chat_router", None,
+                        )
+                        if router_svc is not None and channel is not None:
+                            router_svc.dispatch(updated, channel)
+
+            elif msg_type == "delete":
+                msg_store = websocket.app.state.chat_messages
+                msg = await msg_store.get_message(data["message_id"])
+                if msg:
+                    channel_id = msg["channel_id"]
+                    await msg_store.delete_message(data["message_id"])
+                    await hub.broadcast(channel_id, {
+                        "type": "message_delete",
+                        "seq": hub.next_seq(),
+                        "message_id": data["message_id"],
+                        "channel_id": channel_id,
+                    })
+
+            elif msg_type == "mark_read":
+                ch_store = websocket.app.state.chat_channels
+                await ch_store.update_read_position(user_id, data["channel_id"], data["message_id"])
+
+            elif msg_type == "component_action":
+                await hub.broadcast(data.get("channel_id", ""), {
+                    "type": "component_action",
+                    "seq": hub.next_seq(),
+                    "message_id": data["message_id"],
+                    "action": data["action"],
+                    "value": data.get("value"),
+                    "user_id": user_id,
+                })
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error(f"Chat WS error: {e}")
+    finally:
+        hub.disconnect(websocket, user_id)
+
+
+@router.post("/api/chat/messages")
+async def post_message(request: Request):
+    """Send a message via HTTP (used by agents and the agent-bridge)."""
+    body = await request.json()
+    msg_store = request.app.state.chat_messages
+    ch_store = request.app.state.chat_channels
+    hub = request.app.state.chat_hub
+
+    channel_id = body["channel_id"]
+    content = body.get("content") or ""
+
+    if content.startswith("/help"):
+        from tinyagentos.chat.help import handle_help
+        args = content[len("/help"):].lstrip()
+        system_text = handle_help(args)
+        sys_msg = await msg_store.send_message(
+            channel_id=channel_id,
+            author_id="system",
+            author_type="system",
+            content=system_text,
+            content_type="text",
+            state="complete",
+            metadata=None,
+        )
+        await ch_store.update_last_message_at(channel_id)
+        await hub.broadcast(
+            channel_id,
+            {"type": "message", "seq": hub.next_seq(), **sys_msg},
+        )
+        return JSONResponse(
+            {"ok": True, "handled": "help", "system_message": sys_msg},
+            status_code=200,
+        )
+
+    err = _validate_slash_target(content, await ch_store.get_channel(channel_id))
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+
+    attachments = (body or {}).get("attachments") or []
+    if not isinstance(attachments, list):
+        return JSONResponse({"error": "attachments must be a list"}, status_code=400)
+    if len(attachments) > 10:
+        return JSONResponse({"error": "max 10 attachments per message"}, status_code=400)
+    data_dir = Path(getattr(request.app.state, "data_dir",
+                            Path(os.environ.get("TAOS_DATA_DIR", "./data"))))
+    chat_files = data_dir / "chat-files"
+    for att in attachments:
+        if not isinstance(att, dict):
+            return JSONResponse({"error": "each attachment must be a dict"}, status_code=400)
+        url = att.get("url", "")
+        if not url.startswith("/api/chat/files/"):
+            return JSONResponse(
+                {"error": "attachment url must be served from /api/chat/files/"},
+                status_code=400,
+            )
+        stored_name = url.rsplit("/", 1)[-1]
+        if not (chat_files / stored_name).exists():
+            return JSONResponse(
+                {"error": f"attachment file not found: {stored_name}"},
+                status_code=400,
+            )
+
+    _http_channel = await ch_store.get_channel(channel_id)
+    _http_ttl = None
+    if _http_channel and _http_channel.get("settings"):
+        _http_ttl = _http_channel["settings"].get("ephemeral_ttl_seconds")
+    import time as _time
+    _http_expires_at = (_time.time() + _http_ttl) if isinstance(_http_ttl, (int, float)) and _http_ttl > 0 else None
+
+    message = await msg_store.send_message(
+        channel_id=channel_id,
+        author_id=body["author_id"],
+        author_type=body.get("author_type", "agent"),
+        content=content,
+        content_type=body.get("content_type", "text"),
+        thread_id=body.get("thread_id"),
+        embeds=body.get("embeds"),
+        components=body.get("components"),
+        attachments=attachments,
+        content_blocks=body.get("content_blocks"),
+        metadata=body.get("metadata"),
+        state=body.get("state", "complete"),
+        expires_at=_http_expires_at,
+    )
+    await ch_store.update_last_message_at(channel_id)
+    await hub.broadcast(channel_id, {"type": "message", "seq": hub.next_seq(), **message})
+
+    # Capture user messages into user memory (skip agent messages)
+    if body.get("author_type", "agent") == "user":
+        user_memory = getattr(request.app.state, "user_memory", None)
+        if user_memory:
+            asyncio.create_task(_capture_user_memory(
+                user_memory,
+                content=content,
+                title=f"Message in {channel_id}",
+                collection="conversations",
+                metadata={
+                    "channel_id": channel_id,
+                    "message_id": message.get("id"),
+                    "timestamp": message.get("created_at"),
+                },
+                setting_key="capture_conversations",
+            ))
+
+    # Auto-archive every message for the zero-loss layer
+    archive = getattr(request.app.state, "archive", None)
+    if archive:
+        try:
+            await archive.record(
+                "conversation",
+                {
+                    "content": content,
+                    "channel_id": channel_id,
+                    "message_id": message.get("id"),
+                    "author_id": body["author_id"],
+                    "author_type": body.get("author_type", "agent"),
+                },
+                agent_name=body["author_id"] if body.get("author_type") == "agent" else None,
+                summary=content[:100],
+            )
+        except Exception:
+            pass  # Never block chat for archive failures
+
+    router_svc = getattr(request.app.state, "agent_chat_router", None)
+    if _http_channel is not None:
+        if router_svc is not None:
+            router_svc.dispatch(message, _http_channel)
+        _spawn_background(
+            _beads_on_chat_message(request.app, _http_channel, message)
+        )
+
+    return message
+
+
+@router.post("/api/chat/messages/{message_id}/delta")
+async def post_message_delta(request: Request, message_id: str):
+    """Stream a token delta for an agent response. Used by framework adapters."""
+    body = await request.json()
+    hub = request.app.state.chat_hub
+    channel_id = body.get("channel_id", "")
+    await hub.broadcast(channel_id, {
+        "type": "message_delta",
+        "seq": hub.next_seq(),
+        "message_id": message_id,
+        "channel_id": channel_id,
+        "delta": body.get("delta", ""),
+    })
+    return {"status": "sent"}
+
+
+@router.post("/api/chat/messages/{message_id}/state")
+async def update_message_state(request: Request, message_id: str):
+    """Update message state (pending/streaming/complete/error)."""
+    body = await request.json()
+    msg_store = request.app.state.chat_messages
+    hub = request.app.state.chat_hub
+    await msg_store.update_state(message_id, body["state"])
+    msg = await msg_store.get_message(message_id)
+    if msg:
+        await hub.broadcast(msg["channel_id"], {
+            "type": "message_state",
+            "seq": hub.next_seq(),
+            "message_id": message_id,
+            "state": body["state"],
+        })
+    return {"status": "updated"}
+
+
+# ── Channel CRUD ──────────────────────────────────────────────────────────────
+
+@router.get("/api/chat/channels")
+async def list_channels(
+    request: Request,
+    member: str | None = None,
+    archived: bool | None = None,
+    project_id: str | None = None,
+):
+    ch_store = request.app.state.chat_channels
+    channels = await ch_store.list_channels(member_id=member, archived=archived, project_id=project_id)
+    return {"channels": channels}
+
+
+@router.get("/api/chat/channels/{channel_id}")
+async def get_channel(request: Request, channel_id: str):
+    ch_store = request.app.state.chat_channels
+    channel = await ch_store.get_channel(channel_id)
+    if not channel:
+        return JSONResponse({"error": "Channel not found"}, status_code=404)
+    return channel
+
+
+@router.get("/api/chat/channels/{channel_id}/messages")
+async def get_channel_messages(
+    request: Request, channel_id: str, limit: int = 50, before: float | None = None
+):
+    msg_store = request.app.state.chat_messages
+    messages = await msg_store.get_messages(channel_id, limit=limit, before=before)
+    return {"messages": messages}
+
+
+@router.get("/api/chat/messages/{message_id}")
+async def get_message_by_id(message_id: str, request: Request):
+    store = request.app.state.chat_messages
+    msg = await store.get_message(message_id)
+    if msg is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(msg)
+
+
+@router.get("/api/chat/channels/{channel_id}/threads/{parent_id}/messages")
+async def get_thread_messages_endpoint(
+    channel_id: str, parent_id: str, request: Request, limit: int = 20,
+):
+    store = request.app.state.chat_messages
+    msgs = await store.get_thread_messages(channel_id, parent_id, limit=min(limit, 100))
+    return JSONResponse({"messages": msgs})
+
+
+@router.get("/api/chat/channels/{channel_id}/threads")
+async def get_channel_threads_endpoint(channel_id: str, request: Request):
+    store = request.app.state.chat_messages
+    threads = await store.get_channel_threads(channel_id)
+    return JSONResponse({"threads": threads})
+
+
+@router.get("/api/chat/channels/{channel_id}/pins")
+async def get_channel_pins(channel_id: str, request: Request):
+    store = request.app.state.chat_messages
+    pins = await store.get_pins(channel_id)
+    return JSONResponse({"pins": pins})
+
+
+@router.post("/api/chat/messages/{message_id}/pin")
+async def pin_message_endpoint(message_id: str, request: Request):
+    msg_store = request.app.state.chat_messages
+    msg = await msg_store.get_message(message_id)
+    if msg is None or msg.get("deleted_at"):
+        return JSONResponse({"error": "message not found"}, status_code=404)
+    # Resolve caller id from session cookie
+    auth = getattr(request.app.state, "auth", None)
+    session_user = None
+    if auth is not None:
+        token = request.cookies.get("taos_session") or ""
+        if token:
+            session_user = auth.session_user(token)
+    pinned_by = f"user:{session_user['id']}" if session_user else "user:unknown"
+    try:
+        await msg_store.pin_message(msg["channel_id"], message_id, pinned_by=pinned_by)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
+    # Clear pin_requested flag if it was set (agent had asked for a pin)
+    meta = msg.get("metadata") or {}
+    if meta.get("pin_requested"):
+        meta.pop("pin_requested", None)
+        await msg_store.set_metadata(message_id, meta)
+    hub = request.app.state.chat_hub
+    await hub.broadcast(msg["channel_id"], {
+        "type": "pin", "seq": hub.next_seq(),
+        "channel_id": msg["channel_id"], "message_id": message_id, "pinned_by": pinned_by,
+    })
+    return JSONResponse({"ok": True, "pinned_by": pinned_by})
+
+
+@router.delete("/api/chat/messages/{message_id}/pin")
+async def unpin_message_endpoint(message_id: str, request: Request):
+    msg_store = request.app.state.chat_messages
+    msg = await msg_store.get_message(message_id)
+    if msg is None:
+        return JSONResponse({"error": "message not found"}, status_code=404)
+    ok = await msg_store.unpin_message(msg["channel_id"], message_id)
+    if not ok:
+        return JSONResponse({"error": "message not pinned"}, status_code=404)
+    hub = request.app.state.chat_hub
+    await hub.broadcast(msg["channel_id"], {
+        "type": "unpin", "seq": hub.next_seq(),
+        "channel_id": msg["channel_id"], "message_id": message_id,
+    })
+    return Response(status_code=204)
+
+
+@router.patch("/api/chat/messages/{message_id}")
+async def edit_message_endpoint(message_id: str, request: Request):
+    body = await request.json()
+    allowed = {"content"}
+    if set(body.keys()) - allowed:
+        return JSONResponse(
+            {"error": "only 'content' may be edited"}, status_code=400,
+        )
+    if "content" not in body or not isinstance(body["content"], str):
+        return JSONResponse({"error": "content required"}, status_code=400)
+    msg_store = request.app.state.chat_messages
+    msg = await msg_store.get_message(message_id)
+    if msg is None or msg.get("deleted_at"):
+        return JSONResponse({"error": "message not found"}, status_code=404)
+    auth = getattr(request.app.state, "auth", None)
+    session_user = None
+    if auth is not None:
+        token = request.cookies.get("taos_session") or ""
+        session_user = auth.session_user(token)
+    caller_id = session_user["id"] if session_user else None
+    if msg["author_id"] != caller_id:
+        return JSONResponse({"error": "not the author"}, status_code=403)
+    # Only truncate subsequent messages in DM channels — editing in a
+    # multi-human group must not delete other people's messages.  The
+    # agent is only re-triggered in DM channels for the same reason.
+    ch_store = request.app.state.chat_channels
+    channel = await ch_store.get_channel(msg["channel_id"])
+    channel_type = channel.get("type") if channel else None
+    updated, truncated_ids = await msg_store.edit_and_truncate_branch(
+        message_id, body["content"],
+        channel_type=channel_type,
+        thread_id=msg.get("thread_id"),
+    )
+    if not updated:
+        return JSONResponse({"error": "message not found"}, status_code=404)
+    hub = request.app.state.chat_hub
+    seq = hub.next_seq()
+    await hub.broadcast(msg["channel_id"], {
+        "type": "message_edit", "seq": seq,
+        "message_id": message_id,
+        "content": updated["content"],
+        "edited_at": updated["edited_at"],
+    })
+    for tid in truncated_ids:
+        seq = hub.next_seq()
+        await hub.broadcast(msg["channel_id"], {
+            "type": "message_delete", "seq": seq,
+            "channel_id": msg["channel_id"], "message_id": tid,
+        })
+    # Re-trigger the agent only in DM channels.
+    if channel_type == "dm":
+        router_svc = getattr(request.app.state, "agent_chat_router", None)
+        if router_svc is not None and channel is not None:
+            router_svc.dispatch(updated, channel)
+    return JSONResponse(updated)
+
+
+@router.delete("/api/chat/messages/{message_id}")
+async def delete_message_endpoint(message_id: str, request: Request):
+    msg_store = request.app.state.chat_messages
+    msg = await msg_store.get_message(message_id)
+    if msg is None:
+        return JSONResponse({"error": "message not found"}, status_code=404)
+    auth = getattr(request.app.state, "auth", None)
+    session_user = None
+    if auth is not None:
+        token = request.cookies.get("taos_session") or ""
+        session_user = auth.session_user(token)
+    caller_id = session_user["id"] if session_user else None
+    if msg["author_id"] != caller_id:
+        return JSONResponse({"error": "not the author"}, status_code=403)
+    await msg_store.soft_delete_message(message_id)
+    hub = request.app.state.chat_hub
+    deleted = await msg_store.get_message(message_id)
+    await hub.broadcast(msg["channel_id"], {
+        "type": "message_delete", "seq": hub.next_seq(),
+        "channel_id": msg["channel_id"], "message_id": message_id,
+        "deleted_at": (deleted or {}).get("deleted_at"),
+    })
+    return Response(status_code=204)
+
+
+# ── Search & unread ───────────────────────────────────────────────────────────
+
+@router.get("/api/chat/search")
+async def search_messages(
+    request: Request, q: str = "", channel_id: str | None = None, limit: int = 20
+):
+    if not q or len(q) < 2:
+        return {"results": [], "query": q}
+    msg_store = request.app.state.chat_messages
+    results = await msg_store.search(q, channel_id=channel_id, limit=limit)
+    return {"results": results, "query": q}
+
+
+@router.get("/api/chat/unread")
+async def get_unread(request: Request):
+    ch_store = request.app.state.chat_channels
+    counts = await ch_store.get_unread_counts("user")
+    return {"unread": counts}
+
+
+@router.post("/api/chat/channels/{channel_id}/read-cursor/rewind")
+async def rewind_read_cursor_endpoint(channel_id: str, request: Request):
+    body = await request.json()
+    before_id = body.get("before_message_id")
+    if not before_id:
+        return JSONResponse({"error": "before_message_id required"}, status_code=400)
+    msg_store = request.app.state.chat_messages
+    ch_store = request.app.state.chat_channels
+    msg = await msg_store.get_message(before_id)
+    if msg is None or msg["channel_id"] != channel_id:
+        return JSONResponse({"error": "message not in channel"}, status_code=404)
+    auth = getattr(request.app.state, "auth", None)
+    session_user = None
+    if auth is not None:
+        token = request.cookies.get("taos_session") or ""
+        session_user = auth.session_user(token)
+    if session_user is None:
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    await ch_store.rewind_read_cursor(
+        session_user["id"], channel_id, msg["created_at"] - 0.001,
+    )
+    return JSONResponse({"ok": True})
+
+
+@router.post("/api/chat/channels/{channel_id}/mark-read")
+async def mark_read(request: Request, channel_id: str):
+    # The client may POST with no body (mark the whole channel read); an empty
+    # body made request.json() raise JSONDecodeError -> 500. Tolerate it.
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    ch_store = request.app.state.chat_channels
+    await ch_store.update_read_position("user", channel_id, body.get("message_id", ""))
+    return {"status": "marked"}
+
+
+# ── Reactions ────────────────────────────────────────────────────────────────
+
+@router.post("/api/chat/messages/{message_id}/reactions")
+async def add_reaction(message_id: str, body: dict, request: Request):
+    emoji = body.get("emoji")
+    author_id = body.get("author_id")
+    author_type = body.get("author_type", "user")
+    if not emoji or not author_id:
+        return JSONResponse({"error": "emoji and author_id required"}, status_code=400)
+    state = request.app.state
+    msg = await state.chat_messages.get_message(message_id)
+    if msg is None:
+        return JSONResponse({"error": "message not found"}, status_code=404)
+    await state.chat_messages.add_reaction(message_id, emoji, author_id)
+    channel = await state.chat_channels.get_channel(msg["channel_id"])
+    await state.chat_hub.broadcast(msg["channel_id"], {
+        "type": "reaction_added",
+        "message_id": message_id,
+        "emoji": emoji,
+        "author_id": author_id,
+    })
+    if channel is not None:
+        await maybe_trigger_semantic(
+            emoji=emoji, message=msg,
+            reactor_id=author_id, reactor_type=author_type,
+            channel=channel, state=state,
+        )
+    return JSONResponse({"ok": True}, status_code=200)
+
+
+@router.delete("/api/chat/messages/{message_id}/reactions/{emoji}")
+async def remove_reaction(message_id: str, emoji: str, author_id: str, request: Request):
+    state = request.app.state
+    await state.chat_messages.remove_reaction(message_id, emoji, author_id)
+    msg = await state.chat_messages.get_message(message_id)
+    if msg:
+        await state.chat_hub.broadcast(msg["channel_id"], {
+            "type": "reaction_removed",
+            "message_id": message_id,
+            "emoji": emoji,
+            "author_id": author_id,
+        })
+    return JSONResponse({"ok": True}, status_code=200)
+
+
+@router.get("/api/chat/channels/{channel_id}/wants_reply")
+async def list_wants_reply(channel_id: str, request: Request):
+    reg = getattr(request.app.state, "wants_reply", None)
+    if reg is None:
+        return JSONResponse({"slugs": []})
+    return JSONResponse({"slugs": reg.list(channel_id)})
+
+
+VALID_PHASES = {"thinking", "tool", "reading", "writing", "searching", "planning"}
+
+# ── Typing / thinking indicators ─────────────────────────────────────────────
+
+@router.post("/api/chat/channels/{channel_id}/typing")
+async def post_typing(channel_id: str, body: dict, request: Request):
+    """Mark a human user as typing in the channel. Ephemeral; TTL 3s."""
+    author_id = (body or {}).get("author_id")
+    if not author_id:
+        return JSONResponse({"error": "author_id required"}, status_code=400)
+    reg = getattr(request.app.state, "typing", None)
+    hub = getattr(request.app.state, "chat_hub", None)
+    if reg is None:
+        return JSONResponse({"error": "typing registry not configured"}, status_code=503)
+    reg.mark(channel_id, author_id, "human")
+    if hub is not None:
+        await hub.broadcast(channel_id, {
+            "type": "typing",
+            "kind": "human",
+            "slug": author_id,
+        })
+    return JSONResponse({"ok": True}, status_code=200)
+
+
+@router.post("/api/chat/channels/{channel_id}/thinking")
+async def post_thinking(channel_id: str, body: dict, request: Request):
+    """Bridge-side heartbeat: state=start marks the agent as thinking,
+    state=end clears. Authenticated with the local bearer token."""
+    auth = getattr(request.app.state, "auth", None)
+    bearer = request.headers.get("authorization", "")
+    if not bearer.lower().startswith("bearer "):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if auth is None or not auth.validate_local_token(bearer[7:].strip()):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    slug = (body or {}).get("slug")
+    state = (body or {}).get("state")
+    if not slug or state not in ("start", "end"):
+        return JSONResponse({"error": "slug and state in {start,end} required"}, status_code=400)
+
+    phase = (body or {}).get("phase")
+    if phase is not None:
+        if not isinstance(phase, str) or phase not in VALID_PHASES:
+            return JSONResponse(
+                {"error": f"invalid phase; must be one of {sorted(VALID_PHASES)}"},
+                status_code=400,
+            )
+    detail = (body or {}).get("detail")
+    if detail is not None and not isinstance(detail, str):
+        return JSONResponse({"error": "detail must be a string"}, status_code=400)
+
+    reg = getattr(request.app.state, "typing", None)
+    hub = getattr(request.app.state, "chat_hub", None)
+    if reg is None:
+        return JSONResponse({"error": "typing registry not configured"}, status_code=503)
+    if state == "start":
+        reg.mark(channel_id, slug, "agent", phase=phase, detail=detail)
+    else:
+        reg.clear(channel_id, slug)
+    if hub is not None:
+        await hub.broadcast(channel_id, {
+            "type": "thinking",
+            "slug": slug,
+            "state": state,
+            "phase": phase if state == "start" else None,
+            "detail": detail if state == "start" else None,
+        })
+    return JSONResponse({"ok": True}, status_code=200)
+
+
+@router.get("/api/chat/channels/{channel_id}/typing")
+async def get_typing(channel_id: str, request: Request):
+    """Return current typing+thinking state for a channel."""
+    reg = getattr(request.app.state, "typing", None)
+    if reg is None:
+        return JSONResponse({"human": [], "agent": []})
+    return JSONResponse(reg.list(channel_id))
+

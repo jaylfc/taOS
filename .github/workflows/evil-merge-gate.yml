@@ -1,0 +1,49 @@
+name: Evil-merge gate
+
+# Blocks PRs whose merge resolution invents test-file content that neither
+# parent reviewed.  Uses ``git merge-tree --write-tree`` as the baseline so
+# ordinary automatic merges (non-overlapping edits) stay green.  See
+# scripts/check_evil_merge.py for the implementation.
+
+on:
+  pull_request:
+    branches: [master, dev]
+
+jobs:
+  evil-merge-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch origin "$BASE_REF"
+
+      # A gate that never demonstrably fires is indistinguishable from one that
+      # cannot. Prove RED on the known-evil merge before trusting the green below.
+      - name: Selftest - guard must fire on known evil merge ad5cdfb0c
+        run: |
+          rc=0
+          python scripts/check_evil_merge.py --head ad5cdfb0c || rc=$?
+          # exactly 1 = fired; 0 = stayed green (broken guard); 2 = git error
+          # (e.g. commit unreachable) which is CANNOT-SEE, not a pass.
+          if [ "$rc" -ne 1 ]; then
+            echo "SELFTEST FAIL: expected exit 1 on known evil merge ad5cdfb0c, got $rc"
+            exit 1
+          fi
+          echo "selftest: guard fired RED on ad5cdfb0c"
+
+      - name: Run evil-merge guard
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: python scripts/check_evil_merge.py --head "HEAD"

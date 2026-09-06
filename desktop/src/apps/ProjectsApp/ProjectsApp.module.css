@@ -1,0 +1,916 @@
+/* Projects app redesign (task #59).
+   Tokens come from theme/tokens.css so dark and light both work; no hardcoded
+   theme colors here beyond the board status hues, which mirror the existing
+   board tokens. */
+
+/* ---- left sidebar: project list ---- */
+.sidebar {
+  width: 248px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-shell-bg-deep);
+  border-right: 1px solid var(--color-shell-border);
+  height: 100%;
+  min-height: 0;
+}
+/* Collapsed rail: keeps project switching (mark avatars) while handing the
+   width back to the workspace/chat area. */
+.sidebarCollapsed {
+  width: 56px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--color-shell-bg-deep);
+  border-right: 1px solid var(--color-shell-border);
+  height: 100%;
+  min-height: 0;
+}
+.railTop {
+  height: 52px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 1px solid var(--color-shell-border);
+  width: 100%;
+}
+.railList {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  width: 100%;
+  list-style: none;
+  margin: 0;
+}
+.railMark {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-shell-text-secondary);
+  background: var(--color-shell-surface);
+  border: 1px solid var(--color-shell-border);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.railMark:hover {
+  background: var(--color-shell-surface-hover);
+  color: var(--color-shell-text);
+}
+.railMarkOn {
+  color: var(--color-shell-text);
+  border-color: var(--color-accent, var(--color-shell-border-strong));
+  box-shadow: 0 0 0 1px var(--color-accent, var(--color-shell-border-strong));
+}
+.collapseBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  color: var(--color-shell-text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.collapseBtn:hover {
+  background: var(--color-shell-surface-hover);
+  color: var(--color-shell-text);
+}
+.collapseBtn svg {
+  width: 16px;
+  height: 16px;
+}
+.sbHead {
+  height: 52px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--color-shell-border);
+}
+.sbHead h2 {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--color-shell-text);
+}
+.newBtn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-shell-text-secondary);
+  background: var(--color-shell-surface);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 999px;
+  padding: 5px 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.newBtn:hover {
+  background: var(--color-shell-surface-hover);
+  color: var(--color-shell-text);
+  border-color: var(--color-shell-border-strong);
+}
+.newBtn svg {
+  width: 13px;
+  height: 13px;
+}
+.sbList {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+  list-style: none;
+  margin: 0;
+}
+.pj {
+  display: flex;
+  gap: 11px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-bottom: 2px;
+  color: var(--color-shell-text);
+}
+.pj:hover {
+  background: var(--color-shell-surface-hover);
+}
+.pjOn {
+  background: var(--color-shell-surface-active);
+}
+.pjOn .pjMark {
+  box-shadow: 0 0 0 2px var(--color-accent-glow);
+}
+.pjRow {
+  position: relative;
+}
+.pjNewWin {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: var(--color-shell-surface);
+  color: var(--color-shell-text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.pjRow:hover .pjNewWin,
+.pjNewWin:focus-visible {
+  opacity: 1;
+}
+.pjNewWin:hover {
+  background: var(--color-shell-surface-hover);
+  color: var(--color-shell-text);
+}
+/* Touch devices have no hover, so keep the affordance visible. */
+@media (hover: none) {
+  .pjNewWin {
+    opacity: 1;
+  }
+}
+.pjMark {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #15161a;
+  background: linear-gradient(135deg, #7c8ba1, #aab4c9);
+}
+.pjBody {
+  min-width: 0;
+  flex: 1;
+}
+.pjName {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pjMeta {
+  font-size: 11px;
+  color: var(--color-shell-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pjDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-board-status-closed, #30d158);
+  flex: none;
+  box-shadow: 0 0 0 3px rgba(48, 209, 88, 0.15);
+}
+.sbEmpty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 32px 16px;
+  text-align: center;
+  gap: 12px;
+}
+.sbEmpty p {
+  margin: 0;
+}
+.sbEmptyTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-shell-text);
+}
+.sbEmptySub {
+  font-size: 12px;
+  color: var(--color-shell-text-secondary);
+  line-height: 1.45;
+}
+
+/* ---- main column header ---- */
+.header {
+  flex: none;
+  padding: 14px 22px 0;
+  border-bottom: 1px solid var(--color-shell-border);
+}
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.titleRow h1 {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--color-shell-text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desc {
+  font-size: 12.5px;
+  color: var(--color-shell-text-secondary);
+  margin-top: 4px;
+  max-width: 680px;
+  line-height: 1.45;
+}
+
+/* presence row */
+.presence {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+.stack {
+  display: flex;
+}
+.av {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--color-shell-bg);
+  margin-left: -8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  position: relative;
+}
+.av:first-child {
+  margin-left: 0;
+}
+.avHuman {
+  background: linear-gradient(135deg, #6f7d93, #9aa4b8);
+  color: #15161a;
+}
+.avAgent {
+  background: linear-gradient(135deg, #2c303b, #444a5b);
+  color: var(--color-shell-text);
+}
+.avRing {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--color-board-status-closed, #30d158);
+  border: 2px solid var(--color-shell-bg);
+}
+.presenceLbl {
+  font-size: 11px;
+  color: var(--color-shell-text-tertiary);
+  font-weight: 600;
+}
+
+/* tabs */
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 10px 0 0;
+  margin-top: 12px;
+  overflow-x: auto;
+}
+.tab {
+  position: relative;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-shell-text-tertiary);
+  padding: 8px 13px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s;
+  border: none;
+  background: none;
+  text-transform: capitalize;
+}
+.tab:hover {
+  color: var(--color-shell-text-secondary);
+}
+.tabOn {
+  color: var(--color-shell-text);
+}
+.tabOn::after {
+  content: "";
+  position: absolute;
+  left: 11px;
+  right: 11px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--color-accent-strong);
+}
+
+/* breadcrumb (element drill-in) */
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 22px 0;
+  font-size: 12.5px;
+  color: var(--color-shell-text-tertiary);
+}
+.crumb {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--color-shell-text-secondary);
+  font: inherit;
+  padding: 0;
+}
+.crumb:hover {
+  color: var(--color-shell-text);
+}
+.crumbOn {
+  color: var(--color-shell-text);
+  font-weight: 600;
+  cursor: default;
+}
+.crumbSep {
+  color: var(--color-shell-text-tertiary);
+}
+
+/* panel host */
+.panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.panelPad {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 22px;
+}
+
+/* =========================================================
+   WORKSPACE (hero) split pane
+   ========================================================= */
+.ws {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.wsRight {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--color-shell-bg-deep);
+}
+
+/* right: preview pane */
+.pvBar {
+  height: 50px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--color-shell-border);
+}
+.seg {
+  display: flex;
+  background: var(--color-shell-surface);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 999px;
+  padding: 3px;
+}
+.seg button {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-shell-text-secondary);
+  padding: 5px 13px;
+  border-radius: 999px;
+  cursor: pointer;
+  border: none;
+  background: none;
+  transition: all 0.15s;
+}
+.segOn {
+  background: var(--color-shell-surface-active);
+  color: var(--color-shell-text) !important;
+}
+.pvLive {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--color-shell-text-secondary);
+}
+.pvPulse {
+  position: relative;
+  width: 7px;
+  height: 7px;
+}
+.pvPulse i {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--color-board-status-closed, #30d158);
+}
+.pvPulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--color-board-status-closed, #30d158);
+  animation: pvPulse 2.2s ease-out infinite;
+}
+@keyframes pvPulse {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(3); opacity: 0; }
+}
+.pvTools {
+  margin-left: auto;
+  display: flex;
+  gap: 5px;
+}
+.pvTool {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-shell-text-tertiary);
+  cursor: pointer;
+  border: 1px solid var(--color-shell-border);
+  background: var(--color-shell-surface);
+  transition: all 0.15s;
+}
+.pvTool:hover {
+  background: var(--color-shell-surface-hover);
+  color: var(--color-shell-text-secondary);
+  border-color: var(--color-shell-border-strong);
+}
+.pvTool svg {
+  width: 15px;
+  height: 15px;
+}
+.pvStage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+.pvCanvas {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* honest preview placeholder */
+.placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 40px;
+  text-align: center;
+}
+.phIc {
+  width: 64px;
+  height: 64px;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-shell-surface);
+  border: 1px solid var(--color-shell-border);
+}
+.phIc svg {
+  width: 28px;
+  height: 28px;
+  color: var(--color-accent-strong);
+}
+.placeholder h3 {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--color-shell-text);
+}
+.placeholder p {
+  font-size: 12.5px;
+  color: var(--color-shell-text-secondary);
+  max-width: 340px;
+  line-height: 1.5;
+}
+.tagb {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--color-accent-strong);
+  background: var(--color-accent-soft);
+  border: 1px solid var(--color-accent-line);
+  border-radius: 999px;
+  padding: 4px 12px;
+}
+
+/* code view */
+.codeStage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+.codeView {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.65;
+  background: var(--color-shell-bg);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 14px;
+  padding: 16px 18px;
+  color: var(--color-shell-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* =========================================================
+   Mobile: stack the split pane
+   ========================================================= */
+@media (max-width: 767px) {
+  /* The project-list sidebar is a fixed 248px on desktop; on mobile it is the
+     full-width list screen of the MobileSplitView, so let it fill the width
+     (otherwise the empty remainder showed the window background). */
+  .sidebar {
+    width: 100%;
+  }
+  .ws {
+    flex-direction: column;
+  }
+  .wsRight {
+    width: 100% !important;
+    border-top: 1px solid var(--color-shell-border);
+    min-height: 280px;
+  }
+}
+
+/* ---- Community View (Milestone F) ---- */
+.communityView {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.communityView h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 0.75rem;
+  color: var(--color-shell-text);
+}
+
+/* Overview Stats */
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 0.5rem;
+}
+
+.statCard {
+  background: var(--color-shell-bg-deep);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.statCount {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-shell-text);
+}
+
+.statLabel {
+  font-size: 0.75rem;
+}
+
+.statusBadge {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+/* Leaderboard */
+.leaderboardTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.leaderboardTable th,
+.leaderboardTable td {
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--color-shell-border);
+}
+
+.leaderboardTable th {
+  font-weight: 600;
+  color: var(--color-shell-text-secondary);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.rank {
+  width: 2rem;
+  text-align: center;
+  font-weight: 700;
+  color: var(--color-shell-text-secondary);
+}
+
+.actor {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.barWrap {
+  position: relative;
+  min-width: 60px;
+  height: 1.2rem;
+  background: var(--color-shell-bg-deep);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.bar {
+  height: 100%;
+  background: var(--pico-color-blue-500, #3b82f6);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+  opacity: 0.5;
+}
+
+.barLabel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--color-shell-text);
+}
+
+/* Live Kanban (read-only) */
+.kanbanGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.75rem;
+  overflow-x: auto;
+}
+
+.kanbanColumn {
+  background: var(--color-shell-bg-deep);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 8px;
+  padding: 0.5rem;
+  min-height: 80px;
+}
+
+.kanbanColTitle {
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.kanbanCount {
+  font-size: 0.7rem;
+  background: var(--color-shell-border);
+  color: var(--color-shell-text-secondary);
+  padding: 0.1rem 0.4rem;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.kanbanList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.kanbanCard {
+  background: var(--color-shell-bg);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 6px;
+  padding: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.kanbanCardTitle {
+  font-weight: 500;
+  color: var(--color-shell-text);
+  margin-bottom: 0.25rem;
+}
+
+.kanbanClaimant {
+  font-size: 0.7rem;
+  color: var(--color-shell-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kanbanLabels {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  margin-top: 0.25rem;
+}
+
+.kanbanLabel {
+  font-size: 0.65rem;
+  background: var(--color-shell-border);
+  color: var(--color-shell-text-secondary);
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+}
+
+/* Activity Feed */
+.feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.feedItem {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--color-shell-border);
+}
+
+.feedEvent {
+  font-weight: 600;
+  color: var(--pico-color-blue-500, #3b82f6);
+  min-width: 90px;
+  font-size: 0.7rem;
+}
+
+.feedActor {
+  color: var(--color-shell-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.feedTs {
+  color: var(--color-shell-text-secondary);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+/* Lists Tab */
+.listsRail {
+  width: 220px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-shell-surface);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 12px;
+  padding: 12px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.listsContainer {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 12px;
+}
+
+.listsEntriesPanel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+@media (max-width: 767px) {
+  .listsContainer {
+    flex-direction: column;
+  }
+  .listsRail {
+    width: 100%;
+    min-height: auto;
+    max-height: 40vh;
+  }
+  .listsEntriesPanel {
+    width: 100%;
+  }
+}

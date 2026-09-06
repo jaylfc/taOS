@@ -1,0 +1,24 @@
+id: transformers
+name: HuggingFace Transformers
+type: service
+category: ml-runtime
+version: latest
+description: "HuggingFace Transformers library — runs PyTorch/safetensors models for inference."
+homepage: https://github.com/huggingface/transformers
+license: Apache-2.0
+
+requires:
+  ram_mb: 2048
+  disk_mb: 1000
+  ports: []
+
+install:
+  method: pip
+  package: transformers
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-vulkan-4gb: full
+  arm-vulkan-8gb: full
+  arm-cpu-8gb: full
+  cpu-only: full

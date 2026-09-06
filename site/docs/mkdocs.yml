@@ -1,0 +1,144 @@
+# MkDocs configuration for docs.tinyagentos.com
+#
+# Build:
+#   cd site/docs
+#   pip install mkdocs mkdocs-material
+#   mkdocs build
+#
+# Output: site/docs/site/
+# Deploy: rsync -av --delete site/ root@<LXC-IP>:/var/www/docs.tinyagentos.com/public/
+#
+# The docs_dir points at the main repo's docs/ directory.
+# Update the relative path if you build from a different working directory.
+#
+# Excluded from nav (private/internal): docs/deploy/ is included only
+# when it contains public deployment guides. Private strategy docs are
+# not present in this tree; gitignore handles them upstream.
+
+site_name: TinyAgentOS
+site_description: Self-hosted AI agent platform documentation
+site_url: https://docs.tinyagentos.com
+repo_url: https://github.com/jaylfc/tinyagentos
+repo_name: jaylfc/tinyagentos
+edit_uri: edit/master/docs/
+
+# Path relative to site/docs/, resolves to the repo root's docs/
+docs_dir: ../../../docs
+
+# Output directory (relative to mkdocs.yml)
+site_dir: site
+
+theme:
+  name: material
+  palette:
+    scheme: default
+    primary: custom
+    accent: custom
+  font:
+    # Material theme font settings; served by Google Fonts via CDN.
+    # If you need fully offline docs, set: font: false
+    text: IBM Plex Mono
+    code: IBM Plex Mono
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+# Custom colour variables to match the landing page palette
+extra_css:
+  - _docs_overrides.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/jaylfc/tinyagentos
+      name: jaylfc/tinyagentos on GitHub
+
+copyright: "TinyAgentOS, AGPL-3.0. Built by jaylfc and contributors."
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search:
+      lang: en
+  - exclude:
+      # Exclude private/internal paths that must not appear in public docs.
+      # These patterns match relative to docs_dir.
+      glob:
+        - "strategy/**"
+        - "business/**"
+        - "internal/**"
+        - "private/**"
+        - "*.private.md"
+        - "deploy/platform-lxc-internal*"
+
+nav:
+  - Home: getting-started.md
+  - Design:
+    - Overview: design/abstraction-layers.md
+    - App Store Platform: design/app-store-platform.md
+    - App Streaming: design/app-streaming.md
+    - Container Runtime: design/container-runtime-abstraction.md
+    - Desktop Shell: design/desktop-shell.md
+    - Distributed Compute: design/distributed-compute-cluster.md
+    - Framework-Agnostic Runtime: design/framework-agnostic-runtime.md
+    - Lobby Chat Room: design/lobby-chat-room.md
+    - Message Hub Core: design/message-hub-core.md
+    - Model Torrent Mesh: design/model-torrent-mesh.md
+    - Resource Scheduler: design/resource-scheduler.md
+    - Skills and Plugins: design/skills-plugins.md
+    - Training and Conversion: design/training-conversion-capabilities.md
+    - User Memory: design/user-memory.md
+  - Plans:
+    - Agent Deployer: design/plan-agent-deployer.md
+    - App Streaming Foundation: design/plan-app-streaming-foundation.md
+    - Complete and Polish: design/plan-complete-and-polish.md
+    - Container Runtime: design/plan-container-runtime.md
+    - Desktop Mobile View: design/plan-desktop-mobile-view.md
+    - Desktop OS Apps: design/plan-desktop-os-apps.md
+    - Desktop Shell Core: design/plan-desktop-shell-core.md
+    - Hardware and App Registry: design/plan-hardware-appregistry.md
+    - LLM Proxy: design/plan-llm-proxy.md
+    - Message Hub Stores: design/plan-message-hub-1-stores.md
+  - Research:
+    - Agent Framework Comparison: superpowers/agent-framework-comparison.md
+    - Beads/Exo Integration: superpowers/beads-exo-integration.md
+    - RKNN Image Generation: superpowers/rknn-image-generation.md
+  - Runbooks:
+    - Container Upgrade: runbooks/container-upgrade.md
+    - Framework Swap: runbooks/framework-swap.md
+  - Upstream:
+    - Framework Integration Bridge: upstream-patches/2026-04-11-taos-framework-integration-bridge-design.md
+  - Reference:
+    - Agent QMD Serve Setup: agent-qmd-serve-setup.md
+    - Mirror Policy: mirror-policy.md

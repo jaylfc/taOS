@@ -1,0 +1,457 @@
+from __future__ import annotations
+
+"""API routes for browser sessions (hybrid neko/CDP tier-2 sessions).
+
+Routes:
+  POST   /api/browser/sessions            create a new session
+  GET    /api/browser/sessions            list visible sessions (user + owned agents)
+  GET    /api/browser/sessions/{id}       get session (with stream token if running)
+  POST   /api/browser/sessions/{id}/terminate  stop a session
+"""
+
+import asyncio
+import logging
+import socket
+from typing import Any
+from urllib.parse import urlparse, urlunparse
+
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+from tinyagentos.auth import get_current_user
+from tinyagentos.browser_sessions import (
+    BrowserWorkerError,
+    list_browser_nodes,
+    pick_browser_node,
+    resolve_browser_target,
+)
+from tinyagentos.routes.desktop_browser.session_token import mint_session_token
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+def _rewrite_neko_url(neko_url: str, request: Request) -> str:
+    """Rewrite the host in *neko_url* to match the host the client connected with.
+
+    The neko container binds on 0.0.0.0 so it is reachable on any IP of the
+    host (LAN, Tailscale, etc.).  The stored neko_url uses the LAN IP.
+    When the client arrives via a different address (e.g. Tailscale 100.x),
+    the iframe would try to load an unreachable LAN address.
+
+    Only the hostname is rewritten; the neko port, path, and query string are
+    preserved so the session credentials remain intact.
+
+    Honors X-Forwarded-Host when present (set by reverse proxies).  Falls
+    back to the Host header, then to the original URL unchanged.
+    """
+    if not neko_url:
+        return neko_url
+
+    client_host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or ""
+    )
+    # Strip port from the Host header -- the neko port differs from taOS port.
+    client_hostname = client_host.split(":")[0] if client_host else ""
+    if not client_hostname:
+        return neko_url
+
+    try:
+        parsed = urlparse(neko_url)
+        port_part = f":{parsed.port}" if parsed.port else ""
+        new_netloc = f"{client_hostname}{port_part}"
+        return urlunparse(parsed._replace(netloc=new_netloc))
+    except Exception:
+        return neko_url
+
+
+def _apply_host_rewrite(session: dict, request: Request) -> dict:
+    """Return a copy of *session* with neko_url rewritten for the client's host."""
+    neko_url = session.get("neko_url")
+    if not neko_url:
+        return session
+    return {**session, "neko_url": _rewrite_neko_url(neko_url, request)}
+
+
+def _connecting_host_ip(request: Request) -> str | None:
+    """Resolve the single IP the client connected with, for use as NEKO_WEBRTC_NAT1TO1.
+
+    Reads X-Forwarded-Host then Host (same precedence as _rewrite_neko_url).
+    Strips the port, then resolves the value: IP literals are returned as-is;
+    hostnames go through socket.gethostbyname.  Returns None on failure so
+    callers fall back to the node LAN IP.
+    """
+    client_host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or ""
+    )
+    hostname = client_host.split(":")[0].strip() if client_host else ""
+    if not hostname:
+        return None
+    try:
+        return socket.gethostbyname(hostname)
+    except Exception:
+        return None
+
+
+class CreateSessionBody(BaseModel):
+    url: str
+    profile: str | None = None
+    node: str | None = None
+
+
+@router.post("/api/browser/sessions")
+async def create_session(
+    body: CreateSessionBody,
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    user_id = str(current_user.get("id") or "")
+    if not user_id:
+        return JSONResponse({"error": "session has no user id"}, status_code=401)
+
+    cluster = request.app.state.cluster_manager
+    # Placement: explicit worker -> host (if RAM-capable) -> best worker. The
+    # host branch is what lets a capable controller (e.g. a 16GB Pi) serve a
+    # streamed session itself; the previous worker-only path returned
+    # no_capable_node on a host with no Tier-2 browser workers.
+    host_hw = getattr(request.app.state, "host_hardware", None)
+    target = resolve_browser_target(cluster, host_hw, explicit_node=body.node)
+    if target is None:
+        return JSONResponse({"error": "no_capable_node"}, status_code=409)
+    kind, node = target
+
+    # Resolve the worker BEFORE creating the session row, so a failed lookup
+    # returns 409 without leaving an orphaned session record in the store.
+    worker = None
+    if kind != "host":
+        worker = cluster.get_worker(node)
+        if worker is None:
+            return JSONResponse({"error": "no_capable_node"}, status_code=409)
+
+    mgr = request.app.state.browser_sessions
+    session = await mgr.create_session(
+        "user", user_id, body.url, body.profile or "default"
+    )
+    vol = f"taos-browser-{session['id']}"
+    auth_token = getattr(request.app.state, "browser_worker_auth_token", None)
+    try:
+        if kind == "host":
+            runner = request.app.state.browser_container_runner
+            # _connecting_host_ip does a blocking DNS lookup; offload it so the
+            # event loop is not stalled while the host is resolved.
+            nat1to1_ip = await asyncio.to_thread(_connecting_host_ip, request)
+            session = await mgr.start_on_host(
+                session["id"], profile_volume=vol, runner=runner, nat1to1_ip=nat1to1_ip
+            )
+        else:
+            session = await mgr.start_on_worker(
+                session["id"],
+                node=node,
+                worker_url=worker.url,
+                profile_volume=vol,
+                auth_token=auth_token,
+            )
+    except BrowserWorkerError:
+        return JSONResponse({"error": "worker_start_failed"}, status_code=502)
+    return JSONResponse(session, status_code=201)
+
+
+@router.get("/api/browser/nodes")
+async def get_browser_nodes(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    user_id = str(current_user.get("id") or "")
+    if not user_id:
+        return JSONResponse({"error": "session has no user id"}, status_code=401)
+    nodes = list_browser_nodes(request.app.state.cluster_manager)
+    return {"nodes": nodes}
+
+
+@router.get("/api/browser/sessions")
+async def list_sessions(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    """List sessions visible to the current user: their own sessions plus sessions of
+    agents they own.
+
+    # TODO(multi-user): owned_agent_ids should be scoped to agents owned by this user
+    # once per-user agent ownership is introduced.
+    """
+    user_id = str(current_user.get("id") or "")
+    if not user_id:
+        return JSONResponse({"error": "session has no user id"}, status_code=401)
+
+    # All configured agents are considered owned by the requesting user for now.
+    config = request.app.state.config
+    owned_agent_ids = {a.get("name") for a in config.agents if a.get("name")}
+
+    mgr = request.app.state.browser_sessions
+    sessions = await mgr.list_visible_sessions(user_id, owned_agent_ids=owned_agent_ids)
+    return {"sessions": sessions}
+
+
+@router.get("/api/browser/sessions/mine")
+async def get_my_session(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    device: str = Query(default="desktop"),
+):
+    """Return the caller's always-on browser session, creating and starting it if needed.
+
+    Pass ``?device=mobile`` for a phone client — the session runs portrait
+    (800x1600@30) with a mobile Chromium UA + touch so sites serve mobile
+    layouts. ``?device=desktop`` (default) runs landscape 1280x720.
+
+    If a running session exists in the opposite mode, it is re-presented:
+    container stopped (profile volume kept), restarted in the target mode.
+
+    Placement order: host (if RAM-capable) -> best cluster worker -> 409.
+    When running with a neko_url, attaches a short-lived stream_token.
+
+    NOTE: app.state.browser_container_runner and app.state.host_hardware must be
+    wired in app setup before this route is used in production (follow-up task).
+    """
+    user_id = str(current_user.get("id") or "")
+    if not user_id:
+        return JSONResponse({"error": "session has no user id"}, status_code=401)
+
+    mobile = device == "mobile"
+
+    mgr = request.app.state.browser_sessions
+    session = await mgr.get_or_create_mine(user_id, mobile=mobile)
+    if session is None:
+        return JSONResponse({"error": "failed to create browser session"}, status_code=500)
+
+    # A device-class switch re-presents the session: stop the old container
+    # first so it releases its port + profile-volume lock before the new one.
+    old = session.pop("_represent_old", None) if isinstance(session, dict) else None
+    if old and old.get("container_id"):
+        try:
+            if old.get("node") in (None, "host"):
+                runner = request.app.state.browser_container_runner
+                await runner.stop(container_id=old["container_id"], http_port=old.get("http_port"))
+            else:
+                cluster = request.app.state.cluster_manager
+                worker = cluster.get_worker(old["node"])
+                if worker is not None:
+                    auth_token = getattr(request.app.state, "browser_worker_auth_token", None)
+                    await mgr.stop_on_worker(
+                        session["id"], worker_url=worker.url,
+                        container_id=old["container_id"], http_port=old.get("http_port"),
+                        auth_token=auth_token,
+                        set_status=None,
+                    )
+        except Exception as exc:
+            logger.warning("re-present: failed to stop old container %s: %s", old.get("container_id"), exc)
+
+    if session["status"] in ("pending", "idle"):
+        cluster = request.app.state.cluster_manager
+        host_hw = getattr(request.app.state, "host_hardware", None)
+        target = resolve_browser_target(cluster, host_hw)
+        if target is None:
+            return JSONResponse({"error": "no_capable_node"}, status_code=409)
+        kind, node = target
+        vol = f"taos-browser-{session['id']}"
+        try:
+            if kind == "host":
+                runner = request.app.state.browser_container_runner
+                # _connecting_host_ip does a blocking DNS lookup; offload it so
+                # the event loop is not stalled while the host is resolved.
+                nat1to1_ip = await asyncio.to_thread(_connecting_host_ip, request)
+                session = await mgr.start_on_host(session["id"], profile_volume=vol,
+                                                   runner=runner, mobile=mobile,
+                                                   nat1to1_ip=nat1to1_ip)
+            else:
+                worker = cluster.get_worker(node)
+                auth_token = getattr(request.app.state, "browser_worker_auth_token", None)
+                session = await mgr.start_on_worker(
+                    session["id"],
+                    node=node,
+                    worker_url=worker.url,
+                    profile_volume=vol,
+                    auth_token=auth_token,
+                    mobile=mobile,
+                )
+        except BrowserWorkerError:
+            return JSONResponse({"error": "worker_start_failed"}, status_code=502)
+
+    if session.get("status") == "running" and session.get("neko_url"):
+        signing_key = request.app.state.browser_session_signing_key
+        _, token = mint_session_token(session["id"], user_id, signing_key)
+        return JSONResponse({**_apply_host_rewrite(session, request), "stream_token": token})
+
+    return JSONResponse(session)
+
+
+@router.get("/api/browser/sessions/{session_id}")
+async def get_session(
+    session_id: str,
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    user_id = str(current_user.get("id") or "")
+    if not user_id:
+        return JSONResponse({"error": "session has no user id"}, status_code=401)
+
+    mgr = request.app.state.browser_sessions
+    session = await mgr.get_session(session_id)
+    if session is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+
+    # All configured agents are considered owned by the requesting user for now.
+    # TODO(multi-user): scope owned_agent_ids to agents owned by this user.
+    config = request.app.state.config
+    owned_agent_ids = {a.get("name") for a in config.agents if a.get("name")}
+
+    is_own_session = session["owner_type"] == "user" and session["owner_id"] == user_id
+    is_owned_agent_session = (
+        session["owner_type"] == "agent" and session["owner_id"] in owned_agent_ids
+    )
+    if not is_own_session and not is_owned_agent_session:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+
+    if session["status"] == "running" and session.get("neko_url"):
+        signing_key = request.app.state.browser_session_signing_key
+        _, token = mint_session_token(session_id, user_id, signing_key)
+        return {**_apply_host_rewrite(session, request), "stream_token": token}
+
+    return dict(session)
+
+
+@router.post("/api/browser/sessions/{session_id}/terminate")
+async def terminate_session(
+    session_id: str,
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    user_id = str(current_user.get("id") or "")
+    if not user_id:
+        return JSONResponse({"error": "session has no user id"}, status_code=401)
+
+    mgr = request.app.state.browser_sessions
+    session = await mgr.get_session(session_id)
+    if session is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+
+    if session["owner_type"] != "user" or session["owner_id"] != user_id:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+
+    cluster = request.app.state.cluster_manager
+    auth_token = getattr(request.app.state, "browser_worker_auth_token", None)
+    if session.get("node") and session.get("container_id"):
+        worker = cluster.get_worker(session["node"])
+        if worker is not None:
+            await mgr.stop_on_worker(
+                session_id,
+                worker_url=worker.url,
+                container_id=session["container_id"],
+                auth_token=auth_token,
+            )
+        else:
+            await mgr.terminate_session(session_id)
+    else:
+        await mgr.terminate_session(session_id)
+    return {"ok": True}
+
+
+class MigrateBody(BaseModel):
+    target: str
+
+
+@router.post("/api/browser/sessions/{session_id}/migrate")
+async def migrate_session(
+    session_id: str,
+    body: MigrateBody,
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    """Move a running session to ``target`` (host or a capable worker).
+
+    Graceful suspend -> move profile -> resume, emitting session_migrating /
+    session_resumed so agents on the session pause and await reconnection.
+
+    NOTE: the real cross-node profile-volume transfer and the agent-signal
+    broadcast channel are confirmed by the host<->Fedora integration round-trip
+    (sub-plan F Task 5). Here ``move_volume`` and ``emit`` are best-effort +
+    logged; the orchestration + transitions are what these routes exercise.
+    """
+    user_id = str(current_user.get("id") or "")
+    if not user_id:
+        return JSONResponse({"error": "session has no user id"}, status_code=401)
+
+    mgr = request.app.state.browser_sessions
+    session = await mgr.get_session(session_id)
+    if session is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if session["owner_type"] != "user" or session["owner_id"] != user_id:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+
+    cluster = request.app.state.cluster_manager
+    target = body.target
+    capable = {n["name"] for n in list_browser_nodes(cluster)}
+    if target != "host" and target not in capable:
+        return JSONResponse({"error": "no_capable_node", "target": target}, status_code=409)
+
+    runner = getattr(request.app.state, "browser_container_runner", None)
+    auth_token = getattr(request.app.state, "browser_worker_auth_token", None)
+    vol = f"taos-browser-{session_id}"
+
+    async def emit(kind: str, payload: dict) -> None:
+        # Best-effort lifecycle signal; the broadcast channel agents subscribe to
+        # is confirmed during the F Task-5 round-trip.
+        logger.info("browser session %s: %s %s", session_id, kind, payload)
+
+    async def stop_source(sess: dict) -> None:
+        node = sess.get("node") or "host"
+        if node == "host":
+            if runner is not None and sess.get("container_id"):
+                await runner.stop(container_id=sess["container_id"])
+        else:
+            worker = cluster.get_worker(node)
+            if worker is not None and sess.get("container_id"):
+                await mgr.stop_on_worker(
+                    sess["id"], worker_url=worker.url,
+                    container_id=sess["container_id"], auth_token=auth_token,
+                    set_status=None,
+                )
+
+    async def move_volume(volume: str, src_node: str, dst_node: str) -> None:
+        # Real cross-node tar export/import is wired + verified in F Task 5.
+        logger.warning(
+            "browser session %s: profile volume %s move %s->%s pending integration",
+            session_id, volume, src_node, dst_node,
+        )
+
+    async def start_target(sess: dict, tgt: str) -> dict:
+        if tgt == "host":
+            return await mgr.start_on_host(sess["id"], profile_volume=vol, runner=runner)
+        worker = cluster.get_worker(tgt)
+        return await mgr.start_on_worker(
+            sess["id"], node=tgt, worker_url=worker.url,
+            profile_volume=vol, auth_token=auth_token,
+        )
+
+    try:
+        refreshed = await mgr.migrate_session(
+            session_id, target=target,
+            stop_source=stop_source, move_volume=move_volume,
+            start_target=start_target, emit=emit,
+        )
+    except BrowserWorkerError:
+        return JSONResponse({"error": "migration_failed"}, status_code=502)
+
+    if refreshed is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if refreshed.get("status") == "running" and refreshed.get("neko_url"):
+        signing_key = request.app.state.browser_session_signing_key
+        _, token = mint_session_token(session_id, user_id, signing_key)
+        return {**_apply_host_rewrite(refreshed, request), "stream_token": token}
+    return dict(refreshed)

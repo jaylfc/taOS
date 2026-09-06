@@ -1,0 +1,30 @@
+id: comfyui
+name: ComfyUI
+type: service
+category: image-gen
+version: 0.3.0
+description: "Node-based AI image generation — advanced Stable Diffusion workflows"
+homepage: https://github.com/comfyanonymous/ComfyUI
+license: GPL-3.0
+
+requires:
+  ram_mb: 2048
+  disk_mb: 10000
+  ports: [8188]
+
+install:
+  method: docker
+  image: ghcr.io/ai-dock/comfyui:latest
+  volumes:
+    - data:/workspace
+    - models:/workspace/ComfyUI/models
+  ports: [8188]
+
+hardware_tiers:
+  arm-npu-16gb: unsupported
+  arm-npu-32gb: degraded
+  x86-cuda-12gb: full
+  x86-cuda-24gb: full
+  x86-vulkan-8gb: degraded
+  x86-rocm-12gb: full
+  cpu-only: unsupported

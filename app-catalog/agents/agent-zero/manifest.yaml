@@ -1,0 +1,27 @@
+id: agent-zero
+name: Agent Zero
+type: agent-framework
+verification_status: alpha
+version: 0.8.0
+description: "Autonomous AI agent — self-correcting workflows, tool creation, computer control"
+homepage: https://github.com/frdel/agent-zero
+license: MIT
+
+requires:
+  ram_mb: 512
+  python: ">=3.10"
+
+install:
+  method: script
+  script: scripts/install-agent-zero.sh
+  note: |
+    Clones frdel/agent-zero into /opt/agent-zero and installs with pip.
+    No PyPI package — the `agent-zero` package on PyPI is an unrelated
+    voice-agent framework. Agent Zero is clone-and-run only.
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: degraded

@@ -1,0 +1,67 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { ProjectBoard } from "../ProjectBoard";
+import { projectsApi } from "../../../../lib/projects";
+
+beforeEach(() => {
+  vi.spyOn(projectsApi.tasks, "list").mockResolvedValue([]);
+  vi.spyOn(projectsApi.elements, "list").mockResolvedValue([]);
+  vi.spyOn(projectsApi, "subscribeEvents").mockReturnValue(() => {});
+});
+
+describe("ProjectBoard", () => {
+  it("renders three columns (Ready / Claimed / Closed) in Kanban mode", async () => {
+    render(<ProjectBoard projectId="p1" currentUserId="u1" />);
+    fireEvent.click(await screen.findByRole("tab", { name: /Kanban/ }));
+    await waitFor(() => {
+      expect(screen.getByRole("region", { name: /Ready/ })).toBeInTheDocument();
+      expect(screen.getByRole("region", { name: /Claimed/ })).toBeInTheDocument();
+      expect(screen.getByRole("region", { name: /Closed/ })).toBeInTheDocument();
+    });
+  });
+
+  it("toggles between Lanes and Kanban modes", async () => {
+    render(<ProjectBoard projectId="p1" currentUserId="u1" />);
+    fireEvent.click(await screen.findByRole("tab", { name: /Kanban/ }));
+    expect(screen.getByRole("tab", { name: /Kanban/ })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("renders a Quarantined column with quarantined tasks in Kanban mode", async () => {
+    vi.spyOn(projectsApi.tasks, "list").mockImplementation((_pid: string, status?: string) => {
+      if (status === "quarantined") return Promise.resolve([{ id: "tq1", title: "Q task", status: "quarantined", labels: [], priority: 1, strike_count: 2, latest_strike: { step: "bad" } } as any]);
+      return Promise.resolve([]);
+    });
+    render(<ProjectBoard projectId="p1" currentUserId="u1" isLead />);
+    fireEvent.click(await screen.findByRole("tab", { name: /Kanban/ }));
+    await waitFor(() => {
+      expect(screen.getByRole("region", { name: /Quarantined/ })).toBeInTheDocument();
+      expect(screen.getByText("Q task")).toBeInTheDocument();
+    });
+  });
+
+  it("does not open the move dialog for a parked card", async () => {
+    vi.spyOn(projectsApi.tasks, "list").mockImplementation((_pid: string, status?: string) => {
+      if (status === "parked") return Promise.resolve([{ id: "tp1", title: "Parked task", status: "parked", labels: [], priority: 1 } as any]);
+      return Promise.resolve([]);
+    });
+    render(<ProjectBoard projectId="p1" currentUserId="u1" isLead />);
+    fireEvent.click(await screen.findByRole("tab", { name: /Kanban/ }));
+    const card = await screen.findByLabelText("Parked task");
+    fireEvent.keyDown(card, { key: "m" });
+    // Parked is terminal: the card must offer no move affordance at all, so
+    // the dialog that would dispatch claim/release/close never opens.
+    expect(screen.queryByRole("dialog", { name: /Move task/ })).toBeNull();
+  });
+
+  it("shows unquarantine button on quarantined cards for leads", async () => {
+    vi.spyOn(projectsApi.tasks, "list").mockImplementation((_pid: string, status?: string) => {
+      if (status === "quarantined") return Promise.resolve([{ id: "tq1", title: "Q task", status: "quarantined", labels: [], priority: 1, strike_count: 1, latest_strike: { step: "boom" } } as any]);
+      return Promise.resolve([]);
+    });
+    render(<ProjectBoard projectId="p1" currentUserId="u1" isLead />);
+    fireEvent.click(await screen.findByRole("tab", { name: /Kanban/ }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Unquarantine task tq1/i })).toBeInTheDocument();
+    });
+  });
+});

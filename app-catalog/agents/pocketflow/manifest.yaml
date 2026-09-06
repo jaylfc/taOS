@@ -1,0 +1,24 @@
+id: pocketflow
+name: PocketFlow
+type: agent-framework
+verification_status: alpha
+version: 0.1.0
+description: "100-line LLM framework — zero deps, graph-based agents with MCP support"
+homepage: https://github.com/the-pocket/PocketFlow
+license: MIT
+
+requires:
+  ram_mb: 64
+  python: ">=3.10"
+
+install:
+  method: pip
+  package: pocketflow
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  x86-vulkan-4gb: full
+  cpu-only: full

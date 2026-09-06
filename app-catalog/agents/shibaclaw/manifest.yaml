@@ -1,0 +1,38 @@
+id: shibaclaw
+name: ShibaClaw
+type: agent-framework
+verification_status: alpha
+version: 0.0.13
+description: "Security-focused AI assistant with prompt injection protection, multi-channel support, and proactive learning"
+homepage: https://github.com/RikyZ90/ShibaClaw
+license: MIT
+
+requires:
+  ram_mb: 512
+  python: ">=3.11"
+
+install:
+  method: pip
+  package: shibaclaw
+
+config_schema:
+  - name: model
+    type: model-select
+    label: LLM Model
+    required: true
+  - name: provider
+    type: select
+    label: LLM Provider
+    options: [openai, anthropic, ollama, deepseek, groq, openrouter, vllm]
+    default: ollama
+  - name: learning_enabled
+    type: boolean
+    label: Proactive Learning
+    default: true
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

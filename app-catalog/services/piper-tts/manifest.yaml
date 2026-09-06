@@ -1,0 +1,32 @@
+id: piper-tts
+name: Piper TTS
+type: service
+category: voice
+version: latest
+description: "Fast local text-to-speech via Wyoming Piper — agents can generate natural voice audio"
+homepage: https://github.com/rhasspy/piper
+license: MIT
+
+requires:
+  ram_mb: 256
+  disk_mb: 500
+  ports: [10200]
+
+install:
+  method: docker
+  image: rhasspy/wyoming-piper:latest
+  volumes:
+    - voices:/data
+  ports: [10200]
+  env:
+    PIPER_VOICE: "en_US-lessac-medium"
+
+lifecycle:
+  health_check: "curl -sf http://localhost:10200"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

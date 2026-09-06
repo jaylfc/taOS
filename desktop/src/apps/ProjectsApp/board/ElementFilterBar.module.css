@@ -1,0 +1,28 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid var(--board-hair);
+}
+
+.chip {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--board-hair);
+  border-radius: 999px;
+  padding: 3px 11px;
+  color: #9a9aa1;
+  font: 600 11.5px -apple-system;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chip:hover { color: #d2d2d7; }
+
+.on {
+  background: rgba(34, 211, 238, 0.18);
+  color: #fff;
+  border-color: rgba(34, 211, 238, 0.4);
+}

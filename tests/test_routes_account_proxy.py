@@ -1,0 +1,879 @@
+import httpx
+import pytest
+
+_UPSTREAM = "https://taos.my"
+
+
+def _patch_upstream(monkeypatch, handler):
+    """Patch httpx.AsyncClient.request so ONLY the proxy's upstream call (an
+    absolute taos.my URL) is intercepted; the test client's own ASGI calls
+    (relative URLs) pass through to the real request."""
+    orig = httpx.AsyncClient.request
+
+    async def routed(self, method, url, **kw):
+        if str(url).startswith(_UPSTREAM):
+            return await handler(method, str(url), **kw)
+        return await orig(self, method, url, **kw)
+
+    monkeypatch.setattr("httpx.AsyncClient.request", routed)
+
+
+class _FakeResp:
+    def __init__(self, content=b"{}", status=200, headers=None):
+        self.content = content
+        self.status_code = status
+        self.headers = httpx.Headers(headers or {})
+
+
+@pytest.mark.asyncio
+async def test_account_me_503_when_explicitly_blanked(client, monkeypatch):
+    # An explicit blank override disables the proxy (the dev/off-taos.my state).
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "")
+    r = await client.get("/api/account/me")
+    assert r.status_code == 503
+    assert "not configured" in r.json().get("error", "")
+
+
+def test_base_url_defaults_to_taos_my(monkeypatch):
+    from tinyagentos.routes.account_proxy import _base_url
+    # Unset (the normal instance) uses the production account service.
+    monkeypatch.delenv("TAOS_ACCOUNT_BASE_URL", raising=False)
+    assert _base_url() == "https://taos.my"
+    # An explicit blank disables it; a real override is honored (trailing / trimmed).
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "")
+    assert _base_url() is None
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://staging.taos.my/")
+    assert _base_url() == "https://staging.taos.my"
+
+
+@pytest.mark.asyncio
+async def test_account_me_forwards_body_and_relays_cookie(client, monkeypatch):
+    """/api/account/me forwards to {base}/api/auth/me; the upstream body and
+    content-type pass through verbatim and the session cookie is relayed."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my/")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        return _FakeResp(
+            content=b'{"user_id":"u1","email":"a@b.c","taosgo":{"status":"none"}}',
+            headers={
+                "content-type": "application/json",
+                "set-cookie": "taosgo_session=abc; Path=/",
+            },
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.get("/api/account/me")
+    assert r.status_code == 200
+    assert r.json()["email"] == "a@b.c"
+    assert captured["url"] == "https://taos.my/api/auth/me"
+    assert captured["method"] == "GET"
+    assert "taosgo_session=abc" in r.headers.get("set-cookie", "")
+
+
+@pytest.mark.asyncio
+async def test_set_cookie_rescoped_to_proxy_origin(client, monkeypatch):
+    """A taos.my cookie carrying Domain + Secure must be rescoped to this
+    origin, or the browser rejects it: Domain is stripped, and Secure is
+    dropped because the test client speaks http. Other attrs are preserved."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+
+    async def handler(method, url, **kw):
+        return _FakeResp(
+            content=b"{}",
+            headers={
+                "content-type": "application/json",
+                "set-cookie": "taosgo_session=abc; Path=/; Domain=taos.my; Secure; HttpOnly",
+            },
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.get("/api/account/me")
+    sc = r.headers.get("set-cookie", "")
+    assert "taosgo_session=abc" in sc
+    assert "domain=" not in sc.lower()
+    assert "secure" not in sc.lower()
+    assert "HttpOnly" in sc
+
+
+@pytest.mark.asyncio
+async def test_account_me_503_when_upstream_unreachable(client, monkeypatch):
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+
+    async def handler(method, url, **kw):
+        raise httpx.ConnectError("down")
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.get("/api/account/me")
+    assert r.status_code == 503
+    assert "unreachable" in r.json().get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_secure_kept_when_x_forwarded_proto_https_and_trusted(client, monkeypatch):
+    """Behind a TLS-terminating proxy the request scheme is http but the browser
+    leg is https (X-Forwarded-Proto). When the deployment trusts that header
+    (TAOS_TRUST_FORWARDED_PROTO), the cookie Secure attr must be kept."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    monkeypatch.setenv("TAOS_TRUST_FORWARDED_PROTO", "1")
+
+    async def handler(method, url, **kw):
+        return _FakeResp(
+            headers={"content-type": "application/json", "set-cookie": "s=1; Path=/; Secure"}
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.get("/api/account/me", headers={"x-forwarded-proto": "https"})
+    assert "secure" in r.headers.get("set-cookie", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_x_forwarded_proto_ignored_when_untrusted(client, monkeypatch):
+    """Without the trust opt-in, X-Forwarded-Proto is client-spoofable, so it is
+    ignored and Secure is dropped over the plain-http test connection."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    monkeypatch.delenv("TAOS_TRUST_FORWARDED_PROTO", raising=False)
+
+    async def handler(method, url, **kw):
+        return _FakeResp(
+            headers={"content-type": "application/json", "set-cookie": "s=1; Path=/; Secure"}
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.get("/api/account/me", headers={"x-forwarded-proto": "https"})
+    assert "secure" not in r.headers.get("set-cookie", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_redirect_location_is_relayed(client, monkeypatch):
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+
+    async def handler(method, url, **kw):
+        return _FakeResp(content=b"", status=302, headers={"location": "https://taos.my/login"})
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.get("/api/account/me", follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers.get("location") == "https://taos.my/login"
+
+
+@pytest.mark.asyncio
+async def test_cluster_join_request_forwards(client, monkeypatch):
+    """/api/account/cluster/join/request forwards to {base}/api/cluster/join/request
+    with the body and the session cookie passed through."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        captured["cookie"] = kw.get("headers", {}).get("Cookie", "")
+        return _FakeResp(
+            content=b'{"request_id":"r1","status":"pending","expires_at":"2026-01-01T00:00:00Z"}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    # The `client` fixture carries the taOS controller (local admin) session
+    # cookie. It must NOT be relayed upstream: the forwarded Cookie is empty.
+    r = await client.post(
+        "/api/account/cluster/join/request",
+        json={"device_name": "Mac", "ttl": "10m"},
+    )
+    assert r.status_code == 200
+    assert r.json()["request_id"] == "r1"
+    assert captured["url"] == "https://taos.my/api/cluster/join/request"
+    assert captured["method"] == "POST"
+    assert "taos_session" not in captured["cookie"]
+    assert captured["cookie"] == ""
+
+
+@pytest.mark.asyncio
+async def test_cluster_join_poll_forwards_rid(client, monkeypatch):
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["url"] = url
+        return _FakeResp(content=b'{"status":"pending"}', headers={"content-type": "application/json"})
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.get("/api/account/cluster/join/requests/req-ABC_123/poll")
+    assert r.status_code == 200
+    assert captured["url"] == "https://taos.my/api/cluster/join/requests/req-ABC_123/poll"
+
+
+@pytest.mark.asyncio
+async def test_cluster_join_rejects_bad_request_id(client, monkeypatch):
+    """A request_id that could inject path/query never reaches the upstream: a
+    malformed token is rejected at the validator (400), and an encoded-slash
+    traversal attempt fails to match the route (404). Either way, no upstream
+    call is made (path-traversal / SSRF guard)."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    called = {"n": 0}
+
+    async def handler(method, url, **kw):
+        called["n"] += 1
+        return _FakeResp()
+
+    _patch_upstream(monkeypatch, handler)
+    # The encoded-slash case is blocked at routing (404); the others reach the
+    # validator and are rejected (400). Neither reaches the upstream.
+    for bad in ["..%2f..%2fauth%2fme", "r1;evil", "r1%20x", "x" * 65]:
+        r = await client.post(f"/api/account/cluster/join/requests/{bad}/approve")
+        assert r.status_code in (400, 404), bad
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_cluster_join_503_when_explicitly_blanked(client, monkeypatch):
+    # Unset now defaults to taos.my; an explicit blank disables the proxy (503).
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "")
+    r = await client.get("/api/account/cluster/join/requests")
+    assert r.status_code == 503
+
+
+# --- Guest preauth key minting (cross-user C2) ---
+@pytest.mark.asyncio
+async def test_cluster_guest_preauth_forwards_and_strips_key(client, monkeypatch):
+    """POST /api/account/cluster/join/guest-preauth validates contact_id,
+    forwards to upstream, and strips the preauth key from the response."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        captured["cookie"] = kw.get("headers", {}).get("Cookie", "")
+        captured["body"] = (kw.get("content") or b"").decode("utf-8")
+        return _FakeResp(
+            content=b'{"preauth_key":"guest-key-1","hostname":"guest-node",'
+                    b'"controller_token":"ct-token","headscale_preauth_key":"hs-key"}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/cluster/join/guest-preauth",
+        json={"contact_id": "hub:hogne"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    # Secrets must be stripped — no credential reaches the browser.
+    assert "preauth_key" not in body
+    assert "headscale_preauth_key" not in body
+    assert "controller_token" not in body
+    # Non-secret fields survive.
+    assert body.get("hostname") == "guest-node"
+    assert captured["url"] == "https://taos.my/api/cluster/join/guest-preauth"
+    assert captured["method"] == "POST"
+    assert "taos_session" not in captured["cookie"]
+    # The preauth key was captured server-side for out-of-band delivery
+    # to the guest instance (D1 delegation-accept handler consumes via
+    # _pop_guest_preauth_intent, which is the pop-and-evict accessor).
+    from tinyagentos.routes import account_proxy
+    intent = account_proxy._pop_guest_preauth_intent("hub:hogne")
+    assert intent is not None, "guest preauth key was not captured server-side"
+    assert intent["preauth_key"] == "guest-key-1"
+    assert intent["hostname"] == "guest-node"
+    # Consumed once — a second pop returns None.
+    assert account_proxy._pop_guest_preauth_intent("hub:hogne") is None
+
+
+@pytest.mark.asyncio
+async def test_cluster_guest_preauth_rejects_bad_contact_id(client, monkeypatch):
+    """Reject missing, malformed, or non-hub contact_id at the edge."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    called = {"n": 0}
+
+    async def handler(method, url, **kw):
+        called["n"] += 1
+        return _FakeResp()
+
+    _patch_upstream(monkeypatch, handler)
+    for bad_body in [
+        {},
+        {"contact_id": ""},
+        {"contact_id": "   "},
+        {"contact_id": "not-hub-prefix"},
+        {"contact_id": "hub:"},
+        {"contact_id": "hub:x" * 65},
+    ]:
+        r = await client.post(
+            "/api/account/cluster/join/guest-preauth", json=bad_body
+        )
+        assert r.status_code == 400, f"Expected 400 for {bad_body}"
+    # No upstream call was made for any rejected body.
+    assert called["n"] == 0
+
+
+# --- Account subdomain actions (account model slice 3) ---
+@pytest.mark.asyncio
+async def test_subdomains_check_forwards_name(client, monkeypatch):
+    """GET /api/account/subdomains/check?name=x forwards to
+    {base}/api/subdomains/check?name=x, relaying the session cookie."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        captured["cookie"] = kw.get("headers", {}).get("Cookie", "")
+        return _FakeResp(
+            content=b'{"available":true}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.get("/api/account/subdomains/check?name=mybiz")
+    assert r.status_code == 200
+    assert r.json()["available"] is True
+    assert captured["url"] == "https://taos.my/api/subdomains/check?name=mybiz"
+    assert captured["method"] == "GET"
+    assert "taos_session" not in captured["cookie"]
+    assert captured["cookie"] == ""
+
+
+@pytest.mark.asyncio
+async def test_subdomains_claim_forwards_body(client, monkeypatch):
+    """POST /api/account/subdomains/claim forwards to {base}/api/subdomains/claim
+    with the validated name in the body and the session cookie passed through."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        captured["cookie"] = kw.get("headers", {}).get("Cookie", "")
+        captured["body"] = kw.get("content", b"").decode("utf-8")
+        return _FakeResp(
+            content=b'{"id":"c1","name":"mybiz","status":"active"}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/subdomains/claim",
+        json={"name": "mybiz"},
+    )
+    assert r.status_code == 200
+    assert r.json()["name"] == "mybiz"
+    assert captured["url"] == "https://taos.my/api/subdomains/claim"
+    assert captured["method"] == "POST"
+    assert "taos_session" not in captured["cookie"]
+    assert captured["cookie"] == ""
+    assert "mybiz" in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_subdomains_release_forwards_body(client, monkeypatch):
+    """POST /api/account/subdomains/release forwards to
+    {base}/api/subdomains/release with the validated name in the body."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        captured["body"] = kw.get("content", b"").decode("utf-8")
+        return _FakeResp(
+            content=b'{"name":"mybiz","status":"released"}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post("/api/account/subdomains/release", json={"name": "mybiz"})
+    assert r.status_code == 200
+    assert captured["url"] == "https://taos.my/api/subdomains/release"
+    assert captured["method"] == "POST"
+    assert "mybiz" in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_subdomains_check_503_when_unconfigured(client, monkeypatch):
+    """An explicit blank override disables the proxy; every subdomain action
+    returns 503 without contacting the upstream."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "")
+    called = {"n": 0}
+
+    async def handler(method, url, **kw):
+        called["n"] += 1
+        return _FakeResp()
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.get("/api/account/subdomains/check?name=mybiz")
+    assert r.status_code == 503
+    assert "not configured" in r.json().get("error", "")
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_subdomains_claim_503_when_unconfigured(client, monkeypatch):
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "")
+    called = {"n": 0}
+
+    async def handler(method, url, **kw):
+        called["n"] += 1
+        return _FakeResp()
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post("/api/account/subdomains/claim", json={"name": "mybiz"})
+    assert r.status_code == 503
+    assert "not configured" in r.json().get("error", "")
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_subdomains_check_rejects_invalid_name(client, monkeypatch):
+    """A name that could inject path/query never reaches the upstream: it is
+    rejected at the validator (400) and no upstream call is made."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    called = {"n": 0}
+
+    async def handler(method, url, **kw):
+        called["n"] += 1
+        return _FakeResp()
+
+    _patch_upstream(monkeypatch, handler)
+    for bad in ["..%2f..%2f", "a/b", "a?x=1", "a;b", "../auth/me", "x" * 65]:
+        r = await client.get(f"/api/account/subdomains/check?name={bad}")
+        assert r.status_code == 400, bad
+        assert "invalid name" in r.json().get("error", "")
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_subdomains_claim_rejects_invalid_name(client, monkeypatch):
+    """A malformed name in the claim/release body is rejected (400) before the
+    upstream is contacted."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    called = {"n": 0}
+
+    async def handler(method, url, **kw):
+        called["n"] += 1
+        return _FakeResp()
+
+    _patch_upstream(monkeypatch, handler)
+    for bad in ["a/b", "a?x=1", "../auth/me", "x" * 65, ""]:
+        r = await client.post("/api/account/subdomains/claim", json={"name": bad})
+        assert r.status_code == 400, bad
+    # A non-JSON / non-dict body is also rejected (400), not forwarded.
+    r = await client.post(
+        "/api/account/subdomains/claim",
+        content=b"not json",
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 400
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_subdomains_release_rejects_invalid_name(client, monkeypatch):
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    called = {"n": 0}
+
+    async def handler(method, url, **kw):
+        called["n"] += 1
+        return _FakeResp()
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post("/api/account/subdomains/release", json={"name": "a/b"})
+    assert r.status_code == 400
+    assert called["n"] == 0
+
+
+# --- Hub identity directory actions (hub social slice 1) ---
+# The taos.my side (hub_identities/hub_key_log tables + register/lookup/rotate
+# with challenge proof) is the contract; here we assert the controller proxy
+# forwards to the right upstream path, relays the session cookie, and degrades to
+# 503 when the account service is unconfigured.
+@pytest.mark.asyncio
+async def test_hub_identity_register_forwards_body(client, monkeypatch):
+    """POST /api/account/hub/identity/register forwards to
+    {base}/api/hub/identity/register with the keys + proof body and the session
+    cookie passed through."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        captured["cookie"] = kw.get("headers", {}).get("Cookie", "")
+        captured["body"] = kw.get("content", b"").decode("utf-8")
+        return _FakeResp(
+            content=b'{"username":"alice","status":"registered"}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/identity/register",
+        json={"signing_pubkey": "aa", "encryption_pubkey": "bb", "proof": "cc"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "registered"
+    assert captured["url"] == "https://taos.my/api/hub/identity/register"
+    assert captured["method"] == "POST"
+    assert "taos_session" not in captured["cookie"]
+    assert captured["cookie"] == ""
+    assert "signing_pubkey" in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_hub_identity_lookup_forwards_username_and_returns_key_log(client, monkeypatch):
+    """GET /api/account/hub/identity/lookup?username=alice forwards to
+    {base}/api/hub/identity/lookup?username=alice and relays the directory's
+    keys + append-only key log verbatim."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        return _FakeResp(
+            content=(
+                b'{"username":"alice","signing_pubkey":"aa","encryption_pubkey":"bb",'
+                b'"key_log":[{"signing_pubkey":"aa","recovery":false}]}'
+            ),
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.get("/api/account/hub/identity/lookup?username=alice")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["signing_pubkey"] == "aa"
+    assert body["key_log"] == [{"signing_pubkey": "aa", "recovery": False}]
+    assert captured["url"] == "https://taos.my/api/hub/identity/lookup?username=alice"
+    assert captured["method"] == "GET"
+
+
+@pytest.mark.asyncio
+async def test_hub_identity_rotate_forwards_body(client, monkeypatch):
+    """POST /api/account/hub/identity/rotate forwards to
+    {base}/api/hub/identity/rotate with the rotation statement body."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        captured["body"] = kw.get("content", b"").decode("utf-8")
+        return _FakeResp(
+            content=b'{"status":"rotated"}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/identity/rotate",
+        json={"new_keys": {"signing_pubkey": "dd"}, "old_key_sig": "ee"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "rotated"
+    assert captured["url"] == "https://taos.my/api/hub/identity/rotate"
+    assert captured["method"] == "POST"
+    assert "new_keys" in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_hub_identity_lookup_rejects_invalid_username(client, monkeypatch):
+    """A username that could inject path/query never reaches the upstream: it is
+    rejected at the validator (400) and no upstream call is made."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    called = {"n": 0}
+
+    async def handler(method, url, **kw):
+        called["n"] += 1
+        return _FakeResp()
+
+    _patch_upstream(monkeypatch, handler)
+    for bad in ["a/b", "a?x=1", "../auth/me", "a;b", "x" * 65, ""]:
+        r = await client.get(f"/api/account/hub/identity/lookup?username={bad}")
+        assert r.status_code == 400, bad
+        assert "invalid username" in r.json().get("error", "")
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_hub_identity_503_when_unconfigured(client, monkeypatch):
+    """An explicit blank override disables the proxy; every hub identity action
+    returns 503 without contacting the upstream."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "")
+    called = {"n": 0}
+
+    async def handler(method, url, **kw):
+        called["n"] += 1
+        return _FakeResp()
+
+    _patch_upstream(monkeypatch, handler)
+    r1 = await client.post(
+        "/api/account/hub/identity/register",
+        json={"signing_pubkey": "aa", "encryption_pubkey": "bb", "proof": "cc"},
+    )
+    r2 = await client.get("/api/account/hub/identity/lookup?username=alice")
+    r3 = await client.post("/api/account/hub/identity/rotate", json={"new_keys": {}})
+    for r in (r1, r2, r3):
+        assert r.status_code == 503
+        assert "not configured" in r.json().get("error", "")
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_hub_identity_register_503_when_upstream_unreachable(client, monkeypatch):
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+
+    async def handler(method, url, **kw):
+        raise httpx.ConnectError("down")
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/identity/register",
+        json={"signing_pubkey": "aa", "encryption_pubkey": "bb", "proof": "cc"},
+    )
+    assert r.status_code == 503
+    assert "unreachable" in r.json().get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_forward_to_strips_local_session_cookie(client, monkeypatch):
+    """The proxy must NOT relay the local ``taos_session`` admin cookie upstream:
+    a taos.my log leak would otherwise expose valid local admin session tokens.
+    An upstream (taos.my) cookie in the same Cookie header IS forwarded."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["cookie"] = kw.get("headers", {}).get("Cookie", "")
+        return _FakeResp(
+            content=b'{"username":"alice","status":"registered"}',
+            headers={"content-type": "application/json"},
+        )
+
+    # Build a Cookie header with the (valid) local admin session plus an upstream
+    # taos.my session cookie. The proxy receives this from the browser. We keep
+    # the real session token so the request is authenticated; the fix must strip
+    # it from what is relayed upstream while forwarding the upstream cookie.
+    session = client.cookies.get("taos_session", "")
+    cookie_header = "taos_session=" + session + "; taosgo_session=upstream-value"
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/identity/register",
+        json={"signing_pubkey": "aa", "encryption_pubkey": "bb", "proof": "cc"},
+        headers={"cookie": cookie_header},
+    )
+    assert r.status_code == 200
+    forwarded = captured.get("cookie", "")
+    # The local session cookie must never reach the upstream.
+    assert "taos_session" not in forwarded
+    # The upstream cookie is forwarded as-is.
+    assert "taosgo_session=upstream-value" in forwarded
+
+
+@pytest.mark.asyncio
+async def test_forward_to_sends_no_cookie_when_only_local_session(client, monkeypatch):
+    """When the only cookie present is the local session cookie, the relayed
+    request must send no Cookie header at all (not an empty one)."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["cookie"] = kw.get("headers", {}).get("Cookie", "")
+        return _FakeResp(
+            content=b'{"username":"alice","status":"registered"}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/identity/register",
+        json={"signing_pubkey": "aa", "encryption_pubkey": "bb", "proof": "cc"},
+        headers={"cookie": "taos_session=" + client.cookies.get("taos_session", "")},
+    )
+    assert r.status_code == 200
+    assert "taos_session" not in captured.get("cookie", "")
+    assert captured.get("cookie", "") == ""
+
+
+# --- Hub sealed-envelope relay (cross-user collab A3) ---
+
+
+@pytest.mark.asyncio
+async def test_hub_relay_drop_forwards_envelope(client, monkeypatch):
+    """POST /api/account/hub/relay/drop forwards to
+    {base}/api/hub/relay/drop with the sealed envelope body."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    import tinyagentos.routes.account_proxy as mod
+    monkeypatch.setattr(mod, "resolve_local_identity_id", lambda _data_dir: None)
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        captured["body"] = kw.get("content", b"").decode("utf-8")
+        return _FakeResp(
+            content=b'{"status":"queued","count":1}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/relay/drop",
+        json={
+            "recipient": "hub:bob",
+            "sender_ephemeral_pub": "aa",
+            "nonce": "bb",
+            "ciphertext": "cc",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "queued"
+    assert captured["url"] == "https://taos.my/api/hub/relay/drop"
+    assert captured["method"] == "POST"
+    assert "hub:bob" in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_hub_relay_poll_forwards_recipient(client, monkeypatch):
+    """GET /api/account/hub/relay/poll?recipient=hub:alice forwards to
+    {base}/api/hub/relay/poll?recipient=hub:alice."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    import tinyagentos.routes.account_proxy as mod
+    monkeypatch.setattr(mod, "resolve_local_identity_id", lambda _data_dir: None)
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        return _FakeResp(
+            content=b'{"envelopes":[],"count":0}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.get("/api/account/hub/relay/poll?recipient=hub:alice")
+    assert r.status_code == 200
+    assert r.json()["count"] == 0
+    assert captured["url"] == "https://taos.my/api/hub/relay/poll?recipient=hub:alice"
+    assert captured["method"] == "GET"
+
+
+@pytest.mark.asyncio
+async def test_hub_relay_drop_rejects_invalid_recipient(client, monkeypatch):
+    """An invalid recipient in the body is rejected 400 before forwarding."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+
+    async def handler(method, url, **kw):
+        pytest.fail("must not be called for invalid recipient")
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/relay/drop",
+        json={
+            "recipient": "../admin",
+            "sender_ephemeral_pub": "aa",
+            "nonce": "bb",
+            "ciphertext": "cc",
+        },
+    )
+    assert r.status_code == 400
+    assert "invalid recipient" in r.json()["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_hub_relay_drop_rejects_non_dict_body(client, monkeypatch):
+    """A JSON array (or any non-dict) body is rejected 400 before forwarding."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+
+    async def handler(method, url, **kw):
+        pytest.fail("must not be called for non-dict body")
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/relay/drop",
+        json=[1, 2, 3],
+    )
+    assert r.status_code == 400
+    assert "invalid body" in r.json()["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_hub_relay_poll_rejects_invalid_recipient(client, monkeypatch):
+    """An invalid recipient (path injection) is rejected 400 before forwarding."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+
+    async def handler(method, url, **kw):
+        pytest.fail("must not be called for invalid recipient")
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.get("/api/account/hub/relay/poll?recipient=../admin")
+    assert r.status_code == 400
+    assert "invalid recipient" in r.json()["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_hub_relay_drop_allows_different_recipient(client, monkeypatch):
+    """Drop is outbound send — a node CAN drop envelopes to a different
+    recipient.  Recipient binding only applies to hub_relay_poll (polling
+    your own queue)."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["url"] = url
+        return _FakeResp(
+            content=b'{"status":"queued","count":1}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/relay/drop",
+        json={
+            "recipient": "hub:bob",
+            "sender_ephemeral_pub": "aa",
+            "nonce": "bb",
+            "ciphertext": "cc",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_hub_relay_drop_accepts_matching_recipient(client, monkeypatch):
+    """When the in-body recipient matches the local hub identity the request
+    is forwarded normally."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+
+    import tinyagentos.routes.account_proxy as mod
+    monkeypatch.setattr(
+        mod, "resolve_local_identity_id", lambda _data_dir: "hub:alice"
+    )
+
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["url"] = url
+        captured["body"] = kw.get("content", b"").decode("utf-8")
+        return _FakeResp(
+            content=b'{"status":"queued","count":1}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/relay/drop",
+        json={
+            "recipient": "hub:alice",
+            "sender_ephemeral_pub": "aa",
+            "nonce": "bb",
+            "ciphertext": "cc",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "queued"
+    assert captured["url"] == "https://taos.my/api/hub/relay/drop"

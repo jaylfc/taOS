@@ -1,0 +1,50 @@
+name: Store wiring gate
+
+# Detects PRs that add a new BaseStore subclass without wiring it into
+# tinyagentos/app.py. Routes reach stores ONLY via request.app.state, so a
+# store that is never assigned to app.state is unreachable.
+#
+# Start with a NAME-LEVEL check (class name appears in the lifespan file).
+# Only newly added classes are policed; pre-existing orphans are skipped so
+# the check is mergeable on any branch. A class that some other class under
+# tinyagentos/ subclasses AND that declares no SCHEMA is skipped too: such a
+# base exists to be inherited from, never to be assigned to app.state, and its
+# concrete subclasses are each checked in their own right. A class that
+# declares SCHEMA owns tables, so it is a store and stays policed.
+#
+# A "Store-Unwired-Intentionally: <ClassName>, <why>" trailer in the PR body
+# waives a named class and logs it, for stores genuinely constructed elsewhere
+# (tests, CLI, workers).
+#
+# See scripts/check_store_wiring.py for the implementation.
+
+on:
+  pull_request:
+    # "edited" so a waiver trailer added by editing the PR body retriggers the
+    # gate (a re-run replays the stale event payload with the old body).
+    types: [opened, synchronize, reopened, edited]
+    branches: [master, dev]
+
+jobs:
+  store-wiring-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      BASE_REF: ${{ github.base_ref }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch base branch
+        run: git fetch origin "$BASE_REF"
+
+      - name: Check for unwired BaseStore subclasses
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python scripts/check_store_wiring.py --base "origin/$BASE_REF"

@@ -1,0 +1,95 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "id": "abc123",
+            "subreddit": "LocalLLaMA",
+            "title": "Running LLMs on Orange Pi 5 — my experience",
+            "author": "edge_hacker",
+            "selftext": "I've been running various LLMs on my Orange Pi 5 Plus with the NPU. Here are my findings after two weeks of testing.",
+            "score": 342,
+            "upvote_ratio": 0.97,
+            "num_comments": 42,
+            "created_utc": 1712000000.0,
+            "url": "https://www.reddit.com/r/LocalLLaMA/comments/abc123/running_llms_on_orange_pi_5/",
+            "permalink": "/r/LocalLLaMA/comments/abc123/running_llms_on_orange_pi_5/",
+            "link_flair_text": "Discussion",
+            "is_self": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "id": "cmt001",
+            "author": "npu_fan",
+            "body": "Great write-up! I had similar results with the RK3588 NPU.",
+            "score": 88,
+            "created_utc": 1712001000.0,
+            "depth": 0,
+            "parent_id": "t3_abc123",
+            "edited": false,
+            "distinguished": null,
+            "replies": {
+              "kind": "Listing",
+              "data": {
+                "children": [
+                  {
+                    "kind": "t1",
+                    "data": {
+                      "id": "cmt002",
+                      "author": "arm_dev",
+                      "body": "Which model gave you the best tokens/sec?",
+                      "score": 34,
+                      "created_utc": 1712002000.0,
+                      "depth": 1,
+                      "parent_id": "t1_cmt001",
+                      "edited": 1712002500.0,
+                      "distinguished": null,
+                      "replies": ""
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "cmt003",
+            "author": "[deleted]",
+            "body": "[deleted]",
+            "score": 0,
+            "created_utc": 1712003000.0,
+            "depth": 0,
+            "parent_id": "t3_abc123",
+            "edited": false,
+            "distinguished": null,
+            "replies": ""
+          }
+        },
+        {
+          "kind": "more",
+          "data": {
+            "id": "more001",
+            "children": ["cmt004", "cmt005"],
+            "count": 2,
+            "depth": 0,
+            "parent_id": "t3_abc123"
+          }
+        }
+      ]
+    }
+  }
+]

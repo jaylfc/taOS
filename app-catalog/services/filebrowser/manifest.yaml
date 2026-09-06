@@ -1,0 +1,31 @@
+id: filebrowser
+name: File Browser
+type: service
+category: productivity
+version: latest
+description: "Web file manager — browse and manage agent workspaces through a clean browser UI"
+homepage: https://filebrowser.org
+license: Apache-2.0
+
+requires:
+  ram_mb: 64
+  disk_mb: 100
+  ports: [8080]
+
+install:
+  method: docker
+  image: filebrowser/filebrowser:latest
+  volumes:
+    - data:/srv
+    - config:/config
+  ports: [8080]
+
+lifecycle:
+  health_check: "curl -sf http://localhost:8080"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

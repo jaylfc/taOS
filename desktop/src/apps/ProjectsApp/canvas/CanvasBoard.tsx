@@ -1,0 +1,202 @@
+import { useEffect, useMemo, useRef } from "react";
+import { Tldraw, Editor, createTLStore, defaultShapeUtils, TLShape } from "@tldraw/tldraw";
+import { getAssetUrlsByMetaUrl } from "@tldraw/assets/urls";
+import "@tldraw/tldraw/tldraw.css";
+
+import { canvasApi, CanvasElement } from "./canvas-api";
+import { elementToShape } from "./element-to-shape";
+import { createCanvasStore } from "./canvas-store";
+import { subscribeCanvasStream } from "./canvas-sse";
+import { TaosNoteShapeUtil } from "./shapes/NoteShape";
+import { TaosLinkShapeUtil } from "./shapes/LinkShape";
+import { TaosImageShapeUtil } from "./shapes/ImageShape";
+import { TaosGenericShapeUtil } from "./shapes/GenericShape";
+import { TaosTextShapeUtil } from "./shapes/TextShape";
+import { useIsMobile } from "../../../hooks/use-is-mobile";
+
+interface CanvasBoardProps {
+  projectId: string;
+  projectSlug: string;
+  elementId?: string | null;
+}
+
+const CUSTOM_SHAPE_UTILS = [
+  TaosNoteShapeUtil,
+  TaosLinkShapeUtil,
+  TaosImageShapeUtil,
+  TaosGenericShapeUtil,
+  TaosTextShapeUtil,
+];
+
+// Self-host tldraw's fonts/translations/icons so they load same-origin.
+// taOS is offline-first and its CSP forbids cdn.tldraw.com; getAssetUrlsByMetaUrl
+// resolves every asset via import.meta.url, which Vite bundles to hashed
+// same-origin URLs that satisfy default-src/connect-src 'self'.
+const ASSET_URLS = getAssetUrlsByMetaUrl();
+
+export function CanvasBoard({ projectId, projectSlug, elementId }: CanvasBoardProps) {
+  const isMobile = useIsMobile();
+  const cacheRef = useRef(createCanvasStore());
+  const editorRef = useRef<Editor | null>(null);
+
+  // The store validates records against its schema, so the custom shape utils
+  // must be passed to createTLStore (not just to <Tldraw>, which only governs
+  // rendering). Without this, store.put rejects taos-* shape types with a
+  // ValidationError ("got taos-generic").
+  const store = useMemo(
+    () =>
+      createTLStore({
+        shapeUtils: [...defaultShapeUtils, ...CUSTOM_SHAPE_UTILS],
+        defaultName: `canvas-${projectId}`,
+      }),
+    [projectId],
+  );
+
+  // Initial load + SSE subscription
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const elements = await canvasApi.listElements(projectId, elementId);
+      if (cancelled) return;
+      cacheRef.current.getState().seed(elements);
+      hydrateEditor(editorRef.current, elements, projectSlug, elementId);
+    })();
+    const unsub = subscribeCanvasStream(projectId, cacheRef.current);
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, [projectId, projectSlug, elementId]);
+
+  // Re-hydrate on local cache changes (SSE-driven updates from agents). The
+  // editor only ever renders the items belonging to the active element scope,
+  // so a cross-element SSE event is accepted into the cache but filtered out of
+  // the board until the scope changes.
+  useEffect(() => {
+    const unsub = cacheRef.current.subscribe((s) => {
+      hydrateEditor(editorRef.current, Object.values(s.elements), projectSlug, elementId);
+    });
+    return unsub;
+  }, [projectSlug, elementId]);
+
+  // Keep readonly state in sync if isMobile changes after mount (e.g. window resize)
+  useEffect(() => {
+    editorRef.current?.updateInstanceState({ isReadonly: isMobile });
+  }, [isMobile]);
+
+  return (
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      <Tldraw
+        store={store}
+        assetUrls={ASSET_URLS}
+        shapeUtils={[...defaultShapeUtils, ...CUSTOM_SHAPE_UTILS] as any}
+        onMount={(editor) => {
+          editorRef.current = editor;
+          editor.updateInstanceState({ isReadonly: isMobile });
+          // Send local user edits to backend
+          editor.store.listen(
+            (entry) => {
+              if (entry.source !== "user") return;
+              const added = entry.changes.added as Record<string, TLShape | undefined>;
+              for (const shape of Object.values(added)) {
+                if (!shape || !shape.id.startsWith("shape:")) continue;
+                pushAdd(projectId, shape, elementId).catch(console.warn);
+              }
+              const updated = entry.changes.updated as Record<string, [TLShape, TLShape] | undefined>;
+              for (const pair of Object.values(updated)) {
+                if (!pair) continue;
+                const next = pair[1];
+                if (!next.id.startsWith("shape:")) continue;
+                pushUpdate(projectId, next).catch(console.warn);
+              }
+              const removed = entry.changes.removed as Record<string, TLShape | undefined>;
+              for (const shape of Object.values(removed)) {
+                if (!shape || !shape.id.startsWith("shape:")) continue;
+                const removedElementId = shape.id.replace(/^shape:/, "");
+                canvasApi.deleteElement(projectId, removedElementId).catch(console.warn);
+              }
+            },
+            { source: "user", scope: "document" },
+          );
+        }}
+      />
+    </div>
+  );
+}
+
+function hydrateEditor(
+  editor: Editor | null,
+  elements: CanvasElement[],
+  projectSlug: string,
+  elementId?: string | null,
+) {
+  if (!editor) return;
+  // When the board is scoped to an element, only that element's items belong on
+  // the canvas. A null/undefined scope shows every item (project-level view).
+  const scoped = elementId == null
+    ? elements
+    : elements.filter((e) => e.element_id === elementId);
+  editor.run(() => {
+    const wantedIds = new Set(scoped.map((e) => `shape:${e.id}`));
+    const existing = editor.getCurrentPageShapes();
+    const toRemove = existing.filter((s) => !wantedIds.has(s.id) && s.id.toString().startsWith("shape:"));
+    if (toRemove.length) editor.deleteShapes(toRemove.map((s) => s.id) as any);
+
+    for (const el of scoped) {
+      // Isolate each element: a single malformed shape (bad payload, a props
+      // shape tldraw's validator rejects, a version-skewed tldraw_shape) must
+      // not throw out of editor.run and take down the whole canvas. Skip it and
+      // keep going; the rest of the board still renders.
+      try {
+        const id = `shape:${el.id}` as TLShape["id"];
+        const existingShape = editor.getShape(id);
+        const newShape = elementToShape(el, projectSlug);
+        if (existingShape) {
+          editor.updateShape(newShape);
+        } else {
+          editor.createShape(newShape);
+        }
+      } catch (err) {
+        console.warn("canvas: skipping unrenderable element", el.id, err);
+      }
+    }
+  });
+}
+
+// taos_* lives in props for note/link/image and in meta for taos-generic.
+// Read from whichever is present so round-tripping works for every kind.
+function readTaos(shape: TLShape) {
+  const props = shape.props as any;
+  const meta = shape.meta as any;
+  return {
+    kind: props.taos_kind ?? meta.taos_kind,
+    payload: props.taos_payload ?? meta.taos_payload,
+  };
+}
+
+async function pushAdd(projectId: string, shape: TLShape, elementId?: string | null) {
+  if (!shape.id.toString().startsWith("shape:")) return;
+  const props: any = shape.props;
+  const { kind, payload } = readTaos(shape);
+  await canvasApi.addElement(projectId, {
+    id: shape.id.toString().replace(/^shape:/, ""),
+    kind: (kind ?? "user_shape") as any,
+    x: shape.x, y: shape.y,
+    w: props.w ?? 100, h: props.h ?? 100,
+    rotation: shape.rotation,
+    payload: payload ?? { tldraw_shape: shape },
+    element_id: elementId ?? null,
+  });
+}
+
+async function pushUpdate(projectId: string, shape: TLShape) {
+  const elementId = shape.id.toString().replace(/^shape:/, "");
+  const props: any = shape.props;
+  const { payload } = readTaos(shape);
+  await canvasApi.updateElement(projectId, elementId, {
+    x: shape.x, y: shape.y,
+    w: props.w, h: props.h,
+    rotation: shape.rotation,
+    payload,
+  });
+}

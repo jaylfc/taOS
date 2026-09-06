@@ -1,0 +1,1460 @@
+from __future__ import annotations
+import asyncio
+import datetime
+import httpx
+import io
+import ipaddress
+import logging
+import os
+import shutil
+import tarfile
+import tempfile
+import time
+from collections import OrderedDict
+from pathlib import Path
+from urllib.parse import urlparse
+
+import yaml
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
+from tinyagentos.config import AppConfig, save_config_locked, validate_config
+from tinyagentos.auto_update import resolve_tracked_branch, is_valid_branch_name, PREF_NAMESPACE
+from tinyagentos.data_snapshot import snapshot_data_dir
+from tinyagentos.middleware.upload_body_limit import register_upload_cap
+from tinyagentos.safe_archive import ArchiveError, extract_tar_safely
+from tinyagentos.update_runner import switch_to_branch
+from tinyagentos.restart_orchestrator import write_pending_restart
+
+logger = logging.getLogger(__name__)
+
+
+async def _require_admin_or_local_token(request: Request) -> None:
+    """Gate the entire system-settings router to admin or the host local token.
+
+    This router reads/overwrites system config and triggers updates/restarts
+    (GHSA-47g9-fwwp-hrfp): a plain non-admin user session must never reach any
+    handler below. Mirrors ``tinyagentos.routes.skill_exec._is_admin_or_local_token``
+    -- see that function's docstring for why both signals (``is_admin`` and
+    ``via == "local_token"``) are checked; ``AuthMiddleware``
+    (tinyagentos/auth_middleware.py) sets both on ``request.state``.
+
+    Attached as a router-level dependency so every route in this module is
+    covered without each handler repeating the check.
+    """
+    if getattr(request.state, "is_admin", False):
+        return
+    if getattr(request.state, "via", None) == "local_token":
+        return
+    raise HTTPException(status_code=403, detail="forbidden")
+
+
+router = APIRouter(dependencies=[Depends(_require_admin_or_local_token)])
+
+
+async def _run_capture(
+    cmd: list[str],
+    cwd: str | None = None,
+    timeout: float | None = 600.0,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str]:
+    """Run a subprocess capturing combined stdout+stderr, with timeout.
+
+    Wraps ``asyncio.create_subprocess_exec`` so callers don't have to plumb
+    the PIPE/communicate dance themselves.
+
+    Parameters
+    ----------
+    cmd:
+        Command list (no shell — argv-style).
+    cwd:
+        Working directory.
+    timeout:
+        Wall-clock seconds. Default 10 minutes — long enough for pip
+        wheels on a Pi but short enough to fail loud rather than hang
+        the user's session indefinitely (issue #327).  Pass ``None`` to
+        disable the timeout (rare; only for trusted long-running calls).
+
+    Returns
+    -------
+    tuple[int, str]
+        ``(returncode, combined_output)``.  On timeout, returncode is
+        ``-1`` and the output ends with a clear ``[TIMEOUT after Ns]``
+        marker so callers can include it in the error surface.
+    env:
+        Optional environment mapping for the child process. ``None`` (the
+        default) inherits the parent environment unchanged; callers that
+        need an override (e.g. uv's ``HOME``) pass a full env dict.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=cwd,
+        env=env,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return proc.returncode or 0, out.decode() if out else ""
+    except asyncio.TimeoutError:
+        # Kill the subprocess so it doesn't leak. communicate() may have
+        # buffered some output before we hit the timeout but we can't
+        # safely retrieve it without potentially blocking again.  Don't
+        # rely on proc.wait() unbounded — on some Linux kernels the
+        # asyncio subprocess transport can hold a pipe FD open after
+        # SIGKILL, leaving wait() pending until manual reap (#323/#327
+        # CI flake).  So bound it.
+        try:
+            proc.kill()
+        except (ProcessLookupError, Exception):  # noqa: BLE001
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+            pass
+        return -1, f"[TIMEOUT after {timeout}s] cmd: {' '.join(cmd[:3])}..."
+
+
+class ConfigUpdate(BaseModel):
+    yaml: str
+
+
+class PlatformUpdate(BaseModel):
+    poll_interval: int
+    retention_days: int
+    catalog_repo: str = ""
+
+
+def _dir_size(path: Path) -> int:
+    """Return total size of a directory in bytes."""
+    if not path.exists():
+        return 0
+    total = 0
+    try:
+        for entry in path.rglob("*"):
+            if entry.is_file():
+                try:
+                    total += entry.stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format bytes into a human-readable string."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 ** 2:
+        return f"{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 ** 3:
+        return f"{size_bytes / (1024 ** 2):.1f} MB"
+    else:
+        return f"{size_bytes / (1024 ** 3):.2f} GB"
+
+
+def _get_storage_stats(app) -> list[dict]:
+    """Compute storage usage for key directories."""
+    data_dir = app.state.config_path.parent
+    items = []
+
+    # Models dir
+    models_dir = data_dir / "models"
+    models_bytes = _dir_size(models_dir)
+    items.append({
+        "label": "Models",
+        "path": str(models_dir),
+        "size": _format_size(models_bytes),
+        "bytes": models_bytes,
+    })
+
+    # Data dir
+    data_bytes = _dir_size(data_dir)
+    items.append({
+        "label": "Data",
+        "path": str(data_dir),
+        "size": _format_size(data_bytes),
+        "bytes": data_bytes,
+    })
+
+    # App catalog
+    catalog_dir = getattr(app.state, "registry", None)
+    if catalog_dir and hasattr(catalog_dir, "catalog_dir"):
+        cat_path = catalog_dir.catalog_dir
+    else:
+        cat_path = data_dir.parent / "app-catalog"
+    cat_bytes = _dir_size(cat_path)
+    items.append({
+        "label": "App Catalog",
+        "path": str(cat_path),
+        "size": _format_size(cat_bytes),
+        "bytes": cat_bytes,
+    })
+
+    return items
+
+
+@router.get("/api/config")
+async def get_config(request: Request):
+    """Get current configuration as YAML."""
+    config = request.app.state.config
+    return {"yaml": yaml.dump(config.to_dict(), default_flow_style=False, sort_keys=False)}
+
+
+@router.put("/api/config")
+async def save_config_endpoint(request: Request, body: ConfigUpdate, validate_only: bool = False):
+    """Validate and save configuration from YAML."""
+    try:
+        data = yaml.safe_load(body.yaml)
+    except yaml.YAMLError as e:
+        return JSONResponse({"error": f"Invalid YAML: {e}"}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({"error": "Config must be a YAML mapping"}, status_code=400)
+    new_config = AppConfig(
+        server=data.get("server", {}),
+        backends=data.get("backends", []),
+        qmd=data.get("qmd", {}),
+        agents=data.get("agents", []),
+        metrics=data.get("metrics", {}),
+        webhooks=data.get("webhooks", []),
+        archived_agents=data.get("archived_agents", []),
+        archive=data.get("archive", {}),
+        memory_url=data.get("memory_url", "http://localhost:7900"),
+        taosmd_dir=str(data.get("taosmd_dir", "") or ""),
+        taosmd_restart_cmd=str(data.get("taosmd_restart_cmd", "") or ""),
+        github_app_id=str(data.get("github_app_id", "") or ""),
+        lora_ingest_proxy_url=str(data.get("lora_ingest_proxy_url", "") or ""),
+        config_path=request.app.state.config_path,
+    )
+    errors = validate_config(new_config)
+    if errors:
+        return JSONResponse({"error": "Validation failed", "details": errors}, status_code=400)
+    if validate_only:
+        return {"status": "valid", "message": "Config is valid"}
+    await save_config_locked(new_config, request.app.state.config_path)
+    request.app.state.config = new_config
+    # Clear stale runtime override so _taosmd_base picks up the new config value
+    if hasattr(request.app.state, "taosmd_url"):
+        del request.app.state.taosmd_url
+    return {"status": "saved", "message": "Config saved successfully"}
+
+
+@router.get("/api/settings/storage")
+async def get_storage(request: Request):
+    """Return storage usage as JSON."""
+    storage = _get_storage_stats(request.app)
+    return {"storage": storage}
+
+
+@router.put("/api/settings/platform")
+async def save_platform_settings(request: Request, body: PlatformUpdate):
+    """Update platform settings (metrics interval/retention)."""
+    config = request.app.state.config
+    config.metrics["poll_interval"] = body.poll_interval
+    config.metrics["retention_days"] = body.retention_days
+    await save_config_locked(config, request.app.state.config_path)
+    return {"status": "saved", "message": "Platform settings saved"}
+
+
+@router.get("/api/settings/llm-proxy")
+async def llm_proxy_status(request: Request):
+    """Return LLM proxy status for the settings page."""
+    proxy = request.app.state.llm_proxy
+    return {
+        "running": proxy.is_running() if hasattr(proxy, "is_running") else False,
+        "port": proxy.port if hasattr(proxy, "port") else 7834,
+        "backends": len(request.app.state.config.backends),
+    }
+
+
+@router.post("/api/settings/test-backend")
+async def test_backend_connection(request: Request):
+    """Test connectivity to a backend URL."""
+    from tinyagentos.backend_adapters import get_adapter
+    body = await request.json()
+    url = body.get("url", "")
+    backend_type = body.get("type", "rkllama")
+    if not url:
+        return JSONResponse({"error": "URL required"}, status_code=400)
+    try:
+        adapter = get_adapter(backend_type)
+        http_client = request.app.state.http_client
+        result = await adapter.health(http_client, url)
+        return {"reachable": result["status"] == "ok", "response_ms": result.get("response_ms", 0), "models": result.get("models", [])}
+    except Exception as e:
+        return {"reachable": False, "error": str(e)}
+
+
+@router.post("/api/backup")
+async def create_backup(request: Request):
+    """Create a downloadable backup of configuration and app data."""
+    data_dir = request.app.state.config_path.parent
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name in ["config.yaml", "installed.json", "hardware.json"]:
+            path = data_dir / name
+            if path.exists():
+                tar.add(str(path), arcname=f"backup/{name}")
+        catalog_dir = data_dir.parent / "app-catalog"
+        if catalog_dir.exists():
+            tar.add(str(catalog_dir), arcname="backup/app-catalog")
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/gzip",
+        headers={"Content-Disposition": f"attachment; filename=tinyagentos-backup-{int(time.time())}.tar.gz"},
+    )
+
+
+# Cap the backup upload so a hostile body is never fully buffered; the archive's
+# own bomb limits then bound what the extraction can write into the data dir.
+_MAX_BACKUP_BYTES = 64 * 1024 * 1024
+
+# The read() below runs only after FastAPI has already spooled the multipart
+# body, so the cap also has to be enforced on the arriving request.
+register_upload_cap("/api/restore", lambda: _MAX_BACKUP_BYTES)
+
+
+@router.post("/api/restore")
+async def restore_backup(request: Request, file: UploadFile):
+    """Restore configuration from a backup tarball."""
+    data_dir = request.app.state.config_path.parent
+    # Read one byte past the cap so an oversized upload is detected without
+    # buffering the rest of it (same pattern as the package installers).
+    content = await file.read(_MAX_BACKUP_BYTES + 1)
+    if len(content) > _MAX_BACKUP_BYTES:
+        return JSONResponse({"error": "backup file too large (64 MB max)"}, status_code=413)
+    buf = io.BytesIO(content)
+    try:
+        with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+            # Stage inside data_dir (same filesystem, so the moves are renames).
+            # extract_tar_safely applies the shared bomb caps before anything is
+            # written and PEP 706's "data" filter while it writes, so the
+            # "backup/" prefix can be stripped by relocating real files rather
+            # than by trusting a member name.
+            staging = Path(tempfile.mkdtemp(prefix=".taos-restore-", dir=str(data_dir)))
+            try:
+                extract_tar_safely(tar, staging, kind="backup")
+                root = staging / "backup"
+                if root.is_dir():
+                    for src in sorted(root.rglob("*")):
+                        if src.is_symlink() or not src.is_file():
+                            continue
+                        dest = data_dir / src.relative_to(root)
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(src), str(dest))
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+    except ArchiveError as e:
+        return JSONResponse({"error": f"Invalid backup file: {e}"}, status_code=400)
+    except tarfile.TarError as e:
+        return JSONResponse({"error": f"Invalid backup file: {e}"}, status_code=400)
+    # Reload config if config.yaml was restored
+    config_path = request.app.state.config_path
+    if config_path.exists():
+        try:
+            with open(config_path) as fh:
+                data = yaml.safe_load(fh) or {}
+            new_config = AppConfig(
+                server=data.get("server", {}),
+                backends=data.get("backends", []),
+                qmd=data.get("qmd", {}),
+                agents=data.get("agents", []),
+                metrics=data.get("metrics", {}),
+                webhooks=data.get("webhooks", []),
+                archived_agents=data.get("archived_agents", []),
+                archive=data.get("archive", {}),
+                memory_url=data.get("memory_url", "http://localhost:7900"),
+                taosmd_dir=str(data.get("taosmd_dir", "") or ""),
+                taosmd_restart_cmd=str(data.get("taosmd_restart_cmd", "") or ""),
+                github_app_id=str(data.get("github_app_id", "") or ""),
+                lora_ingest_proxy_url=str(data.get("lora_ingest_proxy_url", "") or ""),
+                config_path=config_path,
+            )
+            request.app.state.config = new_config
+            if hasattr(request.app.state, "taosmd_url"):
+                del request.app.state.taosmd_url
+        except Exception:
+            pass
+    return {"status": "restored", "message": "Backup restored successfully"}
+
+
+class BackupSchedule(BaseModel):
+    frequency: str  # "off", "daily", "weekly"
+
+
+BACKUP_SCHEDULES = {
+    "daily": "0 3 * * *",
+    "weekly": "0 3 * * 0",
+}
+
+
+@router.get("/api/settings/backup-schedule")
+async def get_backup_schedule(request: Request):
+    """Get current backup schedule."""
+    scheduler = request.app.state.scheduler
+    tasks = await scheduler.list_tasks()
+    backup_task = next((t for t in tasks if t.get("name") == "auto-backup"), None)
+    if backup_task:
+        # Reverse-lookup frequency from cron
+        cron = backup_task.get("schedule", "")
+        freq = "custom"
+        for name, sched in BACKUP_SCHEDULES.items():
+            if sched == cron:
+                freq = name
+                break
+        return {"frequency": freq, "schedule": cron, "task_id": backup_task.get("id")}
+    return {"frequency": "off", "schedule": None, "task_id": None}
+
+
+@router.put("/api/settings/backup-schedule")
+async def set_backup_schedule(request: Request, body: BackupSchedule):
+    """Set or disable automatic backup schedule."""
+    scheduler = request.app.state.scheduler
+
+    # Remove existing backup task if any
+    tasks = await scheduler.list_tasks()
+    for task in tasks:
+        if task.get("name") == "auto-backup":
+            await scheduler.delete_task(task["id"])
+
+    if body.frequency == "off":
+        return {"status": "disabled", "frequency": "off"}
+
+    cron = BACKUP_SCHEDULES.get(body.frequency)
+    if not cron:
+        return JSONResponse({"error": f"Invalid frequency: {body.frequency}"}, status_code=400)
+
+    await scheduler.add_task(
+        name="auto-backup",
+        schedule=cron,
+        command="create_backup",
+        agent_name=None,
+    )
+    return {"status": "enabled", "frequency": body.frequency, "schedule": cron}
+
+
+class WebhookAdd(BaseModel):
+    url: str
+    type: str = "generic"
+    bot_token: str = ""
+    chat_id: str = ""
+
+
+@router.get("/api/settings/webhooks")
+async def get_webhooks(request: Request):
+    """Return configured webhooks."""
+    config = request.app.state.config
+    webhooks = config.webhooks if hasattr(config, "webhooks") else []
+    return {"webhooks": webhooks}
+
+
+@router.post("/api/settings/webhooks")
+async def add_webhook(request: Request, body: WebhookAdd):
+    """Add a webhook endpoint."""
+    config = request.app.state.config
+    if not hasattr(config, "webhooks"):
+        config.webhooks = []
+    wh = {"url": body.url, "type": body.type}
+    if body.bot_token:
+        wh["bot_token"] = body.bot_token
+    if body.chat_id:
+        wh["chat_id"] = body.chat_id
+    config.webhooks.append(wh)
+    await save_config_locked(config, request.app.state.config_path)
+    # Update the notifier with new config
+    from tinyagentos.webhook_notifier import WebhookNotifier
+    notifier = WebhookNotifier(config.to_dict())
+    request.app.state.webhook_notifier = notifier
+    request.app.state.notifications.set_webhook_notifier(notifier)
+    return {"status": "added", "webhooks": config.webhooks}
+
+
+@router.delete("/api/settings/webhooks/{index}")
+async def remove_webhook(request: Request, index: int):
+    """Remove a webhook by index."""
+    config = request.app.state.config
+    webhooks = config.webhooks if hasattr(config, "webhooks") else []
+    if index < 0 or index >= len(webhooks):
+        return JSONResponse({"error": "Invalid webhook index"}, status_code=400)
+    webhooks.pop(index)
+    config.webhooks = webhooks
+    await save_config_locked(config, request.app.state.config_path)
+    from tinyagentos.webhook_notifier import WebhookNotifier
+    notifier = WebhookNotifier(config.to_dict())
+    request.app.state.webhook_notifier = notifier
+    request.app.state.notifications.set_webhook_notifier(notifier)
+    return {"status": "removed", "webhooks": config.webhooks}
+
+
+@router.post("/api/settings/webhooks/test")
+async def test_webhook(request: Request):
+    """Send a test notification to a webhook URL."""
+    body = await request.json()
+    url = body.get("url", "")
+    wh_type = body.get("type", "generic")
+    if not url:
+        return JSONResponse({"error": "URL required"}, status_code=400)
+    from tinyagentos.webhook_notifier import WebhookNotifier
+    test_wh = {"url": url, "type": wh_type}
+    if body.get("bot_token"):
+        test_wh["bot_token"] = body["bot_token"]
+    if body.get("chat_id"):
+        test_wh["chat_id"] = body["chat_id"]
+    notifier = WebhookNotifier({"webhooks": [test_wh]})
+    try:
+        await notifier.notify("TinyAgentOS Test", "This is a test notification from TinyAgentOS.", "info")
+        return {"status": "sent", "message": "Test notification sent"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/api/settings/notification-prefs")
+async def get_notification_prefs(request: Request):
+    """Return notification event preferences."""
+    notif_store = request.app.state.notifications
+    prefs = await notif_store.get_event_prefs()
+    return {"prefs": prefs}
+
+
+@router.post("/api/settings/notification-prefs/{event_type}")
+async def toggle_notification_pref(request: Request, event_type: str):
+    """Toggle mute for a notification event type."""
+    body = await request.json()
+    muted = body.get("muted", False)
+    notif_store = request.app.state.notifications
+    await notif_store.set_event_muted(event_type, muted)
+    return {"status": "updated", "event_type": event_type, "muted": muted}
+
+
+@router.get("/api/settings/container-runtime")
+async def get_container_runtime(request: Request):
+    """Return container runtime status."""
+    from tinyagentos.containers.backend import detect_runtime, get_backend
+    try:
+        backend = get_backend()
+        active = backend.__class__.__name__.replace("Backend", "").lower()
+    except RuntimeError:
+        active = "none"
+    detected = detect_runtime()
+    configured = getattr(request.app.state.config, "container_runtime", "auto")
+    return {"active": active, "detected": detected, "configured": configured}
+
+
+@router.put("/api/settings/container-runtime")
+async def set_container_runtime(request: Request):
+    """Set the container runtime preference."""
+    body = await request.json()
+    runtime = body.get("runtime", "auto")
+    if runtime not in ("auto", "apple", "lxc", "docker", "podman", "native"):
+        return JSONResponse({"error": f"Invalid runtime: {runtime}"}, status_code=400)
+    config = request.app.state.config
+    config.container_runtime = runtime
+    await save_config_locked(config, request.app.state.config_path)
+    # Apply immediately
+    from tinyagentos.containers.backend import detect_runtime, set_backend
+    from tinyagentos.containers.lxc import LXCBackend
+    from tinyagentos.containers.docker import DockerBackend
+    effective = runtime
+    if runtime == "auto":
+        effective = detect_runtime()
+    if effective == "apple":
+        from tinyagentos.containers.apple_backend import AppleContainerBackend
+        set_backend(AppleContainerBackend())
+    elif effective == "lxc":
+        set_backend(LXCBackend())
+    elif effective in ("docker", "podman"):
+        set_backend(DockerBackend(binary=effective))
+    elif effective == "native":
+        from tinyagentos.containers.native import NativeBackend
+        set_backend(NativeBackend())
+    return {"status": "updated", "runtime": effective}
+
+
+@router.get("/api/settings/update-check")
+async def check_for_updates(request: Request):
+    """Check if a newer version of TinyAgentOS is available on GitHub."""
+    import asyncio
+    import re
+    from tinyagentos import __version__
+    from tinyagentos.auto_update import changes_are_docs_only, remote_is_strictly_ahead, branch_is_diverged
+    project_dir = str(Path(__file__).parent.parent.parent)
+
+    # Track the user's selected branch (Updates → Advanced selector), or the
+    # checked-out branch when unset — never a hard-coded master, otherwise a
+    # dev box is told a stale master commit is "available" and Install fails.
+    branch = await resolve_tracked_branch(request.app.state.desktop_settings, Path(project_dir))
+
+    # Fetch remote refs so origin/<branch> is current, then compare SHAs.
+    # Parsing dry-run output is unreliable on shallow clones / no tracking branch.
+    fetch_proc = await asyncio.create_subprocess_exec(
+        # `--` forces `branch` to be read as a refspec, never an option, even
+        # though resolve_tracked_branch already validates it (defence in depth).
+        "git", "fetch", "origin", "--", branch,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        cwd=project_dir,
+    )
+    await fetch_proc.communicate()
+
+    async def _rev_parse(ref: str) -> str:
+        p = await asyncio.create_subprocess_exec(
+            "git", "rev-parse", ref,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            cwd=project_dir,
+        )
+        out, _ = await p.communicate()
+        return out.decode().strip() if out else ""
+
+    local_sha, remote_sha = await asyncio.gather(
+        _rev_parse("HEAD"),
+        _rev_parse(f"origin/{branch}"),
+    )
+    # Only a real update when the remote is strictly ahead of us — never offer
+    # an older or divergent commit.
+    has_updates = await remote_is_strictly_ahead(project_dir, local_sha, remote_sha)
+    if has_updates and await changes_are_docs_only(Path(project_dir), local_sha, remote_sha):
+        has_updates = False
+
+    # Detect divergence: when neither side is a strict ancestor of the other,
+    # the local branch has commits not in the remote. Surface an actionable
+    # message so the user knows an update would hard-reset to the remote
+    # (their local work is preserved as a recovery tag).
+    diverged = False
+    diverged_message: str | None = None
+    if not has_updates and local_sha and remote_sha and local_sha != remote_sha \
+            and await branch_is_diverged(project_dir, local_sha, remote_sha):
+        diverged = True
+        diverged_message = (
+            "Your local branch has diverged from the tracked branch. "
+            "An update will preserve your local commits as a recovery tag "
+            "before syncing to the remote."
+        )
+
+    async def _log1(ref: str) -> str:
+        p = await asyncio.create_subprocess_exec(
+            "git", "log", "-1", "--format=%h %s", ref,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            cwd=project_dir,
+        )
+        out, _ = await p.communicate()
+        return out.decode().strip() if out else "unknown"
+
+    current = await _log1("HEAD")
+    new_commit = await _log1(f"origin/{branch}") if (has_updates or diverged) else None
+
+    # Read the version string from the remote branch HEAD so the UI can show
+    # the target version number without requiring a full install first.
+    new_version: str | None = None
+    if has_updates or diverged:
+        try:
+            rc, raw = await _run_capture(
+                ["git", "show", f"origin/{branch}:tinyagentos/__init__.py"],
+                cwd=project_dir,
+            )
+            if rc == 0 and raw:
+                m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', raw)
+                if m:
+                    new_version = m.group(1)
+        except Exception:
+            pass
+
+    return {
+        "has_updates": has_updates,
+        "diverged": diverged,
+        "diverged_message": diverged_message,
+        "current_version": __version__,
+        "new_version": new_version,
+        "current_commit": current,
+        "new_commit": new_commit,
+    }
+
+
+@router.get("/api/settings/update-status")
+async def update_status(request: Request):
+    """Return current SHA, pending restart SHA, and auto-update prefs."""
+    import asyncio
+    from tinyagentos.restart_orchestrator import read_pending_restart
+    from tinyagentos.auto_update import PREF_NAMESPACE, DEFAULT_PREFS
+
+    project_dir = Path(__file__).parent.parent.parent
+
+    proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", "HEAD",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    stdout, _ = await proc.communicate()
+    current_sha = stdout.decode().strip() if stdout else ""
+
+    pending = read_pending_restart()
+    pending_sha = pending.get("target_sha") if pending else None
+
+    settings = getattr(request.app.state, "desktop_settings", None)
+    prefs = dict(DEFAULT_PREFS)
+    if settings:
+        try:
+            saved = await settings.get_preference("user", PREF_NAMESPACE)
+            if saved:
+                prefs.update(saved)
+        except Exception:
+            pass
+
+    # GPG preferences for signature verification.
+    from tinyagentos.gpg_verify import GPG_PREF_NAMESPACE, DEFAULT_GPG_PREFS
+    gpg_prefs = dict(DEFAULT_GPG_PREFS)
+    if settings:
+        try:
+            saved_gpg = await settings.get_preference("user", GPG_PREF_NAMESPACE)
+            if saved_gpg:
+                gpg_prefs.update(saved_gpg)
+        except Exception:
+            pass
+
+    return {
+        "current_sha": current_sha,
+        "pending_restart_sha": pending_sha,
+        "auto_check": prefs.get("check_enabled", True),
+        "gpg": gpg_prefs,
+    }
+
+
+@router.post("/api/settings/update-check-now")
+async def force_update_check(request: Request):
+    """Run the auto-updater now. Honours user auto_apply pref."""
+    updater = getattr(request.app.state, "auto_updater", None)
+    if updater is None:
+        return JSONResponse({"error": "auto-updater not running"}, status_code=503)
+    try:
+        await updater._run_once()
+        return {"status": "checked"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+
+def _find_uv(project_dir: Path) -> str | None:
+    """Locate the uv binary for the dependency-install step.
+
+    uv is not always on PATH: on the Pi the service user's HOME is the install
+    dir, so uv lives at ``<install_dir>/.local/bin/uv`` rather than a global
+    location. Resolution order:
+      (a) ``shutil.which("uv")``
+      (b) ``<project_dir>/.local/bin/uv``
+      (c) ``~/.local/bin/uv`` for the process user
+      (d) ``/usr/local/bin/uv``
+
+    Returns the first path that exists and is executable, else ``None`` so the
+    caller can fall back to pip.
+    """
+    found = shutil.which("uv")
+    if found:
+        return found
+    for candidate in (
+        project_dir / ".local" / "bin" / "uv",
+        Path.home() / ".local" / "bin" / "uv",
+        Path("/usr/local/bin/uv"),
+    ):
+        if candidate.exists() and os.access(str(candidate), os.X_OK):
+            return str(candidate)
+    return None
+
+
+# Optional-dependency extras the updater must install so a `uv sync --frozen`
+# does not prune them out of the venv. Single source of truth for the Python
+# side; `scripts/install-server.sh` installs the same set via
+# `pip install -e ".[proxy]"`, and `test_updater_dep_install.py` asserts the two
+# stay in parity so they cannot silently drift (the bug that stripped litellm).
+UPDATE_EXTRAS: tuple[str, ...] = ("proxy",)
+
+
+async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
+    """Install/sync the update's Python deps, preferring a pinned uv sync.
+
+    A lockfile-pinned ``uv sync --frozen`` installs exactly what CI tested
+    (uv.lock) instead of a fresh pip resolve that can pull newer transitive
+    deps onto a user's box. When uv is not present we fall back to the legacy
+    ``pip install -e .`` so installs without uv still update.
+
+    Both paths carry the ``proxy`` extra (litellm + prisma) to match
+    ``install-server.sh``'s ``pip install -e ".[proxy]"``. The LLM proxy is a
+    core dependency, not optional: a bare ``uv sync --frozen`` prunes the venv
+    to the locked default set and silently uninstalls litellm, disabling the
+    proxy on every update and breaking basic agent functionality.
+
+    Capture output and surface failures -- silently swallowing a failed install
+    lands users on a grey-screen the next time they restart, because the new
+    code imports a module that's not on disk. See issue #323's sibling failure
+    mode.
+
+    Returns (returncode, output); non-zero means the install failed and the
+    caller must abort the update (no restart).
+    """
+    uv_cmd = _find_uv(project_dir)
+    if uv_cmd is not None:
+        # HOME=project_dir so uv resolves its data/cache dir correctly under the
+        # service user whose HOME is the install dir (the Pi layout).
+        env = {**os.environ, "HOME": str(project_dir)}
+        extra_args = [arg for extra in UPDATE_EXTRAS for arg in ("--extra", extra)]
+        cmd = [uv_cmd, "sync", "--frozen", *extra_args]
+        logger.info("Updater dependency install: %s", " ".join(cmd))
+        return await _run_capture(cmd, cwd=str(project_dir), env=env)
+
+    pip_cmd = "pip"
+    for candidate in (project_dir / ".venv" / "bin" / "pip", project_dir / "venv" / "bin" / "pip"):
+        if candidate.exists():
+            pip_cmd = str(candidate)
+            break
+    pip_target = f".[{','.join(UPDATE_EXTRAS)}]"
+    logger.info("Updater dependency install: uv not found, using %s install -e %s", pip_cmd, pip_target)
+    return await _run_capture(
+        [pip_cmd, "install", "-e", pip_target],
+        cwd=str(project_dir),
+    )
+
+
+async def _pip_rebuild_restart(project_dir: Path, target_sha: str) -> tuple[int, str]:
+    """Sync deps, rebuild the SPA, flag the pending restart, trigger restart.
+
+    Returns (returncode, output); non-zero means a step failed.
+    """
+    install_returncode, install_output = await _install_dependencies(project_dir)
+    if install_returncode != 0:
+        return install_returncode, install_output
+
+    # Venv python for the import smoke test below (.venv/bin/python).
+    venv_python: Path | None = None
+    for candidate in (project_dir / ".venv" / "bin" / "python", project_dir / "venv" / "bin" / "python"):
+        if candidate.exists():
+            venv_python = candidate
+            break
+
+    # Import smoke test in a fresh interpreter — verifies the new code can
+    # actually load with the freshly installed deps. Without this a partial
+    # pip install (returncode 0 but a wheel quietly skipped) still grey-screens
+    # the user on restart.
+    #
+    # Walk the package tree dynamically (issue #327) so new modules added in
+    # later PRs are validated automatically without anyone remembering to
+    # update a hardcoded import list. Errors during walk_packages or import
+    # bubble up via the smoke proc's exit code.
+    if venv_python is not None and venv_python.exists():
+        smoke_script = (
+            "import importlib, pkgutil, sys, traceback\n"
+            "import tinyagentos\n"
+            "errors = []\n"
+            "for m in pkgutil.walk_packages(tinyagentos.__path__, prefix='tinyagentos.'):\n"
+            "    name = m.name\n"
+            "    # Skip optional dev/test scaffolding; stay on production code paths.\n"
+            "    if any(part in name for part in ('test', '_pycache_', '.scripts.')):\n"
+            "        continue\n"
+            "    try:\n"
+            "        importlib.import_module(name)\n"
+            "    except Exception:\n"
+            "        errors.append(name + ':\\n' + traceback.format_exc())\n"
+            "if errors:\n"
+            "    print('Import smoke FAILED for', len(errors), 'modules:\\n')\n"
+            "    print('\\n---\\n'.join(errors[:10]))\n"
+            "    sys.exit(1)\n"
+            "print('Import smoke OK')\n"
+        )
+        smoke_returncode, smoke_output = await _run_capture(
+            [str(venv_python), "-c", smoke_script],
+            cwd=str(project_dir),
+            timeout=60.0,  # imports should be fast; 60s is generous
+        )
+        if smoke_returncode != 0:
+            return smoke_returncode, smoke_output
+
+    # Force a desktop bundle rebuild on every applied update. The mtime-based
+    # staleness check in rebuild_desktop_bundle_if_stale is unreliable when
+    # static/desktop/ is committed and a PR lands source-only (no rebuilt
+    # bundle in the commit) — git pull touches both source and bundle in the
+    # same instant and the heuristic can pick the wrong winner. Force-rebuilding
+    # is the only reliable path; the cost is one ~30s npm build on Update click.
+    from tinyagentos.desktop_rebuild import rebuild_desktop_bundle_if_stale
+    rebuild_result = await rebuild_desktop_bundle_if_stale(project_dir, force=True)
+    if rebuild_result.rebuilt:
+        logger.info("Desktop rebuild: %s", rebuild_result.message)
+    if not rebuild_result.success:
+        # Update is still applied to disk, but the frontend won't be in sync
+        # until the rebuild succeeds. Surface this clearly rather than
+        # silently leaving the user with a stale UI.
+        logger.warning(
+            "Update pulled but desktop rebuild failed: %s", rebuild_result.message
+        )
+
+    if target_sha:
+        write_pending_restart(target_sha)
+
+    return 0, ""
+
+
+async def _stash_local_source_changes(project_dir) -> bool:
+    """Stash any remaining tracked modifications so `git pull --ff-only` cannot
+    refuse the update. Build-artifact churn is restored by the caller before
+    this runs, so anything left is a real local source edit. We stash it (never
+    discard) and report it, instead of failing with a cryptic git error and
+    leaving the user stuck on the old version. Untracked files (data/, config)
+    are deliberately NOT stashed.
+
+    Returns True if something was stashed.
+    """
+    status_proc = await asyncio.create_subprocess_exec(
+        "git", "status", "--porcelain", "--untracked-files=no",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    status_out, _ = await status_proc.communicate()
+    if not (status_out and status_out.strip()):
+        return False
+    stash_proc = await asyncio.create_subprocess_exec(
+        "git", "stash", "push", "-m", "taOS auto-update: local source changes (recover with: git stash pop)",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    await stash_proc.communicate()
+    return True
+
+
+# Core capability identifiers every healthy taOSmd /health has served since the
+# capabilities field existed. Deliberately a SUBSET: newer servers add
+# capabilities, and the check must not fail on additions.
+REQUIRED_TAOSMD_CAPABILITIES = frozenset({"a2a.v1", "collections.v1", "search.v1"})
+
+# Post-restart verification pacing. Module constants so tests can collapse the
+# wait instead of patching sleep.
+_TAOSMD_VERIFY_RETRIES = 10
+_TAOSMD_VERIFY_DELAY = 2.0
+
+
+async def _verify_taosmd_running(request: Request) -> str | None:
+    """Verify the RUNNING taOSmd answers a real /health, or say why not.
+
+    Returns None on success, else a human-readable failure reason. Asserts in
+    order: (a) HTTP 200 whose Content-Type is application/json — a text/html
+    200 is the SPA catch-all answering the wrong port and MUST fail; (b) the
+    core capability identifiers are present in the body. Never status alone.
+    """
+    url = request.app.state.config.memory_url
+    try:
+        client = request.app.state.http_client
+        resp = await client.get(
+            f"{url}/health", timeout=httpx.Timeout(5.0, connect=3.0)
+        )
+    except (httpx.RequestError, httpx.InvalidURL) as exc:
+        return f"taOSmd /health unreachable at {url}: {exc}"
+    if resp.status_code != 200:
+        return f"taOSmd /health returned HTTP {resp.status_code} (expected 200)"
+    content_type = resp.headers.get("content-type", "")
+    if not content_type.startswith("application/json"):
+        return (
+            f"taOSmd /health Content-Type is {content_type or 'missing'!r}, not "
+            "application/json — a text/html 200 means the SPA catch-all "
+            "answered, not the memory service"
+        )
+    try:
+        body = resp.json()
+    except ValueError:
+        return "taOSmd /health claimed application/json but the body does not parse"
+    caps = body.get("capabilities") if isinstance(body, dict) else None
+    if not isinstance(caps, list):
+        return "taOSmd /health body has no capabilities list"
+    if not all(isinstance(c, str) for c in caps):
+        return "taOSmd /health capabilities list contains non-string entries"
+    missing = REQUIRED_TAOSMD_CAPABILITIES - set(caps)
+    if missing:
+        return f"taOSmd /health is missing capability identifiers: {sorted(missing)}"
+    return None
+
+
+async def _announce_taosmd_restart(text: str) -> bool:
+    """Post a system notice to the A2A bus BEFORE its process restarts.
+
+    A bus restart drops every SSE subscriber; without this notice the agent
+    leads diagnose a phantom outage. Best-effort: an already-down bus must not
+    block the update — there is nobody connected left to warn.
+    """
+    from tinyagentos.routes.a2a_bus import _bus_url
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{_bus_url()}/a2a/send",
+                json={"from": "system", "thread": "build", "body": text},
+            )
+            resp.raise_for_status()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("taOSmd restart announcement failed: %s", exc)
+        return False
+
+
+async def _update_local_taosmd(request: Request) -> dict:
+    """Bring a locally-hosted taOSmd checkout to latest and restart its service.
+
+    Returns a report dict the update response carries verbatim:
+      {"skipped": <why>}    — legal no-op (remote taOSmd, or hooks unset)
+      {"updated": True, "output": ..., "announced": bool, "restarted": True}
+      {"error": <why>}      — hard failure; the caller must fail the update
+    """
+    import shlex
+
+    config = request.app.state.config
+    if not _is_local_url(config.memory_url):
+        return {"skipped": "memory_url is not local; update taOSmd on its own host"}
+    taosmd_dir = (config.taosmd_dir or "").strip()
+    if not taosmd_dir:
+        return {"skipped": "taosmd_dir not configured"}
+    if not (Path(taosmd_dir) / ".git").exists():
+        return {"error": f"taosmd_dir {taosmd_dir!r} is not a git checkout"}
+    restart_cmd = (config.taosmd_restart_cmd or "").strip()
+    if not restart_cmd:
+        # A configured checkout without a restart command would pull code the
+        # running service never loads — a silent half-update, worse than none.
+        return {
+            "error": "taosmd_dir is set but taosmd_restart_cmd is not; refusing "
+            "a pull the running service would never load"
+        }
+    try:
+        restart_argv = shlex.split(restart_cmd)
+    except ValueError as exc:
+        return {"error": f"taosmd_restart_cmd is not parseable shell syntax: {exc}"}
+    if not restart_argv:
+        return {"error": "taosmd_restart_cmd parses to an empty command"}
+    rc, out = await _run_capture(["git", "pull", "--ff-only"], cwd=taosmd_dir)
+    if rc != 0:
+        return {"error": f"taOSmd git pull failed: {out.strip()[-1500:]}"}
+    announced = await _announce_taosmd_restart(
+        "SYSTEM: taOSmd updating to latest via Settings-update; the A2A bus "
+        "restarts momentarily and SSE subscribers must reconnect."
+    )
+    rc, restart_out = await _run_capture(restart_argv, cwd=taosmd_dir, timeout=120.0)
+    if rc != 0:
+        return {"error": f"taOSmd restart command failed (rc {rc}): {restart_out.strip()[-1500:]}"}
+    return {
+        "updated": True,
+        "output": out.strip()[-1500:],
+        "announced": announced,
+        "restarted": True,
+    }
+
+
+@router.post("/api/settings/update")
+async def apply_update(request: Request):
+    """Pull latest TinyAgentOS code from GitHub."""
+    import asyncio
+    project_dir = Path(__file__).parent.parent.parent
+
+    # The desktop rebuild leaves the tree dirty in three ways, and a dirty
+    # tracked file makes the next git pull --ff-only refuse to overwrite the
+    # local and the Install Update button 500s:
+    #   - static/desktop/assets/* : new content-hashed bundle files (npm build)
+    #   - desktop/tsconfig.tsbuildinfo : touched on every tsc build
+    #   - desktop/package-lock.json : npm install rewrites it (esp. when an
+    #     incoming update also changes it, e.g. the esbuild bump in #849)
+    # Restore all of them before pulling; the pull restores the committed
+    # versions or the rebuild below regenerates the build outputs.
+    reset_proc = await asyncio.create_subprocess_exec(
+        "git", "checkout", "--",
+        "desktop/tsconfig.tsbuildinfo", "desktop/package-lock.json", "static/desktop",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    await reset_proc.communicate()
+    clean_proc = await asyncio.create_subprocess_exec(
+        "git", "clean", "-fd", "static/desktop/assets",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    await clean_proc.communicate()
+
+    # Any tracked source edits left after the build-artifact restore would make
+    # the ff-only pull below refuse (HTTP 500, user stuck). Stash them first so
+    # the update applies; the change is recoverable via `git stash pop`.
+    stashed_local = await _stash_local_source_changes(project_dir)
+
+    # Git pull — pull the branch this install tracks (master on stable, dev on
+    # a dev/test box). Pulling a hard-coded master onto a dev box fails ff-only
+    # (dev is ahead of master) and the update silently never applies.
+    branch = await resolve_tracked_branch(request.app.state.desktop_settings, project_dir)
+
+    # Fetch first so we can verify GPG signature before merging.
+    fetch_proc = await asyncio.create_subprocess_exec(
+        "git", "fetch", "--quiet", "origin", "--", branch,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        cwd=str(project_dir),
+    )
+    fetch_out, _ = await fetch_proc.communicate()
+    if fetch_proc.returncode != 0:
+        return JSONResponse(
+            {"error": f"Fetch failed: {(fetch_out.decode() if fetch_out else 'unknown error').strip()[:300]}"},
+            status_code=500,
+        )
+
+    # ── GPG signature verification (defence-in-depth) ──────────────────
+    from tinyagentos.gpg_verify import verify_remote_commit, resolve_gpg_prefs
+    gpg_prefs = await resolve_gpg_prefs(request.app.state.desktop_settings)
+    remote_sha = ""
+    if gpg_prefs.enabled:
+        try:
+            remote_proc = await asyncio.create_subprocess_exec(
+                "git", "rev-parse", f"origin/{branch}",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                cwd=str(project_dir),
+            )
+            remote_out, _ = await remote_proc.communicate()
+            remote_sha = remote_out.decode().strip() if remote_out else ""
+            if remote_sha:
+                gpg_result = await verify_remote_commit(project_dir, remote_sha, gpg_prefs)
+                if not gpg_result.ok:
+                    if gpg_prefs.required:
+                        return JSONResponse(
+                            {"error": f"GPG signature verification failed — update blocked. {gpg_result.status}"},
+                            status_code=400,
+                        )
+                    # Warn but proceed.
+                    logger.warning("apply_update: GPG verification failed (warn-only): %s", gpg_result.status)
+            elif gpg_prefs.required:
+                # Could not resolve the remote ref — if GPG is required, abort
+                # rather than falling through to an unverified merge.
+                return JSONResponse(
+                    {"error": "GPG verification required but could not resolve remote commit — update blocked."},
+                    status_code=400,
+                )
+        except Exception:
+            logger.exception("apply_update: GPG verification crashed")
+            if gpg_prefs.required:
+                return JSONResponse(
+                    {"error": "GPG verification raised an exception — update blocked."},
+                    status_code=500,
+                )
+
+    # Merge — pin to the verified SHA when GPG check succeeded so a
+    # concurrent remote ref update cannot install a different commit
+    # after verification (TOCTOU).
+    merge_target = remote_sha if remote_sha else f"origin/{branch}"
+    proc = await asyncio.create_subprocess_exec(
+        "git", "merge", "--ff-only", merge_target,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        cwd=str(project_dir),
+    )
+    stdout, _ = await proc.communicate()
+    output = stdout.decode() if stdout else ""
+
+    if proc.returncode != 0:
+        return JSONResponse({"error": f"Update failed: {output}"}, status_code=500)
+
+    # Record the new SHA so the restart modal can confirm the update was applied
+    # and the Updates section can show the pending-restart banner.
+    sha_proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", "HEAD",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    sha_out, _ = await sha_proc.communicate()
+    new_sha = sha_out.decode().strip() if sha_out else ""
+
+    rc, out = await _pip_rebuild_restart(project_dir, new_sha)
+    if rc != 0:
+        return JSONResponse(
+            {
+                "error": "Dependency install failed — update aborted to avoid grey-screen on restart.",
+                "git_output": output.strip(),
+                "pip_output": out.strip()[-2000:],
+            },
+            status_code=500,
+        )
+
+    # Bring a locally-hosted taOSmd to latest in the SAME action (tsk-jjkukj):
+    # two components, one deploy route, one place to look when it fails. A
+    # skip (remote taOSmd, hooks unset) is reported, never silent; a failure
+    # fails the update loudly — a silent half-update is worse than no update.
+    taosmd_report = await _update_local_taosmd(request)
+    if "error" in taosmd_report:
+        return JSONResponse(
+            {
+                "error": f"taOSmd update FAILED — update aborted: {taosmd_report['error']}",
+                "git_output": output.strip(),
+            },
+            status_code=500,
+        )
+    if taosmd_report.get("updated"):
+        # Verify the RUNNING server came back serving real JSON with the core
+        # capability identifiers — never trust the restart exit status alone.
+        verify_reason = None
+        for attempt in range(_TAOSMD_VERIFY_RETRIES):
+            verify_reason = await _verify_taosmd_running(request)
+            if verify_reason is None:
+                break
+            if attempt < _TAOSMD_VERIFY_RETRIES - 1:
+                await asyncio.sleep(_TAOSMD_VERIFY_DELAY)
+        if verify_reason is not None:
+            return JSONResponse(
+                {
+                    "error": f"taOSmd update verification FAILED: {verify_reason}",
+                    "git_output": output.strip(),
+                    "taosmd": taosmd_report,
+                },
+                status_code=500,
+            )
+
+    # Always restart after a successful update.
+    import asyncio as _asyncio
+    from tinyagentos.routes.system import _do_restart
+    _asyncio.create_task(_do_restart(request.app.state))
+    return {
+        "status": "restarting",
+        "output": output.strip(),
+        "stashed_local_changes": stashed_local,
+        "taosmd": taosmd_report,
+        "message": (
+            (
+                "Update applied. Local source changes were stashed (recover with `git stash pop`). "
+                if stashed_local
+                else "Update applied. "
+            )
+            + (
+                "taOSmd updated and verified against the running service. "
+                if taosmd_report.get("updated")
+                else ""
+            )
+            + "Restarting now…"
+        ),
+    }
+
+
+@router.post("/api/settings/rebuild-frontend")
+async def rebuild_frontend(request: Request):
+    """Force a fresh `npm install` + `npm run build` of the desktop bundle.
+
+    The auto-rebuild during `/api/settings/update` uses an mtime heuristic that
+    can miss source-only PRs (where committed bundle and new source files end
+    up with identical mtimes after `git pull`). This endpoint is a manual
+    escape hatch — always rebuilds, regardless of staleness.
+    """
+    project_dir = Path(__file__).parent.parent.parent
+    from tinyagentos.desktop_rebuild import rebuild_desktop_bundle_if_stale
+
+    result = await rebuild_desktop_bundle_if_stale(project_dir, force=True)
+    if not result.success:
+        # Structured success bool — no more string-matching the message
+        # field for "failed"/"error"/"timed out". Issue #327.
+        return JSONResponse({"error": result.message}, status_code=500)
+    if not result.rebuilt:
+        # Force=True should always rebuild unless something is fundamentally
+        # missing (no package.json, npm not on PATH). Surface the reason
+        # rather than claiming success — the user clicked Rebuild.
+        return JSONResponse({"error": result.message}, status_code=500)
+
+    return {
+        "status": "rebuilt",
+        "message": "Desktop bundle rebuilt. Hard-refresh the browser to see new components.",
+    }
+
+
+async def _remote_branches(project_dir: str) -> list[str]:
+    """Branch names available on origin, via git ls-remote --heads."""
+    rc, out = await _run_capture(["git", "ls-remote", "--heads", "origin"], cwd=project_dir, timeout=30.0)
+    if rc != 0:
+        return []
+    names = []
+    for line in out.splitlines():
+        if "refs/heads/" in line:
+            names.append(line.split("refs/heads/", 1)[1].strip())
+    return sorted(set(n for n in names if n))
+
+
+@router.get("/api/settings/branches")
+async def list_branches(request: Request):
+    """List branches available on origin + the one this install tracks."""
+    project_dir = str(Path(__file__).parent.parent.parent)
+    branches = await _remote_branches(project_dir)
+    current = await resolve_tracked_branch(request.app.state.desktop_settings, Path(project_dir))
+    return {"branches": branches, "current": current}
+
+
+class UpdateChannel(BaseModel):
+    branch: str
+
+
+@router.post("/api/settings/update-channel")
+async def set_update_channel(request: Request, body: UpdateChannel):
+    """Switch the install to a different branch: snapshot data/, git switch,
+    persist the tracked_branch pref, then pip/rebuild/restart to apply."""
+    project_dir = Path(__file__).parent.parent.parent
+    branch = body.branch.strip()
+
+    # Reject anything that isn't a plain ref name before it reaches git argv
+    # (flag-injection defence) — independent of the remote-membership check.
+    if not is_valid_branch_name(branch):
+        return JSONResponse({"error": f"invalid branch name '{branch}'"}, status_code=400)
+
+    available = await _remote_branches(str(project_dir))
+    if branch not in available:
+        return JSONResponse({"error": f"unknown branch '{branch}'"}, status_code=400)
+
+    store = request.app.state.desktop_settings
+    current = await resolve_tracked_branch(store, project_dir)
+    if branch == current:
+        return {"status": "unchanged", "branch": branch}
+
+    data_dir = request.app.state.config_path.parent
+    snapshot_path = snapshot_data_dir(data_dir)
+
+    # Resolve GPG prefs for switch_to_branch verification.
+    from tinyagentos.gpg_verify import resolve_gpg_prefs
+    gpg_prefs = await resolve_gpg_prefs(store)
+    result = await switch_to_branch(
+        branch, project_dir,
+        gpg_fingerprint=gpg_prefs.key_fingerprint if gpg_prefs.enabled else None,
+        gpg_required=gpg_prefs.required and gpg_prefs.enabled,
+    )
+    # switch_to_branch sets ok=False (and performs no destructive change) on any
+    # failed step — fetch, stash, checkout. Surface it rather than proceeding to
+    # rebuild/restart on a branch that never actually switched.
+    if not result.ok:
+        return JSONResponse({"error": result.message}, status_code=500)
+
+    prefs = await store.get_preference("user", PREF_NAMESPACE) or {}
+    prefs["tracked_branch"] = branch
+    await store.save_preference("user", PREF_NAMESPACE, prefs)
+
+    rc, out = await _pip_rebuild_restart(project_dir, result.new_sha)
+    if rc != 0:
+        return JSONResponse(
+            {"error": f"Switched to {branch} but rebuild failed: {out[:300]}",
+             "snapshot": str(snapshot_path) if snapshot_path else None},
+            status_code=500,
+        )
+
+    import asyncio as _asyncio
+    from tinyagentos.routes.system import _do_restart
+    # Hold a reference so the task isn't garbage-collected before it runs
+    # (asyncio keeps only weak refs to tasks) — otherwise the restart can drop.
+    request.app.state.update_channel_restart_task = _asyncio.create_task(
+        _do_restart(request.app.state)
+    )
+    return {
+        "status": "switching",
+        "branch": branch,
+        "snapshot": str(snapshot_path) if snapshot_path else None,
+        "recovery_tag": result.recovery_tag,
+        "message": result.message,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Memory URL (taOSmd)
+# ---------------------------------------------------------------------------
+
+_MEMORY_URL_PROBE_CACHE: OrderedDict = OrderedDict()  # {url: (timestamp, bool)} — capped at 32 entries via FIFO eviction
+
+
+def _is_local_url(url: str) -> bool:
+    """Return True if *url* points to the local machine (loopback only).
+
+    Private-LAN addresses (192.168.x.x, 10.x.x.x, 172.16-31.x.x) are NOT
+    classified as local — they may be other machines on the same network."""
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+    if hostname in ("localhost", "127.0.0.1", "::1"):
+        return True
+    try:
+        addr = ipaddress.ip_address(hostname)
+        return addr.is_loopback
+    except ValueError:
+        return False
+
+
+async def _probe_taosmd(request: Request, url: str) -> tuple[bool, str | None]:
+    """Probe the taOSmd /health endpoint.
+
+    Returns (reachable, tier) — *reachable* is True when the endpoint responds
+    with 200, and *tier* is extracted from the JSON response body when available
+    (None if the probe fails or the response omits it)."""
+    try:
+        client = request.app.state.http_client
+        resp = await client.get(
+            f"{url}/health",
+            timeout=httpx.Timeout(3.0, connect=2.0),
+        )
+        if resp.status_code == 200:
+            try:
+                body = resp.json()
+                tier = body.get("tier") if isinstance(body, dict) else None
+            except (ValueError, AttributeError):
+                tier = None
+            return True, tier
+        return False, None
+    except (httpx.RequestError, httpx.InvalidURL):
+        return False, None
+
+
+class MemoryUrlUpdate(BaseModel):
+    url: str
+
+
+@router.get("/api/settings/memory-url")
+async def get_memory_url(request: Request):
+    """Return the current taOSmd memory URL with local/reachable probes."""
+    config = request.app.state.config
+    url = config.memory_url
+    is_local = _is_local_url(url)
+
+    # Return cached probe result if fresh (< 30 s), else re-probe.
+    cached = _MEMORY_URL_PROBE_CACHE.get(url)
+    now = time.monotonic()
+    if cached and (now - cached[0]) < 30:
+        reachable, tier = cached[1], cached[2]
+    else:
+        reachable, tier = await _probe_taosmd(request, url)
+        _MEMORY_URL_PROBE_CACHE[url] = (now, reachable, tier)
+        if len(_MEMORY_URL_PROBE_CACHE) > 32:
+            _MEMORY_URL_PROBE_CACHE.popitem(last=False)
+
+    resp: dict[str, str | bool | None] = {"url": url, "is_local": is_local, "reachable": reachable}
+    if tier:
+        resp["tier"] = tier
+    return resp
+
+
+@router.put("/api/settings/memory-url")
+async def set_memory_url(request: Request, body: MemoryUrlUpdate):
+    """Update the taOSmd memory URL, persist to config, and probe reachability.
+
+    The URL is always accepted and persisted.  The *reachable* field reports
+    the probe result but does not gate the save."""
+    url = body.url.strip()
+    if not url:
+        return JSONResponse({"error": "URL must not be empty"}, status_code=400)
+    # Strip a single trailing slash (not a character set).
+    if url.endswith("/"):
+        url = url[:-1]
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return JSONResponse({"error": "URL must use http:// or https:// scheme"}, status_code=400)
+    if not parsed.hostname:
+        return JSONResponse({"error": "URL must include a hostname"}, status_code=400)
+
+    is_local = _is_local_url(url)
+    reachable, tier = await _probe_taosmd(request, url)
+
+    config = request.app.state.config
+    config.memory_url = url
+    await save_config_locked(config, request.app.state.config_path)
+    # Keep app.state.taosmd_url in sync for runtime access
+    request.app.state.taosmd_url = url
+
+    # Cache the probe result so the next GET is instant.
+    _MEMORY_URL_PROBE_CACHE[url] = (time.monotonic(), reachable, tier)
+    if len(_MEMORY_URL_PROBE_CACHE) > 32:
+        _MEMORY_URL_PROBE_CACHE.popitem(last=False)
+
+    resp: dict[str, str | bool | None] = {"url": url, "is_local": is_local, "reachable": reachable}
+    if tier:
+        resp["tier"] = tier
+    return resp

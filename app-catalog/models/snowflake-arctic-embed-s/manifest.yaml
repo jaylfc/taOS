@@ -1,0 +1,64 @@
+id: snowflake-arctic-embed-s
+name: Snowflake Arctic Embed S
+type: model
+version: 1.0.0
+description: Snowflake's 33M English embedding, 384-dim, CPU-friendly, strong retrieval
+homepage: https://huggingface.co/Snowflake/snowflake-arctic-embed-s
+license: Apache-2.0
+capabilities:
+- embedding
+variants:
+- id: q4_k_m
+  name: Q4_K_M GGUF (27MB)
+  format: gguf
+  size_mb: 27
+  min_ram_mb: 256
+  download_url: https://huggingface.co/ChristianAzinn/snowflake-arctic-embed-s-gguf/resolve/main/snowflake-arctic-embed-s--Q4_K_M.GGUF
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 256
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 256
+  sha256: 3247e632c502a676e796c62fa0132bd329b0291e1d721f5f9c027cc095ac0ee5
+- id: f16
+  name: F16 GGUF (64MB)
+  format: gguf
+  size_mb: 64
+  min_ram_mb: 512
+  download_url: https://huggingface.co/ChristianAzinn/snowflake-arctic-embed-s-gguf/resolve/main/snowflake-arctic-embed-s-f16.GGUF
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 512
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 512
+  sha256: 6e3d14df024e30dc825ab830c1e8c8e37ab671f4ff1b10813d9a88d182d73d93
+hardware_tiers:
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 512

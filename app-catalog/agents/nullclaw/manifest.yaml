@@ -1,0 +1,18 @@
+id: nullclaw
+name: NullClaw
+type: agent-framework
+verification_status: alpha
+version: 0.1.0
+description: "Stateless agent — no persistent state, pure function execution, ephemeral"
+homepage: https://github.com/nicholasgasior/nullclaw
+license: MIT
+requires:
+  ram_mb: 32
+install:
+  method: pip
+  package: nullclaw
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-cpu-8gb: full
+  x86-cuda-12gb: full
+  cpu-only: full

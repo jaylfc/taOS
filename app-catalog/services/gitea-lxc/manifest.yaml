@@ -1,0 +1,52 @@
+id: gitea-lxc
+name: Gitea (LXC)
+type: service
+category: dev-tool
+version: 1.22.0
+backend: lxc
+description: "Self-hosted Git server — auto-creates accounts for deployed agents"
+homepage: https://gitea.io
+license: MIT
+
+requires:
+  ram_mb: 512
+  disk_mb: 2000
+  ports: [3000, 2222]
+  inputs:
+    - name: admin_password
+      label: "Admin password"
+      type: password
+      required: true
+      description: "Password for the initial Gitea admin account"
+
+install:
+  method: lxc
+  image: images:debian/bookworm
+  gitea_version: "1.22.6"
+  memory_limit: "512MiB"
+  cpu_limit: 1
+  ports:
+    http: 3000
+    ssh: 2222
+  service_name: gitea
+  state_paths:
+    - /etc/gitea/
+    - /home/git/
+  # Proxy routing fields (read by the service-proxy layer):
+  #   ui_port  – container-internal port the UI listens on. The installer's
+  #               proxy device forwards host_port → 127.0.0.1:<ui_port>.
+  #   ui_path  – path prefix the app serves its UI at (default "/").
+  #   icon     – optional icon path or URL for desktop/P8 use.
+  #   display_name – optional override for the UI display name.
+  ui_port: 3000
+  ui_path: "/"
+
+lifecycle:
+  health_check: "curl -sf http://localhost:3000/api/healthz"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

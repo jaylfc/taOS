@@ -1,0 +1,51 @@
+id: libreoffice-streaming
+name: LibreOffice (Streaming)
+type: streaming-app
+version: 24.8.0
+description: "Document editing — Writer, Calc, Impress — with AI agent assistance"
+homepage: https://www.libreoffice.org
+license: MPL-2.0
+
+streaming:
+  backend: kasmvnc
+  port: 6901
+  resolution: 1920x1080
+  audio: false
+
+mcp:
+  server: libreoffice-containerized-mcp-server
+  install: "pip install libreoffice-containerized-mcp-server"
+  capabilities:
+    - create_document
+    - edit_document
+    - convert_format
+    - insert_content
+    - export_pdf
+
+agent_bridge:
+  port: 9100
+  computer_use: optional
+  exec_enabled: true
+  keyboard_enabled: true
+
+expert_agent:
+  name: "LibreOffice Expert"
+  system_prompt: "You are a LibreOffice expert assistant. Help users create and edit documents in Writer, spreadsheets in Calc, and presentations in Impress. Use MCP tools to create documents, insert content, apply formatting, work with formulas, and export to PDF or other formats. Offer guidance on styles, templates, mail merge, macros, and compatibility with Microsoft Office formats."
+  model: qwen3-4b
+  color: "#18A303"
+
+requires:
+  ram_mb: 1024
+  gpu_recommended: false
+
+install:
+  method: docker
+  image: taos-app-libreoffice
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  arm-npu-16gb: full
+  apple-silicon: full
+  cpu-only: limited

@@ -1,0 +1,85 @@
+id: qwen3-8b
+name: Qwen 3 8B
+type: model
+version: 3.0.0
+description: General-purpose chat model with strong tool calling and reasoning
+homepage: https://huggingface.co/Qwen/Qwen3-8B
+capabilities:
+- chat
+- tool-calling
+- code
+- reasoning
+variants:
+- id: q4_k_m
+  name: Q4_K_M (4.8GB)
+  format: gguf
+  size_mb: 4800
+  min_ram_mb: 6144
+  download_url: https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 6144
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 6144
+    - id: vllm
+      targets:
+      - x86-cuda
+      min_ram_mb: 6144
+  sha256: d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785
+- id: q8_0
+  name: Q8_0 (8.5GB)
+  format: gguf
+  size_mb: 8500
+  min_ram_mb: 10240
+  download_url: https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q8_0.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 10240
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 10240
+    - id: vllm
+      targets:
+      - x86-cuda
+      min_ram_mb: 10240
+  sha256: 408b955510e196121c1c375201744783b5c9a43c7956d73fc78df54c66e883d6
+hardware_tiers:
+  arm-npu-16gb:
+    recommended: q4_k_m
+    notes: Runs on CPU, NPU used for embed/rerank
+  arm-npu-32gb:
+    recommended: q8_0
+  x86-cuda-12gb:
+    recommended: q4_k_m
+  x86-cuda-24gb:
+    recommended: q8_0
+  x86-vulkan-8gb:
+    recommended: q4_k_m
+  x86-vulkan-4gb: unsupported
+  cpu-only:
+    recommended: q4_k_m
+    notes: Slow but functional
+  x86-cuda-6gb:
+    recommended: q4_k_m
+context_window: 32768

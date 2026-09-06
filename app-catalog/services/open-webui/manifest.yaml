@@ -1,0 +1,29 @@
+id: open-webui
+name: Open WebUI
+type: service
+category: ai-app
+version: 0.5.0
+description: "Self-hosted ChatGPT-style interface — connects to Ollama, llama.cpp, any OpenAI-compatible API"
+homepage: https://github.com/open-webui/open-webui
+license: MIT
+
+requires:
+  ram_mb: 512
+  disk_mb: 2000
+  ports: [3000]
+
+install:
+  method: docker
+  image: ghcr.io/open-webui/open-webui:main
+  volumes:
+    - data:/app/backend/data
+  ports: [3000]
+  env:
+    OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

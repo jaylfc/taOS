@@ -1,0 +1,16 @@
+[Unit]
+Description=React to Docker appearing after taOS install; ensure DOCKER-USER contains our accept rules
+# Intentionally no After= the service we trigger — that creates an ordering
+# cycle with the implicit Wants= from [Path].Unit=. The path unit simply
+# activates the service when the watched path appears; systemd handles the
+# ordering.
+
+[Path]
+# Fires whenever /var/run/docker.pid appears — the cleanest signal that
+# Docker has started or restarted.  The associated service is idempotent
+# so multiple triggers are harmless.
+PathExists=/var/run/docker.pid
+Unit=tinyagentos-host-firewall.service
+
+[Install]
+WantedBy=multi-user.target

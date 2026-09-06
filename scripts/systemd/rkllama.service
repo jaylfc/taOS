@@ -1,0 +1,47 @@
+# RKLLama — Rockchip NPU model server, lazy-load mode
+#
+# Runs as a user systemd unit (under loginctl enable-linger jay) so
+# the orange pi can host the embedding / rerank / query-expansion
+# models without root. The companion qmd.service talks to this on
+# localhost:8080 via the rkllama HTTP API.
+#
+# This unit explicitly does NOT use --preload. Sequential loading is
+# handled at the qmd / scheduler layer: models load on first inference
+# request and stay resident until the resource scheduler evicts them
+# (Phase 1.5 in
+# docs/superpowers/specs/2026-04-11-taos-framework-integration-bridge-design.md).
+#
+# Avoiding --preload has two payoffs on RK3588:
+#  1. Frees the NPU memory budget when chat models aren't in use, so
+#     image gen / TTS / STT can fit alongside on the same 16 GB
+#  2. Each loaded model can use all 3 RK3588 NPU cores instead of
+#     being pinned to one (the rkllm SDK supports RKNN_NPU_CORE_0_1_2
+#     at load time; rkllama auto-picks all available cores when only
+#     one model is resident)
+#
+# Install:
+#     mkdir -p ~/.config/systemd/user
+#     cp scripts/systemd/rkllama.service ~/.config/systemd/user/rkllama.service
+#     systemctl --user daemon-reload
+#     systemctl --user enable --now rkllama.service
+#     loginctl enable-linger $USER     # so it survives logout
+#
+# Configuration: edit this file's ExecStart to change port, model dir,
+# or NPU processor target. The rkllama install-rknpu.sh installer
+# writes a similar unit automatically.
+[Unit]
+Description=RKLLama NPU Model Server (lazy-load mode)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/rkllama
+ExecStart=%h/rkllama/rkllama-env/bin/rkllama_server --processor rk3588 --port 8080 --models %h/rkllama/models
+Restart=always
+RestartSec=5
+# Auto-restart every 2 hours to prevent NPU performance degradation
+RuntimeMaxSec=7200
+Environment=PATH=%h/rkllama/rkllama-env/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

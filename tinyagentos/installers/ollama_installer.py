@@ -1,0 +1,246 @@
+"""Ollama installer — pulls models via `ollama pull` over HTTP.
+
+Ollama runs its own daemon on port 11434 with an OllamaCompatible API,
+including ``POST /api/pull`` (the same shape as rkllama, conveniently).
+This installer just calls that endpoint — Ollama owns the model files
+on disk; we don't push anything from the controller.
+
+Variants in catalog manifests can declare an explicit ``ollama_name``
+field with the Ollama library identifier (e.g. ``qwen2.5:3b``,
+``llama3.2:1b-q8_0``). When absent, we fall back to the manifest's ID
+verbatim — works for any model whose catalog ID matches its Ollama
+library entry, fails clearly otherwise so the user can fix the manifest.
+
+Configuration via env var (matching scripts/install-ollama.sh):
+
+- ``OLLAMA_HOST`` — daemon URL (default: ``http://localhost:11434``)
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+from typing import Any
+
+import httpx
+
+from tinyagentos.installers.base import AppInstaller
+
+logger = logging.getLogger(__name__)
+
+
+_DEFAULT_OLLAMA_PORT = 11434
+_DEFAULT_HAILO_OLLAMA_PORT = 7836
+
+
+def _normalize_digest(digest: str) -> str:
+    """Strip the algorithm prefix from an Ollama layer digest.
+
+    Ollama emits digests as ``sha256:<64-hex>``; hailo-ollama (being
+    Ollama-compatible) does the same.  The ``hef_h10h`` field in the catalog
+    manifest is a bare 64-char hex string, so we strip the prefix to compare.
+    """
+    if digest.startswith("sha256:"):
+        return digest[len("sha256:"):]
+    return digest
+
+
+def _default_host() -> str:
+    """Resolve daemon URL from OLLAMA_HOST or fallback to localhost:11434."""
+    raw = os.environ.get("OLLAMA_HOST", "").strip()
+    if not raw:
+        return "http://localhost:11434"
+    # OLLAMA_HOST sometimes carries just `host:port` without scheme -- normalize.
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    return raw.rstrip("/")
+
+
+def _hailo_ollama_port() -> int:
+    """Return the hailo-ollama port, honouring TAOS_HAILO_OLLAMA_PORT override."""
+    raw = os.environ.get("TAOS_HAILO_OLLAMA_PORT", "").strip()
+    if not raw:
+        return _DEFAULT_HAILO_OLLAMA_PORT
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "TAOS_HAILO_OLLAMA_PORT=%r is not an integer; using default %d",
+            raw, _DEFAULT_HAILO_OLLAMA_PORT,
+        )
+        return _DEFAULT_HAILO_OLLAMA_PORT
+
+
+def resolve_ollama_url(target_remote: str | None, backend_id: str = "ollama") -> str:
+    """Resolve which ollama/hailo-ollama instance to talk to.
+
+    - ``None`` / empty / "local" -> the controller's own daemon (localhost).
+    - Anything else -> the remote worker's hostname on the backend's port.
+
+    Ports:
+    - ollama: 11434 (``_default_host`` honours ``OLLAMA_HOST``).
+    - hailo-ollama: 7836, overridable via ``TAOS_HAILO_OLLAMA_PORT``
+      (see docs/design/hailo-llm-backend.md section B).
+    """
+    if backend_id == "hailo-ollama":
+        port = _hailo_ollama_port()
+        if not target_remote or target_remote == "local":
+            return f"http://localhost:{port}"
+        return f"http://{target_remote}:{port}"
+    # Plain ollama backend.
+    if not target_remote or target_remote == "local":
+        return _default_host()
+    return f"http://{target_remote}:{_DEFAULT_OLLAMA_PORT}"
+
+
+class OllamaInstaller(AppInstaller):
+    """Install models for serving via the Ollama daemon."""
+
+    def __init__(self, host: str | None = None, timeout: int = 3600):
+        self.host = host.rstrip("/") if host else _default_host()
+        # Pulls can take a long time (multi-GB layers, slow mirrors).
+        # 60 minutes is a generous default; callers can override.
+        self.timeout = timeout
+
+    async def install(
+        self,
+        app_id: str,
+        install_config: dict,
+        variant: dict | None = None,
+        **_: Any,
+    ) -> dict:
+        # Resolve the ollama model name. Variant's explicit field wins; fall
+        # back to manifest_id (passed as app_id by the dispatcher).
+        model_name: str = ""
+        if variant and isinstance(variant, dict):
+            model_name = str(variant.get("ollama_name", "") or "").strip()
+        if not model_name:
+            model_name = app_id
+
+        if not model_name:
+            return {
+                "success": False,
+                "error": "no ollama model name to pull (variant.ollama_name or app_id required)",
+            }
+
+        # Verify the daemon is reachable before kicking off a long pull.
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(f"{self.host}/api/tags")
+                resp.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "success": False,
+                "error": (
+                    f"ollama daemon not reachable at {self.host}: {exc}. "
+                    "Run scripts/install-ollama.sh first."
+                ),
+            }
+
+        # Pull via the streaming /api/pull endpoint. Status events flow as
+        # NDJSON; a final {"status": "success"} indicates completion.
+        last_status = ""
+        pulled_digests: set[str] = set()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.host}/api/pull",
+                    json={"name": model_name, "stream": True},
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if data.get("error"):
+                            return {
+                                "success": False,
+                                "error": f"ollama pull failed: {data['error']}",
+                                "ollama_model": model_name,
+                            }
+                        digest = data.get("digest", "")
+                        if digest:
+                            pulled_digests.add(_normalize_digest(digest))
+                        last_status = data.get("status", last_status)
+        except httpx.HTTPError as exc:
+            return {
+                "success": False,
+                "error": f"ollama pull HTTP error: {exc}",
+                "ollama_model": model_name,
+            }
+
+        if last_status != "success":
+            return {
+                "success": False,
+                "error": (
+                    f"ollama pull ended with status {last_status!r} (expected 'success'). "
+                    "Check the daemon logs for details."
+                ),
+                "ollama_model": model_name,
+            }
+
+        # Hailo-10H .hef variants carry a ``hef_h10h`` content pin.  Unlike
+        # download_url + sha256 (which the DownloadInstaller enforces at
+        # byte-hash time), the hailo-ollama daemon pulls and stores the .hef
+        # internally, so we cannot hash the file on disk ourselves.  Instead we
+        # verify the content digest reported by the hailo-ollama pull response
+        # -- in Ollama's content-addressable storage that digest IS the SHA256
+        # of the .hef layer.  If the pin does not match any pulled layer
+        # digest, the install is rejected so a tampered or wrong artefact is
+        # never silently accepted.
+        hef_expected = None
+        if isinstance(variant, dict):
+            hef_expected = variant.get("hef_h10h")
+        if hef_expected:
+            if hef_expected not in pulled_digests:
+                got = sorted(pulled_digests)[0] if pulled_digests else "none"
+                return {
+                    "success": False,
+                    "error": (
+                        f"HEF content hash mismatch: expected {hef_expected}, "
+                        f"got {got}"
+                    ),
+                    "ollama_model": model_name,
+                }
+
+        return {
+            "success": True,
+            "app_id": app_id,
+            "ollama_model": model_name,
+            "endpoint": self.host,
+            "runtime_location": {
+                "host": self.host.replace("http://", "").replace("https://", "").split(":")[0],
+                "port": int(self.host.rsplit(":", 1)[-1]) if ":" in self.host.replace("://", "") else 11434,
+                "backend": "ollama",
+            },
+        }
+
+    async def uninstall(self, app_id: str) -> dict:
+        """Best-effort uninstall via DELETE /api/delete.
+
+        The ollama model name needs to come from caller-supplied metadata
+        (the dispatcher's registry knows what was pulled). Without it we
+        fall back to the app_id itself.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.request(
+                    "DELETE",
+                    f"{self.host}/api/delete",
+                    json={"name": app_id},
+                )
+                if resp.status_code == 200:
+                    return {"success": True, "status": "uninstalled", "ollama_model": app_id}
+                # 404 means already gone — that's fine for uninstall.
+                if resp.status_code == 404:
+                    return {"success": True, "status": "not-installed", "ollama_model": app_id}
+                return {
+                    "success": False,
+                    "error": f"ollama delete returned {resp.status_code}: {resp.text[:200]}",
+                }
+        except httpx.HTTPError as exc:
+            return {"success": False, "error": f"ollama delete HTTP error: {exc}"}

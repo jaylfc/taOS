@@ -1,0 +1,42 @@
+id: openclaw
+name: OpenClaw
+type: agent-framework
+verification_status: beta
+version: 1.0.0
+description: "Full-featured agent framework with multi-channel support (Discord, Telegram, Slack, Signal)"
+homepage: https://github.com/openclaw/openclaw
+license: MIT
+
+requires:
+  ram_mb: 512
+  disk_mb: 2000
+
+install:
+  method: script
+  script: scripts/install-openclaw.sh
+  note: |
+    Clones openclaw/openclaw into /opt/openclaw and installs with pip.
+    No PyPI package — `openclaw` on PyPI resolves to an unrelated CMDOP
+    plugin. OpenClaw is clone-and-run only.
+
+config_schema:
+  - name: model
+    type: model-select
+    label: LLM Model
+    required: true
+  - name: channels
+    type: multiselect
+    label: Communication Channels
+    options: [discord, telegram, slack, signal, web]
+  - name: memory_backend
+    type: select
+    label: Memory Backend
+    options: [qmd, none]
+    default: qmd
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

@@ -1,0 +1,33 @@
+id: smolagents
+name: SmolAgents
+type: agent-framework
+verification_status: alpha
+version: 1.0.0
+description: "HuggingFace's code-based agent framework — 30% fewer LLM calls than JSON tool calling"
+homepage: https://github.com/huggingface/smolagents
+license: Apache-2.0
+
+requires:
+  ram_mb: 256
+  python: ">=3.10"
+
+install:
+  method: pip
+  package: smolagents
+
+config_schema:
+  - name: model
+    type: model-select
+    label: LLM Model
+    required: true
+  - name: tools
+    type: multiselect
+    label: Available Tools
+    options: [web_search, file_read, code_exec, memory_search]
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

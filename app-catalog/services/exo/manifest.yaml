@@ -1,0 +1,25 @@
+id: exo
+name: Exo Distributed Inference
+type: service
+category: llm-runtime
+version: 0.1.0
+description: "Split large models across multiple devices — peer-to-peer distributed AI inference. Run 70B+ models across your cluster by pooling VRAM from multiple machines."
+homepage: https://github.com/exo-explore/exo
+license: Apache-2.0
+
+requires:
+  ram_mb: 4096
+  python: ">=3.13"
+
+install:
+  method: source
+  repo: https://github.com/exo-explore/exo.git
+  build_deps: ["uv>=0.8.6", "rust", "nodejs>=18"]
+  run: "uv sync --all-packages && just build-dashboard && uv run exo"
+
+hardware_tiers:
+  apple-silicon: full
+  x86-cuda-12gb: full
+  x86-cpu: degraded
+  arm-npu-16gb: unsupported
+  arm-npu-32gb: unsupported

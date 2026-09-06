@@ -1,0 +1,34 @@
+id: linkwarden
+name: Linkwarden
+type: service
+category: productivity
+version: latest
+description: "Bookmark and link manager — agents save and organize research links with archiving"
+homepage: https://linkwarden.app
+license: AGPL-3.0
+
+requires:
+  ram_mb: 256
+  disk_mb: 500
+  ports: [3000]
+
+install:
+  method: docker
+  image: ghcr.io/linkwarden/linkwarden:latest
+  volumes:
+    - data:/data/data
+  ports: [3000]
+  env:
+    NEXTAUTH_SECRET: "changeme"
+    NEXTAUTH_URL: "http://localhost:3000"
+    DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/linkwarden"
+
+lifecycle:
+  health_check: "curl -sf http://localhost:3000"
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

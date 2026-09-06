@@ -1,0 +1,99 @@
+id: sdxl-turbo
+name: SDXL Turbo
+type: model
+version: 1.0.0
+description: Real-time image generation — single-step SDXL distillation, fast on GPU
+homepage: https://huggingface.co/stabilityai/sdxl-turbo
+license: sai-nc-community (non-commercial)
+capabilities:
+- image-generation
+variants:
+- id: q4_0
+  name: Q4_0 GGUF (3.9GB)
+  format: gguf
+  size_mb: 3900
+  min_ram_mb: 6144
+  download_url: https://huggingface.co/gpustack/stable-diffusion-xl-1.0-turbo-GGUF/resolve/main/stable-diffusion-xl-1.0-turbo-Q4_0.gguf
+  quality: good
+  requires:
+    backends:
+    - id: stable-diffusion-cpp
+      targets:
+      - cpu
+      min_ram_mb: 6144
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 6144
+  sha256: 5282eec23430ca46de87de984521fbf04e3cf78fa4152b05610089bc71d8a535
+- id: q8_0
+  name: Q8_0 GGUF (5GB)
+  format: gguf
+  size_mb: 5000
+  min_ram_mb: 8192
+  download_url: https://huggingface.co/gpustack/stable-diffusion-xl-1.0-turbo-GGUF/resolve/main/stable-diffusion-xl-1.0-turbo-Q8_0.gguf
+  quality: better
+  requires:
+    backends:
+    - id: stable-diffusion-cpp
+      targets:
+      - cpu
+      min_ram_mb: 8192
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 8192
+  sha256: 32b5ede87470ff486a5abcff3954cc2650292a2601af1c17724108e0abb5905d
+- id: fp16
+  name: FP16 GGUF (6.9GB)
+  format: gguf
+  size_mb: 6900
+  min_ram_mb: 10240
+  download_url: https://huggingface.co/gpustack/stable-diffusion-xl-1.0-turbo-GGUF/resolve/main/stable-diffusion-xl-1.0-turbo-FP16.gguf
+  quality: best
+  requires:
+    backends:
+    - id: stable-diffusion-cpp
+      targets:
+      - cpu
+      min_ram_mb: 10240
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 10240
+  sha256: 1001a76e5c86594a68898050095976db0f29ccea7b0d4917d8cd5a44081dba03
+hardware_tiers:
+  arm-cpu-16gb:
+    recommended: q4_0
+    fallback: q4_0
+    warning: Slow without GPU
+  arm-npu-32gb:
+    recommended: q8_0
+    fallback: q4_0
+  x86-cpu-16gb:
+    recommended: q4_0
+  x86-cuda-8gb:
+    recommended: q8_0
+    fallback: q4_0
+  x86-cuda-12gb:
+    recommended: fp16
+    fallback: q8_0
+  x86-vulkan-8gb:
+    recommended: q4_0
+  apple-silicon:
+    recommended: q8_0
+  cpu-only:
+    recommended: q4_0
+    warning: Slow on CPU
+  x86-cuda-6gb:
+    recommended: q8_0
+    fallback: q4_0
+  x86-vulkan-6gb:
+    recommended: q4_0
+context_window: 77

@@ -1,0 +1,24 @@
+id: tailscale
+name: Tailscale
+type: service
+category: infrastructure
+version: 1.76.0
+description: "Zero-config VPN — secure remote access to your TinyAgentOS from anywhere"
+homepage: https://tailscale.com
+license: BSD-3-Clause
+
+requires:
+  ram_mb: 64
+  disk_mb: 100
+  ports: []
+
+install:
+  method: script
+  script: scripts/install-tailscale.sh
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

@@ -1,0 +1,23 @@
+id: camoufox
+name: Camoufox
+type: plugin
+version: 0.1.0
+description: "Anti-detect Firefox browser for agents — C++ level fingerprint injection, passes all major bot detection. ARM64 native"
+homepage: https://github.com/daijro/camoufox
+license: MPL-2.0
+
+requires:
+  ram_mb: 512
+
+install:
+  method: pip
+  package: camoufox
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full
+  apple-silicon: full

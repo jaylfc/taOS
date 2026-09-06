@@ -1,0 +1,56 @@
+id: lcm-dreamshaper-v7
+name: LCM Dreamshaper V7
+type: model
+version: 7.0.0
+description: Fast image generation — 4-step LCM acceleration, 512x512 in seconds on
+  CPU or GPU
+homepage: https://huggingface.co/SimianLuo/LCM_Dreamshaper_v7
+license: OpenRAIL-M
+capabilities:
+- image-generation
+variants:
+- id: safetensors
+  name: LCM FP16 Safetensors (2.1GB)
+  format: safetensors
+  size_mb: 2100
+  min_ram_mb: 4096
+  download_url: https://huggingface.co/SimianLuo/LCM_Dreamshaper_v7/resolve/main/LCM_Dreamshaper_v7_4k.safetensors
+  sha256: 84feab3a32f1d36108b762b25dad483ca9e37f719b23e0cfd0fdc4ad3fd5409b
+  quality: best
+  requires:
+    backends:
+    - id: diffusers
+      targets:
+      - cpu
+      min_ram_mb: 4096
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 4096
+    - id: sd-webui
+      targets:
+      - cpu
+      min_ram_mb: 4096
+hardware_tiers:
+  arm-cpu-16gb:
+    recommended: safetensors
+  arm-npu-16gb:
+    recommended: safetensors
+  arm-npu-32gb:
+    recommended: safetensors
+  x86-cpu-16gb:
+    recommended: safetensors
+  x86-cuda-8gb:
+    recommended: safetensors
+  x86-cuda-12gb:
+    recommended: safetensors
+  apple-silicon:
+    recommended: safetensors
+  cpu-only:
+    recommended: safetensors
+    notes: Slow — consider SD 1.5 GGUF for CPU
+  x86-cuda-4gb:
+    recommended: safetensors
+context_window: 77

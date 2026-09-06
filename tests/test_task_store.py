@@ -1,0 +1,1015 @@
+from unittest.mock import AsyncMock
+
+import pytest
+
+from tinyagentos.board_audit import BoardAuditLog
+from tinyagentos.projects import task_store as task_store_mod
+from tinyagentos.projects.task_store import ProjectTaskStore
+
+
+async def _store(tmp_path):
+    s = ProjectTaskStore(tmp_path / "tasks.db")
+    await s.init()
+    return s
+
+
+def _strictly_increasing_clock(monkeypatch, start=1_000_000.0, step=1.0):
+    """Patch the store's time.time so each created_at is strictly increasing.
+
+    The store orders by created_at with no secondary tiebreak, so two creates
+    in the same sub-microsecond tick would otherwise produce equal timestamps
+    and an undefined order, making ordering assertions flaky on fast machines.
+    """
+    counter = {"t": start}
+
+    def _now():
+        counter["t"] += step
+        return counter["t"]
+
+    monkeypatch.setattr(task_store_mod.time, "time", _now)
+
+
+@pytest.mark.asyncio
+async def test_create_task_defaults(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Fix bug", "alice")
+    assert task["id"].startswith("tsk-")
+    assert task["project_id"] == "prj-1"
+    assert task["title"] == "Fix bug"
+    assert task["body"] == ""
+    assert task["status"] == "open"
+    assert task["priority"] == 0
+    assert task["labels"] == []
+    assert task["assignee_id"] is None
+    assert task["created_by"] == "alice"
+    assert task["claimed_by"] is None
+    assert task["closed_by"] is None
+    assert task["close_reason"] is None
+    assert task["parent_task_id"] is None
+    assert isinstance(task["created_at"], float)
+    assert isinstance(task["updated_at"], float)
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_create_task_with_all_fields(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task(
+        "prj-1",
+        "Write docs",
+        "bob",
+        body="detailed description",
+        priority=2,
+        labels=["docs", "urgent"],
+        assignee_id="carol",
+        parent_task_id="tsk-parent",
+    )
+    assert task["title"] == "Write docs"
+    assert task["body"] == "detailed description"
+    assert task["priority"] == 2
+    assert task["labels"] == ["docs", "urgent"]
+    assert task["assignee_id"] == "carol"
+    assert task["parent_task_id"] == "tsk-parent"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_create_task_labels_stored_as_json(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "x", "alice", labels=["a", "b"])
+    fetched = await s.get_task(task["id"])
+    assert fetched["labels"] == ["a", "b"]
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_get_task_not_found(tmp_path):
+    s = await _store(tmp_path)
+    result = await s.get_task("tsk-nonexistent")
+    assert result is None
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_empty_project(tmp_path):
+    s = await _store(tmp_path)
+    tasks = await s.list_tasks("prj-empty")
+    assert tasks == []
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_returns_all_in_project(tmp_path):
+    s = await _store(tmp_path)
+    t1 = await s.create_task("prj-1", "First", "alice")
+    t2 = await s.create_task("prj-1", "Second", "bob")
+    await s.create_task("prj-2", "Other", "eve")
+    tasks = await s.list_tasks("prj-1")
+    assert len(tasks) == 2
+    ids = [t["id"] for t in tasks]
+    assert t1["id"] in ids
+    assert t2["id"] in ids
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_filter_by_status(tmp_path):
+    s = await _store(tmp_path)
+    t_open = await s.create_task("prj-1", "Open task", "alice")
+    t_claimed = await s.create_task("prj-1", "Claimed task", "alice")
+    await s.claim_task(t_claimed["id"], "worker-1")
+    open_tasks = await s.list_tasks("prj-1", status="open")
+    assert len(open_tasks) == 1
+    assert open_tasks[0]["id"] == t_open["id"]
+    claimed_tasks = await s.list_tasks("prj-1", status="claimed")
+    assert len(claimed_tasks) == 1
+    assert claimed_tasks[0]["id"] == t_claimed["id"]
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_filter_by_parent(tmp_path):
+    s = await _store(tmp_path)
+    parent = await s.create_task("prj-1", "Parent", "alice")
+    child = await s.create_task("prj-1", "Child", "alice", parent_task_id=parent["id"])
+    await s.create_task("prj-1", "Orphan", "alice")
+    children = await s.list_tasks("prj-1", parent_task_id=parent["id"])
+    assert len(children) == 1
+    assert children[0]["id"] == child["id"]
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_ordered_by_created_at_asc(tmp_path, monkeypatch):
+    _strictly_increasing_clock(monkeypatch)
+    s = await _store(tmp_path)
+    t1 = await s.create_task("prj-1", "First", "alice")
+    t2 = await s.create_task("prj-1", "Second", "alice")
+    t3 = await s.create_task("prj-1", "Third", "alice")
+    tasks = await s.list_tasks("prj-1")
+    assert [t["id"] for t in tasks] == [t1["id"], t2["id"], t3["id"]]
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_task_success(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Do work", "alice")
+    ok = await s.claim_task(task["id"], "worker-1")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "claimed"
+    assert fetched["claimed_by"] == "worker-1"
+    assert isinstance(fetched["claimed_at"], float)
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_task_double_claim_rejected(tmp_path):
+    s = await _store(tmp_path)
+    t1 = await s.create_task("prj-1", "Task A", "alice")
+    t2 = await s.create_task("prj-1", "Task B", "alice")
+    ok1 = await s.claim_task(t1["id"], "worker-1")
+    assert ok1 is True
+    ok2 = await s.claim_task(t2["id"], "worker-1")
+    assert ok2 is False
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_already_claimed_by_other_rejected(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.claim_task(task["id"], "worker-1")
+    ok = await s.claim_task(task["id"], "worker-2")
+    assert ok is False
+    fetched = await s.get_task(task["id"])
+    assert fetched["claimed_by"] == "worker-1"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_closed_task_rejected(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.claim_task(task["id"], "worker-1")
+    await s.close_task(task["id"], "worker-1")
+    ok = await s.claim_task(task["id"], "worker-2")
+    assert ok is False
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_release_task_success(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.claim_task(task["id"], "worker-1")
+    ok = await s.release_task(task["id"], "worker-1")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "open"
+    assert fetched["claimed_by"] is None
+    assert fetched["claimed_at"] is None
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_release_task_wrong_releaser_rejected(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.claim_task(task["id"], "worker-1")
+    ok = await s.release_task(task["id"], "worker-2")
+    assert ok is False
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "claimed"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_release_open_task_noop(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    ok = await s.release_task(task["id"], "worker-1")
+    assert ok is False
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_close_task_from_claimed(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.claim_task(task["id"], "worker-1")
+    ok = await s.close_task(task["id"], "worker-1", reason="done")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "closed"
+    assert fetched["closed_by"] == "worker-1"
+    assert fetched["close_reason"] == "done"
+    assert isinstance(fetched["closed_at"], float)
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_close_task_from_open(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    ok = await s.close_task(task["id"], "alice")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "closed"
+    assert fetched["closed_by"] == "alice"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_close_already_closed_task_rejected(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.close_task(task["id"], "alice")
+    ok = await s.close_task(task["id"], "alice")
+    assert ok is False
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_close_cancelled_task_rejected(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.close_task(task["id"], "alice")
+    await s.reopen_task(task["id"], "alice")
+    await s._db.execute("UPDATE project_tasks SET status = 'cancelled' WHERE id = ?", (task["id"],))
+    await s._db.commit()
+    ok = await s.close_task(task["id"], "alice")
+    assert ok is False
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_reopen_task_success(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.claim_task(task["id"], "worker-1")
+    await s.close_task(task["id"], "worker-1")
+    ok = await s.reopen_task(task["id"], "alice")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "open"
+    assert fetched["closed_by"] is None
+    assert fetched["closed_at"] is None
+    assert fetched["close_reason"] is None
+    assert fetched["claimed_by"] is None
+    assert fetched["claimed_at"] is None
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_reopen_open_task_noop(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    ok = await s.reopen_task(task["id"], "alice")
+    assert ok is False
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_held_task_returns_active_claim(tmp_path):
+    s = await _store(tmp_path)
+    t1 = await s.create_task("prj-1", "Task A", "alice")
+    t2 = await s.create_task("prj-1", "Task B", "alice")
+    await s.claim_task(t1["id"], "worker-1")
+    await s.claim_task(t2["id"], "worker-2")
+    held = await s.held_task("worker-1")
+    assert held == t1["id"]
+    held2 = await s.held_task("worker-2")
+    assert held2 == t2["id"]
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_held_task_none_when_no_claim(tmp_path):
+    s = await _store(tmp_path)
+    result = await s.held_task("worker-1")
+    assert result is None
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_held_task_none_after_close(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.claim_task(task["id"], "worker-1")
+    await s.close_task(task["id"], "worker-1")
+    held = await s.held_task("worker-1")
+    assert held is None
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_after_close_and_reopen(tmp_path):
+    """Red-first: claim -> close -> reopen -> claim by another worker must succeed after fix.
+    
+    This test verifies that reopen_task properly clears claimed_by/claimed_at,
+    making a task claimable again after it was claimed, closed, and reopened.
+    """
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.claim_task(task["id"], "worker-1")
+    await s.close_task(task["id"], "worker-1")
+    await s.reopen_task(task["id"], "alice")
+    ok = await s.claim_task(task["id"], "worker-2")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["claimed_by"] == "worker-2"
+    assert fetched["status"] == "claimed"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_update_task_title(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Old title", "alice")
+    await s.update_task(task["id"], title="New title")
+    fetched = await s.get_task(task["id"])
+    assert fetched["title"] == "New title"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_update_task_labels(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.update_task(task["id"], labels=["bug", "critical"])
+    fetched = await s.get_task(task["id"])
+    assert fetched["labels"] == ["bug", "critical"]
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_update_task_multiple_fields(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.update_task(task["id"], body="new body", priority=5, assignee_id="bob")
+    fetched = await s.get_task(task["id"])
+    assert fetched["body"] == "new body"
+    assert fetched["priority"] == 5
+    assert fetched["assignee_id"] == "bob"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_update_task_no_op_when_all_none(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    before = await s.get_task(task["id"])
+    await s.update_task(task["id"])
+    after = await s.get_task(task["id"])
+    assert before["updated_at"] == after["updated_at"]
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_add_and_list_relationship(tmp_path):
+    s = await _store(tmp_path)
+    t1 = await s.create_task("prj-1", "Blocks", "alice")
+    t2 = await s.create_task("prj-1", "Blocked", "alice")
+    rel = await s.add_relationship("prj-1", t1["id"], t2["id"], "blocks", "alice")
+    assert rel["from_task_id"] == t1["id"]
+    assert rel["to_task_id"] == t2["id"]
+    assert rel["kind"] == "blocks"
+    rels = await s.list_relationships(t1["id"], direction="from")
+    assert len(rels) == 1
+    assert rels[0]["id"] == rel["id"]
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_add_relationship_invalid_kind(tmp_path):
+    s = await _store(tmp_path)
+    t1 = await s.create_task("prj-1", "A", "alice")
+    t2 = await s.create_task("prj-1", "B", "alice")
+    with pytest.raises(ValueError, match="invalid relationship kind"):
+        await s.add_relationship("prj-1", t1["id"], t2["id"], "invalid_kind", "alice")
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_add_relationship_task_not_in_project(tmp_path):
+    s = await _store(tmp_path)
+    t1 = await s.create_task("prj-1", "A", "alice")
+    t2 = await s.create_task("prj-2", "B", "alice")
+    with pytest.raises(ValueError, match="task not in project"):
+        await s.add_relationship("prj-1", t1["id"], t2["id"], "blocks", "alice")
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_remove_relationship(tmp_path):
+    s = await _store(tmp_path)
+    t1 = await s.create_task("prj-1", "A", "alice")
+    t2 = await s.create_task("prj-1", "B", "alice")
+    rel = await s.add_relationship("prj-1", t1["id"], t2["id"], "blocks", "alice")
+    await s.remove_relationship(rel["id"])
+    rels = await s.list_relationships(t1["id"])
+    assert rels == []
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_list_relationships_direction_to(tmp_path):
+    s = await _store(tmp_path)
+    t1 = await s.create_task("prj-1", "A", "alice")
+    t2 = await s.create_task("prj-1", "B", "alice")
+    rel = await s.add_relationship("prj-1", t1["id"], t2["id"], "blocks", "alice")
+    rels = await s.list_relationships(t2["id"], direction="to")
+    assert len(rels) == 1
+    assert rels[0]["id"] == rel["id"]
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_list_relationships_invalid_direction(tmp_path):
+    s = await _store(tmp_path)
+    with pytest.raises(ValueError, match="invalid direction"):
+        await s.list_relationships("tsk-1", direction="sideways")
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_list_ready_tasks_excludes_blocked(tmp_path):
+    s = await _store(tmp_path)
+    ready = await s.create_task("prj-1", "Ready", "alice")
+    blocked = await s.create_task("prj-1", "Blocked", "alice")
+    blocker = await s.create_task("prj-1", "Blocker", "alice")
+    await s.add_relationship("prj-1", blocked["id"], blocker["id"], "blocks", "alice")
+    result = await s.list_ready_tasks("prj-1")
+    ids = [t["id"] for t in result]
+    assert ready["id"] in ids
+    assert blocked["id"] not in ids
+    assert blocker["id"] in ids
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_list_ready_tasks_excludes_claimed(tmp_path):
+    s = await _store(tmp_path)
+    free = await s.create_task("prj-1", "Free", "alice")
+    claimed = await s.create_task("prj-1", "Claimed", "alice")
+    await s.claim_task(claimed["id"], "worker-1")
+    result = await s.list_ready_tasks("prj-1")
+    ids = [t["id"] for t in result]
+    assert free["id"] in ids
+    assert claimed["id"] not in ids
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_list_ready_tasks_ordered_by_priority_then_created(tmp_path):
+    s = await _store(tmp_path)
+    low = await s.create_task("prj-1", "Low", "alice", priority=1)
+    high = await s.create_task("prj-1", "High", "alice", priority=10)
+    mid = await s.create_task("prj-1", "Mid", "alice", priority=5)
+    result = await s.list_ready_tasks("prj-1")
+    ids = [t["id"] for t in result]
+    assert ids == [high["id"], mid["id"], low["id"]]
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_list_ready_tasks_limit_clamped(tmp_path):
+    s = await _store(tmp_path)
+    for i in range(5):
+        await s.create_task("prj-1", f"Task {i}", "alice")
+    result = await s.list_ready_tasks("prj-1", limit=3)
+    assert len(result) == 3
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_add_and_list_comments(tmp_path, monkeypatch):
+    _strictly_increasing_clock(monkeypatch)
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    c1 = await s.add_comment(task["id"], "alice", "first comment")
+    c2 = await s.add_comment(task["id"], "bob", "second comment")
+    comments = await s.list_comments(task["id"])
+    assert len(comments) == 2
+    assert comments[0]["body"] == "first comment"
+    assert comments[1]["body"] == "second comment"
+    assert comments[0]["author_id"] == "alice"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_add_comment_reply(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    parent = await s.add_comment(task["id"], "alice", "parent")
+    child = await s.add_comment(task["id"], "bob", "reply", replies_to_comment_id=parent["id"])
+    assert child["replies_to_comment_id"] == parent["id"]
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_add_comment_reply_wrong_task_rejected(tmp_path):
+    s = await _store(tmp_path)
+    t1 = await s.create_task("prj-1", "Task 1", "alice")
+    t2 = await s.create_task("prj-1", "Task 2", "alice")
+    c = await s.add_comment(t1["id"], "alice", "comment")
+    with pytest.raises(ValueError, match="replies_to_comment_id not in this task"):
+        await s.add_comment(t2["id"], "bob", "reply", replies_to_comment_id=c["id"])
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_add_comment_reply_nonexistent_rejected(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    with pytest.raises(ValueError, match="replies_to_comment_id not in this task"):
+        await s.add_comment(task["id"], "bob", "reply", replies_to_comment_id="cmt-fake")
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_create_task_publishes_event(tmp_path):
+    mock_broker = AsyncMock()
+    s = ProjectTaskStore(tmp_path / "tasks.db", broker=mock_broker)
+    await s.init()
+    task = await s.create_task("prj-1", "Task", "alice")
+    mock_broker.publish.assert_called_once()
+    args = mock_broker.publish.call_args
+    assert args[0][0] == "prj-1"
+    assert args[0][1].kind == "task.created"
+    assert args[0][1].payload["id"] == task["id"]
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_task_publishes_event(tmp_path):
+    mock_broker = AsyncMock()
+    s = ProjectTaskStore(tmp_path / "tasks.db", broker=mock_broker)
+    await s.init()
+    task = await s.create_task("prj-1", "Task", "alice")
+    mock_broker.reset_mock()
+    await s.claim_task(task["id"], "worker-1")
+    mock_broker.publish.assert_called_once()
+    args = mock_broker.publish.call_args
+    assert args[0][1].kind == "task.claimed"
+    assert args[0][1].payload["claimed_by"] == "worker-1"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_close_task_publishes_event(tmp_path):
+    mock_broker = AsyncMock()
+    s = ProjectTaskStore(tmp_path / "tasks.db", broker=mock_broker)
+    await s.init()
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.claim_task(task["id"], "worker-1")
+    mock_broker.reset_mock()
+    await s.close_task(task["id"], "worker-1")
+    mock_broker.publish.assert_called_once()
+    args = mock_broker.publish.call_args
+    assert args[0][1].kind == "task.closed"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_no_broker_no_error(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.claim_task(task["id"], "worker-1")
+    await s.close_task(task["id"], "worker-1")
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_quarantine_claimed_task_records_actual_from_status(tmp_path):
+    audit = BoardAuditLog(tmp_path / "audit.db")
+    await audit.init()
+    s = ProjectTaskStore(tmp_path / "tasks.db", audit=audit)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        await s.claim_task(task["id"], "worker-1")
+        ok = await s.quarantine_task(task["id"], "system")
+        assert ok is True
+        history = await audit.history(task["id"])
+        quarantined = [h for h in history if h["event"] == "task.quarantined"]
+        assert len(quarantined) == 1
+        assert quarantined[0]["from_status"] == "claimed"
+    finally:
+        await s.close()
+        await audit.close()
+
+
+@pytest.mark.asyncio
+async def test_quarantine_unclaimed_task_records_from_status_open(tmp_path):
+    """Open-path assertion: unclaimed task -> audit from_status='open'.
+
+    This test verifies that quarantine_task records from_status='open' when
+    called on an unclaimed task, complementing the existing claimed-task test.
+    """
+    audit = BoardAuditLog(tmp_path / "audit.db")
+    await audit.init()
+    s = ProjectTaskStore(tmp_path / "tasks.db", audit=audit)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        ok = await s.quarantine_task(task["id"], "system")
+        assert ok is True
+        history = await audit.history(task["id"])
+        quarantined = [h for h in history if h["event"] == "task.quarantined"]
+        assert len(quarantined) == 1
+        assert quarantined[0]["from_status"] == "open"
+    finally:
+        await s.close()
+        await audit.close()
+
+
+@pytest.mark.asyncio
+async def test_quarantine_after_reopen_records_from_status_open(tmp_path):
+    """Quarantine-after-reopen records from_status='open'.
+
+    This test verifies that quarantine_task records from_status='open' when
+    called on a reopened task (that was previously claimed, closed, and reopened).
+    """
+    audit = BoardAuditLog(tmp_path / "audit.db")
+    await audit.init()
+    s = ProjectTaskStore(tmp_path / "tasks.db", audit=audit)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        await s.claim_task(task["id"], "worker-1")
+        await s.close_task(task["id"], "worker-1")
+        await s.reopen_task(task["id"], "alice")
+        ok = await s.quarantine_task(task["id"], "system")
+        assert ok is True
+        history = await audit.history(task["id"])
+        quarantined = [h for h in history if h["event"] == "task.quarantined"]
+        assert len(quarantined) == 1
+        assert quarantined[0]["from_status"] == "open"
+    finally:
+        await s.close()
+        await audit.close()
+
+
+@pytest.mark.asyncio
+async def test_quarantine_event_payload_carries_strike_metadata(tmp_path):
+    """The task.quarantined SSE payload must carry strike_count and latest_strike.
+
+    The board's frontend relies on these fields to render the quarantine badge
+    without a refetch; without them the badge reports 0 strikes until reload
+    (regression tsk-dxqu7g / PR #2599 defect 2). The neighbouring
+    unquarantine payload carries them too, so the producer must surface both.
+    """
+    from tinyagentos.projects.strike_store import StrikeStore
+
+    mock_broker = AsyncMock()
+    s = ProjectTaskStore(tmp_path / "tasks.db", broker=mock_broker)
+    await s.init()
+    strikes = StrikeStore(tmp_path / "strikes.db")
+    await strikes.init()
+    s._strikes = strikes
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        await strikes.record_strike(task["id"], "verify", log_tail="boom")
+        await strikes.record_strike(task["id"], "verify", log_tail="boom 2")
+        mock_broker.reset_mock()
+        ok = await s.quarantine_task(task["id"], "system")
+        assert ok is True
+        mock_broker.publish.assert_called_once()
+        event = mock_broker.publish.call_args[0][1]
+        assert event.kind == "task.quarantined"
+        payload = event.payload
+        assert payload["id"] == task["id"]
+        assert payload["strike_count"] == 2
+        assert payload["latest_strike"] is not None
+        assert payload["latest_strike"]["log_tail"] == "boom 2"
+    finally:
+        await s.close()
+        await strikes.close()
+
+
+@pytest.mark.asyncio
+async def test_park_open_task(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    ok = await s.park_task(task["id"], "system")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_park_claimed_task_records_from_status_claimed(tmp_path):
+    audit = BoardAuditLog(tmp_path / "audit.db")
+    await audit.init()
+    s = ProjectTaskStore(tmp_path / "tasks.db", audit=audit)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        await s.claim_task(task["id"], "worker-1")
+        ok = await s.park_task(task["id"], "system")
+        assert ok is True
+        history = await audit.history(task["id"])
+        parked = [h for h in history if h["event"] == "task.parked"]
+        assert len(parked) == 1
+        assert parked[0]["from_status"] == "claimed"
+        # Parked is terminal, so the claim must not survive it: a parked row
+        # that still names a claimer reads as held by an agent that can never
+        # release it, and that is exactly the stale ownership the release-path
+        # parking fix exists to keep out of the board.
+        fetched = await s.get_task(task["id"])
+        assert fetched["status"] == "parked"
+        assert fetched["claimed_by"] is None
+        assert fetched["claimed_at"] is None
+    finally:
+        await s.close()
+        await audit.close()
+
+
+@pytest.mark.asyncio
+async def test_park_quarantined_task_records_from_status_quarantined(tmp_path):
+    """The audit row must name the status the card actually came from.
+
+    Parking accepts any row that is not closed, cancelled or parked, so a
+    quarantined card can be parked -- and quarantine keeps `claimed_by`.
+    Inferring the source status from the claimer logs that card as coming from
+    'claimed', which sends anyone reading the history after a dispatch
+    incident to the wrong story.
+    """
+    audit = BoardAuditLog(tmp_path / "audit.db")
+    await audit.init()
+    s = ProjectTaskStore(tmp_path / "tasks.db", audit=audit)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        await s.claim_task(task["id"], "worker-1")
+        assert await s.quarantine_task(task["id"], "system") is True
+        assert (await s.get_task(task["id"]))["claimed_by"] == "worker-1"
+
+        assert await s.park_task(task["id"], "system") is True
+
+        history = await audit.history(task["id"])
+        parked = [h for h in history if h["event"] == "task.parked"]
+        assert len(parked) == 1
+        assert parked[0]["from_status"] == "quarantined"
+    finally:
+        await s.close()
+        await audit.close()
+
+
+@pytest.mark.asyncio
+async def test_park_is_permanent(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    ok = await s.park_task(task["id"], "system")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_parked_task_cannot_be_claimed(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.park_task(task["id"], "system")
+    ok = await s.claim_task(task["id"], "agent-1")
+    assert ok is False
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_parked_task_cannot_be_closed_or_reopened(tmp_path):
+    """The two remaining routes back into the pool stay shut.
+
+    ``reopen_task`` guards on ``status = 'closed'`` alone; that is only
+    sufficient because ``close_task`` refuses a parked task, keeping 'parked'
+    and 'closed' mutually exclusive.  Assert both halves so the pair cannot
+    drift apart -- if a future edit lets a parked card be closed, reopen would
+    silently become a way to un-park it.
+    """
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.park_task(task["id"], "system")
+    assert await s.close_task(task["id"], "alice") is False
+    assert await s.close_task(task["id"], "alice", force=True) is False
+    assert await s.reopen_task(task["id"], "alice") is False
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_update_task_cannot_unpark(tmp_path):
+    """A generic edit must not resurrect a parked card.
+
+    `update_task(status="open")` is the board's ordinary field editor, so if it
+    can move a parked task back to 'open' the card re-enters ready_tasks and
+    the dispatch lanes pick it up again -- the exact loop parking exists to
+    break.
+    """
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.park_task(task["id"], "system")
+    await s.update_task(task["id"], status="open")
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    ready = await s.list_tasks("prj-1", status="open")
+    assert [t["id"] for t in ready] == []
+    # Other fields still edit fine on a parked card.
+    await s.update_task(task["id"], title="Renamed", status="open")
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "parked"
+    assert fetched["title"] == "Renamed"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_update_refused_by_the_parked_guard_publishes_nothing(tmp_path):
+    """An edit the parked predicate refuses must not announce itself.
+
+    The guard closes the read-then-write gap by matching zero rows when the
+    task was parked after the pre-read.  Nothing commits in that case, so a
+    `task.updated` event would tell every consumer to apply a patch the
+    database never took.
+    """
+    mock_broker = AsyncMock()
+    s = ProjectTaskStore(tmp_path / "tasks.db", broker=mock_broker)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        mock_broker.reset_mock()
+
+        real_execute = s._db.execute
+        state = {"raced": False}
+
+        def racing_execute(sql, *args, **kwargs):
+            # Park the task in the last moment before the guarded UPDATE runs:
+            # the window the predicate exists to cover.  Stays a plain function
+            # so every other statement hands back aiosqlite's cursor unchanged.
+            if (
+                not state["raced"]
+                and sql.lstrip().upper().startswith("UPDATE")
+                and "status != 'parked'" in sql
+            ):
+                state["raced"] = True
+
+                async def _park_then_execute():
+                    assert await s.park_task(task["id"], "system") is True
+                    return await real_execute(sql, *args, **kwargs)
+
+                return _park_then_execute()
+            return real_execute(sql, *args, **kwargs)
+
+        s._db.execute = racing_execute
+        await s.update_task(task["id"], status="closed")
+        s._db.execute = real_execute
+
+        assert state["raced"] is True
+        assert (await s.get_task(task["id"]))["status"] == "parked"
+        published = [
+            call.args[1].kind for call in mock_broker.publish.call_args_list
+        ]
+        assert "task.updated" not in published
+    finally:
+        await s.close()
+
+
+@pytest.mark.asyncio
+async def test_release_parking_does_not_steal_a_concurrent_claim(tmp_path):
+    """Parking on release must not swallow a claim made after the pre-check.
+
+    The release path records the threshold strike and then parks.  If it
+    decides on a separate read, another worker can claim the task in the gap
+    between that read and the park, and the park lands on a live claim.
+    """
+    from tinyagentos.projects.strike_store import StrikeStore
+
+    strikes = StrikeStore(tmp_path / "strikes.db")
+    await strikes.init()
+    s = ProjectTaskStore(tmp_path / "tasks.db", strikes=strikes)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        for _ in range(StrikeStore.STRIKE_THRESHOLD - 1):
+            await strikes.record_strike(task["id"], "dispatch_failed", actor="worker-1")
+        await s.claim_task(task["id"], "worker-1")
+
+        # Drive the interleaving deterministically: worker-2 claims the task in
+        # the last moment before the parking UPDATE runs -- exactly the window a
+        # separate pre-read leaves open.  Both the pre-read design and the
+        # conditional-update design reach this point, so the hook is fair to
+        # either implementation.
+        real_execute = s._db.execute
+        state = {"raced": False}
+
+        def racing_execute(sql, *args, **kwargs):
+            # Stay a plain function so non-matching statements hand back
+            # aiosqlite's cursor object unchanged (callers use it both with
+            # `await` and with `async with`). Parking statements are only ever
+            # awaited, so returning a coroutine for those is safe.
+            if (
+                not state["raced"]
+                and sql.lstrip().upper().startswith("UPDATE")
+                and "'parked'" in sql
+            ):
+                state["raced"] = True
+
+                async def _claim_then_execute():
+                    assert await s.claim_task(task["id"], "worker-2") is True
+                    return await real_execute(sql, *args, **kwargs)
+
+                return _claim_then_execute()
+            return real_execute(sql, *args, **kwargs)
+
+        s._db.execute = racing_execute
+        ok = await s.release_task(task["id"], "worker-1")
+        s._db.execute = real_execute
+        assert ok is True
+        assert state["raced"] is True
+
+        fetched = await s.get_task(task["id"])
+        assert fetched["status"] == "claimed"
+        assert fetched["claimed_by"] == "worker-2"
+    finally:
+        await s.close()
+        await strikes.close()
+
+
+@pytest.mark.asyncio
+async def test_release_records_strike_and_parks_after_threshold(tmp_path):
+    from tinyagentos.projects.strike_store import StrikeStore
+
+    strikes = StrikeStore(tmp_path / "strikes.db")
+    await strikes.init()
+    s = ProjectTaskStore(tmp_path / "tasks.db", strikes=strikes)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        for _ in range(StrikeStore.STRIKE_THRESHOLD):
+            await s.claim_task(task["id"], "worker-1")
+            ok = await s.release_task(task["id"], "worker-1")
+            assert ok is True
+        fetched = await s.get_task(task["id"])
+        assert fetched["status"] == "parked"
+        assert await strikes.count_strikes(task["id"]) == StrikeStore.STRIKE_THRESHOLD
+    finally:
+        await s.close()
+        await strikes.close()
+
+
+@pytest.mark.asyncio
+async def test_release_without_strikes_store_does_not_record(tmp_path):
+    s = await _store(tmp_path)
+    task = await s.create_task("prj-1", "Task", "alice")
+    await s.claim_task(task["id"], "worker-1")
+    ok = await s.release_task(task["id"], "worker-1")
+    assert ok is True
+    fetched = await s.get_task(task["id"])
+    assert fetched["status"] == "open"
+    await s.close()

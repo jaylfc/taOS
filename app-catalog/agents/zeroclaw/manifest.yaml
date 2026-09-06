@@ -1,0 +1,18 @@
+id: zeroclaw
+name: ZeroClaw
+type: agent-framework
+verification_status: alpha
+version: 1.0.0
+description: "Minimal agent — proves agents don't need hundreds of MB RAM. Ultra-lightweight."
+homepage: https://github.com/nicholasgasior/zeroclaw
+license: MIT
+requires:
+  ram_mb: 16
+install:
+  method: pip
+  package: zeroclaw
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-cpu-8gb: full
+  x86-cuda-12gb: full
+  cpu-only: full

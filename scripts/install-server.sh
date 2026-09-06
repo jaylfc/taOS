@@ -1,0 +1,2779 @@
+#!/usr/bin/env bash
+# TinyAgentOS controller installer — Linux + macOS
+# Bootstraps the TinyAgentOS controller: clones the repo, creates a Python
+# venv, installs all controller deps, and registers tinyagentos.service and
+# qmd.service as systemd units so the web UI is accessible at
+# http://<host>:6969 immediately after the script exits.
+#
+# Usage:
+#     curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-server.sh | sudo bash
+#
+# or download + inspect + run:
+#     curl -O https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-server.sh
+#     chmod +x install-server.sh
+#     sudo ./install-server.sh
+#
+# Environment overrides:
+#     TAOS_INSTALL_DIR    where to install (default: ~/tinyagentos)
+#     TAOS_BRANCH         git branch or tag (default: master)
+#     TAOS_REPO           git remote (default: https://github.com/jaylfc/taOS)
+#     TAOS_PORT                 controller listen port (default: 6969)
+#     TAOS_BROWSER_PROXY_PORT   browser-proxy second-origin port (default: 6970); set to 0 to disable
+#     TAOS_QMD_PORT             qmd model service port (default: 7832)
+#     TAOS_BUS_PORT             taosmd A2A bus port (default: 7900); used only to open the firewall rule
+#     TAOS_SERVICE              install as system service: auto (default), system, user, skip
+#     TAOS_SKIP_QMD             if set, skip qmd.service install (useful for boxes without a model backend)
+#     TAOS_RKNPU_SETUP          if set to 1, auto-run install-rknpu.sh when RKNPU is detected but rkllama is missing
+#     TAOS_HAILO_SETUP          set to 1/true to auto-run install-hailo.sh when a Hailo-10H is detected
+#     TAOS_FORCE_HAILO          set to 1/true to force the Hailo-10H branch on bench boxes without /dev/hailo0
+#     TAOS_NO_HAILO             if set to 1/true, skip the hailo-ollama auto-install on Hailo-10H hosts
+#     TAOS_PREFETCH_BASE_IMAGE  if set to 1, download the pre-built agent base image at startup (~300-500MB, one-time)
+#     TAOS_COW_POOL             incus storage driver: auto (default), btrfs, zfs, dir
+#                               auto = use btrfs/zfs if /var/lib is on CoW fs, fall back to dir
+#                               btrfs/zfs = force a specific CoW driver (requires matching fs)
+#                               dir = force directory-backed pool (no CoW, slower clones)
+set -euo pipefail
+
+# If taOS is already installed, default to ITS directory so a re-run updates the
+# existing install in place rather than forking a second copy (e.g. a root
+# `curl | sudo bash` landing in /root while the service runs from /opt). An
+# explicit TAOS_INSTALL_DIR always wins; otherwise prefer the running service's
+# WorkingDirectory, then a /opt install, then the invoking user's home.
+_existing_install=""
+if command -v systemctl >/dev/null 2>&1; then
+    _existing_install="$(systemctl show tinyagentos -p WorkingDirectory --value 2>/dev/null || true)"
+fi
+[[ -z "$_existing_install" && -d /opt/tinyagentos/.git ]] && _existing_install=/opt/tinyagentos
+INSTALL_DIR="${TAOS_INSTALL_DIR:-${_existing_install:-$HOME/tinyagentos}}"
+BRANCH="${TAOS_BRANCH:-master}"
+REPO="${TAOS_REPO:-https://github.com/jaylfc/taOS}"
+TAOS_PORT="${TAOS_PORT:-6969}"
+TAOS_BROWSER_PROXY_PORT="${TAOS_BROWSER_PROXY_PORT:-6970}"
+TAOS_QMD_PORT="${TAOS_QMD_PORT:-7832}"
+TAOS_BUS_PORT="${TAOS_BUS_PORT:-7900}"
+SERVICE_MODE="${TAOS_SERVICE:-auto}"
+COW_POOL_MODE="${TAOS_COW_POOL:-auto}"
+
+os_name="$(uname -s)"
+arch="$(uname -m)"
+
+log()  { printf '\033[1;34m[server-install]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[server-install]\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31m[server-install]\033[0m %s\n' "$*" >&2; exit 1; }
+
+log "os=$os_name arch=$arch"
+# Environment banner: every user-posted install log should self-describe the
+# machine it ran on (distro, kernel, board, python, free disk) so a failure
+# report is diagnosable without a round-trip asking for these.
+if [[ -r /etc/os-release ]]; then
+    log "distro=$( . /etc/os-release; echo "${PRETTY_NAME:-$ID}" )"
+fi
+log "kernel=$(uname -r)"
+if [[ -r /proc/device-tree/model ]]; then
+    log "board=$(tr -d '\0' < /proc/device-tree/model)"
+fi
+command -v python3 >/dev/null 2>&1 && log "python3=$(python3 --version 2>&1)"
+# Report free space on the filesystem the install actually targets;
+# INSTALL_DIR may not exist yet on a fresh box, so walk up to its nearest
+# existing ancestor (falling back to / masks a full /opt-style volume).
+# An empty or relative INSTALL_DIR would walk to "." and report the cwd's
+# filesystem instead of the install target; fall back to / for the banner.
+_df_target="$INSTALL_DIR"
+if [[ -z "$_df_target" || "$_df_target" != /* ]]; then
+    _df_target="/"
+fi
+while [[ ! -d "$_df_target" && "$_df_target" != "/" ]]; do
+    _df_target="$(dirname "$_df_target")"
+done
+log "disk_free=$(df -Ph "$_df_target" 2>/dev/null | awk 'NR==2 {print $4}' || echo unknown) (at $_df_target)"
+log "install_dir=$INSTALL_DIR branch=$BRANCH port=$TAOS_PORT proxy_port=$TAOS_BROWSER_PROXY_PORT qmd_port=$TAOS_QMD_PORT"
+
+# --- system dependencies --------------------------------------------------
+
+ensure_linux_deps() {
+    if command -v apt-get >/dev/null 2>&1; then
+        log "installing apt deps (python3, venv, git, curl, libtorrent, sqlite3, sqlcipher)"
+        # nodejs/npm are intentionally excluded here: ensure_node22() installs
+        # Node 22 via NodeSource immediately after. Including apt's nodejs/npm
+        # causes "held broken packages" when NodeSource's nodejs is already
+        # present, because apt's npm conflicts with NodeSource's bundled npm.
+        sudo apt-get update -qq
+        # vulkan-tools provides vulkaninfo, which the runtime hardware
+        # probe shells out to for iGPU detection. Without it, taOS
+        # silently reports vulkan: false on Intel / AMD iGPUs (#354).
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            python3 python3-venv python3-pip git curl ca-certificates \
+            libtorrent-rasterbar-dev libboost-python-dev sqlite3 libsqlcipher-dev \
+            vulkan-tools
+    elif command -v dnf >/dev/null 2>&1; then
+        log "installing dnf deps (python3, git, curl, libtorrent, nodejs, sqlcipher, vulkan-tools)"
+        # rb_libtorrent: Fedora's libtorrent-rasterbar is split into the C++
+        # library (rb_libtorrent), its devel headers (rb_libtorrent-devel), and
+        # the Python bindings (rb_libtorrent-python3). The bindings are NOT on
+        # PyPI for Fedora's Python 3.14; install them as a system package and
+        # rely on --system-site-packages in the venv below.
+        # python3-virtualenv is intentionally omitted — `python3 -m venv` from
+        # stdlib is sufficient and avoids a name that's been renamed/removed
+        # across recent Fedora releases.
+        sudo dnf install -y -q python3 python3-pip git curl \
+            rb_libtorrent-devel rb_libtorrent-python3 boost-python3 \
+            sqlite nodejs npm sqlcipher-devel vulkan-tools
+    elif command -v pacman >/dev/null 2>&1; then
+        log "installing pacman deps"
+        sudo pacman -Sy --noconfirm --needed python python-pip git curl \
+            libtorrent-rasterbar boost sqlite nodejs npm sqlcipher vulkan-tools
+    elif command -v apk >/dev/null 2>&1; then
+        log "installing apk deps"
+        sudo apk add --no-cache python3 py3-pip git curl libtorrent-rasterbar sqlite nodejs npm sqlcipher-dev vulkan-tools
+    else
+        warn "unrecognised package manager — assuming python3/git/curl/libtorrent/nodejs already present"
+    fi
+}
+
+ensure_macos_deps() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        if command -v brew >/dev/null 2>&1; then
+            log "installing brew python"
+            brew install python git
+        else
+            die "python3 not found and homebrew missing. install from https://brew.sh first"
+        fi
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        die "git not found"
+    fi
+    if command -v brew >/dev/null 2>&1; then
+        if ! brew list libtorrent-rasterbar >/dev/null 2>&1; then
+            log "installing libtorrent-rasterbar via brew"
+            brew install libtorrent-rasterbar || warn "brew install libtorrent-rasterbar failed — torrent path will be unavailable"
+        fi
+        if ! command -v node >/dev/null 2>&1; then
+            log "installing node via brew (required for qmd)"
+            brew install node || warn "brew install node failed — qmd service will be unavailable"
+        fi
+    fi
+}
+
+case "$os_name" in
+    Linux)  ensure_linux_deps ;;
+    Darwin) ensure_macos_deps ;;
+    *)      die "unsupported OS: $os_name" ;;
+esac
+
+# --- node.js version guard ---------------------------------------------------
+# qmd requires Node >=22. Debian/Ubuntu (and Armbian vendor-kernel images) ship
+# Node 18 from apt, which causes node-llama-cpp to attempt a multi-hour native
+# compile from source instead of downloading a prebuilt binary. Detect this and
+# upgrade via NodeSource (ARM64 + x86_64 binaries, no kernel changes required).
+
+ensure_node22() {
+    local node_major=0
+    if command -v node >/dev/null 2>&1; then
+        node_major="$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1)"
+    fi
+
+    if [[ "$node_major" -ge 22 ]]; then
+        log "node $(node --version) — ok (>=22 required)"
+        return 0
+    fi
+
+    log "node ${node_major:-not found} is too old (need >=22) — upgrading to Node 22 LTS via NodeSource"
+
+    if command -v apt-get >/dev/null 2>&1; then
+        # Install Node 22 via NodeSource's GPG-signed apt repository.
+        # This mirrors how Zabbly/Caddy keys are handled in this file: download
+        # the key, verify its fingerprint against a known-good value, import to a
+        # named keyring, then add the signed-by sources entry.
+        #
+        # NodeSource repo GPG key fingerprint — verified 2026-06-08 against
+        # https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+        # and confirmed against NodeSource's official documentation at
+        # https://github.com/nodesource/distributions
+        # Update if NodeSource rotates their signing key.
+        local _ns_expected_fp="6F71F525282841EEDAF851B42F59B5F99B1BE0B4"
+        local _ns_key_tmp
+        _ns_key_tmp="$(mktemp /tmp/nodesource-key.XXXXXX.asc)"
+        # shellcheck disable=SC2064
+        trap "rm -f '$_ns_key_tmp'" RETURN
+        curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+            -o "$_ns_key_tmp" \
+            || die "failed to download NodeSource repo GPG key"
+        local _ns_actual_fp
+        _ns_actual_fp="$(gpg --with-colons --import-options show-only \
+            --import "$_ns_key_tmp" 2>/dev/null \
+            | awk -F: '/^fpr:/{print $10}' | head -1)"
+        _ns_actual_fp="${_ns_actual_fp//[[:space:]]/}"
+        if [[ "$_ns_actual_fp" != "$_ns_expected_fp" ]]; then
+            die "NodeSource repo key fingerprint mismatch: expected $_ns_expected_fp, got '$_ns_actual_fp' — refusing to import"
+        fi
+        log "NodeSource key fingerprint ok (${_ns_actual_fp:0:16}…)"
+        sudo mkdir -p /usr/share/keyrings
+        sudo gpg --dearmor -o /usr/share/keyrings/nodesource.gpg < "$_ns_key_tmp" \
+            || die "gpg --dearmor for NodeSource key failed"
+        sudo chmod 644 /usr/share/keyrings/nodesource.gpg
+        printf 'Types: deb\nURIs: https://deb.nodesource.com/node_22.x\nSuites: nodistro\nComponents: main\nSigned-By: /usr/share/keyrings/nodesource.gpg\n' \
+            | sudo tee /etc/apt/sources.list.d/nodesource.sources > /dev/null
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+            || die "apt-get update after NodeSource repo add failed"
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs \
+            || die "apt-get install nodejs (22) failed"
+    elif command -v dnf >/dev/null 2>&1; then
+        # Install Node 22 via NodeSource's GPG-signed dnf repository.
+        # Key fingerprint verified 2026-06-08 against
+        # https://rpm.nodesource.com/gpgkey/ns-operations-public.key
+        # Update if NodeSource rotates their RPM signing key.
+        local _ns_rpm_expected_fp="242B813831AF09562B6C46F76B88DA4E3AF28A14"
+        local _ns_rpm_key_tmp
+        _ns_rpm_key_tmp="$(mktemp /tmp/nodesource-rpm-key.XXXXXX.asc)"
+        # shellcheck disable=SC2064
+        trap "rm -f '$_ns_rpm_key_tmp'" RETURN
+        curl -fsSL https://rpm.nodesource.com/gpgkey/ns-operations-public.key \
+            -o "$_ns_rpm_key_tmp" \
+            || die "failed to download NodeSource RPM repo GPG key"
+        local _ns_rpm_actual_fp
+        _ns_rpm_actual_fp="$(gpg --with-colons --import-options show-only \
+            --import "$_ns_rpm_key_tmp" 2>/dev/null \
+            | awk -F: '/^fpr:/{print $10}' | head -1)"
+        _ns_rpm_actual_fp="${_ns_rpm_actual_fp//[[:space:]]/}"
+        if [[ "$_ns_rpm_actual_fp" != "$_ns_rpm_expected_fp" ]]; then
+            die "NodeSource RPM key fingerprint mismatch: expected $_ns_rpm_expected_fp, got '$_ns_rpm_actual_fp' — refusing to import"
+        fi
+        log "NodeSource RPM key fingerprint ok (${_ns_rpm_actual_fp:0:16}…)"
+        local _ns_rpm_arch
+        _ns_rpm_arch="$(uname -m)"
+        sudo rpm --import "$_ns_rpm_key_tmp" \
+            || die "rpm --import for NodeSource key failed"
+        printf '[nodesource-nodejs]\nname=Node.js Packages for Linux RPM based distros - %s\nbaseurl=https://rpm.nodesource.com/pub_22.x/nodistro/nodejs/%s\npriority=9\nenabled=1\ngpgcheck=1\ngpgkey=https://rpm.nodesource.com/gpgkey/ns-operations-public.key\nmodule_hotfixes=1\n' \
+            "$_ns_rpm_arch" "$_ns_rpm_arch" \
+            | sudo tee /etc/yum.repos.d/nodesource-nodejs.repo > /dev/null
+        sudo dnf install -y nodejs \
+            || die "dnf install nodejs (22) failed"
+    elif command -v pacman >/dev/null 2>&1; then
+        # Arch ships a current node in extra — just upgrade whatever is installed
+        sudo pacman -Sy --noconfirm nodejs npm \
+            || warn "pacman upgrade of nodejs failed — qmd install may fail on old Node"
+    else
+        warn "cannot auto-upgrade Node $node_major — unsupported package manager"
+        warn "  install Node 22 manually then re-run this script"
+        warn "  see: https://nodejs.org/en/download"
+    fi
+
+    # Re-check after upgrade
+    if command -v node >/dev/null 2>&1; then
+        log "node now at $(node --version)"
+    fi
+}
+
+[[ "$os_name" == "Linux" ]] && ensure_node22
+
+# --- accelerator detection (advisory only — never auto-installs drivers) ----
+#
+# We never apt/dnf/pacman a GPU driver: most boxes don't have an
+# accelerator at all (Apple Silicon, Intel iGPU, ARM SBCs), and the
+# ones that do typically already have the right driver from the OS
+# vendor. Touching the kernel-module + DKMS stack on someone else's
+# box without consent is rude.
+#
+# What we do instead: detect what's physically present, then surface
+# clear advice if the hardware is on the bus but the driver isn't
+# loaded so the controller can use it. The user runs the install command
+# themselves.
+
+detect_and_advise_accelerators() {
+    [[ "$os_name" != "Linux" ]] && return 0  # macOS detection lives elsewhere
+
+    local found_any=0
+
+    # ── NVIDIA ───────────────────────────────────────────────────────
+    local nv_devices=0 nv_driver=0 nv_userspace=0
+    [[ -e /dev/nvidia0 ]] && nv_devices=1
+    [[ -d /proc/driver/nvidia ]] && nv_driver=1
+    command -v nvidia-smi >/dev/null 2>&1 && nv_userspace=1
+
+    local nv_on_bus=0
+    if command -v lspci >/dev/null 2>&1; then
+        if lspci 2>/dev/null | grep -qi "NVIDIA Corporation"; then
+            nv_on_bus=1
+        fi
+    fi
+
+    if (( nv_devices || nv_driver || nv_on_bus )); then
+        found_any=1
+        if (( nv_driver && nv_devices )); then
+            log "nvidia: kernel module loaded + device nodes present (CUDA / Vulkan available)"
+            if (( ! nv_userspace )); then
+                # nvidia-smi provides VRAM size and capability reporting to
+                # the runtime hardware probe. Without it, VRAM reports as
+                # 'unknown' even though the GPU is fully operational (#370).
+                if command -v apt-get >/dev/null 2>&1 && apt-cache show nvidia-utils >/dev/null 2>&1; then
+                    log "installing nvidia-utils for VRAM/capability reporting"
+                    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nvidia-utils
+                elif command -v dnf >/dev/null 2>&1; then
+                    # nvidia-smi lives in rpmfusion-nonfree — only install if
+                    # the user already enabled RPM Fusion. Silently skip if
+                    # the package isn't there (no non-free repo = no NVIDIA).
+                    if dnf list nvidia-smi >/dev/null 2>&1; then
+                        log "installing nvidia-smi for VRAM/capability reporting"
+                        sudo dnf install -y -q nvidia-smi
+                    else
+                        warn "nvidia-smi not available — enable RPM Fusion nonfree for VRAM reporting"
+                        warn "  https://rpmfusion.org/Configuration"
+                    fi
+                elif command -v pacman >/dev/null 2>&1 && pacman -Si nvidia-utils >/dev/null 2>&1; then
+                    log "installing nvidia-utils for VRAM/capability reporting"
+                    sudo pacman -S --noconfirm --needed nvidia-utils
+                else
+                    warn "nvidia-smi is not installed — VRAM size will report as unknown to the controller"
+                    warn "  optional: install nvidia-utils-XXX matching your driver version"
+                fi
+            fi
+        elif (( nv_on_bus )); then
+            warn "NVIDIA GPU detected on the PCIe bus but the kernel module is not loaded"
+            warn "  the controller will not be able to use it until the driver is installed"
+            if command -v apt-get >/dev/null 2>&1; then
+                warn "  Debian / Ubuntu: sudo apt install nvidia-driver firmware-misc-nonfree && sudo reboot"
+            elif command -v dnf >/dev/null 2>&1; then
+                warn "  Fedora: enable RPM Fusion, then sudo dnf install akmod-nvidia xorg-x11-drv-nvidia-cuda && sudo reboot"
+            elif command -v pacman >/dev/null 2>&1; then
+                warn "  Arch: sudo pacman -S nvidia nvidia-utils && sudo reboot"
+            else
+                warn "  see your distro's NVIDIA driver documentation"
+            fi
+        fi
+    fi
+
+    # ── AMD ROCm / AMDGPU ───────────────────────────────────────────
+    local amd_on_bus=0 amd_drm=0 amd_rocm=0
+    if command -v lspci >/dev/null 2>&1; then
+        if lspci 2>/dev/null | grep -qi "AMD/ATI" | head -1 >/dev/null \
+           || lspci 2>/dev/null | grep -E "VGA|3D" | grep -qi "Advanced Micro Devices"; then
+            amd_on_bus=1
+        fi
+    fi
+    [[ -e /dev/kfd ]] && amd_drm=1
+    [[ -d /opt/rocm ]] && amd_rocm=1
+
+    if (( amd_on_bus || amd_drm )); then
+        found_any=1
+        if (( amd_rocm && amd_drm )); then
+            log "amdgpu: kfd device + ROCm runtime present (HIP / Vulkan available)"
+            # rocm-smi provides VRAM size, temperature, and capability
+            # reporting for the runtime hardware probe. Without it, VRAM
+            # reports as 'unknown' even though the GPU is fully operational (#370).
+            if command -v apt-get >/dev/null 2>&1 && apt-cache show rocm-smi-lib >/dev/null 2>&1; then
+                log "installing rocm-smi-lib for VRAM/capability reporting"
+                sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rocm-smi-lib
+            elif command -v dnf >/dev/null 2>&1 && dnf list rocm-smi >/dev/null 2>&1; then
+                log "installing rocm-smi for VRAM/capability reporting"
+                sudo dnf install -y -q rocm-smi
+            elif command -v pacman >/dev/null 2>&1 && pacman -Si rocm-smi-lib >/dev/null 2>&1; then
+                log "installing rocm-smi-lib for VRAM/capability reporting"
+                sudo pacman -S --noconfirm --needed rocm-smi-lib
+            else
+                warn "rocm-smi not installed — VRAM will report as unknown"
+                warn "  optional: install rocm-smi-lib (apt/pacman) or rocm-smi (dnf)"
+            fi
+        elif (( amd_drm && ! amd_rocm )); then
+            warn "AMD GPU detected with kfd device but ROCm is not installed"
+            warn "  the controller will fall back to CPU until ROCm is set up"
+            if command -v apt-get >/dev/null 2>&1; then
+                warn "  Debian / Ubuntu: see https://rocm.docs.amd.com/projects/install-on-linux/en/latest/"
+            elif command -v dnf >/dev/null 2>&1; then
+                warn "  Fedora: sudo dnf install rocm-hip rocm-opencl"
+            elif command -v pacman >/dev/null 2>&1; then
+                warn "  Arch: sudo pacman -S rocm-hip-runtime rocm-opencl-runtime"
+            fi
+        elif (( amd_on_bus && ! amd_drm )); then
+            warn "AMD GPU on the PCIe bus but the amdgpu kernel module is not loaded"
+            warn "  ensure the amdgpu driver is enabled in your kernel and reboot"
+        fi
+    fi
+
+    # ── Intel Arc / iGPU (Vulkan via Mesa) ──────────────────────────
+    local intel_gpu=0
+    if command -v lspci >/dev/null 2>&1; then
+        if lspci 2>/dev/null | grep -E "VGA|3D" | grep -qi "Intel Corporation"; then
+            intel_gpu=1
+        fi
+    fi
+    if (( intel_gpu )); then
+        found_any=1
+        # Install Mesa Vulkan drivers so vulkaninfo can report hardware
+        # devices on Intel iGPUs. vulkan-tools (in ensure_linux_deps) only
+        # ships the vulkaninfo binary — it needs Mesa's Vulkan driver to
+        # actually detect the GPU (#354, epic #370).
+        if command -v apt-get >/dev/null 2>&1 && apt-cache show mesa-vulkan-drivers >/dev/null 2>&1; then
+            log "installing mesa-vulkan-drivers for Intel Vulkan support"
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mesa-vulkan-drivers
+        elif command -v dnf >/dev/null 2>&1 && dnf list mesa-vulkan-drivers >/dev/null 2>&1; then
+            log "installing mesa-vulkan-drivers for Intel Vulkan support"
+            sudo dnf install -y -q mesa-vulkan-drivers
+        elif command -v pacman >/dev/null 2>&1 && pacman -Si vulkan-intel >/dev/null 2>&1; then
+            log "installing vulkan-intel vulkan-mesa-layers for Intel Vulkan support"
+            sudo pacman -S --noconfirm --needed vulkan-intel vulkan-mesa-layers
+        elif command -v apk >/dev/null 2>&1 && apk search mesa-vulkan-intel >/dev/null 2>&1; then
+            log "installing mesa-vulkan-intel mesa-dri-gallium for Intel Vulkan support"
+            sudo apk add --no-cache mesa-vulkan-intel mesa-dri-gallium
+        fi
+        if [[ -d /sys/class/drm/card0 ]] || [[ -d /sys/class/drm/card1 ]]; then
+            log "intel gpu: present (Vulkan via Mesa, no separate driver install needed on most distros)"
+        else
+            warn "Intel GPU detected on the PCIe bus but no DRM device — install mesa-vulkan-drivers"
+        fi
+    fi
+
+    # ── Rockchip RKNPU ──────────────────────────────────────────────
+    # Multi-signal detection: different RK3588 kernels expose the NPU at
+    # different paths. /dev/rknpu and /sys/class/devfreq/*.npu are the
+    # cleanest signals when present, but some kernel builds skip devfreq
+    # or expose only the debugfs entry, and on others the user-space
+    # device node is gated behind a module that isn't autoloaded. Fall
+    # back to the device-tree compatible string (the SoC's bootloader
+    # ID, always present on real RK35xx hardware) so we don't miss the
+    # NPU on those boards.  TAOS_FORCE_RKNPU=1 forces this branch on
+    # for testing or for kernels we don't yet recognise.
+    local rknpu_present=0
+    local rknpu_signal=""
+    if [[ "${TAOS_FORCE_RKNPU:-}" == "1" || "${TAOS_FORCE_RKNPU:-}" == "true" ]]; then
+        rknpu_present=1
+        rknpu_signal="TAOS_FORCE_RKNPU"
+    elif [[ -e /dev/rknpu ]]; then
+        rknpu_present=1
+        rknpu_signal="/dev/rknpu"
+    elif [[ -d /sys/kernel/debug/rknpu ]] || [[ -e /sys/kernel/debug/rknpu/load ]]; then
+        rknpu_present=1
+        rknpu_signal="/sys/kernel/debug/rknpu"
+    elif command -v lsmod >/dev/null 2>&1 && lsmod 2>/dev/null | awk '{print $1}' | grep -qx "rknpu"; then
+        rknpu_present=1
+        rknpu_signal="lsmod:rknpu"
+    elif [[ -r /proc/device-tree/compatible ]] && tr -d '\0' < /proc/device-tree/compatible 2>/dev/null | grep -qE "rockchip,rk(3588|3576|3568)"; then
+        rknpu_present=1
+        rknpu_signal="device-tree:rockchip-rk3xxx"
+    else
+        for _npu_devfreq in /sys/class/devfreq/*.npu; do
+            [[ -d "$_npu_devfreq" ]] && { rknpu_present=1; rknpu_signal="$_npu_devfreq"; break; }
+        done
+    fi
+    if (( rknpu_present )); then
+        log "rknpu: detected via $rknpu_signal"
+    fi
+    if (( rknpu_present )); then
+        found_any=1
+        # rkllama might be installed as a top-level command, or as a
+        # venv-local entrypoint under ~/rkllama/rkllama-env/bin. Check
+        # both — the install-rknpu.sh layout uses the venv path.
+        local rkllama_found=0
+        if command -v rkllama >/dev/null 2>&1; then
+            rkllama_found=1
+        elif [[ -x "$HOME/rkllama/rkllama-env/bin/rkllama_server" ]]; then
+            rkllama_found=1
+        fi
+        if (( rkllama_found )); then
+            log "rknpu: device present + rkllama backend installed"
+        else
+            log "Rockchip NPU detected — auto-installing the jaylfc/rkllama backend"
+            log "  (set TAOS_NO_RKNPU=1 to skip, or run install-rknpu.sh manually later)"
+            log "  fork: https://github.com/jaylfc/rkllama"
+            # Chained auto-install on by default for RK3588 hosts: if the
+            # NPU is present and rkllama isn't installed yet, set up our
+            # fork now so rkllama is already serving (port 7833) before the
+            # controller systemd unit lands. Opt-out via TAOS_NO_RKNPU=1.
+            if [[ "${TAOS_NO_RKNPU:-}" == "1" || "${TAOS_NO_RKNPU:-}" == "true" ]]; then
+                warn "TAOS_NO_RKNPU=1 — skipping rkllama install; controller will run CPU-only on this NPU box"
+                warn "  to set up later: sudo bash scripts/install-rknpu.sh"
+            else
+                # Defer the actual install to after the repo clone — the
+                # script we need lives at $INSTALL_DIR/scripts/install-rknpu.sh
+                # and that path doesn't exist on this very first detection
+                # pass. install_rknpu_if_pending below picks this up.
+                RKNPU_PENDING_INSTALL=1
+                log "rkllama install deferred until after repo clone"
+            fi
+        fi
+    fi
+
+    # ── Hailo-10H ──────────────────────────────────────────────
+    # The 10H is the only Hailo part with an LLM runtime. It appears as
+    # /dev/hailo0 on the AI HAT+2 (PCIe M.2). lspci -d 1e60: reports
+    # "10h"/"hailo-10" for a 10H; any other /dev/hailo* node is an 8/8L
+    # vision-class device and must NOT trigger the LLM installer.
+    # TAOS_FORCE_HAILO=1 forces the branch on bench boxes without a node.
+    local hailo_present=0
+    local hailo_signal=""
+    if [[ "${TAOS_FORCE_HAILO:-}" == "1" || "${TAOS_FORCE_HAILO:-}" == "true" ]]; then
+        hailo_present=1
+        hailo_signal="TAOS_FORCE_HAILO"
+    elif [[ -e /dev/hailo0 ]]; then
+        # 10H vs 8L discrimination: only a 10H runs LLMs.
+        if command -v lspci >/dev/null 2>&1 && lspci -d 1e60: 2>/dev/null | grep -Eiq '10h|hailo-10'; then
+            hailo_present=1
+            hailo_signal="/dev/hailo0 + lspci"
+        elif command -v hailortcli >/dev/null 2>&1 && hailortcli fw-control identify 2>/dev/null | grep -Eiq '10h|hailo-10'; then
+            hailo_present=1
+            hailo_signal="hailortcli identify"
+        else
+            hailo_signal="hailo device is 8/8L-class (vision only)"
+        fi
+    fi
+    if (( hailo_present )); then
+        log "hailo: 10H detected via $hailo_signal"
+    elif [[ -e /dev/hailo0 ]]; then
+        warn "hailo: detected a Hailo device that is not a 10H (vision-class: no LLM support) - skipping hailo-ollama"
+    fi
+    if (( hailo_present )); then
+        found_any=1
+        # hailo-ollama may already be installed and serving on 7836.
+        local hailo_ollama_found=0
+        if command -v hailo-ollama >/dev/null 2>&1; then
+            hailo_ollama_found=1
+        elif systemctl is-enabled hailo-ollama.service >/dev/null 2>&1; then
+            hailo_ollama_found=1
+        fi
+        if (( hailo_ollama_found )); then
+            log "hailo: device present + hailo-ollama backend installed"
+        else
+            log "Hailo-10H detected - auto-installing the hailo-ollama NPU backend"
+            log "  (set TAOS_NO_HAILO=1 to skip, or run install-hailo.sh manually later)"
+            log "  upstream: https://github.com/hailo-ai/hailo-ollama"
+            if [[ "${TAOS_NO_HAILO:-}" == "1" || "${TAOS_NO_HAILO:-}" == "true" ]]; then
+                warn "TAOS_NO_HAILO=1 - skipping hailo-ollama install; controller will run CPU-only on this NPU box"
+                warn "  to set up later: sudo bash scripts/install-hailo.sh"
+            else
+                # Defer the actual install to after the repo clone - the
+                # script we need lives at $INSTALL_DIR/scripts/install-hailo.sh
+                # and that path doesn't exist on this very first detection
+                # pass. install_hailo_if_pending below picks this up.
+                HAILO_PENDING_INSTALL=1
+                log "hailo-ollama install deferred until after repo clone"
+            fi
+        fi
+    fi
+
+    # ── Apple Silicon (handled in macOS path) ───────────────────────
+    if (( ! found_any )); then
+        log "no discrete accelerator detected — controller will run on CPU"
+    fi
+}
+
+# Run the deferred rknpu auto-install once the repo is on disk. Called
+# after `git clone $INSTALL_DIR`. Skips if no NPU was detected up front
+# or if the user opted out via TAOS_NO_RKNPU=1.
+install_rknpu_if_pending() {
+    if [[ "${RKNPU_PENDING_INSTALL:-0}" != "1" ]]; then
+        return 0
+    fi
+    local rknpu_script="$INSTALL_DIR/scripts/install-rknpu.sh"
+    # We invoke via `bash "$rknpu_script"`, so executable bit isn't
+    # required — only readable. Per CodeRabbit nit on #405.
+    if [[ ! -f "$rknpu_script" || ! -r "$rknpu_script" ]]; then
+        warn "install-rknpu.sh missing or unreadable at $rknpu_script — skipping rkllama auto-install"
+        warn "  to set up rkllama later: sudo bash $INSTALL_DIR/scripts/install-rknpu.sh"
+        return 0
+    fi
+    log "chaining into $rknpu_script (rkllama auto-install)"
+    sudo -E bash "$rknpu_script" --yes \
+        || warn "install-rknpu.sh failed — continuing controller install anyway"
+}
+
+# Run the deferred hailo auto-install once the repo is on disk. Called
+# after `git clone $INSTALL_DIR`. Skips if no Hailo-10H was detected up front
+# or if the user opted out via TAOS_NO_HAILO=1.
+install_hailo_if_pending() {
+    if [[ "${HAILO_PENDING_INSTALL:-0}" != "1" ]]; then
+        return 0
+    fi
+    local hailo_script="$INSTALL_DIR/scripts/install-hailo.sh"
+    # We invoke via `bash "$hailo_script"`, so executable bit isn't
+    # required - only readable.
+    if [[ ! -f "$hailo_script" || ! -r "$hailo_script" ]]; then
+        warn "install-hailo.sh missing or unreadable at $hailo_script - skipping hailo-ollama auto-install"
+        warn "  to set up hailo-ollama later: sudo bash $INSTALL_DIR/scripts/install-hailo.sh"
+        return 0
+    fi
+    log "chaining into $hailo_script (hailo-ollama auto-install)"
+    sudo -E bash "$hailo_script" --yes \
+        || warn "install-hailo.sh failed - continuing controller install anyway"
+}
+
+# Install the RK3588 performance-mode systemd service when the NPU is
+# detected. This applies devfreq governors (performance for NPU/GPU/DMC
+# and CPU big-cluster) on every boot so rkllama runs at full throughput
+# without manual re-tuning after each power cycle (#361).
+#
+# Gated on: RKNPU_PENDING_INSTALL=1 (rkllama was just installed) AND
+# the perf service unit exists in the repo. Opt-out via TAOS_NO_RKNPU_PERF=1.
+install_rk3588_perf_if_needed() {
+    if [[ "${TAOS_NO_RKNPU_PERF:-}" == "1" || "${TAOS_NO_RKNPU_PERF:-}" == "true" ]]; then
+        log "TAOS_NO_RKNPU_PERF=1 — skipping rk3588 perf service install"
+        return 0
+    fi
+    if [[ "${RKNPU_PENDING_INSTALL:-0}" != "1" ]]; then
+        # Only install the perf service when we actually set up rkllama.
+        # If rkllama was already present, the user likely already has
+        # performance tuning configured.
+        return 0
+    fi
+    local perf_unit="scripts/systemd/taos-rk3588-perf.service"
+    if [[ ! -f "$INSTALL_DIR/$perf_unit" ]]; then
+        warn "taos-rk3588-perf.service not found in repo — skipping perf service install"
+        return 0
+    fi
+    local local_sudo=""
+    if [[ "$(id -u)" != "0" ]]; then
+        if ! command -v sudo >/dev/null 2>&1; then
+            warn "no sudo available — skipping rk3588 perf service install"
+            return 0
+        fi
+        local_sudo="sudo"
+    fi
+    log "installing /etc/systemd/system/taos-rk3588-perf.service"
+    $local_sudo install -m 0644 "$INSTALL_DIR/$perf_unit" /etc/systemd/system/taos-rk3588-perf.service
+    $local_sudo systemctl daemon-reload
+    $local_sudo systemctl enable taos-rk3588-perf.service
+    log "taos-rk3588-perf.service installed — NPU governors will be set on boot"
+}
+
+detect_and_advise_accelerators
+
+# --- filesystem CoW detection ----------------------------------------------
+# Detect whether /var/lib is on a copy-on-write filesystem (btrfs or ZFS).
+# Incus auto-detects the best storage driver at init time, but we surface
+# this explicitly so users know whether they'll get fast CoW clones (<=5s)
+# or slow directory-backed copies (full file copy per container).
+#
+# TAOS_COW_POOL lets the user override the driver choice:
+#   auto  - let incus decide (uses btrfs/zfs if available, dir otherwise)
+#   btrfs - force btrfs pool (fails if /var/lib isn't btrfs)
+#   zfs   - force zfs pool (fails if /var/lib isn't zfs)
+#   dir   - force directory-backed pool even on CoW fs (slower, portable)
+
+detect_cow_filesystem() {
+    local target="/var/lib"
+    [[ -d /var/lib/incus ]] && target="/var/lib/incus"
+
+    local fs_type=""
+    # stat -f --format=%T is the most portable way to get the fs type name
+    # on Linux. Fall back to df -T if stat isn't available or doesn't support
+    # the format flag (busybox, some containers).
+    if stat -f --format=%T "$target" >/dev/null 2>&1; then
+        fs_type=$(stat -f --format=%T "$target" 2>/dev/null)
+    elif df -T "$target" >/dev/null 2>&1; then
+        fs_type=$(df -T "$target" 2>/dev/null | awk 'NR==2 {print $2}')
+    fi
+
+    [[ -z "$fs_type" ]] && fs_type="unknown"
+    log "filesystem at $target: $fs_type" >&2
+    echo "$fs_type"
+}
+
+# Initialise incus storage with an explicit driver choice. Called after
+# incus is installed but before incus admin init --auto. If the user
+# explicitly requested a CoW driver, we honour that; otherwise we let
+# incus auto-detect (which prefers btrfs > zfs > lvm > dir).
+_incus_storage_init() {
+    local fs_type="$1"
+
+    case "${COW_POOL_MODE}" in
+        btrfs)
+            if [[ "$fs_type" != "btrfs" ]]; then
+                warn "TAOS_COW_POOL=btrfs but /var/lib is $fs_type - btrfs pool requires btrfs filesystem"
+                warn "  falling back to incus auto-detection"
+                return 0
+            fi
+            log "creating incus btrfs storage pool for CoW container clones (<=5s deploys)"
+            if sudo incus storage create default btrfs 2>/dev/null; then
+                COW_EFFECTIVE_MODE="btrfs"
+                return 0
+            fi
+            warn "incus storage create default btrfs failed - falling back to incus admin init --auto"
+            ;;
+        zfs)
+            if [[ "$fs_type" != "zfs" ]]; then
+                warn "TAOS_COW_POOL=zfs but /var/lib is $fs_type - zfs pool requires zfs filesystem"
+                warn "  falling back to incus auto-detection"
+                return 0
+            fi
+            log "creating incus zfs storage pool for CoW container clones (<=5s deploys)"
+            if sudo incus storage create default zfs 2>/dev/null; then
+                COW_EFFECTIVE_MODE="zfs"
+                return 0
+            fi
+            warn "incus storage create default zfs failed - falling back to incus admin init --auto"
+            ;;
+        dir)
+            warn "TAOS_COW_POOL=dir - forcing directory-backed pool (no CoW, slower clones)"
+            if sudo incus storage list 2>/dev/null | grep -q '\bdefault\b'; then
+                log "incus storage pool 'default' already exists - skipping create"
+            else
+                sudo incus storage create default dir 2>/dev/null \
+                    || { warn "incus storage create default dir failed"; return 1; }
+                log "incus directory-backed storage pool 'default' created"
+            fi
+            COW_EFFECTIVE_MODE="dir"
+            return 0
+            ;;
+        auto|*)
+            case "$fs_type" in
+                btrfs|zfs)
+                    log "CoW filesystem ($fs_type) detected - auto-creating $fs_type storage pool for fast clones (<=5s deploys)"
+                    if sudo incus storage create default "$fs_type" 2>/dev/null; then
+                        log "incus $fs_type storage pool 'default' created - clones will use CoW"
+                        COW_EFFECTIVE_MODE="$fs_type"
+                        return 0
+                    fi
+                    warn "incus storage create default $fs_type failed - falling back to incus admin init --auto (dir pool)"
+                    ;;
+                ext[2-4]|xfs)
+                    log "$fs_type filesystem - CoW not available; container clones will be full copies (slower)"
+                    log "  for <=5s deploys, run incus on a btrfs or ZFS volume"
+                    COW_EFFECTIVE_MODE="none"
+                    ;;
+                *)
+                    log "filesystem type '$fs_type' - incus will auto-select the best available driver"
+                    COW_EFFECTIVE_MODE="none"
+                    ;;
+            esac
+            return 0
+            ;;
+    esac
+    return 0
+}
+
+detect_and_advise_cow() {
+    COW_FS_TYPE="$(detect_cow_filesystem)"
+}
+detect_and_advise_cow
+
+# Effective storage mode is set later by _incus_storage_init (btrfs/zfs/dir/none)
+# or left as "n/a" when no incus pool is configured (Docker/Podman/macOS).
+COW_EFFECTIVE_MODE="n/a"
+
+# --- container runtime — install Incus if nothing is present -------------
+#
+# taOS uses a container runtime (Incus, Docker, or Podman) to deploy
+# worker containers. On macOS, the Apple Containerization framework
+# (bundled with macOS 26) is used instead — no install needed here.
+# On Linux, if no runtime is found, we install Incus via the system
+# package manager on Debian/Ubuntu/Fedora. On Arch/Alpine we log a
+# manual-install notice and continue — those distros have it in the
+# repos but the AUR/apk setup varies too much to auto-invoke here.
+# A failed Incus install is non-fatal: taOS still starts; cluster and
+# worker-container features are simply unavailable until one is added.
+
+ensure_container_runtime() {
+    if [[ "$os_name" == "Darwin" ]]; then
+        log "container runtime: macOS — Apple Containerization framework (macOS 26+) will be used"
+        return 0
+    fi
+
+    # Check if any supported runtime is already present
+    if command -v incus >/dev/null 2>&1; then
+        log "container runtime: incus $(incus --version 2>/dev/null | head -1) — ok"
+        # incus pre-existed, so _incus_storage_init below never runs and
+        # COW_EFFECTIVE_MODE would stay "n/a" (which reads as "no incus").
+        # Reflect the existing default pool's driver in the summary instead.
+        local _existing_drv
+        _existing_drv=$(sudo incus storage show default 2>/dev/null | sed -n 's/^driver:[[:space:]]*//p' | head -1)
+        case "$_existing_drv" in
+            btrfs|zfs) COW_EFFECTIVE_MODE="$_existing_drv" ;;
+            *)         COW_EFFECTIVE_MODE="existing" ;;
+        esac
+        return 0
+    fi
+    # A pre-existing Docker/podman (vendor Pi images often ship Docker) is a
+    # usable runtime, but agent LXC deploys prefer incus — and returning early
+    # here meant incus was never installed on such images, leaving the user to
+    # discover it from a later group-setup warning and install it by hand
+    # (#1546). Install incus as well, except on WSL (where Docker is the sane
+    # default) or with TAOS_NO_INCUS=1.
+    local _other_runtime=""
+    if command -v docker >/dev/null 2>&1; then
+        _other_runtime="docker"
+        log "container runtime: docker $(docker --version 2>/dev/null | head -1) — ok"
+    elif command -v podman >/dev/null 2>&1; then
+        _other_runtime="podman"
+        log "container runtime: podman $(podman --version 2>/dev/null | head -1) — ok"
+    fi
+    if [[ -n "$_other_runtime" ]]; then
+        if [[ "${TAOS_NO_INCUS:-0}" == "1" ]]; then
+            log "TAOS_NO_INCUS=1 — not installing incus; agent containers will use $_other_runtime"
+            return 0
+        fi
+        if grep -qi microsoft /proc/version 2>/dev/null; then
+            log "WSL detected — using $_other_runtime; skipping the incus install"
+            return 0
+        fi
+        log "incus not found — installing it as well (preferred runtime for agent containers; set TAOS_NO_INCUS=1 to skip)"
+    else
+        log "no container runtime found — installing Incus"
+    fi
+
+    local installed=0
+    local _incus_pkg=""
+    if command -v apt-get >/dev/null 2>&1; then
+        # Try the distro's default repos first (Ubuntu 24.04+ ships incus in
+        # universe; some Debian unstable releases also have it). Fall back
+        # to Zabbly for older Debian/Ubuntu where the package isn't there.
+        # apt-cache madison is the lightest "is the package available?"
+        # probe — empty output means no candidate, which is what we want.
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null || true
+        # Prefer incus-base: the full `incus` metapackage pulls incus-ui and
+        # other extras whose dependencies are unsatisfiable on Debian Bookworm
+        # ARM64 ("held broken packages"), whereas incus-base is the minimal
+        # daemon+CLI and installs cleanly there (#1555). Use the full package
+        # only where incus-base is not a candidate. Gate on EITHER package so a
+        # repo shipping incus-base but not the metapackage still takes this
+        # native path instead of a wasted Zabbly round trip.
+        _incus_pkg=""
+        [[ -n "$(apt-cache madison incus-base 2>/dev/null)" ]] && _incus_pkg="incus-base"
+        [[ -z "$_incus_pkg" && -n "$(apt-cache madison incus 2>/dev/null)" ]] && _incus_pkg="incus"
+        if [[ -n "$_incus_pkg" ]]; then
+            log "incus available in default apt repos — installing $_incus_pkg"
+            # No metapackage fallback: the exact failure this fix targets is the
+            # full `incus` package being broken on the vendor image, so retrying
+            # it would fail identically. The warn below covers the failure path.
+            if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$_incus_pkg"; then
+                installed=1
+                log "container runtime: $_incus_pkg installed from default apt repos"
+            else
+                warn "default apt install of $_incus_pkg failed — see /var/log/apt/term.log"
+            fi
+        else
+            # Detect distro codename for Zabbly repo line.
+            local codename=""
+            if command -v lsb_release >/dev/null 2>&1; then
+                codename=$(lsb_release -cs 2>/dev/null)
+            elif [[ -f /etc/os-release ]]; then
+                codename=$(. /etc/os-release && echo "${VERSION_CODENAME:-}")
+            fi
+
+            # Zabbly publishes for a fixed set of codenames. Listed at
+            # https://github.com/zabbly/incus — keep this in sync with
+            # whatever's in the repo's Release file. Adding an unsupported
+            # codename to sources.list.d gives a "does not have a Release
+            # file" error and breaks every subsequent apt run.
+            local zabbly_supported=" bookworm trixie jammy noble "
+
+            if [[ -z "$codename" ]]; then
+                warn "couldn't detect distro codename — skipping Zabbly fallback"
+                warn "  install Incus manually: https://github.com/zabbly/incus"
+            elif [[ "$zabbly_supported" != *" $codename "* ]]; then
+                warn "incus not in default repos and codename '$codename' isn't on Zabbly's supported list ($zabbly_supported)."
+                warn "  if your distro is newer than Zabbly's supported set, install Incus from your package manager once it's available."
+                warn "  otherwise: https://github.com/zabbly/incus"
+            else
+                log "incus not in default repos — using Zabbly for codename '$codename'"
+                sudo install -d -m 0755 /etc/apt/keyrings
+
+                # Fetch and verify Zabbly GPG key before importing.
+                # Expected key fingerprint (verified 2026-06-08 from https://pkgs.zabbly.com/key.asc
+                # and confirmed on keyserver.ubuntu.com):
+                #   4EFC 5906 96CB 15B8 7C73  A3AD 82CC 8797 C838 DCFD
+                # RESIDUAL RISK: Zabbly does not publish a separate SHA256 for
+                # key.asc; we verify via gpg --fingerprint after dearmoring.
+                # Update the expected fingerprint if Zabbly rotates their signing key.
+                local _zabbly_key_tmp
+                _zabbly_key_tmp="$(mktemp /tmp/zabbly-key.XXXXXX.asc)"
+                # shellcheck disable=SC2064
+                trap "rm -f '$_zabbly_key_tmp'" RETURN
+                if ! curl -fsSL https://pkgs.zabbly.com/key.asc -o "$_zabbly_key_tmp"; then
+                    warn "failed to fetch Zabbly key — skipping Incus install"
+                    return 0
+                fi
+                local _zabbly_expected_fp="4EFC590696CB15B87C73A3AD82CC8797C838DCFD"
+                local _zabbly_actual_fp
+                _zabbly_actual_fp="$(gpg --with-colons --import-options show-only \
+                    --import "$_zabbly_key_tmp" 2>/dev/null \
+                    | awk -F: '/^fpr:/{gsub(/ /,"",$10); print $10}' | head -1)"
+                _zabbly_actual_fp="${_zabbly_actual_fp//[[:space:]]/}"
+                if [[ "$_zabbly_actual_fp" != "$_zabbly_expected_fp" ]]; then
+                    warn "Zabbly key fingerprint mismatch: expected $_zabbly_expected_fp, got '$_zabbly_actual_fp'"
+                    warn "  Refusing to import — skipping Incus install via Zabbly"
+                    return 0
+                fi
+                log "Zabbly key fingerprint ok (${_zabbly_actual_fp:0:16}…)"
+                sudo install -m 0644 "$_zabbly_key_tmp" /etc/apt/keyrings/zabbly.asc
+                echo "deb [signed-by=/etc/apt/keyrings/zabbly.asc] https://pkgs.zabbly.com/incus/stable $codename main" \
+                    | sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.list > /dev/null
+                sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+                if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq incus; then
+                    installed=1
+                    log "container runtime: incus installed via Zabbly"
+                else
+                    warn "Zabbly Incus install failed — see /var/log/apt/term.log"
+                fi
+            fi
+        fi
+    elif command -v dnf >/dev/null 2>&1; then
+        log "installing incus via dnf"
+        sudo dnf install -y -q incus \
+            && installed=1 \
+            || warn "dnf install incus failed — continuing without container support"
+    elif command -v pacman >/dev/null 2>&1; then
+        warn "container runtime: Arch detected — install Incus manually with:"
+        warn "  sudo pacman -S incus"
+        warn "  (or install Docker/Podman if you prefer)"
+        warn "  worker containers will be unavailable until a runtime is installed"
+    elif command -v apk >/dev/null 2>&1; then
+        warn "container runtime: Alpine detected — install Incus manually with:"
+        warn "  sudo apk add incus"
+        warn "  worker containers will be unavailable until a runtime is installed"
+    else
+        warn "container runtime: unrecognised package manager — install Incus or Docker manually"
+        warn "  worker containers will be unavailable until a runtime is installed"
+    fi
+
+    if (( installed )); then
+        if command -v incus >/dev/null 2>&1; then
+            log "container runtime: incus installed successfully"
+        else
+            warn "incus install reported success but binary not found on PATH — check your PATH"
+        fi
+    fi
+
+    if (( installed )) && command -v incus >/dev/null 2>&1; then
+        log "initialising Incus with default storage + network"
+        # Try explicit CoW pool first - if the user set TAOS_COW_POOL or the
+        # filesystem is btrfs/zfs, this creates the pool before incus init.
+        # Falls back gracefully to incus admin init --auto when:
+        #  - the fs isn't CoW and the user didn't force a driver
+        #  - the explicit pool creation fails
+        _incus_storage_init "$COW_FS_TYPE"
+        if sudo incus admin init --auto >/dev/null 2>&1; then
+            log "container runtime: incus initialised"
+        else
+            warn "incus admin init --auto failed — you may need to configure storage manually"
+            warn "  see: https://linuxcontainers.org/incus/docs/main/howto/initialize/"
+        fi
+    fi
+}
+
+# True when the Docker daemon is reachable (don't trust a single start call's
+# exit code — WSL2/systemd quirks make that unreliable).
+_docker_running() {
+    sudo docker info >/dev/null 2>&1
+}
+
+# Configure Docker so it coexists with incus networking.
+#
+# When Docker enables IP forwarding it sets the iptables FORWARD chain's
+# default policy to DROP, which severs incus bridge (incusbr0) traffic and
+# kills agent-container networking. The upstream-recommended fix (Incus
+# firewall docs + Docker packet-filtering docs) is Docker's own switch
+# `ip-forward-no-drop`, which tells Docker to never touch that policy — far
+# cleaner than patching the FORWARD chain by hand (Docker reorders/reinserts
+# its own rules, so hand-added FORWARD rules are fragile). We also enable IP
+# forwarding via sysctl as a belt-and-suspenders for older Docker builds that
+# predate the option. This must run BEFORE Docker's daemon first starts so the
+# DROP policy is never set in the first place.
+_configure_docker_incus_coexistence() {
+    sudo mkdir -p /etc/docker
+    # Merge "ip-forward-no-drop": true into any existing daemon.json. python3 is
+    # a controller dependency installed earlier, so it's always available here.
+    sudo python3 - <<'PY'
+import json, os
+path = "/etc/docker/daemon.json"
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f) or {}
+    except Exception:
+        data = {}  # malformed/empty — start clean rather than fail the install
+if data.get("ip-forward-no-drop") is not True:
+    data["ip-forward-no-drop"] = True
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+PY
+    log "set Docker ip-forward-no-drop=true for incus coexistence (/etc/docker/daemon.json)"
+
+    # Independently ensure IPv4 forwarding is on; if it's already enabled when
+    # Docker starts, Docker won't flip the FORWARD policy even on engines that
+    # lack ip-forward-no-drop.
+    printf 'net.ipv4.conf.all.forwarding=1\n' | sudo tee /etc/sysctl.d/99-taos-forwarding.conf >/dev/null
+    sudo sysctl -p /etc/sysctl.d/99-taos-forwarding.conf >/dev/null 2>&1 || true
+}
+
+# Docker is the engine for Store "Docker apps" (manifest install.method: docker),
+# including compose-style stacks like SearXNG / Perplexica. incus runs agent
+# LXCs; Docker runs Docker apps. Installed by default — set TAOS_SKIP_DOCKER=1
+# to opt out (Store Docker apps then stay unavailable).
+# The Compose v2 plugin has two apt names: Debian and Docker's own repo call
+# it docker-compose-plugin; Ubuntu's universe archive calls it
+# docker-compose-v2. Trying only the Ubuntu name broke Debian Bookworm
+# (vendor Pi images included) with "Unable to locate package" (#1541).
+# Debian trixie (and Armbian trixie, reported in taOS#2) ships NEITHER
+# name in the distro archive, so both madison lookups come back empty. The
+# caller detects that "both miss" case and falls back to Docker's official
+# apt repo via _apt_install_docker_official_repo below.
+_apt_install_compose() {
+    # Probe availability with apt-cache madison instead of grepping apt's
+    # stderr: the error text is locale-dependent (so string matching broke
+    # the fallback on any non-English system) and "no installation candidate"
+    # was a second phrasing the match missed; an empty madison covers both.
+    # Return codes:
+    #   0 = compose plugin installed
+    #   2 = neither docker-compose-plugin nor docker-compose-v2 exists in
+    #       the distro archive (callers fall back to Docker's official repo)
+    #   1 = the package EXISTS but apt install failed (lock, held deps,
+    #       resolver error); callers must NOT silently swap repositories
+    #       in this case -- the real apt error is the actionable signal.
+    if [[ -n "$(apt-cache madison docker-compose-plugin 2>/dev/null)" ]]; then
+        if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin; then
+            warn "apt install docker-compose-plugin failed -- see /var/log/apt/term.log"
+            return 1
+        fi
+    elif [[ -n "$(apt-cache madison docker-compose-v2 2>/dev/null)" ]]; then
+        if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-v2; then
+            warn "apt install docker-compose-v2 failed -- see /var/log/apt/term.log"
+            return 1
+        fi
+    else
+        # Neither name is in this distro's apt archive (trixie, some
+        # armbian releases, vendor-stripped images). Leave Docker Engine
+        # un-installed so the caller's fallback path can try Docker's
+        # official repo; if that also fails the install still exits 0
+        # with a "Store Docker apps will be unavailable" warning.
+        return 2
+    fi
+}
+
+# Undo one apt file touched by the Docker official-repo fallback below.
+#   $1 = path, $2 = backup path ("" when the file did NOT pre-exist),
+#   $3 = 1 when THIS invocation created the file.
+# A file that already existed is restored byte-for-byte from its backup; only
+# a file this invocation created is deleted. Anything else is left alone --
+# the installer must never destroy an apt config it did not write. Tracking
+# "did we write it" alone was not enough: overwriting a host's customised
+# docker.asc / docker.list and then rm -f'ing it on the failure path wiped an
+# operator's mirror, pinned suite or internal signing key.
+_docker_apt_restore() {
+    local path="$1" backup="$2" created="${3:-0}"
+    if [[ -n "$backup" ]]; then
+        if sudo cp -a "$backup" "$path"; then
+            log "restored the pre-existing $path"
+        else
+            warn "could not restore $path -- a copy is kept at $backup"
+        fi
+    elif (( created )); then
+        sudo rm -f "$path"
+    fi
+    # Explicit: a false (( created )) is the last command otherwise, and a
+    # non-zero return from a bare call would abort the caller under set -e.
+    return 0
+}
+
+# Reinstall the distro Docker packages the fallback removed to make room for
+# docker-ce. $1 is the space-separated list actually removed ("" = nothing to
+# do). Without this a failed fallback ends the install with NO Docker at all:
+# the caller installs docker.io just before entering the fallback, so removing
+# it and then failing on apt-get update/install (unsupported arch, proxy,
+# held deps) leaves the host worse off than before the installer ran.
+_docker_restore_distro_pkgs() {
+    local pkgs="$1"
+    [[ -n "$pkgs" ]] || return 0
+    log "restoring the distro Docker packages: $pkgs"
+    # shellcheck disable=SC2086
+    if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs; then
+        return 0
+    fi
+    # Whatever got us here may have left apt's lists inconsistent, and
+    # docker.list has just been rolled back. Refresh once and retry -- a
+    # "restore" that only narrates is worse than no restore at all.
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    # shellcheck disable=SC2086
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs \
+        || warn "could not reinstall $pkgs -- this host has NO Docker now; run: sudo apt-get install $pkgs"
+    return 0
+}
+
+# Docker Engine + Compose v2 plugin from Docker's official apt repo
+# (download.docker.com). Used as a fallback when neither
+# docker-compose-plugin nor docker-compose-v2 are present in the distro
+# archive (taOS#2 — Debian trixie / Armbian trixie). Mirrors the
+# GPG-verify pattern used by the Zabbly Incus fallback above so a
+# rotated docker.com signing key fails closed instead of silently
+# trusting whatever a MITM serves. Returns 0 on success, 1 on any
+# failure (network blocked, missing codename, fingerprint mismatch,
+# install error). Air-gapped hosts must still let the installer
+# finish, so every caller treats 1 as "give up gracefully".
+_apt_install_docker_official_repo() {
+    local codename=""
+    if command -v lsb_release >/dev/null 2>&1; then
+        codename=$(lsb_release -cs 2>/dev/null)
+    elif [[ -f /etc/os-release ]]; then
+        codename=$(. /etc/os-release && echo "${VERSION_CODENAME:-}")
+    fi
+    if [[ -z "$codename" ]]; then
+        warn "couldn't detect distro codename — skipping Docker official-repo fallback"
+        return 1
+    fi
+
+    # Docker publishes the Debian archive at /linux/debian and the
+    # Ubuntu archive at /linux/ubuntu — the same codename is used as
+    # the suite (bookworm, trixie, jammy, noble, ...). Match on
+    # ID_LIKE so derivatives (raspbian, armbian) route to the right
+    # archive: armbian trixie reports ID=armbian / ID_LIKE=debian.
+    # The default 'debian' is intentional: Docker ships a single
+    # /linux/debian repo that covers every Debian-derived codename
+    # (kali-rolling, elementary, linuxmint, ...), so other ID_LIKE=debian
+    # derivatives fall through to it without an explicit case branch.
+    local docker_os="debian"
+    if [[ -f /etc/os-release ]]; then
+        local os_id
+        os_id=$(. /etc/os-release && echo "${ID:-}")
+        case "$os_id" in
+            ubuntu) docker_os="ubuntu" ;;
+            raspbian) docker_os="debian" ;;
+        esac
+        if [[ "$docker_os" == "debian" ]]; then
+            local id_like
+            id_like=$(. /etc/os-release && echo "${ID_LIKE:-}")
+            case ",$id_like," in
+                *,ubuntu,*) docker_os="ubuntu" ;;
+            esac
+        fi
+    fi
+
+    sudo install -d -m 0755 /etc/apt/keyrings
+
+    local _docker_key_tmp _docker_bak_dir
+    _docker_key_tmp="$(mktemp /tmp/docker-key.XXXXXX.asc)"
+    # Backups of pre-existing apt files live OUTSIDE /etc/apt so a transient
+    # copy is never picked up (or warned about) by apt itself.
+    _docker_bak_dir="$(mktemp -d /tmp/taos-docker-apt.XXXXXX)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$_docker_key_tmp'; rm -rf '$_docker_bak_dir'" RETURN
+    # Bounded timeouts so a blackholed route / stalled peer does not pin
+    # the installer indefinitely and miss its graceful-failure path.
+    if ! curl -fsSL --connect-timeout 15 --max-time 60 \
+            "https://download.docker.com/linux/$docker_os/gpg" \
+            -o "$_docker_key_tmp"; then
+        warn "failed to fetch Docker apt key — skipping Docker official-repo fallback"
+        return 1
+    fi
+    # Expected key fingerprint (verified against https://download.docker.com/linux/debian/gpg
+    # — "Docker Release (CE deb) <docker@docker.com>", primary key
+    # 9DC8 5822 9FC7 DD38 854A  E2D8 8D81 803C 0EBF CD88). Update here
+    # if Docker rotates the signing key. If the fingerprint check below
+    # fails after a rotation, fetch the current key from
+    # https://download.docker.com/linux/$docker_os/gpg and rotate
+    # _docker_expected_fp accordingly; Docker's rotation policy lives
+    # at https://docs.docker.com/engine/security/#rotating-signing-keys.
+    local _docker_expected_fp="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
+    local _docker_actual_fp
+    _docker_actual_fp="$(gpg --with-colons --import-options show-only \
+        --import "$_docker_key_tmp" 2>/dev/null \
+        | awk -F: '/^fpr:/{gsub(/ /,"",$10); print $10}' | head -1)"
+    _docker_actual_fp="${_docker_actual_fp//[[:space:]]/}"
+    if [[ "$_docker_actual_fp" != "$_docker_expected_fp" ]]; then
+        warn "Docker apt key fingerprint mismatch: expected $_docker_expected_fp, got '$_docker_actual_fp'"
+        warn "  Refusing to add Docker's repo — skipping Docker official-repo fallback"
+        warn "  If Docker rotated the signing key, fetch the current one from"
+        warn "  https://download.docker.com/linux/$docker_os/gpg and update _docker_expected_fp"
+        return 1
+    fi
+    log "Docker apt key fingerprint ok (${_docker_actual_fp:0:16}…)"
+
+    # Back up any pre-existing Docker apt config BEFORE overwriting it, and
+    # track CREATION (not merely "we wrote it") so the failure paths below can
+    # put the host back exactly as they found it: restore what was there,
+    # delete only what this invocation brought into existence.
+    local _docker_keyring=/etc/apt/keyrings/docker.asc
+    local _docker_list=/etc/apt/sources.list.d/docker.list
+    local _docker_keyring_backup=""
+    local _docker_list_backup=""
+    local _docker_created_keyring=0
+    local _docker_created_list=0
+    local _docker_removed_pkgs=""
+    if [[ -e "$_docker_keyring" ]]; then
+        _docker_keyring_backup="$_docker_bak_dir/docker.asc"
+        if ! sudo cp -a "$_docker_keyring" "$_docker_keyring_backup"; then
+            warn "could not back up the existing $_docker_keyring -- skipping Docker official-repo fallback"
+            return 1
+        fi
+        log "backed up the existing $_docker_keyring before replacing it"
+    fi
+    if sudo install -m 0644 "$_docker_key_tmp" "$_docker_keyring"; then
+        [[ -n "$_docker_keyring_backup" ]] || _docker_created_keyring=1
+    else
+        warn "could not write Docker apt keyring -- skipping Docker official-repo fallback"
+        _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
+        return 1
+    fi
+    if [[ -e "$_docker_list" ]]; then
+        _docker_list_backup="$_docker_bak_dir/docker.list"
+        if ! sudo cp -a "$_docker_list" "$_docker_list_backup"; then
+            warn "could not back up the existing $_docker_list -- skipping Docker official-repo fallback"
+            _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
+            return 1
+        fi
+        log "backed up the existing $_docker_list before replacing it"
+    fi
+    if echo "deb [signed-by=$_docker_keyring] https://download.docker.com/linux/$docker_os $codename stable" \
+            | sudo tee "$_docker_list" > /dev/null; then
+        [[ -n "$_docker_list_backup" ]] || _docker_created_list=1
+    else
+        warn "could not write Docker apt sources.list -- skipping Docker official-repo fallback"
+        _docker_apt_restore "$_docker_list" "$_docker_list_backup" "$_docker_created_list"
+        _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
+        return 1
+    fi
+
+    # docker.io (Debian) ships containerd; docker-ce (Docker's repo)
+    # ships containerd.io. Both drop binaries at /usr/bin/{docker,
+    # containerd} and /usr/sbin/containerd, so installing them together
+    # leaves dpkg half-configured. Match Docker's official upgrade
+    # guide: remove the distro packages before installing docker-ce.
+    # Record WHICH of the trio are actually installed before removing them, so
+    # the failure paths below can put them back. The caller installs docker.io
+    # moments before entering this fallback (trixie ships docker.io -- only the
+    # compose plugin is missing, which is why we are here at all), so removing
+    # them and then failing left the host with NO Docker at all: strictly worse
+    # than before the installer ran.
+    _docker_removed_pkgs="$(dpkg -l docker.io containerd runc 2>/dev/null \
+        | awk '/^ii/{print $2}' \
+        | grep -E '^(docker\.io|containerd|runc)$' | tr '\n' ' ' || true)"
+    if [[ -n "$_docker_removed_pkgs" ]]; then
+        log "removing distro packages before installing docker-ce: $_docker_removed_pkgs"
+        # shellcheck disable=SC2086
+        sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq $_docker_removed_pkgs \
+            || warn "could not remove $_docker_removed_pkgs -- apt may be left half-configured"
+    fi
+
+    if ! sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq; then
+        warn "apt-get update failed after adding Docker's repo -- rolling back the partial repo config"
+        _docker_apt_restore "$_docker_list" "$_docker_list_backup" "$_docker_created_list"
+        _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
+        _docker_restore_distro_pkgs "$_docker_removed_pkgs"
+        return 1
+    fi
+    if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+        warn "apt install from Docker's repo failed -- see /var/log/apt/term.log -- rolling back the partial repo config"
+        _docker_apt_restore "$_docker_list" "$_docker_list_backup" "$_docker_created_list"
+        _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
+        _docker_restore_distro_pkgs "$_docker_removed_pkgs"
+        return 1
+    fi
+    log "Docker Engine + Compose v2 plugin installed via Docker's official repo"
+    return 0
+}
+
+ensure_docker_for_apps() {
+    if [[ "${TAOS_SKIP_DOCKER:-0}" == "1" ]]; then
+        log "TAOS_SKIP_DOCKER=1 — skipping Docker (Store Docker apps will be unavailable)"
+        return 0
+    fi
+    # macOS: the Docker Engine can't run natively (it needs a Linux VM), so the
+    # server doesn't install it here — agents use the Apple Containerization
+    # framework, and Docker apps need a user-provided Docker (Desktop/colima).
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        command -v docker >/dev/null 2>&1 \
+            && log "macOS: using existing Docker ($(docker --version 2>/dev/null | head -1))" \
+            || log "macOS: provide Docker (Desktop or colima) for Store Docker apps; agents use Apple Containerization"
+        return 0
+    fi
+
+    local had_docker=0
+    command -v docker >/dev/null 2>&1 && had_docker=1
+
+    # Configure Docker↔incus coexistence BEFORE the daemon's first start so
+    # Docker never sets the FORWARD policy to DROP. Only relevant when incus is
+    # also present (it runs the agent containers).
+    if command -v incus >/dev/null 2>&1; then
+        _configure_docker_incus_coexistence
+    fi
+
+    # Linux, including WSL2: install the native Docker Engine + CLI in-distro.
+    # We deliberately use the in-distro engine rather than Docker Desktop on
+    # WSL2 so the controller is self-contained and headless; the daemon-start
+    # ladder below covers WSL2 setups where systemd isn't enabled.
+    if (( had_docker )); then
+        log "docker present: $(docker --version 2>/dev/null | head -1)"
+    else
+        # Install the engine AND the Compose v2 plugin — taOS deploys Store
+        # Docker apps via `docker compose`, and most distro 'docker' packages
+        # (e.g. Ubuntu's docker.io) don't bundle compose, which otherwise fails
+        # with "unknown command: docker compose".
+        log "installing Docker Engine + Compose plugin (for Store Docker apps)"
+        if command -v apt-get >/dev/null 2>&1; then
+            # Install the engine and the compose plugin in SEPARATE apt
+            # transactions: bundling them meant a missing compose package name
+            # (see _apt_install_compose below) failed the whole transaction and
+            # left the box without Docker at all (#1541).
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io \
+                || warn "apt install docker.io failed — Store Docker apps will be unavailable"
+            # _apt_install_compose distinguishes missing-package (rc=2)
+            # from install-failure (rc=1). Only the missing-package case
+            # means the distro archive has no compose plugin to offer --
+            # Debian trixie / Armbian trixie (taOS#2). Anything else is a
+            # real apt error and must NOT silently swap to Docker's repo.
+            _apt_install_compose
+            _apt_compose_rc=$?
+            if (( _apt_compose_rc == 2 )); then
+                log "compose plugin not in distro apt — trying Docker's official apt repo"
+                if ! _apt_install_docker_official_repo; then
+                    warn "Docker Engine + Compose plugin are unavailable on this host (Store Docker apps will be unavailable)"
+                fi
+            elif (( _apt_compose_rc != 0 )); then
+                warn "compose plugin install failed -- Store Docker apps will be unavailable"
+            fi
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y -q moby-engine docker-compose \
+                || warn "dnf install moby-engine/docker-compose failed — Store Docker apps will be unavailable"
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -Sy --noconfirm --needed docker docker-compose \
+                || warn "pacman install docker/docker-compose failed — Store Docker apps will be unavailable"
+        elif command -v apk >/dev/null 2>&1; then
+            sudo apk add --no-cache docker docker-cli-compose \
+                || warn "apk add docker/docker-cli-compose failed — Store Docker apps will be unavailable"
+        else
+            warn "unrecognised package manager — install Docker + the compose plugin manually for Store Docker apps"
+            return 0
+        fi
+    fi
+
+    # Ensure the Compose v2 plugin (taOS deploys apps via `docker compose`).
+    # This also covers the case where Docker was ALREADY installed but without
+    # the plugin — the fresh-install branch above bundles it, but a pre-existing
+    # Docker (the `had_docker` path) may lack it, so install it here too.
+    if ! docker compose version >/dev/null 2>&1; then
+        log "installing the Docker Compose v2 plugin"
+        if command -v apt-get >/dev/null 2>&1; then
+            _apt_install_compose || true
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y -q docker-compose || true
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -Sy --noconfirm --needed docker-compose || true
+        elif command -v apk >/dev/null 2>&1; then
+            sudo apk add --no-cache docker-cli-compose || true
+        fi
+        docker compose version >/dev/null 2>&1 \
+            || warn "the 'docker compose' plugin isn't available — Store Docker apps need it (install docker-compose-v2 / docker-compose-plugin manually)"
+    fi
+
+    command -v docker >/dev/null 2>&1 || { warn "docker not on PATH after install — skipping daemon/group setup"; return 0; }
+
+    # Start + enable the daemon across init systems: systemd (most distros),
+    # SysV 'service' (e.g. WSL2 without systemd), then OpenRC (Alpine). Verify
+    # reachability afterwards rather than trusting any single call's exit code.
+    if command -v systemctl >/dev/null 2>&1; then
+        sudo systemctl enable --now docker >/dev/null 2>&1 || true
+    fi
+    if ! _docker_running && command -v service >/dev/null 2>&1; then
+        sudo service docker start >/dev/null 2>&1 || true
+    fi
+    if ! _docker_running && command -v rc-update >/dev/null 2>&1; then
+        sudo rc-update add docker default >/dev/null 2>&1 || true
+        sudo service docker start >/dev/null 2>&1 || true
+    fi
+    _docker_running \
+        && log "docker daemon is running" \
+        || warn "docker installed but the daemon isn't reachable — start it manually (e.g. sudo systemctl start docker)"
+
+    # Let the controller's user run docker without sudo.
+    local duser="${SUDO_USER:-$USER}"
+    if [[ -n "$duser" && "$duser" != "root" ]]; then
+        sudo groupadd -f docker >/dev/null 2>&1 || true
+        sudo usermod -aG docker "$duser" >/dev/null 2>&1 \
+            && log "added '$duser' to the docker group (re-login for it to take effect)" \
+            || warn "could not add '$duser' to the docker group"
+    fi
+
+    # Keep incus agent networking alive alongside Docker. ip-forward-no-drop
+    # (set above, before first start) stops Docker setting FORWARD=DROP going
+    # forward. For a Docker that was already running, restart so it re-reads the
+    # config, then normalise any DROP a prior start may have left (idempotent;
+    # ACCEPT is ip-forward-no-drop's intended end-state — Docker still filters
+    # its own containers via the DOCKER/DOCKER-USER chains).
+    if command -v incus >/dev/null 2>&1; then
+        if (( had_docker )) && command -v systemctl >/dev/null 2>&1; then
+            sudo systemctl restart docker >/dev/null 2>&1 || true
+        fi
+        if command -v iptables >/dev/null 2>&1; then
+            sudo iptables -P FORWARD ACCEPT 2>/dev/null || true
+        fi
+    fi
+}
+
+# Container/Docker setup is optional for the core controller. On hosts where it
+# cannot complete (WSL without systemd, minimal VMs, incus/docker iptables that
+# fail under set -e), warn and continue rather than aborting the whole install.
+ensure_container_runtime || warn "container runtime setup did not complete -- agent containers may be unavailable; continuing"
+ensure_docker_for_apps || warn "Docker setup did not complete -- Store Docker apps will be unavailable; continuing"
+
+# --- clone / update the repo ---------------------------------------------
+
+if [[ ! -d "$INSTALL_DIR/.git" ]]; then
+    log "cloning $REPO into $INSTALL_DIR"
+    mkdir -p "$(dirname "$INSTALL_DIR")"
+    git clone --depth 1 --branch "$BRANCH" "$REPO" "$INSTALL_DIR"
+else
+    log "updating existing checkout"
+    # The repo is chowned to the 'taos' service user at the end of a system
+    # install, so a re-run (as root) trips git's dubious-ownership check.
+    # That check is guarding a real privilege-escalation path: running git as
+    # root inside a tree the unprivileged 'taos' user can write to would let a
+    # planted .git/config or hook execute as root.  So drop to the owning user
+    # for the update instead of overriding the check.  When the tree is already
+    # root-owned, or we are not root (user-mode / macOS install), run directly.
+    _repo_owner="$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || stat -f '%Su' "$INSTALL_DIR" 2>/dev/null || echo "")"
+    if [[ "$(id -u)" == "0" && -n "$_repo_owner" && "$_repo_owner" != "root" ]]; then
+        # A prior install that was interrupted mid-chown (or a step that wrote a
+        # few paths back as root) leaves a tree with MIXED ownership.  Running
+        # the update as the owning user would then fail to unlink the still
+        # root-owned paths ("unable to unlink old ...: Permission denied" ->
+        # "Could not reset index file"), bricking every re-run.  Normalise
+        # ownership to the owning user first so the reset can rewrite the whole
+        # tree.  Safe: root performs the chown and git still runs unprivileged.
+        # Do not let a partial chown failure (immutable file, read-only mount)
+        # abort the whole installer under set -euo pipefail; warn and proceed,
+        # since the reset below will surface any real ownership problem.
+        chown -R "$_repo_owner" "$INSTALL_DIR" \
+            || warn "chown -R $_repo_owner $INSTALL_DIR partially failed; the update may not apply cleanly"
+        sudo -u "$_repo_owner" git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH" \
+            && sudo -u "$_repo_owner" git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
+    else
+        (cd "$INSTALL_DIR" && git fetch --depth 1 origin "$BRANCH" && git reset --hard "origin/$BRANCH")
+    fi
+fi
+
+cd "$INSTALL_DIR"
+
+# Now that the repo is on disk, run any accelerator-backend install
+# that was deferred up front (e.g. rkllama on a Rockchip NPU host).
+install_rknpu_if_pending
+install_hailo_if_pending
+
+# If we installed rkllama on an RK3588 board, also install the performance
+# mode systemd service so the NPU/devfreq governors are set on every boot.
+# Without this, rkllama throughput is ~20% of rated after a power cycle (#361).
+install_rk3588_perf_if_needed
+
+# --- python venv + controller deps ---------------------------------------
+
+# Resolve a Python the controller deps support: litellm (the proxy extra) needs
+# >=3.10,<3.14. Prefer a system interpreter in range; otherwise provision a
+# standalone 3.13 with uv. The reported failure was a fresh WSL/Ubuntu 26.04 that
+# ships only Python 3.14 and does not package python3.13, so apt cannot help and
+# uv (which downloads a standalone CPython on any distro) is the reliable path.
+# libtorrent is optional, so the venv is clean -- no system-site-packages binding
+# juggling (a 3.13 venv could not import a 3.14-built system binding anyway).
+pick_system_python() {
+    local c v
+    for c in python3.13 python3.12 python3.11 python3; do
+        command -v "$c" >/dev/null 2>&1 || continue
+        v=$("$c" -c 'import sys;print(sys.version_info[0]*100+sys.version_info[1])' 2>/dev/null) || continue
+        if [ "$v" -ge 311 ] && [ "$v" -lt 314 ]; then echo "$c"; return 0; fi
+    done
+    return 1
+}
+
+ensure_uv() {
+    command -v uv >/dev/null 2>&1 && return 0
+    if [[ -x "$HOME/.local/bin/uv" ]]; then export PATH="$HOME/.local/bin:$PATH"; return 0; fi
+    log "installing uv to provision a supported Python"
+    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 || return 1
+    export PATH="$HOME/.local/bin:$PATH"
+    command -v uv >/dev/null 2>&1
+}
+
+# Self-heal a stale venv: a re-install over a .venv built with an unsupported
+# Python (e.g. a 3.14 venv from an attempt before this fix) would otherwise be
+# reused, and `pip install -e .` fails the requires-python <3.14 check. Recreate
+# it if its interpreter is out of the supported [3.11,3.14) range.
+if [[ -d .venv ]]; then
+    _vv=$(.venv/bin/python -c 'import sys;print(sys.version_info[0]*100+sys.version_info[1])' 2>/dev/null || echo 0)
+    if [ "$_vv" -lt 311 ] || [ "$_vv" -ge 314 ]; then
+        warn "existing .venv uses an unsupported Python ($_vv); recreating with a 3.11-3.13 interpreter"
+        rm -rf .venv
+    fi
+fi
+
+if [[ ! -d .venv ]]; then
+    PYBIN="$(pick_system_python || true)"
+    if [[ -n "$PYBIN" ]]; then
+        log "creating venv with $PYBIN ($("$PYBIN" --version 2>&1))"
+        "$PYBIN" -m venv .venv
+    elif ensure_uv; then
+        log "no system Python 3.11-3.13; provisioning 3.13 with uv"
+        uv python install 3.13 >/dev/null 2>&1 || true
+        uv venv --seed --python 3.13 .venv || die "uv could not create a Python 3.13 venv"
+    else
+        die "taOS needs Python 3.11-3.13 (litellm has no 3.14 build yet) and uv could not be installed to provision one. Install python3.13 (e.g. 'sudo apt install python3.13 python3.13-venv') and re-run."
+    fi
+fi
+
+log "installing controller python deps into .venv (pip install -e '.[proxy]')"
+./.venv/bin/pip install --quiet --upgrade pip
+./.venv/bin/pip install --quiet -e ".[proxy]"
+
+# The proxy extra no longer routes through litellm[proxy], so the proprietary
+# litellm-enterprise wheel is no longer part of the install set. A FRESH install
+# therefore never lands it -- but pip does not prune what an EARLIER install put
+# in the venv, so upgrading an existing box would silently keep redistributing
+# it. Nothing in taOS imports it (grep -rn litellm_enterprise tinyagentos/ is
+# empty), so removing it is inert; and it is the shipped venv, not the source
+# tree, that a commercial licensee redistributes.
+#
+# Probed with importlib.metadata.distribution(), not importlib.util.find_spec():
+# that is exactly what `pip uninstall` itself consults, so the probe and the
+# uninstall it gates can no longer disagree about whether the package is there.
+litellm_enterprise_present() {
+    ./.venv/bin/python -c "
+import importlib.metadata as m, sys
+try:
+    m.distribution('litellm-enterprise')
+except m.PackageNotFoundError:
+    sys.exit(1)
+" 2>/dev/null
+}
+
+if litellm_enterprise_present; then
+    log "removing litellm-enterprise (LicenseRef-Proprietary) left in .venv by an earlier install"
+    # `|| true` because of `set -e` above: pip's own non-zero exit would end the
+    # installer with pip's message before the re-probe below could give the
+    # by-hand command; the re-probe is the verdict, not pip's exit code.
+    ./.venv/bin/pip uninstall --quiet --yes litellm-enterprise || true
+    # Fail closed: a warning that lets the installer succeed anyway ships the
+    # proprietary package right along with it. Re-probe with the same check
+    # pip uninstall itself consults, rather than trusting its exit code alone.
+    if litellm_enterprise_present; then
+        die "litellm-enterprise (LicenseRef-Proprietary) is still present in .venv after uninstall -- remove it by hand: ./.venv/bin/pip uninstall -y litellm-enterprise"
+    fi
+fi
+
+log "verifying controller import"
+if ! ./.venv/bin/python -c "import tinyagentos.app; tinyagentos.app.create_app()" 2>/dev/null; then
+    # Run again without redirecting stderr so the error is visible
+    ./.venv/bin/python -c "import tinyagentos.app; tinyagentos.app.create_app()" || \
+        die "controller import verification failed — see error above"
+fi
+log "controller import ok"
+
+# --- initialize data dir -------------------------------------------------
+
+if [[ ! -d data ]]; then
+    log "creating data/ directory"
+    mkdir -p data
+fi
+
+if [[ -f data/config.yaml.example && ! -f data/config.yaml ]]; then
+    log "copying data/config.yaml.example → data/config.yaml (first-run defaults)"
+    cp data/config.yaml.example data/config.yaml
+fi
+
+# --- LiteLLM virtual-key store (Postgres) --------------------------------
+#
+# LiteLLM uses a Postgres-backed key store to mint per-agent virtual keys
+# via /key/generate. Without it, agent deploys log a "DB not connected"
+# error and fall back to a shared master key (functional, but every agent
+# in this controller authenticates as the same identity). We install a
+# small local Postgres and write data/.litellm_db_url so the controller
+# picks it up on next start. Idempotent: re-runs leave the existing URL
+# in place — bumping the password would invalidate any keys already
+# minted against it.
+
+ensure_litellm_postgres() {
+    if [[ -f data/.litellm_db_url && -s data/.litellm_db_url ]]; then
+        log "litellm postgres: data/.litellm_db_url present — skipping setup"
+        return 0
+    fi
+
+    if ! command -v sudo >/dev/null 2>&1 && [[ "$(id -u)" != "0" ]]; then
+        warn "litellm postgres: sudo not available and not running as root — skipping"
+        warn "  per-agent virtual keys will not work; deployer will use the shared master key"
+        return 0
+    fi
+
+    if ! command -v psql >/dev/null 2>&1; then
+        log "installing postgresql for LiteLLM virtual keys"
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql \
+                || { warn "apt install postgresql failed — skipping virtual key setup"; return 0; }
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y -q postgresql postgresql-server \
+                || { warn "dnf install postgresql failed — skipping virtual key setup"; return 0; }
+            # Fedora/RHEL ship Postgres uninitialised — set up the data
+            # cluster before systemd can start it.
+            if [[ ! -d /var/lib/pgsql/data/base ]]; then
+                sudo postgresql-setup --initdb >/dev/null 2>&1 || true
+            fi
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -S --noconfirm postgresql \
+                || { warn "pacman -S postgresql failed — skipping virtual key setup"; return 0; }
+            # Arch ships postgresql binaries without an initialised data
+            # directory; systemd refuses to start until initdb has run.
+            if [[ ! -d /var/lib/postgres/data/base ]]; then
+                sudo mkdir -p /var/lib/postgres/data
+                sudo chown postgres:postgres /var/lib/postgres/data
+                sudo -u postgres initdb --locale=C.UTF-8 --encoding=UTF8 \
+                    -D /var/lib/postgres/data >/dev/null 2>&1 || true
+            fi
+        else
+            warn "litellm postgres: unrecognised package manager — install postgresql manually then re-run"
+            return 0
+        fi
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then
+        sudo systemctl enable --now postgresql >/dev/null 2>&1 \
+            || { warn "litellm postgres: could not start postgresql service — skipping"; return 0; }
+    fi
+
+    # Wait for Postgres to accept connections (cold start can take a few seconds).
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        sudo -u postgres psql -tAc 'SELECT 1' >/dev/null 2>&1 && break
+        sleep 1
+    done
+
+    local pw
+    pw=$(openssl rand -hex 24 2>/dev/null || head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+    if [[ -z "$pw" ]]; then
+        warn "litellm postgres: could not generate password — skipping"
+        return 0
+    fi
+
+    # Pipe the password via stdin instead of -c "...PASSWORD '...'" so it
+    # never appears in /proc/<pid>/cmdline. Quoting nuance: psql's :'var'
+    # interpolation produces a properly-escaped SQL string literal.
+    local role_sql
+    if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='litellm'" 2>/dev/null | grep -q 1; then
+        role_sql="CREATE ROLE litellm WITH LOGIN PASSWORD :'pw';"
+    else
+        role_sql="ALTER ROLE litellm WITH LOGIN PASSWORD :'pw';"
+    fi
+    if ! printf '%s\n' "$role_sql" \
+            | sudo -u postgres psql -v ON_ERROR_STOP=1 -v "pw=${pw}" >/dev/null 2>&1; then
+        warn "litellm postgres: role create/alter failed — skipping"
+        return 0
+    fi
+
+    if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='litellm'" 2>/dev/null | grep -q 1; then
+        printf 'CREATE DATABASE litellm OWNER litellm;\n' \
+            | sudo -u postgres psql -v ON_ERROR_STOP=1 >/dev/null 2>&1 \
+            || { warn "litellm postgres: CREATE DATABASE failed — skipping"; return 0; }
+    fi
+
+    # Subshell scopes umask so we don't leak 077 into the rest of the
+    # install script (the SPA build below relies on the calling shell's
+    # default umask for npm-managed files). chmod is belt-and-braces.
+    ( umask 077 && \
+        printf 'postgresql://litellm:%s@127.0.0.1:5432/litellm\n' "$pw" > data/.litellm_db_url )
+    chmod 600 data/.litellm_db_url
+    log "litellm postgres: data/.litellm_db_url written — virtual keys enabled"
+}
+
+# Postgres backs LiteLLM virtual keys; without it the controller still runs and
+# falls back gracefully. Never let DB setup abort the core install (e.g. WSL
+# without systemd, where the postgres daemon cannot start).
+ensure_litellm_postgres || warn "litellm postgres setup did not complete -- virtual keys disabled, controller still runs; continuing"
+
+# --- desktop SPA bundle --------------------------------------------------
+# The bundle is not committed to git (static/desktop/ is gitignored), so it has
+# to come from somewhere on every install / upgrade. Prefer a PREBUILT bundle
+# published by CI (keyed by the git tree SHA of desktop/, so it is valid for
+# every commit that does not touch the frontend) and download it -- this skips
+# the vite build, which needs ~2-4GB and OOMs on small machines (e.g. an 8GB
+# WSL), where a failed build used to leave the install silently stuck on the
+# old UI. Fall back to a local build only when no matching prebuilt is available.
+
+_bundle_base="https://github.com/jaylfc/taOS/releases/download/bundle-latest"
+
+# The repo is chowned to the 'taos' service user at the end of a system
+# install, so on a re-run as root a plain `git rev-parse` here trips git's
+# dubious-ownership check, returned empty, and silently disabled the prebuilt
+# path — every re-run then fell back to the memory-heavy local vite build
+# (#1544). Drop to the owning user, matching the checkout-update logic above.
+_tree_owner="$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || stat -f '%Su' "$INSTALL_DIR" 2>/dev/null || echo "")"
+_git_ro() {
+    # safe.directory is passed explicitly so a TOCTOU owner change between the
+    # stat above and this call cannot re-trip the dubious-ownership guard.
+    if [[ "$(id -u)" == "0" && -n "$_tree_owner" && "$_tree_owner" != "root" ]]; then
+        sudo -u "$_tree_owner" git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" "$@"
+    else
+        git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" "$@"
+    fi
+}
+_desktop_tree="$(_git_ro rev-parse HEAD:desktop 2>/dev/null || echo "")"
+[[ -z "$_desktop_tree" ]] \
+    && warn "could not read the desktop/ tree SHA from $INSTALL_DIR — prebuilt bundles unavailable this run"
+
+# Try one prebuilt-bundle source ($1 = release download base URL, $2 = label
+# for logs). Returns 0 only when a tree-matching, checksum-verified bundle was
+# installed into static/desktop/.
+_try_prebuilt_bundle() {
+    local _base="$1" _label="$2" _remote_tree _stage _tarball _exp_sha _sha_cmd _own _old
+    _remote_tree="$(curl -fsSL --max-time 20 "$_base/desktop-tree.txt" 2>/dev/null | tr -d '[:space:]' || echo "")"
+    if [[ -z "$_remote_tree" ]]; then
+        # Say WHY there is no prebuilt: a transient network failure here used
+        # to be indistinguishable from a genuine source mismatch (#1544).
+        log "prebuilt bundle: $_label unreachable or missing its manifest — skipping"
+        return 1
+    fi
+    if [[ "$_remote_tree" != "$_desktop_tree" ]]; then
+        log "prebuilt bundle: $_label was built from a different desktop/ source — skipping"
+        return 1
+    fi
+    log "fetching prebuilt desktop bundle from $_label (matches source; no local build needed)"
+    mkdir -p "$INSTALL_DIR/static"
+    # Stage INSIDE the install tree (private, same filesystem) rather than a
+    # fixed world-writable /tmp path: this makes the final swap an atomic
+    # rename and avoids writing through an attacker-planted symlink while
+    # running as root in the common `curl | sudo bash` invocation.
+    _stage="$(mktemp -d "$INSTALL_DIR/static/.taos-bundle.XXXXXX")"
+    # BSD/macOS mktemp requires the template to END in Xs (no suffix allowed).
+    _tarball="$(mktemp "$INSTALL_DIR/static/.taos-bundle-tar.XXXXXX")"
+    # Verify the download against the CI-published SHA256 before extracting,
+    # so a corrupted or tampered tarball is rejected (we fall back to a local
+    # build). sha256sum on Linux, shasum -a 256 on macOS; with neither, say
+    # explicitly that VERIFICATION was impossible (not "download failed").
+    _exp_sha="$(curl -fsSL --max-time 20 "$_base/desktop-bundle.sha256" 2>/dev/null | tr -d '[:space:]' || echo "")"
+    _sha_cmd="sha256sum"
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        if command -v shasum >/dev/null 2>&1; then
+            _sha_cmd="shasum -a 256"
+        else
+            warn "no sha256 tool available — cannot verify the prebuilt bundle, skipping it"
+            rm -rf "$_stage" "$_tarball"
+            return 1
+        fi
+    fi
+    if curl -fsSL --max-time 120 "$_base/desktop-bundle.tar.gz" -o "$_tarball" \
+       && [[ -n "$_exp_sha" && "$($_sha_cmd "$_tarball" | awk '{print $1}')" == "$_exp_sha" ]] \
+       && tar -C "$_stage" -xzf "$_tarball" \
+       && [[ -f "$_stage/desktop/index.html" ]]; then
+        # Swap via rename-out / rename-in (same filesystem, so each mv is an
+        # atomic rename): a failed swap must never leave the install with NO
+        # desktop at all, which is what delete-then-move risked.
+        _old=""
+        if [[ -d "$INSTALL_DIR/static/desktop" ]]; then
+            _old="$_stage/desktop.old"
+            if ! mv "$INSTALL_DIR/static/desktop" "$_old"; then
+                warn "could not move the current desktop aside — leaving it in place"
+                rm -rf "$_stage" "$_tarball"
+                return 1
+            fi
+        fi
+        if ! mv "$_stage/desktop" "$INSTALL_DIR/static/desktop"; then
+            # Do not claim the restore worked unless it actually did: a failed
+            # rename-back would otherwise leave no desktop while saying otherwise.
+            if [[ -z "$_old" ]]; then
+                warn "installing the prebuilt bundle failed during the swap — no previous desktop existed; the local build below (or a re-run) will create static/desktop"
+            elif mv "$_old" "$INSTALL_DIR/static/desktop"; then
+                warn "installing the prebuilt bundle failed during the swap — previous desktop restored"
+            else
+                warn "installing the prebuilt bundle failed during the swap AND the previous desktop could not be restored — static/desktop is missing; the local build below (or a re-run) will recreate it"
+            fi
+            rm -rf "$_stage" "$_tarball"
+            return 1
+        fi
+        # Match the repo owner so a later in-app rebuild (run as that user) can
+        # still write here; only meaningful when installing as root. Trailing
+        # colon sets the owner's primary group (do not assume a group named
+        # after the user exists).
+        _own="$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || stat -f '%Su' "$INSTALL_DIR" 2>/dev/null || echo "")"
+        if [[ "$(id -u)" == "0" && -n "$_own" && "$_own" != "root" ]]; then
+            chown -R "$_own:" "$INSTALL_DIR/static/desktop" 2>/dev/null || true
+        fi
+        rm -rf "$_stage" "$_tarball"
+        log "prebuilt desktop bundle installed into static/desktop/ (from $_label)"
+        return 0
+    fi
+    warn "prebuilt bundle from $_label failed (download error, checksum mismatch, or bad archive)"
+    rm -rf "$_stage" "$_tarball"
+    return 1
+}
+
+_prebuilt_done=0
+if [[ -n "$_desktop_tree" ]]; then
+    # bundle-latest tracks the newest master build, so an install pinned to an
+    # older release tag only matches it until the next master push. Fall back
+    # to the bundle attached to the release tag itself, which matches that
+    # tag's source forever (#1544).
+    _try_prebuilt_bundle "$_bundle_base" "bundle-latest" && _prebuilt_done=1
+    if [[ "$_prebuilt_done" == "0" ]]; then
+        _rel_tag="$(_git_ro describe --exact-match --tags HEAD 2>/dev/null || echo "")"
+        if [[ -n "$_rel_tag" ]]; then
+            _try_prebuilt_bundle "${_bundle_base%bundle-latest}$_rel_tag" "release $_rel_tag" && _prebuilt_done=1
+        fi
+    fi
+fi
+
+if [[ "$_prebuilt_done" == "0" ]]; then
+    if command -v npm >/dev/null 2>&1; then
+        log "building desktop SPA locally (no matching prebuilt bundle for this source)"
+        log "  note: the vite build needs roughly 2-4GB of free memory; on small boards close other services first"
+        if ! (cd "$INSTALL_DIR/desktop" && npm install --silent && npm run build); then
+            die "desktop SPA build failed. This almost always means the machine ran out of memory: the vite build needs roughly 2-4GB free. On WSL the Linux VM is capped at about half of Windows RAM by default, so add to C:\\Users\\<you>\\.wslconfig:
+    [wsl2]
+    memory=12GB
+then run 'wsl --shutdown' in PowerShell, reopen, and re-run this installer. IMPORTANT: your UI was NOT updated -- the previous version keeps being served until the build succeeds."
+        fi
+        log "desktop bundle built into static/desktop/"
+    else
+        warn "npm not found on PATH -- desktop UI bundle was not built"
+        warn "  install Node.js (>=22), then re-run this installer"
+        warn "  see: https://nodejs.org/en/download"
+    fi
+fi
+
+# --- migrate: remove stale user-level qmd-serve.service (April 2026 rkllama unit) ---
+# An earlier development iteration shipped a user-level qmd-serve.service that
+# started qmd with --backend rkllama. That unit is superseded by the system-level
+# qmd.service below. If both units run together they race for port 7832 and the
+# system unit loses, causing taOS memory search to fail on start.
+_stale_qmd_user="${SUDO_USER:-$USER}"
+if [[ -n "$_stale_qmd_user" && "$_stale_qmd_user" != "root" ]]; then
+    _stale_qmd_home=$(getent passwd "$_stale_qmd_user" 2>/dev/null | cut -d: -f6 || echo "/home/$_stale_qmd_user")
+    for _stale_path in \
+        "$_stale_qmd_home/.config/systemd/user/qmd-serve.service" \
+        "$_stale_qmd_home/.local/share/systemd/user/qmd-serve.service"
+    do
+        if [[ -f "$_stale_path" ]]; then
+            warn "found stale user-level qmd-serve.service at $_stale_path — removing"
+            sudo -u "$_stale_qmd_user" XDG_RUNTIME_DIR="/run/user/$(id -u "$_stale_qmd_user")" \
+                systemctl --user stop qmd-serve 2>/dev/null || true
+            sudo -u "$_stale_qmd_user" XDG_RUNTIME_DIR="/run/user/$(id -u "$_stale_qmd_user")" \
+                systemctl --user disable qmd-serve 2>/dev/null || true
+            rm -f "$_stale_path"
+            warn "removed stale qmd-serve.service (the system-level qmd.service is the correct one)"
+        fi
+    done
+fi
+
+# --- qmd.service install -------------------------------------------------
+
+have_root_or_sudo() {
+    if [[ "$(id -u)" = "0" ]]; then
+        return 0
+    fi
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
+    log "installing qmd service"
+
+    if ! command -v qmd >/dev/null 2>&1; then
+        log "qmd not found on PATH — installing via npm"
+        if command -v npm >/dev/null 2>&1; then
+            # Run as root so npm can write to the system global prefix
+            # (/usr/lib/node_modules on Debian).  HOME=/root ensures npm
+            # uses root's own cache dir rather than the calling user's
+            # ~/.npm directory (which root can't write to).
+            #
+            # --unsafe-perm: required on npm >= 10.  When npm runs as root and
+            # the install dir has non-root ownership at any point during tar
+            # extraction, npm drops privileges to `nobody` to run lifecycle
+            # scripts.  `nobody` typically has no usable PATH/shell setup, so
+            # better-sqlite3's postinstall fails with `spawn sh ENOENT`
+            # (errno -2).  --unsafe-perm keeps npm running as root throughout,
+            # which is the historical behaviour and the only thing that works
+            # for native-binding packages on a system-global install.
+            # Pre-clean a partial qmd install dir before we try again.
+            # If a prior run failed mid-extraction, the leftover directory
+            # makes npm's tar extractor stumble on a second attempt with
+            # ENOENT errors that look like a fresh failure but are really
+            # just unfinished cleanup.
+            npm_prefix=$(npm config get prefix 2>/dev/null || echo "/usr")
+            partial_qmd="${npm_prefix}/lib/node_modules/@jaylfc/qmd"
+            if [[ -d "$partial_qmd" ]] && ! command -v qmd >/dev/null 2>&1; then
+                log "removing partial qmd install at $partial_qmd before retry"
+                sudo rm -rf "$partial_qmd"
+            fi
+
+            # Capture npm stderr so we can diagnose the failure class.
+            # The TAR_ENTRY_ERROR / "spawn sh ENOENT" combo is the canonical
+            # node-llama-cpp tar-extraction failure (issue #310). When we
+            # see it, point the user at the partial-install path and the log
+            # rather than dumping hundreds of lines of npm noise to stderr.
+            # Pin qmd to a specific npm version to prevent surprise
+            # version bumps on fresh installs.  The npm package is
+            # pre-built (dist/ is not committed to the source repo),
+            # so installing from a git SHA requires a TypeScript
+            # build step — use the npm registry instead.
+            # Pin to a specific published version rather than @latest.
+            # Update TAOS_QMD_NPM_VERSION when a new qmd release ships.
+            # npm packages are signed via the registry's package-lock integrity
+            # mechanism (sha512 in package-lock.json); pinning the version here
+            # is the supply-chain control available at install time.
+            qmd_npm_version="${TAOS_QMD_NPM_VERSION:-2.6.0}"
+            qmd_install_log=$(mktemp /tmp/taos-qmd-install.XXXXXX.log)
+            log "npm install -g @jaylfc/qmd@${qmd_npm_version} (log: $qmd_install_log)"
+            if ! sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd@${qmd_npm_version}" >"$qmd_install_log" 2>&1; then
+                if grep -q "TAR_ENTRY_ERROR" "$qmd_install_log" \
+                   && grep -q "spawn sh" "$qmd_install_log"; then
+                    warn "npm install of qmd hit the node-llama-cpp tar-extraction"
+                    warn "failure mode (issue #310). Recovery:"
+                    warn "  1. sudo rm -rf $partial_qmd"
+                    warn "  2. Re-run install-server.sh"
+                    warn "  3. If it still fails, share $qmd_install_log on issue #2"
+                    warn "Do NOT run 'npm install -g npm@<newer>' as recovery — it can"
+                    warn "hit the same failure mode against npm's own tarball and leave"
+                    warn "your npm in a broken state requiring a full nodejs reinstall."
+                fi
+                # Pinned version missing from npm (ETARGET) — fall back to @latest
+                # so a stale/wrong pin can't hard-fail the whole install (see #706).
+                if grep -qiE "ETARGET|No matching version found" "$qmd_install_log" \
+                   && [[ "$qmd_npm_version" != "latest" ]]; then
+                    warn "qmd ${qmd_npm_version} not found on npm (ETARGET); retrying @latest"
+                    if sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd@latest" >>"$qmd_install_log" 2>&1; then
+                        log "qmd installed via @latest fallback"
+                    else
+                        tail -20 "$qmd_install_log" >&2
+                        die "npm install of qmd failed (pinned ${qmd_npm_version} and @latest) — see $qmd_install_log"
+                    fi
+                else
+                    tail -20 "$qmd_install_log" >&2
+                    die "npm install of qmd failed — see $qmd_install_log"
+                fi
+            fi
+            rm -f "$qmd_install_log"
+            # Confirm the binary is reachable before we proceed.
+            if ! command -v qmd >/dev/null 2>&1; then
+                die "qmd binary not found on PATH after npm install — check npm global prefix and PATH"
+            fi
+        else
+            warn "npm not found — cannot install qmd; skipping qmd.service install"
+            TAOS_SKIP_QMD=1
+        fi
+    else
+        log "qmd already installed at $(command -v qmd) — skipping npm install"
+    fi
+
+    if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
+        if have_root_or_sudo; then
+            local_sudo=""
+            if [[ "$(id -u)" != "0" ]]; then
+                local_sudo="sudo"
+            fi
+            if [[ -f scripts/systemd/qmd.service ]]; then
+                log "installing /etc/systemd/system/qmd.service"
+                # The unit ships with __TAOS_USER__ / __TAOS_GROUP__ /
+                # __TAOS_QMD_BIN__ placeholders. Substitute real values at
+                # install time. User/group: prefer invoking sudo user so the
+                # service runs as them; fall back to 'root' if invoked as
+                # root directly. qmd binary path: discover via PATH (Ubuntu
+                # puts it at /usr/bin/qmd via dpkg's npm prefix; Fedora's
+                # npm uses /usr/local prefix and lands at /usr/local/bin/qmd).
+                taos_user="${SUDO_USER:-root}"
+                taos_group=$(id -gn "$taos_user" 2>/dev/null || echo "$taos_user")
+                taos_qmd_bin=$(command -v qmd 2>/dev/null)
+                if [[ -z "$taos_qmd_bin" ]]; then
+                    # Fallback hunt — npm root -g + /bin/qmd, then common paths
+                    for cand in "$(npm root -g 2>/dev/null)/@jaylfc/qmd/bin/qmd" \
+                                /usr/local/bin/qmd /usr/bin/qmd; do
+                        if [[ -x "$cand" ]]; then
+                            taos_qmd_bin="$cand"
+                            break
+                        fi
+                    done
+                fi
+                if [[ -z "$taos_qmd_bin" ]]; then
+                    die "qmd binary not found after npm install — cannot render qmd.service"
+                fi
+                log "qmd binary at $taos_qmd_bin"
+                $local_sudo sed \
+                    -e "s|__TAOS_USER__|${taos_user}|g" \
+                    -e "s|__TAOS_GROUP__|${taos_group}|g" \
+                    -e "s|__TAOS_QMD_BIN__|${taos_qmd_bin}|g" \
+                    scripts/systemd/qmd.service > /tmp/qmd.service.rendered
+                $local_sudo install -m 0644 /tmp/qmd.service.rendered /etc/systemd/system/qmd.service
+                $local_sudo rm -f /tmp/qmd.service.rendered
+                $local_sudo systemctl daemon-reload
+                $local_sudo systemctl enable --now qmd.service
+                log "waiting for qmd to become ready on port $TAOS_QMD_PORT (up to 60 s)..."
+                qmd_tries=0
+                while [[ $qmd_tries -lt 60 ]]; do
+                    if curl -sf "http://localhost:$TAOS_QMD_PORT/health" >/dev/null 2>&1; then
+                        log "qmd is up"
+                        break
+                    fi
+                    sleep 1
+                    qmd_tries=$((qmd_tries + 1))
+                done
+                if [[ $qmd_tries -ge 60 ]]; then
+                    warn "qmd did not respond within 60 seconds — it may still be starting"
+                    warn "check: systemctl status qmd"
+                    if command -v journalctl >/dev/null 2>&1; then
+                        warn "last 10 lines of qmd journal:"
+                        journalctl -u qmd --no-pager -n 10 2>/dev/null || true
+                    fi
+                fi
+            else
+                warn "scripts/systemd/qmd.service not found in repo — skipping qmd.service install"
+            fi
+        else
+            warn "no root/sudo available — skipping qmd.service install (system unit requires root)"
+            warn "  to install later: sudo cp scripts/systemd/qmd.service /etc/systemd/system/qmd.service && sudo systemctl enable --now qmd"
+        fi
+    fi
+else
+    log "TAOS_SKIP_QMD is set — skipping qmd.service install"
+fi
+
+# --- ufw: open the A2A bus port when the firewall is active ---------------
+# When a shared taosmd serve instance acts as the A2A bus on this host,
+# remote agents and workers need inbound TCP access on the bus port.
+# ufw blocks that by default. Open the port automatically so the operator
+# does not have to do it by hand after install (see issue #691).
+#
+# Conditions: Linux only, ufw present, ufw currently ACTIVE.
+# We never enable ufw, never disable rules, never touch other rules.
+if [[ "$os_name" == "Linux" ]] && command -v ufw >/dev/null 2>&1; then
+    if ufw status 2>/dev/null | grep -q '^Status: active'; then
+        if ufw status 2>/dev/null | grep -qE "^${TAOS_BUS_PORT}[[:space:]]|^${TAOS_BUS_PORT}/tcp[[:space:]]"; then
+            log "ufw: port $TAOS_BUS_PORT/tcp already allowed, skipping"
+        else
+            if ufw allow "${TAOS_BUS_PORT}/tcp" comment 'taOS A2A bus' >/dev/null 2>&1; then
+                log "ufw: allowed port $TAOS_BUS_PORT/tcp (taOS A2A bus)"
+            else
+                warn "ufw allow ${TAOS_BUS_PORT}/tcp failed, open the port manually if needed"
+            fi
+        fi
+    else
+        log "ufw is installed but not active, skipping bus port rule"
+    fi
+fi
+
+# --- dedicated service user -----------------------------------------------
+# The controller runs as an unprivileged system user 'taos' rather than root.
+# The installer itself still runs as root (via sudo bash); only the resulting
+# systemd unit drops to 'taos'.  The user needs access to the incus and docker
+# sockets (group membership) but no elevated privileges beyond that.
+
+ensure_taos_user() {
+    [[ "$os_name" == "Linux" ]] || return 0  # no-op on macOS (launchd agent)
+
+    local sudo_cmd=""
+    [[ "$(id -u)" != "0" ]] && sudo_cmd="sudo"
+
+    # Create the system user if absent. useradd -r = system account (no home
+    # dir by default, no expiry). -M = do not create /home/taos. -d sets the
+    # "home" field in /etc/passwd to INSTALL_DIR (used by some tools for ~
+    # expansion, not an actual home directory on disk).
+    if ! id -u taos >/dev/null 2>&1; then
+        log "creating system user 'taos' for the controller service"
+        $sudo_cmd useradd -r -M -s /usr/sbin/nologin -d "$INSTALL_DIR" taos \
+            || $sudo_cmd useradd -r -M -s /sbin/nologin -d "$INSTALL_DIR" taos \
+            || { warn "useradd failed — the service will not run as 'taos'"; return 1; }
+        log "system user 'taos' created"
+    else
+        log "system user 'taos' already exists — skipping useradd"
+    fi
+
+    # Add 'taos' to the incus group so it can reach the incus socket without
+    # root. Warn (don't fail) if the group doesn't exist — the socket is still
+    # usable if incus is not installed on this host.
+    if getent group incus >/dev/null 2>&1; then
+        $sudo_cmd usermod -aG incus taos >/dev/null 2>&1 \
+            && log "added 'taos' to the 'incus' group" \
+            || warn "could not add 'taos' to the 'incus' group — agent container deploys may fail"
+    else
+        warn "'incus' group not found — incus is not installed, so agent LXC deploys are unavailable (Docker apps still work). Install incus and re-run this installer to finish the group setup."
+    fi
+
+    # Mirror the existing docker-group handling: add 'taos' to docker so the
+    # controller can manage Store Docker apps. Warn if docker isn't present.
+    if getent group docker >/dev/null 2>&1; then
+        $sudo_cmd usermod -aG docker taos >/dev/null 2>&1 \
+            && log "added 'taos' to the 'docker' group" \
+            || warn "could not add 'taos' to the 'docker' group — Store Docker apps may fail"
+    else
+        warn "'docker' group not found — skipping (install Docker first, then re-run to add 'taos' to the group)"
+    fi
+
+    # GPU/NPU device access. Backends (rkllama, image-gen, hardware video
+    # encode) run as 'taos', not root, and reach the accelerator through the
+    # render/video group-owned DRI/mpp device nodes (mode 660). Without these
+    # groups an NPU/GPU model load fails with a device-permission error.
+    for _dev_grp in render video; do
+        if ! getent group "$_dev_grp" >/dev/null 2>&1; then
+            warn "group '$_dev_grp' not found — if a GPU/NPU backend can't reach the device, create it and re-run"
+        elif id -nG taos 2>/dev/null | tr ' ' '\n' | grep -qx "$_dev_grp"; then
+            log "'taos' already in the '$_dev_grp' group"
+        else
+            $sudo_cmd usermod -aG "$_dev_grp" taos >/dev/null 2>&1 \
+                && log "added 'taos' to the '$_dev_grp' group (GPU/NPU device access)" \
+                || warn "could not add 'taos' to '$_dev_grp' — GPU/NPU backends may fail"
+        fi
+    done
+}
+
+# --- data dir ownership + permissions ------------------------------------
+# After the venv + data dir are set up, hand ownership of the runtime data
+# tree to the 'taos' user so the service can read/write it.  Sensitive files
+# get tighter permissions (600).  Idempotent: chown/chmod are always safe
+# to re-run.
+
+set_data_dir_ownership() {
+    [[ "$os_name" == "Linux" ]] || return 0  # no-op on macOS
+    ! id -u taos >/dev/null 2>&1 && return 0  # no-op if user wasn't created
+
+    local sudo_cmd=""
+    [[ "$(id -u)" != "0" ]] && sudo_cmd="sudo"
+
+    # Security trade-off: taos must OWN the entire install dir (repo, .git,
+    # .venv, static/desktop/) so the in-app self-updater can write to those
+    # paths while running non-root (git pull, pip install -e ., npm run build).
+    # Full update-privilege-separation (a dedicated updater suid helper that
+    # verifies signatures before writing) is a post-beta hardening task.
+    log "setting ownership of $INSTALL_DIR → taos:taos (required for non-root in-app self-update)"
+    if ! $sudo_cmd chown -R taos:taos "$INSTALL_DIR" 2>/dev/null; then
+        warn "chown -R taos:taos $INSTALL_DIR failed — the service will not start; re-run the installer with sudo"
+    fi
+
+    # Ensure every parent directory of INSTALL_DIR is traversable by the taos
+    # service user — without this, systemd CHDIR fails (exit 200) when the
+    # install lives under a restricted root like /root (mode 700).
+    # o+x = traverse only, not list: minimal security impact.
+    _parent="$(dirname "$INSTALL_DIR")"
+    while [[ "$_parent" != "/" && "$_parent" != "." ]]; do
+        if [[ -d "$_parent" ]]; then
+            $sudo_cmd chmod o+x "$_parent" 2>/dev/null \
+                || warn "chmod o+x $_parent failed — the service may not start; re-run the installer with sudo"
+        fi
+        _parent="$(dirname "$_parent")"
+    done
+
+    # Tighten the data directory and sensitive credential files on top of the
+    # broad chown above — done AFTER so the restrictive perms win.
+    log "tightening $INSTALL_DIR/data/ → mode 0700 and secret files → 0600"
+    $sudo_cmd chmod 0700 "$INSTALL_DIR/data"
+    for f in \
+        "$INSTALL_DIR/data/.auth_password" \
+        "$INSTALL_DIR/data/.auth_user.json" \
+        "$INSTALL_DIR/data/.auth_sessions" \
+        "$INSTALL_DIR/data/.auth_local_token" \
+        "$INSTALL_DIR/data/.litellm_db_url" \
+        "$INSTALL_DIR/data/browser_cookie_key.hex"; do
+        [[ -f "$f" ]] && $sudo_cmd chmod 0600 "$f" || true
+    done
+}
+
+# --- tinyagentos.service install -----------------------------------------
+
+install_linux_systemd_system() {
+    local unit="/etc/systemd/system/tinyagentos.service"
+    local sudo_cmd=""
+    if [[ "$(id -u)" != "0" ]]; then
+        sudo_cmd="sudo"
+    fi
+
+    # Resolve base image prefetch opt-in: honour TAOS_PREFETCH_BASE_IMAGE
+    # if set at install time, default to 0 (disabled).
+    local taos_prefetch="${TAOS_PREFETCH_BASE_IMAGE:-0}"
+
+    # Create the dedicated service user and assign group memberships.
+    ensure_taos_user
+
+    # Install graceful-stop script
+    $sudo_cmd install -m 0755 "$INSTALL_DIR/scripts/taos-graceful-stop.sh" /usr/local/bin/taos-graceful-stop
+    log "installed /usr/local/bin/taos-graceful-stop"
+
+    # Install desktop rebuild script (runs async after controller start; taOS #807)
+    $sudo_cmd install -m 0755 "$INSTALL_DIR/scripts/rebuild-desktop.sh" /usr/local/bin/taos-rebuild-desktop
+    log "installed /usr/local/bin/taos-rebuild-desktop"
+
+    # Stamp the template from the repo, substituting install-time variables.
+    # The service runs as the dedicated 'taos' system user, not the installer's
+    # $USER.  The installer itself still runs as root.
+    sed \
+        -e "s|TAOS_USER|taos|g" \
+        -e "s|TAOS_GROUP|taos|g" \
+        -e "s|TAOS_INSTALL_DIR|$INSTALL_DIR|g" \
+        -e "s|TAOS_PYTHON|$INSTALL_DIR/.venv/bin/python|g" \
+        -e "s|TAOS_PORT|$TAOS_PORT|g" \
+        -e "s|TAOS_STOP_SCRIPT|/usr/local/bin/taos-graceful-stop|g" \
+        -e "s|__TAOS_PREFETCH_VALUE__|$taos_prefetch|g" \
+        "$INSTALL_DIR/scripts/systemd/tinyagentos.service" \
+        | $sudo_cmd tee "$unit" > /dev/null
+    # Inject bind host/port + proxy port into the unit's Environment block.
+    # ExecStart now runs `python -m tinyagentos`, which reads these (rather
+    # than uvicorn CLI args), so the dual-port browser-proxy origin starts.
+    $sudo_cmd sed -i "s|^Environment=PYTHONUNBUFFERED=1|Environment=PYTHONUNBUFFERED=1\nEnvironment=TAOS_HOST=0.0.0.0\nEnvironment=TAOS_PORT=$TAOS_PORT\nEnvironment=TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT|" "$unit"
+    log "installed $unit (system unit, runs as 'taos')"
+
+    # Install desktop-rebuild service (runs async after controller starts; taOS #807)
+    local rebuild_unit="/etc/systemd/system/tinyagentos-rebuild-desktop.service"
+    sed \
+        -e "s|TAOS_USER|taos|g" \
+        -e "s|TAOS_GROUP|taos|g" \
+        -e "s|TAOS_INSTALL_DIR|$INSTALL_DIR|g" \
+        "$INSTALL_DIR/scripts/systemd/tinyagentos-rebuild-desktop.service" \
+        | $sudo_cmd tee "$rebuild_unit" > /dev/null
+    log "installed $rebuild_unit"
+
+    # Hand the data directory to the service user before the unit first starts.
+    set_data_dir_ownership
+
+    # Install pre-shutdown hook
+    if [[ -f "$INSTALL_DIR/systemd/taos-pre-shutdown.service" ]]; then
+        $sudo_cmd cp "$INSTALL_DIR/systemd/taos-pre-shutdown.service" /etc/systemd/system/taos-pre-shutdown.service
+        log "installed /etc/systemd/system/taos-pre-shutdown.service"
+    fi
+
+    $sudo_cmd systemctl daemon-reload
+    # Enable the desktop rebuild service before starting the controller so
+    # systemd installs the WantedBy= symlink atomically (taOS #807).
+    $sudo_cmd systemctl enable tinyagentos-rebuild-desktop.service
+    $sudo_cmd systemctl enable --now tinyagentos
+    if [[ -f /etc/systemd/system/taos-pre-shutdown.service ]]; then
+        $sudo_cmd systemctl enable taos-pre-shutdown.service
+    fi
+    log "controller running as system service (user: taos)"
+    log "check: systemctl status tinyagentos"
+    log "logs:  journalctl -u tinyagentos -f"
+}
+
+install_linux_systemd_user() {
+    local unit_dir="$HOME/.config/systemd/user"
+    local unit="$unit_dir/tinyagentos.service"
+    mkdir -p "$unit_dir"
+    # Install graceful-stop script to user-local bin if possible
+    mkdir -p "$HOME/.local/bin"
+    install -m 0755 "$INSTALL_DIR/scripts/taos-graceful-stop.sh" "$HOME/.local/bin/taos-graceful-stop"
+    # Install desktop rebuild script (runs async after controller start; taOS #807)
+    install -m 0755 "$INSTALL_DIR/scripts/rebuild-desktop.sh" "$HOME/.local/bin/taos-rebuild-desktop"
+    log "installed $HOME/.local/bin/taos-rebuild-desktop"
+
+    local taos_prefetch="${TAOS_PREFETCH_BASE_IMAGE:-0}"
+
+    # User unit: no User=/Group= (inherits the running user), no ExecStartPre
+    # for debugfs (that needs root). ExecReload/Restart=always still apply.
+    sed \
+        -e "s|TAOS_USER|$USER|g" \
+        -e "s|TAOS_GROUP|$(id -gn)|g" \
+        -e "s|TAOS_INSTALL_DIR|$INSTALL_DIR|g" \
+        -e "s|TAOS_PYTHON|$INSTALL_DIR/.venv/bin/python|g" \
+        -e "s|TAOS_PORT|$TAOS_PORT|g" \
+        -e "s|TAOS_STOP_SCRIPT|$HOME/.local/bin/taos-graceful-stop|g" \
+        -e "s|__TAOS_PREFETCH_VALUE__|$taos_prefetch|g" \
+        -e "/^User=/d" \
+        -e "/^Group=/d" \
+        -e "s|WantedBy=multi-user.target|WantedBy=default.target|g" \
+        -e "/ExecStartPre/,/|| true'$/d" \
+        "$INSTALL_DIR/scripts/systemd/tinyagentos.service" \
+        > "$unit"
+    # Inject bind host/port + proxy port into the unit's Environment block.
+    # ExecStart now runs `python -m tinyagentos`, which reads these (rather
+    # than uvicorn CLI args), so the dual-port browser-proxy origin starts.
+    sed -i "s|^Environment=PYTHONUNBUFFERED=1|Environment=PYTHONUNBUFFERED=1\nEnvironment=TAOS_HOST=0.0.0.0\nEnvironment=TAOS_PORT=$TAOS_PORT\nEnvironment=TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT|" "$unit"
+    log "installed $unit (user unit fallback — sudo unavailable)"
+
+    # Install desktop-rebuild service (runs async after controller starts; taOS #807)
+    local rebuild_unit="$unit_dir/tinyagentos-rebuild-desktop.service"
+    sed \
+        -e "s|TAOS_USER|$USER|g" \
+        -e "s|TAOS_GROUP|$(id -gn)|g" \
+        -e "s|TAOS_INSTALL_DIR|$INSTALL_DIR|g" \
+        -e "s|/usr/local/bin/taos-rebuild-desktop|$HOME/.local/bin/taos-rebuild-desktop|g" \
+        -e "/^User=/d" \
+        -e "/^Group=/d" \
+        "$INSTALL_DIR/scripts/systemd/tinyagentos-rebuild-desktop.service" \
+        > "$rebuild_unit"
+    log "installed $rebuild_unit (user unit fallback)"
+
+    # Make the user manager start on boot without an active login. Must
+    # happen BEFORE the systemctl --user calls so the user bus is up.
+    loginctl enable-linger "$USER" 2>/dev/null || true
+
+    # When run from a non-interactive context (curl|bash, ssh -c, etc),
+    # XDG_RUNTIME_DIR may be unset and systemctl --user can't find the
+    # user bus. Set it explicitly and wait briefly for the user manager
+    # to come up after enable-linger.
+    export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    local tries=0
+    while [[ $tries -lt 10 ]] && ! systemctl --user is-system-running >/dev/null 2>&1; do
+        sleep 1
+        tries=$((tries + 1))
+    done
+
+    if ! systemctl --user daemon-reload 2>/dev/null; then
+        warn "user systemd not reachable — leaving the units on disk so they activate on next login"
+        warn "to start manually: systemctl --user daemon-reload && systemctl --user enable --now tinyagentos tinyagentos-rebuild-desktop"
+        return 0
+    fi
+    # Enable the desktop rebuild service before starting the controller so
+    # systemd --user installs the WantedBy= symlink atomically (taOS #807).
+    systemctl --user enable tinyagentos-rebuild-desktop.service
+    systemctl --user enable --now tinyagentos
+    log "controller running as user systemd service"
+    log "check: systemctl --user status tinyagentos"
+    log "logs:  journalctl --user -u tinyagentos -f"
+}
+
+# True when systemd is the running init, so the systemd path will actually work.
+# On WSL without systemd (or a minimal container), systemctl is either missing or
+# reports the system was not booted with systemd as PID 1.
+_systemd_is_init() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    case "$(systemctl is-system-running 2>/dev/null)" in
+        running|degraded|starting|initializing|maintenance) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Fallback when systemd is not the init (e.g. WSL without systemd): start the
+# controller as a plain background process so the Web UI is reachable now. It
+# will NOT auto-start on reboot; we leave a re-launch helper and explain how to
+# get a managed service. This is the controller-equivalent of the no-systemd
+# Docker daemon ladder above, so a WSL box is not left with a dead UI.
+install_linux_nohup() {
+    local pyenv="$INSTALL_DIR/.venv/bin/python"
+    local logf="$INSTALL_DIR/data/controller.log"
+    local runner="$INSTALL_DIR/scripts/taos-run.sh"
+    local runuser
+    if [[ "$(id -u)" == "0" ]]; then
+        ensure_taos_user
+        set_data_dir_ownership
+        runuser="taos"
+    else
+        runuser="$(id -un)"
+    fi
+
+    # Re-launch helper so the user can start taOS again after a reboot.
+    cat > "$runner" <<EOF
+#!/bin/bash
+# Start the taOS controller without systemd (background-free; runs in foreground).
+cd "$INSTALL_DIR" || exit 1
+# The live install ran the controller as '$runuser'. If this helper is later
+# re-run as root (the documented post-reboot path), re-drop to that user so
+# data/ ownership stays consistent. Minimal boxes may lack sudo, so prefer
+# runuser/su (util-linux) over sudo.
+if [ "\$(id -u)" = "0" ] && [ "\$(id -un)" != "$runuser" ]; then
+    if command -v runuser >/dev/null 2>&1; then exec runuser -u "$runuser" -- /bin/bash "\$0"
+    elif command -v sudo >/dev/null 2>&1; then exec sudo -u "$runuser" /bin/bash "\$0"
+    elif command -v su >/dev/null 2>&1; then exec su -s /bin/bash "$runuser" -c "exec /bin/bash '\$0'"; fi
+fi
+export PYTHONUNBUFFERED=1 TAOS_HOST=0.0.0.0 TAOS_PORT=$TAOS_PORT TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT
+exec "$pyenv" -m tinyagentos
+EOF
+    chmod +x "$runner"
+    [[ "$runuser" != "$(id -un)" ]] && chown "$runuser": "$runner" 2>/dev/null || true
+
+    log "systemd is not the init here (e.g. WSL without systemd) -- starting the controller directly"
+    local launch="cd '$INSTALL_DIR'; PYTHONUNBUFFERED=1 TAOS_HOST=0.0.0.0 TAOS_PORT=$TAOS_PORT TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT nohup '$pyenv' -m tinyagentos >> '$logf' 2>&1 &"
+    if [[ "$runuser" != "$(id -un)" ]]; then
+        # Drop to the service user without assuming sudo: minimal containers (a
+        # target of this fallback) frequently run as root with no sudo binary.
+        # Prefer runuser/su (util-linux, present on minimal boxes), then sudo.
+        if command -v runuser >/dev/null 2>&1; then
+            runuser -u "$runuser" -- bash -c "$launch"
+        elif command -v sudo >/dev/null 2>&1; then
+            sudo -u "$runuser" bash -c "$launch"
+        else
+            su -s /bin/bash "$runuser" -c "$launch"
+        fi
+    else
+        bash -c "$launch"
+    fi
+
+    local i=0
+    while (( i < 15 )) && ! curl -sf -o /dev/null "http://localhost:$TAOS_PORT/api/health" 2>/dev/null; do
+        sleep 1; i=$((i+1))
+    done
+    if curl -sf -o /dev/null "http://localhost:$TAOS_PORT/api/health" 2>/dev/null; then
+        log "controller started (no-systemd mode), reachable on port $TAOS_PORT"
+    else
+        warn "controller did not answer on port $TAOS_PORT yet -- see $logf"
+    fi
+    warn "no systemd: taOS will NOT auto-start on reboot."
+    warn "  start it again later with:  bash $runner"
+    warn "  for a managed auto-start service, enable systemd and re-run this installer:"
+    warn "    WSL: put '[boot]' then 'systemd=true' in /etc/wsl.conf, run 'wsl --shutdown', reopen."
+}
+
+install_linux_systemd() {
+    # WSL/minimal boxes may not run systemd; the systemctl path would just fail
+    # and leave the UI dead. Fall back to a direct background launch instead.
+    if ! _systemd_is_init; then
+        install_linux_nohup
+        return
+    fi
+    if have_root_or_sudo; then
+        install_linux_systemd_system
+    else
+        install_linux_systemd_user
+    fi
+}
+
+install_macos_launchd() {
+    local plist_dir="$HOME/Library/LaunchAgents"
+    local plist="$plist_dir/com.tinyagentos.controller.plist"
+    mkdir -p "$plist_dir"
+    cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.tinyagentos.controller</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$INSTALL_DIR/.venv/bin/python</string>
+        <string>-m</string>
+        <string>uvicorn</string>
+        <string>tinyagentos.app:create_app</string>
+        <string>--factory</string>
+        <string>--host</string>
+        <string>0.0.0.0</string>
+        <string>--port</string>
+        <string>$TAOS_PORT</string>
+    </array>
+    <key>WorkingDirectory</key><string>$INSTALL_DIR</string>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>$INSTALL_DIR/controller.log</string>
+    <key>StandardErrorPath</key><string>$INSTALL_DIR/controller.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key><string>1</string>
+        <key>TAOS_BROWSER_PROXY_PORT</key><string>$TAOS_BROWSER_PROXY_PORT</string>
+    </dict>
+</dict>
+</plist>
+EOF
+    log "installed $plist"
+    launchctl unload "$plist" 2>/dev/null || true
+    launchctl load "$plist"
+    log "controller running as launchd agent"
+    log "check: launchctl list | grep tinyagentos"
+    log "logs:  tail -f $INSTALL_DIR/controller.log"
+}
+
+if [[ "$SERVICE_MODE" == "skip" ]]; then
+    log "TAOS_SERVICE=skip — not installing a service unit"
+    log "run manually: cd $INSTALL_DIR && TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT ./.venv/bin/python -m tinyagentos"
+else
+    case "$os_name" in
+        Linux)  install_linux_systemd ;;
+        Darwin) install_macos_launchd ;;
+    esac
+fi
+
+# --- wait for controller to come up -------------------------------------
+
+if [[ "$SERVICE_MODE" != "skip" ]]; then
+    # Cold-boot on a fresh install runs a lot of first-run init (litellm
+    # prisma migration, store creation, backend catalog probing) that can
+    # exceed the old 120 s cap and make the installer print "controller did
+    # not respond" when the app was actually still starting. A re-run then
+    # succeeds because everything is already initialised (taOS#2).
+    #
+    # We wait in two phases so the message names exactly what is happening:
+    #   1. port open  -- the process is alive and uvicorn is listening.
+    #   2. ready      -- /api/cluster/workers answers, meaning the lifespan
+    #                    init chain has completed.
+    _PORT_WAIT=60
+    _READY_WAIT=240
+
+    log "waiting for controller port $TAOS_PORT to open (up to $_PORT_WAIT s)..."
+    _port_tries=0
+    _port_open=0
+    _port_deadline=$(( SECONDS + _PORT_WAIT ))
+    while [[ $_port_tries -lt $_PORT_WAIT ]]; do
+        # `_port_deadline` is an absolute wall-clock deadline, so every guard
+        # below reads the clock at the moment it runs instead of a value
+        # captured earlier in the iteration. The `max(1, ...)` floor keeps
+        # curl's --max-time strictly positive even if a future edit weakens
+        # the deadline guard above; curl --max-time 0 means "no timeout" and
+        # would hang the installer forever.
+        _remaining=$(( _port_deadline - SECONDS ))
+        [[ $_remaining -le 0 ]] && break
+        _curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))
+        if curl -sf --max-time "$_curl_timeout" "http://localhost:$TAOS_PORT/api/health" >/dev/null 2>&1; then
+            _port_open=1
+            break
+        fi
+        # Re-read the clock after the probe: curl may have burned the whole
+        # remaining budget, so the pre-probe `_remaining` is stale here and
+        # would let the follow-up sleep run past the phase deadline.
+        _remaining=$(( _port_deadline - SECONDS ))
+        [[ $_remaining -le 1 ]] && break
+        sleep 1
+        _port_tries=$((_port_tries + 1))
+    done
+
+    if [[ $_port_open -eq 0 ]]; then
+        warn "controller did not open port $TAOS_PORT within $_PORT_WAIT seconds"
+        if command -v journalctl >/dev/null 2>&1; then
+            warn "latest journal output:"
+            journalctl -u tinyagentos --no-pager -n 30 2>/dev/null || true
+        fi
+        die "controller process did not start — check the journal above and fix before continuing"
+    fi
+    log "controller port $TAOS_PORT is open, waiting for first-boot init to finish..."
+
+    _ready_tries=0
+    _ready_ok=0
+    _ready_deadline=$(( SECONDS + _READY_WAIT ))
+    while [[ $_ready_tries -lt $_READY_WAIT ]]; do
+        # Same timeout invariant as the port-open loop above: cap curl's
+        # --max-time by remaining phase time, floor it at 1 s so it can
+        # never silently disable curl's per-attempt timeout, and re-read
+        # the clock after the probe so a slow probe cannot push the sleep
+        # past the phase deadline.
+        _remaining=$(( _ready_deadline - SECONDS ))
+        [[ $_remaining -le 0 ]] && break
+        _curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))
+        if curl -sf --max-time "$_curl_timeout" "http://localhost:$TAOS_PORT/api/cluster/workers" >/dev/null 2>&1; then
+            _ready_ok=1
+            break
+        fi
+        _remaining=$(( _ready_deadline - SECONDS ))
+        [[ $_remaining -le 1 ]] && break
+        sleep 1
+        _ready_tries=$((_ready_tries + 1))
+    done
+
+    if [[ $_ready_ok -eq 0 ]]; then
+        warn "controller did not become ready within $_READY_WAIT seconds"
+        warn "first-boot init may still be running (litellm migration, store creation, backend catalog probing)"
+        if command -v journalctl >/dev/null 2>&1; then
+            warn "latest journal output:"
+            journalctl -u tinyagentos --no-pager -n 30 2>/dev/null || true
+        fi
+        die "controller cluster/workers endpoint did not respond — check the journal above and fix before continuing"
+    fi
+    log "controller is ready"
+fi
+
+# --- post-install hardware capability verification -----------------------
+# Probe each claimed hardware capability (vulkan / cuda / rocm / rknpu / mlx)
+# with lightweight verification commands. Claimed-but-failing capabilities
+# warn the user; verified ones log a quiet success. Failures are non-blocking
+# — the controller runs regardless — but are prominently displayed so the
+# user knows what's broken before they walk away from the install (#370).
+
+verify_hardware_capabilities() {
+    local claimed_vulkan=0 claimed_cuda=0 claimed_rocm=0 claimed_rknpu=0 claimed_mlx=0
+    local verified_ok=0 verified_warn=0
+
+    # Fetch the hardware profile from the now-running controller.
+    local hw_json
+    hw_json=$(curl -sf "http://localhost:$TAOS_PORT/api/system/hardware/refresh" 2>/dev/null || true)
+    if [[ -z "$hw_json" ]]; then
+        warn "hardware verification skipped — controller did not return a profile"
+        return 0
+    fi
+
+    # Parse claimed capabilities from the JSON response. Uses grep+sed
+    # instead of jq to avoid a dependency. The API response is a flat
+    # dataclass serialized with asdict() — simple pattern matching is
+    # sufficient.
+    if echo "$hw_json" | grep -q '"vulkan":[[:space:]]*true'; then claimed_vulkan=1; fi
+    if echo "$hw_json" | grep -q '"cuda":[[:space:]]*true'; then claimed_cuda=1; fi
+    if echo "$hw_json" | grep -q '"rocm":[[:space:]]*true'; then claimed_rocm=1; fi
+    if echo "$hw_json" | grep -q '"type":[[:space:]]*"rknpu"'; then claimed_rknpu=1; fi
+    # Apple Silicon: the profile_id starts with "arm-" and mlx capability
+    # is implicit on Apple M-series. CPU arch + macOS = MLX available.
+    if [[ "$os_name" == "Darwin" ]]; then claimed_mlx=1; fi
+
+    if (( ! claimed_vulkan && ! claimed_cuda && ! claimed_rocm && ! claimed_rknpu && ! claimed_mlx )); then
+        log "hardware: no discrete accelerator claimed — CPU-only profile, verification skipped"
+        return 0
+    fi
+
+    log "hardware: verifying claimed capabilities..."
+    log ""
+
+    # --- Vulkan ---
+    if (( claimed_vulkan )); then
+        if command -v vulkaninfo >/dev/null 2>&1; then
+            if vulkaninfo --summary 2>/dev/null | grep -q 'deviceName'; then
+                log "  ✓ vulkan: verified — vulkaninfo reports devices"
+                verified_ok=$((verified_ok + 1))
+            else
+                warn "  ✗ vulkan: claimed by controller but vulkaninfo reports no devices"
+                warn "     install mesa-vulkan-drivers (Debian/Ubuntu) or vulkan-intel (Arch) and re-run"
+                verified_warn=$((verified_warn + 1))
+            fi
+        else
+            warn "  ✗ vulkan: claimed by controller but vulkaninfo is not installed"
+            warn "     install vulkan-tools (apt/dnf/pacman) and re-run"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    # --- CUDA ---
+    if (( claimed_cuda )); then
+        if command -v nvidia-smi >/dev/null 2>&1; then
+            if nvidia-smi -L 2>/dev/null | grep -qi 'GPU'; then
+                log "  ✓ cuda: verified — nvidia-smi reports GPU(s)"
+                verified_ok=$((verified_ok + 1))
+            else
+                warn "  ✗ cuda: claimed by controller but nvidia-smi reports no GPUs"
+                warn "     check: nvidia-smi -L"
+                verified_warn=$((verified_warn + 1))
+            fi
+        else
+            warn "  ✗ cuda: claimed by controller but nvidia-smi is not installed"
+            warn "     install nvidia-utils (apt/pacman) or enable RPM Fusion for nvidia-smi (dnf)"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    # --- ROCm ---
+    if (( claimed_rocm )); then
+        if command -v rocm-smi >/dev/null 2>&1; then
+            if rocm-smi --showproductname 2>/dev/null | grep -qi 'GPU'; then
+                log "  ✓ rocm: verified — rocm-smi reports GPU(s)"
+                verified_ok=$((verified_ok + 1))
+            else
+                warn "  ✗ rocm: claimed by controller but rocm-smi reports no GPUs"
+                warn "     check: rocm-smi --showproductname"
+                verified_warn=$((verified_warn + 1))
+            fi
+        else
+            warn "  ✗ rocm: claimed by controller but rocm-smi is not installed"
+            warn "     install rocm-smi-lib (apt/pacman) or rocm-smi (dnf)"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    # --- RKNPU ---
+    if (( claimed_rknpu )); then
+        local rknpu_ok=0
+        if [[ -r /dev/rknpu ]] || [[ -r /sys/kernel/debug/rknpu/load ]]; then
+            rknpu_ok=1
+        fi
+        # Also check if rkllama is responding (7833 default, 8080 legacy)
+        local _rk_port="${TAOS_RKLLAMA_PORT:-7833}"
+        if curl -sf --max-time 3 "http://localhost:${_rk_port}/health" >/dev/null 2>&1 \
+           || curl -sf --max-time 3 "http://localhost:8080/health" >/dev/null 2>&1; then
+            rknpu_ok=1
+        fi
+        if (( rknpu_ok )); then
+            log "  ✓ rknpu: verified — device node readable, rkllama responding"
+            verified_ok=$((verified_ok + 1))
+        else
+            warn "  ✗ rknpu: claimed by controller but device node not readable and rkllama not responding"
+            warn "     check: ls -l /dev/rknpu && curl http://localhost:${TAOS_RKLLAMA_PORT:-7833}/health"
+            warn "     ensure rkllama.service is running: sudo systemctl status rkllama"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    # --- MLX (Apple Silicon) ---
+    if (( claimed_mlx )); then
+        # On macOS, check that the Neural Engine / GPU is visible via system_profiler.
+        # Apple M-series always has MLX-capable hardware; we just confirm the chip is present.
+        local apple_chip
+        apple_chip=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "")
+        if echo "$apple_chip" | grep -qi 'Apple M'; then
+            log "  ✓ mlx: verified — Apple Silicon ($apple_chip)"
+            verified_ok=$((verified_ok + 1))
+        else
+            warn "  ✗ mlx: claimed by controller but CPU is not Apple Silicon ($apple_chip)"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    log ""
+    if (( verified_warn == 0 )); then
+        log "hardware: all claimed capabilities verified ($verified_ok/$verified_ok ok)"
+    else
+        warn "hardware: $verified_ok capability(s) verified, $verified_warn capability(s) reported with warnings"
+    fi
+}
+
+# Only run verification when we started the controller ourselves and curl
+# is available. Skip in SERVICE_MODE=skip (user manages the process) or
+# when curl wasn't installed (very minimal distros).
+if [[ "$SERVICE_MODE" != "skip" ]]; then
+    if command -v curl >/dev/null 2>&1; then
+        verify_hardware_capabilities
+    else
+        warn "curl not available — skipping hardware capability verification"
+    fi
+fi
+
+# --- pre-beta install hint -----------------------------------------------
+# If a root-based pre-beta install exists at a different location than the
+# new install, point the user to the migration script so they can preserve
+# their existing data.
+
+if [[ "$os_name" == "Linux" ]]; then
+    _prebeta_found=""
+    for _cand in /root/tinyagentos /home/*/tinyagentos; do
+        [[ -d "$_cand/data" ]] || continue
+        [[ "$(realpath "$_cand" 2>/dev/null)" == "$(realpath "$INSTALL_DIR" 2>/dev/null)" ]] && continue
+        _prebeta_found="$_cand"
+        break
+    done
+    if [[ -n "$_prebeta_found" ]]; then
+        warn ""
+        warn "Pre-beta install detected at $_prebeta_found"
+        warn "To migrate your existing data to this install, run:"
+        warn "  sudo bash $INSTALL_DIR/scripts/pre-beta-to-beta.sh"
+        warn ""
+    fi
+fi
+
+# --- success summary -----------------------------------------------------
+
+host_ip=""
+if command -v hostname >/dev/null 2>&1; then
+    host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')" || host_ip="$(hostname)"
+fi
+[[ -z "$host_ip" ]] && host_ip="<host-ip>"
+
+log ""
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log "  TinyAgentOS controller install complete"
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log ""
+log "  Web UI      : http://$host_ip:$TAOS_PORT"
+log "  Localhost   : http://localhost:$TAOS_PORT"
+log ""
+log "  First run   : open the Web UI above and create your admin account."
+log "                You choose the username and password (8+ chars) -- there"
+log "                is no default password."
+if [[ "$TAOS_BROWSER_PROXY_PORT" != "0" ]]; then
+    log "  Browser app : also listens on port $TAOS_BROWSER_PROXY_PORT (TAOS_BROWSER_PROXY_PORT)"
+    log "                open both ports in your firewall if accessing remotely"
+fi
+log "  Install dir : $INSTALL_DIR"
+log "  Storage pool: ${COW_EFFECTIVE_MODE:-n/a} (detected fs: ${COW_FS_TYPE:-unknown})"
+if [[ "${COW_EFFECTIVE_MODE:-}" == "btrfs" || "${COW_EFFECTIVE_MODE:-}" == "zfs" ]]; then
+    log "    * CoW clones enabled - container deploys <=5 seconds"
+elif [[ "${COW_EFFECTIVE_MODE:-}" == "dir" ]]; then
+    log "    i Directory-backed pool - no CoW (TAOS_COW_POOL=dir was set)"
+    log "    For faster deploys: re-run on a btrfs or ZFS volume (TAOS_COW_POOL=auto)"
+elif [[ "${COW_EFFECTIVE_MODE:-}" == "n/a" ]]; then
+    log "    i Storage pool not managed by taOS (Docker/Podman/macOS host)"
+elif [[ "${COW_EFFECTIVE_MODE:-}" == "existing" ]]; then
+    log "    i Using your pre-existing Incus storage pool"
+else
+    log "    i CoW not available - deploys are full file copies (slower)"
+    log "    For faster deploys: run incus on btrfs or ZFS (set TAOS_COW_POOL=btrfs or TAOS_COW_POOL=zfs)"
+fi
+log ""
+if have_root_or_sudo; then
+    log "  Manage services:"
+    log "    systemctl status tinyagentos qmd"
+    log "    journalctl -u tinyagentos -f"
+    log "    journalctl -u qmd -f"
+    log ""
+    log "  Upgrade:"
+    log "    cd $INSTALL_DIR && git pull && \\"
+    log "      find . -name __pycache__ -type d -exec rm -rf {} + && \\"
+    log "      sudo systemctl restart tinyagentos qmd"
+else
+    log "  Manage services:"
+    log "    systemctl --user status tinyagentos"
+    log "    journalctl --user -u tinyagentos -f"
+    log ""
+    log "  Upgrade:"
+    log "    cd $INSTALL_DIR && git pull && \\"
+    log "      find . -name __pycache__ -type d -exec rm -rf {} + && \\"
+    log "      systemctl --user restart tinyagentos"
+fi
+log ""
+log "  Now install workers on other machines with:"
+log "    curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-worker.sh | sudo bash -s -- http://$host_ip:$TAOS_PORT"
+log ""
