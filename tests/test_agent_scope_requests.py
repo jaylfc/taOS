@@ -10,6 +10,7 @@ routes and middleware.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 import pytest_asyncio
@@ -140,6 +141,46 @@ async def test_agent_can_self_request_with_own_token(client, monkeypatch, tmp_pa
         assert resp.status_code == 200, resp.text
         assert resp.json()["status"] == "pending"
         assert await env.scope_store.count_pending_for(cid) == 1
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_cannot_self_request_with_rotated_token(
+    client, monkeypatch, tmp_path
+):
+    """Rotating an identity's tokens must kill this route too.
+
+    Self-request is authorised by `check_agent_identity` alone -- no scope
+    grant is required, because the whole point is asking for a scope you do
+    not have.  So if that check skips the rotation cutoff, a leaked token
+    survives `rotate-tokens` on the one route that can widen its own
+    privileges.  Before the cutoff was enforced this returned 200 and left a
+    live `pending` request behind.
+
+    The status is 404, not 401: `_authorize_scope_request_creation`
+    deliberately folds every bad-credential outcome into the not-found body so
+    the pair (unknown target 404, existing target 401/403) cannot be used as an
+    existence oracle.  The load-bearing assertion is that nothing was created.
+    """
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        token = env.agent_token(cid)
+        # Owner rotates: every token minted before now is superseded.
+        await env.registry.bump_token_min_iat(cid, int(time.time()) + 3600)
+
+        app = client._transport.app
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp = await bare.post(
+                f"/api/agents/registry/{cid}/scope-requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"requested_scopes": ["a2a_send"]},
+            )
+        assert resp.status_code == 404, resp.text
+        assert await env.scope_store.count_pending_for(cid) == 0
     finally:
         await env.close()
 

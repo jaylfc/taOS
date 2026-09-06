@@ -66,6 +66,30 @@ def _grant_unexpired(expires_at, now: datetime) -> bool:
     return exp > now
 
 
+def _enforce_rotation_cutoff(record: dict, payload: dict) -> None:
+    """Reject a token issued before the identity's ``token_min_iat`` cutoff.
+
+    Shared by ``_verify_agent_scope``, ``check_agent_identity``, and
+    ``check_agent_project_grants`` (previously copy-pasted into all three,
+    which let the cutoff semantics silently drift between call sites).
+
+    Both ``token_min_iat`` (absent until an identity has ever been rotated)
+    and ``iat`` default to 0 when missing -- NOT rejected outright. This is a
+    deliberate safe-by-default choice: an identity that was never rotated has
+    ``token_min_iat`` unset, and a token missing ``iat`` is treated as
+    infinitely old rather than exempt, so it is accepted only until the first
+    rotation and superseded by any cutoff set thereafter.  ``mint_registry_token``
+    always sets ``iat``; a missing claim only occurs on a hand-crafted token.
+
+    Raises:
+      401 -- ``iat`` is strictly before ``token_min_iat`` (superseded by rotation).
+    """
+    token_min_iat = record.get("token_min_iat") or 0
+    token_iat = payload.get("iat") or 0
+    if token_iat < token_min_iat:
+        raise HTTPException(status_code=401, detail="token superseded")
+
+
 def _get_keypair(request: Request) -> tuple[bytes, bytes]:
     kp = getattr(request.app.state, "agent_registry_keypair", None)
     if kp is None:
@@ -113,10 +137,7 @@ async def _verify_agent_scope(
         raise HTTPException(status_code=403, detail="agent is not active in the registry")
 
     # Reject tokens issued before the identity's token_min_iat cutoff (rotation).
-    token_min_iat = record.get("token_min_iat") or 0
-    token_iat = payload.get("iat") or 0
-    if token_iat < token_min_iat:
-        raise HTTPException(status_code=401, detail="token superseded")
+    _enforce_rotation_cutoff(record, payload)
 
     # Must hold an active grant for the required scope.
     grants_store = _get_grants_store(request)
@@ -175,7 +196,8 @@ async def check_agent_identity(request: Request) -> Optional[str]:
 
     Raises:
       401 -- Authorization header present but the token is malformed, has a bad
-             signature, or is missing the sub claim.
+             signature, is missing the sub claim, or was superseded by a token
+             rotation on the identity.
       403 -- Token is valid but the agent is not active in the registry.
     """
     auth_header = request.headers.get("Authorization", "")
@@ -198,6 +220,15 @@ async def check_agent_identity(request: Request) -> Optional[str]:
     record = await registry.get(canonical_id)
     if record is None or record.get("status") != "active":
         raise HTTPException(status_code=403, detail="agent is not active in the registry")
+
+    # Reject tokens issued before the identity's token_min_iat cutoff (rotation),
+    # exactly as check_agent_scope and check_agent_scope_for_project do. Identity
+    # is the ONLY auth on the surfaces that do not need a grant -- creating a
+    # scope request, the agent decisions routes, container-provisioning requests,
+    # the auth-request flow -- so skipping it here would leave rotate-tokens
+    # unable to kill a leaked token on precisely the route that can widen its own
+    # privileges.
+    _enforce_rotation_cutoff(record, payload)
 
     return canonical_id
 
@@ -288,10 +319,7 @@ async def check_agent_project_grants(
     if record is None or record.get("status") != "active":
         raise HTTPException(status_code=403, detail="agent is not active in the registry")
 
-    token_min_iat = record.get("token_min_iat") or 0
-    token_iat = payload.get("iat") or 0
-    if token_iat < token_min_iat:
-        raise HTTPException(status_code=401, detail="token superseded")
+    _enforce_rotation_cutoff(record, payload)
 
     grants_store = _get_grants_store(request)
     grants = await grants_store.list_grants(canonical_id)

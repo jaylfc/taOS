@@ -66,6 +66,11 @@ dependencies = [
     # NEVER install the "unidecode" extra: it pulls GPL-only Unidecode, which
     # is a blocker for the commercial licence. See docs/dependency-licences.md.
     "python-slugify>=8.0.4",
+    # PEP 440 version parsing/ordering for the worker update check
+    # (tinyagentos/worker/update_check.py) and the optional-app catalog
+    # (tinyagentos/routes/apps.py). Previously only reachable through the
+    # proxy extra and the dev group, so a bare `uv sync` did not install it.
+    "packaging>=24",
     # YouTube/X knowledge ingestion shells out to the yt-dlp CLI
     # (tinyagentos/knowledge_fetchers/{youtube,x}.py). install-server.sh used to
     # `pip install yt-dlp` after the editable install, which put a package on
