@@ -830,17 +830,29 @@ WantedBy=multi-user.target
                             if _nohup_rc == 0:
                                 steps.append("committer_installed_nohup")
                             else:
-                                logger.warning(
-                                    "Deploy %s: nohup committer failed (rc=%s): %s",
-                                    req.name, _nohup_rc, _nohup_out[-200:],
+                                _nohup_error = (
+                                    f"nohup committer failed (rc={_nohup_rc}): "
+                                    f"{_nohup_out[-200:]}"
                                 )
+                                logger.warning("Deploy %s: %s", req.name, _nohup_error)
                                 steps.append("committer_failed")
+                                versioning = False
+                                versioning_error = _nohup_error
                     else:
-                        logger.warning(
-                            "Deploy %s: failed to push committer script (rc=%s): %s",
-                            req.name, _push_rc, _push_out[-200:],
+                        _push_error = (
+                            f"failed to push committer script (rc={_push_rc}): "
+                            f"{_push_out[-200:]}"
                         )
+                        logger.warning("Deploy %s: %s", req.name, _push_error)
                         steps.append("committer_failed")
+                        versioning = False
+                        versioning_error = _push_error
+                else:
+                    _missing_error = f"committer script not found at {_committer}"
+                    logger.warning("Deploy %s: %s", req.name, _missing_error)
+                    steps.append("committer_failed")
+                    versioning = False
+                    versioning_error = _missing_error
             except Exception as exc:
                 logger.warning("Deploy %s: committer install failed: %s", req.name, exc)
                 versioning = False
