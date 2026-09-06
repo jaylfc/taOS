@@ -473,14 +473,14 @@ async def send_device_push(
     empty = {"sent": 0, "failed": 0, "skipped": 0, "removed": 0}
     user_id = row.get("user_id")
     if not user_id:
-        return dict(empty)
+        return empty
     try:
         devices = await device_store.list_for_user(user_id)
     except Exception:  # noqa: BLE001 - store read must never break add()
         logger.warning("notif-push: failed to list devices", exc_info=True)
-        return dict(empty)
+        return empty
     if not devices:
-        return dict(empty)
+        return empty
 
     payload, actions = _build_device_push_payload(row)
     results = await asyncio.gather(

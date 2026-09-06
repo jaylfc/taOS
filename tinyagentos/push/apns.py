@@ -171,6 +171,9 @@ class HttpApnsSender:
         # Cached provider token, reused across pushes (see _provider_token).
         self._jwt: str | None = None
         self._jwt_minted_at = 0.0
+        # The iat actually embedded in the cached token; floors every future
+        # iat so a regressed wall clock cannot pin a new token behind it.
+        self._jwt_iat = 0
 
     def _provider_token(self, now: float) -> str:
         """Return the cached provider token, reminting only when it is stale.
@@ -184,10 +187,21 @@ class HttpApnsSender:
         """
         age = now - self._jwt_minted_at
         if self._jwt is None or not 0 <= age < _TOKEN_REFRESH_SECONDS:
+            # iat must never regress: Apple checks it against its OWN correct
+            # clock, so a wall clock that steps backward (a bad NTP correction)
+            # must not pin the new token's iat earlier than the last one this
+            # process actually used. Flooring at the previous iat freezes the
+            # value through the bad stretch instead of moving it backward --
+            # without this, a regressed iat combined with a full fresh
+            # cache window can let this cache keep reusing the token until
+            # Apple's real elapsed-since-iat time is already past the true
+            # one-hour limit, well before this cache's own refresh timer fires.
+            new_iat = max(int(now), self._jwt_iat)
             self._jwt = build_apns_jwt(
                 key_pem=self._key_pem, key_id=self._key_id,
-                team_id=self._team_id, now=int(now),
+                team_id=self._team_id, now=new_iat,
             )
+            self._jwt_iat = new_iat
             self._jwt_minted_at = now
         return self._jwt
 
@@ -221,11 +235,15 @@ class HttpApnsSender:
         )
         if resp.status_code == 410:
             raise ApnsUnregistered(push_token, apns_id=apns_id, reason=reason)
-        if resp.status_code == 403 and reason == "ExpiredProviderToken":
+        if resp.status_code == 403 and reason in ("ExpiredProviderToken", "InvalidProviderToken"):
             # Caching a token introduces this failure mode: under clock skew the
-            # cached token can expire before the refresh timer fires, and every
-            # push would then be refused until it did. Drop it so the next send
-            # mints a replacement.
+            # cached token can expire (ExpiredProviderToken) before the refresh
+            # timer fires, and every push would then be refused until it did.
+            # InvalidProviderToken is just as permanent -- a rotated signing
+            # key, or a cached token that is otherwise unparseable -- so it
+            # gets the same immediate cache drop rather than waiting out the
+            # rest of the refresh window. Drop it so the next send mints a
+            # replacement.
             self._jwt = None
         return False
 

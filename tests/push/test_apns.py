@@ -1,3 +1,4 @@
+import base64
 import json
 import httpx
 import pytest
@@ -141,6 +142,13 @@ def _counting_mint(monkeypatch) -> list[int]:
     return mints
 
 
+def _decode_iat(jwt: str) -> int:
+    """Decode the `iat` claim out of a JWT built by build_apns_jwt."""
+    payload_b64 = jwt.split(".")[1]
+    padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+    return json.loads(base64.urlsafe_b64decode(padded))["iat"]
+
+
 def _sender_with(handler, pem: str):
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     sender = HttpApnsSender(
@@ -271,6 +279,58 @@ async def test_expired_provider_token_forces_a_remint(monkeypatch):
     # replacement token is then reused like any other.
     assert mints[0] == 2, f"expected exactly one remint after ExpiredProviderToken, got {mints[0]}"
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_invalid_provider_token_forces_a_remint(monkeypatch):
+    # InvalidProviderToken is just as permanent as ExpiredProviderToken (a
+    # rotated signing key, or a cached token that is otherwise unparseable):
+    # every push would be refused for the rest of the 50-minute cache window
+    # unless this also invalidates the cache immediately.
+    mints = _counting_mint(monkeypatch)
+    statuses = [403, 200, 200]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if statuses.pop(0) == 403:
+            return httpx.Response(403, json={"reason": "InvalidProviderToken"})
+        return httpx.Response(200)
+
+    sender, client = _sender_with(handler, _test_key_pem())
+    assert await sender.send("devtoken", {"aps": {}}) is False
+    assert await sender.send("devtoken", {"aps": {}}) is True
+    assert await sender.send("devtoken", {"aps": {}}) is True
+    assert mints[0] == 2, f"expected exactly one remint after InvalidProviderToken, got {mints[0]}"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_provider_token_iat_never_regresses_after_backward_clock_step(monkeypatch):
+    # A wall clock that steps backward (a bad NTP correction) must not pin the
+    # next token's iat to the regressed time. Apple checks iat against its OWN
+    # correct clock: a regressed iat combined with a full fresh 50-minute local
+    # cache window can let this cache keep reusing the token until Apple's real
+    # elapsed-since-iat time is already past the true one-hour limit, well
+    # before the local refresh timer would ever fire.
+    from tinyagentos.push import apns as apns_mod
+
+    clock = [1_700_000_000.0]
+    monkeypatch.setattr(apns_mod.time, "time", lambda: clock[0])
+
+    sender, client = _sender_with(lambda req: httpx.Response(200), _test_key_pem())
+    await sender.send("devtoken", {"aps": {}})
+    iat1 = _decode_iat(sender._jwt)
+    assert iat1 == int(clock[0])
+
+    # The clock steps backward by 15 minutes and never corrects (a permanent
+    # skew), forcing an immediate remint (age goes negative).
+    clock[0] -= 15 * 60
+    await sender.send("devtoken", {"aps": {}})
+    iat2 = _decode_iat(sender._jwt)
+    assert iat2 >= iat1, f"iat regressed from {iat1} to {iat2} after a backward clock step"
+    await client.aclose()
+
+
+# ---------------------------------------------------------------------------
 # tsk-cf7wzc: image + actions wiring for the native decision shell
 # ---------------------------------------------------------------------------
 
