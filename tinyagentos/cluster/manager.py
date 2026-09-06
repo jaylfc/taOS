@@ -47,6 +47,7 @@ class ClusterManager:
         capabilities=None,
         worker_registry_store=None,
         failure_tracker=None,
+        max_leases_per_worker: int = 10,
     ):
         self._workers: dict[str, WorkerInfo] = {}
         self._leases: dict[str, GpuLease] = {}
@@ -69,7 +70,7 @@ class ClusterManager:
         self._generation: int = 1  # incremented in start() when store is wired
         self._fenced: bool = False  # True when another controller has advanced generation
         # Maximum number of leases a single worker can hold (prevents DoS)
-        self._max_leases_per_worker = 10
+        self._max_leases_per_worker = max_leases_per_worker
 
     async def start(self):
         # taOS #640: increment generation on each controller start (split-brain
@@ -531,8 +532,8 @@ class ClusterManager:
         """Return the WorkerInfo for a resource_id, or None.
 
         Excludes draining and offline workers (taOS #890). Validates that the
-        resource part of the resource_id matches one of the worker's registered
-        backends to prevent a compromised worker from fabricating arbitrary
+        resource part of the resource_id matches one of the worker's reported
+        scheduler resources to prevent a compromised worker from fabricating arbitrary
         resources (S2-24)."""
         parsed = self._parse_resource_id(resource_id)
         if parsed is None:
@@ -542,13 +543,19 @@ class ClusterManager:
         if worker is None or worker.status not in ("online", "update-available"):
             return None
         
-        # Validate that the resource part matches one of the worker's registered backends
-        # The resource_id format is "worker-name:backend-name"
-        # Check if the worker has any backends with this name
-        valid_backends = worker.backends or []
-        if not any(backend.get("name") == resource_part for backend in valid_backends):
-            # Resource not registered for this worker
-            return None
+        # Validate that the resource part matches one of the worker's reported resources
+        if worker.resources:
+            # Worker has a non-empty resource inventory (scheduler-based discovery)
+            if resource_part not in worker.resources:
+                return None
+        else:
+            # Worker has no resource inventory (older worker, or registration without resources)
+            # Fall back to the legacy grammar check for backward compatibility
+            import re
+            # Pattern matches valid scheduler resource names
+            # gpu-cuda-0, npu-rk3588, cpu-inference
+            if not re.match(r'^gpu-cuda-\d+$|^npu-[a-z0-9-]+$|^cpu-inference$', resource_part):
+                return None
             
         return worker
 
@@ -941,6 +948,7 @@ class ClusterManager:
             "degraded_reason": worker.degraded_reason,
             "free_vram_mb": worker.free_vram_mb,
             "used_vram_mb": worker.used_vram_mb,
+            "resources": json.dumps(worker.resources or []),
         }
         await self._registry_store.upsert_worker(info)
 
@@ -1001,6 +1009,7 @@ class ClusterManager:
                     degraded_reason=row.get("degraded_reason"),
                     free_vram_mb=row.get("free_vram_mb"),
                     used_vram_mb=row.get("used_vram_mb"),
+                    resources=json.loads(row.get("resources", "[]")),
                 )
                 self._workers[name] = worker
                 self._ever_seen.add(name)

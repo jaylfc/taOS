@@ -25,6 +25,8 @@ class WorkerInfo:
     platform: str = ""                # linux | windows | macos
     tier_id: str = ""                 # catalog hardware tier, e.g. "x86-cuda-12gb"
     potential_capabilities: list[str] = field(default_factory=list)  # derived from catalog + tier
+    # Scheduler resource inventory: Resource.name values the worker has registered (gpu-cuda-0, npu-rk3588, cpu-inference)
+    resources: list[str] = field(default_factory=list)
     # KV cache quantization support exposed as separate K and V type lists
     # plus a boundary-layer-protect flag. Research (NexusQuant llama.cpp#21591
     # plus Ziskind empirical) shows asymmetric K/V is the correct default:
