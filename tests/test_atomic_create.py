@@ -273,6 +273,36 @@ class TestNoHardlinkFallback:
             "after acquiring the claim"
         )
 
+    def test_absent_target_after_a_dying_winners_claim_disappears_is_retried(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the claim owner's own write fails (e.g. ENOSPC) after it
+        acquired the claim, its ``finally`` still removes the claim -- but
+        the target was never created. A poller that sees the claim vanish
+        must not let a bare ``FileNotFoundError`` from ``path.read_bytes()``
+        escape in that case; it must retry the fallback exactly like a
+        stale claim.
+        """
+        target = tmp_path / "key.bin"
+        claim = target.with_name(target.name + ".claim")
+        claim.parent.mkdir(parents=True, exist_ok=True)
+        claim.touch()  # a winner claimed the name...
+
+        monkeypatch.setattr(os, "link", _no_hardlinks)
+        monkeypatch.setattr(atomic_io, "_CLAIM_POLL_ATTEMPTS", 200)
+        monkeypatch.setattr(atomic_io, "_CLAIM_POLL_INTERVAL", 0.01)
+
+        def kill_winner() -> None:
+            time.sleep(0.05)
+            claim.unlink()  # ...then died before ever writing the target
+
+        threading.Thread(target=kill_winner, daemon=True).start()
+
+        returned = atomic_create_bytes(target, b"recovered")
+
+        assert returned == b"recovered"
+        assert target.read_bytes() == b"recovered"
+
     def test_operators_are_warned_once_about_the_degraded_mount(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:

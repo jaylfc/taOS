@@ -186,7 +186,15 @@ def _create_via_claim(path: Path, data: bytes, mode: int | None) -> bytes:
             # else: path is already complete even though the winner has not
             # unlinked its claim yet -- fall through to read it below.
 
-        return path.read_bytes()
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            # The claim owner released the claim without ever persisting
+            # the target -- its own write failed (e.g. ENOSPC) after it
+            # acquired the claim. Retry the fallback once rather than let
+            # a bare FileNotFoundError escape from what is supposed to be
+            # a *create* call.
+            continue
 
     raise OSError(
         f"could not persist {path}: filesystem without hard links and a stale claim"

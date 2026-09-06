@@ -228,9 +228,26 @@ class BeadsBridge:
 
         # fsync of the file and of the parent dir are blocking syscalls; this
         # renders on a background tick, so keep them off the shared event loop.
-        await asyncio.to_thread(
-            atomic_write_text, target, "\n".join(lines) + ("\n" if lines else "")
+        write_task = asyncio.ensure_future(
+            asyncio.to_thread(
+                atomic_write_text, target, "\n".join(lines) + ("\n" if lines else "")
+            )
         )
+        try:
+            await asyncio.shield(write_task)
+        except asyncio.CancelledError:
+            # atomic_write_text does two blocking fsyncs on a thread-pool
+            # worker that cancellation cannot stop -- the write keeps
+            # running after this await raises. The per-project lock (in
+            # export_now/_writer_loop) would be released as soon as this
+            # coroutine unwinds; a newer render for the same project could
+            # then acquire it, write, and finish before this orphaned write's
+            # later os.replace lands, silently clobbering the newer content
+            # with this stale one. Wait for the real write to land before
+            # the cancellation propagates and the lock is released.
+            if not write_task.done():
+                await asyncio.wait([write_task])
+            raise
 
     async def _find_a2a_channel(self, project_id: str) -> dict | None:
         """Resolve the project's A2A channel. None if missing/archived."""

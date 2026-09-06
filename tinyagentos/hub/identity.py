@@ -32,6 +32,13 @@ import time
 from pathlib import Path
 from typing import Optional
 
+# The repair lock's poll: how long a process waits for a rival's
+# corrupt-keystore repair to finish before treating its lock as stale, and
+# how many times. 100 * 20ms = 2s -- generous for one JSON write plus two
+# fsyncs, short enough not to wedge a boot.
+_REPAIR_POLL_ATTEMPTS = 100
+_REPAIR_POLL_INTERVAL = 0.02
+
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -89,6 +96,63 @@ def _pub_raw(key) -> bytes:
     return key.public_bytes(Encoding.Raw, PublicFormat.Raw)
 
 
+def _repair_corrupt(creds: dict) -> dict:
+    """Replace a corrupt keystore at ``_path()`` with *creds*, serialized.
+
+    Two processes can each find the same corrupt file (the 2026-08-21
+    NUL-filled shape or similar) and both reach here with their own freshly
+    minted ``creds``. ``atomic_write_bytes`` is a durable *replace*: without
+    serialization the later write wins on disk and the earlier caller still
+    returns its own (now-orphaned) creds -- it signs (or encrypts) under a
+    fingerprint that is not what actually persisted, and loses it on the
+    next restart.
+
+    A sidecar ``.repair.lock`` claim -- the same exclusive-creation
+    technique ``atomic_create_bytes`` uses for the no-hard-link fallback --
+    makes exactly one process perform the repair; every other process
+    re-reads what the winner actually persisted instead of writing again.
+    """
+    lock = _path().with_name(_path().name + ".repair.lock")
+    for _ in range(2):  # the initial attempt, plus one retry after a stale lock
+        acquired = False
+        for _ in range(_REPAIR_POLL_ATTEMPTS):
+            try:
+                fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                time.sleep(_REPAIR_POLL_INTERVAL)
+                continue
+            else:
+                os.close(fd)
+                acquired = True
+                break
+
+        if acquired:
+            try:
+                # Someone else may have repaired the file while we polled;
+                # only write if it is still unusable.
+                current = _load()
+                if current is not None:
+                    return current
+                atomic_write_bytes(
+                    _path(), json.dumps(creds).encode("utf-8"), mode=0o600
+                )
+                return creds
+            finally:
+                try:
+                    os.unlink(lock)
+                except OSError:
+                    pass
+
+        # Poll bound exceeded: the lock holder likely crashed mid-repair.
+        # Reclaim the name and retry once rather than wedge every boot.
+        try:
+            os.unlink(lock)
+        except OSError:
+            pass
+
+    raise OSError(f"could not repair {_path()}: stale corrupt-keystore repair lock")
+
+
 def _save_new(identity: dict) -> dict:
     """Persist a freshly minted keystore, mode 0600, durably -- if absent.
 
@@ -128,15 +192,14 @@ def _save_new(identity: dict) -> dict:
         # write is always complete JSON. There is no identity in it to lose,
         # and leaving it would wedge every future boot: `_load` treats it as
         # absent, mints again, and races again forever. Repair it now so this
-        # recovery cycle ends with a usable keystore on disk.
-        atomic_write_bytes(_path(), json.dumps(creds).encode("utf-8"), mode=0o600)
-        return creds
+        # recovery cycle ends with a usable keystore on disk -- serialized,
+        # so a concurrent repairer can't clobber (or be clobbered by) us.
+        return _repair_corrupt(creds)
     if not isinstance(on_disk, dict) or not on_disk.get("signing_private"):
         # Something unusable is already sitting at the path (a corrupt file the
         # loader treats as absent). Replace it: there is no identity in it to
         # lose, and refusing would wedge the node at every boot.
-        atomic_write_bytes(_path(), json.dumps(creds).encode("utf-8"), mode=0o600)
-        return creds
+        return _repair_corrupt(creds)
     return on_disk
 
 

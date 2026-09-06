@@ -123,6 +123,82 @@ class TestKeystore:
         )
 
 
+class TestCorruptKeystoreRepairRace:
+    def test_concurrent_repair_of_a_corrupt_keystore_converges_on_one_identity(
+        self, data_dir, monkeypatch
+    ):
+        """Two processes can both see the same corrupt keystore and both
+        try to repair it. Without serialization each computes its own
+        fresh credentials and writes via a durable *replace*; the last
+        write wins on disk but the *other* caller still returns its own
+        (now-orphaned) creds -- it would sign under a fingerprint that is
+        not what's actually on disk, and lose it on the next restart.
+
+        Modelled with two real threads released together by a barrier and
+        a deliberately slowed write, so both repairs are genuinely in
+        flight at once regardless of which the scheduler favours --
+        whichever caller's return value doesn't match what actually ended
+        up on disk is the bug.
+        """
+        import threading
+        import time
+
+        hub_dir = data_dir / "hub"
+        hub_dir.mkdir(parents=True, exist_ok=True)
+        identity_file = hub_dir / "identity.json"
+        identity_file.write_bytes(b"\x00" * 200)
+
+        creds_a = {
+            "signing_private": "aa" * 32,
+            "signing_public": "bb" * 32,
+            "encryption_private": "cc" * 32,
+            "encryption_public": "dd" * 32,
+            "created_at": 1.0,
+        }
+        creds_b = {
+            "signing_private": "11" * 32,
+            "signing_public": "22" * 32,
+            "encryption_private": "33" * 32,
+            "encryption_public": "44" * 32,
+            "created_at": 2.0,
+        }
+
+        real_atomic_write_bytes = identity.atomic_write_bytes
+
+        def slow_atomic_write_bytes(path, data, *, mode=None):
+            # Widen the window so two concurrent repairs are genuinely both
+            # in flight, whichever the scheduler runs first.
+            time.sleep(0.05)
+            real_atomic_write_bytes(path, data, mode=mode)
+
+        monkeypatch.setattr(identity, "atomic_write_bytes", slow_atomic_write_bytes)
+
+        start = threading.Barrier(2)
+        results: dict[str, dict] = {}
+
+        def run(key: str, creds: dict) -> None:
+            start.wait(timeout=5)
+            results[key] = identity._save_new(creds)
+
+        ta = threading.Thread(target=run, args=("a", creds_a))
+        tb = threading.Thread(target=run, args=("b", creds_b))
+        ta.start()
+        tb.start()
+        ta.join(timeout=10)
+        tb.join(timeout=10)
+
+        on_disk = json.loads(identity_file.read_text())
+        assert results["a"]["signing_private"] == on_disk["signing_private"], (
+            "process A returned an identity that is not the one persisted "
+            "after a concurrent corrupt-keystore repair -- it would sign "
+            "under a fingerprint it loses on the next restart"
+        )
+        assert results["b"]["signing_private"] == on_disk["signing_private"], (
+            "process B returned an identity that is not the one persisted "
+            "after a concurrent corrupt-keystore repair"
+        )
+
+
 class TestChallengeProof:
     def test_registration_proof_verifies_with_the_right_key(self, data_dir):
         reg = identity.build_registration("server-challenge-abc")

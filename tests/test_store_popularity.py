@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -163,7 +165,7 @@ class TestFetchStars:
         loop_thread_id = threading.get_ident()
         seen_thread_ids: list[int] = []
 
-        def spying_persist_cache():
+        def spying_persist_cache(snapshot=None):
             seen_thread_ids.append(threading.get_ident())
 
         with pytest.MonkeyPatch.context() as mp:
@@ -175,6 +177,56 @@ class TestFetchStars:
         assert loop_thread_id not in seen_thread_ids, (
             "_persist_cache ran on the event-loop thread -- its fsyncs "
             "block all concurrent request handling"
+        )
+
+    @pytest.mark.asyncio
+    async def test_persist_survives_the_cache_mutating_during_its_own_iteration(
+        self, tmp_path
+    ):
+        """``_persist_cache`` used to build its payload from ``_star_cache``
+        on the worker thread while a concurrent ``fetch_stars`` call could
+        still be mutating that same dict on the event-loop thread --
+        ``RuntimeError: dictionary changed size during iteration`` from the
+        dict comprehension, silently swallowed by the broad except and
+        logged at debug, so the persist for this tick is dropped with no
+        visible failure.
+
+        Modelled with a dict whose ``.items()`` mutates itself the first
+        time it is iterated from a thread other than the one that built it
+        -- exactly the shape of the real race, without depending on actual
+        scheduling luck.
+        """
+        import threading
+
+        sp.configure_persistence(tmp_path)
+        owner_thread = threading.get_ident()
+
+        class MutatingDict(dict):
+            def items(self):
+                it = super().items()
+                mutated = False
+                for item in it:
+                    if not mutated and threading.get_ident() != owner_thread:
+                        mutated = True
+                        dict.__setitem__(self, "intruder/repo", (0, 0))
+                    yield item
+
+        sp._star_cache = MutatingDict(
+            {
+                "owner/repo": (time.time() + 3600, 1),
+                "owner/repo2": (time.time() + 3600, 2),
+            }
+        )
+
+        client = _client_returning(200, {"stargazers_count": 5})
+        stars = await sp.fetch_stars("owner/repo3", client=client)
+        assert stars == 5
+
+        persisted = json.loads((tmp_path / "store_popularity.json").read_text())
+        assert "owner/repo3" in persisted, (
+            "the persist silently failed: a dict mutated during iteration "
+            "off the event-loop thread raised RuntimeError inside "
+            "_persist_cache, caught by its broad except and logged at debug"
         )
 
 

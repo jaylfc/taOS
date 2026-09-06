@@ -212,9 +212,14 @@ async def fetch_stars(repo: str, *, client: httpx.AsyncClient | None = None) -> 
             await client.aclose()
 
     _star_cache[repo] = (time.time() + ttl, stars)
+    # Snapshot on the event-loop thread: the worker must not iterate
+    # _star_cache while a concurrent warmer fetch mutates it on the loop
+    # thread -- that raises "dictionary changed size during iteration",
+    # which _persist_cache's broad except then swallows at debug level.
+    snapshot = {r: [exp, stars] for r, (exp, stars) in _star_cache.items()}
     # _persist_cache does two blocking fsyncs; keep them off the shared
     # event loop so a slow disk does not stall every concurrent request.
-    await asyncio.to_thread(_persist_cache)
+    await asyncio.to_thread(_persist_cache, snapshot)
     return stars
 
 
@@ -304,17 +309,18 @@ def _load_cache() -> None:
             continue
 
 
-def _persist_cache() -> None:
+def _persist_cache(snapshot: dict | None = None) -> None:
     if _cache_path is None:
         return
+    if snapshot is None:
+        # Direct/test callers with no race to guard against: build the
+        # payload here, on whatever thread calls this.
+        snapshot = {r: [exp, stars] for r, (exp, stars) in _star_cache.items()}
     try:
         # Atomic + durable: a crash mid-write must not corrupt the persisted
         # cache, and without the fsyncs a rename can land while the bytes are
         # still only in page cache.
-        atomic_write_text(
-            _cache_path,
-            json.dumps({r: [exp, stars] for r, (exp, stars) in _star_cache.items()}),
-        )
+        atomic_write_text(_cache_path, json.dumps(snapshot))
     except Exception as exc:
         logger.debug("store popularity cache persist failed: %s", exc)
 
