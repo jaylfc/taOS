@@ -415,7 +415,15 @@ The registry-JWT surface, by scope:
   whitelisted fields (title, body, labels, priority), own-or-lead cards only.
   Also SEPARATE from project_tasks - a plain project_tasks token gets 403 on
   PATCH. The seeded internal lead (@taOS-dev) carries it by default so it can
-  edit its own board's cards; assignee_id and parent_task_id stay human-only.
+  edit its own board's cards; assignee_id and parent_task_id stay human-only -
+  the whitelist keys on which fields the body SENDS, so sending one of them as
+  `null` (a clear) is refused 403 like any other edit of it.
+  The route writes exactly the fields the body sends: an omitted field is left
+  unchanged, `assignee_id`/`parent_task_id`/`element_id` take `null` as a real
+  clear (`element_id` also takes the legacy `"none"` string), and anything the
+  route cannot write - a `null` on a non-nullable field, a misspelled key, a
+  read-only column such as `id`/`created_by`/`claimed_by` - is a 422 rather
+  than a 200 echoing a task it never changed.
 - **project_doc_review**: read and write doc-review stamps for a project.
   `GET /api/projects/{pid}/doc-reviews` (list), `GET /api/projects/{pid}/doc-review/{path}`
   (read one), and `PUT /api/projects/{pid}/doc-review/{path}` (set state).
