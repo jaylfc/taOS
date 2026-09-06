@@ -387,6 +387,9 @@ def register_all_routers(app):
     from tinyagentos.routes.account_proxy import router as account_proxy_router
     app.include_router(account_proxy_router, dependencies=_csrf)
 
+    from tinyagentos.routes.taosgo import router as taosgo_router
+    app.include_router(taosgo_router, dependencies=_csrf)
+
     # Local hub API (hub social slice 2): the node's own profile + object store.
     from tinyagentos.routes.hub import router as hub_router
     app.include_router(hub_router, dependencies=_csrf)
