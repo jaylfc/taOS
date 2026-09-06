@@ -1,10 +1,19 @@
 """Unit tests for auth_middleware allow/deny logic."""
 from __future__ import annotations
 
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+)
 from fastapi.responses import JSONResponse
+from starlette.datastructures import Headers
 from starlette.responses import RedirectResponse
 
 from tinyagentos.auth_middleware import (
@@ -30,7 +39,12 @@ def _request(
     req = MagicMock()
     req.method = method
     req.url.path = path
-    req.headers = headers or {}
+    # A real Request's headers are case-INSENSITIVE. A plain dict here silently
+    # hid `check_agent_identity` from every arm that did not patch it: the
+    # middleware reads "authorization" while that function reads
+    # "Authorization", so on a dict the real credential check saw no header at
+    # all and returned None instead of raising.
+    req.headers = Headers(headers or {})
     req.cookies = cookies or {}
     if client_host is None:
         req.client = None
@@ -723,6 +737,35 @@ class TestAgentDecisionsDispatch:
         call_next.assert_not_awaited()
 
 
+def _registry_keypair() -> tuple[bytes, bytes]:
+    """Return (private_pem, public_pem) for a fresh Ed25519 keypair."""
+    private = Ed25519PrivateKey.generate()
+    return (
+        private.private_bytes(
+            encoding=Encoding.PEM,
+            format=PrivateFormat.PKCS8,
+            encryption_algorithm=NoEncryption(),
+        ),
+        private.public_key().public_bytes(
+            encoding=Encoding.PEM,
+            format=PublicFormat.SubjectPublicKeyInfo,
+        ),
+    )
+
+
+def _signed_registry_token(private_pem: bytes) -> str:
+    """Mint a real registry JWT signed by *private_pem*."""
+    from tinyagentos.agent_registry_store import mint_registry_token
+
+    return mint_registry_token(
+        canonical_id="test-agent",
+        private_key_pem=private_pem,
+        user_id="",
+        framework="test",
+        project_id=None,
+    )
+
+
 class TestRegistryJwtRouteResolution:
     """Acceptance tests for the registry-JWT 404-vs-401 fix.
 
@@ -730,6 +773,8 @@ class TestRegistryJwtRouteResolution:
     (2) no token + unknown route -> 401 AND no token + real route -> 401 with IDENTICAL bodies
     (3) valid registry JWT + allowlisted real route -> 2xx
     (4) valid registry JWT + KNOWN non-allowlisted route -> 401
+    (5) ROTATED registry JWT + unknown route -> 401 (a dead credential never
+        earns the wrong-URL 404), with a live-token control alongside it
     """
 
     @pytest.mark.asyncio
@@ -820,6 +865,81 @@ class TestRegistryJwtRouteResolution:
 
         assert resp.status_code == 401
         assert resp.body == b'{"error":"Authentication required"}'
+        call_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rotated_registry_jwt_unknown_route_returns_401_not_404(self):
+        """A ROTATED token is dead, so it must not earn the 404 that says
+        "your credential is fine, your URL is not".
+
+        `check_agent_identity` is deliberately NOT patched here: the whole
+        point is that the real liveness chain runs, so a signature that still
+        verifies against a still-"active" record does not by itself buy the
+        404.
+        """
+        private_pem, public_pem = _registry_keypair()
+        token = _signed_registry_token(private_pem)
+
+        middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
+        req = _request(
+            method="GET",
+            path="/api/definitely-not-a-route",
+            headers={"authorization": f"Bearer {token}"},
+            auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/system", {"GET"})],
+        )
+        state = MagicMock()
+        state.auth = auth_mgr
+        state.agent_registry_keypair = (private_pem, public_pem)
+        state.agent_registry = MagicMock()
+        # Active, but every token minted before the cutoff is superseded.
+        state.agent_registry.get = AsyncMock(
+            return_value={
+                "status": "active",
+                "token_min_iat": int(time.time()) + 3600,
+            }
+        )
+        req.app.state = state
+        call_next = AsyncMock()
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 401
+        assert resp.body == b'{"error":"Authentication required"}'
+        call_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_live_registry_jwt_unknown_route_still_returns_404(self):
+        """Control for the arm above: with the SAME real liveness chain and a
+        LIVE record, the wrong-URL 404 still fires.  Narrowing the 404 to live
+        credentials must not turn into removing it."""
+        private_pem, public_pem = _registry_keypair()
+        token = _signed_registry_token(private_pem)
+
+        middleware = AuthMiddleware(app=MagicMock())
+        auth_mgr = _default_auth_mgr()
+        req = _request(
+            method="GET",
+            path="/api/definitely-not-a-route",
+            headers={"authorization": f"Bearer {token}"},
+            auth_mgr=auth_mgr,
+            routes=[_fake_route("/api/system", {"GET"})],
+        )
+        state = MagicMock()
+        state.auth = auth_mgr
+        state.agent_registry_keypair = (private_pem, public_pem)
+        state.agent_registry = MagicMock()
+        state.agent_registry.get = AsyncMock(
+            return_value={"status": "active", "token_min_iat": 0}
+        )
+        req.app.state = state
+        call_next = AsyncMock()
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 404
+        assert resp.body == b'{"error":"Not Found"}'
         call_next.assert_not_awaited()
 
     @pytest.mark.asyncio
