@@ -1015,8 +1015,9 @@ export function DeployWizard({
                         Slug: <code>{slug || "—"}</code>{" "}
                         {!slug && (
                           <span>
-                            (this name has no Latin letters, so taOS derives the
-                            slug for you){" "}
+                            (this name has no Latin letters -- click "edit" to
+                            set a slug yourself, or the agent name will be
+                            rejected){" "}
                           </span>
                         )}
                         <button
