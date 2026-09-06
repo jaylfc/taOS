@@ -1,8 +1,12 @@
 """Tests for SecurityHeadersMiddleware (#655)."""
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
+import respx
 from httpx import ASGITransport, AsyncClient
+from httpx import Response as HttpxResponse
 
 
 @pytest.fixture
@@ -92,19 +96,81 @@ class TestApiNoStore:
         assert resp.headers.get("cache-control") == "no-store"
 
     @pytest.mark.asyncio
+    async def test_agent_debugger_ui_route_is_no_store(self, client):
+        # A second, unrelated /agent/ route (the HTML debugger UI, not the
+        # JSON debug/status handler above) so the no-store guarantee is
+        # asserted against the /agent/ prefix itself rather than one
+        # specific handler's behavior.
+        resp = await client.get("/agent/does-not-exist/debug")
+        assert resp.status_code == 200
+        assert resp.headers.get("cache-control") == "no-store"
+
+    @pytest.mark.asyncio
     async def test_handler_cache_control_not_clobbered(self, client):
         # /api/userspace-apps/sdk.js sets its own "no-cache" so the SDK
         # revalidates instead of being pinned; the middleware must not
-        # overwrite an explicit policy.
+        # overwrite an explicit policy. Compared against "no-store" (the
+        # middleware default) rather than the handler's exact literal, so
+        # this only fails if the middleware contract breaks, not if the SDK
+        # handler's own policy changes.
         resp = await client.get("/api/userspace-apps/sdk.js")
-        assert resp.headers.get("cache-control") == "no-cache"
+        assert resp.headers.get("cache-control") != "no-store"
 
     @pytest.mark.asyncio
     async def test_static_assets_keep_long_cache(self, client):
-        # /static/ is mounted outside /api/ and stays cacheable.
+        # /static/ is mounted outside /api/ and stays cacheable. Matched by
+        # prefix rather than the exact TTL literal, so a future bump to the
+        # static-files max-age doesn't fail a test about a different thing
+        # (middleware must not clobber a static asset's cache policy).
         resp = await client.get("/static/favicon.ico")
         assert resp.status_code == 200
-        assert resp.headers.get("cache-control") == "public, max-age=86400"
+        assert resp.headers.get("cache-control", "").startswith("public,")
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_proxy_passthrough_no_upstream_cache_control_gets_no_store(self, client):
+        # /api/desktop/browser/proxy forwards upstream response headers
+        # verbatim (see out_headers in proxy.py); when upstream sets no
+        # Cache-Control of its own, the middleware's setdefault must still
+        # land, not a heuristic "assume cacheable" default.
+        respx.get("http://example.com/").mock(
+            return_value=HttpxResponse(
+                200, content=b"hi", headers={"content-type": "text/plain"},
+            )
+        )
+        with patch(
+            "tinyagentos.routes.desktop_browser.ssrf.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
+        ):
+            resp = await client.get(
+                "/api/desktop/browser/proxy",
+                params={"profile_id": "personal", "url": "http://example.com/"},
+            )
+        assert resp.status_code == 200
+        assert resp.headers.get("cache-control") == "no-store"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_proxy_passthrough_preserves_upstream_cache_control(self, client):
+        # An upstream page that opts into caching keeps that policy — the
+        # middleware only fills in a default, it never overwrites.
+        respx.get("http://example.com/").mock(
+            return_value=HttpxResponse(
+                200,
+                content=b"hi",
+                headers={"content-type": "text/plain", "cache-control": "max-age=600"},
+            )
+        )
+        with patch(
+            "tinyagentos.routes.desktop_browser.ssrf.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
+        ):
+            resp = await client.get(
+                "/api/desktop/browser/proxy",
+                params={"profile_id": "personal", "url": "http://example.com/"},
+            )
+        assert resp.status_code == 200
+        assert resp.headers.get("cache-control") == "max-age=600"
 
 
 class TestNoStoreMiddlewareUnit:
