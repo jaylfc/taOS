@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class WorkerInfo:
+    """Cluster worker record populated by register/heartbeat."""
     name: str
     url: str                          # Worker's base URL
     hardware: dict = field(default_factory=dict)  # From hardware detection

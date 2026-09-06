@@ -1307,6 +1307,13 @@ Route module `tinyagentos/routes/cluster.py`, manager logic in
 registrations and heartbeats.
 
 - `POST /api/cluster/workers` (register) and `POST /api/cluster/heartbeat`
+  both accept an optional `resources` list (`list[str]`) carrying the
+  scheduler resource names the worker advertises (e.g. `["gpu-cuda-0",
+  "npu-rk3588", "cpu-inference"]`). The controller stores this list on
+  `WorkerInfo.resources` and uses it for lease allowlist validation
+  instead of the legacy backend-name grammar. Workers that omit the
+  field fall back to the grammar; a warning is logged once per mismatch.
+- `POST /api/cluster/workers` (register) and `POST /api/cluster/heartbeat`
   both **echo the controller's current generation** in their response
   (`"generation"` key alongside the existing `status` field), so a worker
   always knows which controller instance accepted it.

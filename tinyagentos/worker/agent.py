@@ -520,6 +520,11 @@ class WorkerAgent:
         backends = await self.detect_backends()
         caps = sorted(set(self.detect_capabilities(backends)) | set(self.extra_capabilities))
         kv_quant = self.detect_kv_quant_support(backends)
+        resources = ["cpu-inference"]
+        if any(b["type"] == "rkllama" for b in backends):
+            resources.append("npu-rk3588")
+        if any(b["type"] in {"vllm", "ollama", "exo", "mlx"} for b in backends):
+            resources.append("gpu-cuda-0")
 
         # Use pinned advertise_url if provided; otherwise infer from backends or LAN IP.
         # TAOS_ADVERTISE_IP is set by the worker-LXC installer: inside the LXC the
@@ -548,6 +553,7 @@ class WorkerAgent:
             "capabilities": caps,
             "platform": platform.system().lower(),
             "models": [],
+            "resources": resources,
             "kv_cache_quant_support": kv_quant.get("legacy", ["fp16"]),
             "kv_cache_quant_k_support": kv_quant.get("k", ["fp16"]),
             "kv_cache_quant_v_support": kv_quant.get("v", ["fp16"]),
@@ -654,6 +660,11 @@ class WorkerAgent:
             backends = await self.detect_backends()
             caps = sorted(set(self.detect_capabilities(backends)) | set(self.extra_capabilities))
             kv_quant = self.detect_kv_quant_support(backends)
+            resources = ["cpu-inference"]
+            if any(b["type"] == "rkllama" for b in backends):
+                resources.append("npu-rk3588")
+            if any(b["type"] in {"vllm", "ollama", "exo", "mlx"} for b in backends):
+                resources.append("gpu-cuda-0")
             snap = capacity_snapshot()
             vram = gpu_vram_snapshot()
             adv_ip = os.environ.get("TAOS_ADVERTISE_IP", "").strip()
@@ -672,6 +683,7 @@ class WorkerAgent:
                 "load": load,
                 "backends": backends,
                 "capabilities": caps,
+                "resources": resources,
                 "kv_cache_quant_support": kv_quant.get("legacy", ["fp16"]),
                 "kv_cache_quant_k_support": kv_quant.get("k", ["fp16"]),
                 "kv_cache_quant_v_support": kv_quant.get("v", ["fp16"]),

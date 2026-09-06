@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
 import time
 from typing import TYPE_CHECKING
@@ -16,6 +17,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_TIMEOUT = 30  # seconds before marking worker offline
+
+# Legacy resource-name grammar for backward compatibility with workers that
+# do not send a `resources` inventory on registration.
+_LEGACY_RESOURCE_RE = re.compile(r'^gpu-cuda-\d+$|^npu-[a-z0-9-]+$|^cpu-inference$')
 
 # Valid worker-initiated status values that gate drain/update protection.
 # Keep in sync with the notification block below and the heartbeat guard.
@@ -272,6 +277,7 @@ class ClusterManager:
         status: str | None = None,
         drain_reason: str | None = None,
         generation: int | None = None,
+        resources: list[str] | None = None,
     ) -> bool:
         """Accept a worker heartbeat.
 
@@ -397,6 +403,8 @@ class ClusterManager:
             worker.storage_used_bytes = int(storage_used_bytes)
         if bytes_deduped_total is not None:
             worker.bytes_deduped_total = int(bytes_deduped_total)
+        if resources is not None:
+            worker.resources = list(resources)
         # Worker-initiated drain notification (taOS #890 C2).
         # Emit when the worker transitions into draining/update-available on
         # its own initiative, so the operator sees it in the activity feed.
@@ -551,10 +559,11 @@ class ClusterManager:
         else:
             # Worker has no resource inventory (older worker, or registration without resources)
             # Fall back to the legacy grammar check for backward compatibility
-            import re
-            # Pattern matches valid scheduler resource names
-            # gpu-cuda-0, npu-rk3588, cpu-inference
-            if not re.match(r'^gpu-cuda-\d+$|^npu-[a-z0-9-]+$|^cpu-inference$', resource_part):
+            logger.warning(
+                "Worker '%s' has no resource inventory; falling back to legacy grammar check for resource '%s'",
+                worker_name, resource_part,
+            )
+            if not _LEGACY_RESOURCE_RE.match(resource_part):
                 return None
             
         return worker
@@ -620,11 +629,13 @@ class ClusterManager:
                 return None
 
             # Enforce lease cap per worker to prevent DoS (S2-24)
-            # Count existing leases for this worker
+            # Count only active (non-expired) leases for this worker
+            now = time.time()
             worker_lease_count = 0
             for lid, lease in self._leases.items():
                 if (parsed := self._parse_resource_id(lease.resource_id)) and parsed[0] == worker.name:
-                    worker_lease_count += 1
+                    if lease.expires_at > now:
+                        worker_lease_count += 1
             
             if worker_lease_count >= self._max_leases_per_worker:
                 logger.debug(

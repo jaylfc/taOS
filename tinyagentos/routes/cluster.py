@@ -218,6 +218,7 @@ class WorkerRegister(BaseModel):
     models: list[str] = []
     capabilities: list[str] = []
     platform: str = ""
+    resources: list[str] = []
     # KV quant support, asymmetric K/V plus boundary-layer flag. Defaults
     # to fp16-only so legacy workers that don't send these still validate.
     kv_cache_quant_support: list[str] = ["fp16"]
@@ -245,6 +246,7 @@ class HeartbeatBody(BaseModel):
     name: str
     load: float = 0.0
     models: list[str] | None = None
+    resources: list[str] | None = None
     # Backend-driven fields (worker agent v2+). Both optional so legacy
     # worker agents that only report load + models still validate.
     backends: list[dict] | None = None
@@ -396,6 +398,7 @@ async def register_worker(request: Request, body: WorkerRegister):
         models=body.models,
         capabilities=body.capabilities,
         platform=body.platform,
+        resources=body.resources,
         kv_cache_quant_support=body.kv_cache_quant_support,
         kv_cache_quant_k_support=body.kv_cache_quant_k_support,
         kv_cache_quant_v_support=body.kv_cache_quant_v_support,
@@ -550,6 +553,7 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
         body.name,
         load=body.load,
         models=body.models,
+        resources=body.resources,
         backends=body.backends,
         capabilities=body.capabilities,
         kv_cache_quant_support=body.kv_cache_quant_support,

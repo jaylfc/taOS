@@ -387,14 +387,13 @@ async def test_unregister_worker_releases_leases(client, app):
 # ── ClusterManager unit tests ──────────────────────────────────────────
 
 
-def _worker(name, free_vram=None, resources=None):
+def _worker(name, free_vram=None):
     w = WorkerInfo(
         name=name,
         url=f"http://{name}:9000",
         capabilities=["llm-chat"],
         free_vram_mb=free_vram,
     )
-    w.resources = resources or []
     w.status = "online"
     w.last_heartbeat = time.time()
     return w

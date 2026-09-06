@@ -480,9 +480,8 @@ class TestWorkerDrain:
     async def test_update_available_can_claim_leases(self):
         """Update-available workers still allow lease claims."""
         mgr = ClusterManager()
-        # Create a worker with a backend that matches the resource
         worker = _make_worker("update-gpu", url="http://update:9000")
-        worker.backends = [{"name": "gpu-cuda-0", "type": "nvidia", "url": "http://gpu:11434"}]
+        worker.resources = ["gpu-cuda-0"]
         await mgr.register_worker(worker)
         worker = mgr.get_worker("update-gpu")
         worker.free_vram_mb = 8000
