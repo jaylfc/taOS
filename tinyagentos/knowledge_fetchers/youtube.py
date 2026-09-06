@@ -10,22 +10,15 @@ import asyncio
 import json
 import logging
 import re
+import shutil
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Tracked subprocesses so they can be killed on timeout or cancel.
-_tracked_procs: list[asyncio.subprocess.Process] = []
-
+_YTDLP_NOT_FOUND_MSG = "yt-dlp not installed -- install the optional media extra"
 
 def _cleanup_procs() -> None:
-    """Kill all tracked subprocesses (called on timeout or cancel)."""
-    for p in _tracked_procs:
-        try:
-            p.kill()
-        except Exception:
-            pass
-    _tracked_procs.clear()
+    pass
 
 # Quality format map for yt-dlp -f flag
 _QUALITY_FORMATS: dict[str, str] = {
@@ -131,117 +124,119 @@ async def fetch(
 
     Returns a dict suitable for storage in KnowledgeItem fields.
     """
+    ytdlp = shutil.which("yt-dlp")
+    if ytdlp is None:
+        raise RuntimeError(_YTDLP_NOT_FOUND_MSG)
+
     media_dir = Path(media_dir)
     media_dir.mkdir(parents=True, exist_ok=True)
 
-    # ------------------------------------------------------------------ #
-    # Step 1: fetch JSON metadata (no download)
-    # ------------------------------------------------------------------ #
-    proc = await asyncio.create_subprocess_exec(
-        "yt-dlp", "--dump-json", "--no-download", url,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _tracked_procs.append(proc)
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        err = stderr.decode(errors="replace").strip()
-        raise RuntimeError(f"yt-dlp metadata fetch failed for {url!r}: {err}")
+    tracked_procs: list[asyncio.subprocess.Process] = []
 
-    info = json.loads(stdout.decode())
+    try:
+        # ------------------------------------------------------------------ #
+        # Step 1: fetch JSON metadata (no download)
+        # ------------------------------------------------------------------ #
+        proc = await asyncio.create_subprocess_exec(
+            ytdlp, "--dump-single-json", "--no-download", url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        tracked_procs.append(proc)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        if proc.returncode != 0:
+            err = stderr.decode(errors="replace").strip()
+            raise RuntimeError(f"yt-dlp metadata fetch failed for {url!r}: {err}")
 
-    video_id: str = info.get("id", "")
-    title: str = info.get("title", "")
-    channel: str = info.get("channel") or info.get("uploader") or ""
-    description: str = info.get("description") or ""
-    view_count: int | None = info.get("view_count")
-    like_count: int | None = info.get("like_count")
-    duration: float | None = info.get("duration")
-    upload_date: str = info.get("upload_date") or ""
-    thumbnail_url: str = info.get("thumbnail") or ""
+        info_list = json.loads(stdout.decode(errors="replace"))
+        info = info_list[0]
 
-    # Chapters: yt-dlp returns list of {title, start_time, end_time}
-    raw_chapters: list[dict] = info.get("chapters") or []
-    chapters = [
-        {
-            "title": ch.get("title", ""),
-            "start_time": ch.get("start_time", 0.0),
-            "end_time": ch.get("end_time", 0.0),
+        video_id: str = info.get("id", "")
+        title: str = info.get("title", "")
+        channel: str = info.get("channel") or info.get("uploader") or ""
+        description: str = info.get("description") or ""
+        view_count: int | None = info.get("view_count")
+        like_count: int | None = info.get("like_count")
+        duration: float | None = info.get("duration")
+        upload_date: str = info.get("upload_date") or ""
+        thumbnail_url: str = info.get("thumbnail") or ""
+
+        # Chapters: yt-dlp returns list of {title, start_time, end_time}
+        raw_chapters: list[dict] = info.get("chapters") or []
+        chapters = [
+            {
+                "title": ch.get("title", ""),
+                "start_time": ch.get("start_time", 0.0),
+                "end_time": ch.get("end_time", 0.0),
+            }
+            for ch in raw_chapters
+        ]
+
+        # ------------------------------------------------------------------ #
+        # Step 2+3: download thumbnail and captions in one invocation
+        # ------------------------------------------------------------------ #
+        out_proc = await asyncio.create_subprocess_exec(
+            ytdlp,
+            "--write-thumbnail",
+            "--convert-thumbnails", "png",
+            "--write-auto-sub",
+            "--write-sub",
+            "--sub-lang", "en",
+            "--sub-format", "vtt",
+            "--skip-download",
+            "-o", str(media_dir / "%(id)s"),
+            url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        tracked_procs.append(out_proc)
+        await asyncio.wait_for(out_proc.communicate(), timeout=120)
+        if out_proc.returncode != 0:
+            logger.warning("yt-dlp media download failed for %s", url)
+
+        # ------------------------------------------------------------------ #
+        # Step 4: parse VTT
+        # ------------------------------------------------------------------ #
+        segments: list[dict] = []
+        vtt_candidates = sorted(media_dir.glob(f"{video_id}*.vtt"))
+        if vtt_candidates:
+            vtt_file = vtt_candidates[0]
+            try:
+                vtt_text = vtt_file.read_text(encoding="utf-8", errors="replace")
+                segments = parse_vtt(vtt_text)
+            except Exception as exc:
+                logger.warning("Failed to parse VTT for %s: %s", video_id, exc)
+
+        transcript = "\n".join(seg["text"] for seg in segments)
+
+        thumbnail_path = None
+        for candidate in sorted(media_dir.glob(f"{video_id}.*")):
+            if candidate.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
+                thumbnail_path = candidate
+                break
+
+        return {
+            "title": title,
+            "author": channel,
+            "content": transcript,
+            "thumbnail": str(thumbnail_path) if thumbnail_path else None,
+            "metadata": {
+                "video_id": video_id,
+                "channel": channel,
+                "views": view_count,
+                "likes": like_count,
+                "duration": duration,
+                "upload_date": upload_date,
+                "chapters": chapters,
+                "transcript_segments": segments,
+            },
         }
-        for ch in raw_chapters
-    ]
-
-    # ------------------------------------------------------------------ #
-    # Step 2: download thumbnail
-    # ------------------------------------------------------------------ #
-    thumbnail_path = media_dir / f"{video_id}.png"
-    thumb_proc = await asyncio.create_subprocess_exec(
-        "yt-dlp",
-        "--write-thumbnail",
-        "--skip-download",
-        "--convert-thumbnails", "png",
-        "-o", str(media_dir / "%(id)s"),
-        url,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _tracked_procs.append(thumb_proc)
-    await thumb_proc.communicate()
-    if thumb_proc.returncode != 0:
-        logger.warning("yt-dlp thumbnail download failed for %s", url)
-
-    # ------------------------------------------------------------------ #
-    # Step 3: extract captions
-    # ------------------------------------------------------------------ #
-    cap_proc = await asyncio.create_subprocess_exec(
-        "yt-dlp",
-        "--write-auto-sub",
-        "--write-sub",
-        "--sub-lang", "en",
-        "--sub-format", "vtt",
-        "--skip-download",
-        "-o", str(media_dir / "%(id)s"),
-        url,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _tracked_procs.append(cap_proc)
-    await cap_proc.communicate()
-    if cap_proc.returncode != 0:
-        logger.warning("yt-dlp caption extraction failed for %s", url)
-
-    # ------------------------------------------------------------------ #
-    # Step 4: parse VTT
-    # ------------------------------------------------------------------ #
-    segments: list[dict] = []
-    # yt-dlp names auto-subs like: <id>.en.vtt or <id>.en-orig.vtt
-    vtt_candidates = list(media_dir.glob(f"{video_id}*.vtt"))
-    if vtt_candidates:
-        vtt_file = vtt_candidates[0]
-        try:
-            vtt_text = vtt_file.read_text(encoding="utf-8", errors="replace")
-            segments = parse_vtt(vtt_text)
-        except Exception as exc:
-            logger.warning("Failed to parse VTT for %s: %s", video_id, exc)
-
-    transcript = "\n".join(seg["text"] for seg in segments)
-
-    return {
-        "title": title,
-        "author": channel,
-        "content": transcript,
-        "thumbnail": str(thumbnail_path) if thumbnail_path.exists() else None,
-        "metadata": {
-            "video_id": video_id,
-            "channel": channel,
-            "views": view_count,
-            "likes": like_count,
-            "duration": duration,
-            "upload_date": upload_date,
-            "chapters": chapters,
-            "transcript_segments": segments,
-        },
-    }
+    finally:
+        for p in tracked_procs:
+            try:
+                p.kill()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -257,34 +252,47 @@ async def download_video(
 
     Returns the output file path on success, None on failure.
     """
+    ytdlp = shutil.which("yt-dlp")
+    if ytdlp is None:
+        raise RuntimeError(_YTDLP_NOT_FOUND_MSG)
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     fmt = _QUALITY_FORMATS.get(quality, _QUALITY_FORMATS["720"])
     output_template = str(output_dir / "%(id)s.%(ext)s")
 
-    proc = await asyncio.create_subprocess_exec(
-        "yt-dlp",
-        "-f", fmt,
-        "-o", output_template,
-        url,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _tracked_procs.append(proc)
-    stdout, stderr = await proc.communicate()
+    tracked_procs: list[asyncio.subprocess.Process] = []
 
-    if proc.returncode != 0:
-        err = stderr.decode(errors="replace").strip()
-        logger.warning("yt-dlp download failed for %s: %s", url, err)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ytdlp,
+            "-f", fmt,
+            "-o", output_template,
+            url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        tracked_procs.append(proc)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+
+        if proc.returncode != 0:
+            err = stderr.decode(errors="replace").strip()
+            logger.warning("yt-dlp download failed for %s: %s", url, err)
+            return None
+
+        # Try to find the downloaded file by parsing yt-dlp output
+        output_text = stdout.decode(errors="replace")
+        # yt-dlp prints lines like: [download] Destination: path/to/file.ext
+        m = re.search(r"\[download\] Destination: (.+)", output_text)
+        if m:
+            return m.group(1).strip()
+
+        # Fallback: return None -- caller can scan output_dir for new files
         return None
-
-    # Try to find the downloaded file by parsing yt-dlp output
-    output_text = stdout.decode(errors="replace")
-    # yt-dlp prints lines like: [download] Destination: path/to/file.ext
-    m = re.search(r"\[download\] Destination: (.+)", output_text)
-    if m:
-        return m.group(1).strip()
-
-    # Fallback: return None — caller can scan output_dir for new files
-    return None
+    finally:
+        for p in tracked_procs:
+            try:
+                p.kill()
+            except Exception:
+                pass

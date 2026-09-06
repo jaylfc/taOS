@@ -136,15 +136,15 @@ def _make_mock_proc(returncode: int = 0, stdout: bytes = b"", stderr: bytes = b"
     mock_proc.communicate = AsyncMock(return_value=(stdout, stderr))
     mock_proc.returncode = returncode
     mock_proc.wait = AsyncMock(return_value=returncode)
+    mock_proc.kill = MagicMock()
     return mock_proc
 
 
 @pytest.mark.asyncio
 async def test_fetch_mocked(tmp_path):
-    json_bytes = json.dumps(_FAKE_INFO).encode()
+    json_bytes = json.dumps([_FAKE_INFO]).encode()
     meta_proc = _make_mock_proc(stdout=json_bytes)
-    thumb_proc = _make_mock_proc()
-    cap_proc = _make_mock_proc()
+    media_proc = _make_mock_proc()
 
     call_count = 0
 
@@ -153,13 +153,12 @@ async def test_fetch_mocked(tmp_path):
         call_count += 1
         if call_count == 1:
             return meta_proc
-        elif call_count == 2:
-            return thumb_proc
         else:
-            return cap_proc
+            return media_proc
 
-    with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
-        result = await fetch("https://www.youtube.com/watch?v=test123", media_dir=tmp_path)
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+            result = await fetch("https://www.youtube.com/watch?v=test123", media_dir=tmp_path)
 
     assert result["title"] == "Test Video Title"
     assert result["author"] == "Test Channel"
@@ -188,10 +187,9 @@ async def test_fetch_mocked_with_transcript(tmp_path):
     )
     (tmp_path / "test123.en.vtt").write_text(vtt_content)
 
-    json_bytes = json.dumps(_FAKE_INFO).encode()
+    json_bytes = json.dumps([_FAKE_INFO]).encode()
     meta_proc = _make_mock_proc(stdout=json_bytes)
-    thumb_proc = _make_mock_proc()
-    cap_proc = _make_mock_proc()
+    media_proc = _make_mock_proc()
 
     call_count = 0
 
@@ -200,13 +198,12 @@ async def test_fetch_mocked_with_transcript(tmp_path):
         call_count += 1
         if call_count == 1:
             return meta_proc
-        elif call_count == 2:
-            return thumb_proc
         else:
-            return cap_proc
+            return media_proc
 
-    with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
-        result = await fetch("https://www.youtube.com/watch?v=test123", media_dir=tmp_path)
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+            result = await fetch("https://www.youtube.com/watch?v=test123", media_dir=tmp_path)
 
     assert "Hello from transcript" in result["content"]
     assert len(result["metadata"]["transcript_segments"]) == 2
@@ -217,9 +214,10 @@ async def test_fetch_metadata_error_raises(tmp_path):
     """fetch() raises RuntimeError if yt-dlp metadata step fails."""
     err_proc = _make_mock_proc(returncode=1, stderr=b"ERROR: video unavailable")
 
-    with patch("asyncio.create_subprocess_exec", return_value=err_proc):
-        with pytest.raises(RuntimeError, match="yt-dlp metadata fetch failed"):
-            await fetch("https://www.youtube.com/watch?v=bad", media_dir=tmp_path)
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", return_value=err_proc):
+            with pytest.raises(RuntimeError, match="yt-dlp metadata fetch failed"):
+                await fetch("https://www.youtube.com/watch?v=bad", media_dir=tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -231,12 +229,13 @@ async def test_download_video_mocked_720(tmp_path):
     stdout_text = b"[download] Destination: /some/path/test123.mp4\n"
     dl_proc = _make_mock_proc(stdout=stdout_text)
 
-    with patch("asyncio.create_subprocess_exec", return_value=dl_proc) as mock_exec:
-        result = await download_video(
-            "https://www.youtube.com/watch?v=test123",
-            quality="720",
-            output_dir=tmp_path,
-        )
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", return_value=dl_proc) as mock_exec:
+            result = await download_video(
+                "https://www.youtube.com/watch?v=test123",
+                quality="720",
+                output_dir=tmp_path,
+            )
 
     args = mock_exec.call_args[0]
     # Check format string for 720p
@@ -251,12 +250,13 @@ async def test_download_video_mocked_best(tmp_path):
     stdout_text = b"[download] Destination: /some/path/test123.webm\n"
     dl_proc = _make_mock_proc(stdout=stdout_text)
 
-    with patch("asyncio.create_subprocess_exec", return_value=dl_proc) as mock_exec:
-        await download_video(
-            "https://www.youtube.com/watch?v=test123",
-            quality="best",
-            output_dir=tmp_path,
-        )
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", return_value=dl_proc) as mock_exec:
+            await download_video(
+                "https://www.youtube.com/watch?v=test123",
+                quality="best",
+                output_dir=tmp_path,
+            )
 
     args = mock_exec.call_args[0]
     fmt_idx = list(args).index("-f")
@@ -267,11 +267,12 @@ async def test_download_video_mocked_best(tmp_path):
 async def test_download_video_failure_returns_none(tmp_path):
     err_proc = _make_mock_proc(returncode=1, stderr=b"Download error")
 
-    with patch("asyncio.create_subprocess_exec", return_value=err_proc):
-        result = await download_video(
-            "https://www.youtube.com/watch?v=bad",
-            output_dir=tmp_path,
-        )
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", return_value=err_proc):
+            result = await download_video(
+                "https://www.youtube.com/watch?v=bad",
+                output_dir=tmp_path,
+            )
 
     assert result is None
 
@@ -281,10 +282,11 @@ async def test_download_video_no_destination_line_returns_none(tmp_path):
     """If yt-dlp succeeds but prints no 'Destination:' line, return None."""
     proc = _make_mock_proc(stdout=b"some other output\n")
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
-        result = await download_video(
-            "https://www.youtube.com/watch?v=test123",
-            output_dir=tmp_path,
-        )
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            result = await download_video(
+                "https://www.youtube.com/watch?v=test123",
+                output_dir=tmp_path,
+            )
 
     assert result is None
