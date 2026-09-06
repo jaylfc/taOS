@@ -10,8 +10,9 @@ import httpx
 import yaml
 
 logger = logging.getLogger(__name__)
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 
@@ -1850,10 +1851,54 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     if static_dir.exists():
         app.mount("/static", _CacheAwareStaticFiles(directory=str(static_dir)), name="static")
 
-    # Mount workspace for serving generated images and other workspace files
+    # Workspace files: agent paths are ownership-checked, everything else falls
+    # back to the plain workspace directory (generated images, music, etc.).
     workspace_dir = data_dir / "workspace"
     workspace_dir.mkdir(parents=True, exist_ok=True)
-    app.mount("/data/workspace", StaticFiles(directory=str(workspace_dir)), name="workspace")
+
+    @app.get("/data/workspace/{first_segment}/{rest:path}")
+    async def _serve_workspace_file(request: Request, first_segment: str, rest: str = ""):
+        from tinyagentos.auth_context import (
+            current_user,
+            require_owner_or_admin,
+            resolve_agent_owner,
+        )
+
+        user = current_user(request)
+
+        registry = getattr(request.app.state, "agent_registry", None)
+        owner = None
+        if registry is not None:
+            try:
+                rec = await registry.get(first_segment)
+                if rec is None:
+                    rec = await registry.get_by_slug(first_segment)
+                if rec is None:
+                    rec = await registry.get_by_handle(first_segment)
+            except RuntimeError:
+                rec = None
+            if rec is not None:
+                owner = rec.get("user_id") or None
+
+        if owner is not None:
+            require_owner_or_admin(user, owner)
+            root = Path(request.app.state.agent_workspaces_dir).resolve()
+            agent_dir = (root / first_segment).resolve()
+            if not agent_dir.is_relative_to(root):
+                raise HTTPException(status_code=404)
+            target = (agent_dir / rest).resolve() if rest else agent_dir
+            if not target.is_relative_to(agent_dir):
+                raise HTTPException(status_code=404)
+        else:
+            root = (Path(request.app.state.data_dir) / "workspace").resolve()
+            target = (root / first_segment / rest).resolve() if rest else (root / first_segment).resolve()
+            if not target.is_relative_to(root):
+                raise HTTPException(status_code=404)
+
+        if not target.is_file():
+            raise HTTPException(status_code=404)
+
+        return FileResponse(target)
 
     # Desktop SPA assets are served by the desktop route handler (routes/desktop.py)
 
