@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 
 import pytest
@@ -11,6 +12,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import importlib.util
 import yaml
+
+
+# Revert tests exercise the real locked-script path in agent_git.git_revert,
+# which shells out to the system `flock`. Skip rather than fail on a host
+# that lacks it.
+requires_flock = pytest.mark.skipif(
+    shutil.which("flock") is None, reason="flock not available"
+)
 
 
 def _init_fixture_repo(path):
@@ -26,6 +35,12 @@ def _init_fixture_repo(path):
 
 
 def _fake_exec_for_repo(fixture_repo):
+    # The real flock target (agent_git._STATE_LOCK_PATH) is a fixed host path
+    # shared by every test process and every developer running the suite at
+    # once; redirect it into this fixture's own tmp dir so revert tests never
+    # serialize on, or fight over ownership of, one file on the real host.
+    lock_path = str(fixture_repo.parent / "agent_state.lock")
+
     async def _fake(container, cmd, timeout=60):
         if cmd[0] == "git" and cmd[1] == "-C" and cmd[2] == "/root":
             git_args = cmd[3:]
@@ -36,7 +51,11 @@ def _fake_exec_for_repo(fixture_repo):
             )
             return result.returncode, result.stdout
         if cmd[0] == "bash" and cmd[1] == "-c":
-            script = cmd[2].replace("/root", str(fixture_repo))
+            script = (
+                cmd[2]
+                .replace("/root", str(fixture_repo))
+                .replace("/tmp/agent_state.lock", lock_path)
+            )
             result = subprocess.run(
                 [cmd[0], cmd[1], script],
                 capture_output=True,
@@ -110,6 +129,7 @@ class TestAgentVersionsRoutes:
         resp = await client.get("/api/agents/test-agent/versions/--output=.bashrc/diff")
         assert resp.status_code == 400
 
+    @requires_flock
     async def test_revert_restores_content(self, tmp_path, client):
         fixture = tmp_path / "repo"
         fixture.mkdir()
@@ -127,7 +147,6 @@ class TestAgentVersionsRoutes:
             new=_fake_exec_for_repo(fixture),
         ):
             resp = await client.post(f"/api/agents/test-agent/versions/{first_sha}/revert")
-        print("RESP:", resp.status_code, resp.text)
         assert resp.status_code == 200
         assert resp.json()["status"] == "reverted"
         assert (fixture / "README.md").exists()
@@ -203,6 +222,7 @@ class TestAgentVersionsRoutes:
         assert data["versions"][0]["author_email"] == "agent@taos.local"
         assert data["versions"][0]["date"] == "2026-01-01 00:00:00 +0000"
 
+    @requires_flock
     async def test_revert_to_head_returns_noop(self, tmp_path, client):
         fixture = tmp_path / "repo"
         fixture.mkdir()
@@ -219,6 +239,49 @@ class TestAgentVersionsRoutes:
         assert resp.status_code == 200
         assert resp.json()["status"] == "noop"
 
+    @requires_flock
+    async def test_revert_wins_a_commit_racing_the_sha_resolution(self, tmp_path, client):
+        """The auto-committer can commit between resolving the requested sha and
+        the reset. The noop decision therefore belongs inside the flock: a sha
+        that was HEAD a moment ago must still be restored, not reported `noop`
+        while the tree sits on the committer's new commit."""
+        fixture = tmp_path / "repo"
+        fixture.mkdir()
+        _init_fixture_repo(fixture)
+        head_sha = subprocess.run(
+            ["git", "-C", str(fixture), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        passthrough = _fake_exec_for_repo(fixture)
+        raced = []
+
+        async def racing_exec(container, cmd, timeout=60):
+            result = await passthrough(container, cmd, timeout)
+            if not raced and "rev-parse" in cmd:
+                raced.append(cmd)
+                (fixture / "racy.txt").write_text("written between resolve and revert")
+                subprocess.run(
+                    ["git", "-C", str(fixture), "add", "racy.txt"],
+                    check=True, capture_output=True,
+                )
+                subprocess.run(
+                    ["git", "-C", str(fixture), "commit", "-m", "auto: racy"],
+                    check=True, capture_output=True,
+                )
+            return result
+
+        with patch("tinyagentos.agent_git.exec_in_container", new=racing_exec):
+            resp = await client.post(f"/api/agents/test-agent/versions/{head_sha}/revert")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "reverted"
+        final_sha = subprocess.run(
+            ["git", "-C", str(fixture), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert final_sha == head_sha
+        assert not (fixture / "racy.txt").exists()
+
+    @requires_flock
     async def test_revert_racing_commit_before_lock_is_not_falsely_noop(self, tmp_path, client):
         # Regression for the noop decision being made outside the lock: a
         # committer can create a new commit after the route resolves the
@@ -277,6 +340,7 @@ class TestAgentVersionsRoutes:
             resp = await client.post(f"/api/agents/test-agent/versions/{orphan}/revert")
         assert resp.status_code == 409
 
+    @requires_flock
     async def test_revert_dirty_tree_returns_409(self, tmp_path, client):
         fixture = tmp_path / "repo"
         fixture.mkdir()
@@ -296,6 +360,57 @@ class TestAgentVersionsRoutes:
     async def test_short_sha_rejected_by_versions_route(self, client):
         resp = await client.get("/api/agents/test-agent/versions/abc1/diff")
         assert resp.status_code == 400
+
+    @requires_flock
+    async def test_uppercase_sha_is_accepted(self, tmp_path, client):
+        """Hex object names are case-insensitive to git, and every route a
+        user copies a sha from can hand one over uppercase."""
+        fixture = tmp_path / "repo"
+        fixture.mkdir()
+        _init_fixture_repo(fixture)
+        head_sha = subprocess.run(
+            ["git", "-C", str(fixture), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        with patch(
+            "tinyagentos.agent_git.exec_in_container",
+            new=_fake_exec_for_repo(fixture),
+        ):
+            resp = await client.post(
+                f"/api/agents/test-agent/versions/{head_sha.upper()}/revert"
+            )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "noop"
+
+    async def test_agent_name_that_breaks_the_container_target_returns_400(self, tmp_path):
+        """"remote:container" is the qualified form, so a name carrying a
+        colon would silently address a different remote."""
+        app, token = _make_app_with_remote(tmp_path, None)
+        app.state.config.agents[0]["name"] = "bad:name"
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": token},
+            event_hooks=csrf_event_hooks(),
+        ) as c:
+            resp = await c.get("/api/agents/bad:name/versions")
+        assert resp.status_code == 400
+        assert "invalid agent name" in resp.json()["error"]
+
+    async def test_failed_reset_returns_409_with_the_git_error(self, client):
+        """A repo-state failure is 409 and says what git said — not a 404
+        "unknown revision" and not a bare "container_unreachable"."""
+        async def _fake(container, cmd, timeout=60):
+            if cmd[0] == "bash":
+                return 1, "fatal: Unable to write new index file"
+            if "merge-base" in cmd:
+                return 0, ""
+            return 0, "b" * 40
+
+        with patch("tinyagentos.agent_git.exec_in_container", new=_fake):
+            resp = await client.post(f"/api/agents/test-agent/versions/{'b' * 40}/revert")
+        assert resp.status_code == 409
+        assert "Unable to write new index file" in resp.json()["error"]
 
     async def test_list_versions_403_for_unauthorized_user(self, tmp_path):
         config = {

@@ -4,6 +4,15 @@ Exposes git-history operations against each agent container's local state
 repo at /root. Container interactions go via ``agent_git`` helpers so the
 same code works for both LXC and Docker backends.
 
+Scope
+-----
+The repo root is the agent's home directory, so what these routes can serve
+is bounded by an allowlist rather than by the caller: only the state paths in
+``agent_git._STATE_PATHS`` (workspace, memory, the per-framework AGENTS.md)
+are versioned. Framework config carrying API keys and bridge tokens, shell
+history and cache trees are never in history, so ``/diff`` cannot leak them
+and ``/revert`` cannot roll the framework install back.
+
 Routes
 ------
 GET  /api/agents/{name}/versions            — list commits
@@ -14,9 +23,11 @@ Revert status codes
 -------------------
 200 {status: "noop"}   — sha is HEAD, nothing to do
 200 {status: "reverted"} — success
-400                     — invalid sha format
+400                     — invalid sha format, or an unusable container target
 404                     — unknown revision
-409                     — sha not an ancestor of HEAD, or dirty tree
+409                     — sha not an ancestor of HEAD, dirty tree, the git
+                          operation failed on repo state, or the container is
+                          unreachable
 """
 from __future__ import annotations
 
@@ -30,10 +41,10 @@ from tinyagentos.agent_db import find_agent
 from tinyagentos.agent_git import (
     ContainerUnreachableError,
     DirtyTreeError,
+    GitOperationError,
     NotAncestorError,
     git_diff,
     git_log,
-    git_merge_base_is_ancestor,
     git_rev_parse,
     git_revert,
 )
@@ -43,21 +54,28 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
-_REMOTE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# Hex object names are case-insensitive to git, and every copy-paste route a
+# user has (git log, GitHub, an IDE) can hand over uppercase.
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+# Both halves of a container target — the remote and the agent name — have to
+# be plain tokens: "remote:container" is the qualified form, so a name that
+# smuggles a colon would silently parse as a different remote.
+_CONTAINER_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
-class InvalidRemoteError(Exception):
+class InvalidContainerTargetError(Exception):
     pass
 
 
 def _container_name(agent: dict) -> str:
     remote = agent.get("remote")
     name = agent["name"]
+    if not _CONTAINER_TOKEN_RE.match(name):
+        raise InvalidContainerTargetError(f"invalid agent name {name}")
     container = f"taos-agent-{name}"
     if remote:
-        if not _REMOTE_RE.match(remote):
-            raise InvalidRemoteError(f"invalid remote {remote} in agent {name}")
+        if not _CONTAINER_TOKEN_RE.match(remote):
+            raise InvalidContainerTargetError(f"invalid remote {remote} in agent {name}")
         return f"{remote}:{container}"
     return container
 
@@ -95,7 +113,7 @@ async def list_versions(request: Request, name: str):
     try:
         container = _container_name(agent)
         commits = await git_log(container)
-    except InvalidRemoteError as exc:
+    except InvalidContainerTargetError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:
         logger.warning("versions list failed for %s: %s", name, exc)
@@ -134,7 +152,7 @@ async def version_diff(request: Request, name: str, sha: str):
     try:
         container = _container_name(agent)
         patch = await git_diff(container, sha)
-    except InvalidRemoteError as exc:
+    except InvalidContainerTargetError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except DirtyTreeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
@@ -180,17 +198,23 @@ async def revert_version(request: Request, name: str, sha: str):
 
     try:
         container = _container_name(agent)
+        # Resolve the sha (404s an unknown one), then let git_revert decide
+        # noop vs reverted *inside* the state lock — comparing against a HEAD
+        # read out here races the auto-committer, which would answer "noop"
+        # while the tree sits on a commit the caller never asked for.
         resolved_sha = await git_rev_parse(container, sha)
-        # The noop-vs-reverted decision is made inside git_revert, under the
-        # container's state lock, so it stays correct even if a committer
-        # creates a new commit between sha resolution and lock acquisition.
         status = await git_revert(container, resolved_sha)
         return {"agent": name, "sha": resolved_sha, "status": status}
-    except InvalidRemoteError as exc:
+    except InvalidContainerTargetError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except DirtyTreeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
     except NotAncestorError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    except GitOperationError as exc:
+        # The container answered; git could not do the work. Reported apart
+        # from container_unreachable so a repo-state problem is diagnosable.
+        logger.warning("version revert failed for %s/%s: %s", name, sha, exc)
         return JSONResponse({"error": str(exc)}, status_code=409)
     except ContainerUnreachableError:
         return JSONResponse({"error": "container_unreachable"}, status_code=409)

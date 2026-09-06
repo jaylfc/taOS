@@ -25,6 +25,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tinyagentos.secrets import SecretsStore
 
+# Per-framework AGENTS.md path inside the agent's container. Frameworks read
+# this file on every turn to pick up agent rules (per the taosmd contract —
+# see issue #378). It is defined in ``agent_git`` because the versioned scope
+# of the agent state repo derives from it; re-exported here under the name
+# callers have always used.
+from tinyagentos.agent_git import AGENTS_MD_PATHS
 from tinyagentos.agent_image import (
     GENERIC_BASE_ALIAS,
     base_image_alias,
@@ -102,13 +108,8 @@ _TAOSMD_END = "<!-- taosmd:rules-end -->"
 # that do not match are skipped rather than written outside ~/.ssh.
 _SAFE_SSH_KEY_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
-# Per-framework AGENTS.md path inside the agent's container.
-# Frameworks read this file on every turn to pick up agent rules
-# (per the taosmd contract — see issue #378).
-AGENTS_MD_PATHS: dict[str, str] = {
-    "openclaw": "/root/.openclaw/AGENTS.md",
-    "hermes": "/root/.hermes/AGENTS.md",
-}
+# Auto-committer pushed into every agent container (deploy step 4c).
+_COMMITTER_SCRIPT = Path(__file__).parent / "scripts" / "agent_committer.py"
 
 
 def _splice_taosmd_block(existing: str, new_rules: str) -> str:
@@ -717,9 +718,11 @@ async def deploy_agent(req: DeployRequest) -> dict:
                 logger.exception("%s: AGENTS.md injection failed", req.framework)
 
         # Step 4b: Initialise a git repo inside the container for agent state
-        # versioning. The repo lives at /root and covers the agent's text
-        # state (workspace, memory, framework config). A .gitignore excludes
-        # secrets and bulk artefacts so they never enter history.
+        # versioning. The repo root is the agent home (/root), so its
+        # .gitignore is an ALLOWLIST (agent_git._STATE_PATHS): workspace,
+        # memory and the per-framework AGENTS.md are versioned and everything
+        # else — framework config carrying api keys, caches, shell history —
+        # stays out of history entirely.
         versioning = True
         versioning_error = None
         try:
@@ -742,40 +745,47 @@ async def deploy_agent(req: DeployRequest) -> dict:
         # Step 4c: Install the auto-committer script and start it as a
         # background loop inside the container. Prefer a systemd unit so it
         # survives reboots; fall back to nohup when systemctl is absent.
+        # Every terminal failure below raises: the enclosing handler is what
+        # turns versioning off. A deploy result that says versioning=True while
+        # no committer ever starts is a lie no caller can detect.
         if versioning:
             try:
-                from pathlib import Path as _P
-                _committer = _P(__file__).parent / "scripts" / "agent_committer.py"
-                if _committer.exists():
-                    _mkdir_rc, _mkdir_out = await exec_in_container(
-                        container_name, ["mkdir", "-p", "/root/.taos"],
+                if not _COMMITTER_SCRIPT.exists():
+                    raise RuntimeError(
+                        f"committer script missing at {_COMMITTER_SCRIPT}"
                     )
-                    if _mkdir_rc != 0:
-                        raise RuntimeError(
-                            f"failed to create /root/.taos (rc={_mkdir_rc}): {_mkdir_out[-300:]}"
-                        )
-                    _push_rc, _push_out = await push_file(
-                        container_name,
-                        str(_committer),
-                        "/root/.taos/agent_committer.py",
+                _mkdir_rc, _mkdir_out = await exec_in_container(
+                    container_name, ["mkdir", "-p", "/root/.taos"],
+                )
+                if _mkdir_rc != 0:
+                    raise RuntimeError(
+                        f"failed to create /root/.taos (rc={_mkdir_rc}): {_mkdir_out[-300:]}"
                     )
-                    if _push_rc == 0:
-                        await exec_in_container(
-                            container_name, ["chmod", "+x", "/root/.taos/agent_committer.py"]
-                        )
-                        _has_systemd = await exec_in_container(
-                            container_name, ["bash", "-c", "command -v systemctl >/dev/null 2>&1 && echo yes || echo no"]
-                        )
-                        _installed = False
-                        if _has_systemd[0] == 0 and _has_systemd[1].strip() == "yes":
-                            _unit = """\
+                _push_rc, _push_out = await push_file(
+                    container_name,
+                    str(_COMMITTER_SCRIPT),
+                    "/root/.taos/agent_committer.py",
+                )
+                if _push_rc != 0:
+                    raise RuntimeError(
+                        f"failed to push committer script (rc={_push_rc}): {_push_out[-300:]}"
+                    )
+                await exec_in_container(
+                    container_name, ["chmod", "+x", "/root/.taos/agent_committer.py"]
+                )
+                _has_systemd = await exec_in_container(
+                    container_name, ["bash", "-c", "command -v systemctl >/dev/null 2>&1 && echo yes || echo no"]
+                )
+                _installed = False
+                if _has_systemd[0] == 0 and _has_systemd[1].strip() == "yes":
+                    _unit = """\
 [Unit]
 Description=taOS Agent Auto-Committer
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /root/.taos/agent_committer.py
+ExecStart=/usr/bin/env python3 /root/.taos/agent_committer.py
 Restart=always
 RestartSec=5
 Environment=AGENT_STATE_REPO=/root
@@ -784,75 +794,55 @@ Environment=COMMIT_INTERVAL=300
 [Install]
 WantedBy=multi-user.target
 """
-                            import tempfile as _tf
-                            with _tf.NamedTemporaryFile("w", suffix=".service", delete=False) as _tfh:
-                                _tfh.write(_unit)
-                                _unit_path = _tfh.name
-                            try:
-                                _unit_rc, _unit_out = await push_file(
-                                    container_name,
-                                    _unit_path,
-                                    "/etc/systemd/system/taos-agent-committer.service",
-                                )
-                            finally:
-                                os.unlink(_unit_path)
-                            if _unit_rc == 0:
-                                await exec_in_container(
-                                    container_name,
-                                    ["systemctl", "enable", "--now", "taos-agent-committer.service"],
-                                )
-                                _active = await exec_in_container(
-                                    container_name, ["systemctl", "is-active", "taos-agent-committer.service"]
-                                )
-                                if _active[0] == 0 and _active[1].strip() == "active":
-                                    steps.append("committer_installed")
-                                    _installed = True
-                                else:
-                                    logger.warning(
-                                        "Deploy %s: committer systemd unit not active: %s",
-                                        req.name, _active[1].strip(),
-                                    )
-                                    steps.append("committer_failed")
-                            else:
-                                logger.warning(
-                                    "Deploy %s: failed to push committer unit: %s",
-                                    req.name, _unit_out[-200:],
-                                )
-                        if not _installed:
-                            _nohup_rc, _nohup_out = await exec_in_container(
-                                container_name,
-                                [
-                                    "bash", "-c",
-                                    "nohup python3 /root/.taos/agent_committer.py "
-                                    "> /root/.taos/committer.log 2>&1 &",
-                                ],
-                            )
-                            if _nohup_rc == 0:
-                                steps.append("committer_installed_nohup")
-                            else:
-                                _nohup_error = (
-                                    f"nohup committer failed (rc={_nohup_rc}): "
-                                    f"{_nohup_out[-200:]}"
-                                )
-                                logger.warning("Deploy %s: %s", req.name, _nohup_error)
-                                steps.append("committer_failed")
-                                versioning = False
-                                versioning_error = _nohup_error
-                    else:
-                        _push_error = (
-                            f"failed to push committer script (rc={_push_rc}): "
-                            f"{_push_out[-200:]}"
+                    import tempfile as _tf
+                    with _tf.NamedTemporaryFile("w", suffix=".service", delete=False) as _tfh:
+                        _tfh.write(_unit)
+                        _unit_path = _tfh.name
+                    try:
+                        _unit_rc, _unit_out = await push_file(
+                            container_name,
+                            _unit_path,
+                            "/etc/systemd/system/taos-agent-committer.service",
                         )
-                        logger.warning("Deploy %s: %s", req.name, _push_error)
-                        steps.append("committer_failed")
-                        versioning = False
-                        versioning_error = _push_error
-                else:
-                    _missing_error = f"committer script not found at {_committer}"
-                    logger.warning("Deploy %s: %s", req.name, _missing_error)
-                    steps.append("committer_failed")
-                    versioning = False
-                    versioning_error = _missing_error
+                    finally:
+                        os.unlink(_unit_path)
+                    if _unit_rc == 0:
+                        await exec_in_container(
+                            container_name,
+                            ["systemctl", "enable", "--now", "taos-agent-committer.service"],
+                        )
+                        _active = await exec_in_container(
+                            container_name, ["systemctl", "is-active", "taos-agent-committer.service"]
+                        )
+                        if _active[0] == 0 and _active[1].strip() == "active":
+                            steps.append("committer_installed")
+                            _installed = True
+                        else:
+                            # Not terminal: the nohup fallback below still gets
+                            # a turn, and only its failure disables versioning.
+                            logger.warning(
+                                "Deploy %s: committer systemd unit not active: %s",
+                                req.name, _active[1].strip(),
+                            )
+                    else:
+                        logger.warning(
+                            "Deploy %s: failed to push committer unit: %s",
+                            req.name, _unit_out[-200:],
+                        )
+                if not _installed:
+                    _nohup_rc, _nohup_out = await exec_in_container(
+                        container_name,
+                        [
+                            "bash", "-c",
+                            "nohup python3 /root/.taos/agent_committer.py "
+                            "> /root/.taos/committer.log 2>&1 &",
+                        ],
+                    )
+                    if _nohup_rc != 0:
+                        raise RuntimeError(
+                            f"nohup committer failed (rc={_nohup_rc}): {_nohup_out[-300:]}"
+                        )
+                    steps.append("committer_installed_nohup")
             except Exception as exc:
                 logger.warning("Deploy %s: committer install failed: %s", req.name, exc)
                 versioning = False
