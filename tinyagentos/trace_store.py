@@ -219,10 +219,13 @@ class AgentTraceStore:
         """Inject the reasoning judge.  None disables judging."""
         self._judge = judge
 
-    async def _open_bucket(self, bucket: str) -> aiosqlite.Connection:
-        conn = self._connections.get(bucket)
-        if conn is not None:
-            return conn
+    async def _open_bucket(self, bucket: str, *, read_only: bool = False) -> aiosqlite.Connection:
+        # Only cache non-read-only connections (write connections)
+        if not read_only:
+            conn = self._connections.get(bucket)
+            if conn is not None:
+                return conn
+        
         trace_dir = _agent_trace_dir(self._data_dir, self._slug)
         trace_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -230,11 +233,16 @@ class AgentTraceStore:
         except OSError:
             pass
         db_path = _bucket_db_path(self._data_dir, self._slug, bucket)
-        conn = await aiosqlite.connect(str(db_path))
+        # Open read-only connection if requested
+        if read_only:
+            conn = await aiosqlite.connect(str(db_path), mode='ro')
+        else:
+            conn = await aiosqlite.connect(str(db_path))
         await apply_wal_pragmas_async(conn)
         await conn.executescript(TRACE_SCHEMA)
         await conn.commit()
-        self._connections[bucket] = conn
+        if not read_only:
+            self._connections[bucket] = conn
         return conn
 
     async def _evict_old_buckets(self, current_bucket: str) -> None:
@@ -437,38 +445,42 @@ class AgentTraceStore:
                 if not _bucket_overlaps(bucket, since, until):
                     continue
                 try:
-                    conn = await self._open_bucket(bucket)
-                    clauses = []
-                    params: list[Any] = []
-                    if kind is not None:
-                        clauses.append("kind = ?"); params.append(kind)
-                    if channel_id is not None:
-                        clauses.append("channel_id = ?"); params.append(channel_id)
-                    if trace_id is not None:
-                        clauses.append("trace_id = ?"); params.append(trace_id)
-                    if since is not None:
-                        clauses.append("created_at >= ?"); params.append(since)
-                    if until is not None:
-                        clauses.append("created_at <= ?"); params.append(until)
-                    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-                    sql = f"SELECT * FROM trace_events{where} ORDER BY created_at DESC LIMIT ?"
-                    params.append(limit)
-                    cur = await conn.execute(sql, params)
-                    rows = await cur.fetchall()
-                    cols = [d[0] for d in cur.description]
-                    await cur.close()
-                    for r in rows:
-                        ev = dict(zip(cols, r))
-                        try:
-                            ev["payload"] = json.loads(ev.get("payload") or "{}")
-                        except Exception:
-                            pass
-                        ev_id = ev.get("id")
-                        if ev_id and ev_id in seen_ids:
-                            continue
-                        if ev_id:
-                            seen_ids.add(ev_id)
-                        merged.append(ev)
+                    # Open read-only connection for listing, close after use
+                    conn = await aiosqlite.connect(f"file:{_bucket_db_path(self._data_dir, self._slug, bucket)}?mode=ro", uri=True)
+                    try:
+                        clauses = []
+                        params: list[Any] = []
+                        if kind is not None:
+                            clauses.append("kind = ?"); params.append(kind)
+                        if channel_id is not None:
+                            clauses.append("channel_id = ?"); params.append(channel_id)
+                        if trace_id is not None:
+                            clauses.append("trace_id = ?"); params.append(trace_id)
+                        if since is not None:
+                            clauses.append("created_at >= ?"); params.append(since)
+                        if until is not None:
+                            clauses.append("created_at <= ?"); params.append(until)
+                        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+                        sql = f"SELECT * FROM trace_events{where} ORDER BY created_at DESC LIMIT ?"
+                        params.append(limit)
+                        cur = await conn.execute(sql, params)
+                        rows = await cur.fetchall()
+                        cols = [d[0] for d in cur.description]
+                        await cur.close()
+                        for r in rows:
+                            ev = dict(zip(cols, r))
+                            try:
+                                ev["payload"] = json.loads(ev.get("payload") or "{}")
+                            except Exception:
+                                pass
+                            ev_id = ev.get("id")
+                            if ev_id and ev_id in seen_ids:
+                                continue
+                            if ev_id:
+                                seen_ids.add(ev_id)
+                            merged.append(ev)
+                    finally:
+                        await conn.close()
                 except Exception as exc:
                     logger.warning("trace_store: list() bucket %s skipped: %s", bucket, exc)
                 if len(merged) >= limit * 4:

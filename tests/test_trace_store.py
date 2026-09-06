@@ -22,6 +22,7 @@ from tinyagentos.trace_store import (
     VALID_KINDS,
     SCHEMA_VERSION,
     SEAL_AGE_SECONDS,
+    TRACE_SCHEMA,
 )
 
 
@@ -549,6 +550,48 @@ async def test_list_dedup_by_id_primary_wins(tmp_path):
     if isinstance(payload, str):
         payload = json.loads(payload)
     assert payload.get("source") == "db", "DB version should win over late version"
+
+
+@pytest.mark.asyncio
+async def test_list_does_not_leak_connections_or_threads(tmp_path):
+    """list() must not leave open connections or threads behind."""
+    import sqlite3
+    import threading
+    store = AgentTraceStore(tmp_path, "agent-leak")
+
+    for i in range(20):
+        ts = _ts(hour=i)
+        bucket = _bucket_key(ts)
+        db_path = _bucket_db_path(tmp_path, "agent-leak", bucket)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(TRACE_SCHEMA)
+        conn.execute(
+            "INSERT INTO trace_events (id, v, created_at, agent_name, kind, payload) VALUES (?, ?, ?, ?, ?, ?)",
+            (f"id-{i}", 1, ts, "agent-leak", "lifecycle", '{"event":"test"}'),
+        )
+        conn.commit()
+        conn.close()
+
+    before_threads = threading.active_count()
+    before_conns = len(store._connections)
+
+    await store.list()
+    after_first_threads = threading.active_count()
+    after_first_conns = len(store._connections)
+
+    await store.list()
+    after_second_threads = threading.active_count()
+    after_second_conns = len(store._connections)
+
+    assert after_second_conns == before_conns, (
+        f"open connections leaked: {after_second_conns} (before {before_conns})"
+    )
+    assert after_second_threads <= before_threads + 1, (
+        f"threads leaked: {after_second_threads} (before {before_threads})"
+    )
+
+    await store.close()
 
 
 # ---------------------------------------------------------------------------
