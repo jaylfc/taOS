@@ -7,18 +7,33 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from tinyagentos.auth_context import require_admin
 from tinyagentos.cluster import backend_services
 from tinyagentos.restart_orchestrator import write_pending_restart, read_pending_restart
 
 logger = logging.getLogger(__name__)
 
+# Restart/shutdown triggers are gated per handler (admin or host local token,
+# see tinyagentos.auth_context.require_admin) rather than at router level:
+# prepare-shutdown must also accept the loopback stop hook, and the status read
+# stays open.
 router = APIRouter()
 
 
-@router.post("/api/system/prepare-shutdown")
+def _require_admin_or_loopback(request: Request) -> None:
+    """Gate for the shutdown drain: the loopback systemd stop hook (no session,
+    ``via == "loopback"`` stamped by AuthMiddleware) or an admin/local-token
+    caller. A remote non-admin member session drains every agent otherwise.
+    """
+    if getattr(request.state, "via", None) == "loopback":
+        return
+    require_admin(request)
+
+
+@router.post("/api/system/prepare-shutdown", dependencies=[Depends(_require_admin_or_loopback)])
 async def prepare_shutdown(request: Request):
     """Gracefully prepare all agents for shutdown. Used by systemd stop hook."""
     orchestrator = getattr(request.app.state, "orchestrator", None)
@@ -28,9 +43,9 @@ async def prepare_shutdown(request: Request):
     return {"status": "ready", "report": report}
 
 
-@router.post("/api/system/restart/prepare")
+@router.post("/api/system/restart/prepare", dependencies=[Depends(require_admin)])
 async def prepare_restart(request: Request):
-    """Restart just the controller process.
+    """Restart just the controller process. Admin or host local token only.
 
     Agents and LiteLLM run independently and stay up across a controller
     restart, so there's nothing to drain — the restart is a ~5s uvicorn
@@ -169,22 +184,7 @@ async def _managed_ai_units(request: Request) -> list[tuple[str, str | None]]:
     return [c for c in checks if c is not None]
 
 
-def _is_admin_or_local_token(request: Request) -> bool:
-    """True if the caller is an admin session or presented the host local token.
-
-    Restarting host services is privileged (it runs ``systemctl restart``), so
-    a plain non-admin user session must never reach it. ``AuthMiddleware`` sets
-    both signals on ``request.state`` (see
-    ``tinyagentos/routes/skill_exec.py::_is_admin_or_local_token`` for the full
-    rationale). The ``system`` router is not gated at the router level, so this
-    handler guards itself.
-    """
-    if getattr(request.state, "is_admin", False):
-        return True
-    return getattr(request.state, "via", None) == "local_token"
-
-
-@router.post("/api/system/ai-stack/restart")
+@router.post("/api/system/ai-stack/restart", dependencies=[Depends(require_admin)])
 async def restart_ai_stack(request: Request):
     """Restart the local AI inference stack -- issue #1743.
 
@@ -198,9 +198,6 @@ async def restart_ai_stack(request: Request):
     partial recovery still reports what was restarted. Units are restarted
     concurrently so worst-case latency is one unit's timeout, not their sum.
     """
-    if not _is_admin_or_local_token(request):
-        return JSONResponse({"error": "forbidden"}, status_code=403)
-
     targets = await _managed_ai_units(request)
     if not targets:
         return {

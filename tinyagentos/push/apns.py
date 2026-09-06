@@ -40,16 +40,63 @@ class NullApnsSender:
 
 
 def build_apns_payload(
-    *, title: str, body: str, data: dict | None = None, content_available: bool = False
+    *,
+    title: str,
+    body: str,
+    data: dict | None = None,
+    content_available: bool = False,
+    category: str | None = None,
+    actions: list[dict] | None = None,
+    image: str | None = None,
 ) -> dict:
+    """Build an APNs payload, letting explicit keyword args win over `data`.
+
+    ``actions``: when the caller passes anything other than the default
+    ``None`` (including an explicit empty list ``[]``), it is authoritative
+    for `payload["actions"]` too, not only for the mutable-content gate below.
+    An explicit `[]` overrides a stale `data["actions"]` (e.g. re-sending a
+    notification after a decision resolved) by leaving the key present with
+    an empty list, rather than removing it. Omitting `actions` entirely
+    (`None`) leaves any `data`-supplied action set untouched.
+    """
+    # `data` goes down first so the explicit keyword arguments below win over any
+    # same-named key the caller happened to put in it. Merging the other way round
+    # let a stray data["image"] replace the explicit image *after* mutable-content
+    # had already been decided, so the payload advertised one image while the flag
+    # was computed from another.
+    payload: dict = dict(data or {})
+    if image:
+        payload["image"] = image
+    if actions is not None:
+        payload["actions"] = actions
+    # `data` may still be the only source of an image or an action set (that is
+    # how notifications_push threads both), so read the merged values back rather
+    # than trusting the arguments: mutable-content has to follow what the service
+    # extension will actually be handed, not what this call was told about.
+    effective_image = payload.get("image")
+    effective_actions = payload.get("actions")
+
     aps: dict = {}
     if title or body:
         aps["alert"] = {"title": title, "body": body}
     if content_available:
         aps["content-available"] = 1
-    payload = {"aps": aps}
-    if data:
-        payload.update(data)
+    # Apple does not honour a JSON `actions` array; the native shell (tsk-cf7wzc)
+    # registers a UNNotificationCategory whose identifier matches the `category`
+    # below. Buttons come from the registered category, and tapping one fires a
+    # UNUserNotificationCenterDelegate callback the shell routes back to the
+    # controller's Decisions answer route.
+    if category:
+        aps["category"] = category
+    # Any rich attachment (image) or action set requires the notification service
+    # extension to mutate the payload before display: download the image, attach
+    # UNNotificationAttachment, and surface the action buttons. APNs only allows
+    # that mutation when `mutable-content` is set.
+    if (effective_image or effective_actions) and not content_available:
+        aps["mutable-content"] = 1
+    # `aps` is Apple's reserved envelope; assigning it last keeps a stray
+    # data["aps"] from overwriting the alert and flags computed above.
+    payload["aps"] = aps
     return payload
 
 
