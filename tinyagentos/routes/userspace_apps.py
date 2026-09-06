@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from tinyagentos.code_analyzer import analyze_app_source, has_critical
+from tinyagentos.middleware.upload_body_limit import register_upload_cap
 from tinyagentos.userspace.broker import handle_capability, GATED_CAPS
 from tinyagentos.userspace.capabilities import capability_ceiling, default_provenance_for_trust
 from tinyagentos.userspace.container_deploy import deploy_app_container, destroy_app_container
@@ -126,6 +127,10 @@ async def get_app(request: Request, app_id: str):
 
 # Cap the package upload / fetch size to bound memory and pre-filter zip bombs.
 _MAX_PACKAGE_BYTES = 64 * 1024 * 1024
+
+# The read() below runs only after FastAPI has already spooled the multipart
+# body, so the cap also has to be enforced on the arriving request.
+register_upload_cap("/api/userspace-apps/install", lambda: _MAX_PACKAGE_BYTES)
 
 
 @router.post("/api/userspace-apps/install")

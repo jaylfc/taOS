@@ -175,6 +175,17 @@ entirely**. `scripts/install-server.sh:1510` runs `pip install -e ".[proxy]"`, a
 the set audited in `uv.lock`, and a future upstream relicense reaches users without tripping the
 lockfile. Any licence-scan CI job must be pointed at what the installer actually installs.
 
+**Resolved (tsk-f3j765).** Neither option 1 nor 2 as written: pip cannot subtract one member of
+another package's extra, and plain `litellm` does not run the proxy. Instead the `proxy` extra in
+`pyproject.toml` inlines litellm 1.94.2's own proxy requirements minus `litellm-enterprise`, caps
+litellm `<1.95` (the installer's `pip install -e .[proxy]` does not read `uv.lock`, and litellm 1.99
+grows requirements the inlined list lacks), and `install-server.sh` uninstalls a copy an earlier
+install left behind. `yt-dlp` is now a declared dependency. `scripts/check_install_licences.py`
+walks `uv.lock` from the server extras and fails on any blocked licence or any installer
+`pip install` of an undeclared package; `tests/test_install_licences.py` holds the rule.
+Option 3 (isolated proxy venv) remains the structural answer to the transitive footprint, incl.
+`soundfile`'s bundled libsndfile (§2.1).
+
 ---
 
 ## 2. Licence FLAGs and compliance hygiene
@@ -318,8 +329,9 @@ source offer. Same task as §2.3.
 ### 2.7 Other hygiene the audit surfaced
 
 - **`jinja2` 3.1.6 is a declared core dependency with zero imports anywhere in the repo** —
-  `grep -rn "import jinja2\|from jinja2" tinyagentos/` → 0 (re-verified). Either put it to work (it
-  is the fix for the stored XSS, §3.1 S1) or drop it.
+  `grep -rn "import jinja2\|from jinja2" tinyagentos/` → 0 (re-verified). Either put it to work or
+  drop it. The stored XSS it was nominated for (§3.1 S1) has since been closed with stdlib
+  `html.escape`, so nothing depends on that decision any more.
 - **`chardet` 7.4.3 is 0BSD today but was LGPL-2.1+ through 5.2.0.** The lock pins a good version;
   a careless bump backwards re-introduces an LGPL core dependency. This is exactly the shape a
   licence-scan gate catches.
@@ -365,7 +377,7 @@ being written down; the line numbers are current.
 
 | # | Area | Current code | Concrete defect | Library (SPDX) | Effort | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |
-| **S1** | Stored XSS, notifications | `tinyagentos/routes/notifications.py:45-46` (~12 LOC fragment builder) | `f'<div class="notif-title">{level_icon} {item["title"]}</div>'` and the sibling `notif-meta` line interpolate **unescaped**. `tinyagentos/routes/broker.py:64-70` builds `message` from `body.agent_identity`, `body.provider_id` and `body.reason` straight off the `POST /api/broker/access-request` body and calls `notifications.add(...)` — free-form attacker-controlled text. A `reason` of `<img src=x onerror=…>` executes in the dashboard origin, and the CSRF cookie is deliberately non-HttpOnly (`middleware/csrf.py`) so it is directly readable. `routes/project_invites.py:1365` does it right with `html.escape` — the codebase knows the rule; this path missed it. | `jinja2` 3.1.6 + `markupsafe` 3.0.3 (**BSD-3-Clause**) — **already declared core deps with zero imports anywhere** (§2.7). Minimum viable: `markupsafe.escape()` / stdlib `html.escape` at the two interpolations. Zero new weight. | **S** | **REPLACE** with an autoescaped template |
+| **S1** | Stored XSS, notifications | `tinyagentos/routes/notifications.py:50-51` (~12 LOC fragment builder) | `f'<div class="notif-title">{level_icon} {item["title"]}</div>'` and the sibling `notif-meta` line interpolated **unescaped** (pre-fix). `tinyagentos/routes/broker.py:64-70` builds `message` from `body.agent_identity`, `body.provider_id` and `body.reason` straight off the `POST /api/broker/request` body and calls `notifications.add(...)` — free-form attacker-controlled text. A `reason` of `<img src=x onerror=…>` executes in the dashboard origin, and the CSRF cookie is deliberately non-HttpOnly (`middleware/csrf.py`) so it is directly readable. `routes/project_invites.py:1365` does it right with `html.escape` — the codebase knows the rule; this path missed it. | `jinja2` 3.1.6 + `markupsafe` 3.0.3 (**BSD-3-Clause**) — **already declared core deps with zero imports anywhere** (§2.7). Minimum viable: `markupsafe.escape()` / stdlib `html.escape` at the two interpolations. Zero new weight. | **S** | **FIXED (tsk-wpjxqn)** — both interpolations now go through stdlib `html.escape`; the JSON view still returns raw text. An autoescaped template remains the nicer shape if the fragment ever grows. |
 | **S2** | HTML injection, App Studio preview | `tinyagentos/routes/coding.py:555-563` (six regexes) + `:590`, `:610`, `:642-648` (~110 LOC) | Line 590 builds `f"<style>{text}</style>"` from raw `.css` bytes and line 610 builds `f"<script{remaining_attrs}>{text}</script>"` from raw `.js` bytes — **neither escapes the terminator**, so a JS string containing `</script>` (very likely in LLM-authored code) ends the block and the remainder is reparsed as HTML. Also: `_SCRIPT_TAG_RE`'s `[^>]*` (`:559`) stops at the first `>` even inside a quoted attribute; `_ATTR_RE` (`:562`) requires quotes so unquoted `src=` is never rewritten; `_CSS_URL_RE` (`:563`) truncates a data-URI `url()` at the first `)`. | `lxml.html` — **already a core dependency** (`lxml>=5.0.0`, BSD-3, ARM64 manylinux wheels). `routes/desktop_browser/rewriter.py` already does this class of job correctly with it. Zero new deps. | **M** | **REPLACE** |
 | **S3** | Isolation leak, browser proxy | `tinyagentos/routes/desktop_browser/rewriter.py:45,230`; `proxy.py:399` (~35 LOC) | `_CSS_URL_RE` matches only `url()`. **`@import "x.css";` is not matched at all** — `grep -rn "@import" tinyagentos/routes/desktop_browser/` returns **zero hits** (verified), so a proxied page's `@import` fetches straight from origin, bypassing cookie isolation and the SSRF choke point. Separately `proxy.py:399` rewrites **only** `text/html`; a `text/css` response falls through to byte pass-through, so external stylesheets keep origin-absolute URLs entirely. `themes/schema.py:44` already knows `@import` exists — the knowledge is in the tree, just not here. | `tinycss2` 1.5.1 (**BSD-3-Clause**; PyPI classifier says generic "BSD License", the CourtBouillon/Kozea project ships a 3-clause LICENSE). Pure `py3-none-any`, one dep `webencodings` (BSD, pure), ~150 KB combined. The tokenizer behind WeasyPrint and bleach's CSS sanitiser. | **M** | **REPLACE** + rewrite `text/css` |
 | **S4** | Theme token validation | `tinyagentos/themes/schema.py:44` `_FORBIDDEN`, `:46-51` `_check_value` | A **blocklist** guarding a value destined for a CSS declaration: `(url\s*\(\|expression\s*\(\|javascript:\|</\|<script\|@import\|;\s*}\|\\)`. `;\s*}` catches `red;}` but `red} body{position:fixed;inset:0` has no `;` before `}`, no `url(`, no `@import` → **passes**. That is a rule breakout giving arbitrary CSS on the shell (overlay / UI-redress). **Honest caveat, verified:** the only consumer today is `desktop/src/stores/theme-store.ts:468` → `root.style.setProperty(k, v)`, and CSSOM rejects an unbalanced `}`, so **no live exploit is demonstrated**. The defect is that a provably incomplete blocklist is the only server-side gate; the day anything inlines tokens into a `<style>` string it becomes live. Blocking `url(` also rejects legitimate gradients and `image-set()`. | `tinycss2` (same dep as S3): `parse_component_value_list` plus a per-token-class **allowlist** — colour tokens accept only `<hash-token>`/`<ident>`/`rgb()`-shaped functions, lengths only `<dimension>`. `{`/`}` rejected by construction. | **S** | **REPLACE** the blocklist with an allowlist |

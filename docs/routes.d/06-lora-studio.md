@@ -7,7 +7,7 @@
 ### POST /api/loras/ingest
 
 - Form field `url`, a `civitai.com` / `civitai.red` model page
-- Answers `202` with the pending row and runs the download in a background task
+- Answers `202` with the pending row; the download runs in a background task
 - `400` for any other host or an unparseable URL
 
 ### GET /api/loras
@@ -17,22 +17,22 @@
 
 ### GET /api/loras/{id}
 
-- One row, `404` if unknown
+- One row; `404` if unknown
 
 ### GET /api/loras/{id}/preview/{n}
 
 - Serves stored preview image `n`
-- Paths are re-checked against the archive root before the file is served
+- Path re-checked against the archive root before serving
 
 ### DELETE /api/loras/{id}
 
-- Removes the row, the safetensors file, and the LoRA directory
-- Refuses with `400` if a stored path resolves outside the archive root rather than deleting it
+- Removes the row, the safetensors file and the LoRA directory
+- `400` rather than a delete if a stored path resolves outside the archive root
 
 ### POST /api/loras/{id}/retry
 
 - Re-runs a `failed` ingest
-- The `failed → pending` transition is a single atomic UPDATE, so concurrent retries get one `202` and one `409`, never two download jobs in one directory
+- The `failed → pending` transition is one atomic UPDATE: concurrent retries get one `202` and one `409`, never two download jobs in one directory
 
 ## Archive layout
 
