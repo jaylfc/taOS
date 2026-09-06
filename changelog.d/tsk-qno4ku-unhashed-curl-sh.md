@@ -1,0 +1,6 @@
+### Fixed: Immutable version-pinned installer URLs and abort-on-hash-mismatch for catalog installs
+
+- `app-catalog/agents/deer-flow/scripts/install.sh`: Switched uv installer fetch from mutable `astral.sh/uv/install.sh` to immutable `github.com/astral-sh/uv/releases/download/0.12.10/uv-installer.sh`. Added `_fetch_and_verify` helper that exits 1 with URL/expected/actual on hash mismatch. Recorded measurement command and hash.
+- `app-catalog/agents/openclaw/scripts/install.sh`: Replaced mutable NodeSource `setup_22.x` script with direct apt repo pinning (replicating its key+repo actions). Added `_fetch_and_verify` helper that exits 1 with URL/expected/actual on key hash mismatch.
+- `app-catalog/streaming/code-server/Dockerfile`: Switched installer fetch from mutable `code-server.dev/install.sh` to immutable `raw.githubusercontent.com/coder/code-server/v4.135.0/install.sh`. Recorded measurement command and hash.
+- `tests/scripts/test_audit_s2_22.py`: Added `test_sha256_pinned_urls_are_versioned` (mutable-URL guard, fails when a pinned sha256sum -c fetch has no version token in its URL). Added `test_hash_mismatch_aborts_with_url` (verifies non-zero exit and URL presence in stderr on hash mismatch).

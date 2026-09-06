@@ -36,8 +36,35 @@ _node_ok() {
   return 1
 }
 if ! _node_ok; then
-  echo "[openclaw] installing Node >=22.19 via NodeSource"
-  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  echo "[openclaw] installing Node >=22.19 via NodeSource apt repo (direct)"
+  _fetch_and_verify() {
+    local url="$1"
+    local expected="$2"
+    local dest="$3"
+    if ! curl -fsSL -o "$dest" "$url"; then
+      echo "[openclaw] FATAL: failed to download $url" >&2
+      exit 1
+    fi
+    local actual
+    actual=$(sha256sum "$dest" | awk '{print $1}')
+    if [ "$actual" != "$expected" ]; then
+      echo "[openclaw] FATAL: hash mismatch for $url" >&2
+      echo "[openclaw] expected: $expected" >&2
+      echo "[openclaw] actual:   $actual" >&2
+      rm -f "$dest"
+      exit 1
+    fi
+  }
+  # Immutable NodeSource GPG key (measured 2026-09-06):
+  #   url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+  #   sha256sum: b42e0321dabdc24e892115da705cf061167eac12a317f23d329862d0aa0a271d
+  _fetch_and_verify "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key" \
+    "b42e0321dabdc24e892115da705cf061167eac12a317f23d329862d0aa0a271d" \
+    /tmp/nodesource.gpg
+  gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource.gpg
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+    > /etc/apt/sources.list.d/nodesource.list
+  DEBIAN_FRONTEND=noninteractive apt-get update -qq
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs
 fi
 if ! command -v git >/dev/null 2>&1; then
