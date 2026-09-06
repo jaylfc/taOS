@@ -187,3 +187,102 @@ async def test_poll_item_updates_monitor_config(store):
     assert item["monitor"]["last_poll"] > 0
     # No change -> interval decays
     assert item["monitor"]["current_interval"] == int(86400 * 2.0)
+
+
+# ------------------------------------------------------------------
+# S2-19: size cap and content-type gate on monitor fetches
+# ------------------------------------------------------------------
+
+
+class _TrackedResponse:
+    """Mock response that tracks how many bytes are consumed."""
+
+    def __init__(self, chunks, content_type="text/html"):
+        self._chunks = list(chunks)
+        self._all_text = b"".join(self._chunks).decode("utf-8", errors="replace")
+        self.status_code = 200
+        self.headers = {"content-type": content_type}
+        self.is_redirect = False
+        self.bytes_read = 0
+
+    def raise_for_status(self):
+        pass
+
+    async def aiter_bytes(self, chunk_size=8192):
+        for chunk in self._chunks:
+            self.bytes_read += len(chunk)
+            yield chunk
+
+    @property
+    def text(self):
+        self.bytes_read = len(self._all_text.encode("utf-8"))
+        return self._all_text
+
+    @property
+    def encoding(self):
+        return "utf-8"
+
+
+@pytest.mark.asyncio
+async def test_fetch_article_rejects_oversized_body(store):
+    """Monitor fetch must not buffer a body larger than the cap."""
+    chunk_size = 8192
+    num_chunks = 2000  # ~15 MB total, over the 10 MB default cap
+    chunks = [b"x" * chunk_size] * num_chunks
+    resp = _TrackedResponse(chunks, content_type="text/html")
+
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(return_value=resp)
+
+    item_id = await store.add_item(
+        source_type="article",
+        source_url="https://example.com/large",
+        title="Article",
+        author="",
+        content="original content",
+        summary="summary",
+        categories=[],
+        tags=[],
+        metadata={},
+        status="ready",
+        monitor={"frequency": 86400, "decay_rate": 2.0, "stop_after_days": 14,
+                  "pinned": False, "last_poll": 0, "current_interval": 86400},
+    )
+    svc = MonitorService(store=store, http_client=mock_http)
+    new_content, changed = await svc._fetch_article(await store.get_item(item_id))
+
+    assert new_content == ""
+    assert changed is False
+    assert resp.bytes_read <= 10 * 1024 * 1024 + chunk_size, (
+        f"Oversized body should not be fully buffered, but {resp.bytes_read} bytes were read"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_article_rejects_non_text_content_type(store):
+    """Monitor fetch must reject non-text content-types."""
+    resp = _TrackedResponse([b"binary data"], content_type="application/octet-stream")
+
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(return_value=resp)
+
+    item_id = await store.add_item(
+        source_type="article",
+        source_url="https://example.com/bin",
+        title="Article",
+        author="",
+        content="original content",
+        summary="summary",
+        categories=[],
+        tags=[],
+        metadata={},
+        status="ready",
+        monitor={"frequency": 86400, "decay_rate": 2.0, "stop_after_days": 14,
+                  "pinned": False, "last_poll": 0, "current_interval": 86400},
+    )
+    svc = MonitorService(store=store, http_client=mock_http)
+    new_content, changed = await svc._fetch_article(await store.get_item(item_id))
+
+    assert new_content == ""
+    assert changed is False
+    assert resp.bytes_read == 0, "Non-text response should not be buffered at all"
