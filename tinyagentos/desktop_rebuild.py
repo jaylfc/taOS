@@ -73,10 +73,18 @@ def _newest_build_input_mtime(desktop_dir: Path) -> float:
         for path in src_dir.rglob("*"):
             if path.is_file():
                 newest = max(newest, path.stat().st_mtime)
-    # Dependency + build-tool config lives at the top of desktop/; node_modules
-    # is deliberately not walked (see _is_desktop_build_input).
-    for path in desktop_dir.iterdir():
-        if path.is_file() and _is_desktop_build_input(f"desktop/{path.name}"):
+    # Dependency + build-tool config can live anywhere under desktop/, not
+    # just at the top level (a workspace-style nested package.json or
+    # tsconfig) -- walk the whole subtree, pruning node_modules/ and the
+    # already-covered src/, mirroring the `find ... -prune` in
+    # scripts/rebuild-desktop.sh.
+    for path in desktop_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        rel_parts = path.relative_to(desktop_dir).parts
+        if rel_parts[0] == "src" or "node_modules" in rel_parts:
+            continue
+        if _is_desktop_build_input("desktop/" + "/".join(rel_parts)):
             newest = max(newest, path.stat().st_mtime)
     return newest
 

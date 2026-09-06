@@ -434,9 +434,13 @@ async def test_rebuild_falls_through_when_provenance_matches_but_index_html_miss
     result = await rebuild_desktop_bundle_if_stale(tmp_path)
     assert result.rebuilt is True
     assert result.success is True
-    # Marker write must not have happened for a stale-but-missing bundle, but
-    # a fresh build should have been triggered to restore index.html.
+    # A fresh build must be triggered to restore index.html; provenance is
+    # then re-recorded for the clean tree that was just built (fake_exec
+    # reports a clean `git status` and a matching `rev-parse`, so the marker
+    # write does happen here -- this is not the "stale marker, dirty tree"
+    # case that skips recording).
     assert any(c[0] == "npm" and c[1] == "run" for c in calls)
+    assert (static_dir / ".taos-bundle-provenance").read_text().strip() == "MATCHING_SHA"
 
 
 @pytest.mark.asyncio
@@ -957,6 +961,33 @@ def test_is_bundle_stale_sees_newer_build_config(tmp_path):
     pkg = tmp_path / "desktop" / "package.json"
     pkg.write_text('{"name":"x"}')
     os.utime(pkg, (time.time(), time.time()))
+
+    assert _is_bundle_stale(tmp_path) is True
+
+
+def test_is_bundle_stale_sees_newer_nested_build_config(tmp_path):
+    """A build-config file nested under desktop/ (not a direct child) still counts.
+
+    The mtime scan used to call desktop_dir.iterdir() -- direct children only
+    -- for build-config files, while scripts/rebuild-desktop.sh's `find`
+    walks the whole subtree. A workspace-style nested package.json or
+    tsconfig would be invisible to the Python check but still caught by the
+    shell path (#2766 [6]).
+    """
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    bundle = static_dir / "index.html"
+    bundle.write_text("<html />")
+    os.utime(src_dir / "App.tsx", (time.time() - 120, time.time() - 120))
+    os.utime(bundle, (time.time() - 60, time.time() - 60))
+    nested_dir = tmp_path / "desktop" / "packages" / "widgets"
+    nested_dir.mkdir(parents=True)
+    nested_tsconfig = nested_dir / "tsconfig.json"
+    nested_tsconfig.write_text("{}")
+    os.utime(nested_tsconfig, (time.time(), time.time()))
 
     assert _is_bundle_stale(tmp_path) is True
 
