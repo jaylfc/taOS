@@ -32,6 +32,7 @@ class ContainerUnreachableError(RuntimeError):
 
 _GITIGNORE_CONTENTS = """\
 .env
+.env.*
 *.cred
 *token*
 *.pem
@@ -57,6 +58,24 @@ async def _git(container: str, args: List[str], timeout: int = 60) -> tuple[int,
         container, ["git", "-C", _REPO_PATH, *args], timeout=timeout
     )
     return rc, out
+
+
+# Real diagnostics git prints for an unknown/missing revision, observed against
+# the actual binary (not guessed): `rev-parse --verify X^{commit}` prints
+# "Needed a single revision" or "unknown revision or path not in the working
+# tree", while `git show X` prints "bad object" (and sometimes "bad
+# revision"). Matched case-insensitively since git's casing varies by command.
+_UNKNOWN_REVISION_PHRASES = (
+    "needed a single revision",
+    "unknown revision",
+    "bad revision",
+    "bad object",
+)
+
+
+def _is_unknown_revision(out: str) -> bool:
+    lowered = out.lower()
+    return any(phrase in lowered for phrase in _UNKNOWN_REVISION_PHRASES)
 
 
 async def git_init(container: str) -> None:
@@ -99,7 +118,7 @@ async def git_is_dirty(container: str) -> bool:
 async def git_rev_parse(container: str, sha: str) -> str:
     rc, out = await _git(container, ["rev-parse", "--verify", f"{sha}^{{commit}}"])
     if rc != 0:
-        if "bad revision" in out.lower():
+        if _is_unknown_revision(out):
             raise RuntimeError(f"unknown revision {sha}")
         raise ContainerUnreachableError(out.strip() or "container unreachable")
     return out.strip()
@@ -135,7 +154,7 @@ async def git_log(container: str) -> List[dict]:
 async def git_diff(container: str, sha: str) -> str:
     rc, out = await _git(container, ["show", "--format=", "--patch", sha])
     if rc != 0:
-        if "bad revision" in out.lower():
+        if _is_unknown_revision(out):
             raise RuntimeError(f"unknown revision {sha}")
         raise ContainerUnreachableError(out.strip() or "container unreachable")
     return out
