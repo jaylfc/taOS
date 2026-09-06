@@ -134,6 +134,35 @@ def test_quote_injection_is_safe(tmp_path):
     assert _shell_record_field(tmp_path, "prev_branch") == "a'b"
 
 
+def test_crlf_record_is_normalized_by_both_readers(tmp_path):
+    """A CRLF-formatted record must parse identically in Python and bash.
+
+    Python's own read leaves no trailing `\\r` (`str.strip()` eats it), but
+    `grep`-then-substring in the shell reader keeps a `\\r` on the end of each
+    line it reads. Left in place, that `\\r` sits after the closing quote, the
+    shell's quote-stripping `[[ "$val" == \\'*\\' ]]` no longer matches, and
+    `record_field` hands back the value with its quotes (and the `\\r`) still
+    attached -- which `sha_safe` then rejects. The shell falls back to the
+    recovery tag while Python reports the real recorded target: the two
+    readers disagree about a record that is otherwise perfectly good.
+    """
+    (tmp_path / ROLLBACK_FILE).write_bytes(
+        (
+            "# taOS rollback target\r\n"
+            "prev_branch='feat/x'\r\n"
+            f"prev_sha='{SHA_A}'\r\n"
+            "prev_ts='42'\r\n"
+        ).encode()
+    )
+    assert read_rollback_target(tmp_path) == {
+        "branch": "feat/x",
+        "sha": SHA_A,
+        "ts": "42",
+    }
+    assert _shell_record_field(tmp_path, "prev_sha") == SHA_A
+    assert _shell_sha_safe(_shell_record_field(tmp_path, "prev_sha"))
+
+
 @pytest.mark.parametrize(
     "sha",
     [SHA_A + "\n", SHA_A + " ", " " + SHA_A, SHA_A + "\r\n", SHA_A + "\t"],

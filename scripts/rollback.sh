@@ -34,6 +34,7 @@ log(){ echo "[rollback] $*"; }
 record_field(){
   local key="$1" line val
   line="$(grep -m1 -E "^[[:space:]]*${key}=" .taos-rollback 2>/dev/null)" || return 0
+  line="${line%$'\r'}"
   val="${line#*=}"
   if [[ "$val" == \'*\' ]]; then
     val="${val:1:${#val}-2}"
