@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from tinyagentos.agent_registry_store import _slugify, agent_slug_or_fallback
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
-from tinyagentos.auth_middleware import rate_limit_ok
+from tinyagentos.auth_middleware import rate_limit_ok, rate_limit_retry_after
 from tinyagentos.projects.invite_store import (
     InviteAlreadyRedeemedError,
     InviteExpiredError,
@@ -20,6 +20,7 @@ from tinyagentos.projects.invite_store import (
     InvitePendingCapError,
     InviteRevokedError,
 )
+from tinyagentos.rate_limit import rate_limited_response
 from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
 
 logger = logging.getLogger(__name__)
@@ -1086,9 +1087,9 @@ async def redeem_invite(request: Request, body: RedeemInviteIn):
     """
     client_ip = request.client.host if request.client else "unknown"
     if not rate_limit_ok(client_ip):
-        return JSONResponse(
-            {"error": "too many redeem attempts; slow down and retry"},
-            status_code=429,
+        return rate_limited_response(
+            "too many redeem attempts; slow down and retry",
+            rate_limit_retry_after(client_ip),
         )
 
     store = request.app.state.project_invites

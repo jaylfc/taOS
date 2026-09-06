@@ -196,6 +196,31 @@ What this means when you write a test:
 - **A filename no longer changes behaviour.** The old carve-out was a substring match on the
   path, so renaming a file silently re-armed the bypass with no failure anywhere.
 
+### Test markers
+
+Every pytest marker is declared once, in `pyproject.toml` under
+`[tool.pytest.ini_options] markers`. Do NOT register one from a
+`pytest_configure` hook in `tests/conftest.py`: that file already defines the
+canonical hook, and a second module-level `def pytest_configure` is last-wins
+rebinding rather than additive registration, so the earlier body never runs and
+its next edit is a silent no-op in CI.
+
+- **`@pytest.mark.skip_if_no_embed_backend` skips a test that cannot run without
+  an embedding backend** — a reachable qmd service, or an installed
+  `onnxruntime`. There is no opt-out marker and no `-o` switch: not applying it
+  IS the opt-out, and that is the default for every test.
+- **Like `csrf_bypass`, nothing uses it, and
+  `tests/test_embed_backend_marker_debt.py` asserts the list stays EMPTY.**
+  Before adding it, check what the test actually calls. A test driving an
+  `AsyncMock(spec=httpx.AsyncClient)`, a hand-built `_snapshot`, or a patched
+  `_run_setup` never reaches a backend, so the marker does not protect it from
+  anything — it just deletes it from every CI row while the suite stays green.
+- **Probe the capability, not a proxy for it.** The backend check opens a socket
+  against the packaged default qmd URL and looks for `onnxruntime` (what executes a
+  model), not `onnx` (the model-format library taOS does not depend on) and not
+  an environment variable no module under `tinyagentos/` reads. A proxy answers
+  "no backend" on a box that works and "backend" for a host that does not exist.
+
 Patch timing matters if you ever stub it yourself: `register_all_routers` does
 `from ... import verify_csrf` and freezes the object into `Depends(...)` at `include_router`
 time, so patching the module attribute AFTER `create_app` does nothing.
@@ -495,6 +520,19 @@ items by number (for example "pitfall 5").
   `test_config.py`.
 - **Catalog entry:** `manifest.yaml` under `app-catalog/<category>/<id>/` → add to `catalog.yaml` →
   `pytest tests/test_catalog_sync.py`.
+- **Writing a state file:** call `atomic_write_text` / `atomic_write_bytes` from
+  `tinyagentos.atomic_io` (it creates the parent dir, fsyncs the temp file and the parent
+  directory, applies `mode` before the rename, and randomises the temp name). Never hand-roll
+  `tmp.write_text(...)` + `tmp.replace(target)` — that fsyncs nothing, so a power cut brings the
+  file back the right size and full of NULs, which is the 2026-08-21 account-store wipe.
+  `tests/test_config_atomic.py` fails the build on a new copy; a promotion that genuinely cannot
+  use `atomic_io` (a symlink swap) is waived in place with `# atomic-io-exempt: <reason>`
+  (pitfall 24). From `async` code, wrap it: `await asyncio.to_thread(atomic_write_text, ...)` --
+  the fsyncs are blocking syscalls and stall the event loop.
+- **Creating one-time key material:** call `atomic_create_bytes`, not `atomic_write_bytes`. A write
+  is a durable *replace*, so two processes that both find the key file absent both write and the
+  last one wins; the loser keeps encrypting/signing with material that is not on disk.
+  `atomic_create_bytes` claims the name with `link(2)` and returns whatever actually persisted.
 - **Debugging a test:** confirm it uses the async `client` fixture and that `tmp_data_dir` setup is
   complete; check the store's `init()`; isolate with `pytest <path>::<test> -v`.
 
@@ -582,6 +620,14 @@ blocks PRs that add a new `BaseStore` subclass without wiring it into `tinyagent
 Routes reach stores ONLY via `request.app.state`, so an unwired store is unreachable dead
 code. The check is name-level (the class name must appear in `app.py`) and polices only
 classes added by the PR - pre-existing orphans are skipped.
+
+A class that some other class under `tinyagentos/` subclasses **and** that declares no
+`SCHEMA` of its own is skipped too, and the gate prints the exemption. Such a base exists
+to be inherited from, never to be assigned to `app.state` - `ProjectsDBStore` in
+`tinyagentos/projects/tx.py` carries the shared `projects.db` transaction helper for the
+eight stores on that file, owns no tables and is never instantiated. A class that declares
+`SCHEMA` owns tables, so it is a store and stays policed however many subclasses it grows:
+subclassing an unwired store does not launder it past the gate.
 
 For a store genuinely constructed elsewhere (tests, CLI, workers), waive it with a PR-body
 trailer, which is logged by the gate:

@@ -1,3 +1,6 @@
+import io
+import tarfile
+
 import pytest
 import yaml
 from tinyagentos.config import load_config, save_config_locked
@@ -179,4 +182,86 @@ class TestConfigPage:
             app.state.config.memory_url = "http://localhost:7900"
             app.state.config.taosmd_dir = ""
             app.state.config.taosmd_restart_cmd = ""
+
+
+class _Zeros(io.RawIOBase):
+    """A readable stream of `n` zero bytes, so a tar bomb can be built without
+    ever holding its declared payload in memory."""
+
+    def __init__(self, n: int):
+        self.remaining = n
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buf) -> int:
+        count = min(len(buf), self.remaining)
+        self.remaining -= count
+        buf[:count] = bytes(count)
+        return count
+
+
+def _tar_bomb(members: int, member_bytes: int) -> bytes:
+    """A backup tarball declaring members * member_bytes of zeros.
+
+    Zeros gzip to almost nothing, so the upload stays about a megabyte while
+    the member headers declare hundreds of MB to write into the data dir.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=1) as tar:
+        for i in range(members):
+            info = tarfile.TarInfo(f"backup/pad{i}.bin")
+            info.size = member_bytes
+            tar.addfile(info, io.BufferedReader(_Zeros(member_bytes)))
+    return buf.getvalue()
+
+
+def _valid_backup() -> bytes:
+    payload = yaml.dump({"cpu": "test"}).encode()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("backup/hardware.json")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+class TestRestoreArchiveLimits:
+    """POST /api/restore must bound what a backup tarball can write.
+
+    The traversal checks were already there; the missing guard was a cumulative
+    size cap, so a gzip bomb wrote unbounded into the data dir.
+    """
+
+    async def test_restore_enforces_a_cumulative_size_cap(self, client, tmp_data_dir):
+        # Five 52 MiB members: each under the per-member cap, 260 MiB in total.
+        bomb = _tar_bomb(members=5, member_bytes=52 * 1024 * 1024)
+        assert len(bomb) < 4 * 1024 * 1024, "the bomb must stay small on the wire"
+        resp = await client.post(
+            "/api/restore",
+            files={"file": ("backup.tar.gz", bomb, "application/gzip")},
+        )
+        assert resp.status_code == 400, resp.text
+        assert "uncompressed size too large" in resp.json()["error"]
+        assert not list(tmp_data_dir.glob("pad*.bin"))
+
+    async def test_restore_rejects_an_oversized_upload(self, client, monkeypatch):
+        import tinyagentos.routes.settings as settings_routes
+
+        monkeypatch.setattr(settings_routes, "_MAX_BACKUP_BYTES", 64)
+        resp = await client.post(
+            "/api/restore",
+            files={"file": ("backup.tar.gz", _valid_backup(), "application/gzip")},
+        )
+        assert resp.status_code == 413
+        assert "too large" in resp.json()["error"]
+
+    async def test_restore_still_restores_a_valid_backup(self, client, tmp_data_dir):
+        resp = await client.post(
+            "/api/restore",
+            files={"file": ("backup.tar.gz", _valid_backup(), "application/gzip")},
+        )
+        assert resp.status_code == 200, resp.text
+        assert (tmp_data_dir / "hardware.json").exists()
 

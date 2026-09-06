@@ -325,10 +325,42 @@ describe("NotificationsApp", () => {
 });
 
 describe("APP_REDIRECTS", () => {
-  it("has no unread section field on redirect entries", async () => {
+  // The anti-inert-field gate (c01c1e5). It used to reject a `section` field
+  // outright, which made "carry the section as far as the dock store and no
+  // further" look like a fix. The gate now asks for the stronger property it
+  // was always after: a declared section must come out of the real
+  // launch-props path and reach the exact prop the tab component renders as
+  // active. A field nothing reads still fails, and so does one that is read
+  // but never consumed.
+  //
+  // This runs against the mocked `Tabs` from the top of the file, so it
+  // proves NotificationsApp forwards `section` all the way to that prop for
+  // EVERY declared redirect -- it does not prove the real Radix Tabs renders
+  // that tab active in the DOM. That user-visible consequence is covered,
+  // for the one redirect that exists today, by
+  // NotificationsApp.legacy-pin.test.tsx (unmocked Radix, asserts
+  // data-state="active"). A new redirect needs the equivalent acceptance
+  // coverage before it can be trusted end to end.
+  it("every declared redirect section becomes a launch prop the target app acts on", async () => {
     const mod = await import("@/registry/app-registry");
-    for (const entry of Object.values(mod.APP_REDIRECTS)) {
-      expect(entry).not.toHaveProperty("section");
+    const withSection = Object.entries(mod.APP_REDIRECTS).filter(([, entry]) => entry.section);
+    expect(withSection.length).toBeGreaterThan(0);
+
+    for (const [pinId, entry] of withSection) {
+      if (entry.appId !== "notifications") {
+        throw new Error(
+          `redirect "${pinId}" declares section "${entry.section}" on app "${entry.appId}", ` +
+            "which this gate cannot prove is consumed. Add the equivalent gate beside that " +
+            "app's tests before declaring a section for it.",
+        );
+      }
+
+      const props = mod.pinnedLaunchProps(pinId);
+      expect(props).toEqual({ section: entry.section });
+
+      const { unmount } = render(<NotificationsApp windowId="w1" {...(props ?? {})} />);
+      expect(screen.getByTestId("tabs")).toHaveAttribute("data-value", entry.section);
+      unmount();
     }
   });
 });

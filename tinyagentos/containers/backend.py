@@ -8,6 +8,8 @@ import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from tinyagentos.size_units import BYTES_PER_MIB, parse_size_bytes_or
+
 logger = logging.getLogger(__name__)
 
 
@@ -16,25 +18,17 @@ class ContainerInfo:
     name: str
     status: str  # Running | Stopped | ...
     ip: str | None
-    memory_mb: int
+    memory_mb: int  # mebibytes
     cpu_cores: int
 
 
 def _parse_memory(mem_str: str) -> int:
-    """Parse memory string like '2GB' or '512MB' to megabytes."""
-    mem_str = mem_str.strip().upper()
-    if not mem_str or mem_str == "0":
-        return 0
-    if mem_str.endswith("GB"):
-        return int(float(mem_str[:-2]) * 1024)
-    if mem_str.endswith("MB"):
-        return int(float(mem_str[:-2]))
-    if mem_str.endswith("KB"):
-        return int(float(mem_str[:-2]) / 1024)
-    try:
-        return int(mem_str) // (1024 * 1024)  # assume bytes
-    except ValueError:
-        return 0
+    """Parse a container memory limit ('512m', '2GiB', '512MB') into mebibytes.
+
+    Returns 0 for an unreadable value -- the container list has to render
+    even when a limit was hand-edited into something we cannot parse.
+    """
+    return parse_size_bytes_or(mem_str, 0) // BYTES_PER_MIB
 
 
 class PtyHandle(ABC):

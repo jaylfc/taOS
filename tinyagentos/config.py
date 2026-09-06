@@ -12,6 +12,7 @@ from typing import Literal
 import yaml
 from slugify import slugify
 
+from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.providers import ALL_TYPES as VALID_BACKEND_TYPES
 
 log = logging.getLogger(__name__)
@@ -402,10 +403,16 @@ def normalize_agent(agent: dict) -> dict:
     return agent
 
 def save_config(config: AppConfig, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".yaml.tmp")
-    tmp_path.write_text(yaml.dump(config.to_dict(), default_flow_style=False, sort_keys=False))
-    tmp_path.replace(path)
+    # config.yaml holds the entire install, and this runs on the _pin_applied
+    # path at boot -- the window a first-boot power cut is most likely to hit.
+    # atomic_io fsyncs the temp file and the parent directory, so a crash
+    # leaves the complete old config or the complete new one, never a
+    # NUL-filled one; its randomised temp name also keeps a second writer
+    # (save_config is reachable outside save_config_locked's per-process
+    # asyncio.Lock) from sharing one temp inode.
+    atomic_write_text(
+        path, yaml.dump(config.to_dict(), default_flow_style=False, sort_keys=False)
+    )
 
 async def save_config_locked(config: AppConfig, path: Path) -> None:
     async with _config_lock:

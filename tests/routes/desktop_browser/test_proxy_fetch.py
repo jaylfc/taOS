@@ -469,3 +469,51 @@ class TestPageChangedBroadcast:
 
         assert len(captured) == 1
         assert len(captured[0]["extract"]) == 4000
+
+
+@pytest.mark.asyncio
+class TestProxyCacheControl:
+    """The proxy lives under /api/, so SecurityHeadersMiddleware's no-store
+    default applies to it -- but the route forwards the upstream response
+    headers, and an upstream policy must survive that (tsk-piiqiw)."""
+
+    @respx.mock
+    async def test_upstream_without_cache_control_gets_no_store(self, client):
+        respx.get("http://example.com/img.png").mock(
+            return_value=Response(
+                200,
+                content=b"\x89PNG\r\n\x1a\n" + b"X" * 32,
+                headers={"content-type": "image/png"},
+            )
+        )
+
+        with _SSRF_PATCH:
+            resp = await client.get(
+                "/api/desktop/browser/proxy",
+                params={"profile_id": "personal", "url": "http://example.com/img.png"},
+            )
+
+        assert resp.status_code == 200
+        assert resp.headers.get("cache-control") == "no-store"
+
+    @respx.mock
+    async def test_upstream_cache_control_is_preserved(self, client):
+        respx.get("http://example.com/asset.png").mock(
+            return_value=Response(
+                200,
+                content=b"\x89PNG\r\n\x1a\n" + b"Y" * 32,
+                headers={
+                    "content-type": "image/png",
+                    "cache-control": "public, max-age=600",
+                },
+            )
+        )
+
+        with _SSRF_PATCH:
+            resp = await client.get(
+                "/api/desktop/browser/proxy",
+                params={"profile_id": "personal", "url": "http://example.com/asset.png"},
+            )
+
+        assert resp.status_code == 200
+        assert resp.headers.get("cache-control") == "public, max-age=600"
