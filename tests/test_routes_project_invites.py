@@ -800,3 +800,25 @@ async def test_redeem_failed_approve_os_level_restores_pending(
         client, app, monkeypatch, iid, pin, auth_store,
         harness="claude", expected_handle="scout",
     )
+
+
+@pytest.mark.asyncio
+async def test_redeem_429_carries_retry_after(client):
+    """Redeem is unauthenticated, so its 429 is the one an honest client is
+    most likely to meet: it must say how long to back off. The limiter runs
+    before the invite is even looked up, so a bogus id is enough to trip it."""
+    from tinyagentos import auth_middleware
+
+    auth_middleware._rate_limit_hits.clear()
+    try:
+        last = None
+        for _ in range(auth_middleware._INVITE_RATE_MAX_PER_WINDOW + 1):
+            last = await client.post(
+                "/api/projects/invites/redeem",
+                json={"invite_id": "nosuch", "pin": "00000000", "harness": "claude"},
+            )
+        assert last.status_code == 429, last.text
+        retry_after = int(last.headers["retry-after"])
+        assert 1 <= retry_after <= int(auth_middleware._INVITE_RATE_WINDOW_SECS)
+    finally:
+        auth_middleware._rate_limit_hits.clear()

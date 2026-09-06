@@ -5,6 +5,7 @@ to CodeRabbit on the original PR #322 (success: False when systemctl
 fails or /health doesn't return 200).
 """
 import os
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -133,6 +134,48 @@ class TestInstallSucceedsHappyPath:
         assert result["success"] is True
         assert result["service_running"] is True
         assert result["endpoint"] == "http://localhost:8090"
+
+
+class TestAliasWriteOffloadedFromEventLoop:
+    """``atomic_write_text`` does two blocking fsyncs; running it inline in
+    ``install`` (a coroutine awaited by taosmd) blocks unrelated event-loop
+    tasks on slow storage."""
+
+    @pytest.mark.asyncio
+    async def test_alias_write_does_not_run_on_the_event_loop_thread(
+        self, tmp_path, sandboxed_models_root
+    ):
+        from tinyagentos.installers import rkllamacpp_installer as mod
+        from tinyagentos.installers.rkllamacpp_installer import RkLlamaCppInstaller
+
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "llama-server").write_text("fake")
+
+        installer = RkLlamaCppInstaller(install_dir=tmp_path, port=8090)
+
+        loop_thread_id = threading.get_ident()
+        seen_thread_ids: list[int] = []
+
+        def spying_atomic_write_text(path, text, **kwargs):
+            seen_thread_ids.append(threading.get_ident())
+            Path(path).write_text(text)
+
+        with patch.object(mod, "atomic_write_text", side_effect=spying_atomic_write_text), \
+             patch.object(installer, "_download", new=AsyncMock()), \
+             patch.object(installer, "_systemctl", new=AsyncMock()), \
+             patch.object(installer, "_wait_for_server", new=AsyncMock(return_value=True)):
+            result = await installer.install(
+                "fake-app",
+                install_config={"method": "rkllamacpp"},
+                variant={"id": "q4", "size_mb": 100, "download_url": "https://example/x.gguf"},
+            )
+
+        assert result["success"] is True
+        assert seen_thread_ids, "atomic_write_text for active.alias was never called"
+        assert loop_thread_id not in seen_thread_ids, (
+            "the durable active.alias write ran on the event-loop thread -- "
+            "its fsyncs block unrelated event-loop tasks on slow storage"
+        )
 
 
 class TestInstallUsesSharedLayout:
