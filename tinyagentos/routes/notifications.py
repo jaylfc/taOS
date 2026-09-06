@@ -17,6 +17,22 @@ from tinyagentos.routes.auth import _require_admin
 router = APIRouter()
 
 
+def _notif_user_id(request: Request) -> str:
+    """Resolve the calling user the way the rest of the app does.
+
+    AuthMiddleware sets ``request.state.user_id`` for BOTH the session cookie
+    and the local token (``Authorization: Bearer <token>``, which it maps to
+    the primary user), so browser sessions, ``taosctl`` and host scripts all
+    resolve here. A cookie-only dependency such as ``get_current_user`` would
+    401 every local-token caller. Same idiom as ``routes/event_stream.py`` and
+    ``routes/desktop_control.py``.
+    """
+    uid = getattr(request.state, "user_id", None)
+    if not uid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return str(uid)
+
+
 def _format_ts(ts: int) -> str:
     """Format a unix timestamp as a relative or short date string."""
     delta = int(time.time()) - ts
@@ -31,8 +47,9 @@ def _format_ts(ts: int) -> str:
 
 @router.get("/api/notifications")
 async def list_notifications(request: Request, unread_only: bool = False):
+    user_id = _notif_user_id(request)
     store = request.app.state.notifications
-    items = await store.list(unread_only=unread_only)
+    items = await store.list(unread_only=unread_only, user_id=user_id)
     # Return HTML for HTMX requests, JSON otherwise
     if request.headers.get("hx-request"):
         if not items:
@@ -91,44 +108,54 @@ async def create_notification(request: Request, body: CreateNotificationRequest)
 
 @router.get("/api/notifications/count", response_class=HTMLResponse)
 async def notification_count(request: Request):
+    user_id = _notif_user_id(request)
     store = request.app.state.notifications
-    count = await store.unread_count()
+    count = await store.unread_count(user_id=user_id)
     return f"<span class='notif-badge' data-count='{count}'>{count if count else ''}</span>"
 
 
 @router.get("/api/notifications/archived")
 async def list_archived_notifications(request: Request):
     """History view: dismissed notifications, newest first (nothing deleted)."""
+    user_id = _notif_user_id(request)
     store = request.app.state.notifications
-    return await store.list_archived()
+    return await store.list_archived(user_id=user_id)
 
 
 @router.post("/api/notifications/{notif_id}/read")
 async def mark_read(request: Request, notif_id: int):
+    user_id = _notif_user_id(request)
     store = request.app.state.notifications
-    await store.mark_read(notif_id)
+    affected = await store.mark_read(notif_id, user_id=user_id)
+    if affected == 0:
+        raise HTTPException(status_code=404, detail="notification not found")
     return {"ok": True}
 
 
 @router.post("/api/notifications/{notif_id}/archive")
 async def archive_notification(request: Request, notif_id: int):
     """Dismiss a notification by archiving it; it stays in the History view."""
+    user_id = _notif_user_id(request)
     store = request.app.state.notifications
-    await store.archive(notif_id)
+    affected = await store.archive(notif_id, user_id=user_id)
+    if affected == 0:
+        raise HTTPException(status_code=404, detail="notification not found")
     return {"ok": True}
 
 
 @router.post("/api/notifications/read-all")
 async def mark_all_read(request: Request):
+    user_id = _notif_user_id(request)
     store = request.app.state.notifications
-    await store.mark_all_read()
-    return {"ok": True}
+    count = await store.mark_all_read(user_id=user_id)
+    return {"ok": True, "marked": count}
 
 
 @router.post("/api/notifications/mark-all-read")
 async def mark_all_read_counted(request: Request):
+    user_id = _notif_user_id(request)
     store = request.app.state.notifications
-    count = await store.mark_all_read()
+    count = await store.mark_all_read(user_id=user_id)
     return {"marked": count}
 
 
