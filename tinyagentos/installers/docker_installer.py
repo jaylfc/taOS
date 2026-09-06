@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import secrets
 import shutil
 from pathlib import Path
@@ -101,7 +102,11 @@ class DockerInstaller(AppInstaller):
                 content = self._substitute_secret_key(content, secret_key)
             full_path = app_dir / path
             full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text(content)
+            # Write config file with 0600 permissions to protect any secret substitutions
+            fd = os.open(full_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+            os.chmod(full_path, 0o600)
 
     @staticmethod
     def _is_named_volume(source: str) -> bool:
@@ -199,7 +204,11 @@ class DockerInstaller(AppInstaller):
 
         compose, host_port = self._generate_compose(app_id, install_config)
         compose_path = self._compose_path(app_id)
-        compose_path.write_text(yaml.dump(compose, default_flow_style=False))
+        # Write docker-compose.yaml with 0600 permissions to protect any secret substitutions
+        fd = os.open(compose_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(yaml.dump(compose, default_flow_style=False))
+        os.chmod(compose_path, 0o600)
 
         # Pull image
         code, output = await run_cmd(

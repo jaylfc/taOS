@@ -61,20 +61,79 @@ class TestPipInstaller:
 
 class TestDockerInstaller:
     @pytest.mark.asyncio
-    async def test_install_writes_compose(self, tmp_path):
+    def test_compose_file_is_0600(self, tmp_path):
+        """RED: _generate_compose must write docker-compose.yaml at 0o600 permissions
+        to protect any secret substitutions (previous default umask 0o644 exposed
+        secrets in the live session-signing key). Applies to all files
+        _write_config_files writes whose content had a {secret_key} substitution.
+        """
         installer = DockerInstaller(apps_dir=tmp_path)
         install_config = {
             "method": "docker",
-            "image": "gitea/gitea:1.22",
-            "volumes": ["data:/data"],
-            "env": {"ROOT_URL": "http://localhost:3000"},
+            "image": "ghcr.io/linkwarden/linkwarden:latest",
+            "volumes": ["data:/data/data"],
+            "ports": [3000],
+            "env": {
+                "NEXTAUTH_SECRET": "{secret_key}",
+                "NEXTAUTH_URL": "http://localhost:3000",
+                "DATABASE_URL": "postgresql://postgres:postgres@localhost:5432/linkwarden"
+            }
         }
+        # Mock run_cmd to avoid docker dependency
         with patch("tinyagentos.installers.docker_installer.run_cmd", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = (0, "")
-            result = await installer.install("gitea", install_config)
-            assert result["success"] is True
-            compose_file = tmp_path / "gitea" / "docker-compose.yaml"
-            assert compose_file.exists()
+            import asyncio
+            asyncio.run(installer.install("linkwarden", install_config))
+        
+        compose_path = tmp_path / "linkwarden" / "docker-compose.yaml"
+        assert compose_path.exists()
+        stat_mode = compose_path.stat().st_mode
+        assert (stat_mode & 0o777) == 0o600, f"Expected 0o600, got {oct(stat_mode & 0o777)}"
+
+    def test_preexisting_config_file_is_0600(self, tmp_path):
+        """When _write_config_files writes a file with {secret_key} substitution,
+        it must harden the mode even if it already existed at 0o644 from a previous
+        install (O_CREAT only applies the mode on creation)."""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        # Create a pre-existing settings.yml at 0o644
+        app_dir = tmp_path / "linkwarden"
+        app_dir.mkdir(parents=True)
+        config_file = app_dir / "settings.yml"
+        config_file.write_text("")
+        config_file.chmod(0o644)
+        assert (config_file.stat().st_mode & 0o777) == 0o644
+        
+        # Write config files with {secret_key} substitution
+        installer._write_config_files("linkwarden", {
+            "config_files": [
+                {"path": "settings.yml", "content": 'secret_key: "{secret_key}"'}
+            ]
+        })
+        
+        # The config file should now be 0o600
+        stat_mode = config_file.stat().st_mode
+        assert (stat_mode & 0o777) == 0o600, f"Expected 0o600, got {oct(stat_mode & 0o777)}"
+
+    def test_config_file_with_secret_key_substitution_is_0600(self, tmp_path):
+        """Config files whose content had a {secret_key} substitution must be written
+        at 0o600 permissions."""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        installer._write_config_files("searxng", {
+            "config_files": [
+                {"path": "settings.yml", "content": 'secret_key: "{secret_key}"'}
+            ]
+        })
+        
+        settings_yml = tmp_path / "searxng" / "settings.yml"
+        assert settings_yml.exists()
+        stat_mode = settings_yml.stat().st_mode
+        assert (stat_mode & 0o777) == 0o600, f"Expected 0o600, got {oct(stat_mode & 0o777)}"
+        
+        # The secret key file should also be 0o600
+        secret_path = tmp_path / "searxng" / ".secret_key"
+        assert secret_path.exists()
+        stat_mode = secret_path.stat().st_mode
+        assert (stat_mode & 0o777) == 0o600, f"Expected 0o600, got {oct(stat_mode & 0o777)}"
 
     def test_generate_compose_declares_named_volumes_and_omits_version(self, tmp_path):
         # Regression: named volumes (e.g. searxng's "config:/etc/searxng") must
