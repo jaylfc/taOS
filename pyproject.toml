@@ -60,6 +60,12 @@ dependencies = [
     # startup via app.py. Previously only pulled in transitively through
     # pywebpush; declare it directly so the import is guaranteed.
     "cryptography>=50.0.0",
+    # Unicode-aware slugs for agent/handle names (tinyagentos/config.py). The
+    # ASCII-only regex it replaces deleted every non-Latin code point, so a
+    # Chinese or Cyrillic agent name could not be created at all.
+    # NEVER install the "unidecode" extra: it pulls GPL-only Unidecode, which
+    # is a blocker for the commercial licence. See docs/dependency-licences.md.
+    "python-slugify>=8.0.4",
     # PEP 440 version parsing/ordering for the worker update check
     # (tinyagentos/worker/update_check.py) and the optional-app catalog
     # (tinyagentos/routes/apps.py). Previously only reachable through the

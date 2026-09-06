@@ -30,7 +30,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from aiosqlite import IntegrityError
-from tinyagentos.agent_registry_store import _slugify, mint_registry_token
+from tinyagentos.agent_registry_store import agent_slug_or_fallback, mint_registry_token
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.base_store import PendingCapExceeded
 
@@ -503,7 +503,10 @@ async def approve_request_record(
     # back to the cleaned claim, then the framework name.
     display_name = (display_name or "").strip() or _claim or record["framework"]
 
-    handle = _slugify(_claim)
+    # The handle is an identity key, so it must never be empty and never be a
+    # constant shared with every other unslugifiable claim: fall back to the
+    # framework name first, then to the per-name digest.
+    handle = agent_slug_or_fallback(_claim or record["framework"])
     # The handle column is NOT uniformly slugified: internal driver agents are
     # seeded with their RAW sigilled spelling (@taOSmd-dev, @Hermes, ...) while
     # this path registers the slugified claim (`taosmd-dev`). An exact lookup on

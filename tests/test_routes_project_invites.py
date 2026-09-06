@@ -822,3 +822,23 @@ async def test_redeem_429_carries_retry_after(client):
         assert 1 <= retry_after <= int(auth_middleware._INVITE_RATE_WINDOW_SECS)
     finally:
         auth_middleware._rate_limit_hits.clear()
+
+
+class TestDeriveOsHandleHarnessFallback:
+    """CodeRabbit finding on #2798: an unslugifiable display_name with a
+    slugifiable label dropped the harness component entirely instead of
+    falling back to it, so two different harnesses landed on the identical
+    label-only handle."""
+
+    def test_unslugifiable_alias_with_label_still_includes_harness(self):
+        from tinyagentos.routes.project_invites import _derive_os_handle
+
+        handle = _derive_os_handle("🎉", "claude", "beta")
+        assert handle == "claude-beta"
+
+    def test_different_harnesses_no_longer_collide_on_label_alone(self):
+        from tinyagentos.routes.project_invites import _derive_os_handle
+
+        claude_handle = _derive_os_handle("🎉", "claude", "beta")
+        gemini_handle = _derive_os_handle("🎉", "gemini", "beta")
+        assert claude_handle != gemini_handle
