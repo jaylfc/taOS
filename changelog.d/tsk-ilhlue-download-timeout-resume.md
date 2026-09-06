@@ -21,3 +21,7 @@
 - Finished download tasks are pruned after an hour instead of staying resident
   for the lifetime of the process, so `/api/models/downloads` no longer grows
   without bound. Pending and downloading tasks are never pruned.
+- A re-download of an already-installed model no longer deletes the existing
+  valid file when the new attempt fails before promoting anything: the
+  cleanup on failure now only removes `task.dest` when this attempt actually
+  renamed the `.part` stage file onto it.

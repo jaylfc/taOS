@@ -346,6 +346,7 @@ class DownloadManager:
         task.status = "downloading"
         task.started_at = time.time()
         part = task.dest.with_name(task.dest.name + ".part")
+        promoted = False
         try:
             task.dest.parent.mkdir(parents=True, exist_ok=True)
             digest = await with_retry(
@@ -356,23 +357,30 @@ class DownloadManager:
                 retry_on=DOWNLOAD_RETRY_ON,
             )
             part.replace(task.dest)
+            promoted = True
             error = await self._validate_download(task, expected_sha256, computed_sha256=digest)
             if error:
-                # The bytes are wrong, so the stage file is worthless too:
-                # keeping it would make every later attempt resume onto a
-                # corrupt prefix and fail the same way forever.
+                # The bytes are wrong, so the promoted file is worthless: this
+                # attempt just replaced task.dest with a bad copy, and that
+                # copy (not the now-gone .part) is what has to go.
                 task.dest.unlink(missing_ok=True)
-                part.unlink(missing_ok=True)
                 task.status = "error"
                 task.error = error
             else:
                 task.status = "complete"
                 task.completed_at = time.time()
         except Exception as e:
-            task.dest.unlink(missing_ok=True)
+            # Only clean up task.dest when THIS attempt is the one that put a
+            # (possibly bad) file there. _stream_to_part writes exclusively to
+            # `part`, so a failure before promotion leaves task.dest exactly as
+            # it was -- which, for a re-download of an already-installed model,
+            # is a perfectly good file. Deleting it here would destroy a valid
+            # install over a transient failure of the NEW attempt.
+            if promoted:
+                task.dest.unlink(missing_ok=True)
             task.status = "error"
             task.error = str(e)
-            logger.error(f"Download failed for {task.id}: {e}")
+            logger.error("Download failed for %s: %s", task.id, e)
 
     async def _stream_to_part(self, task: DownloadTask, part: Path) -> str:
         """One HTTP attempt, appending into the ``.part`` stage file.

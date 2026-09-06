@@ -936,6 +936,53 @@ class TestDownloadTimeoutResumeAndCleanup:
         assert task.status == "error"
         assert len(server.requests) == 1
 
+    @pytest.mark.asyncio
+    async def test_server_5xx_is_retried(self, dm, tmp_path, fast_retries):
+        """5xx is retried (unlike 4xx above); with_retry's own status branch
+        handles it, but nothing exercised that path -- a regression that
+        stopped retrying 5xx would leave every other test here green."""
+        body = b"eventually served"
+        dest = tmp_path / "out.bin"
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        server = _FakeHttpServer(
+            body,
+            fail_attempts=1,
+            failure=httpx.HTTPStatusError(
+                "HTTP 503",
+                request=httpx.Request("GET", "http://example.com/f.bin"),
+                response=httpx.Response(503),
+            ),
+        )
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", server):
+            await dm._download(task, expected_sha256=hashlib.sha256(body).hexdigest())
+
+        assert len(server.requests) > 1
+        assert task.status == "complete", task.error
+
+    @pytest.mark.asyncio
+    async def test_failed_redownload_does_not_delete_an_existing_valid_file(
+        self, dm, tmp_path, fast_retries
+    ):
+        """A re-download of an already-installed model must not destroy the
+        good copy just because the NEW attempt failed before ever promoting
+        anything to task.dest. _stream_to_part writes only to the .part
+        stage file; if with_retry exhausts its attempts, task.dest still
+        holds whatever a PRIOR successful download put there and that must
+        survive this attempt's failure."""
+        dest = tmp_path / "out.bin"
+        existing = b"a previously installed, valid model"
+        dest.write_bytes(existing)
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        server = _FakeHttpServer(b"new bytes that never arrive", fail_attempts=99)
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", server):
+            await dm._download(task, expected_sha256=None)
+
+        assert task.status == "error"
+        assert dest.exists(), "a failed re-download must not delete the existing file"
+        assert dest.read_bytes() == existing
+
 
 class TestTaskPruning:
     """self._tasks grew for the lifetime of the process: every model the user
