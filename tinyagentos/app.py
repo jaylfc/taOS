@@ -120,8 +120,8 @@ PROJECT_DIR = Path(__file__).parent.parent
 # Paths that must remain accessible before startup completes (health checks,
 # static assets, auth endpoints).  Everything else gets 503 until the lifespan
 # finishes its init sequence.
-_STARTUP_EXEMPT_PATHS = frozenset({"/api/health", "/api/version"})
-_STARTUP_EXEMPT_PREFIXES = ("/static/", "/desktop/", "/chat-pwa/", "/ws/", "/auth/", "/setup", "/shortcut/")
+_STARTUP_EXEMPT_PATHS = frozenset({"/api/health", "/api/version", "/setup"})
+_STARTUP_EXEMPT_PREFIXES = ("/static/", "/desktop/", "/chat-pwa/", "/ws/", "/auth/", "/setup/", "/shortcut/")
 
 from tinyagentos.task_utils import _create_supervised_task, cancel_and_wait  # noqa: E402
 
@@ -1636,7 +1636,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             status_code=503,
         )
 
-    # Auth middleware — must be added before GZip so it runs first
+    # Auth middleware -- added first so it is innermost. Starlette builds the
+    # middleware stack in reverse add order (last added is outermost), so the
+    # first-added middleware wraps the route last in the request chain, keeping
+    # Auth sitting between the route and every downstream header/compression/
+    # cookie layer.
     from tinyagentos.auth_middleware import AuthMiddleware
     app.add_middleware(AuthMiddleware)
 
@@ -1646,11 +1650,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.middleware.security_headers import SecurityHeadersMiddleware
     app.add_middleware(SecurityHeadersMiddleware)
 
+    # GZip compression for faster transfers on slow SD card / network.
+    # Added BEFORE CSRF so it is innermost to the cookie-setting layer: the
+    # body is compressed but Set-Cookie headers are not (BREACH precondition).
+    app.add_middleware(GZipMiddleware, minimum_size=500)
+
     from tinyagentos.middleware.csrf import CSRFMiddleware
     app.add_middleware(CSRFMiddleware)
-
-    # GZip compression for faster transfers on slow SD card / network
-    app.add_middleware(GZipMiddleware, minimum_size=500)
 
     # Startup guard — return 503 for non-exempt requests that arrive before
     # the lifespan has finished initialising app state.  Added last so it is
@@ -1944,13 +1950,25 @@ def main():
         host=config.server.get("host", "0.0.0.0"),
         port=config.server.get("port", 6969),
         backlog=128,
+        server_header=False,
     )
 
 
 def gui():
     """Launch the TinyAgentOS web UI in a browser window."""
     import subprocess
+    import sys
     import webbrowser
+
+    spa_index = PROJECT_DIR / "static" / "desktop" / "index.html"
+    if not spa_index.exists():
+        print(
+            "Desktop shell not built -- the SPA bundle is missing. "
+            "Run: cd desktop && npm run build",
+            file=sys.stderr,
+        )
+        raise SystemExit(503)
+
     port = 6969
     url = f"http://localhost:{port}"
     # Try Chromium in app mode first (cleanest look), fall back to default browser
