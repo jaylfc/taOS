@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import stat
 from pathlib import Path
 from unittest.mock import patch
@@ -796,11 +797,10 @@ class TestStderrLogHandling:
     parent process must not leak the log's file descriptor."""
 
     @pytest.mark.asyncio
-    async def test_existing_stderr_log_rechmoded_to_0600(self, tmp_path, monkeypatch):
-        """os.open(..., 0o600) only applies the mode when it CREATES the
-        inode. A log left over from a pre-fix install (or one an operator
-        widened by hand) must be hardened back to 0600 on every open, not
-        just the first."""
+    async def test_stale_stderr_log_rotated_to_fresh_0600_inode(self, tmp_path, monkeypatch):
+        """On start, a stale log (0644 or any permissions) is rotated to .1
+        and a fresh 0600 inode opened. A reader holding a descriptor to the
+        old inode cannot observe new output."""
         import os as os_mod
         import shutil
         import tinyagentos.llm_proxy as mod
@@ -818,13 +818,82 @@ class TestStderrLogHandling:
         config_dir = tmp_path / "litellm"
         config_dir.mkdir(parents=True)
         log_path = config_dir / "litellm.stderr.log"
-        log_path.write_text("stale log from a pre-fix install\n")
+        stale_content = "stale log from a pre-fix install\n"
+        log_path.write_text(stale_content)
         os_mod.chmod(log_path, 0o644)
+
+        # Record the old inode and open a reader fd before start
+        old_ino = log_path.stat().st_ino
+        rfd = os_mod.open(str(log_path), os_mod.O_RDONLY)
 
         await p.start(backends=[])
 
+        # After start:
+        # (a) log_path has a different inode (rotated away)
+        new_ino = log_path.stat().st_ino
+        assert new_ino != old_ino, f"Expected different inode after rotation; old={old_ino}, new={new_ino}"
+
+        # (b) new log has mode 0o600
         mode = stat.S_IMODE(log_path.stat().st_mode)
         assert mode == 0o600, f"expected 0600, got {oct(mode)}"
+
+        # (c) .1 exists with mode 0o600 and the stale content
+        rotated_path = log_path.with_name("litellm.stderr.log.1")
+        assert rotated_path.exists(), f"rotated log {rotated_path} must exist"
+        rotated_mode = stat.S_IMODE(rotated_path.stat().st_mode)
+        assert rotated_mode == 0o600, f"rotated log expected 0600, got {oct(rotated_mode)}"
+        rotated_content = rotated_path.read_text()
+        assert rotated_content == stale_content, f"rotated log must preserve original content"
+
+        # (d) reader fd still points to old inode and doesn't see new output
+        old_fstat_ino = os_mod.fstat(rfd).st_ino
+        assert old_fstat_ino == old_ino, f"reader fd should still point to old inode"
+
+        # Write a marker to the new log
+        log_path.open("a").write("post-restart secret\n")
+
+        # Reader fd should not see this marker (it's on the old inode)
+        content_from_old_fd = os_mod.read(rfd, 4096).decode()
+        assert "post-restart secret" not in content_from_old_fd, f"reader on old inode must not see new output"
+
+        os_mod.close(rfd)
+
+    @pytest.mark.asyncio
+    async def test_stderr_log_rotation_keeps_only_one_previous_generation(self, tmp_path, monkeypatch):
+        """When .log and .log.1 both exist, rotation replaces .log.1 with the
+        old .log, keeping only one previous generation."""
+        import os as os_mod
+        import shutil
+        import tinyagentos.llm_proxy as mod
+
+        monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
+        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+
+        class _FakePopen:
+            def __init__(self, *a, **kw):
+                raise FileNotFoundError("stubbed to skip real spawn")
+
+        monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
+
+        p = mod.LLMProxy(port=14020, data_dir=tmp_path)
+        config_dir = tmp_path / "litellm"
+        config_dir.mkdir(parents=True)
+        log_path = config_dir / "litellm.stderr.log"
+        rotated_path = log_path.with_name("litellm.stderr.log.1")
+
+        # Pre-create both .log and .log.1
+        current_content = "current log content\n"
+        previous_content = "previous log content\n"
+        log_path.write_text(current_content)
+        rotated_path.write_text(previous_content)
+
+        await p.start(backends=[])
+
+        # After start, .1 must hold the former .log content
+        assert rotated_path.read_text() == current_content, ".1 must hold the old .log content"
+        # And no .2 should exist
+        log_2_path = log_path.with_name("litellm.stderr.log.2")
+        assert not log_2_path.exists(), f"no .2 generation should exist"
 
     @pytest.mark.asyncio
     async def test_stderr_handle_closed_after_successful_start(self, tmp_path, monkeypatch):
@@ -991,8 +1060,8 @@ class TestSystemdUnitPermissions:
 
     def test_unit_has_private_tmp(self):
         text = self._UNIT_PATH.read_text()
-        assert "PrivateTmp=yes" in text
+        assert re.search(r"(?m)^\s*PrivateTmp\s*=\s*yes\s*$", text)
 
     def test_unit_has_no_umask(self):
         text = self._UNIT_PATH.read_text()
-        assert "UMask=" not in text
+        assert re.search(r"(?m)^\s*UMask\s*=", text) is None

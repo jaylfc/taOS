@@ -515,13 +515,17 @@ class LLMProxy:
         # are visible instead of silently discarded. stdout stays on
         # DEVNULL — it's mostly noisy per-request logs we don't need.
         stderr_log_path = config_path.parent / "litellm.stderr.log"
-        # S2-10: log at 0600 so error output (which may carry backend key material
-        # in LiteLLM's error text) is not world-readable alongside the config.
-        # os.O_CREAT only applies the mode when it creates the inode, so an
-        # existing log (e.g. left over from a pre-fix install) needs an
-        # explicit fchmod to be hardened too.
-        stderr_fd = os.open(str(stderr_log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        os.fchmod(stderr_fd, 0o600)
+        # S2-10: On every start, rotate the existing log to .1 (if it exists) and
+        # open a fresh 0600 inode via O_EXCL. This ensures that a reader holding
+        # a descriptor to the old inode cannot observe new LiteLLM output, and the
+        # old log's content (which may carry backend key material) is no longer
+        # 0644 from pre-fix installs. Keeping one previous generation (.1) preserves
+        # the last boot's errors for diagnosis.
+        if os.path.lexists(stderr_log_path):
+            rotated = stderr_log_path.with_name("litellm.stderr.log.1")
+            os.replace(stderr_log_path, rotated)
+            os.chmod(rotated, 0o600)
+        stderr_fd = os.open(str(stderr_log_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND, 0o600)
         stderr_handle = os.fdopen(stderr_fd, "a", buffering=1)
         try:
             self._process = subprocess.Popen(
