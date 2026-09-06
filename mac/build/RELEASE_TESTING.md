@@ -53,7 +53,15 @@ Run on a fresh macOS 26 install (or a wiped data dir) before tagging a release.
 - [ ] Reinstall the same DMG → no setup wizard, picks up where it left off.
 - [ ] `brew uninstall --cask --zap taos` (when Cask exists) wipes the four `~/Library/...` dirs.
 
-## Sign-off
+## 8. Sparkle Framework Link Proof (NEW for this PR)
+
+- [ ] Run `TAOS_RELEASE=1 mac/build/build.sh --version X.Y.Z --output dist` on a Mac to verify:
+  - The `verify_sparkle.sh` script passes validation
+  - Sparkle.framework is properly linked at runtime (`@rpath/Sparkle.framework/Versions/B/Sparkle`)
+  - LC_RPATH `@executable_path/../Frameworks` is correctly set
+  - The fix-forward addresses all original issues with zip layout, release guard, and launcher linking
+
+Sign-off
 
 Tester: ______________  Date: ______________
 Version: ______________  All boxes checked: yes / no
