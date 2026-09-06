@@ -1,2 +1,5 @@
 ### Security
 - Rotating an agent identity's tokens (`POST /api/agents/registry/{id}/rotate-tokens`) now also kills the surfaces that authenticate by identity alone. `check_agent_identity` skipped the `token_min_iat` cutoff that `check_agent_scope` and `check_agent_scope_for_project` both enforce, so a superseded token still passed on the routes that need no scope grant -- creating a scope request (the one route whose purpose is asking for more privilege), the agent decisions routes, container-provisioning requests and the auth-request flow. A rotated token is now refused there, and on an unrouted path it gets the dead-credential 401 instead of the wrong-URL 404.
+
+### Internal
+- The `token_min_iat` rotation-cutoff check was copy-pasted into three places in `tinyagentos/agent_token_auth.py` (`_verify_agent_scope`, `check_agent_identity`, `check_agent_project_grants`); extracted into a single `_enforce_rotation_cutoff` helper so a future change to the cutoff semantics cannot silently apply to only some of them.

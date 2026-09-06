@@ -364,3 +364,42 @@ class TestRotateTokensRoute:
             "/api/agents/registry/no-such-agent-20260101-000000/rotate-tokens"
         )
         assert resp.status_code == 404
+
+class TestEnforceRotationCutoffHelper:
+    """Unit tests for the shared rotation-cutoff check.
+
+    The same four-line token_min_iat comparison used to be copy-pasted into
+    _verify_agent_scope, check_agent_identity, and check_agent_project_grants
+    (kilo-code-bot review on #2799): any future change to the cutoff
+    semantics had to be applied in three places or one would silently
+    disagree. It is now a single helper all three call.
+    """
+
+    def test_iat_at_or_after_cutoff_passes(self):
+        from tinyagentos.agent_token_auth import _enforce_rotation_cutoff
+
+        _enforce_rotation_cutoff({"token_min_iat": 100}, {"iat": 100})
+        _enforce_rotation_cutoff({"token_min_iat": 100}, {"iat": 200})
+
+    def test_iat_before_cutoff_raises_401(self):
+        from tinyagentos.agent_token_auth import _enforce_rotation_cutoff
+
+        with pytest.raises(HTTPException) as exc_info:
+            _enforce_rotation_cutoff({"token_min_iat": 100}, {"iat": 99})
+        assert exc_info.value.status_code == 401
+
+    def test_missing_token_min_iat_defaults_to_zero(self):
+        """No rotation has ever happened -- any real iat clears the cutoff."""
+        from tinyagentos.agent_token_auth import _enforce_rotation_cutoff
+
+        _enforce_rotation_cutoff({}, {"iat": 1})
+
+    def test_missing_iat_is_treated_as_ancient_and_rejected_once_rotated(self):
+        """A token with no iat claim is collapsed to 0 (documented
+        safe-by-default policy), so it is superseded by ANY cutoff a caller
+        has ever set."""
+        from tinyagentos.agent_token_auth import _enforce_rotation_cutoff
+
+        with pytest.raises(HTTPException) as exc_info:
+            _enforce_rotation_cutoff({"token_min_iat": 1}, {})
+        assert exc_info.value.status_code == 401
