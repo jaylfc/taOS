@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -814,3 +815,184 @@ class TestMergeAttributionReconciliation:
         result = self._run_checker(tmp_path, env, cutoff="2026-08-28T00:00:00Z")
         assert result.returncode == 1, result.stdout + result.stderr
         assert "42" in result.stdout
+
+    def test_gate_fails_loudly_when_neither_jq_nor_python3_available(self, tmp_path: Path) -> None:
+        """The documented "neither jq nor python3" path must actually run.
+
+        `set -e` is restored (line 84) before the audit-encoding block. With
+        jq absent, the fallback is a bare `VAR=$(python3 -c ...)` assignment;
+        if python3 is ALSO absent, that assignment's own nonzero exit (127,
+        "command not found") kills the script under `set -e` before it ever
+        reaches its own "neither jq nor python3 is available" handling further
+        down. The merge still succeeded, so a raw shell crash here is wrong on
+        two counts: exit 65 (audit incomplete) is documented for exactly this
+        case, and the operator gets a Python traceback-less shell error
+        instead of the message that names the cause.
+        """
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
+        merge_sha = _commit_file(repo, "feat.txt", "feature\n", "merge PR #43")
+
+        # A pure-/bin/sh gh stub: the usual _write_stub_gh is itself a python3
+        # script, which would defeat a PATH with no python3 on it before the
+        # script under test ever gets to run. Every lookup this test needs
+        # succeeds; the audit-encoding step is the only thing meant to fail.
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        gh_path = bin_dir / "gh"
+        gh_path.write_text(
+            "#!/bin/sh\n"
+            "case \"$*\" in\n"
+            f"  *mergeCommit*) echo '{merge_sha}';;\n"
+            "  *mergedBy*) echo bot;;\n"
+            "  *nameWithOwner*) echo test-org/test-repo;;\n"
+            "  *number*) echo 43;;\n"
+            "  *) exit 0;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        gh_path.chmod(0o755)
+
+        config_file = self._write_config(tmp_path, [{
+            "number": 43,
+            "mergeCommit": {"oid": merge_sha},
+            "mergedAt": "2026-08-28T12:00:00Z",
+            "mergedBy": {"login": "bot"},
+        }])
+        audit_file = tmp_path / "audit.jsonl"
+        audit_file.write_text("", encoding="utf-8")
+        env = self._make_env(tmp_path, config_file, extra={"FLEET_AUDIT_LOG": str(audit_file)})
+
+        # Rebuild PATH from scratch with only what the script needs to run at
+        # all (bash builtins plus basename/dirname/mkdir/date/git/sh, and the
+        # gh stub) -- deliberately no jq, no python3, wherever they really
+        # live on this host.
+        bare_bin = tmp_path / "bare-bin"
+        bare_bin.mkdir()
+        for tool in ("basename", "dirname", "mkdir", "date", "git", "cat", "sh"):
+            for candidate in (Path("/usr/bin") / tool, Path("/bin") / tool):
+                if candidate.exists():
+                    (bare_bin / tool).symlink_to(candidate)
+                    break
+        (bare_bin / "gh").symlink_to(gh_path)
+        bash_path = shutil.which("bash") or "/usr/bin/bash"
+        env["PATH"] = str(bare_bin)
+
+        gate_result = subprocess.run(
+            [bash_path, GATE, "43", "tsk-test", "test note"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+
+        assert gate_result.returncode == 65, gate_result.stdout + gate_result.stderr
+        assert "neither jq nor python3" in gate_result.stderr, gate_result.stderr
+        assert "43" in gate_result.stderr
+
+    # ---- review fold: an audit entry with sha but no repo warns, not silence ----
+
+    def test_audit_entry_missing_repo_field_warns_not_just_drops(self, tmp_path: Path) -> None:
+        """A `sha` present but `repo` missing/empty must warn, not vanish quietly.
+
+        `e.get("repo") == repo_slug` is False for a missing OR an empty `repo`
+        the same way it is for a genuine other-repo entry, so the comprehension
+        correctly excludes it from `audit_shas` either way -- the merge is
+        still reported as unmatched. But unlike a genuine other-repo entry
+        (normal, multi-repo audit log), a present `sha` with no `repo` at all
+        is a producer bug or schema drift, and the operator gets nothing
+        pointing at that cause: the merge just reads as flatly unattributed.
+        """
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
+        merge_sha = _commit_file(repo, "feat.txt", "feature\n", "merge PR #42")
+
+        prs = [
+            {
+                "number": 42,
+                "mergeCommit": {"oid": merge_sha},
+                "mergedAt": "2026-08-28T12:00:00Z",
+                "mergedBy": {"login": "bot"},
+            },
+        ]
+        config_file = self._write_config(tmp_path, prs, repo="test-org/test-repo")
+        self._write_stub_gh(tmp_path)
+        env = self._make_env(tmp_path, config_file)
+
+        (tmp_path / "audit.jsonl").write_text(
+            json.dumps({
+                "actor": "bot", "repo": "", "pr": 42,
+                "sha": merge_sha, "merged_by": "bot",
+                "timestamp": "2026-08-28T12:00:00Z", "script": "gate_merge.sh",
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        result = self._run_checker(tmp_path, env, cutoff="2026-08-28T00:00:00Z")
+
+        # Still correctly unmatched -- this must not become a false pass.
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "42" in result.stdout
+        # ...but now the operator is told why: a real audit line names this
+        # sha with no repo attached, not just silence about it.
+        assert "WARN" in result.stderr, result.stderr
+        assert merge_sha[:12] in result.stderr, result.stderr
+
+    # ---- review fold: a truncated `gh pr list` must not pass as clean ----
+
+    def test_pr_list_at_the_limit_ceiling_is_an_error_not_a_clean_pass(
+        self, tmp_path: Path
+    ) -> None:
+        """`gh pr list --limit 1000` silently caps at 1000 with no truncation
+        flag. If the real result has more merges than that in scope, the
+        extras never enter the reconciliation set and an unattributed merge
+        among them is never reported -- a truncated fetch must not read as a
+        clean audit.
+        """
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
+
+        prs = [
+            {
+                "number": n,
+                "mergeCommit": {"oid": f"{n:040x}"},
+                "mergedAt": "2026-08-28T12:00:00Z",
+                "mergedBy": {"login": "bot"},
+            }
+            for n in range(1, 1001)
+        ]
+        config_file = self._write_config(tmp_path, prs, repo="test-org/test-repo")
+        self._write_stub_gh(tmp_path)
+        env = self._make_env(tmp_path, config_file)
+        (tmp_path / "audit.jsonl").write_text("", encoding="utf-8")
+
+        result = self._run_checker(tmp_path, env, cutoff="2026-08-28T00:00:00Z")
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "1000" in result.stderr, result.stderr
+
+    # ---- review fold: infrastructure errors must map to EXIT_ERROR too ----
+
+    def test_missing_gh_binary_maps_to_exit_error_not_a_traceback(self, tmp_path: Path) -> None:
+        """A `gh` that isn't even on PATH must map to EXIT_ERROR, not crash.
+
+        `subprocess.run(["gh", ...])` raises `FileNotFoundError` (an `OSError`)
+        when `gh` is absent, and `main()` only catches `RuntimeError` -- the
+        exception escapes, Python exits 1, and an infrastructure failure
+        reads as EXIT_FAIL ("one or more merges lack audit entries") instead
+        of EXIT_ERROR.
+        """
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "# main\n", "initial")
+
+        env = os.environ.copy()
+        env["PATH"] = str(tmp_path / "empty-bin")  # gh is nowhere on this PATH
+        (tmp_path / "empty-bin").mkdir()
+        env["HOME"] = str(tmp_path / "home")
+        (tmp_path / "audit.jsonl").write_text("", encoding="utf-8")
+
+        result = self._run_checker(tmp_path, env, cutoff="2026-08-28T00:00:00Z")
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "Traceback" not in result.stderr, result.stderr

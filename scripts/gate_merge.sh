@@ -131,6 +131,13 @@ if [ "$rc" -eq 0 ]; then
     # interpolating them into a hand-written `{...}` lets a single quote or
     # backslash emit a line the checker's JSON parser cannot read -- and an
     # unreadable audit line is an unattributed merge.
+    # `set -e` is active here (line 84): a bare `VAR=$(cmd)` assignment whose
+    # command is missing (jq or python3 absent) would otherwise kill the
+    # script with a raw "command not found" before the "neither jq nor
+    # python3" handling below ever runs -- and the merge already succeeded,
+    # so a shell crash here is strictly worse than falling through to the
+    # documented exit 65. `|| AUDIT_LINE=""` tolerates the failure at each
+    # site and lets that existing fallback report it.
     if command -v jq >/dev/null 2>&1; then
         AUDIT_LINE="$(jq -cn \
             --arg actor "$ACTOR" \
@@ -140,7 +147,7 @@ if [ "$rc" -eq 0 ]; then
             --arg merged_by "$MERGED_BY" \
             --arg timestamp "$TIMESTAMP" \
             --arg script "$SCRIPT_NAME" \
-            '{actor:$actor,repo:$repo,pr:(($pr|tonumber?) // $pr),sha:$sha,merged_by:$merged_by,timestamp:$timestamp,script:$script}')"
+            '{actor:$actor,repo:$repo,pr:(($pr|tonumber?) // $pr),sha:$sha,merged_by:$merged_by,timestamp:$timestamp,script:$script}')" || AUDIT_LINE=""
     else
         AUDIT_LINE="$(
             AUDIT_ACTOR="$ACTOR" AUDIT_REPO="$REPO" AUDIT_PR="$PR_NUM" \
@@ -161,11 +168,15 @@ print(json.dumps({
     "timestamp": os.environ["AUDIT_TIMESTAMP"],
     "script": os.environ["AUDIT_SCRIPT"],
 }, separators=(",", ":")))'
-        )"
+        )" || AUDIT_LINE=""
     fi
 
     if [ -n "$AUDIT_LINE" ]; then
-        printf '%s\n' "$AUDIT_LINE" >> "$AUDIT_LOG"
+        if ! printf '%s\n' "$AUDIT_LINE" >> "$AUDIT_LOG"; then
+            echo "ERROR: could not append the audit entry to ${AUDIT_LOG}." >&2
+            echo "       PR #${PR_NUMBER} merged but is UNATTRIBUTED." >&2
+            AUDIT_RC=65
+        fi
     else
         # Fail loud and closed: with no audit line the checker reports this
         # merge as unattributed, which is the correct outcome, but the

@@ -36,6 +36,11 @@ EXIT_OK = 0
 EXIT_FAIL = 1
 EXIT_ERROR = 2
 
+# `gh pr list` silently caps at this many records with no truncation flag; if
+# the real result is at the ceiling, extra merges beyond it never enter the
+# reconciliation set and an unattributed merge among them is never reported.
+PR_LIST_LIMIT = 1000
+
 # `gh` talks to the network; without a bound a hung call hangs CI forever
 # instead of surfacing as EXIT_ERROR.
 DEFAULT_GH_TIMEOUT = 60.0
@@ -151,7 +156,7 @@ def find_merged_prs(
         "pr", "list",
         "--state", "merged",
         "--json", "number,mergeCommit,mergedAt",
-        "--limit", "1000",
+        "--limit", str(PR_LIST_LIMIT),
     ]
     if cutoff_dt is not None:
         # GitHub search takes the qualifier and its value with no space
@@ -166,6 +171,15 @@ def find_merged_prs(
         prs = json.loads(out)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"gh pr list returned unparseable JSON: {exc}") from exc
+
+    # A result at the ceiling reads exactly like a complete one; check the
+    # raw count before any client-side filter narrows it, so a truncated
+    # fetch cannot read as a clean audit either with or without a cutoff.
+    if len(prs) >= PR_LIST_LIMIT:
+        raise RuntimeError(
+            f"gh pr list returned {len(prs)} PRs, the --limit {PR_LIST_LIMIT} "
+            "ceiling; the list may be truncated -- narrow --cutoff"
+        )
 
     # Client-side filter as a safety net (the --search flag may be ignored
     # by a stub gh in tests, or may differ in real gh's date parsing).
@@ -259,6 +273,22 @@ def reconcile(
         for e in audit_entries
         if e.get("sha") and e.get("repo") == repo_slug
     }
+    # A missing/empty `repo` is excluded from audit_shas the same way a
+    # genuine other-repo entry is (`None == repo_slug` and `"" == repo_slug`
+    # are both False), so the merge it describes is correctly still reported
+    # as unmatched below. But unlike a real other-repo entry -- normal in the
+    # shared multi-repo audit log -- a present `sha` with no `repo` at all is
+    # a producer bug or schema drift, and read_audit_log already warns on the
+    # sibling anomaly (unparseable JSON, non-object lines); mirror that here
+    # so this failure mode doesn't read as silence about a cause.
+    for e in audit_entries:
+        sha = e.get("sha")
+        if sha and not e.get("repo"):
+            print(
+                f"WARN: audit entry for sha {sha[:12]} has no repo field; "
+                f"treating as unattributed for {repo_slug}",
+                file=sys.stderr,
+            )
 
     unmatched: list[str] = []
     for pr in merged_prs:
@@ -301,7 +331,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         unmatched = reconcile(args.repo, args.audit_file, args.cutoff, gh_timeout=args.gh_timeout)
-    except RuntimeError as exc:
+    except (RuntimeError, OSError) as exc:
+        # OSError covers FileNotFoundError (gh/git absent from PATH) and a
+        # read_audit_log() that can't read an existing-but-unreadable audit
+        # file -- both infrastructure failures, not "merges lack entries",
+        # and both otherwise escape as a traceback with exit 1 (== EXIT_FAIL).
         print(f"ERROR: {exc}", file=sys.stderr)
         return EXIT_ERROR
 
