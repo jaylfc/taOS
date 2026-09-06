@@ -25,6 +25,31 @@ async def test_create_project_duplicate_slug_returns_409(client):
     assert resp.status_code == 409
 
 
+@pytest.mark.asyncio
+async def test_patch_project_onto_a_taken_name_returns_409(client):
+    """A rename onto another project's name is the same conflict as a create.
+
+    ``projects.name`` has no unique index; the create path enforces
+    case-insensitive uniqueness with a query and answers 409. The PATCH ran no
+    such check, so a rename left two projects sharing one name and
+    ``get_project_by_name`` returning only one of them.
+    """
+    await client.post("/api/projects", json={"name": "Alpha", "slug": "alpha"})
+    pid = (
+        await client.post("/api/projects", json={"name": "Beta", "slug": "beta"})
+    ).json()["id"]
+
+    resp = await client.patch(f"/api/projects/{pid}", json={"name": "ALPHA"})
+    assert resp.status_code == 409
+    assert resp.json()["field"] == "name"
+    assert (await client.get(f"/api/projects/{pid}")).json()["name"] == "Beta"
+
+    # Its own name in another case is not a conflict.
+    resp = await client.patch(f"/api/projects/{pid}", json={"name": "BETA"})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "BETA"
+
+
 @pytest.mark.parametrize("bad_slug", ["../escape", "/abs", "with space", "UPPER", "x" * 64, "", "."])
 @pytest.mark.asyncio
 async def test_create_project_rejects_unsafe_slug(client, bad_slug):

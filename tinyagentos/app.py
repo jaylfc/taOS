@@ -1678,6 +1678,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     app.add_middleware(_StartupGuardMiddleware)
 
+    # Upload body caps — added last so it is the outermost layer and the cap is
+    # armed before anything downstream (FastAPI's multipart parsing included)
+    # pulls a byte of the body. See the module docstring for why a route-level
+    # read(cap + 1) is too late to stop the spooling.
+    from tinyagentos.middleware.upload_body_limit import UploadBodyLimitMiddleware
+    app.add_middleware(UploadBodyLimitMiddleware)
+
     # _background_tasks collects all fire-and-forget asyncio.Task handles so
     # they can be cancelled on shutdown and exceptions can be logged.
     # _startup_complete is NOT set here — the lifespan arms the guard (False)

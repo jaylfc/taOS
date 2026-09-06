@@ -12,9 +12,26 @@ app = FastAPI()
 # long-horizon agent that legitimately takes minutes; a read timeout means the
 # run is in progress, so re-firing it would re-execute the whole job (and any
 # side effects). Keep the attempt count low for the same reason.
-_RETRY_ON = (httpx.ConnectError, httpx.RemoteProtocolError)
+# ConnectTimeout and PoolTimeout belong on this list too — both are raised
+# before any request reaches DeerFlow, and neither inherits ConnectError.
+_RETRY_ON = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+    httpx.RemoteProtocolError,
+)
+# DeerFlow gets its own budget rather than retry_policy's: its call timeout is
+# 600s, far past the router's. 60s is still a safe deadline because a
+# connection-level failure fails fast, so this bounds a restart window without
+# ever truncating a run that did connect — a connected run never re-enters the
+# retry loop.
 _RETRY_KWARGS = dict(
-    max_attempts=3, base_delay=0.5, multiplier=2.0, max_delay=10.0, retry_on=_RETRY_ON
+    max_attempts=3,
+    base_delay=0.5,
+    multiplier=2.0,
+    max_delay=10.0,
+    retry_on=_RETRY_ON,
+    max_total_seconds=60.0,
 )
 
 

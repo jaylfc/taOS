@@ -87,9 +87,20 @@ class IngestPipeline:
         qmd_base_url: str = "",
         llm_base_url: str = "",
         max_concurrent: int = _INGEST_SEMAPHORE_SLOTS,
+        fetch_client: "httpx.AsyncClient | None" = None,
     ) -> None:
+        """`http_client` talks to our own services (the LLM backend, qmd), so
+        it must stay unguarded — they live on loopback. Article URLs are
+        user-supplied and are fetched with `fetch_client` instead, which
+        defaults to a fresh SSRF-pinned client per download; pass one only if
+        it is guarded too. If the object passed in is an `httpx.AsyncClient`,
+        this is enforced at fetch time — it must carry the
+        `SsrfGuardedAsyncTransport`, or a `TypeError` is raised. Test doubles
+        that are not `httpx.AsyncClient` (mocks, fakes) are exempt.
+        """
         self._store = store
         self._http_client = http_client
+        self._fetch_client = fetch_client
         self._notifications = notifications
         self._category_engine = category_engine
         self._qmd_base_url = qmd_base_url
@@ -286,27 +297,51 @@ class IngestPipeline:
         against the loopback / link-local / private-range blocklist before the
         request is issued, so an attacker-supplied URL (or a public URL that
         302-redirects inward) cannot make the host fetch internal services.
+        The fetch itself goes through an SSRF-pinned client, so the address
+        that passed the blocklist is the address the socket is opened to.
         """
+        from contextlib import nullcontext
         from urllib.parse import urljoin
+
+        import httpx
 
         from tinyagentos.routes.desktop_browser.ssrf import (
             SsrfBlockedError,
+            SsrfGuardedAsyncTransport,
+            guarded_async_client,
             validate_url_or_raise,
         )
 
+        # A caller-supplied fetch_client that IS an httpx.AsyncClient must
+        # carry the SSRF-pinned transport, or the guard is silently bypassed
+        # for every article fetch through this pipeline (e.g. a shared
+        # app-wide client handed in by mistake). Test doubles that are not
+        # httpx.AsyncClient at all (mocks, fakes) pass through unchanged.
+        if self._fetch_client is not None and isinstance(self._fetch_client, httpx.AsyncClient):
+            if not isinstance(
+                getattr(self._fetch_client, "_transport", None), SsrfGuardedAsyncTransport
+            ):
+                raise TypeError("fetch_client must be built by guarded_async_client")
+
+        client_cm = (
+            nullcontext(self._fetch_client)
+            if self._fetch_client is not None
+            else guarded_async_client()
+        )
         current_url = url
         resp = None
-        for _hop in range(_MAX_ARTICLE_REDIRECTS + 1):
-            validate_url_or_raise(current_url)  # raises SsrfBlockedError
-            resp = await self._http_client.get(
-                current_url, timeout=30, follow_redirects=False
-            )
-            if resp.is_redirect and resp.headers.get("location"):
-                current_url = urljoin(current_url, resp.headers["location"])
-                continue
-            break
-        else:
-            raise SsrfBlockedError(f"too many redirects fetching {url!r}")
+        async with client_cm as http:
+            for _hop in range(_MAX_ARTICLE_REDIRECTS + 1):
+                validate_url_or_raise(current_url)  # raises SsrfBlockedError
+                resp = await http.get(
+                    current_url, timeout=30, follow_redirects=False
+                )
+                if resp.is_redirect and resp.headers.get("location"):
+                    current_url = urljoin(current_url, resp.headers["location"])
+                    continue
+                break
+            else:
+                raise SsrfBlockedError(f"too many redirects fetching {url!r}")
 
         resp.raise_for_status()
         html = resp.text

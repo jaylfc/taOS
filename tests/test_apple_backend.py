@@ -63,7 +63,8 @@ async def test_list_containers_filters_by_prefix(monkeypatch):
     assert items[0].name == "taos-agent-alice"
     assert items[0].status == "running"
     assert items[0].ip == "192.168.65.3"
-    assert items[0].memory_mb == 2048
+    # "2GB" is SI: 2e9 bytes = 1907 MiB.
+    assert items[0].memory_mb == 1907
     assert items[0].cpu_cores == 2
 
 
