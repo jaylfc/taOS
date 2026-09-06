@@ -81,8 +81,10 @@ async def test_rate_limited_post_carries_retry_after(client, monkeypatch):
     await client.post("/api/client-logs", json={"level": "error", "message": "flood"})
     blocked = await client.post("/api/client-logs", json={"level": "error", "message": "flood"})
     assert blocked.status_code == 429
-    # 1 token at 0.5/s is 2 seconds away, rounded up.
-    assert int(blocked.headers["retry-after"]) == 2
+    # 1 token at 0.5/s is 2 seconds away, rounded up -- but if the first post
+    # took close to a second, the elapsed time can round the wait down to 1.
+    retry_after = int(blocked.headers["retry-after"])
+    assert retry_after in (1, 2)
 
 
 @pytest.mark.asyncio
