@@ -282,6 +282,52 @@ class TestDownloadHttp:
         assert not dest.exists()
 
     @pytest.mark.asyncio
+    async def test_corrupt_redownload_keeps_existing_dest(self, dm, tmp_path):
+        """A re-download of an already-installed model whose new bytes are
+        corrupt (SHA mismatch) must not overwrite or delete the existing valid
+        file. The .part stage file is validated before promotion, so a bad
+        re-download never reaches task.dest."""
+        original = b"a previously installed, valid model"
+        original_hash = hashlib.sha256(original).hexdigest()
+        dest = tmp_path / "out.bin"
+        dest.write_bytes(original)
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+
+        corrupt = b"corrupt bytes that hash to something different"
+        mock_resp = self._make_async_context_manager_mock(corrupt, len(corrupt))
+        mock_client = self._make_mock_client(mock_resp)
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", return_value=mock_client):
+            await dm._download(task, expected_sha256=original_hash)
+
+        assert task.status == "error"
+        assert task.error == "SHA256 mismatch"
+        assert dest.exists(), "a corrupt re-download must not delete the existing file"
+        assert dest.read_bytes() == original
+        part = dest.with_name(dest.name + ".part")
+        assert not part.exists(), "the corrupt .part must be cleaned up"
+
+    @pytest.mark.asyncio
+    async def test_success_promotes_and_removes_part(self, dm, tmp_path):
+        """Happy path: a valid download is promoted to task.dest and the
+        .part stage file is removed."""
+        data = b"hello galaxy" * 10
+        expected_hash = hashlib.sha256(data).hexdigest()
+        dest = tmp_path / "out.bin"
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        mock_resp = self._make_async_context_manager_mock(data, len(data))
+        mock_client = self._make_mock_client(mock_resp)
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", return_value=mock_client):
+            await dm._download(task, expected_sha256=expected_hash)
+
+        assert task.status == "complete"
+        assert dest.exists()
+        assert dest.read_bytes() == data
+        part = dest.with_name(dest.name + ".part")
+        assert not part.exists()
+
+    @pytest.mark.asyncio
     async def test_download_http_error(self, dm, tmp_path):
         dest = tmp_path / "out.bin"
         task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
