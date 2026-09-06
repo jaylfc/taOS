@@ -181,11 +181,16 @@ class LLMProxy:
         """
         self.config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         # mkdir's mode is masked by umask; chmod ensures 0700 even if the
-        # directory already existed from a prior (insecure) run.
+        # directory already existed from a prior (insecure) run. Fail closed:
+        # a local user who controls a still-insecure directory could plant or
+        # read the generated config/shims before LiteLLM loads them, so raise
+        # before writing anything rather than continuing into the write.
         try:
             os.chmod(self.config_dir, 0o700)
-        except OSError:
-            pass
+        except OSError as exc:
+            raise PermissionError(
+                f"LiteLLM config directory must be 0700: {self.config_dir}"
+            ) from exc
         discovered = await _discover_ollama_backends_concurrent(backends)
         config = generate_litellm_config(
             backends,
@@ -512,7 +517,11 @@ class LLMProxy:
         stderr_log_path = config_path.parent / "litellm.stderr.log"
         # S2-10: log at 0600 so error output (which may carry backend key material
         # in LiteLLM's error text) is not world-readable alongside the config.
+        # os.O_CREAT only applies the mode when it creates the inode, so an
+        # existing log (e.g. left over from a pre-fix install) needs an
+        # explicit fchmod to be hardened too.
         stderr_fd = os.open(str(stderr_log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.fchmod(stderr_fd, 0o600)
         stderr_handle = os.fdopen(stderr_fd, "a", buffering=1)
         try:
             self._process = subprocess.Popen(
@@ -526,26 +535,32 @@ class LLMProxy:
                 stderr=stderr_handle,
                 env=env,
             )
-            # Wait for startup. LiteLLM on a fresh Pi DB runs
-            # ``prisma migrate deploy`` against an empty database before
-            # opening its HTTP port — that can take 45-60s on ARM.
-            # Poll ``/health/readiness`` (public) rather than ``/health``
-            # (requires master key → 401 for the polling client).
-            for _ in range(120):
-                await asyncio.sleep(1)
-                try:
-                    async with httpx.AsyncClient(timeout=3) as client:
-                        resp = await client.get(f"{self.url}/health/readiness")
-                        if resp.status_code == 200:
-                            logger.info(f"LiteLLM proxy started on port {self.port}")
-                            return True
-                except Exception:
-                    pass
-            logger.error("LiteLLM proxy failed to start within 120s")
-            return False
         except FileNotFoundError:
             logger.warning("LiteLLM not installed — proxy disabled. Install with: pip install litellm[proxy]")
             return False
+        finally:
+            # The child inherited its own copy of the fd via Popen(); the
+            # parent's handle must be closed on both the success and the
+            # failed-spawn path, or every start() attempt leaks one fd.
+            stderr_handle.close()
+
+        # Wait for startup. LiteLLM on a fresh Pi DB runs
+        # ``prisma migrate deploy`` against an empty database before
+        # opening its HTTP port — that can take 45-60s on ARM.
+        # Poll ``/health/readiness`` (public) rather than ``/health``
+        # (requires master key → 401 for the polling client).
+        for _ in range(120):
+            await asyncio.sleep(1)
+            try:
+                async with httpx.AsyncClient(timeout=3) as client:
+                    resp = await client.get(f"{self.url}/health/readiness")
+                    if resp.status_code == 200:
+                        logger.info(f"LiteLLM proxy started on port {self.port}")
+                        return True
+            except Exception:
+                pass
+        logger.error("LiteLLM proxy failed to start within 120s")
+        return False
 
     def stop(self):
         """Stop the LiteLLM proxy."""

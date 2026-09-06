@@ -791,6 +791,121 @@ class TestProxySelfHeal:
         assert await LLMProxy()._selfheal_proxy_extra() is False
 
 
+class TestStderrLogHandling:
+    """S2-10: the LiteLLM stderr log must stay 0600 across restarts, and the
+    parent process must not leak the log's file descriptor."""
+
+    @pytest.mark.asyncio
+    async def test_existing_stderr_log_rechmoded_to_0600(self, tmp_path, monkeypatch):
+        """os.open(..., 0o600) only applies the mode when it CREATES the
+        inode. A log left over from a pre-fix install (or one an operator
+        widened by hand) must be hardened back to 0600 on every open, not
+        just the first."""
+        import os as os_mod
+        import shutil
+        import tinyagentos.llm_proxy as mod
+
+        monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
+        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+
+        class _FakePopen:
+            def __init__(self, *a, **kw):
+                raise FileNotFoundError("stubbed to skip real spawn")
+
+        monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
+
+        p = mod.LLMProxy(port=14017, data_dir=tmp_path)
+        config_dir = tmp_path / "litellm"
+        config_dir.mkdir(parents=True)
+        log_path = config_dir / "litellm.stderr.log"
+        log_path.write_text("stale log from a pre-fix install\n")
+        os_mod.chmod(log_path, 0o644)
+
+        await p.start(backends=[])
+
+        mode = stat.S_IMODE(log_path.stat().st_mode)
+        assert mode == 0o600, f"expected 0600, got {oct(mode)}"
+
+    @pytest.mark.asyncio
+    async def test_stderr_handle_closed_after_successful_start(self, tmp_path, monkeypatch):
+        """The parent keeps stdio piped to the child via the inherited fd;
+        it must close its own copy right after Popen() succeeds, or a
+        repeated start() leaks one descriptor per attempt."""
+        import os as os_mod
+        import shutil
+        import tinyagentos.llm_proxy as mod
+
+        class _FakeResp:
+            status_code = 200
+
+        class _FakeClient:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *exc): return False
+            async def get(self, url): return _FakeResp()
+
+        monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
+        monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
+        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+
+        class _FakePopen:
+            def __init__(self, *a, **kw):
+                pass
+
+        monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
+
+        captured_handles = []
+        orig_fdopen = os_mod.fdopen
+
+        def _tracking_fdopen(fd, *a, **kw):
+            handle = orig_fdopen(fd, *a, **kw)
+            captured_handles.append(handle)
+            return handle
+
+        monkeypatch.setattr(mod.os, "fdopen", _tracking_fdopen)
+
+        p = mod.LLMProxy(port=14018, data_dir=tmp_path)
+        result = await p.start(backends=[])
+
+        assert result is True
+        assert len(captured_handles) == 1
+        assert captured_handles[0].closed, "parent must close its stderr log handle"
+
+    @pytest.mark.asyncio
+    async def test_stderr_handle_closed_when_popen_raises(self, tmp_path, monkeypatch):
+        """Same cleanup is required on the failed-spawn path (litellm binary
+        missing) — the handle must not leak just because Popen() failed."""
+        import os as os_mod
+        import shutil
+        import tinyagentos.llm_proxy as mod
+
+        monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
+        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+
+        class _FakePopen:
+            def __init__(self, *a, **kw):
+                raise FileNotFoundError("stubbed")
+
+        monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
+
+        captured_handles = []
+        orig_fdopen = os_mod.fdopen
+
+        def _tracking_fdopen(fd, *a, **kw):
+            handle = orig_fdopen(fd, *a, **kw)
+            captured_handles.append(handle)
+            return handle
+
+        monkeypatch.setattr(mod.os, "fdopen", _tracking_fdopen)
+
+        p = mod.LLMProxy(port=14019, data_dir=tmp_path)
+        result = await p.start(backends=[])
+
+        assert result is False
+        assert len(captured_handles) == 1
+        assert captured_handles[0].closed, "parent must close its stderr log handle even on failed spawn"
+
+
 class TestConfigDirPermissions:
     """S2-10: LiteLLM config dir and files must not be world-readable.
 
@@ -849,9 +964,28 @@ class TestConfigDirPermissions:
         yaml_text = (proxy.config_dir / "litellm_config.yaml").read_text()
         assert key in yaml_text
 
+    @pytest.mark.asyncio
+    async def test_write_config_fails_closed_when_chmod_fails(self, tmp_path):
+        """If hardening the config dir to 0700 fails, write_config must raise
+        BEFORE writing any generated file — otherwise a local user who
+        controls the (still-insecure) directory could plant or read the
+        config/shims before LiteLLM ever loads them."""
+        proxy = LLMProxy(port=14016, data_dir=tmp_path)
+        with patch("os.chmod", side_effect=OSError("boom")):
+            with pytest.raises(PermissionError):
+                await proxy.write_config([])
+        assert not (proxy.config_dir / "litellm_config.yaml").exists()
+        assert not (proxy.config_dir / "taos_callback.py").exists()
+
 
 class TestSystemdUnitPermissions:
-    """S2-10: the systemd unit template must enable PrivateTmp and UMask."""
+    """S2-10: the systemd unit template must enable PrivateTmp. It must NOT
+    set a global UMask: the model store under <data_dir>/models is read by
+    backend units (llama-cpp, hailo, rk*) that install-*.sh runs as a
+    different user (the human $SUDO_USER), so a controller-wide umask would
+    make every freshly downloaded model unreadable by those units. Per-file
+    modes (mkdir 0700 / atomic_write_text 0o600 / os.open 0o600) are the
+    hardening mechanism for this PR's secrets, not a global umask."""
 
     _UNIT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "systemd" / "tinyagentos.service"
 
@@ -859,6 +993,6 @@ class TestSystemdUnitPermissions:
         text = self._UNIT_PATH.read_text()
         assert "PrivateTmp=yes" in text
 
-    def test_unit_has_umask(self):
+    def test_unit_has_no_umask(self):
         text = self._UNIT_PATH.read_text()
-        assert "UMask=0077" in text
+        assert "UMask=" not in text
