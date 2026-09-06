@@ -175,6 +175,17 @@ entirely**. `scripts/install-server.sh:1510` runs `pip install -e ".[proxy]"`, a
 the set audited in `uv.lock`, and a future upstream relicense reaches users without tripping the
 lockfile. Any licence-scan CI job must be pointed at what the installer actually installs.
 
+**Resolved (tsk-f3j765).** Neither option 1 nor 2 as written: pip cannot subtract one member of
+another package's extra, and plain `litellm` does not run the proxy. Instead the `proxy` extra in
+`pyproject.toml` inlines litellm 1.94.2's own proxy requirements minus `litellm-enterprise`, caps
+litellm `<1.95` (the installer's `pip install -e .[proxy]` does not read `uv.lock`, and litellm 1.99
+grows requirements the inlined list lacks), and `install-server.sh` uninstalls a copy an earlier
+install left behind. `yt-dlp` is now a declared dependency. `scripts/check_install_licences.py`
+walks `uv.lock` from the server extras and fails on any blocked licence or any installer
+`pip install` of an undeclared package; `tests/test_install_licences.py` holds the rule.
+Option 3 (isolated proxy venv) remains the structural answer to the transitive footprint, incl.
+`soundfile`'s bundled libsndfile (§2.1).
+
 ---
 
 ## 2. Licence FLAGs and compliance hygiene
