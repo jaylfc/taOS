@@ -35,6 +35,18 @@
 
 # Portable (no GNU-only `stat`): a directory we can write into that neither the
 # group nor other users can write to.
+#
+# Known gap: this only reads the POSIX mode bits `ls -ld` prints. A directory
+# whose numeric mode is 0750 but which also carries a filesystem ACL granting
+# write to a group or "other" (systemd's RuntimeDirectoryMode does not strip
+# pre-existing ACLs, and some hardening profiles set default ACLs on /run)
+# renders as `drwxr-x---+` here -- the trailing `+` is ignored and the ACL
+# grant is invisible to this check. We don't shell out to `getfacl`/`setfacl`
+# to close that gap because neither is guaranteed installed on every target
+# (minimal container/embedded images in particular), and a missing-binary
+# failure here must not silently fall through to a worse default. If a
+# platform is known to set default ACLs on RuntimeDirectory, that must be
+# fixed at the installer/systemd-unit level, not detected here.
 stamp_dir_is_private() {
     [ -d "$1" ] && [ -w "$1" ] || return 1
     # drwxr-x---: chars 5-7 are the group bits, 8-10 the other bits.
@@ -67,7 +79,14 @@ if [ -n "$STAMP_FILE" ] && [ -r "$STAMP_FILE" ]; then
     case "$stamp_epoch" in
         '' | *[!0-9]*) stamp_epoch=0 ;;
     esac
-    if [ "$(( $(date +%s) - stamp_epoch ))" -lt 60 ]; then
+    # A future-dated epoch (RTC-less Pis routinely step the clock forward by
+    # minutes to hours on the first NTP sync after a power cut) must not
+    # dedupe indefinitely: without the lower bound, a negative stamp_age is
+    # always "-lt 60" and the drain stays suppressed until the wall clock
+    # catches up to stamp_epoch + 60 -- on the exact failure mode this dedupe
+    # exists to prevent.
+    stamp_age=$(( $(date +%s) - stamp_epoch ))
+    if [ "$stamp_age" -ge 0 ] && [ "$stamp_age" -lt 60 ]; then
         exit 0
     fi
 fi

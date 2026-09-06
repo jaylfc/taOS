@@ -171,6 +171,26 @@ def test_stamp_records_its_own_epoch_so_the_age_check_is_portable(host: FakeHost
     assert len(host.drain_calls) == before + 1, "an expired stamp suppressed the drain"
 
 
+def test_future_dated_stamp_does_not_suppress_forever(host: FakeHost) -> None:
+    """A future epoch must not dedupe: `date +%s - stamp_epoch` can go negative,
+    and a negative number is always `-lt 60`. RTC-less Pis routinely step the
+    clock forward by minutes to hours after an NTP sync post power-cut, so a
+    stamp written just before that step reads as "in the future" afterwards --
+    on the exact failure mode the dedupe exists to prevent, a clock step means
+    a successful drain gets silently re-deduped on the next reboot hook.
+    """
+    host.run()
+    stamp = host.runtime / "prepare-shutdown.stamp"
+    assert stamp.is_file(), "no stamp written to the runtime dir"
+
+    stamp.write_text(f"{int(time.time()) + 3600}\n")
+    before = len(host.drain_calls)
+    host.run()
+    assert len(host.drain_calls) == before + 1, (
+        "a future-dated stamp suppressed the drain"
+    )
+
+
 def test_second_run_within_60s_is_deduped(host: FakeHost) -> None:
     host.run()
     host.run()
@@ -179,6 +199,10 @@ def test_second_run_within_60s_is_deduped(host: FakeHost) -> None:
     )
 
 
+@pytest.mark.skipif(
+    os.access("/run/taos", os.W_OK),
+    reason="an eligible /run/taos on this host wins the candidate lookup before hostile",
+)
 def test_world_writable_runtime_dir_is_refused(host: FakeHost, tmp_path: Path) -> None:
     hostile = tmp_path / "hostile"
     hostile.mkdir()
