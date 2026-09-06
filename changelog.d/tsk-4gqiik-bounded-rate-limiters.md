@@ -1,0 +1,34 @@
+### Security
+- Rate limiters can no longer be made to exhaust memory. The per-key registries
+  behind the unauthenticated project-invite redeem, the cluster manual-claim,
+  the routine webhook and the client-log capture grew without bound, so a
+  caller with a large address range (an IPv6 /64 is 2^64 keys) could push the
+  controller into an out-of-memory kill on a small board. (The peer routes
+  registry already evicted opportunistically at 2000 entries; it carried the
+  same brute-force and clock-step defects as the others, described below.)
+  All five now share one bounded limiter in `tinyagentos/rate_limit.py` and
+  evict the least recently used key once 2000 are tracked.
+
+### Fixed
+- Rate-limit windows no longer allow twice the documented burst at the window
+  edge. The 20-per-10s limiters reset their counter on the first request after
+  the window elapsed, so 20 requests just before the boundary plus 20 just
+  after went through in a fraction of a second; the shared limiter now counts
+  over a moving window, which halves the reachable brute-force rate against
+  the invite PIN.
+- Rate-limit windows no longer freeze when the system clock steps backwards.
+  They measured elapsed time with the wall clock, so an NTP correction after a
+  cold boot on a board without an RTC could lock a caller out until the clock
+  caught up. Every limiter now uses the monotonic clock.
+- `429 Too Many Requests` responses now carry `Retry-After`, so a client that
+  is throttled can back off instead of retrying as fast as it can fail.
+- `RateLimiter` and `MovingWindowLimiter` now reject a non-positive `max_keys`
+  at construction with `ValueError` instead of raising `KeyError` out of the
+  eviction loop on the very first tracked key.
+- `RateLimiter` now rejects a non-positive `capacity` or `refill_per_second`,
+  and `MovingWindowLimiter` a non-positive `max_per_window` or `window_secs`,
+  at construction with `ValueError`. Previously a bad value silently locked
+  every caller out forever (`capacity=0`) or disabled the limiter entirely
+  (`window_secs<=0` accepted every request); `Retry-After` also no longer
+  advertises a made-up 1-second retry for a bucket configured to never
+  refill, since that configuration is now rejected up front.

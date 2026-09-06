@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from tinyagentos.atomic_io import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -74,18 +74,10 @@ def _read_state(path: Path) -> dict:
 
 
 def _write_state(path: Path, state: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix="." + path.stem + ".", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(json.dumps(state, sort_keys=True))
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    # atomic_io fsyncs the temp file and the parent directory: a power cut
+    # must not leave wake_budget.json the right size and full of NULs, which
+    # every reader here is written to treat as a hard error.
+    atomic_write_text(path, json.dumps(state, sort_keys=True))
 
 
 def _today() -> str:

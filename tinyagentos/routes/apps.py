@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from packaging.version import InvalidVersion, Version
 
 router = APIRouter()
 
@@ -80,21 +81,20 @@ APP_PROVENANCE: dict[str, str] = {
 }
 
 
-def _semver_tuple(version: str) -> tuple[int, int, int]:
-    """Parse a semver string into a fixed-length (major, minor, patch) tuple.
+def _parse_app_version(version: str) -> Version | None:
+    """Parse an app version string into a PEP 440 ``Version``.
 
-    Strips a leading 'v' and ignores pre-release/build suffixes for ordering,
-    and pads to three components so "1.0" and "1.0.0" compare equal. Returns
-    (0, 0, 0) on any parse failure so comparisons degrade gracefully without
-    masking a real update.
+    ``packaging`` accepts a leading 'v' and zero-pads short releases, so "1.0"
+    and "1.0.0" still compare equal, and it orders pre-releases below the GA of
+    the same release instead of discarding them. Returns None when the string
+    is not a version at all: an unrecognisable recorded version is unknown, not
+    ancient, and the old (0, 0, 0) fallback turned it into a permanent,
+    unclearable "update available".
     """
-    v = version.lstrip("v").split("-")[0].split("+")[0]
     try:
-        parts = [int(p) for p in v.split(".")]
-    except ValueError:
-        return (0, 0, 0)
-    parts = (parts + [0, 0, 0])[:3]
-    return (parts[0], parts[1], parts[2])
+        return Version(version)
+    except (InvalidVersion, TypeError):
+        return None
 
 
 def _resolve_icon(manifest_icon: str, manifest_dir) -> str:
@@ -247,10 +247,12 @@ async def optional_app_catalog(request: Request):
     UI rework.
 
     ``update_available`` is true only when the app is installed AND the version
-    recorded at install time is older than APP_VERSIONS (semver comparison).
+    recorded at install time is older than APP_VERSIONS (PEP 440 ordering, so
+    a recorded pre-release counts as older than the GA of the same release).
     Freshly installed apps always record the current APP_VERSIONS version, so
     update_available will be false unless an older install row pre-dates a
-    version bump.
+    version bump. A recorded version that cannot be parsed is reported as no
+    update rather than as older than everything.
     """
     store = getattr(request.app.state, "installed_apps", None)
 
@@ -270,9 +272,13 @@ async def optional_app_catalog(request: Request):
         is_installed = row is not None
         update_available = False
         if is_installed and row is not None:
-            recorded = row.get("version") or ""
-            if recorded:
-                update_available = _semver_tuple(recorded) < _semver_tuple(current_version)
+            recorded_version = _parse_app_version(row.get("version") or "")
+            latest_version = _parse_app_version(current_version)
+            update_available = (
+                recorded_version is not None
+                and latest_version is not None
+                and recorded_version < latest_version
+            )
 
         # Legacy install rows (from before provenance was recorded) fall back to
         # the APP_PROVENANCE allowlist -- every optional app shipped in-core is

@@ -32,6 +32,20 @@ def test_build_payload_with_actions():
     assert payload["actions"] == actions
 
 
+def test_build_payload_with_image():
+    # tsk-cf7wzc: a rich image attachment rides on the top-level `image` key so
+    # UnifiedPush distributors can render it without inspecting `data`.
+    payload = build_unifiedpush_payload(
+        title="Deploy", body="queued", image="https://cdn.example.com/run/42.png",
+    )
+    assert payload["image"] == "https://cdn.example.com/run/42.png"
+
+
+def test_build_payload_omits_image_when_absent():
+    payload = build_unifiedpush_payload(title="Hi", body="there")
+    assert "image" not in payload
+
+
 @pytest.mark.asyncio
 async def test_null_sender_returns_false():
     assert await NullUnifiedPushSender().send("https://example.com/endpoint", {}) is False
@@ -318,7 +332,15 @@ async def test_send_device_push_broadcast_actions_for_decision_types():
     devices_ios = [{"device_id": "d1", "platform": "ios", "push_token": "apns-tok", "user_id": "u1"}]
 
     for dtype, expected_actions in [
-        ("approve_deny", [{"id": "approve", "label": "Approve"}, {"id": "deny", "label": "Deny"}]),
+        # tsk-cf7wzc: approve_deny decisions pin the action set to approve /
+        # reject / add-note. The single_select/free_text rows keep their
+        # narrower button sets; the add-note row is asserted in a dedicated
+        # test below.
+        ("approve_deny", [
+            {"id": "approve", "label": "Approve"},
+            {"id": "reject", "label": "Reject"},
+            {"id": "add_note", "label": "Add note"},
+        ]),
         ("single_select", [{"id": "opt1", "label": "Option 1"}]),
         ("free_text", [{"id": "quick_reply", "label": "Reply"}]),
     ]:

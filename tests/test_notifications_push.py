@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import pathlib
 import tempfile
 from unittest.mock import patch
@@ -237,6 +238,50 @@ class TestSendWebPush:
             result = await send_web_push(_ROW, store=push_store, vapid=FAKE_VAPID)
         mock.assert_not_called()
         assert result == {"sent": 0, "failed": 0, "removed": 0}
+
+    async def test_payload_includes_image_when_row_carries_one(self, push_store):
+        # tsk-cf7wzc: web push carries the rich attachment on both top-level
+        # `image` (Notification API) and inner `data.image` so PWA service workers
+        # that only inspect one shape still see it. Non-native clients that
+        # ignore `image` still get a valid text notification.
+        await _seed(push_store, _ENDPOINT_A)
+        row = {
+            "id": 9,
+            "title": "Deploy",
+            "message": "queued",
+            "source": "decisions",
+            "data": {
+                "image": "https://cdn.example.com/run/42.png",
+                "decision_type": "approve_deny",
+            },
+        }
+        captured: list[bytes] = []
+
+        def capture(**kwargs):
+            captured.append(kwargs["data"].encode("utf-8"))
+
+        with patch("pywebpush.webpush", side_effect=capture):
+            await send_web_push(row, store=push_store, vapid=FAKE_VAPID)
+        assert len(captured) == 1
+        payload = json.loads(captured[0].decode("utf-8"))
+        assert payload["image"] == "https://cdn.example.com/run/42.png"
+        assert payload["data"]["image"] == "https://cdn.example.com/run/42.png"
+        # Non-native clients still see a valid text notification.
+        assert payload["title"] == "Deploy"
+        assert payload["body"] == "queued"
+
+    async def test_payload_omits_image_when_absent(self, push_store):
+        await _seed(push_store, _ENDPOINT_A)
+        captured: list[bytes] = []
+
+        def capture(**kwargs):
+            captured.append(kwargs["data"].encode("utf-8"))
+
+        with patch("pywebpush.webpush", side_effect=capture):
+            await send_web_push(_ROW, store=push_store, vapid=FAKE_VAPID)
+        payload = json.loads(captured[0].decode("utf-8"))
+        assert "image" not in payload
+        assert "image" not in payload["data"]
 
 
 # ---------------------------------------------------------------------------
@@ -612,7 +657,11 @@ class TestSendDevicePush:
         assert FakeUP.sent[0][0] == "https://up.example.com/endpoint"
         body = FakeUP.sent[0][1]
         assert body["title"] == "Decide"
-        assert body["actions"] == [{"id": "approve", "label": "Approve"}, {"id": "deny", "label": "Deny"}]
+        assert body["actions"] == [
+            {"id": "approve", "label": "Approve"},
+            {"id": "reject", "label": "Reject"},
+            {"id": "add_note", "label": "Add note"},
+        ]
 
     async def test_ios_routes_to_apns_unchanged(self):
         class FakeApns:
@@ -807,3 +856,120 @@ class TestSendDevicePush:
             assert after["push_token"] == "freshtoken"
         finally:
             await store.close()
+    async def test_ios_decision_sets_category_mutable_content_and_actions(self):
+        # tsk-cf7wzc: an approve_deny decision must reach iOS with the
+        # DECISION_APPROVE_DENY category so the native shell maps it to a
+        # UNNotificationCategory with approve / reject / add-note buttons, and
+        # mutable-content so the service extension can attach the image and
+        # wire the action callback that posts back to Decisions answer.
+        class FakeApns:
+            sent = []
+
+            async def send(self, push_token, payload, *, topic=None):
+                FakeApns.sent.append(payload)
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeUP:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeStore:
+            async def list_for_user(self, user_id):
+                return [
+                    {"device_id": "d1", "platform": "ios", "push_token": "apns-tok", "user_id": "u1"}
+                ]
+
+        row = {
+            "id": 1,
+            "title": "Deploy",
+            "message": "approve?",
+            "source": "decisions",
+            "user_id": "u1",
+            "data": {
+                "decision_type": "approve_deny",
+                "image": "https://cdn.example.com/run/42.png",
+            },
+        }
+        await send_device_push(
+            row,
+            device_store=FakeStore(),
+            apns_sender=FakeApns(),
+            up_sender=FakeUP(),
+        )
+        assert len(FakeApns.sent) == 1
+        payload = FakeApns.sent[0]
+        assert payload["aps"]["category"] == "DECISION_APPROVE_DENY"
+        assert payload["aps"]["mutable-content"] == 1
+        assert payload["aps"]["alert"] == {"title": "Deploy", "body": "approve?"}
+        # APNs flattens `data` into the top-level payload (per Apple docs), so
+        # the iOS shell + service extension read actions / image directly off
+        # the root, not under a nested `data` key.
+        assert payload["actions"] == [
+            {"id": "approve", "label": "Approve"},
+            {"id": "reject", "label": "Reject"},
+            {"id": "add_note", "label": "Add note"},
+        ]
+        assert payload["image"] == "https://cdn.example.com/run/42.png"
+        assert payload["decision_type"] == "approve_deny"
+
+    async def test_android_decision_carries_image_and_actions(self):
+        # tsk-cf7wzc: UnifiedPush distributors get a uniform shape -- top-level
+        # `image` for distributors that render attachments, `actions` for
+        # button rows, and the inner `data` mirror for clients that only read
+        # one of the two.
+        class FakeApns:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeUP:
+            sent = []
+
+            async def send(self, push_token, payload):
+                FakeUP.sent.append(payload)
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeStore:
+            async def list_for_user(self, user_id):
+                return [
+                    {"device_id": "d1", "platform": "android", "push_token": "https://up.example.com/e", "user_id": "u1"}
+                ]
+
+        row = {
+            "id": 1,
+            "title": "Deploy",
+            "message": "approve?",
+            "source": "decisions",
+            "user_id": "u1",
+            "data": {
+                "decision_type": "approve_deny",
+                "image": "https://cdn.example.com/run/42.png",
+            },
+        }
+        await send_device_push(
+            row,
+            device_store=FakeStore(),
+            apns_sender=FakeApns(),
+            up_sender=FakeUP(),
+        )
+        assert len(FakeUP.sent) == 1
+        body = FakeUP.sent[0]
+        assert body["image"] == "https://cdn.example.com/run/42.png"
+        assert body["actions"] == [
+            {"id": "approve", "label": "Approve"},
+            {"id": "reject", "label": "Reject"},
+            {"id": "add_note", "label": "Add note"},
+        ]
+        assert body["data"]["image"] == "https://cdn.example.com/run/42.png"
+        assert body["data"]["actions"] == body["actions"]
