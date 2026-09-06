@@ -886,6 +886,11 @@ async def undeploy_agent(name: str, *, data_dir: Path | None = None, delete_stat
     result = await destroy_container(container_name)
     if delete_state and data_dir is not None:
         import shutil
+        # Delete the trace directory that was created for this agent
+        trace_dir = data_dir / "trace" / name
+        if trace_dir.exists():
+            shutil.rmtree(trace_dir, ignore_errors=True)
+        # Also delete workspaces and memory as before
         for sub in ("agent-workspaces", "agent-memory"):
             target = data_dir / sub / name
             if target.exists():
