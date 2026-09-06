@@ -110,6 +110,21 @@ class DockerInstaller(AppInstaller):
         Returns a ``(compose_dict, host_port)`` tuple.  ``host_port`` is
         ``None`` when the manifest declares no ports.
         """
+        # Handle {secret_key} substitution for env vars and companion passwords
+        app_dir = self.apps_dir / app_id
+        secret_key_path = app_dir / ".secret_key"
+        secret_key = ""
+        if secret_key_path.exists():
+            secret_key = secret_key_path.read_text().strip()
+        if len(secret_key) != 64 or not all(c in "0123456789abcdef" for c in secret_key):
+            secret_key = secrets.token_hex(32)
+            app_dir.mkdir(parents=True, exist_ok=True)
+            secret_key_path.write_text(secret_key)
+            secret_key_path.chmod(0o600)
+
+        def _sub_secret_key(text: str) -> str:
+            return text.replace("{secret_key}", secret_key) if "{secret_key}" in text else text
+
         service = {
             "image": install_config["image"],
             "restart": "unless-stopped",
@@ -125,7 +140,39 @@ class DockerInstaller(AppInstaller):
                 if self._is_named_volume(source):
                     named_volumes[source] = None
         if "env" in install_config:
-            service["environment"] = install_config["env"]
+            service["environment"] = {
+                k: _sub_secret_key(v) for k, v in install_config["env"].items()
+            }
+
+        # Companion services (e.g. postgres for linkwarden)
+        companions: list[dict] = install_config.get("companions", [])
+        companion_services: list[dict] = []
+        companion_names: list[str] = []
+        if companions:
+            for comp in companions:
+                comp_name = comp.get("name", f"companion-{len(companion_services)}")
+                companion_names.append(comp_name)
+                comp_service = {
+                    "image": comp["image"],
+                    "restart": "unless-stopped",
+                }
+                # companion volumes
+                comp_named_volumes: dict[str, None] = {}
+                if "volumes" in comp:
+                    comp_service["volumes"] = comp["volumes"]
+                    for vol in comp["volumes"]:
+                        source = str(vol).split(":", 1)[0]
+                        if self._is_named_volume(source):
+                            comp_named_volumes[source] = None
+                # companion environment (e.g. POSTGRES_PASSWORD using {secret_key})
+                if "env" in comp:
+                    comp_service["environment"] = {
+                        k: _sub_secret_key(v) for k, v in comp["env"].items()
+                    }
+                companion_services.append(comp_service)
+                # Map named companion volumes into the top-level volumes block
+                for vn in comp_named_volumes:
+                    named_volumes[vn] = None
 
         # Collect the container-internal ports from the manifest.
         container_ports: list[int] = []
@@ -155,9 +202,15 @@ class DockerInstaller(AppInstaller):
                 for hp, cport in zip(host_ports, container_ports)
             ]
 
+        # Build the services dict: app service first, then companions
+        all_services: dict[str, dict] = {}
+        all_services[app_id] = service
+        for i, comp_service in enumerate(companion_services):
+            all_services[companion_names[i]] = comp_service
+
         # No top-level `version:` — it's obsolete in Compose v2 and emits a
         # warning on every command.
-        compose: dict = {"services": {app_id: service}}
+        compose: dict = {"services": all_services}
         if named_volumes:
             compose["volumes"] = named_volumes
         return compose, allocated_host_port

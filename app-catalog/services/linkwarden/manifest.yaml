@@ -21,7 +21,16 @@ install:
   env:
     NEXTAUTH_SECRET: "changeme"
     NEXTAUTH_URL: "http://localhost:3000"
-    DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/linkwarden"
+    DATABASE_URL: "postgresql://linkwarden:{secret_key}@postgres:5432/linkwarden"
+  companions:
+    - name: postgres
+      image: postgres:16-alpine
+      volumes:
+        - pgdata:/var/lib/postgresql/data
+      env:
+        POSTGRES_PASSWORD: "{secret_key}"
+        POSTGRES_USER: "linkwarden"
+        POSTGRES_DB: "linkwarden"
 
 lifecycle:
   health_check: "curl -sf http://localhost:3000"
