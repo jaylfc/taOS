@@ -1,11 +1,13 @@
 ### Security
 - Rate limiters can no longer be made to exhaust memory. The per-key registries
   behind the unauthenticated project-invite redeem, the cluster manual-claim,
-  the routine webhook, the client-log capture and the peer routes grew without
-  bound, so a caller with a large address range (an IPv6 /64 is 2^64 keys)
-  could push the controller into an out-of-memory kill on a small board. All
-  five now share one bounded limiter in `tinyagentos/rate_limit.py` and evict
-  the least recently used key once 2000 are tracked.
+  the routine webhook and the client-log capture grew without bound, so a
+  caller with a large address range (an IPv6 /64 is 2^64 keys) could push the
+  controller into an out-of-memory kill on a small board. (The peer routes
+  registry already evicted opportunistically at 2000 entries; it carried the
+  same brute-force and clock-step defects as the others, described below.)
+  All five now share one bounded limiter in `tinyagentos/rate_limit.py` and
+  evict the least recently used key once 2000 are tracked.
 
 ### Fixed
 - Rate-limit windows no longer allow twice the documented burst at the window
