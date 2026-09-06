@@ -202,21 +202,32 @@ class SpanStore:
 
 
 class SpanStoreRegistry:
-    """Opens and caches one SpanStore per agent slug."""
+    """Opens and caches one SpanStore per agent slug with bounded LRU eviction."""
 
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, max_size: int = 100):
         self._data_dir = data_dir
         self._stores: dict[str, SpanStore] = {}
         self._lock = asyncio.Lock()
+        self._max_size = max_size
+        self._access_order: list[str] = []
 
     async def get(self, slug: str) -> SpanStore:
         safe = _safe_slug(slug)
         async with self._lock:
-            store = self._stores.get(safe)
-            if store is None:
-                store = SpanStore(self._data_dir, safe)
-                self._stores[safe] = store
-            return store
+            if safe not in self._stores:
+                # Evict LRU entries if we exceed max_size
+                while len(self._stores) >= self._max_size and self._stores:
+                    lru_key = self._access_order.pop(0)
+                    store_to_evict = self._stores.pop(lru_key, None)
+                    if store_to_evict:
+                        await store_to_evict.close()
+                self._stores[safe] = SpanStore(self._data_dir, safe)
+                self._access_order.append(safe)
+            else:
+                # Move to LRU to mark as recently used
+                self._access_order.remove(safe)
+                self._access_order.append(safe)
+            return self._stores[safe]
 
     async def close_all(self) -> None:
         async with self._lock:
