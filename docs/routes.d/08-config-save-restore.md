@@ -23,7 +23,7 @@
 ## Important: both write paths REBUILD `AppConfig` field by field
 
 - A field missing from either rebuild is silently dropped on the next save, wiping whatever the user had set
-- This has now happened twice: `archive`, `archived_agents` and `github_app_id` (#2375) and `lora_ingest_proxy_url` (#2374)
+- Has happened twice already: `archive`, `archived_agents` and `github_app_id` (#2375) and `lora_ingest_proxy_url` (#2374)
 - Adding a field to `AppConfig` means adding it at BOTH sites in this module
 - `test_save_config_preserves_all_to_dict_keys` compares the whole `to_dict()` key set against what survives a round trip and fails if one is forgotten
 - Never fix such a leak by removing the field from `to_dict()`: `save_config()` serialises from there, so that makes the setting unpersistable

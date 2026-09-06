@@ -21,15 +21,7 @@ Access the kanban board for a project. Granting `project_tasks` also makes the a
 
 ### PATCH body semantics
 
-`PATCH /api/projects/{pid}/tasks/{id}` writes exactly the fields sent and
-returns the stored task. Omitted = unchanged. `assignee_id`, `parent_task_id`,
-`element_id` accept `null` as a real clear (`element_id` also the legacy
-`"none"`). `null` elsewhere, an unknown key, or a read-only column (`id`,
-`created_by`, `claimed_by`) is a `422` — never a `200` echoing an unchanged task.
-
-### Grant requirements
-
-Granting `project_tasks` also makes the agent a project member.
+`PATCH /api/projects/{pid}/tasks/{id}` writes exactly the fields sent and returns the stored task. Omitted = unchanged. `assignee_id`, `parent_task_id`, `element_id` accept `null` as a real clear (`element_id` also the legacy `"none"`). `null` elsewhere, an unknown key, or a read-only column (`id`, `created_by`, `claimed_by`) is a `422` — never a `200` echoing an unchanged task.
 
 ### LEAD-only extensions
 
