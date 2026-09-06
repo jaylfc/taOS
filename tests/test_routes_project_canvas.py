@@ -777,6 +777,37 @@ class TestPermissionPatchExtendsFlags:
         assert resp.json()["can_edit_canvas"] is True
         assert resp.json()["can_read_canvas"] is False
 
+    async def test_patch_404s_when_the_member_is_removed_after_the_write(self, ctx):
+        """A member removed between the flag write and the read-back is a 404.
+
+        ``update_member_canvas_flags`` commits before it returns, so a
+        concurrent ``remove_member`` can delete the row before the route reads
+        it back.  Dereferencing that ``None`` raised ``AttributeError`` and the
+        client got a 500 for a race the API already has a 404 for.
+        """
+        pid = await _new_project(ctx, "alpha")
+        cid, _token = await _mint_agent(ctx, pid, ("canvas_write",))
+        await _add_member(ctx, pid, cid)
+
+        store = ctx.app.state.project_store
+        real_get_member = store.get_member
+
+        async def vanishing_get_member(project_id, member_id):
+            # The member is gone by the time the route reads it back.
+            store.get_member = real_get_member
+            return None
+
+        store.get_member = vanishing_get_member
+        try:
+            resp = await ctx.client.patch(
+                f"/api/projects/{pid}/canvas/permissions/{cid}",
+                json={"can_edit_canvas": True},
+            )
+        finally:
+            store.get_member = real_get_member
+
+        assert resp.status_code == 404, resp.text
+
     async def test_patch_rejects_agent_token(self, ctx):
         """The permissions PATCH is owner/admin only; an agent token must not
         reach it (the middleware leaves it off the agent allowlist -> 401)."""
