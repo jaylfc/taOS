@@ -5,4 +5,3 @@
 - Agent version routes now enforce owner-or-admin authorization on list, diff, and revert operations.
 - Cross-process lock serializes state writers (committer and revert) to prevent lost commits.
 - Committer startup failures are now reported as `committer_failed` steps.
-- `.aws/`, `credentials`, and `*.credentials` patterns added to agent state `.gitignore`.

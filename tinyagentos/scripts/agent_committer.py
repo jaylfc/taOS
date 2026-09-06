@@ -33,10 +33,13 @@ def _is_dirty() -> bool:
 
 
 def _changed_summary() -> str:
+    # Read from the index only, and only after `git add -A` has staged the
+    # tree: neither `git diff --cached --name-only` nor `git diff
+    # --name-only` lists untracked files, so a summary taken before staging
+    # is blind to the most common agent change — a new file under
+    # workspace/ — and silently falls back to "auto-commit".
     rc, out, _ = _git("diff", "--cached", "--name-only")
-    if rc != 0 or not out.strip():
-        rc, out, _ = _git("diff", "--name-only")
-    lines = [l.strip() for l in out.strip().splitlines() if l.strip()]
+    lines = [l.strip() for l in out.strip().splitlines() if l.strip()] if rc == 0 else []
     if not lines:
         return "auto-commit"
     if len(lines) == 1:
@@ -51,11 +54,11 @@ def _commit() -> None:
         if not _is_dirty():
             return
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        summary = _changed_summary()
-        message = f"auto: {ts} | {summary}"
         rc, out, err = _git("add", "-A")
         if rc != 0:
             raise RuntimeError(f"git add failed: {err or out}")
+        summary = _changed_summary()
+        message = f"auto: {ts} | {summary}"
         rc, out, err = _git("commit", "-m", message)
         if rc != 0:
             raise RuntimeError(f"git commit failed: {err or out}")

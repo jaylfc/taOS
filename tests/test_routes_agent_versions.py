@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 
 import pytest
@@ -11,6 +12,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import importlib.util
 import yaml
+
+
+# Revert tests exercise the real locked-script path in agent_git.git_revert,
+# which shells out to the system `flock`. Skip rather than fail on a host
+# that lacks it.
+requires_flock = pytest.mark.skipif(
+    shutil.which("flock") is None, reason="flock not available"
+)
 
 
 def _init_fixture_repo(path):
@@ -26,6 +35,12 @@ def _init_fixture_repo(path):
 
 
 def _fake_exec_for_repo(fixture_repo):
+    # The real flock target (agent_git._STATE_LOCK_PATH) is a fixed host path
+    # shared by every test process and every developer running the suite at
+    # once; redirect it into this fixture's own tmp dir so revert tests never
+    # serialize on, or fight over ownership of, one file on the real host.
+    lock_path = str(fixture_repo.parent / "agent_state.lock")
+
     async def _fake(container, cmd, timeout=60):
         if cmd[0] == "git" and cmd[1] == "-C" and cmd[2] == "/root":
             git_args = cmd[3:]
@@ -36,7 +51,11 @@ def _fake_exec_for_repo(fixture_repo):
             )
             return result.returncode, result.stdout
         if cmd[0] == "bash" and cmd[1] == "-c":
-            script = cmd[2].replace("/root", str(fixture_repo))
+            script = (
+                cmd[2]
+                .replace("/root", str(fixture_repo))
+                .replace("/tmp/agent_state.lock", lock_path)
+            )
             result = subprocess.run(
                 [cmd[0], cmd[1], script],
                 capture_output=True,
@@ -110,6 +129,7 @@ class TestAgentVersionsRoutes:
         resp = await client.get("/api/agents/test-agent/versions/--output=.bashrc/diff")
         assert resp.status_code == 400
 
+    @requires_flock
     async def test_revert_restores_content(self, tmp_path, client):
         fixture = tmp_path / "repo"
         fixture.mkdir()
@@ -202,6 +222,7 @@ class TestAgentVersionsRoutes:
         assert data["versions"][0]["author_email"] == "agent@taos.local"
         assert data["versions"][0]["date"] == "2026-01-01 00:00:00 +0000"
 
+    @requires_flock
     async def test_revert_to_head_returns_noop(self, tmp_path, client):
         fixture = tmp_path / "repo"
         fixture.mkdir()
@@ -218,6 +239,7 @@ class TestAgentVersionsRoutes:
         assert resp.status_code == 200
         assert resp.json()["status"] == "noop"
 
+    @requires_flock
     async def test_revert_wins_a_commit_racing_the_sha_resolution(self, tmp_path, client):
         """The auto-committer can commit between resolving the requested sha and
         the reset. The noop decision therefore belongs inside the flock: a sha
@@ -259,6 +281,7 @@ class TestAgentVersionsRoutes:
         assert final_sha == head_sha
         assert not (fixture / "racy.txt").exists()
 
+    @requires_flock
     async def test_revert_racing_commit_before_lock_is_not_falsely_noop(self, tmp_path, client):
         # Regression for the noop decision being made outside the lock: a
         # committer can create a new commit after the route resolves the
@@ -317,6 +340,7 @@ class TestAgentVersionsRoutes:
             resp = await client.post(f"/api/agents/test-agent/versions/{orphan}/revert")
         assert resp.status_code == 409
 
+    @requires_flock
     async def test_revert_dirty_tree_returns_409(self, tmp_path, client):
         fixture = tmp_path / "repo"
         fixture.mkdir()
@@ -337,6 +361,7 @@ class TestAgentVersionsRoutes:
         resp = await client.get("/api/agents/test-agent/versions/abc1/diff")
         assert resp.status_code == 400
 
+    @requires_flock
     async def test_uppercase_sha_is_accepted(self, tmp_path, client):
         """Hex object names are case-insensitive to git, and every route a
         user copies a sha from can hand one over uppercase."""
