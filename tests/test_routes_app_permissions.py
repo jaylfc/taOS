@@ -138,6 +138,7 @@ async def test_request_consent_creates_decision_for_gated_caps(client):
     dec = data["decision"]
     assert dec["type"] == "multi_select"
     assert dec["metadata"] == {
+        "_server_raised": True,
         "kind": "app_grant", "app_id": "stream-chat",
         "capabilities": ["app.net", "app.memory"],
     }

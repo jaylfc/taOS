@@ -15,6 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from tinyagentos.routes.decisions import SERVER_RAISED_KEY
 
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.userspace.capabilities import (
@@ -68,6 +69,7 @@ def app_grant_decision_payload(app_id: str, capabilities: list[str]) -> dict:
             {"label": describe_capability(c), "value": c} for c in capabilities
         ],
         "metadata": {
+            SERVER_RAISED_KEY: True,
             "kind": "app_grant",
             "app_id": app_id,
             "capabilities": list(capabilities),

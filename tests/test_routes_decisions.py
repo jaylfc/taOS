@@ -4,6 +4,8 @@ import time
 
 import pytest
 
+from tinyagentos.routes.decisions import SERVER_RAISED_KEY
+
 
 @pytest.mark.asyncio
 async def test_post_list_get_answer_flow(client):
@@ -157,18 +159,19 @@ async def test_app_grant_answer_writes_grants(client):
     # multi_select with a subset writes granted for the picked caps and denied
     # for the rest to the app_grants ledger.
     app = client._transport.app
-    resp = await client.post("/api/decisions", json={
-        "from_agent": "@taos-app-install", "question": "stream-chat permissions",
-        "type": "multi_select",
-        "options": [{"label": "Net", "value": "app.net"},
-                    {"label": "Memory", "value": "app.memory"}],
-        "metadata": {"kind": "app_grant", "app_id": "stream-chat",
-                     "capabilities": ["app.net", "app.memory"]},
-    })
-    d = resp.json()
+    user_id = _admin_uid(app)
+    d = await app.state.decision_store.create(
+        from_agent="@taos-app-install",
+        question="stream-chat permissions",
+        type="multi_select",
+        options=[{"label": "Net", "value": "app.net"},
+                 {"label": "Memory", "value": "app.memory"}],
+        user_id=user_id,
+        metadata={SERVER_RAISED_KEY: True, "kind": "app_grant", "app_id": "stream-chat",
+                  "capabilities": ["app.net", "app.memory"]},
+    )
     resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": ["app.net"]})
     assert resp.status_code == 200
-    user_id = d["user_id"]
     granted = await app.state.app_grants.granted_capabilities(user_id, "stream-chat")
     assert granted == {"app.net"}
     grants = {g["capability"]: g["decision"]
@@ -182,13 +185,14 @@ async def test_execution_gate_approve_writes_grant(client):
     # == execution_gate): approving it writes a live execution grant for the
     # (agent, action_class) pair so the agent's retry passes the policy gate.
     app = client._transport.app
-    resp = await client.post("/api/decisions", json={
-        "from_agent": "agent-a", "question": "Agent agent-a wants to run code_exec (code-exec)",
-        "type": "approve_deny", "priority": "blocking",
-        "metadata": {"kind": "execution_gate", "agent_name": "agent-a",
-                     "action_class": "code-exec", "tool": "code_exec"},
-    })
-    d = resp.json()
+    d = await app.state.decision_store.create(
+        from_agent="agent-a",
+        question="Agent agent-a wants to run code_exec (code-exec)",
+        type="approve_deny", priority="blocking",
+        user_id=_admin_uid(app),
+        metadata={SERVER_RAISED_KEY: True, "kind": "execution_gate", "agent_name": "agent-a",
+                  "action_class": "code-exec", "tool": "code_exec"},
+    )
     resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": "approve"})
     assert resp.status_code == 200
     assert await app.state.execution_policies.has_live_grant("agent-a", "code-exec") is True
@@ -197,13 +201,14 @@ async def test_execution_gate_approve_writes_grant(client):
 @pytest.mark.asyncio
 async def test_execution_gate_deny_writes_no_grant(client):
     app = client._transport.app
-    resp = await client.post("/api/decisions", json={
-        "from_agent": "agent-a", "question": "Agent agent-a wants to run code_exec (code-exec)",
-        "type": "approve_deny", "priority": "blocking",
-        "metadata": {"kind": "execution_gate", "agent_name": "agent-a",
-                     "action_class": "code-exec", "tool": "code_exec"},
-    })
-    d = resp.json()
+    d = await app.state.decision_store.create(
+        from_agent="agent-a",
+        question="Agent agent-a wants to run code_exec (code-exec)",
+        type="approve_deny", priority="blocking",
+        user_id=_admin_uid(app),
+        metadata={SERVER_RAISED_KEY: True, "kind": "execution_gate", "agent_name": "agent-a",
+                  "action_class": "code-exec", "tool": "code_exec"},
+    )
     resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": "deny"})
     assert resp.status_code == 200
     assert await app.state.execution_policies.has_live_grant("agent-a", "code-exec") is False
@@ -212,12 +217,13 @@ async def test_execution_gate_deny_writes_no_grant(client):
 @pytest.mark.asyncio
 async def test_execution_gate_grant_scoped_to_its_own_agent_and_class(client):
     app = client._transport.app
-    resp = await client.post("/api/decisions", json={
-        "from_agent": "agent-a", "question": "q", "type": "approve_deny", "priority": "blocking",
-        "metadata": {"kind": "execution_gate", "agent_name": "agent-a",
-                     "action_class": "code-exec", "tool": "code_exec"},
-    })
-    d = resp.json()
+    d = await app.state.decision_store.create(
+        from_agent="agent-a",
+        question="q", type="approve_deny", priority="blocking",
+        user_id=_admin_uid(app),
+        metadata={SERVER_RAISED_KEY: True, "kind": "execution_gate", "agent_name": "agent-a",
+                  "action_class": "code-exec", "tool": "code_exec"},
+    )
     await client.post(f"/api/decisions/{d['id']}/answer", json={"value": "approve"})
     # Neither a different agent nor a different action class picks up the grant.
     assert await app.state.execution_policies.has_live_grant("agent-b", "code-exec") is False
@@ -229,7 +235,8 @@ async def test_app_grant_payload_builder():
     from tinyagentos.routes.app_permissions import app_grant_decision_payload
     payload = app_grant_decision_payload("stream-chat", ["app.net", "app.memory"])
     assert payload["type"] == "multi_select"
-    assert payload["metadata"] == {"kind": "app_grant", "app_id": "stream-chat",
+    assert payload["metadata"] == {SERVER_RAISED_KEY: True,
+                                   "kind": "app_grant", "app_id": "stream-chat",
                                    "capabilities": ["app.net", "app.memory"]}
     assert [o["value"] for o in payload["options"]] == ["app.net", "app.memory"]
     assert payload["options"][0]["label"]
@@ -743,15 +750,15 @@ async def test_device_bearer_ordinary_consent_still_answered(client, app):
 @pytest.mark.asyncio
 async def test_session_user_execution_gate_still_approved(client, app):
     """Control: a real session user can still approve an execution_gate."""
-    resp = await client.post("/api/decisions", json={
-        "from_agent": "agent-a",
-        "question": "Agent agent-a wants to run code_exec (code-exec)",
-        "type": "approve_deny",
-        "priority": "blocking",
-        "metadata": {"kind": "execution_gate", "agent_name": "agent-a",
-                     "action_class": "code-exec", "tool": "code_exec"},
-    })
-    d = resp.json()
+    d = await app.state.decision_store.create(
+        from_agent="agent-a",
+        question="Agent agent-a wants to run code_exec (code-exec)",
+        type="approve_deny",
+        priority="blocking",
+        user_id=_admin_uid(app),
+        metadata={SERVER_RAISED_KEY: True, "kind": "execution_gate", "agent_name": "agent-a",
+                  "action_class": "code-exec", "tool": "code_exec"},
+    )
     resp = await client.post(
         f"/api/decisions/{d['id']}/answer", json={"value": "approve"},
     )

@@ -39,6 +39,14 @@ _ANSWER_THREAD = "decisions"
 # place prevents drift between the two call sites and the applier functions.
 GATE_DECISION_KINDS = ("execution_gate", "delegation_gate", "app_grant")
 
+# Server-stamped provenance marker for gate decisions (tsk-mul5pa).  The
+# public create path strips this key so an API caller can never self-stamp a
+# privileged gate; only the internal raisers (peer-inbox delegation dispatch,
+# execution-gate raiser, device-pairing raiser, app-grant flow) set it.  Every
+# _apply_*_grant handler refuses to act when it is absent, so a caller-supplied
+# metadata.kind can never mint a grant on approval.
+SERVER_RAISED_KEY = "_server_raised"
+
 
 def _bus_url() -> str:
     return os.environ.get("TAOS_A2A_BUS_URL", _DEFAULT_BUS_URL).rstrip("/")
@@ -288,6 +296,11 @@ async def create_decision(
         elif parent.get("from_agent") != from_agent:
             return JSONResponse({"error": "parent_decision_id not found"}, status_code=400)
 
+    # tsk-mul5pa: an API caller cannot stamp server provenance.  Strip the
+    # marker before persisting so the _apply_*_grant handlers refuse any gate
+    # decision whose metadata was supplied over the wire.
+    metadata = dict(body.metadata) if isinstance(body.metadata, dict) else {}
+    metadata.pop(SERVER_RAISED_KEY, None)
     decision = await store.create(
         from_agent=from_agent,
         question=body.question,
@@ -301,7 +314,7 @@ async def create_decision(
         parent_decision_id=parent_id,
         checkpoint_ref=body.checkpoint_ref,
         timeline_id=body.timeline_id,
-        metadata=body.metadata,
+        metadata=metadata,
     )
 
     # Mark the parent superseded only after the replacement is persisted.
@@ -598,6 +611,12 @@ async def _apply_execution_grant(request: Request, decision: dict, value) -> boo
     Mirrors ``_apply_app_grant``: the answer is already persisted, so a grant-
     store hiccup must not fail the answer."""
     meta = decision.get("metadata") or {}
+    if meta.get(SERVER_RAISED_KEY) is not True:
+        logger.warning(
+            "gate decision %s refused: missing server provenance (kind=%r)",
+            decision.get("id"), meta.get("kind"),
+        )
+        return False
     if meta.get("kind") != "execution_gate":
         return False
     policies = getattr(request.app.state, "execution_policies", None)
@@ -653,6 +672,12 @@ async def _apply_device_pairing_grant(request: Request, decision: dict, value) -
     pending->accepted UPDATE reports the row was already decided, the freshly
     minted device is revoked rather than left dangling."""
     meta = decision.get("metadata") or {}
+    if meta.get(SERVER_RAISED_KEY) is not True:
+        logger.warning(
+            "gate decision %s refused: missing server provenance (kind=%r)",
+            decision.get("id"), meta.get("kind"),
+        )
+        return False
     if meta.get("kind") != "device_pairing":
         return False
     store = getattr(request.app.state, "device_pair_requests", None)
@@ -712,6 +737,12 @@ async def _apply_delegation_grant(request: Request, decision: dict, value) -> bo
     ``_apply_execution_grant``: the answer is already persisted, so a
     grant-store or delegation-completion hiccup must not fail the answer."""
     meta = decision.get("metadata") or {}
+    if meta.get(SERVER_RAISED_KEY) is not True:
+        logger.warning(
+            "gate decision %s refused: missing server provenance (kind=%r)",
+            decision.get("id"), meta.get("kind"),
+        )
+        return False
     if meta.get("kind") != "delegation_gate":
         return False
     policies = getattr(request.app.state, "execution_policies", None)
@@ -907,6 +938,12 @@ async def _apply_app_grant(request: Request, decision: dict, value) -> bool:
     not fail the answer. Returns False: app grants do not route an agent reply,
     so the caller sends the generic answer."""
     meta = decision.get("metadata") or {}
+    if meta.get(SERVER_RAISED_KEY) is not True:
+        logger.warning(
+            "gate decision %s refused: missing server provenance (kind=%r)",
+            decision.get("id"), meta.get("kind"),
+        )
+        return False
     if meta.get("kind") != "app_grant":
         return False
     grants = getattr(request.app.state, "app_grants", None)
