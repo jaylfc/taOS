@@ -7,6 +7,7 @@
 #   --python-version <PYVER>
 #   --container-cli-version <CLIVER>
 #   --output <DIR>
+#   TAOS_RELEASE=1 (or use version pattern [0-9]*.[0-9]*.[0-9]*) to trigger release mode
 set -euo pipefail
 
 VERSION=""
@@ -40,8 +41,9 @@ mkdir -p "$STAGING"
 echo "[build] (1/9) launcher"
 cd "$REPO_ROOT/mac/launcher"
 swift build -c release --arch arm64
-LAUNCHER_BINARY="$REPO_ROOT/mac/launcher/.build/arm64-apple-macosx/release/taOSLauncher"
 cd "$REPO_ROOT"
+
+LAUNCHER_BINARY="$REPO_ROOT/mac/launcher/.build/arm64-apple-macosx/release/taOSLauncher"
 
 echo "[build] (2/9) python"
 "$SCRIPT_DIR/build_python.sh" --version "$PYTHON_VER" --output "$STAGING"
@@ -49,29 +51,51 @@ echo "[build] (2/9) python"
 echo "[build] (3/9) frontend"
 "$SCRIPT_DIR/build_frontend.sh" --output "$STAGING"
 
-echo "[build] (4/9) container CLI"
+echo "[build] (4/9) Sparkle.framework"
+"$SCRIPT_DIR/fetch_sparkle.sh" --output "$STAGING"
+
+echo "[build] (5/9) container CLI"
 "$SCRIPT_DIR/fetch_container_cli.sh" --version "$CLI_VER" --output "$STAGING"
 
-echo "[build] (5/9) assemble bundle"
-"$SCRIPT_DIR/assemble_bundle.sh" \
-    --version "$VERSION" \
-    --staging "$STAGING" \
-    --launcher-binary "$LAUNCHER_BINARY" \
-    --output "$REPO_ROOT/$OUTPUT"
+# Check if this is a release build
+TAOS_RELEASE="${TAOS_RELEASE:-0}"
+if [[ "$TAOS_RELEASE" = "1" || "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "[build] release mode"
+  RELEASE_MODE=1
+else
+  echo "[build] development mode"
+  RELEASE_MODE=0
+fi
+
+echo "[build] (6/9) assemble bundle"
+if [[ $RELEASE_MODE -eq 1 ]]; then
+  "$SCRIPT_DIR/assemble_bundle.sh" \
+      --version "$VERSION" \
+      --staging "$STAGING" \
+      --launcher-binary "$LAUNCHER_BINARY" \
+      --output "$REPO_ROOT/$OUTPUT" \
+      --release
+else
+  "$SCRIPT_DIR/assemble_bundle.sh" \
+      --version "$VERSION" \
+      --staging "$STAGING" \
+      --launcher-binary "$LAUNCHER_BINARY" \
+      --output "$REPO_ROOT/$OUTPUT"
+fi
 
 APP="$REPO_ROOT/$OUTPUT/taOS.app"
 
-echo "[build] (6/9) sign"
+echo "[build] (7/10) sign"
 "$SCRIPT_DIR/sign.sh" --app "$APP"
 
-echo "[build] (7/9) package DMG"
+echo "[build] (8/10) package DMG"
 "$SCRIPT_DIR/package_dmg.sh" --app "$APP" --version "$VERSION" --output "$REPO_ROOT/$OUTPUT"
 DMG="$REPO_ROOT/$OUTPUT/taOS-$VERSION.dmg"
 
-echo "[build] (8/9) notarize"
+echo "[build] (9/10) notarize"
 "$SCRIPT_DIR/notarize.sh" --dmg "$DMG"
 
-echo "[build] (9/9) sparkle-sign"
+echo "[build] (10/10) sparkle-sign"
 SPARKLE_KEY="${SPARKLE_ED_PRIVATE_KEY:-$HOME/.taos/sparkle_ed_private.pem}"
 if [[ -f "$SPARKLE_KEY" ]]; then
   "$SCRIPT_DIR/sparkle_sign.sh" --dmg "$DMG" --version "$VERSION" --output "$REPO_ROOT/$OUTPUT"

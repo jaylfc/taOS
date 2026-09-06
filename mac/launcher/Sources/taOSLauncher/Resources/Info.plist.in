@@ -25,7 +25,7 @@
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>SUFeedURL</key>
-  <string>https://taos.app/appcast.xml</string>
+  <string>https://taos.my/appcast.xml</string>
   <key>SUPublicEDKey</key>
   <string>${SU_PUBLIC_ED_KEY}</string>
   <key>SUEnableAutomaticChecks</key>

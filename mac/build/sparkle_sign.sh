@@ -25,7 +25,8 @@ PRIVATE_KEY="${SPARKLE_ED_PRIVATE_KEY:-$HOME/.taos/sparkle_ed_private.pem}"
 # Locate Sparkle's sign_update tool — bundled with Sparkle release tarball
 SIGN_UPDATE="$(command -v sign_update || true)"
 if [[ -z "$SIGN_UPDATE" ]]; then
-  for c in "$REPO_ROOT/mac/build/staging/Sparkle.framework/Versions/B/Resources/sign_update" \
+  for c in "$REPO_ROOT/mac/build/staging/sparkle-bin/sign_update" \
+           "$REPO_ROOT/mac/build/staging/Sparkle.framework/Versions/B/Resources/sign_update" \
            "/Applications/Sparkle.framework/Versions/B/Resources/sign_update"; do
     [[ -x "$c" ]] && { SIGN_UPDATE="$c"; break; }
   done
@@ -54,7 +55,7 @@ cat > "$SNIPPET" <<XML
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
       <description><![CDATA[${NOTES}]]></description>
       <enclosure
-        url="https://taos.app/releases/$(basename "$DMG")"
+        url="https://taos.my/releases/$(basename "$DMG")"
         ${SIGNATURE_LINE}
         type="application/octet-stream"/>
     </item>

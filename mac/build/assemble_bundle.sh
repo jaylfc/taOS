@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # Build taOS.app/Contents/ from staging dirs.
 #
-# Args: --version <X.Y.Z> --staging <DIR> --launcher-binary <PATH> --output <DIR>
+# Args: --version <X.Y.Z> --staging <DIR> --launcher-binary <PATH> --output <DIR> --release
+#   --release: Build mode with strict requirements for Sparkle.framework and ed_public.pem
+#   (if not specified, permissive mode skips missing items with warnings)
 set -euo pipefail
 
 VERSION=""
 STAGING=""
 LAUNCHER_BINARY=""
 OUTPUT=""
+RELEASE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
     --staging) STAGING="$2"; shift 2 ;;
     --launcher-binary) LAUNCHER_BINARY="$2"; shift 2 ;;
     --output) OUTPUT="$2"; shift 2 ;;
+    --release) RELEASE=1 ;;
     *) echo "assemble_bundle.sh: unknown arg $1" >&2; exit 2 ;;
   esac
 done
@@ -35,6 +39,11 @@ if [[ -f "$ED_KEY_FILE" ]]; then
 else
   echo "[assemble_bundle] no ed_public.pem — Sparkle will be disabled in this build"
   SU_PUBLIC_ED_KEY=""
+fi
+# Exit 1 in release mode when ed_public.pem is missing
+if [[ -z "$SU_PUBLIC_ED_KEY" ]] && [[ $RELEASE -eq 1 ]]; then
+  echo "[assemble_bundle] ed_public.pem missing in release build — exiting" >&2
+  exit 1
 fi
 sed -e "s|\${VERSION}|$VERSION|g" \
     -e "s|\${SU_PUBLIC_ED_KEY}|$SU_PUBLIC_ED_KEY|g" \
@@ -98,7 +107,15 @@ if [[ -d "$STAGING/libexec/container" ]]; then
 fi
 
 # Sparkle.framework — fetched/extracted by build.sh prior
-if [[ -d "$STAGING/Sparkle.framework" ]]; then
+if [[ ! -d "$STAGING/Sparkle.framework" ]]; then
+  # Exit 1 in release mode when Sparkle.framework is missing
+  if [[ $RELEASE -eq 1 ]]; then
+    echo "[assemble_bundle] Sparkle.framework missing in release build — exiting" >&2
+    exit 1
+  else
+    echo "[assemble_bundle] Sparkle.framework missing — skipping" >&2
+  fi
+else
   cp -R "$STAGING/Sparkle.framework" "$CONTENTS/Frameworks/Sparkle.framework"
 fi
 
