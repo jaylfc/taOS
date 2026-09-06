@@ -101,6 +101,16 @@ describe("slugifyClient with non-ASCII input", () => {
     // only folds combining marks, so a CJK name has no client-derived slug.
     expect(slugifyClient("我的代理")).toBe("");
   });
+
+  it("does NOT transliterate letters with no NFKD decomposition (known gap)", () => {
+    // kilo-code-bot review on #2798: "ß" is not a combining mark, so it
+    // survives NFKD unchanged and is then dropped by the [^a-z0-9]+ strip.
+    // The server transliterates it (python-slugify: "straße" -> "strasse"),
+    // so this is a real, accepted client/server preview mismatch for this
+    // narrow set of characters -- pinned here so it stays a documented
+    // choice rather than a silent regression.
+    expect(slugifyClient("straße")).toBe("stra-e");
+  });
 });
 
 describe("slugifyWithFallback", () => {

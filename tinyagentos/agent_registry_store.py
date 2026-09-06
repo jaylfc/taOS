@@ -429,7 +429,11 @@ def agent_slug_or_fallback(name: str) -> str:
     slug = _slugify(name)
     if slug:
         return slug
-    digest = hashlib.blake2s(name.encode("utf-8"), digest_size=4).hexdigest()
+    # 8 bytes (16 hex chars): a 4-byte digest is only a 32-bit collision space,
+    # and get_by_slug() resolves a slug to "the oldest matching record" -- two
+    # different unslugifiable names colliding into the same fallback would
+    # silently resolve a lookup (e.g. a DM channel member) to the wrong agent.
+    digest = hashlib.blake2s(name.encode("utf-8"), digest_size=8).hexdigest()
     return f"agent-{digest}"
 
 

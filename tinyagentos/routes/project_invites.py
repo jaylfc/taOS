@@ -117,12 +117,20 @@ def _derive_os_handle(display_name: str | None, harness: str, label: str | None)
     result is never the empty handle."""
     alias = (display_name or "").strip()
     base = _slugify(alias) if alias else _slugify(harness)
+    # An alias that is present but unslugifiable (pure emoji/punctuation) must
+    # still fall back to the harness here, not just when parts joins to "":
+    # a slugifiable label would otherwise make the joined string non-empty on
+    # its own and skip the fallback below entirely, silently dropping the
+    # harness component and colliding two different harnesses on the same
+    # label-only handle.
+    if not base:
+        base = agent_slug_or_fallback(harness)
     parts = [base]
     if label:
         lbl = _slugify(label)
         if lbl:
             parts.append(lbl)
-    return "-".join(p for p in parts if p) or agent_slug_or_fallback(harness)
+    return "-".join(p for p in parts if p)
 
 
 async def _dedupe_handle(request: Request, base_handle: str) -> str:

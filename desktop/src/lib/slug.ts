@@ -9,6 +9,18 @@
  * (python-slugify). Returning "" for them is deliberate — a made-up client
  * slug would not match the one the server mints. Callers that must show or
  * send something use {@link slugifyWithFallback}.
+ *
+ * This only folds COMBINING marks left behind by NFKD decomposition, not
+ * standalone letters that have no ASCII decomposition at all -- "ß", "ŋ",
+ * "ɐ" and similar are not combining marks, so they survive NFKD unchanged and
+ * are then dropped by the `[^a-z0-9]+` strip below. The server transliterates
+ * these (python-slugify: "straße" -> "strasse"), so the client preview
+ * ("stra-e") is a known, accepted mismatch for this narrow set of characters
+ * rather than the full-accent coverage the "folds accented Latin" line above
+ * might suggest — see {@link slugifyClient} unit tests below for the pinned
+ * example. A client-side transliteration table would close it but is out of
+ * scope for the same reason CJK/Cyrillic transliteration is: it needs the
+ * server's table to actually match.
  */
 export function slugifyClient(name: string): string {
   return name

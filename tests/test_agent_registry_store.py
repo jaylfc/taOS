@@ -88,6 +88,18 @@ class TestAgentSlugOrFallback:
     def test_two_unslugifiable_names_do_not_share_a_fallback(self):
         assert agent_slug_or_fallback("🚀") != agent_slug_or_fallback("🎉")
 
+    def test_fallback_digest_is_wide_enough_to_resist_collision(self):
+        """CodeRabbit finding on #2798: a 32-bit (4-byte) digest lets two
+        different unslugifiable names collide into the same "agent-<digest>"
+        fallback slug. get_by_slug() resolves a slug to "the oldest matching
+        record", so a collision would silently point a DM channel (or
+        anything else resolved by slug) at the wrong agent. 8 bytes (16 hex
+        chars) makes that collision space large enough to be unreachable in
+        practice.
+        """
+        digest = agent_slug_or_fallback("🚀").removeprefix("agent-")
+        assert len(digest) == 16
+
     def test_leading_trailing_dashes(self):
         assert _slugify("  hello  ") == "hello"
 
