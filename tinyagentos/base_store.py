@@ -9,6 +9,27 @@ class Engine(Enum):
     POSTGRES = "postgres"
 
 
+class PendingCapExceeded(Exception):
+    """A store refused an insert because a per-key pending cap is already full.
+
+    Raised by a ``create()`` that enforces the cap INSIDE its INSERT statement
+    rather than leaving the caller to count first.  A count-then-insert cap is
+    bypassable by exactly the traffic caps exist to stop: every request in a
+    concurrent burst reads the same pre-insert count, every one of them passes
+    the check, and every one of them inserts.
+
+    ``pending`` is read back after the refusal, so it is a description for the
+    error message, not the value the decision was made on -- that comparison
+    happened atomically in SQL.  Routes map this to 429.
+    """
+
+    def __init__(self, *, key: str, cap: int, pending: int):
+        self.key = key
+        self.cap = cap
+        self.pending = pending
+        super().__init__(f"{pending} pending at cap {cap} for {key!r}")
+
+
 class BaseStore:
     """Base class for all SQLite-backed stores.
 
@@ -37,6 +58,13 @@ class BaseStore:
     MIGRATIONS: list = []
     # Database engine: SQLITE (default) or POSTGRES
     ENGINE: Engine = Engine.SQLITE
+    # Open the sqlite connection in autocommit mode (isolation_level=None), so
+    # the driver never opens an implicit transaction that an error path could
+    # leave dangling on the connection.  A store that sets this MUST wrap every
+    # multi-statement write in an explicit transaction -- see
+    # tinyagentos/projects/tx.py, which does exactly that for the eight stores
+    # sharing projects.db.
+    AUTOCOMMIT: bool = False
 
     def __init__(self, db_path: Path, engine: Engine | None = None):
         self.db_path = db_path
@@ -55,7 +83,8 @@ class BaseStore:
         import aiosqlite
         from tinyagentos.db_migrations import apply_wal_pragmas_async, run_migrations_async
 
-        self._db = await aiosqlite.connect(str(self.db_path))
+        connect_kwargs = {"isolation_level": None} if self.AUTOCOMMIT else {}
+        self._db = await aiosqlite.connect(str(self.db_path), **connect_kwargs)
         await apply_wal_pragmas_async(self._db)
         if self.SCHEMA:
             await self._db.executescript(self.SCHEMA)

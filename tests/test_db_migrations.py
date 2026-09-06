@@ -267,3 +267,15 @@ class TestApplyWalPragmasAsync:
         row = await cur.fetchone()
         assert row[0] == 1
         await conn.close()
+
+    async def test_busy_timeout_set(self, tmp_path):
+        # Parity with the sync helper: a connection that meets a concurrent
+        # short write on the same file must wait instead of failing the
+        # request with "database is locked".
+        import aiosqlite
+        conn = await aiosqlite.connect(str(tmp_path / "async_busy.db"))
+        await apply_wal_pragmas_async(conn)
+        cur = await conn.execute("PRAGMA busy_timeout")
+        row = await cur.fetchone()
+        assert row[0] == 5000
+        await conn.close()
