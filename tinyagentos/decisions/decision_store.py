@@ -126,6 +126,23 @@ class DecisionStore(BaseStore):
                 return None
             return _row_to_decision(row, cur.description)
 
+    async def find_by_metadata(self, key: str, value: str) -> list[dict]:
+        """Return decisions whose ``metadata`` JSON has ``metadata[key] == value``.
+
+        Uses SQLite ``json_extract`` (JSON1, bundled in the stdlib SQLite) so
+        the match is an exact JSON-key equality, not a lossy substring scan.
+        Used by the peer inbox to make ``delegation_status`` handling idempotent
+        on ``invite_id``: a retried envelope must not mint a duplicate decision.
+        """
+        async with self._db.execute(
+            "SELECT * FROM decisions "
+            "WHERE json_extract(metadata, ?) = ? ORDER BY created_at DESC",
+            (f"$.{key}", value),
+        ) as cur:
+            rows = await cur.fetchall()
+            desc = cur.description
+        return [_row_to_decision(r, desc) for r in rows]
+
     async def list(
         self,
         *,

@@ -131,3 +131,33 @@ async def test_answer_source_persistence(store):
     d3 = await store.create("@a", "q3", "approve_deny", user_id="u1")
     upd3 = await store.answer(d3["id"], "approve", "u1")
     assert upd3["answer"]["source"] == "in_app"
+
+
+@pytest.mark.asyncio
+async def test_find_by_metadata_exact_match(store):
+    """find_by_metadata returns only decisions whose metadata[key] == value."""
+    await store.create(
+        "@a", "q1", "free_text", user_id="u1",
+        metadata={"invite_id": "inv-abc", "agent_slug": "grok"},
+    )
+    await store.create(
+        "@a", "q2", "free_text", user_id="u1",
+        metadata={"invite_id": "inv-xyz", "agent_slug": "grok"},
+    )
+    await store.create("@a", "q3", "free_text", user_id="u1", metadata={})
+
+    hits = await store.find_by_metadata("invite_id", "inv-abc")
+    assert len(hits) == 1
+    assert hits[0]["metadata"]["invite_id"] == "inv-abc"
+    # A missing key must not match (json_extract returns NULL, not equal).
+    assert await store.find_by_metadata("invite_id", "inv-absent") == []
+
+
+@pytest.mark.asyncio
+async def test_find_by_metadata_distinguishes_similar_values(store):
+    """An exact JSON-key equality must not substring-match (inv-abc vs inv-abcd)."""
+    await store.create(
+        "@a", "q1", "free_text", user_id="u1",
+        metadata={"invite_id": "inv-abc"},
+    )
+    assert await store.find_by_metadata("invite_id", "inv-abcd") == []

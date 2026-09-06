@@ -1,0 +1,621 @@
+"""Agent delegation handler — cross-user collab D1.
+
+Processes delegation-request envelopes from remote contacts, applies
+scope denylist and policy gates, creates Decisions cards for manual
+approval, and on approval mints project invites for the sponsored agent.
+
+Also provides cascade revocation and kill-switch machinery.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from typing import Optional
+
+from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Scope denylist — hard-coded scopes that can NEVER be granted to sponsored
+# agents in v1, regardless of owner decisions (design section 5).
+# ---------------------------------------------------------------------------
+
+SPONSORED_DENY_SCOPES: frozenset[str] = frozenset({
+    "files_write",
+    "decisions_write",
+})
+
+# Default scope tier for delegated agents per design section 5.
+SPONSORED_DEFAULT_SCOPES: frozenset[str] = frozenset({
+    "a2a_send",
+    "a2a_receive",
+    "project_tasks",
+    "canvas_read",
+    "registry_feeds_read",
+})
+
+# Scopes that bind the JWT to a specific project (same set as agent_auth_requests).
+_PROJECT_SCOPES: frozenset[str] = frozenset({"project_tasks", "canvas_read", "canvas_write"})
+
+
+def validate_delegation_scopes(
+    requested_scopes: list[str],
+) -> tuple[list[str], list[str], list[str]]:
+    """Split *requested_scopes* into ``(tier, elevated, denied)``.
+
+    * ``tier`` — scopes in the #2019 default allowlist
+      (``SPONSORED_DEFAULT_SCOPES``); safe to auto-grant.
+    * ``elevated`` — scopes outside BOTH the allowlist and the deny list;
+      require explicit per-scope human approval and are NEVER auto-granted.
+    * ``denied`` — scopes in ``SPONSORED_DENY_SCOPES``; hard-denied and never
+      minted.
+    """
+    requested_set = set(requested_scopes)
+    denied = sorted(requested_set & SPONSORED_DENY_SCOPES)
+    tier = sorted(requested_set & SPONSORED_DEFAULT_SCOPES)
+    elevated = sorted(requested_set - SPONSORED_DEFAULT_SCOPES - SPONSORED_DENY_SCOPES)
+    if denied:
+        logger.warning(
+            "delegation: hard-denied scopes %r from request %r",
+            denied, sorted(requested_set),
+        )
+    return tier, elevated, denied
+
+
+def _validate_delegation_envelope_body(body: dict) -> tuple[bool, str, Optional[dict]]:
+    """Validate the body of a delegation-request envelope.
+
+    Returns ``(ok, error, parsed)``.  ``parsed`` is a dict with keys
+    ``agent_slug``, ``display_name``, ``requested_scopes``, and ``project_id``
+    when valid.
+    """
+    required = ("agent_slug", "display_name", "requested_scopes", "project_id")
+    for field in required:
+        if field not in body:
+            return False, f"missing required field: {field}", None
+        value = body[field]
+        if field == "requested_scopes":
+            if not isinstance(value, list):
+                return False, f"{field} must be a list", None
+            if not value:
+                return False, f"{field} must not be empty", None
+        elif not isinstance(value, str) or not value.strip():
+            return False, f"{field} must be a non-empty string", None
+
+    requested_scopes = body["requested_scopes"]
+    # Reject any scope not in the closed vocabulary — the per-scope
+    # docstring requires explicit per-scope Decisions approval, but all
+    # delegated scopes are bundled into a single approve_deny card, so an
+    # unknown scope would ride through to the mint with no human awareness.
+    # Tightening to the closed vocabulary ensures only scopes the system
+    # actually enforces can be requested.
+    unknown = sorted(set(requested_scopes) - VALID_SCOPES)
+    if unknown:
+        return False, f"unknown scopes: {unknown}; valid: {sorted(VALID_SCOPES)}", None
+
+    parsed = {
+        "agent_slug": body["agent_slug"].strip(),
+        "display_name": body["display_name"].strip(),
+        "requested_scopes": body["requested_scopes"],
+        "project_id": body["project_id"].strip(),
+    }
+    return True, "", parsed
+
+
+async def process_delegation_request(
+    request,
+    *,
+    contact_id: str,
+    envelope_body: dict,
+) -> dict:
+    """Process a delegation-request envelope from a remote contact.
+
+    Called from the peer inbox when envelope.kind == "delegation_request".
+
+    1. Validate envelope body structure.
+    2. Verify the contact has ``member_kind="human"`` in the target project.
+    3. Apply scope denylist (strip ``files_write``, ``decisions_write``).
+    4. Check ``auto_approve_delegation`` project setting.
+       - If ON (dev-swarm future): auto-mint invite, return result.
+       - If OFF (v1 default): create a blocking Decisions card.
+
+    Returns a dict suitable for the peer inbox response envelope.
+    On pending-approval: ``{"status": "pending_approval", "decision_id": ...}``
+    On auto-approved: ``{"status": "approved", "invite_id": ..., ...}``
+    """
+    ok, err, parsed = _validate_delegation_envelope_body(envelope_body)
+    if not ok or parsed is None:
+        return {"status": "error", "error": err}
+
+    agent_slug = parsed["agent_slug"]
+    display_name = parsed["display_name"]
+    requested_scopes = parsed["requested_scopes"]
+    project_id = parsed["project_id"]
+
+    # Verify sender is an active human collaborator on the target project.
+    project_store = getattr(request.app.state, "project_store", None)
+    if project_store is None:
+        return {"status": "error", "error": "project store not available"}
+
+    if not await project_store.is_project_member(
+        project_id, contact_id, member_kind="human"
+    ):
+        return {
+            "status": "error",
+            "error": (
+                f"contact {contact_id} is not a human collaborator on project "
+                f"{project_id}"
+            ),
+        }
+
+    # Split the request into the default (allowlist) tier, elevated scopes, and
+    # hard-denied scopes.  Only the tier is ever auto-grantable; elevated scopes
+    # require explicit human approval and hard-denied scopes are never minted.
+    tier_scopes, elevated_scopes, denied_scopes = validate_delegation_scopes(requested_scopes)
+
+    # Check project policy: auto_approve_delegation knob.
+    auto_approve = await project_store.get_project_setting(
+        project_id, "auto_approve_delegation", default=False
+    )
+
+    # Auto-approve is only ever allowed when there are NO elevated scopes — a
+    # remote contact must never be auto-granted a scope outside the default
+    # tier.  Any elevated scope forces the manual path.
+    if auto_approve and not elevated_scopes:
+        # Future dev-swarm path: immediate approval (tier scopes only).
+        return await _auto_approve_delegation(
+            request,
+            contact_id=contact_id,
+            agent_slug=agent_slug,
+            display_name=display_name,
+            granted_scopes=tier_scopes,
+            denied_scopes=denied_scopes,
+            project_id=project_id,
+        )
+
+    # v1 manual path: create a blocking Decisions card.
+    return await _create_delegation_decision(
+        request,
+        contact_id=contact_id,
+        agent_slug=agent_slug,
+        display_name=display_name,
+        granted_scopes=tier_scopes,
+        elevated_scopes=elevated_scopes,
+        denied_scopes=denied_scopes,
+        project_id=project_id,
+    )
+
+
+async def _create_delegation_decision(
+    request,
+    *,
+    contact_id: str,
+    agent_slug: str,
+    display_name: str,
+    granted_scopes: list[str],
+    elevated_scopes: list[str],
+    denied_scopes: list[str],
+    project_id: str,
+) -> dict:
+    """Create a blocking Decisions card for manual delegation approval.
+
+    The human sees the routine (tier) scopes and — separately and per-scope —
+    any elevated scopes that require explicit approval, so elevated scopes are
+    never bundled silently into the routine grant.  Hard-denied scopes are
+    noted in the question text so the human knows they were stripped.
+    """
+    decision_store = getattr(request.app.state, "decision_store", None)
+    if decision_store is None:
+        return {"status": "error", "error": "decision store not available"}
+
+    question_parts = [
+        f"{contact_id} wants to delegate agent "
+        f"'{display_name}' ({agent_slug}) to this project",
+        f"Routine scopes: {', '.join(granted_scopes) or '(none)'}",
+    ]
+    if elevated_scopes:
+        question_parts.append(
+            f"Elevated scopes — require explicit approval: "
+            f"{', '.join(elevated_scopes)}"
+        )
+    if denied_scopes:
+        question_parts.append(
+            f"(Hard-denied: {', '.join(denied_scopes)} — "
+            f"these scopes cannot be granted to delegated agents in v1)"
+        )
+
+    question = ". ".join(question_parts) + "."
+
+    try:
+        decision = await decision_store.create(
+            from_agent=contact_id,
+            question=question,
+            type="approve_deny",
+            priority="blocking",
+            project_id=project_id,
+            metadata={
+                "kind": "collab_delegation_gate",
+                "contact_id": contact_id,
+                "agent_slug": agent_slug,
+                "display_name": display_name,
+                "granted_scopes": granted_scopes,
+                "elevated_scopes": elevated_scopes,
+                "denied_scopes": denied_scopes,
+                "project_id": project_id,
+            },
+        )
+    except Exception:
+        logger.warning(
+            "delegation: failed to create decision for %s / %s",
+            contact_id, agent_slug, exc_info=True,
+        )
+        return {"status": "error", "error": "failed to create approval decision"}
+
+    return {
+        "status": "pending_approval",
+        "decision_id": decision["id"],
+    }
+
+
+async def _auto_approve_delegation(
+    request,
+    *,
+    contact_id: str,
+    agent_slug: str,
+    display_name: str,
+    granted_scopes: list[str],
+    denied_scopes: list[str],
+    project_id: str,
+) -> dict:
+    """Auto-approve a delegation request (dev-swarm future path).
+
+    Mints a project invite (kind="agent", pin_required=false) and returns
+    the invite_id + connection_bundle.
+    """
+    invite_store = getattr(request.app.state, "project_invites", None)
+    if invite_store is None:
+        return {"status": "error", "error": "invite store not available"}
+
+    # The project-scoped scopes require a non-null project_id for the JWT.
+    project_scopes = sorted(set(granted_scopes) & _PROJECT_SCOPES)
+    non_project_scopes = sorted(set(granted_scopes) - _PROJECT_SCOPES)
+
+    try:
+        invite = await invite_store.mint(
+            project_id=project_id,
+            scopes=non_project_scopes + project_scopes,
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by=contact_id,
+            pin_required=False,
+            display_name=display_name,
+            metadata={"sponsor_contact_id": contact_id},
+        )
+    except Exception:
+        logger.warning(
+            "delegation: failed to create invite for %s / %s",
+            contact_id, agent_slug, exc_info=True,
+        )
+        return {"status": "error", "error": "failed to create project invite"}
+
+    return {
+        "status": "approved",
+        "invite_id": invite["record"]["invite_id"],
+        "agent_slug": agent_slug,
+    }
+
+
+async def complete_delegation_approval(
+    request,
+    *,
+    decision_metadata: dict,
+) -> dict:
+    """Complete a delegation approval after the human answers the Decisions card.
+
+    Called from the decisions route when a delegation_gate decision is approved.
+    ``decision_metadata`` is the metadata dict stored on the decision at creation
+    time (contains contact_id, agent_slug, display_name, granted_scopes, etc.).
+
+    Mints a project invite and returns the result for delivery over the peer
+    channel.
+    """
+    contact_id = decision_metadata.get("contact_id", "")
+    agent_slug = decision_metadata.get("agent_slug", "")
+    display_name = decision_metadata.get("display_name", "")
+    granted_scopes = decision_metadata.get("granted_scopes", [])
+    elevated_scopes = decision_metadata.get("elevated_scopes", [])
+    project_id = decision_metadata.get("project_id", "")
+
+    if not all([contact_id, agent_slug, display_name, project_id]):
+        return {"status": "error", "error": "incomplete decision metadata"}
+
+    # Re-validate project membership at approval time: the contact may have
+    # been removed from the project between decision creation and approval.
+    # This is the fail-closed runtime check required by section 5 of the
+    # cross-user-collab design spec.  A missing project_store is an error, not
+    # a pass (the old code failed OPEN and minted anyway).
+    project_store = getattr(request.app.state, "project_store", None)
+    if project_store is None:
+        return {"status": "error", "error": "project store not available"}
+    if not await project_store.is_project_member(
+        project_id, contact_id, member_kind="human"
+    ):
+        return {
+            "status": "error",
+            "error": (
+                f"contact {contact_id} is no longer a human collaborator "
+                f"on project {project_id}"
+            ),
+        }
+
+    invite_store = getattr(request.app.state, "project_invites", None)
+    if invite_store is None:
+        return {"status": "error", "error": "invite store not available"}
+
+    # Re-apply scope denylist to ensure hard-denied scopes are stripped even
+    # if the stored metadata was tampered with between decision creation and
+    # approval.  The denylist is the authoritative gate; the stored scopes are
+    # the human-approved set, but the code must never mint tokens for
+    # hard-denied scopes regardless.
+    combined = list(dict.fromkeys(granted_scopes + elevated_scopes))
+    safe_tier, safe_elevated, re_denied = validate_delegation_scopes(combined)
+    safe_scopes = safe_tier + safe_elevated
+    if re_denied:
+        logger.warning(
+            "complete_delegation_approval: re-stripped hard-denied scopes %r from stored grant",
+            re_denied,
+        )
+
+    try:
+        invite = await invite_store.mint(
+            project_id=project_id,
+            scopes=safe_scopes,
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by=contact_id,
+            pin_required=False,
+            display_name=display_name,
+            metadata={"sponsor_contact_id": contact_id},
+        )
+    except Exception:
+        logger.warning(
+            "delegation: complete_approval: failed to create invite for %s / %s",
+            contact_id, agent_slug, exc_info=True,
+        )
+        return {"status": "error", "error": "failed to create project invite"}
+
+    return {
+        "status": "approved",
+        "invite_id": invite["record"]["invite_id"],
+        "agent_slug": agent_slug,
+    }
+
+
+async def cascade_sponsor_revoke(
+    request,
+    *,
+    contact_id: str,
+    project_id: str | None = None,
+    reason: str = "sponsor revoked",
+) -> dict:
+    """Revoke a contact's sponsorships, revoking identities when the last one goes.
+
+    Sponsorship is a per-(identity, project) association (D1 rework).  The
+    cascade removes the contact's association rows — scoped to *project_id*
+    when provided (membership-revoke) or all of them when None
+    (contact-revoke) — and revokes the underlying identity itself only when NO
+    sponsorship rows remain.  An identity sponsored by two contacts in two
+    projects therefore survives one contact's revoke and dies on the second.
+
+    Also unassigns in-flight board tasks and posts an A2A system line.
+    Returns a summary dict of what was revoked.
+    """
+    registry = getattr(request.app.state, "agent_registry", None)
+    if registry is None:
+        return {"status": "error", "error": "registry not available"}
+
+    # Find the sponsorship associations for this contact, optionally scoped to
+    # a single project.  Each row names the (identity, project) pair the
+    # contact actually sponsored, so this cascade finds exactly what the
+    # contact sponsored in their own project(s) — never another contact's.
+    sponsorships = await registry.list_sponsorships_by_contact(
+        contact_id, project_id=project_id
+    )
+    revoked_ids: list[str] = []
+
+    for sp in sponsorships:
+        canonical_id = sp["canonical_id"]
+        sp_project_id = sp["project_id"]
+
+        # Revoke the association first: the contact no longer sponsors this
+        # identity in that project, regardless of the identity's fate.
+        await registry.remove_sponsorship(canonical_id, sp_project_id)
+
+        # Only ACTIVE identities are subject to revocation (a non-active
+        # identity has no live bearer).  An identity that is still sponsored
+        # elsewhere survives — it is revoked only once the last association
+        # row is gone.
+        record = await registry.get(canonical_id)
+        if record is None or record.get("status") != "active":
+            continue
+        remaining = await registry.list_sponsorships_for_identity(canonical_id)
+        if remaining:
+            continue
+
+        try:
+            await registry.set_status(canonical_id, "revoked", actor=contact_id)
+            revoked_ids.append(canonical_id)
+        except Exception:
+            logger.warning(
+                "cascade_revoke: failed to revoke %s (sponsor %s)",
+                canonical_id, contact_id, exc_info=True,
+            )
+
+    # Unassign in-flight board tasks for all revoked agent identities.
+    task_store = getattr(request.app.state, "project_task_store", None)
+    unassigned_count = 0
+    if task_store is not None and revoked_ids:
+        for canonical_id in revoked_ids:
+            try:
+                # Find tasks assigned to this agent and move them back to ready.
+                unassigned = await _unassign_agent_tasks(
+                    task_store, canonical_id, project_id
+                )
+                unassigned_count += unassigned
+            except Exception:
+                logger.warning(
+                    "cascade_revoke: task unassign failed for %s",
+                    canonical_id, exc_info=True,
+                )
+
+    # Post A2A system line to the affected project (when scoped).
+    # Contact-wide revoke does not emit A2A — each project's membership-revoke
+    # path handles its own audit event when the cascade fires per-project.
+    if project_id:
+        try:
+            from tinyagentos.projects.a2a import ensure_a2a_channel
+
+            msg_store = request.app.state.chat_messages
+            channel = await ensure_a2a_channel(
+                request.app.state.chat_channels,
+                request.app.state.project_store,
+                project_id,
+                config=getattr(request.app.state, "config", None),
+            )
+            await msg_store.send_message(
+                channel_id=channel["id"],
+                author_id="system",
+                author_type="user",
+                content=(
+                    f"Collaboration with {contact_id} has been revoked. "
+                    f"{len(revoked_ids)} delegated agent(s) revoked, "
+                    f"{unassigned_count} task(s) unassigned."
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "cascade_revoke: A2A system line failed for %s",
+                contact_id, exc_info=True,
+            )
+
+    return {
+        "status": "revoked",
+        "contact_id": contact_id,
+        "revoked_agents": len(revoked_ids),
+        "unassigned_tasks": unassigned_count,
+        "revoked_ids": revoked_ids,
+        "reason": reason,
+    }
+
+
+async def _unassign_agent_tasks(
+    task_store,
+    canonical_id: str,
+    project_id: str | None = None,
+) -> int:
+    """Release every in-flight (claimed) task held by *canonical_id*.
+
+    The task store's vocabulary is ``open``/``claimed`` with ``claimed_by`` —
+    NOT ``status="in_progress"`` + ``assignee_id``.  It enforces one active
+    claim per agent, so there is at most one 'claimed' task to release.  Uses
+    the store's real release path (``release_task`` — the ``claimed -> open``
+    transition that clears ``claimed_by``/``claimed_at``).
+
+    Returns the count of tasks released.
+    """
+    count = 0
+    while True:
+        try:
+            task_id = await task_store.held_task(canonical_id)
+        except AttributeError:
+            logger.warning(
+                "unassign_agent_tasks: task store has no held_task(); "
+                "skipping task release for %s",
+                canonical_id,
+            )
+            return count
+        if task_id is None:
+            break
+        try:
+            released = await task_store.release_task(task_id, canonical_id)
+        except Exception:
+            logger.warning(
+                "unassign_agent_tasks: release_task(%s) failed for %s",
+                task_id, canonical_id, exc_info=True,
+            )
+            break
+        if not released:
+            # The claim changed under us (e.g. already released); stop rather
+            # than spin.
+            break
+        count += 1
+
+    return count
+
+
+# ---------------------------------------------------------------------------
+# Kill-switch: 3 levels per design section 5
+# ---------------------------------------------------------------------------
+
+async def kill_switch_per_contact(request, *, contact_id: str) -> dict:
+    """Level 2 kill-switch: pause collaboration with a specific contact.
+
+    Suspends the peer link and revokes all sponsored tokens.  Reversible
+    (the peer link can be re-established).
+    """
+    contacts_store = getattr(request.app.state, "contacts_store", None)
+    if contacts_store is None:
+        return {"status": "error", "error": "contacts store not available"}
+
+    # Suspend the peer link (revoke the inbound token, set status to suspended).
+    try:
+        await contacts_store.revoke_peer_link(contact_id)
+    except Exception:
+        logger.warning(
+            "kill_switch_per_contact: peer link revoke failed for %s",
+            contact_id, exc_info=True,
+        )
+
+    # Cascade to all sponsored agents.
+    cascade_result = await cascade_sponsor_revoke(
+        request, contact_id=contact_id, reason="kill-switch (per-contact pause)",
+    )
+
+    return {
+        "status": "paused",
+        "contact_id": contact_id,
+        "revoked_agents": cascade_result.get("revoked_agents", 0),
+        "unassigned_tasks": cascade_result.get("unassigned_tasks", 0),
+    }
+
+
+async def kill_switch_per_instance(request) -> dict:
+    """Level 3 kill-switch: disable the entire peer route family.
+
+    Sets a flag on app.state that the peer routes check on every request.
+    Does NOT revoke tokens — just blocks all new peer traffic.
+    Use ``kill_switch_reenable()`` to restore peer routes.
+    """
+    request.app.state._peer_disabled = True
+    logger.warning("kill_switch: per-instance panic — peer routes DISABLED")
+    return {"status": "panic", "peer_routes": "disabled"}
+
+
+async def kill_switch_reenable(request) -> dict:
+    """Re-enable peer routes after a per-instance panic.
+
+    Clears the panic flag set by ``kill_switch_per_instance``.
+    Does NOT re-establish revoked peer links or re-mint tokens —
+    those must be restored manually via the contacts/peer-link flow.
+    """
+    request.app.state._peer_disabled = False
+    logger.info("kill_switch: per-instance panic cleared — peer routes RE-ENABLED")
+    return {"status": "recovered", "peer_routes": "enabled"}
+
+
+def is_peer_disabled(request) -> bool:
+    """Check whether the per-instance peer panic switch is active."""
+    return getattr(request.app.state, "_peer_disabled", False)

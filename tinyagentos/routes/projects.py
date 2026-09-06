@@ -99,6 +99,10 @@ class UpdateProjectIn(BaseModel):
     settings: dict | None = None
 
 
+class ProjectSettingIn(BaseModel):
+    value: object
+
+
 def _mirror(request: Request, project: dict) -> None:
     # Folder mirror is best-effort: if the disk write fails (permissions, full
     # filesystem, transient I/O), the DB row is still authoritative and the
@@ -235,6 +239,45 @@ async def update_project(
     await store.log_activity(project_id, user.user_id, "project.updated", payload.model_dump(exclude_none=True))
     _mirror(request, p)
     return p
+
+
+@router.get("/api/projects/{project_id}/settings/{key}")
+async def get_project_setting_route(
+    project_id: str,
+    key: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    store = request.app.state.project_store
+    p = await store.get_project(project_id)
+    if p is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not user.is_admin and user.user_id != p["user_id"]:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    value = await store.get_project_setting(project_id, key)
+    return {"key": key, "value": value}
+
+
+@router.put("/api/projects/{project_id}/settings/{key}")
+async def set_project_setting_route(
+    project_id: str,
+    key: str,
+    payload: ProjectSettingIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    store = request.app.state.project_store
+    p = await store.get_project(project_id)
+    if p is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    require_owner_or_admin(user, p["user_id"])
+    ok = await store.set_project_setting(project_id, key, payload.value)
+    if not ok:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    await store.log_activity(
+        project_id, user.user_id, "project.settings.updated", {"key": key}
+    )
+    return {"key": key, "value": payload.value}
 
 
 @router.post("/api/projects/{project_id}/archive")

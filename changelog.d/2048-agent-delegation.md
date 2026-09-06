@@ -1,0 +1,3 @@
+### Added
+
+- **Cross-user agent delegation (D1)**: agents can delegate project work to another user's agent. A `sponsor_contact_id` column on the agent registry links a sponsored identity to its sponsor, a `delegation_request` envelope routes through the peer inbox into a scope-validated delegation handler, and each project gains an `auto_approve_delegation` knob (default off — otherwise a manual Decisions card gates the delegation). Sponsored agents get a conservative default scope (`a2a_send`, `a2a_receive`, `project_tasks`, `canvas_read`, `registry_feeds_read`) with `files_write` and `decisions_write` hard-denied at scope validation. Revoking a contact or membership cascades to revoke all sponsored identities and unassign their board tasks (#2048).

@@ -36,18 +36,32 @@ logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_registry (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    canonical_id    TEXT    NOT NULL UNIQUE,
-    display_name    TEXT    NOT NULL DEFAULT '',
-    framework       TEXT    NOT NULL DEFAULT '',
-    user_id         TEXT    NOT NULL DEFAULT '',
-    origin          TEXT    NOT NULL DEFAULT 'taos-deployed',
-    handle          TEXT    NOT NULL DEFAULT '',
-    role            TEXT,
-    capabilities    TEXT    NOT NULL DEFAULT '[]',
-    created_ts      TEXT    NOT NULL,
-    revoked_at      TEXT,
-    status          TEXT    NOT NULL DEFAULT 'active'
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    canonical_id        TEXT    NOT NULL UNIQUE,
+    display_name        TEXT    NOT NULL DEFAULT '',
+    framework           TEXT    NOT NULL DEFAULT '',
+    user_id             TEXT    NOT NULL DEFAULT '',
+    origin              TEXT    NOT NULL DEFAULT 'taos-deployed',
+    handle              TEXT    NOT NULL DEFAULT '',
+    role                TEXT,
+    capabilities        TEXT    NOT NULL DEFAULT '[]',
+    created_ts          TEXT    NOT NULL,
+    revoked_at          TEXT,
+    status              TEXT    NOT NULL DEFAULT 'active',
+    sponsor_contact_id  TEXT
+);
+
+-- Per-(identity, project) sponsorship association (D1 rework, #2048).
+-- A single agent identity can be reused BY HANDLE across projects, and each
+-- project's delegating contact sponsors the identity independently.  One row
+-- per (canonical_id, project_id) describes exactly one sponsorship, so each
+-- contact's cascade finds exactly what they sponsored in their own project.
+CREATE TABLE IF NOT EXISTS agent_sponsorship (
+    canonical_id        TEXT    NOT NULL,
+    project_id          TEXT    NOT NULL,
+    sponsor_contact_id  TEXT    NOT NULL,
+    created_at          REAL    NOT NULL,
+    PRIMARY KEY (canonical_id, project_id)
 );
 """
 
@@ -227,6 +241,8 @@ async def _migration_v5_add_token_min_iat(conn) -> None:
             "ALTER TABLE agent_registry ADD COLUMN token_min_iat INTEGER NOT NULL DEFAULT 0"
         )
         await conn.commit()
+
+
 async def _migration_v6_add_install_id(conn) -> None:
     """Add install_id column (idempotent), anchoring an identity to ONE install.
 
@@ -251,6 +267,68 @@ async def _migration_v6_add_install_id(conn) -> None:
             "ALTER TABLE agent_registry ADD COLUMN install_id TEXT NOT NULL DEFAULT ''"
         )
         await conn.commit()
+
+
+async def _migration_v7_add_sponsor_contact_id(conn) -> None:
+    """Add sponsor_contact_id column (idempotent) for Cross-User Collab D1.
+
+    Delegated agents (those minted via a contact's delegation-request flow)
+    carry ``sponsor_contact_id`` linking back to the sponsoring contact.
+    Existing rows (non-delegated) get NULL.
+    """
+    existing_cols = {
+        row[1]
+        for row in await (
+            await conn.execute("PRAGMA table_info(agent_registry)")
+        ).fetchall()
+    }
+    if "sponsor_contact_id" not in existing_cols:
+        await conn.execute(
+            "ALTER TABLE agent_registry ADD COLUMN sponsor_contact_id TEXT"
+        )
+        await conn.commit()
+
+
+# Sentinel project_id used when backfilling the association from the legacy
+# sponsor_contact_id column.  Pre-association rows carry a sponsor but no
+# project binding (the old column could not record one), so the backfilled
+# association is keyed to this empty project_id.  It is deliberately distinct
+# from any real project_id, which is always a non-empty string validated by
+# the delegation flow.
+_LEGACY_SPONSORSHIP_PROJECT = ""
+
+
+async def _migration_v8_backfill_sponsorship(conn) -> None:
+    """Backfill agent_sponsorship from the legacy sponsor_contact_id column.
+
+    Databases created before the per-(identity, project) association carried
+    sponsorship on ``agent_registry.sponsor_contact_id``.  This migration
+    copies each stamped identity into an association row (idempotent via
+    INSERT OR IGNORE) so a pre-existing single-sponsor identity reproduces the
+    old cascade result exactly: ``list_by_sponsor`` finds it, and revoking the
+    one association leaves no rows, so the identity is revoked.
+
+    The legacy column is retained READ-ONLY for one release; new sponsorships
+    are written to ``agent_sponsorship`` only.  The column is dropped in a
+    later release.
+    """
+    rows = await (
+        await conn.execute(
+            "SELECT canonical_id, sponsor_contact_id FROM agent_registry "
+            "WHERE sponsor_contact_id IS NOT NULL AND sponsor_contact_id != ''"
+        )
+    ).fetchall()
+    if not rows:
+        return
+    now = time.time()
+    for canonical_id, sponsor_contact_id in rows:
+        await conn.execute(
+            "INSERT OR IGNORE INTO agent_sponsorship "
+            "(canonical_id, project_id, sponsor_contact_id, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (canonical_id, _LEGACY_SPONSORSHIP_PROJECT, sponsor_contact_id, now),
+        )
+    await conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +601,8 @@ class AgentRegistryStore(BaseStore):
         await _migration_v4_dedupe_active_handles(self._db)
         await _migration_v5_add_token_min_iat(self._db)
         await _migration_v6_add_install_id(self._db)
+        await _migration_v7_add_sponsor_contact_id(self._db)
+        await _migration_v8_backfill_sponsorship(self._db)
         # Created after the status migration so the partial index's WHERE clause
         # can reference the status column on the pre-status migration path.
         # Guard the index creation too: if some path we did not anticipate still
@@ -567,6 +647,11 @@ class AgentRegistryStore(BaseStore):
         the reserved ``taos-`` prefix; it is deliberately a keyword the HTTP
         layer never populates from a request body, so external callers
         cannot reach it.
+
+        Sponsorship is NOT stamped here.  Delegated agents (cross-user collab
+        D1) are recorded via ``set_sponsorship`` on the per-(identity, project)
+        association table after registration, so a single identity can be
+        sponsored independently in several projects.
 
         Raises ``RuntimeError`` if the store is not initialised, and
         ``ValueError`` if the name resolves to a reserved prefix.
@@ -874,6 +959,139 @@ class AgentRegistryStore(BaseStore):
             rows.extend(await cursor.fetchall())
         return [_row_to_dict(r) for r in rows]
 
+    async def list_by_sponsor(
+        self, sponsor_contact_id: str, *, status: Optional[str] = None
+    ) -> list[dict]:
+        """Return every identity *sponsor_contact_id* sponsors, via the association.
+
+        Sponsorship is now per-(identity, project): the same identity may be
+        sponsored by several contacts across several projects, so the victim
+        set for a contact's cascade is resolved through ``agent_sponsorship``
+        rather than a single column on the identity.  Each contact therefore
+        finds exactly what they sponsored in their own project(s).
+
+        Optionally filtered by *status* (on the identity row).
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        if status is not None:
+            cursor = await self._db.execute(
+                "SELECT DISTINCT ar.* FROM agent_registry ar "
+                "JOIN agent_sponsorship sp ON sp.canonical_id = ar.canonical_id "
+                "WHERE sp.sponsor_contact_id = ? AND ar.status = ? ORDER BY ar.id",
+                (sponsor_contact_id, status),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT DISTINCT ar.* FROM agent_registry ar "
+                "JOIN agent_sponsorship sp ON sp.canonical_id = ar.canonical_id "
+                "WHERE sp.sponsor_contact_id = ? ORDER BY ar.id",
+                (sponsor_contact_id,),
+            )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    async def set_sponsorship(
+        self, canonical_id: str, project_id: str, sponsor_contact_id: str
+    ) -> bool:
+        """Record that *sponsor_contact_id* sponsors *canonical_id* in *project_id*.
+
+        The association's PRIMARY KEY (canonical_id, project_id) makes this
+        atomic and deterministic: the FIRST writer for a given
+        (identity, project) wins, and any later write is a no-op (the INSERT
+        is ignored on the unique-key conflict).  This is the atomic
+        first-writer-wins discipline the old ``sponsor_contact_id`` column
+        guard defended — moved to the table it actually belongs on.
+
+        Returns True if a new sponsorship row was written, False if
+        (canonical_id, project_id) was already sponsored (ignored).
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        cur = await self._db.execute(
+            "INSERT OR IGNORE INTO agent_sponsorship "
+            "(canonical_id, project_id, sponsor_contact_id, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (canonical_id, project_id, sponsor_contact_id, time.time()),
+        )
+        await self._db.commit()
+        return cur.rowcount == 1
+
+    async def remove_sponsorship(self, canonical_id: str, project_id: str) -> None:
+        """Delete the sponsorship association for (canonical_id, project_id).
+
+        Used by cascade revocation: revoking the association removes the
+        contact's claim over the identity in that project WITHOUT necessarily
+        revoking the identity itself (which only dies when no associations
+        remain).
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        await self._db.execute(
+            "DELETE FROM agent_sponsorship WHERE canonical_id = ? AND project_id = ?",
+            (canonical_id, project_id),
+        )
+        await self._db.commit()
+
+    async def list_sponsorships_for_identity(
+        self, canonical_id: str
+    ) -> list[dict]:
+        """Return every sponsorship association row for *canonical_id*.
+
+        A sponsored identity survives a contact's cascade while ANY row
+        remains; it is revoked only once the last row is removed.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        cursor = await self._db.execute(
+            "SELECT canonical_id, project_id, sponsor_contact_id, created_at "
+            "FROM agent_sponsorship WHERE canonical_id = ? ORDER BY created_at",
+            (canonical_id,),
+        )
+        return [
+            {
+                "canonical_id": r["canonical_id"],
+                "project_id": r["project_id"],
+                "sponsor_contact_id": r["sponsor_contact_id"],
+                "created_at": r["created_at"],
+            }
+            for r in await cursor.fetchall()
+        ]
+
+    async def list_sponsorships_by_contact(
+        self, sponsor_contact_id: str, *, project_id: Optional[str] = None
+    ) -> list[dict]:
+        """Return the sponsorship association rows for *sponsor_contact_id*.
+
+        Optionally scoped to a single *project_id* (membership-revoke).  This
+        is the association-level query the cascade iterates: each row names
+        the (identity, project) pair the contact actually sponsored.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        if project_id is not None:
+            cursor = await self._db.execute(
+                "SELECT canonical_id, project_id, sponsor_contact_id, created_at "
+                "FROM agent_sponsorship "
+                "WHERE sponsor_contact_id = ? AND project_id = ? ORDER BY created_at",
+                (sponsor_contact_id, project_id),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT canonical_id, project_id, sponsor_contact_id, created_at "
+                "FROM agent_sponsorship "
+                "WHERE sponsor_contact_id = ? ORDER BY created_at",
+                (sponsor_contact_id,),
+            )
+        return [
+            {
+                "canonical_id": r["canonical_id"],
+                "project_id": r["project_id"],
+                "sponsor_contact_id": r["sponsor_contact_id"],
+                "created_at": r["created_at"],
+            }
+            for r in await cursor.fetchall()
+        ]
     # ------------------------------------------------------------------
     # Lifecycle state machine
     # ------------------------------------------------------------------
