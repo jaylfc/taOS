@@ -1378,3 +1378,192 @@ class TestFrameworkAwareBaseImage:
             "hermes", {"taos-hermes-base", "taos-base"}, tmp_path
         )
         assert launch == "taos-hermes-base"
+
+
+class TestGitInitAndCommitter:
+    @pytest.mark.asyncio
+    async def test_deploy_emits_git_init_step(self, tmp_path):
+        req = _req(data_dir=tmp_path)
+
+        async def mock_exec(name, cmd, **kwargs):
+            if "hostname -I" in " ".join(cmd):
+                return (0, "10.0.0.5")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}), \
+             patch("tinyagentos.agent_git.git_init", new_callable=AsyncMock) as mock_git_init, \
+             patch("tinyagentos.agent_git.write_gitignore", new_callable=AsyncMock) as mock_gitignore, \
+             patch("tinyagentos.agent_git.git_config_user", new_callable=AsyncMock) as mock_git_config, \
+             patch("tinyagentos.agent_git.git_add_commit", new_callable=AsyncMock) as mock_git_commit:
+            mock_create.return_value = {"success": True, "name": "taos-agent-test"}
+            result = await deploy_agent(req)
+            assert result["success"] is True
+            assert "git_init" in result["steps"]
+            mock_git_init.assert_awaited_once_with("taos-agent-test")
+            mock_gitignore.assert_awaited_once_with("taos-agent-test")
+            mock_git_config.assert_awaited_once_with("taos-agent-test", "test", "test@taos.local")
+            mock_git_commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_deploy_emits_committer_installed_step(self, tmp_path):
+        req = _req(data_dir=tmp_path)
+
+        async def mock_exec(name, cmd, **kwargs):
+            cmd_str = " ".join(cmd)
+            if "hostname -I" in cmd_str:
+                return (0, "10.0.0.5")
+            if "command -v systemctl" in cmd_str:
+                return (0, "yes")
+            if "systemctl is-active" in cmd_str:
+                return (0, "active")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}), \
+             patch("tinyagentos.agent_git.git_init", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.write_gitignore", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.git_config_user", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.git_add_commit", new_callable=AsyncMock):
+            mock_create.return_value = {"success": True, "name": "taos-agent-test"}
+            result = await deploy_agent(req)
+            assert result["success"] is True
+            assert "committer_installed" in result["steps"]
+
+    @pytest.mark.asyncio
+    async def test_deploy_reports_versioning_failure(self, tmp_path):
+        req = _req(data_dir=tmp_path)
+
+        async def mock_exec(name, cmd, **kwargs):
+            if "hostname -I" in " ".join(cmd):
+                return (0, "10.0.0.5")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}), \
+             patch("tinyagentos.agent_git.git_init", side_effect=RuntimeError("no git")):
+            mock_create.return_value = {"success": True, "name": "taos-agent-test"}
+            result = await deploy_agent(req)
+            assert result["success"] is True
+            assert result["versioning"] is False
+            assert result["versioning_error"] is not None
+            assert "git_init" not in result.get("steps", [])
+
+    @pytest.mark.asyncio
+    async def test_committer_install_creates_taos_dir(self, tmp_path):
+        req = _req(data_dir=tmp_path)
+        recorded = []
+
+        async def mock_exec(name, cmd, **kwargs):
+            recorded.append(" ".join(cmd))
+            cmd_str = " ".join(cmd)
+            if "hostname -I" in cmd_str:
+                return (0, "10.0.0.5")
+            if "command -v systemctl" in cmd_str:
+                return (0, "yes")
+            if "systemctl is-active" in cmd_str:
+                return (0, "active")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}), \
+             patch("tinyagentos.agent_git.git_init", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.write_gitignore", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.git_config_user", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.git_add_commit", new_callable=AsyncMock):
+            mock_create.return_value = {"success": True, "name": "taos-agent-test"}
+            result = await deploy_agent(req)
+            assert result["success"] is True
+            assert any("mkdir -p /root/.taos" in c for c in recorded)
+
+    @pytest.mark.asyncio
+    async def test_committer_install_fails_when_taos_dir_cannot_be_created(self, tmp_path):
+        req = _req(data_dir=tmp_path)
+
+        async def mock_exec(name, cmd, **kwargs):
+            cmd_str = " ".join(cmd)
+            if "hostname -I" in cmd_str:
+                return (0, "10.0.0.5")
+            if "mkdir -p /root/.taos" in cmd_str:
+                return (1, "permission denied")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}), \
+             patch("tinyagentos.agent_git.git_init", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.write_gitignore", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.git_config_user", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.git_add_commit", new_callable=AsyncMock):
+            mock_create.return_value = {"success": True, "name": "taos-agent-test"}
+            result = await deploy_agent(req)
+            assert result["success"] is True
+            assert result["versioning"] is False
+            assert result["versioning_error"] is not None
+
+    @pytest.mark.asyncio
+    async def test_committer_script_push_failure_reports_versioning_false(self, tmp_path):
+        req = _req(data_dir=tmp_path)
+
+        async def mock_exec(name, cmd, **kwargs):
+            if "hostname -I" in " ".join(cmd):
+                return (0, "10.0.0.5")
+            return (0, "ok")
+
+        async def mock_push(container, local_path, remote_path):
+            if remote_path == "/root/.taos/agent_committer.py":
+                return (1, "no space left on device")
+            return (0, "")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", side_effect=mock_push), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}), \
+             patch("tinyagentos.agent_git.git_init", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.write_gitignore", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.git_config_user", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.git_add_commit", new_callable=AsyncMock):
+            mock_create.return_value = {"success": True, "name": "taos-agent-test"}
+            result = await deploy_agent(req)
+            assert result["success"] is True
+            assert "committer_failed" in result["steps"]
+            assert result["versioning"] is False
+            assert result["versioning_error"] is not None
+
+    @pytest.mark.asyncio
+    async def test_committer_nohup_failure_reports_versioning_false(self, tmp_path):
+        req = _req(data_dir=tmp_path)
+
+        async def mock_exec(name, cmd, **kwargs):
+            cmd_str = " ".join(cmd)
+            if "hostname -I" in cmd_str:
+                return (0, "10.0.0.5")
+            if "command -v systemctl" in cmd_str:
+                return (0, "no")
+            if "nohup python3" in cmd_str:
+                return (1, "permission denied")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}), \
+             patch("tinyagentos.agent_git.git_init", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.write_gitignore", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.git_config_user", new_callable=AsyncMock), \
+             patch("tinyagentos.agent_git.git_add_commit", new_callable=AsyncMock):
+            mock_create.return_value = {"success": True, "name": "taos-agent-test"}
+            result = await deploy_agent(req)
+            assert result["success"] is True
+            assert "committer_failed" in result["steps"]
+            assert result["versioning"] is False
+            assert result["versioning_error"] is not None
