@@ -162,8 +162,28 @@ export function getOptionalApps(): AppManifest[] {
  * optional apps the user has installed. `installedOptional` is the set of
  * installed optional app ids (from /api/apps/optional/installed).
  */
-export const APP_REDIRECTS: Record<string, { appId: string }> = {
-  "notification-archive": { appId: "notifications" },
+/** What a dock pin launches: the app, plus the section it should open on. */
+export interface ResolvedPinnedId {
+  id: string;
+  section?: string;
+}
+
+/** Window props that put the launched app on the pin's section. */
+export type PinnedLaunchProps = { section?: string };
+
+/**
+ * Pin ids that are not app ids: retired launcher entries the dock may still
+ * hold, mapped to the app (and section) they open today.
+ *
+ * The dock stores *pin ids*, never these resolved targets. Rewriting a pin to
+ * its target throws the section away — `notifications` alone cannot say the
+ * pin meant the Archive tab — and the dock auto-save then persists the
+ * stripped id, so one reload destroys the pin for good (#2677). Resolution
+ * therefore happens where a pin is used: `pinnedAppId` for the icon,
+ * `pinnedLaunchProps` for the launch.
+ */
+export const APP_REDIRECTS: Record<string, { appId: string; section?: string }> = {
+  "notification-archive": { appId: "notifications", section: "archive" },
 };
 
 /**
@@ -210,10 +230,33 @@ export function getLaunchableApps(installedOptional: Set<string>): AppManifest[]
   );
 }
 
-export function resolvePinnedId(id: string): string | undefined {
+/**
+ * Resolve a dock pin id to the app it launches, or undefined when no app
+ * (yet) claims it — a userspace app can register after the dock restores.
+ */
+export function resolvePinnedId(id: string): ResolvedPinnedId | undefined {
   const redirect = APP_REDIRECTS[id];
   const targetId = redirect?.appId ?? id;
-  return getApp(targetId) ? targetId : undefined;
+  if (!getApp(targetId)) return undefined;
+  return { id: targetId, ...(redirect?.section ? { section: redirect.section } : {}) };
+}
+
+/**
+ * The app id a pin renders and launches as. Unknown pins keep their own id so
+ * an app that registers later still lines up with the pin the user saved.
+ */
+export function pinnedAppId(id: string): string {
+  return resolvePinnedId(id)?.id ?? id;
+}
+
+/**
+ * The props a pin's launch must carry, or undefined when it opens the app's
+ * default view. Every launch site goes through this so a section can never be
+ * declared in APP_REDIRECTS and then quietly dropped on the way to the window.
+ */
+export function pinnedLaunchProps(id: string): PinnedLaunchProps | undefined {
+  const section = resolvePinnedId(id)?.section;
+  return section ? { section } : undefined;
 }
 
 const prefetched = new Set<string>();

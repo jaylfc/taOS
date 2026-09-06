@@ -1,4 +1,5 @@
 import { DockIcon } from "../DockIcon";
+import { pinnedAppId } from "@/registry/app-registry";
 import type { DockVariantProps } from "./MacosDock";
 
 export function WindowsTaskbar({
@@ -10,7 +11,10 @@ export function WindowsTaskbar({
   position = "bottom",
 }: DockVariantProps) {
   const runningAppIds = windows.map((w) => w.appId);
-  const runningNotPinned = runningAppIds.filter((id) => !pinned.includes(id));
+  // Matched by the app a pin launches -- see MacosDock for why the pin id
+  // itself will not do.
+  const pinnedAppIds = pinned.map(pinnedAppId);
+  const runningNotPinned = runningAppIds.filter((id) => !pinnedAppIds.includes(id));
   const items = [...pinned, ...runningNotPinned];
   const isLeft = position === "left";
 
@@ -50,7 +54,7 @@ export function WindowsTaskbar({
           <DockIcon
             key={appId}
             appId={appId}
-            isRunning={runningAppIds.includes(appId)}
+            isRunning={runningAppIds.includes(pinnedAppId(appId))}
             onClick={() => onAppClick(appId)}
             size={iconSize}
           />
