@@ -1,5 +1,3 @@
-import secrets
-
 import pytest
 import pytest_asyncio
 import yaml
@@ -202,7 +200,8 @@ class TestNotificationRoutesUserScope:
         async with await self._alice_client(app, alice_token) as c:
             resp = await c.get("/api/notifications/count")
             assert resp.status_code == 200
-            assert "1" in resp.text
+            assert "data-count='1'" in resp.text
+            assert "<span class='notif-badge' data-count='1'>1</span>" == resp.text
 
     async def test_mark_read_other_user_returns_404(self, two_user_app):
         app, alice_id, alice_token, bob_id, bob_token = two_user_app
