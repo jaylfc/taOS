@@ -191,7 +191,11 @@ class RkLlamaCppInstaller(AppInstaller):
         active_alias_path = self.install_dir / "active.alias"
         # systemd reads this via EnvironmentFile=, and a NUL-filled or
         # half-written alias file fails the unit at boot, so write it durably.
-        atomic_write_text(active_alias_path, f"TAOS_ACTIVE_ALIAS={app_id}\n")
+        # atomic_write_text does two blocking fsyncs; keep them off the event
+        # loop so slow storage does not stall unrelated event-loop tasks.
+        await asyncio.to_thread(
+            atomic_write_text, active_alias_path, f"TAOS_ACTIVE_ALIAS={app_id}\n"
+        )
 
         # Enable + restart the service. Failure here means the model file
         # is on disk but the runtime is not actually serving it — we report

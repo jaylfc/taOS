@@ -148,6 +148,19 @@ def _create_via_claim(path: Path, data: bytes, mode: int | None) -> bytes:
                 path,
             )
             try:
+                # The claim only decides who is allowed to *write*; it does
+                # not decide who wins. `atomic_write_bytes` replaces `path`
+                # rather than creating it exclusively, so if some other
+                # route landed `path` durably in the window between this
+                # call's initial existence check and the claim being
+                # acquired here, writing now would clobber it. Recheck and
+                # hand back whatever is already there instead.
+                try:
+                    existing = path.read_bytes()
+                except FileNotFoundError:
+                    existing = b""
+                if existing:
+                    return existing
                 atomic_write_bytes(path, data, mode=mode)
             finally:
                 try:

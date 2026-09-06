@@ -154,6 +154,29 @@ class TestFetchStars:
         assert first == second == 100
         client.get.assert_awaited_once()  # second call served from cache
 
+    @pytest.mark.asyncio
+    async def test_persist_cache_does_not_run_on_the_event_loop_thread(self):
+        """``_persist_cache`` does two blocking fsyncs; every warmer fetch
+        going through it on the event loop stalls all concurrent handling."""
+        import threading
+
+        loop_thread_id = threading.get_ident()
+        seen_thread_ids: list[int] = []
+
+        def spying_persist_cache():
+            seen_thread_ids.append(threading.get_ident())
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(sp, "_persist_cache", spying_persist_cache)
+            client = _client_returning(200, {"stargazers_count": 100})
+            await sp.fetch_stars("owner/repo", client=client)
+
+        assert seen_thread_ids, "_persist_cache was never called"
+        assert loop_thread_id not in seen_thread_ids, (
+            "_persist_cache ran on the event-loop thread -- its fsyncs "
+            "block all concurrent request handling"
+        )
+
 
 class TestCachedReads:
     def test_cached_stars_none_when_unknown(self):

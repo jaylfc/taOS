@@ -212,7 +212,9 @@ async def fetch_stars(repo: str, *, client: httpx.AsyncClient | None = None) -> 
             await client.aclose()
 
     _star_cache[repo] = (time.time() + ttl, stars)
-    _persist_cache()
+    # _persist_cache does two blocking fsyncs; keep them off the shared
+    # event loop so a slow disk does not stall every concurrent request.
+    await asyncio.to_thread(_persist_cache)
     return stars
 
 

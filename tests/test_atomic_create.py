@@ -175,6 +175,7 @@ class TestNoHardlinkFallback:
         claim = target.with_name(target.name + ".claim")
         monkeypatch.setattr(os, "link", _no_hardlinks)
         monkeypatch.setattr(atomic_io, "_CLAIM_POLL_INTERVAL", 0.01)
+        monkeypatch.setattr(atomic_io, "_CLAIM_POLL_ATTEMPTS", 500)
 
         first_write_started = threading.Event()
         release_first_write = threading.Event()
@@ -237,6 +238,40 @@ class TestNoHardlinkFallback:
         assert returned == b"recovered"
         assert target.read_bytes() == b"recovered"
         assert not claim.exists()
+
+    def test_recheck_target_after_acquiring_the_claim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The claim only decides who *writes*; it does not decide who wins.
+
+        If some other route (not this fallback) durably creates ``path``
+        between this call's initial existence check and the moment it
+        actually acquires the sidecar claim, the claim winner must not
+        clobber it -- it must return the bytes already on disk.
+        """
+        target = tmp_path / "key.bin"
+        claim = target.with_name(target.name + ".claim")
+        monkeypatch.setattr(os, "link", _no_hardlinks)
+        real_open = os.open
+
+        def opening_the_claim_lets_a_rival_land_first(path, flags, mode=0o777):
+            if os.fspath(path) == os.fspath(claim) and flags & os.O_EXCL:
+                if not target.exists():
+                    target.write_bytes(b"rival")
+            return real_open(path, flags, mode)
+
+        monkeypatch.setattr(os, "open", opening_the_claim_lets_a_rival_land_first)
+
+        returned = atomic_create_bytes(target, b"ours")
+
+        assert returned == b"rival", (
+            "the claim winner overwrote a target that another writer had "
+            "already landed durably"
+        )
+        assert target.read_bytes() == b"rival", (
+            "atomic_create_bytes clobbered the already-persisted target "
+            "after acquiring the claim"
+        )
 
     def test_operators_are_warned_once_about_the_degraded_mount(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
