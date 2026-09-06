@@ -6,8 +6,7 @@
 
 ### POST /api/cluster/workers/{name}/revoke
 
-- Kills the node's HMAC signing key; subsequent register and heartbeat requests are rejected
-- The node may re-pair through announce/confirm/claim to obtain a fresh key
+- Kills the node's HMAC signing key; register and heartbeat are rejected until it re-pairs (announce/confirm/claim) for a fresh key
 - Answers `{"revoked": true, "changed": <bool>}`
 
 ### POST /api/cluster/workers/{name}/block
@@ -25,5 +24,5 @@
 ## Common behaviour
 
 - `404` when the node is absent from the PAIRING store; `503` when the pairing store is unavailable
-- Revoke and block mark the in-memory worker **offline immediately** so the scheduler stops routing tasks to it
+- Revoke and block mark the in-memory worker **offline immediately** so the scheduler stops routing to it
 - Blocked devices keep consuming a per-user slot (`list_for_user` returns `revoked=0 OR blocked=1`) until unblocked

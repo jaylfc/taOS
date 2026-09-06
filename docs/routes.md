@@ -4,7 +4,7 @@
 
 ## Project tasks
 
-Access the kanban board for a project. Granting `project_tasks` also makes the agent a project member.
+The kanban board for a project. Granting `project_tasks` also makes the agent a project member.
 
 ### API endpoints
 
@@ -18,14 +18,10 @@ Access the kanban board for a project. Granting `project_tasks` also makes the a
 - `POST /api/projects/{pid}/tasks/{id}/reopen` — reopen a closed task
 - `GET /api/projects/tasks/{id}/context` — get task context
 
-### Grant requirements
-
-Granting `project_tasks` also makes the agent a project member.
-
 ### LEAD-only extensions
 
-- `POST .../tasks/{id}/claimable` — add/remove the `claimable` label (LEAD-only)
-- `POST .../tasks/{id}/unquarantine` — return a quarantined card to the open pool (LEAD-only)
+- `POST .../tasks/{id}/claimable` — add/remove the `claimable` label
+- `POST .../tasks/{id}/unquarantine` — return a quarantined card to the open pool
 
 ---
 
@@ -33,7 +29,7 @@ Granting `project_tasks` also makes the agent a project member.
 
 ## Scoped allowlist
 
-Agents authenticate with their registry JWT (`Authorization: Bearer`) and reach exactly the routes their granted SCOPES allow, nothing else.
+Agents authenticate with their registry JWT (`Authorization: Bearer`) and reach exactly the routes their granted SCOPES allow.
 
 ### project_tasks (the kanban board)
 
@@ -45,7 +41,7 @@ Granting `project_tasks` also makes the agent a project member.
 
 ### project_tasks_update
 
-`PATCH /api/projects/{pid}/tasks/{tid}` — whitelisted fields (title, body, labels, priority). own-or-lead cards only. SEPARATE from `project_tasks`; plain project_tasks token gets 403.
+`PATCH /api/projects/{pid}/tasks/{tid}` — whitelisted fields (title, body, labels, priority), own-or-lead cards only. SEPARATE from `project_tasks`; a plain project_tasks token gets 403.
 
 ### canvas_read & canvas_write
 
@@ -65,7 +61,7 @@ Files routes key on the project SLUG. `GET .../files/{path}`, `POST .../files/up
 
 ### CONSENT KEY surface
 
-`GET /v1/models` and `POST /v1/chat/completions` reachable without a session using a CONSENT KEY. No key, no resolution, OpenAI-shaped 401 otherwise. Only those two exact method+path pairs pass the middleware.
+`GET /v1/models` and `POST /v1/chat/completions` are reachable without a session using a CONSENT KEY; no key means an OpenAI-shaped 401. Only those two exact method+path pairs pass the middleware.
 
 ---
 
@@ -80,7 +76,7 @@ Files routes key on the project SLUG. `GET .../files/{path}`, `POST .../files/up
 
 ### Allowlist is method-and-path anchored
 
-- `GET /api/devices`, `DELETE /api/devices/{id}`, `POST /api/decisions` are deliberately NOT on it and stay session-only
+- `GET /api/devices`, `DELETE /api/devices/{id}`, `POST /api/decisions` are deliberately NOT on it (session-only)
 
 ### Device identity
 
@@ -99,8 +95,7 @@ Files routes key on the project SLUG. `GET .../files/{path}`, `POST .../files/up
 
 ## Coverage
 
-- `agent_chat` destinations resolve through the agent registry (exact canonical_id, then a slug lookup bounded to the canonical `-YYYYMMDD-HHMMSS` tail)
-- Only registry-backed agents appear; a plain deployed agent with no registry row resolves nothing and its DM is omitted
+- `agent_chat` destinations resolve through the agent registry (exact canonical_id, then a slug lookup bounded to the `-YYYYMMDD-HHMMSS` tail); a deployed agent with no registry row resolves nothing and its DM is omitted
 
 ## Response shape
 
@@ -124,10 +119,10 @@ Files routes key on the project SLUG. `GET .../files/{path}`, `POST .../files/up
 
 Body: `{invite_id, pin, harness, label?}`
 
-- Verifies the PIN (wrong PIN / expired / attempt-capped → 403; already redeemed / revoked → 409)
+- Verifies the PIN (wrong / expired / attempt-capped → 403; already redeemed / revoked → 409)
 - Derives the agent handle `{project_slug}-{harness}[-{label}]`
-- De-dupes it against active registry agents in the project
-- Auto-approves through the shared `approve_request_record` helper (decided_by = the invite's creator) or leaves the request pending (manual mode)
+- De-duped against active registry agents in the project
+- Auto-approves via `approve_request_record` (decided_by = the invite's creator) or leaves the request pending (manual mode)
 - Returns a connection bundle plus `{request_id, agent_handle, poll_path}`
 - `project_tasks` is force-included so a successful redeem always yields a project member
 
@@ -142,8 +137,8 @@ Content-negotiated advert:
 ## Connection bundle
 
 - `controller.endpoints` — non-loopback LAN IPv4s (priority ordered, operator override first) and the mesh (Tailscale) node IP when joined. No relay in Phase 1.
-- `apis` — agent-JWT-reachable surface, scoped exactly to the granted scopes and mirroring the middleware canvas allowlist
-- `delivery` — timed-check contract (`poll_path`, `stream_path`, `check_interval_secs` from the invite, `cursor: ts`, `filter: mentions+project`)
+- `apis` — agent-JWT-reachable surface, scoped exactly to the granted scopes (mirrors the middleware canvas allowlist)
+- `delivery` — timed-check contract (`poll_path`, `stream_path`, `check_interval_secs`, `cursor: ts`, `filter: mentions+project`)
 - `onboarding` + `guide_markdown` — personalized capability guide (repo link, agent manual links, scoped Projects/Canvas summary, the A2A authenticated-proxy contract)
 
 See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes are advertised only when that scope was granted.
@@ -157,14 +152,14 @@ See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes 
 - `?kinds=a,b,c` — comma-separated allowlist of event kinds
 - Omitted, empty, or naming no kind at all (`?kinds=`, `?kinds=%20`, `?kinds=,`) means every kind: an empty allowlist is "no filter", so a blank parameter can no longer build a set that matches nothing and deliver silence
 - Filtering happens as events enter the per-connection buffer, so an unrequested kind can never evict one the subscriber asked for
-- At most 256 events are buffered per connection. Past that the OLDEST buffered event is dropped and the client is sent `{"kind": "events.lagged", "dropped": N}` — its cue to refetch rather than assume it saw everything
-- A comment frame `:keepalive` is sent every 10 s so proxies do not close an idle stream
+- At most 256 events are buffered per connection; past that the OLDEST is dropped and the client gets `{"kind": "events.lagged", "dropped": N}` — its cue to refetch rather than assume it saw everything
+- A `:keepalive` comment frame every 10 s keeps proxies from closing an idle stream
 - Frames deliberately carry **no** SSE `id:` line (that is what makes a browser send `Last-Event-ID`, which this endpoint ignores): resume is best-effort through the EventBus replay buffer (last 32 events per channel, delivered on subscribe)
-- The payload never crosses the wire: `id` is the event's trace id, so a subscriber learns that something changed and must refetch to learn what
+- The payload never crosses the wire: `id` is the event's trace id; a subscriber learns that something changed and refetches to learn what
 
 ## Desktop integration
 
-- `desktop/src/hooks/use-os-events.ts`: `useOsEvents(kinds, onEvent)` holds one connection, returns `connected` / `stale`, dedupes by event id, reconnects with exponential backoff, and reopens the stream when `kinds` changes (the URL is fixed for the life of a connection, so a widened list needs a new one)
+- `desktop/src/hooks/use-os-events.ts`: `useOsEvents(kinds, onEvent)` holds one connection, returns `connected` / `stale`, dedupes by event id, reconnects with exponential backoff, and reopens the stream when `kinds` changes (the URL is fixed per connection)
 
 ## Technical details
 
@@ -179,7 +174,7 @@ See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes 
 ### POST /api/loras/ingest
 
 - Form field `url`, a `civitai.com` / `civitai.red` model page
-- Answers `202` with the pending row and runs the download in a background task
+- Answers `202` with the pending row; the download runs in a background task
 - `400` for any other host or an unparseable URL
 
 ### GET /api/loras
@@ -189,22 +184,22 @@ See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes 
 
 ### GET /api/loras/{id}
 
-- One row, `404` if unknown
+- One row; `404` if unknown
 
 ### GET /api/loras/{id}/preview/{n}
 
 - Serves stored preview image `n`
-- Paths are re-checked against the archive root before the file is served
+- Path re-checked against the archive root before serving
 
 ### DELETE /api/loras/{id}
 
-- Removes the row, the safetensors file, and the LoRA directory
-- Refuses with `400` if a stored path resolves outside the archive root rather than deleting it
+- Removes the row, the safetensors file and the LoRA directory
+- `400` rather than a delete if a stored path resolves outside the archive root
 
 ### POST /api/loras/{id}/retry
 
 - Re-runs a `failed` ingest
-- The `failed → pending` transition is a single atomic UPDATE, so concurrent retries get one `202` and one `409`, never two download jobs in one directory
+- The `failed → pending` transition is one atomic UPDATE: concurrent retries get one `202` and one `409`, never two download jobs in one directory
 
 ## Archive layout
 
@@ -227,13 +222,12 @@ See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes 
 
 ### Two or more projects
 
-- Fetched by agent, then filtered in Python
+- Fetched by agent, filtered in Python
 
 ### Limit interaction
 
 - The global and single-project paths push the project filter into the store query, so the 500 limit applies AFTER scoping (issue #2194)
-- The two-or-more-project path still fetches up to 500 rows for the agent and filters afterwards in Python, so an agent holding grants on several projects and carrying more than 500 decisions in total can still lose allowed-project rows to the limit
-- Same shape as the original bug, narrower blast radius
+- The two-or-more-project path still fetches up to 500 rows then filters in Python, so an agent with several project grants and more than 500 decisions in total can still lose allowed-project rows to the limit (same shape as the original bug, narrower blast radius)
 
 ---
 
@@ -254,14 +248,14 @@ See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes 
 ### POST /api/restore
 
 - Multipart `file`, restores a backup tarball into the data dir
-- **The path is `/api/restore`, NOT `/api/settings/restore`**, even though the handler sits in `routes/settings.py` beside the `/api/settings/*` routes
+- **The path is `/api/restore`, NOT `/api/settings/restore`**, although the handler sits in `routes/settings.py` beside `/api/settings/*`
 
 ## Important: both write paths REBUILD `AppConfig` field by field
 
 - A field missing from either rebuild is silently dropped on the next save, wiping whatever the user had set
-- This has now happened twice: `archive`, `archived_agents` and `github_app_id` (#2375) and `lora_ingest_proxy_url` (#2374)
+- Happened twice already: `archive`, `archived_agents`, `github_app_id` (#2375) and `lora_ingest_proxy_url` (#2374)
 - Adding a field to `AppConfig` means adding it at BOTH sites in this module
-- `test_save_config_preserves_all_to_dict_keys` compares the whole `to_dict()` key set against what survives a round trip and fails if one is forgotten
+- `test_save_config_preserves_all_to_dict_keys` compares the whole `to_dict()` key set against a round trip and fails if one is forgotten
 - Never fix such a leak by removing the field from `to_dict()`: `save_config()` serialises from there, so that makes the setting unpersistable
 
 ---
@@ -280,13 +274,13 @@ See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes 
 
 - `framework` is ADVISORY today, not enforced: it tells the agent runtime what to use but does **not** yet stop the controller from involving taOSmd. A `framework`-mode deploy still registers with taOSmd and splices taOSmd rules into `AGENTS.md`, so a taOSmd outage can still block it.
 
-- `memory_mode` is OPTIONAL on `PATCH /api/agents/{slug}/memory` and omitting it leaves the stored value alone. Only `memory_plugin` is required.
+- `memory_mode` is OPTIONAL on `PATCH /api/agents/{slug}/memory`; omitting it leaves the stored value alone. Only `memory_plugin` is required.
 
 - Agents deployed before this field existed are backfilled to `both` by `config.py` on config load, so an older record reads as the default rather than as empty.
 
 - `POST /api/agents/deploy` takes `memory_mode` (default `both`); it is persisted on the agent record and injected into the agent's environment as `TAOS_MEMORY_MODE` at deploy time.
 
-- Deploy validates the pair before any side effect: an unknown `memory_mode` or `memory_plugin` answers `400` naming the valid set, and so does a contradictory pair such as `{"memory_plugin": "none", "memory_mode": "taosmd"}`.
+- Deploy validates before any side effect: an unknown `memory_mode` or `memory_plugin` answers `400` naming the valid set, as does a contradictory pair such as `{"memory_plugin": "none", "memory_mode": "taosmd"}`.
 
 ---
 
@@ -296,8 +290,7 @@ See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes 
 
 ### POST /api/cluster/workers/{name}/revoke
 
-- Kills the node's HMAC signing key; subsequent register and heartbeat requests are rejected
-- The node may re-pair through announce/confirm/claim to obtain a fresh key
+- Kills the node's HMAC signing key; register and heartbeat are rejected until it re-pairs (announce/confirm/claim) for a fresh key
 - Answers `{"revoked": true, "changed": <bool>}`
 
 ### POST /api/cluster/workers/{name}/block
@@ -315,7 +308,7 @@ See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes 
 ## Common behaviour
 
 - `404` when the node is absent from the PAIRING store; `503` when the pairing store is unavailable
-- Revoke and block mark the in-memory worker **offline immediately** so the scheduler stops routing tasks to it
+- Revoke and block mark the in-memory worker **offline immediately** so the scheduler stops routing to it
 - Blocked devices keep consuming a per-user slot (`list_for_user` returns `revoked=0 OR blocked=1`) until unblocked
 
 ---
@@ -336,17 +329,17 @@ See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes 
 
 ## Note field
 
-- When present it is appended to the text routed to the agent as `<answer> (note: <note>)`
+- When present, appended to the text routed to the agent as `<answer> (note: <note>)`
 
 ## Without `other_value`
 
-- The original strict validation is unchanged: the answer must be one of, or a subset of, the declared options
+- Strict validation is unchanged: the answer must be one of, or a subset of, the declared options
 - A non-hashable or non-iterable value fails closed as `400` rather than `500`
 
 ## Two consequences
 
-- **There is no per-decision opt-out.** No `allow_other` flag exists, so the free-text path is available on EVERY select decision
-- **The agent path gained it too.** An agent holding `decisions_write` can record arbitrary free text where it was previously constrained to the declared options
+- **No per-decision opt-out.** No `allow_other` flag exists; the free-text path is available on EVERY select decision
+- **The agent path gained it too.** An agent holding `decisions_write` can now record arbitrary free text, not only the declared options
 
 ---
 
@@ -357,35 +350,30 @@ See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes 
 ### POST /api/shares
 
 - Body: `{resource_type, resource_id, to_username, permission}`
-- Share a resource with another user by username
-- Resolves the target via AuthManager; self-share is rejected (400)
+- Shares a resource with another user by username (resolved via AuthManager); self-share is `400`
 - Duplicate shares (same owner, resource, target, permission) are idempotent
 
 ### GET /api/shares?direction=out|in
 
-- `out` (default) returns shares the user owns
-- `in` returns shares where the user is the target
+- `out` (default): shares the user owns; `in`: shares where the user is the target
 
 ### POST /api/shares/{id}/accept
 
-- Accept a pending share (target user only)
-- Once accepted, the module-level helper `user_can_access()` returns True for that resource
+- Accept a pending share (target user only); afterwards `user_can_access()` returns True for that resource
 
 ### POST /api/shares/{id}/deny
 
-- Deny a pending share (target user only)
-- The share row is preserved with `status=denied` for audit
+- Deny a pending share (target user only); the row is kept with `status=denied` for audit
 
 ### DELETE /api/shares/{id}
 
-- Revoke a share
-- Owner or admin only (requires `require_owner_or_admin` against the share's `owner_user_id`)
+- Revoke a share; owner or admin only (`require_owner_or_admin` against the share's `owner_user_id`)
 
 ---
 
 # Admin gates on global resources
 
-A session alone does not authorize these: a non-admin member gets `403 {"detail": "forbidden"}`; the host local token (`taosctl`, agents) passes. Single-user installs are unaffected.
+A session alone does not authorize these: non-admin members get `403`; the host local token (`taosctl`, agents) passes. Single-user installs are unaffected.
 
 | Router | Gated | Open / owner-scoped |
 |---|---|---|
@@ -394,6 +382,29 @@ A session alone does not authorize these: a non-admin member gets `403 {"detail"
 | providers | create, patch, delete, `start`, `stop` | `GET /api/providers` (model pickers) with `api_key` stripped for non-admins |
 | mcp | `start`/`stop`/`restart`, uninstall, `config` PUT, `env`, permission attach/detach, `/api/mcp/call` | list, logs, capabilities, permissions list, `config` GET |
 | agent-model-keys | `POST /api/agent-model-keys` mints only for agents the caller owns (admin: any) | |
+
+---
+
+# Agent desktop lifecycle
+
+## Routes
+
+Under `/api/agents/{agent_name}/desktop/`:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `install` | Install XFCE + x11vnc |
+| `POST` | `start` | Start desktop + VNC |
+| `POST` | `stop` | Stop desktop |
+| `GET` | `status` | Runtime state |
+
+## Key points
+
+- On demand, per agent, retryable. Owner or admin only.
+- Start returns a one-shot VNC password, mode-600 file not argv; a secret
+  left behind fails the start (no password).
+- `status` 500s, records the error, keeps state; `running` is `null` then,
+  not `false`.
 
 ---
 
@@ -418,3 +429,4 @@ Run `python3 scripts/build-routes-doc.py` to compile these into `docs/routes.md`
 | `11-select-decision.md` | Answering a select decision with free text (`other_value`) |
 | `12-share-routes.md` | User resource sharing (share routes) |
 | `13-admin-gates.md` | Admin gates on global resources (secrets, system, providers, mcp, keys) |
+| `14-agent-desktop.md` | Agent desktop lifecycle (install, start, stop, status) |

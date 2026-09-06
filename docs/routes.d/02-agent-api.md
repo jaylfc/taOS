@@ -4,7 +4,7 @@
 
 ## Scoped allowlist
 
-Agents authenticate with their registry JWT (`Authorization: Bearer`) and reach exactly the routes their granted SCOPES allow, nothing else.
+Agents authenticate with their registry JWT (`Authorization: Bearer`) and reach exactly the routes their granted SCOPES allow.
 
 ### project_tasks (the kanban board)
 
@@ -16,7 +16,7 @@ Granting `project_tasks` also makes the agent a project member.
 
 ### project_tasks_update
 
-`PATCH /api/projects/{pid}/tasks/{tid}` — whitelisted fields (title, body, labels, priority). own-or-lead cards only. SEPARATE from `project_tasks`; plain project_tasks token gets 403.
+`PATCH /api/projects/{pid}/tasks/{tid}` — whitelisted fields (title, body, labels, priority), own-or-lead cards only. SEPARATE from `project_tasks`; a plain project_tasks token gets 403.
 
 ### canvas_read & canvas_write
 
@@ -36,4 +36,4 @@ Files routes key on the project SLUG. `GET .../files/{path}`, `POST .../files/up
 
 ### CONSENT KEY surface
 
-`GET /v1/models` and `POST /v1/chat/completions` reachable without a session using a CONSENT KEY. No key, no resolution, OpenAI-shaped 401 otherwise. Only those two exact method+path pairs pass the middleware.
+`GET /v1/models` and `POST /v1/chat/completions` are reachable without a session using a CONSENT KEY; no key means an OpenAI-shaped 401. Only those two exact method+path pairs pass the middleware.

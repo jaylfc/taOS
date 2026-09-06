@@ -2,7 +2,7 @@
 
 <!-- `tinyagentos.auth_context.require_admin`: admin session or host local token, else `403 {"detail": "forbidden"}` -->
 
-A session alone does not authorize these: a non-admin member gets `403 {"detail": "forbidden"}`; the host local token (`taosctl`, agents) passes. Single-user installs are unaffected.
+A session alone does not authorize these: non-admin members get `403`; the host local token (`taosctl`, agents) passes. Single-user installs are unaffected.
 
 | Router | Gated | Open / owner-scoped |
 |---|---|---|

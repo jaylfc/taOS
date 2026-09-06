@@ -212,12 +212,26 @@ async def update_project(
     if p is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     require_owner_or_admin(user, p["user_id"])
-    await store.update_project(
-        project_id,
-        name=payload.name,
-        description=payload.description,
-        settings=payload.settings,
-    )
+    try:
+        await store.update_project(
+            project_id,
+            name=payload.name,
+            description=payload.description,
+            settings=payload.settings,
+        )
+    except ProjectConflict as e:
+        # Same conflict, same answer as the create path: a rename onto a name
+        # another project already holds is a 409, not a silent duplicate.
+        suggestions = await _free_suggestions(store, e.field, e.taken)
+        return JSONResponse(
+            {
+                "error": str(e),
+                "field": e.field,
+                "taken": e.taken,
+                "suggestions": suggestions,
+            },
+            status_code=409,
+        )
     p = await store.get_project(project_id)
     await store.log_activity(project_id, user.user_id, "project.updated", payload.model_dump(exclude_none=True))
     _mirror(request, p)

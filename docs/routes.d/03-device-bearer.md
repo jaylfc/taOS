@@ -11,7 +11,7 @@
 
 ### Allowlist is method-and-path anchored
 
-- `GET /api/devices`, `DELETE /api/devices/{id}`, `POST /api/decisions` are deliberately NOT on it and stay session-only
+- `GET /api/devices`, `DELETE /api/devices/{id}`, `POST /api/decisions` are deliberately NOT on it (session-only)
 
 ### Device identity
 
@@ -30,8 +30,7 @@
 
 ## Coverage
 
-- `agent_chat` destinations resolve through the agent registry (exact canonical_id, then a slug lookup bounded to the canonical `-YYYYMMDD-HHMMSS` tail)
-- Only registry-backed agents appear; a plain deployed agent with no registry row resolves nothing and its DM is omitted
+- `agent_chat` destinations resolve through the agent registry (exact canonical_id, then a slug lookup bounded to the `-YYYYMMDD-HHMMSS` tail); a deployed agent with no registry row resolves nothing and its DM is omitted
 
 ## Response shape
 

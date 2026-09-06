@@ -5,7 +5,7 @@
 
 ## Project tasks
 
-Access the kanban board for a project. Granting `project_tasks` also makes the agent a project member.
+The kanban board for a project. Granting `project_tasks` also makes the agent a project member.
 
 ### API endpoints
 
@@ -19,11 +19,7 @@ Access the kanban board for a project. Granting `project_tasks` also makes the a
 - `POST /api/projects/{pid}/tasks/{id}/reopen` — reopen a closed task
 - `GET /api/projects/tasks/{id}/context` — get task context
 
-### Grant requirements
-
-Granting `project_tasks` also makes the agent a project member.
-
 ### LEAD-only extensions
 
-- `POST .../tasks/{id}/claimable` — add/remove the `claimable` label (LEAD-only)
-- `POST .../tasks/{id}/unquarantine` — return a quarantined card to the open pool (LEAD-only)
+- `POST .../tasks/{id}/claimable` — add/remove the `claimable` label
+- `POST .../tasks/{id}/unquarantine` — return a quarantined card to the open pool
