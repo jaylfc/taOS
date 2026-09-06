@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request, UploadFile, File
 from fastapi.responses import JSONResponse, FileResponse
 
+from tinyagentos.middleware.upload_body_limit import register_upload_cap
 from tinyagentos.themes.package import extract_theme_package, ThemePackageError
 
 router = APIRouter()
@@ -11,6 +12,16 @@ router = APIRouter()
 # theme_id is interpolated into filesystem paths, so it must be a plain slug —
 # never a value that could contain "/" or ".." and escape the themes root.
 _THEME_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+# Cap the .taostheme upload so a hostile body is never fully buffered: tokens,
+# a wallpaper and a handful of assets fit comfortably, an exhaustion attempt
+# does not. The archive's own bomb limits then apply inside extraction.
+_MAX_THEME_PACKAGE_BYTES = 32 * 1024 * 1024
+
+# The read() below runs only after FastAPI has already spooled the multipart
+# body, so the cap also has to be enforced on the arriving request.
+register_upload_cap("/api/themes/install", lambda: _MAX_THEME_PACKAGE_BYTES)
 
 
 def _valid_theme_id(theme_id: str) -> bool:
@@ -26,7 +37,11 @@ async def list_themes(request: Request):
 
 @router.post("/api/themes/install")
 async def install_theme(request: Request, package: UploadFile = File(...)):
-    data = await package.read()
+    # Read one byte past the cap so an oversized upload is detected without
+    # buffering the rest of it (same pattern as the userspace app installer).
+    data = await package.read(_MAX_THEME_PACKAGE_BYTES + 1)
+    if len(data) > _MAX_THEME_PACKAGE_BYTES:
+        return JSONResponse({"error": "theme package too large (32 MB max)"}, status_code=413)
     try:
         manifest = extract_theme_package(data, themes_root=_themes_root(request))
     except ThemePackageError as exc:
