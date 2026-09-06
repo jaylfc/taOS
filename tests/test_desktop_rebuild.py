@@ -1074,6 +1074,70 @@ async def test_rebuild_forced_when_a_dirty_build_input_is_older_than_the_bundle(
 
 
 @pytest.mark.asyncio
+async def test_dirty_input_check_reuses_the_provenance_git_status(tmp_path, monkeypatch):
+    """A matching-but-dirty marker must not pay for `git status` twice.
+
+    When the marker's SHA matches HEAD:desktop but the working tree is
+    dirty, `_is_bundle_provenance_current` already ran `git status` to find
+    that out. Falling through to `_dirty_desktop_build_inputs` must reuse
+    that result instead of running the identical `git status` again
+    (#2766 [7]). A `git status` after the build (to decide whether to record
+    or clear the marker) is a separate, unavoidable call -- so the fixed
+    total is 2 `status` invocations, not 3.
+    """
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// app")
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"x"}')
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    bundle = static_dir / "index.html"
+    bundle.write_text("<html />")
+    # Bundle is newer than every build input -> the mtime heuristic says fresh.
+    old = time.time() - 600
+    os.utime(src_dir / "App.tsx", (old, old))
+    os.utime(bundle, (time.time(), time.time()))
+    (static_dir / ".taos-bundle-provenance").write_text("TREE_SHA")
+
+    calls = []
+
+    class _Proc:
+        def __init__(self, rc, out=b"", err=b""):
+            self.returncode = rc
+            self._out = out
+            self._err = err
+
+        async def communicate(self):
+            return self._out, self._err
+
+    async def fake_exec(*args, **kwargs):
+        calls.append(args)
+        if args[0] == "git":
+            sub = args[3] if len(args) > 3 else ""
+            if sub == "rev-parse":
+                return _Proc(0, b"TREE_SHA\n")
+            if sub == "status":
+                # Dirty tracked edit to a build input -> marker distrusted,
+                # mtime overridden.
+                return _Proc(0, b" M desktop/src/App.tsx\n")
+            return _Proc(0)
+        return _Proc(0)  # npm ci / npm run build
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    _no_prebuilt_bundle(monkeypatch)
+
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+
+    assert result.rebuilt is True, result.message
+    assert result.success is True, result.message
+    status_calls = [c for c in calls if c[0] == "git" and len(c) > 3 and c[3] == "status"]
+    assert len(status_calls) == 2, (
+        f"expected 2 `git status` calls (one shared pre-build skip decision, "
+        f"one post-build provenance re-check), got {len(status_calls)}: {status_calls}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_mtime_skip_is_kept_when_git_cannot_verify_the_tree(tmp_path, monkeypatch):
     """An unverifiable tree must NOT force a rebuild.
 

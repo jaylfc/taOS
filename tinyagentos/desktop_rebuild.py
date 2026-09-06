@@ -182,43 +182,65 @@ def _porcelain_paths(out: bytes) -> tuple[str, ...]:
     return tuple(paths)
 
 
-async def _desktop_tree_status(project_root: Path) -> tuple[bool, tuple[str, ...]]:
+# A single `rebuild_desktop_bundle_if_stale` call may need the desktop/
+# working-tree status twice -- once to decide whether the provenance marker
+# is still trustworthy, once to look for a dirty build input the mtime
+# heuristic would miss. Both ask the identical `git status` question; a
+# cache keyed by project_root, scoped to one call, lets the second asker
+# reuse the first answer instead of spending another subprocess on it.
+_TreeStatusCache = dict[Path, tuple[bool, tuple[str, ...]]]
+
+
+async def _desktop_tree_status(
+    project_root: Path, *, cache: "_TreeStatusCache | None" = None,
+) -> tuple[bool, tuple[str, ...]]:
     """Return ``(verified, dirty_paths)`` for the desktop/ working tree.
 
     ``verified`` is False when git could not answer (not installed, no/broken
     .git, unreadable index); callers must not read anything into the empty
     path list in that case.
     """
-    desktop_dir = project_root / "desktop"
-    if not desktop_dir.is_dir():
-        return False, ()
-    try:
-        # --untracked-files=normal (the default) is deliberate: an untracked
-        # file always shows up -- as itself or as its untracked parent
-        # directory -- so "all" would descend into every untracked directory
-        # under desktop/ for no extra signal, which is real I/O on SD-card
-        # hosts (Pi 4).
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            "-C",
-            str(project_root),
-            "status",
-            "--porcelain",
-            "--untracked-files=normal",
-            "--",
-            "desktop",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        out, _ = await proc.communicate()
-        if proc.returncode != 0:
+    if cache is not None and project_root in cache:
+        return cache[project_root]
+
+    async def _compute() -> tuple[bool, tuple[str, ...]]:
+        desktop_dir = project_root / "desktop"
+        if not desktop_dir.is_dir():
             return False, ()
-        return True, _porcelain_paths(out)
-    except FileNotFoundError:
-        return False, ()
+        try:
+            # --untracked-files=normal (the default) is deliberate: an untracked
+            # file always shows up -- as itself or as its untracked parent
+            # directory -- so "all" would descend into every untracked directory
+            # under desktop/ for no extra signal, which is real I/O on SD-card
+            # hosts (Pi 4).
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "-C",
+                str(project_root),
+                "status",
+                "--porcelain",
+                "--untracked-files=normal",
+                "--",
+                "desktop",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await proc.communicate()
+            if proc.returncode != 0:
+                return False, ()
+            return True, _porcelain_paths(out)
+        except FileNotFoundError:
+            return False, ()
+
+    result = await _compute()
+    if cache is not None:
+        cache[project_root] = result
+    return result
 
 
-async def _is_desktop_working_tree_clean(project_root: Path) -> bool:
+async def _is_desktop_working_tree_clean(
+    project_root: Path, *, cache: "_TreeStatusCache | None" = None,
+) -> bool:
     """Return True if the desktop/ tree has no tracked edits or untracked build inputs.
 
     Provenance is only a reliable proof of freshness when the working tree
@@ -227,11 +249,13 @@ async def _is_desktop_working_tree_clean(project_root: Path) -> bool:
     could predate local edits and would skip a needed rebuild.  An unverifiable
     tree (no git) is treated as dirty for the same reason.
     """
-    verified, dirty = await _desktop_tree_status(project_root)
+    verified, dirty = await _desktop_tree_status(project_root, cache=cache)
     return verified and not dirty
 
 
-async def _dirty_desktop_build_inputs(project_root: Path) -> tuple[str, ...]:
+async def _dirty_desktop_build_inputs(
+    project_root: Path, *, cache: "_TreeStatusCache | None" = None,
+) -> tuple[str, ...]:
     """Return the modified/untracked desktop *build inputs*, if git can tell us.
 
     Rejecting the provenance marker is not enough on its own: the mtime
@@ -245,14 +269,20 @@ async def _dirty_desktop_build_inputs(project_root: Path) -> tuple[str, ...]:
     service start, which is the failure this whole check exists to prevent.
     Their marker is already distrusted, so they keep the mtime heuristic that
     predates provenance.
+
+    ``cache``, when passed, lets this reuse a ``git status`` already run by
+    ``_is_bundle_provenance_current`` earlier in the same staleness check
+    instead of spending a second, identical subprocess on it.
     """
-    verified, dirty = await _desktop_tree_status(project_root)
+    verified, dirty = await _desktop_tree_status(project_root, cache=cache)
     if not verified:
         return ()
     return tuple(path for path in dirty if _is_desktop_build_input(path))
 
 
-async def _is_bundle_provenance_current(project_root: Path) -> bool:
+async def _is_bundle_provenance_current(
+    project_root: Path, *, cache: "_TreeStatusCache | None" = None,
+) -> bool:
     """Return True if the bundle provenance marker matches the current desktop tree.
 
     A marker written by a successful prebuilt-bundle install or local build
@@ -266,6 +296,10 @@ async def _is_bundle_provenance_current(project_root: Path) -> bool:
     against the committed tree, so a matching marker with local edits or
     untracked build inputs must fall through to the mtime check, and a
     matching marker with no bundle must not report success.
+
+    ``cache``, when passed, is where the ``git status`` this may run gets
+    stored, so a caller that also needs ``_dirty_desktop_build_inputs`` right
+    after a False return here doesn't pay for the identical status check twice.
     """
     index_html = project_root / "static" / "desktop" / "index.html"
     if not index_html.is_file():
@@ -280,7 +314,7 @@ async def _is_bundle_provenance_current(project_root: Path) -> bool:
     current = await _get_desktop_tree_sha(project_root)
     if not (current and current == recorded):
         return False
-    return await _is_desktop_working_tree_clean(project_root)
+    return await _is_desktop_working_tree_clean(project_root, cache=cache)
 
 
 def _record_bundle_provenance(project_root: Path, tree_sha: str) -> None:
@@ -453,10 +487,15 @@ async def rebuild_desktop_bundle_if_stale(
     their freshness when a PR landed source-only.
     """
     if not force:
+        # Shared for this one staleness check: if the provenance check below
+        # runs `git status` (marker present, SHA matches) and then falls
+        # through dirty, the dirty-build-input check right after it reuses
+        # that same answer instead of running the identical `git status` again.
+        _tree_status_cache: _TreeStatusCache = {}
         # Provenance check first: a fetched (or locally built) bundle whose
         # recorded tree SHA matches the current desktop/ source is always
         # current, regardless of filesystem mtimes.
-        if await _is_bundle_provenance_current(project_root):
+        if await _is_bundle_provenance_current(project_root, cache=_tree_status_cache):
             return RebuildResult(
                 rebuilt=False,
                 success=True,
@@ -467,7 +506,7 @@ async def rebuild_desktop_bundle_if_stale(
             # content differs from what was built while its timestamp does not
             # (backup/archive restore, clock skew). If git can name dirty build
             # inputs, they win over the heuristic.
-            dirty_inputs = await _dirty_desktop_build_inputs(project_root)
+            dirty_inputs = await _dirty_desktop_build_inputs(project_root, cache=_tree_status_cache)
             if not dirty_inputs:
                 return RebuildResult(
                     rebuilt=False,
