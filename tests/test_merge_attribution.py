@@ -422,11 +422,42 @@ class TestMergeAttributionReconciliation:
         result = self._run_checker(tmp_path, env, cutoff="2026-08-28T00:00:00Z")
 
         assert result.returncode == 1
-        # Only PR #42 (after cutoff) should be reported.
-        assert "42" in result.stdout
-        assert "41" not in result.stdout
+        # Only PR #42 (after cutoff) should be reported. Assert on the exact
+        # "#41"/"#42" PR-reference token the checker prints
+        # (f"#{pr_num} {short}"), not the bare digits: a runtime-generated
+        # commit sha is asserted present right alongside it, and a bare "41"
+        # or "42" can coincidentally appear inside THAT hex sha, making the
+        # assertion flake independent of whether PR #41 was actually reported.
+        assert "#42" in result.stdout
+        assert "#41" not in result.stdout
         assert old_sha[:12] not in result.stdout
         assert new_sha[:12] in result.stdout
+
+    def test_bare_pr_number_assertion_is_not_sha_safe(self) -> None:
+        """Pins WHY the two tests above assert "#41"/"#42", not the bare
+        digits. The fixture shas in this file are generated at runtime by
+        real git commits, so the IN-SCOPE PR's own sha can coincidentally
+        contain the excluded PR's number as a hex substring -- CI hit this
+        three times in one hour (#2798 shard 3.12/3, #2800 shard 3.13/3)
+        because "41" happened to land inside PR #42's sha. This test fixes
+        the collision instead of hoping for one, so it is deterministic, not
+        probabilistic.
+        """
+        # Stand-in for the checker's real stdout: PR #41 correctly excluded
+        # (cutoff/pre-adoption), PR #42 in scope and unmatched. The #42 sha
+        # is chosen to contain "41" as a hex-digit coincidence -- exactly the
+        # collision a real run hit by chance.
+        stdout = "UNMATCHED MERGE: #42 a41bcdef0123 -- no audit entry found\n"
+
+        # A bare-digit assertion here (`assert "41" not in stdout`) fails
+        # even though PR #41 was never reported -- "41" matches inside #42's
+        # sha, not PR #41's number. The fixed pattern checks the PR-reference
+        # token the checker actually prints (f"#{pr_num} {short}"), which
+        # cannot collide with a hex sha substring the way a bare number can.
+        # First prove the collision is really present in the fixture, so this
+        # test cannot pass vacuously if the sha above is ever edited.
+        assert "41" in stdout
+        assert "#41" not in stdout
 
     # ---- acceptance (c): checker enumerates from gh API, not git log ----
 
@@ -539,10 +570,13 @@ class TestMergeAttributionReconciliation:
         result = self._run_checker(tmp_path, env, cutoff=cutoff_sha)
 
         assert result.returncode == 1, result.stdout + result.stderr
-        assert "42" in result.stdout
+        assert "#42" in result.stdout
         assert new_sha[:12] in result.stdout
-        # The control stays out of scope.
-        assert "41" not in result.stdout
+        # The control stays out of scope. Assert on "#41", not the bare
+        # digits: new_sha (asserted present two lines up) is a runtime commit
+        # sha that can coincidentally contain "41" as a substring, which would
+        # fail this assertion even though PR #41 was correctly excluded.
+        assert "#41" not in result.stdout
         assert old_sha[:12] not in result.stdout
 
     def test_unparseable_cutoff_is_an_error_not_an_empty_scope(self, tmp_path: Path) -> None:
