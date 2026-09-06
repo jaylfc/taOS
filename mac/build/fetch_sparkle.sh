@@ -38,15 +38,37 @@ echo "[fetch_sparkle] downloading $URL"
 curl -L --fail -o "$ZIP" "$URL"
 
 EXPECTED_SHA="$(cat "$CHECKSUM_FILE")"
-ACTUAL_SHA="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
+if command -v shasum >/dev/null 2>&1; then
+  ACTUAL_SHA="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
+else
+  ACTUAL_SHA="$(sha256sum "$ZIP" | awk '{print $1}')"
+fi
 if [[ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]]; then
   echo "[fetch_sparkle] SHA mismatch: expected $EXPECTED_SHA got $ACTUAL_SHA" >&2
   exit 1
 fi
 
 echo "[fetch_sparkle] extracting"
-# The zip contains Sparkle.framework directly
-unzip -o "$ZIP" -d "$OUTPUT"
+TEMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TEMP_DIR"' EXIT
+unzip -o "$ZIP" -d "$TEMP_DIR"
 rm "$ZIP"
+
+# Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework exists per the release notes
+SPARKLE_FRAMEWORK_PATH="$TEMP_DIR/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+if [[ -d "$SPARKLE_FRAMEWORK_PATH" ]]; then
+  echo "[fetch_sparkle] found Sparkle.framework at $SPARKLE_FRAMEWORK_PATH"
+  cp -R "$SPARKLE_FRAMEWORK_PATH" "$OUTPUT/Sparkle.framework"
+else
+  echo "[fetch_sparkle] ERROR: Sparkle.framework not found at expected path $SPARKLE_FRAMEWORK_PATH" >&2
+  exit 1
+fi
+
+# Stage bin/sign_update and bin/generate_appcast for sparkle_sign.sh
+if [[ -d "$TEMP_DIR/bin" ]]; then
+  echo "[fetch_sparkle] staging sparkle-bin/ directory"
+  mkdir -p "$OUTPUT/sparkle-bin"
+  cp -R "$TEMP_DIR/bin/"* "$OUTPUT/sparkle-bin/" 2>/dev/null || true
+fi
 
 echo "[fetch_sparkle] done: $OUTPUT/Sparkle.framework"
