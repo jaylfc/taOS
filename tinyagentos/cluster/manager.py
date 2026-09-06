@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
 import time
 from typing import TYPE_CHECKING
@@ -16,6 +17,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_TIMEOUT = 30  # seconds before marking worker offline
+
+# Legacy resource-name grammar for backward compatibility with workers that
+# do not send a `resources` inventory on registration.
+_LEGACY_RESOURCE_RE = re.compile(r'^gpu-cuda-\d+$|^npu-[a-z0-9-]+$|^cpu-inference$')
 
 # Valid worker-initiated status values that gate drain/update protection.
 # Keep in sync with the notification block below and the heartbeat guard.
@@ -47,6 +52,7 @@ class ClusterManager:
         capabilities=None,
         worker_registry_store=None,
         failure_tracker=None,
+        max_leases_per_worker: int = 10,
     ):
         self._workers: dict[str, WorkerInfo] = {}
         self._leases: dict[str, GpuLease] = {}
@@ -68,6 +74,8 @@ class ClusterManager:
         self._failure_tracker: FailureTracker | None = failure_tracker
         self._generation: int = 1  # incremented in start() when store is wired
         self._fenced: bool = False  # True when another controller has advanced generation
+        # Maximum number of leases a single worker can hold (prevents DoS)
+        self._max_leases_per_worker = max_leases_per_worker
 
     async def start(self):
         # taOS #640: increment generation on each controller start (split-brain
@@ -269,6 +277,7 @@ class ClusterManager:
         status: str | None = None,
         drain_reason: str | None = None,
         generation: int | None = None,
+        resources: list[str] | None = None,
     ) -> bool:
         """Accept a worker heartbeat.
 
@@ -394,6 +403,8 @@ class ClusterManager:
             worker.storage_used_bytes = int(storage_used_bytes)
         if bytes_deduped_total is not None:
             worker.bytes_deduped_total = int(bytes_deduped_total)
+        if resources is not None:
+            worker.resources = list(resources)
         # Worker-initiated drain notification (taOS #890 C2).
         # Emit when the worker transitions into draining/update-available on
         # its own initiative, so the operator sees it in the activity feed.
@@ -528,14 +539,33 @@ class ClusterManager:
     def _worker_for_resource(self, resource_id: str) -> WorkerInfo | None:
         """Return the WorkerInfo for a resource_id, or None.
 
-        Excludes draining and offline workers (taOS #890)."""
+        Excludes draining and offline workers (taOS #890). Validates that the
+        resource part of the resource_id matches one of the worker's reported
+        scheduler resources to prevent a compromised worker from fabricating arbitrary
+        resources (S2-24)."""
         parsed = self._parse_resource_id(resource_id)
         if parsed is None:
             return None
-        worker_name, _ = parsed
+        worker_name, resource_part = parsed
         worker = self._workers.get(worker_name)
         if worker is None or worker.status not in ("online", "update-available"):
             return None
+        
+        # Validate that the resource part matches one of the worker's reported resources
+        if worker.resources:
+            # Worker has a non-empty resource inventory (scheduler-based discovery)
+            if resource_part not in worker.resources:
+                return None
+        else:
+            # Worker has no resource inventory (older worker, or registration without resources)
+            # Fall back to the legacy grammar check for backward compatibility
+            logger.warning(
+                "Worker '%s' has no resource inventory; falling back to legacy grammar check for resource '%s'",
+                worker_name, resource_part,
+            )
+            if not _LEGACY_RESOURCE_RE.match(resource_part):
+                return None
+            
         return worker
 
     def find_existing_lease(self, resource_id: str) -> GpuLease | None:
@@ -595,6 +625,22 @@ class ClusterManager:
                 logger.debug(
                     "claim_lease: %s needs %d MiB VRAM but %s has %d MiB free",
                     caller, required_vram_mb, worker.name, worker.free_vram_mb,
+                )
+                return None
+
+            # Enforce lease cap per worker to prevent DoS (S2-24)
+            # Count only active (non-expired) leases for this worker
+            now = time.time()
+            worker_lease_count = 0
+            for lid, lease in self._leases.items():
+                if (parsed := self._parse_resource_id(lease.resource_id)) and parsed[0] == worker.name:
+                    if lease.expires_at > now:
+                        worker_lease_count += 1
+            
+            if worker_lease_count >= self._max_leases_per_worker:
+                logger.debug(
+                    "claim_lease: worker %s has reached max leases (%d), rejecting new claim",
+                    worker.name, self._max_leases_per_worker,
                 )
                 return None
 
@@ -913,6 +959,7 @@ class ClusterManager:
             "degraded_reason": worker.degraded_reason,
             "free_vram_mb": worker.free_vram_mb,
             "used_vram_mb": worker.used_vram_mb,
+            "resources": json.dumps(worker.resources or []),
         }
         await self._registry_store.upsert_worker(info)
 
@@ -973,6 +1020,7 @@ class ClusterManager:
                     degraded_reason=row.get("degraded_reason"),
                     free_vram_mb=row.get("free_vram_mb"),
                     used_vram_mb=row.get("used_vram_mb"),
+                    resources=json.loads(row.get("resources", "[]")),
                 )
                 self._workers[name] = worker
                 self._ever_seen.add(name)
