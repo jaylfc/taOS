@@ -1,17 +1,23 @@
-import json
-import pytest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
+
+import pytest
+import yaml
+
 from tinyagentos.installers.base import get_installer
-from tinyagentos.installers.pip_installer import PipInstaller
 from tinyagentos.installers.docker_installer import DockerInstaller
 from tinyagentos.installers.download_installer import DownloadInstaller
+from tinyagentos.installers.pip_installer import PipInstaller
 from tinyagentos.installers.port_allocator import (
+    _POOL_END,
+    _POOL_START,
     RESERVED_PORTS,
     allocate_host_port,
-    _POOL_START,
-    _POOL_END,
 )
+
+# Anchor the catalog path on this file so tests never depend on cwd. The repo
+# layout is tests/test_installers.py -> <repo>/app-catalog.
+_CATALOG_ROOT = Path(__file__).resolve().parent.parent / "app-catalog"
 
 
 class TestGetInstaller:
@@ -55,20 +61,79 @@ class TestPipInstaller:
 
 class TestDockerInstaller:
     @pytest.mark.asyncio
-    async def test_install_writes_compose(self, tmp_path):
+    def test_compose_file_is_0600(self, tmp_path):
+        """RED: _generate_compose must write docker-compose.yaml at 0o600 permissions
+        to protect any secret substitutions (previous default umask 0o644 exposed
+        secrets in the live session-signing key). Applies to all files
+        _write_config_files writes whose content had a {secret_key} substitution.
+        """
         installer = DockerInstaller(apps_dir=tmp_path)
         install_config = {
             "method": "docker",
-            "image": "gitea/gitea:1.22",
-            "volumes": ["data:/data"],
-            "env": {"ROOT_URL": "http://localhost:3000"},
+            "image": "ghcr.io/linkwarden/linkwarden:latest",
+            "volumes": ["data:/data/data"],
+            "ports": [3000],
+            "env": {
+                "NEXTAUTH_SECRET": "{secret_key}",
+                "NEXTAUTH_URL": "http://localhost:3000",
+                "DATABASE_URL": "postgresql://postgres:postgres@localhost:5432/linkwarden"
+            }
         }
+        # Mock run_cmd to avoid docker dependency
         with patch("tinyagentos.installers.docker_installer.run_cmd", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = (0, "")
-            result = await installer.install("gitea", install_config)
-            assert result["success"] is True
-            compose_file = tmp_path / "gitea" / "docker-compose.yaml"
-            assert compose_file.exists()
+            import asyncio
+            asyncio.run(installer.install("linkwarden", install_config))
+        
+        compose_path = tmp_path / "linkwarden" / "docker-compose.yaml"
+        assert compose_path.exists()
+        stat_mode = compose_path.stat().st_mode
+        assert (stat_mode & 0o777) == 0o600, f"Expected 0o600, got {oct(stat_mode & 0o777)}"
+
+    def test_preexisting_config_file_is_0600(self, tmp_path):
+        """When _write_config_files writes a file with {secret_key} substitution,
+        it must harden the mode even if it already existed at 0o644 from a previous
+        install (O_CREAT only applies the mode on creation)."""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        # Create a pre-existing settings.yml at 0o644
+        app_dir = tmp_path / "linkwarden"
+        app_dir.mkdir(parents=True)
+        config_file = app_dir / "settings.yml"
+        config_file.write_text("")
+        config_file.chmod(0o644)
+        assert (config_file.stat().st_mode & 0o777) == 0o644
+        
+        # Write config files with {secret_key} substitution
+        installer._write_config_files("linkwarden", {
+            "config_files": [
+                {"path": "settings.yml", "content": 'secret_key: "{secret_key}"'}
+            ]
+        })
+        
+        # The config file should now be 0o600
+        stat_mode = config_file.stat().st_mode
+        assert (stat_mode & 0o777) == 0o600, f"Expected 0o600, got {oct(stat_mode & 0o777)}"
+
+    def test_config_file_with_secret_key_substitution_is_0600(self, tmp_path):
+        """Config files whose content had a {secret_key} substitution must be written
+        at 0o600 permissions."""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        installer._write_config_files("searxng", {
+            "config_files": [
+                {"path": "settings.yml", "content": 'secret_key: "{secret_key}"'}
+            ]
+        })
+        
+        settings_yml = tmp_path / "searxng" / "settings.yml"
+        assert settings_yml.exists()
+        stat_mode = settings_yml.stat().st_mode
+        assert (stat_mode & 0o777) == 0o600, f"Expected 0o600, got {oct(stat_mode & 0o777)}"
+        
+        # The secret key file should also be 0o600
+        secret_path = tmp_path / "searxng" / ".secret_key"
+        assert secret_path.exists()
+        stat_mode = secret_path.stat().st_mode
+        assert (stat_mode & 0o777) == 0o600, f"Expected 0o600, got {oct(stat_mode & 0o777)}"
 
     def test_generate_compose_declares_named_volumes_and_omits_version(self, tmp_path):
         # Regression: named volumes (e.g. searxng's "config:/etc/searxng") must
@@ -216,6 +281,83 @@ class TestDockerInstaller:
             assert result["success"] is True
             calls = [str(c) for c in mock_run.call_args_list]
             assert any("up" in c and "-d" in c for c in calls)
+
+
+class TestLinkwardenSecretSubstitution:
+    """tsk-teaogm: {secret_key} must be substituted into install.env, not just
+    config_files content, so Linkwarden's NEXTAUTH_SECRET is per-app and stable.
+    """
+
+    @pytest.mark.asyncio
+    async def test_env_secret_key_substituted_in_compose(self, tmp_path):
+        manifest_path = _CATALOG_ROOT / "services" / "linkwarden" / "manifest.yaml"
+        manifest = yaml.safe_load(manifest_path.read_text())
+        install_config = manifest["install"]
+
+        async def _render(app_id):
+            installer = DockerInstaller(apps_dir=tmp_path)
+            with patch(
+                "tinyagentos.installers.docker_installer.run_cmd",
+                new_callable=AsyncMock,
+            ) as mock_run:
+                mock_run.return_value = (0, "")
+                await installer.install(app_id, install_config)
+            compose = yaml.safe_load(
+                (tmp_path / app_id / "docker-compose.yaml").read_text()
+            )
+            return compose["services"][app_id]["environment"]["NEXTAUTH_SECRET"]
+
+        secret_a = await _render("linkwarden-a")
+        secret_b = await _render("linkwarden-b")
+
+        # The substituted secret must be a 64-char hex string, not the
+        # placeholder literal or the shipped default.
+        assert len(secret_a) == 64
+        assert all(c in "0123456789abcdef" for c in secret_a)
+        assert secret_a != "{secret_key}"
+        assert secret_b != "{secret_key}"
+
+        # Different app_dirs get different per-app secrets.
+        assert secret_a != secret_b
+
+        # Same app_dir rendered twice must reuse the persisted .secret_key.
+        secret_a_again = await _render("linkwarden-a")
+        assert secret_a == secret_a_again
+
+
+class TestCatalogManifestAudit:
+    """tsk-teaogm: catalog manifests must not ship literal secrets.
+
+    Every *_SECRET / *_KEY env value must carry the ``{secret_key}`` placeholder
+    so the DockerInstaller substitutes a per-app secret, and no env value may be
+    the shipped default ``"changeme"``.
+    """
+
+    def test_no_hardcoded_secrets_in_manifests(self):
+        manifest_paths = sorted((_CATALOG_ROOT / "services").rglob("manifest.yaml"))
+        assert manifest_paths, "no service manifests found under app-catalog/services"
+
+        failures: list[str] = []
+        secret_suffixes = ("_SECRET", "_KEY")
+        for mp in manifest_paths:
+            data = yaml.safe_load(mp.read_text())
+            if not isinstance(data, dict):
+                continue
+            env = (data.get("install") or {}).get("env") or {}
+            if not isinstance(env, dict):
+                continue
+            rel = mp.relative_to(_CATALOG_ROOT)
+            for key, val in env.items():
+                if not isinstance(val, str):
+                    continue
+                if val == "changeme":
+                    failures.append(f"{rel}: {key} == 'changeme'")
+                if key.endswith(secret_suffixes) and "{secret_key}" not in val:
+                    failures.append(
+                        f"{rel}: {key} is a literal secret (no {{secret_key}} placeholder)"
+                    )
+
+        assert not failures, "; ".join(failures)
 
 
 class TestDownloadInstaller:
