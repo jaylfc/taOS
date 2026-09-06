@@ -16,6 +16,7 @@ from tinyagentos.agent_registry_store import (
     _RESERVED_PREFIXES,
     _row_to_dict,
     _slugify,
+    agent_slug_or_fallback,
     load_or_create_signing_keypair,
     mint_canonical_id,
     mint_registry_token,
@@ -61,16 +62,49 @@ class TestSlugify:
         assert _slugify("agent@v2.0!") == "agent-v2-0"
 
     def test_empty_string(self):
-        assert _slugify("") == "agent"
+        # No sentinel: a constant fallback gave every unslugifiable name the
+        # same slug and collided their identities (agent_slug_or_fallback
+        # supplies a per-name one where a slug is mandatory).
+        assert _slugify("") == ""
 
     def test_only_special_chars(self):
-        assert _slugify("!@#$%") == "agent"
+        assert _slugify("!@#$%") == ""
+
+    def test_non_latin_script_transliterates(self):
+        assert _slugify("我的代理") == "wo-de-dai-li"
+        assert _slugify("Агент Иванов") == "agent-ivanov"
 
     def test_leading_trailing_dashes(self):
         assert _slugify("  hello  ") == "hello"
 
     def test_multiple_spaces(self):
         assert _slugify("a  b  c") == "a-b-c"
+
+
+class TestAgentSlugOrFallback:
+    def test_returns_the_slug_when_there_is_one(self):
+        assert agent_slug_or_fallback("My Agent") == "my-agent"
+
+    def test_falls_back_for_an_unslugifiable_name(self):
+        assert agent_slug_or_fallback("🚀").startswith("agent-")
+
+    def test_the_fallback_is_deterministic(self):
+        assert agent_slug_or_fallback("🚀") == agent_slug_or_fallback("🚀")
+
+    def test_two_unslugifiable_names_do_not_share_a_fallback(self):
+        assert agent_slug_or_fallback("🚀") != agent_slug_or_fallback("🎉")
+
+    def test_fallback_digest_is_wide_enough_to_resist_collision(self):
+        """CodeRabbit finding on #2798: a 32-bit (4-byte) digest lets two
+        different unslugifiable names collide into the same "agent-<digest>"
+        fallback slug. get_by_slug() resolves a slug to "the oldest matching
+        record", so a collision would silently point a DM channel (or
+        anything else resolved by slug) at the wrong agent. 8 bytes (16 hex
+        chars) makes that collision space large enough to be unreachable in
+        practice.
+        """
+        digest = agent_slug_or_fallback("🚀").removeprefix("agent-")
+        assert len(digest) == 16
 
 
 class TestMintCanonicalId:

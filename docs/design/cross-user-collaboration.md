@@ -403,7 +403,9 @@ for T0, verified by a test that a guest node cannot reach a second node); persis
 after contact-revoke (cascade is transactional: contact row, peer link,
 memberships, sponsored identities, outbox purge).
 
-**Rate limits:** peer routes 60 req/min/contact, chat 600 msgs/day/contact,
+**Rate limits:** peer routes 60 req/min/contact (a moving window from the
+shared `tinyagentos/rate_limit.py`; the 429 carries `Retry-After`),
+chat 600 msgs/day/contact,
 pending delegation requests at most 3/contact (mirrors invite pending-cap 10
 spirit), envelope size at most 32KB. Hub relay: at most 200 queued
 envelopes/recipient.

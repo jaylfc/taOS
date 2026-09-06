@@ -5,9 +5,10 @@ import logging
 import time
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from tinyagentos.auth_context import require_admin
 from tinyagentos.backend_adapters import get_adapter
 from tinyagentos.config import save_config_locked, VALID_BACKEND_TYPES
 from tinyagentos.lifecycle_manager import LifecycleManager
@@ -404,6 +405,14 @@ async def list_providers(request: Request):
     config = request.app.state.config
     http_client = request.app.state.http_client
     providers = []
+    # The list must stay readable by every signed-in user (the model pickers
+    # in the deploy wizard / agent settings read it), but a backend entry can
+    # carry an inline ``api_key`` (PATCH accepts one). Only an admin or the host
+    # local token gets that field back; a member gets the entry without it.
+    # Same signals as tinyagentos.auth_context.require_admin.
+    reveal_keys = bool(getattr(request.state, "is_admin", False)) or (
+        getattr(request.state, "via", None) == "local_token"
+    )
 
     # 1) Controller-local providers (live health probe)
     # Only expose backends with a recognised AI type — entries with an empty
@@ -471,6 +480,8 @@ async def list_providers(request: Request):
             "lifecycle_state": lifecycle_state,
             "enabled": backend.get("enabled", True),
         }
+        if not reveal_keys:
+            entry.pop("api_key", None)
         entry["category"] = _categorise(entry)
         # Cloud providers don't participate in lifecycle management
         if entry["category"] != "cloud":
@@ -552,7 +563,7 @@ async def test_provider(request: Request, body: ProviderTest):
     except Exception as e:
         return {"reachable": False, "error": str(e)}
 
-@router.post("/api/providers")
+@router.post("/api/providers", dependencies=[Depends(require_admin)])
 async def add_provider(request: Request, body: ProviderCreate):
     """Add a new provider to the configuration.
 
@@ -632,7 +643,7 @@ async def add_provider(request: Request, body: ProviderCreate):
         logger.debug("providers: models cache invalidation skipped: %s", exc)
     return {"status": "added", "name": body.name}
 
-@router.patch("/api/providers/{name}")
+@router.patch("/api/providers/{name}", dependencies=[Depends(require_admin)])
 async def patch_provider(request: Request, name: str, body: ProviderPatch):
     """Update a provider's config. Re-probes ``/models`` and reloads
     LiteLLM when routing-affecting fields (url/api_key_secret/api_key)
@@ -817,7 +828,7 @@ async def force_refresh_models(request: Request):
     }
 
 
-@router.post("/api/providers/{name}/start")
+@router.post("/api/providers/{name}/start", dependencies=[Depends(require_admin)])
 async def start_provider(request: Request, name: str):
     """Manually start a stopped provider."""
     config = request.app.state.config
@@ -835,7 +846,7 @@ async def start_provider(request: Request, name: str):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@router.post("/api/providers/{name}/stop")
+@router.post("/api/providers/{name}/stop", dependencies=[Depends(require_admin)])
 async def stop_provider(request: Request, name: str, body: ProviderStop):
     """Gracefully stop (or force-kill) a running provider."""
     config = request.app.state.config
@@ -851,7 +862,7 @@ async def stop_provider(request: Request, name: str, body: ProviderStop):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@router.delete("/api/providers/{name}")
+@router.delete("/api/providers/{name}", dependencies=[Depends(require_admin)])
 async def delete_provider(request: Request, name: str):
     """Remove a provider. Only local (config-based) providers can be
     deleted — worker-reported backends disappear when the worker goes

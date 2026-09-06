@@ -1,0 +1,3 @@
+### Fixed
+- A legacy `notification-archive` dock pin now survives a session restore and opens the Notifications Archive tab. Restoring the dock rewrote the pin to `notifications`, which threw away the Archive destination before the dock, the Ctrl+1–9 shortcuts or the app could read it, and the dock auto-save then wrote the stripped id back to the server, so one reload lost the pin for good.
+- Hardened the macOS dock icon list: matching a pin's running state no longer trusts a non-null assertion on a positionally-indexed lookup, so a future refactor that lets the pinned-id and app-id arrays diverge fails safe instead of crashing.

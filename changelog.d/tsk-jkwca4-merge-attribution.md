@@ -1,0 +1,4 @@
+### Added
+- `scripts/check_merge_attribution.py`: reconciliation check that reads the fleet's local JSONL merge audit log and asserts every merge commit in the repo has a matching audit entry, failing red with the unmatched SHA when one is missing.
+- `scripts/gate_merge.sh`: fleet merge wrapper that appends an actor, repo, PR, SHA, merged_by, timestamp, and script entry to `~/.fleet/merge-audit.jsonl` after every successful `gh pr merge`, giving each fleet action an append-only local audit trail without changing the GitHub `merged_by` field.
+- `tests/test_merge_attribution.py`: three acceptance proofs — a merge with no audit line goes RED naming the unmatched SHA, a normal fleet merge with an audit line reconciles clean with rc=0, and deleting the audit line for a real merge returns to RED, proving the check is load-bearing.

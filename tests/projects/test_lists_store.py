@@ -3,6 +3,7 @@ import time
 
 import pytest
 import pytest_asyncio
+from aiosqlite.context import Result
 
 from tinyagentos.projects.lists_store import ProjectListsStore, ProjectListEntriesStore
 
@@ -297,14 +298,27 @@ async def test_reorder_entries_does_not_corrupt_sibling_list(entries_store):
 async def test_concurrent_add_entry_distinct_positions(entries_store, monkeypatch):
     """Two concurrent add_entry calls without explicit positions must not
     persist duplicate positions."""
-    original = entries_store._get_next_position
+    # Yield to the loop after each INSERT starts so the two gather branches
+    # actually interleave on the shared connection; without this the atomic
+    # single-statement INSERT keeps the test passing for the wrong reason.
+    real_execute = entries_store._db.execute
+    insert_calls = 0
 
-    async def slow_next_position(project_id, list_id):
-        val = await original(project_id, list_id)
-        await asyncio.sleep(0)
-        return val
+    def delaying_execute(*args, **kwargs):
+        nonlocal insert_calls
+        sql = args[0] if args else kwargs.get("sql", "")
+        is_insert = "INSERT INTO project_list_entries" in sql
 
-    monkeypatch.setattr(entries_store, "_get_next_position", slow_next_position)
+        async def _runner():
+            nonlocal insert_calls
+            if is_insert:
+                insert_calls += 1
+                await asyncio.sleep(0)
+            return await real_execute(*args, **kwargs)
+
+        return Result(_runner())
+
+    monkeypatch.setattr(entries_store._db, "execute", delaying_execute)
 
     e1, e2 = await asyncio.gather(
         entries_store.add_entry(
@@ -325,8 +339,11 @@ async def test_concurrent_add_entry_distinct_positions(entries_store, monkeypatc
         ),
     )
 
+    assert insert_calls == 2, "both inserts must have run through execute()"
     positions = {e1["position"], e2["position"]}
-    assert len(positions) == 2, f"expected distinct positions, got {positions}"
+    assert len(positions) == 2, (
+        f"expected distinct positions under concurrent gather, got {positions}"
+    )
 
 
 # ---------------------------------------------------------------------------
