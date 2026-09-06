@@ -1,0 +1,3 @@
+### Fixed
+- Mobile home default grid now applies the same tier rule as the desktop launcher: tier 1 and tier 2 apps surface on the default grid, while tier 3 apps (providers, mcp, channels, notification-archive) are excluded and remain searchable. Extracted a shared `isDefaultSurfaceApp()` helper in the app registry so the mobile home grid and launcher can no longer drift into different tier predicates (#2517).
+- Red-proven test added: `mobile-home-store` default grid is asserted to exclude the real tier-3 registry id `providers` (and the other tier-3 apps); reverting the predicate to `tier !== 4` turns the test red, restoring `isDefaultSurfaceApp` turns it green.

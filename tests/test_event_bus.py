@@ -457,3 +457,95 @@ async def test_store_list_huge_limit_clamped(tmp_path):
         assert len(rows) == 5
     finally:
         await store.close()
+
+
+# ---------------------------------------------------------------------------
+# Finding 4 — per-user event routing
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_user_id_target_publishes_to_user_channel_not_broadcast():
+    """A target of the form ``user:<id>`` must reach that per-user channel
+    and must NOT leak to the broadcast channel."""
+    bus = EventBus()
+    notifications = FakeNotifications()
+    agent_messages = FakeAgentMessages()
+    trace = FakeTraceStore()
+
+    user_q = await bus.subscribe("user:user-1")
+    bcast_q = await bus.subscribe("broadcast")
+
+    ev = _make_event(targets=["user:user-1"])
+    await bus.emit(ev, notifications=notifications, agent_messages=agent_messages, trace_store=trace)
+
+    assert user_q.get_nowait() is ev
+    assert bcast_q.empty(), "user-scoped event must not reach broadcast"
+
+
+@pytest.mark.asyncio
+async def test_user_id_target_with_explicit_broadcast_reaches_both():
+    """If ``broadcast`` is explicitly in targets alongside ``user:<id>``, both
+    channels receive the event."""
+    bus = EventBus()
+    notifications = FakeNotifications()
+    agent_messages = FakeAgentMessages()
+    trace = FakeTraceStore()
+
+    user_q = await bus.subscribe("user:user-1")
+    bcast_q = await bus.subscribe("broadcast")
+
+    ev = _make_event(targets=["user:user-1", "broadcast"])
+    await bus.emit(ev, notifications=notifications, agent_messages=agent_messages, trace_store=trace)
+
+    assert user_q.get_nowait() is ev
+    assert bcast_q.get_nowait() is ev
+
+
+@pytest.mark.asyncio
+async def test_user_sentinel_alone_still_broadcasts():
+    """The ``user`` sentinel (no id) is a notification trigger, not a channel.
+    Events with only ``user`` in targets must still reach broadcast."""
+    bus = EventBus()
+    notifications = FakeNotifications()
+    agent_messages = FakeAgentMessages()
+    trace = FakeTraceStore()
+
+    bcast_q = await bus.subscribe("broadcast")
+
+    ev = _make_event(targets=["user"])
+    await bus.emit(ev, notifications=notifications, agent_messages=agent_messages, trace_store=trace)
+
+    assert bcast_q.get_nowait() is ev
+    assert len(notifications.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_broadcast_target_still_reaches_broadcast():
+    """Explicit ``broadcast`` in targets must still work."""
+    bus = EventBus()
+    notifications = FakeNotifications()
+    agent_messages = FakeAgentMessages()
+    trace = FakeTraceStore()
+
+    bcast_q = await bus.subscribe("broadcast")
+
+    ev = _make_event(targets=["broadcast"])
+    await bus.emit(ev, notifications=notifications, agent_messages=agent_messages, trace_store=trace)
+
+    assert bcast_q.get_nowait() is ev
+
+
+@pytest.mark.asyncio
+async def test_no_targets_still_broadcasts():
+    """An event with no targets must still reach broadcast for backward compat."""
+    bus = EventBus()
+    notifications = FakeNotifications()
+    agent_messages = FakeAgentMessages()
+    trace = FakeTraceStore()
+
+    bcast_q = await bus.subscribe("broadcast")
+
+    ev = _make_event(targets=[])
+    await bus.emit(ev, notifications=notifications, agent_messages=agent_messages, trace_store=trace)
+
+    assert bcast_q.get_nowait() is ev

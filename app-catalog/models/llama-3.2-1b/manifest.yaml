@@ -2,7 +2,7 @@ id: llama-3.2-1b
 name: Llama 3.2 1B
 type: model
 version: 3.2.0
-description: Meta's lightest model — 2GB RAM, ARM-optimized, perfect for mobile workers
+description: Meta's lightest model -- 2GB RAM, ARM-optimized, perfect for mobile workers
   and Pi 4
 homepage: https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct
 capabilities:
@@ -31,9 +31,22 @@ variants:
       - cpu
       min_ram_mb: 2048
   sha256: 6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83
+- id: a8w4
+  name: A8W4 HEF (1.8GB, NPU)
+  format: hef
+  size_mb: 1790
+  min_ram_mb: 0
+  hef_h10h: 0a0d378c530fb120d81ffcd1bde1b367c7bb1ce6e2d8f3fb8166558eee40536e
+  ollama_name: llama3.2:1b
+  requires:
+    backends:
+    - id: hailo-ollama
+      targets:
+      - hailo
+      min_ram_mb: 2048
 hardware_tiers:
   arm-npu-16gb:
-    recommended: q4_k_m
+    recommended: a8w4
   arm-cpu-8gb:
     recommended: q4_k_m
   x86-vulkan-4gb:

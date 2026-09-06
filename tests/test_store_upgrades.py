@@ -29,6 +29,8 @@ from tinyagentos.projects.canvas.store import ProjectCanvasStore
 from tinyagentos.projects.task_store import ProjectTaskStore
 from tinyagentos.chat.channel_store import ChatChannelStore
 from tinyagentos.notes.shared_docs_store import SharedDocsStore
+from tinyagentos.contacts_store import ContactsStore
+from tinyagentos.hub.identity import fingerprint as _compute_fingerprint
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +481,165 @@ class TestSharedDocsStoreUpgrade:
             assert "permission" in cols, "permission missing"
             assert "action" in cols, "action missing"
             assert "discuss_channel_id" in cols, "discuss_channel_id missing"
+        finally:
+            await store.close()
+
+
+# ---------------------------------------------------------------------------
+# ContactsStore — column peer_fingerprint added in _post_init
+# ---------------------------------------------------------------------------
+
+CONTACTS_V0_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS contacts (
+    contact_id        TEXT PRIMARY KEY,
+    hub_username      TEXT NOT NULL UNIQUE,
+    display_name      TEXT NOT NULL,
+    ed25519_pub       TEXT NOT NULL,
+    x25519_pub        TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    local_crm_id      TEXT,
+    created_at        REAL NOT NULL,
+    revoked_at        REAL
+);
+CREATE TABLE IF NOT EXISTS peer_links (
+    contact_id              TEXT PRIMARY KEY REFERENCES contacts(contact_id),
+    inbound_token_hash      TEXT NOT NULL,
+    outbound_token          TEXT NOT NULL,
+    endpoints               TEXT NOT NULL DEFAULT '[]',
+    established_at          REAL NOT NULL,
+    last_seen_at            REAL,
+    revoked_at              REAL
+);
+CREATE INDEX IF NOT EXISTS idx_peer_links_token_hash ON peer_links(inbound_token_hash);
+CREATE TABLE IF NOT EXISTS peer_nonces (
+    nonce                   TEXT NOT NULL,
+    contact_id              TEXT NOT NULL,
+    kind                    TEXT NOT NULL DEFAULT '',
+    seen_at                 REAL NOT NULL,
+    PRIMARY KEY (contact_id, kind, nonce)
+);
+"""
+
+
+@pytest.mark.asyncio
+class TestContactsStoreUpgrade:
+    async def test_upgrade_adds_peer_fingerprint_column(self, tmp_path):
+        db_path = tmp_path / "contacts.db"
+        _seed_db(db_path, CONTACTS_V0_SCHEMA)
+        store = ContactsStore(db_path)
+        await store.init()
+        try:
+            cols = _column_names(db_path, "contacts")
+            assert "peer_fingerprint" in cols, "peer_fingerprint missing after upgrade"
+        finally:
+            await store.close()
+
+    async def test_upgrade_add_contact_works_after_upgrade(self, tmp_path):
+        db_path = tmp_path / "contacts.db"
+        _seed_db(db_path, CONTACTS_V0_SCHEMA)
+        store = ContactsStore(db_path)
+        await store.init()
+        try:
+            await store.add_contact(
+                contact_id="hub:test",
+                hub_username="test",
+                display_name="Test",
+                ed25519_pub="ab" * 32,
+                x25519_pub="cd" * 32,
+                peer_fingerprint="deadbeef",
+            )
+            contact = await store.get_contact("hub:test")
+            assert contact is not None
+            assert contact["peer_fingerprint"] == "deadbeef"
+        finally:
+            await store.close()
+
+    async def test_upgrade_backfills_fingerprint_for_existing_rows(
+        self, tmp_path
+    ):
+        """Regression: rows predating peer_fingerprint must get backfilled.
+
+        Without backfill, block_peer (routes/hub.py) resolves peers by
+        fingerprint only and silently fails to revoke the peer link for
+        every pre-existing contact — the block path fails open.
+        """
+        db_path = tmp_path / "contacts.db"
+        _seed_db(db_path, CONTACTS_V0_SCHEMA)
+        # Seed a pre-existing contact with key material but no fingerprint
+        # column (the v0 schema has no peer_fingerprint).
+        now = time.time()
+        db = sqlite3.connect(str(db_path))
+        db.execute(
+            "INSERT INTO contacts "
+            "(contact_id, hub_username, display_name, ed25519_pub, x25519_pub,"
+            " status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("hub:testpeer", "testpeer", "Test Peer",
+             "ab" * 32, "cd" * 32, "active", now),
+        )
+        db.commit()
+        db.close()
+
+        store = ContactsStore(db_path)
+        await store.init()
+        try:
+            contact = await store.get_contact("hub:testpeer")
+            assert contact is not None
+            assert contact["peer_fingerprint"] != "", (
+                "peer_fingerprint not backfilled for pre-existing row"
+            )
+            expected = _compute_fingerprint("ab" * 32)
+            assert contact["peer_fingerprint"] == expected, (
+                f"fingerprint mismatch: {contact['peer_fingerprint']} != {expected}"
+            )
+        finally:
+            await store.close()
+
+    async def test_upgrade_skips_malformed_ed25519_during_backfill(
+        self, tmp_path
+    ):
+        """Backfill must not brick boot when a v0 row has non-hex key material.
+
+        _compute_fingerprint calls bytes.fromhex, which raises ValueError on
+        odd-length strings, non-hex chars, or embedded NULs.  A single bad row
+        must never crash init() or abort the rest of the backfill.
+        """
+        db_path = tmp_path / "contacts.db"
+        _seed_db(db_path, CONTACTS_V0_SCHEMA)
+        now = time.time()
+        db = sqlite3.connect(str(db_path))
+        # Row with valid hex — must be backfilled.
+        db.execute(
+            "INSERT INTO contacts "
+            "(contact_id, hub_username, display_name, ed25519_pub, x25519_pub,"
+            " status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("hub:valid", "valid", "Valid", "ab" * 32, "cd" * 32,
+             "active", now),
+        )
+        # Row with malformed hex — must NOT crash init().
+        db.execute(
+            "INSERT INTO contacts "
+            "(contact_id, hub_username, display_name, ed25519_pub, x25519_pub,"
+            " status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("hub:badhex", "badhex", "Bad Hex", "not-hex-data!!!", "cd" * 32,
+             "active", now),
+        )
+        db.commit()
+        db.close()
+
+        store = ContactsStore(db_path)
+        await store.init()  # must not raise
+        try:
+            # Valid row is backfilled.
+            valid = await store.get_contact("hub:valid")
+            assert valid is not None
+            assert valid["peer_fingerprint"] == _compute_fingerprint("ab" * 32)
+
+            # Bad row is reachable (not bricked), fingerprint stays empty.
+            bad = await store.get_contact("hub:badhex")
+            assert bad is not None
+            assert bad["peer_fingerprint"] == "", (
+                "malformed-hex row must keep empty fingerprint, not crash"
+            )
         finally:
             await store.close()
 

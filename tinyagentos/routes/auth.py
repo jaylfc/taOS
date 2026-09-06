@@ -143,13 +143,6 @@ body {
   gap: 12px;
   margin-bottom: 22px;
 }
-.brand .icon {
-  width: 56px; height: 56px;
-  border-radius: 16px;
-  display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, #8b92a3, #5b6170);
-  font-size: 26px;
-}
 /* The on-screen keyboard takes roughly half of a 600px panel, so while it is
    open the card sheds decorative height to keep its actions above the keys.
    The body is scrollable in that state either way, but a sign-in the user has
@@ -157,9 +150,22 @@ body {
 body.osk-open .card { padding: 16px 20px 12px; }
 body.osk-open label.field { margin-bottom: 6px; }
 body.osk-open .brand { margin-bottom: 8px; gap: 6px; }
-body.osk-open .brand .icon { width: 40px; height: 40px; border-radius: 12px; font-size: 20px; }
+body.osk-open .brand h1.wordmark { font-size: 26px; }
 body.osk-open .brand p { display: none; }
-.brand h1 { margin: 0; font-size: 18px; font-weight: 600; }
+/* The wordmark IS the brand mark on these pages: the product name set as type,
+   carrying the card visually on its own. It replaces an earlier drawn glyph —
+   a rounded square with a centre dot and an X through it — which on a sign-in
+   screen read as an error badge or a close affordance rather than a logo.
+   Plain ASCII in the page's own font stack, so there is no webfont to fetch
+   and no code point that can land as TOFU on a device missing a covering font,
+   which is what the JS-free, CDN-free auth pages need. */
+.brand h1.wordmark {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
 .brand p { margin: 0; font-size: 12px; color: rgba(255,255,255,0.5); text-align: center; }
 label.field {
   display: block;
@@ -417,27 +423,6 @@ def _pin_panel_html(next_url: str) -> str:
     """
 
 
-# Inline taOS brand mark for the auth pages. Rendered as an SVG rather than a
-# bare Unicode glyph (⌗ / ✦): those code points are host-font-dependent and
-# render as TOFU on machines that lack a covering font, which contradicts the
-# pages' deliberate JS-free, CDN-free robustness. The SVG scales to its
-# `.icon` container (100% x 100%) so the same mark works in both the default
-# 56px slot and the osk-open 40px slot, and uses `currentColor` so it inherits
-# the page's text colour rather than fetching a webfont.
-_AUTH_BRAND_SVG = (
-    '<svg width="100%" height="100%" viewBox="0 0 56 56" '
-    'xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">'
-    '<rect x="12" y="12" width="32" height="32" rx="4" fill="none" '
-    'stroke="currentColor" stroke-width="2.5"></rect>'
-    '<circle cx="28" cy="28" r="3.5" fill="currentColor"></circle>'
-    '<line x1="18" y1="18" x2="38" y2="38" stroke="currentColor" '
-    'stroke-width="2" stroke-linecap="round"></line>'
-    '<line x1="38" y1="18" x2="18" y2="38" stroke="currentColor" '
-    'stroke-width="2" stroke-linecap="round"></line>'
-    '</svg>'
-)
-
-
 def _login_page(
     error: str = "",
     multi_user: bool = False,
@@ -476,8 +461,7 @@ def _login_page(
 <body>
   <div class="card">
     <div class="brand">
-      <div class="icon">{_AUTH_BRAND_SVG}</div>
-      <h1>taOS</h1>
+      <h1 class="wordmark">taOS</h1>
       <p>Sign in to continue</p>
     </div>
     {err}
@@ -533,9 +517,8 @@ def _setup_page(error: str = "", pin_offered: bool = False) -> str:
 <body>
   <form class="card" method="POST" action="/auth/setup">
     <div class="brand">
-      <div class="icon">{_AUTH_BRAND_SVG}</div>
-      <h1>Welcome to taOS</h1>
-      <p>Set up your account to get started.</p>
+      <h1 class="wordmark">taOS</h1>
+      <p>Welcome — set up your account to get started.</p>
     </div>
     {err}
     <label class="field">

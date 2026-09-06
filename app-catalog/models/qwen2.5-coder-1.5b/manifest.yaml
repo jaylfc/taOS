@@ -1,5 +1,5 @@
 id: qwen2.5-coder-1.5b
-name: Qwen 2.5 Coder 1.5B Instruct (HEF)
+name: Qwen 2.5 Coder 1.5B Instruct
 type: model
 version: 2.5.0
 description: "Hailo-10H NPU-accelerated Qwen 2.5 Coder 1.5B — fast, small code-focused model for Raspberry Pi 5 + AI HAT+2 via hailo-ollama"
@@ -15,8 +15,8 @@ variants:
   format: hef
   size_mb: 1675
   min_ram_mb: 0
-  sha256: 88aa7633ebe3385452430ae19f2b459b5a00791cab035576a3262a41ec1350f5
-  download_url: https://dev-public.hailo.ai/v5.1.1/blob/Qwen2.5-Coder-1.5B-Instruct.hef
+  hef_h10h: 773470cd8bd8157cb6c48c4c1871b2b1c85b4d4b4b68193486828f7e7681330d
+  ollama_name: qwen2.5-coder:1.5b
   requires:
     backends:
     - id: hailo-ollama
@@ -29,4 +29,3 @@ hardware_tiers:
   arm-npu-16gb:
     recommended: a8w4
 context_window: 2048
-

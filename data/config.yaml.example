@@ -29,3 +29,11 @@ agents: []
 metrics:
   poll_interval: 30
   retention_days: 30
+
+# Wake budget controls how many scheduled checks an agent may receive per day.
+# Most specific wins: per-project overrides apply to project-bound agents,
+# then per-agent overrides, then the global default.
+wake_budget:
+  global_default: 2        # fleet default (rule 6): 2 scheduled checks/day
+  per_agent: {}            # agent id -> override
+  per_project: {}          # project id -> override

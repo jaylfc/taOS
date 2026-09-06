@@ -288,6 +288,26 @@ class LibraryStore(BaseStore):
             rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
+    async def list_jobs(
+        self, state: str | None = None, limit: int = 100,
+    ) -> list[dict]:
+        self._db.row_factory = aiosqlite.Row
+        where: list[str] = []
+        params: list = []
+        if state:
+            where.append("state = ?")
+            params.append(state)
+
+        sql = "SELECT * FROM library_jobs"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        async with self._db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
     async def update_job(self, job_id: str, **kwargs) -> None:
         allowed = {"state", "error", "updated_at"}
         fields = [(k, v) for k, v in kwargs.items() if k in allowed]

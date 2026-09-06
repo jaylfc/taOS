@@ -43,6 +43,15 @@ TimeoutStartSec=180
 # `deactivating` (which also breaks the in-app Update). Paired with the short
 # --max-time in taos-graceful-stop.sh.
 TimeoutStopSec=45
+# Private scratch dir for taos-graceful-stop's dedupe stamp: /run/taos for this
+# system unit, $XDG_RUNTIME_DIR/taos for the user-unit fallback, owned by the
+# service user either way. Without it the stamp fell back to world-writable
+# /tmp, where any local user could plant the file and silently suppress the
+# agent drain on every restart and reboot. Preserved across a restart so the
+# ExecStop stamp still dedupes the second call from taos-pre-shutdown.service.
+RuntimeDirectory=taos
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 Environment=PYTHONUNBUFFERED=1
 Environment=TAOS_PREFETCH_BASE_IMAGE=__TAOS_PREFETCH_VALUE__
 

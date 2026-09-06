@@ -11,9 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import tempfile
 import time
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,8 +25,11 @@ from tinyagentos.agent_token_auth import (
     _grant_unexpired,
     check_agent_scope,
 )
+from tinyagentos.atomic_io import atomic_write_text
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_STATE: dict = {"global": False, "lanes": {}}
 
@@ -39,7 +41,7 @@ STALE_CLAIM_SECONDS = 1800
 
 # Serialise read-modify-write of the pause/throttle state files so two
 # concurrent admin POSTs cannot lose an update (each reads the same prior
-# state and the second os.replace clobbers the first). The writes are
+# state and the second write clobbers the first). The writes are
 # infrequent admin actions, so a single in-process lock is sufficient.
 _write_lock = asyncio.Lock()
 
@@ -63,26 +65,22 @@ def _read_state(request: Request) -> dict:
     }
 
 
-def _atomic_write(p: Path, state: dict) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    # Write to a temp file in the same dir then atomically rename, so a crash
-    # mid-write or a concurrent writer can never leave a truncated/corrupt file
-    # (a reader always sees either the old or the new complete state).
-    fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix="." + p.stem + ".", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(json.dumps(state))
-        os.replace(tmp, p)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+async def _atomic_write(p: Path, state: dict) -> None:
+    # Temp file in the same dir, fsynced, then renamed (and the directory
+    # fsynced too), so neither a crash mid-write nor a concurrent writer can
+    # leave a truncated, corrupt or NUL-filled file -- a reader always sees
+    # either the old or the new complete state.
+    #
+    # Those two fsyncs are blocking syscalls: on a slow disk (an SD card on a
+    # Pi) they are tens of milliseconds in which no other request, dispatch
+    # tick or heartbeat can run, so the pause switch would stall the very
+    # fleet it steers. Run them on a worker thread; ``_write_lock`` is what
+    # serialises the read-modify-write, and it is still held across this await.
+    await asyncio.to_thread(atomic_write_text, p, json.dumps(state))
 
 
-def _write_state(request: Request, state: dict) -> None:
-    _atomic_write(_state_path(request), state)
+async def _write_state(request: Request, state: dict) -> None:
+    await _atomic_write(_state_path(request), state)
 
 
 async def _authorize_observatory_read(request: Request) -> str:
@@ -161,7 +159,7 @@ async def set_pause(body: PauseBody, request: Request):
             state["lanes"][scope] = True
         else:
             state["lanes"].pop(scope, None)
-        _write_state(request, state)
+        await _write_state(request, state)
     return state
 
 
@@ -229,7 +227,7 @@ async def set_throttle(body: ThrottleBody, request: Request):
             state["lanes"][scope] = limit
         else:
             state["lanes"].pop(scope, None)
-        _atomic_write(_throttle_path(request), state)
+        await _atomic_write(_throttle_path(request), state)
     return state
 
 
@@ -319,7 +317,7 @@ async def set_approval_mode(body: ApprovalModeBody, request: Request):
             state["sessions"][scope] = mode
         else:
             state["sessions"].pop(scope, None)
-        _atomic_write(_approval_path(request), state)
+        await _atomic_write(_approval_path(request), state)
     return state
 
 
@@ -403,7 +401,8 @@ async def get_fleet(request: Request):
 
     # Registered agents holding no card are idle; surface them so the fleet
     # shows the full active roster, not just the busy lanes. Best-effort: a
-    # missing or erroring registry must not break the working view.
+    # missing or erroring registry must not break the working view. Any
+    # registry exception is caught and logged; the working view still renders.
     registry = getattr(request.app.state, "agent_registry", None)
     registered: list[dict] = []
     if registry is not None:
@@ -413,6 +412,7 @@ async def get_fleet(request: Request):
             else:
                 registered = await registry.list_for_user(user_id, status="active") if user_id else []
         except Exception:
+            logger.exception("registry lookup failed for fleet view")
             registered = []
         for rec in registered:
             handle = (rec.get("handle") or "").strip()
@@ -456,3 +456,16 @@ async def get_fleet(request: Request):
         "status": "degraded" if stale_handles else ("active" if working_count else "idle"),
     }
     return {"agents": agents, "paused": _read_state(request), "health": health}
+
+
+@router.get("/api/observatory/wake-budget")
+async def get_wake_budget(request: Request):
+    """Per-agent wake budget, consumption, and next scheduled wake.
+
+    Admin or an agent holding ``observatory_control`` may read it.
+    """
+    await _authorize_observatory_read(request)
+    from tinyagentos.wake_budget import get_fleet_wake_info
+    data_dir = Path(request.app.state.data_dir)
+    info = await get_fleet_wake_info(data_dir, request.app.state.config, request.app.state.project_task_store)
+    return {"agents": info}

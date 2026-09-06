@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   bucketAgentChannels,
   buildAgentPresence,
+  collectBoundChannels,
   computeAgentPresence,
   type AgentSectionChannel,
   type AgentSectionLiveAgent,
@@ -207,5 +208,43 @@ describe("buildAgentPresence", () => {
       new Set(),
     );
     expect(presence).toEqual({});
+  });
+
+  describe("MessagesApp presence assembly (regression test for standalone project channels)", () => {
+    const ch = (id: string, agent?: string) => ({
+      id,
+      settings: agent ? { taostalk_agent: agent } : undefined,
+    });
+
+    it("bound project channel gets presence when its agent is thinking", () => {
+      const projectGroups = [
+        { channels: [ch("p1", "hermes")] },
+        { channels: [ch("p2")], },
+      ];
+      const dmSections = { live: [], suspended: [], archived: [] };
+      const grouped = { topic: [], group: [] };
+      const workingSlugs = new Set(["hermes"]);
+      const agentPresence = buildAgentPresence(
+        dmSections,
+        collectBoundChannels(grouped, projectGroups),
+        workingSlugs,
+      );
+      expect(agentPresence).toEqual({ p1: "working" });
+    });
+
+    it("bound project channel gets no presence when its agent is not thinking", () => {
+      const projectGroups = [
+        { channels: [ch("p1", "hermes")] },
+      ];
+      const dmSections = { live: [], suspended: [], archived: [] };
+      const grouped = { topic: [], group: [] };
+      const workingSlugs = new Set();
+      const agentPresence = buildAgentPresence(
+        dmSections,
+        collectBoundChannels(grouped, projectGroups),
+        workingSlugs,
+      );
+      expect(agentPresence).toEqual({});
+    });
   });
 });

@@ -258,59 +258,190 @@ _RESUME_RETRY_WINDOW_S = 600
 
 _MAX_CONTEXT_SNAPSHOT_BYTES = 32768
 
+# A resume note without these is not worth resuming: the framework cannot tell
+# which agent or session it is waking. Preserving them was documented and
+# asserted but never implemented - both drop loops ordered purely by value size,
+# so the fields survived only while their values happened to be small. A large
+# agent_id beside many long-NAME fields sorts FIRST and is dropped first, and
+# ordering by serialized entry size instead does not help: the long names move
+# the entries, not the ordering. Exclude them by name.
+_REQUIRED_SNAPSHOT_FIELDS = ("agent_id", "session_id")
+_TRUNCATION_REASON = (
+    "snapshot exceeded context window; largest fields dropped first, "
+    "agent_id and session_id kept where the cap allows"
+)
+_NON_OBJECT_TRUNCATION_REASON = (
+    "context_snapshot was not an object and exceeded the context window; "
+    "the whole value was dropped"
+)
+
+
+def _entry_bytes(key: str, value) -> int:
+    """Serialized cost of one `"key":value` pair inside a JSON object."""
+    return len(json.dumps(key)) + 1 + len(json.dumps(value, separators=(",", ":")))
+
+
+def _object_bytes(entry_total: int, count: int) -> int:
+    """Serialized size of an object whose entries cost `entry_total` bytes:
+    the two braces plus the comma between each adjacent pair.
+
+    Sizes are tracked arithmetically because the cap tests apply once per
+    dropped field, and re-serializing a 32 KB snapshot on every iteration made
+    the drop loop quadratic in the number of fields.
+    """
+    return 2 + entry_total + max(count - 1, 0)
+
+
+# Room held back so the marker always has somewhere to go: dropping fields
+# until the payload merely fits leaves the snapshot flush against the cap, and
+# the record of what was lost then cannot be written at all. This is the
+# CHEAPEST marker - names are reported out of whatever room is left over, never
+# by sacrificing another payload field to describe the ones already gone.
+_MARKER_RESERVE_BYTES = (
+    _entry_bytes("_truncated", {"dropped_fields": [], "reason": _TRUNCATION_REASON}) + 1
+)
+
 
 def _cap_context_snapshot(note: dict) -> None:
     snapshot = note.get("context_snapshot")
-    if not isinstance(snapshot, dict) or not snapshot:
+    if not isinstance(snapshot, dict):
+        _cap_non_object_snapshot(note, snapshot)
+        return
+    if not snapshot:
+        return
+
+    sizes = {key: _entry_bytes(key, value) for key, value in snapshot.items()}
+    entry_total = sum(sizes.values())
+    total = _object_bytes(entry_total, len(sizes))
+    if total <= _MAX_CONTEXT_SNAPSHOT_BYTES:
+        return
+    logger.warning(
+        "resume note context_snapshot capped: %d bytes over limit (%d bytes total)",
+        total - _MAX_CONTEXT_SNAPSHOT_BYTES,
+        total,
+    )
+    snapshot = dict(snapshot)
+    note["context_snapshot"] = snapshot
+
+    def _drop(key: str) -> None:
+        nonlocal entry_total
+        snapshot.pop(key)
+        entry_total -= sizes.pop(key)
+        dropped.append(key)
+
+    def _fits(reserve: int = 0) -> bool:
+        return (
+            _object_bytes(entry_total, len(sizes))
+            <= _MAX_CONTEXT_SNAPSHOT_BYTES - reserve
+        )
+
+    # Ordered by VALUE size, which is what "largest fields dropped first"
+    # means to whoever reads the marker; the ordering is computed once, and
+    # the running total above is what makes each cap test O(1).
+    def _value_bytes(key: str) -> int:
+        return len(json.dumps(snapshot[key], separators=(",", ":")))
+
+    dropped: list[str] = []
+    for key in sorted(
+        (k for k in snapshot if k not in _REQUIRED_SNAPSHOT_FIELDS),
+        key=_value_bytes,
+        reverse=True,
+    ):
+        if _fits(_MARKER_RESERVE_BYTES):
+            break
+        _drop(key)
+
+    if not _fits():
+        # Only the required fields are left and the snapshot still overflows.
+        # The cap is the harder invariant - an over-limit note re-triggers the
+        # very overflow the cap exists to prevent - so give them up too,
+        # largest first, and record them like any other dropped field.
+        for key in sorted(
+            (k for k in snapshot if k in _REQUIRED_SNAPSHOT_FIELDS),
+            key=_value_bytes,
+            reverse=True,
+        ):
+            if _fits():
+                break
+            _drop(key)
+
+    # Priced against the room actually left, so adding the marker can never
+    # put the snapshot back over the cap and there is no second drop pass to
+    # undo it. Only a snapshot with no room at all for a bare marker goes out
+    # without one, and that is said out loud rather than silently.
+    marker = _build_truncated_marker(
+        dropped, entry_total, len(sizes), _MAX_CONTEXT_SNAPSHOT_BYTES
+    )
+    if marker is not None:
+        snapshot["_truncated"] = marker
+    else:
+        logger.warning(
+            "resume note context_snapshot left no room for the truncation "
+            "marker; %d dropped field name(s) are not recorded",
+            len(dropped),
+        )
+
+
+def _cap_non_object_snapshot(note: dict, snapshot) -> None:
+    """Bound a `context_snapshot` that is not an object.
+
+    The agent's own framework writes `resume_note.json` when it answers
+    /prepare-for-shutdown, so the snapshot is only an object by convention: a
+    transcript dumped as a bare string or a list of turns arrives here too.
+    Returning early on those posted them to /resume unchanged, which is the
+    exact overflow the cap exists to prevent, reached through the one shape
+    the guard never checked. A scalar has no fields to drop, so an oversized
+    one is replaced wholesale by the marker - bounded by construction, and
+    back in the documented object shape.
+    """
+    if snapshot is None:
         return
     encoded = json.dumps(snapshot, separators=(",", ":"))
     if len(encoded) <= _MAX_CONTEXT_SNAPSHOT_BYTES:
         return
-    overflow = len(encoded) - _MAX_CONTEXT_SNAPSHOT_BYTES
     logger.warning(
-        "resume note context_snapshot capped: %d bytes over limit (%d bytes total)",
-        overflow,
+        "resume note context_snapshot is a %s of %d bytes, over the %d-byte "
+        "limit; replacing it with the truncation marker",
+        type(snapshot).__name__,
         len(encoded),
+        _MAX_CONTEXT_SNAPSHOT_BYTES,
     )
-    snapshot_copy = dict(snapshot)
-    fields = sorted(
-        snapshot_copy.items(),
-        key=lambda kv: len(json.dumps(kv[0], separators=(",", ":")))
-        + len(json.dumps(kv[1], separators=(",", ":")))
-        + 1,
-        reverse=True,
-    )
-    dropped_count = 0
-    max_dropped = len(fields)
-    marker_overhead = len(
-        json.dumps(
-            {"_truncated": True, "_dropped": max_dropped}, separators=(",", ":")
+    note["context_snapshot"] = {
+        "_truncated": {
+            "dropped_fields": ["context_snapshot"],
+            "reason": _NON_OBJECT_TRUNCATION_REASON,
+        }
+    }
+
+
+def _build_truncated_marker(
+    dropped: list[str], entry_total: int, count: int, max_bytes: int
+) -> dict | None:
+    """The largest marker that still fits, or None when even a bare one does not.
+
+    `entry_total`/`count` price the snapshot WITHOUT the marker (see
+    `_object_bytes`), so a candidate costs one dump of the marker alone rather
+    than a fresh dump of the whole 32 KB snapshot.
+    """
+    _MAX_DROPPED = 100
+    candidates = []
+    for n_reported in range(min(len(dropped), _MAX_DROPPED), -1, -1):
+        extra = len(dropped) - n_reported
+        candidates.append(
+            dropped[:n_reported] + ([f"...and {extra} more"] if extra > 0 else [])
         )
-    )
-    for key, _ in fields:
-        del snapshot_copy[key]
-        dropped_count += 1
-        encoded = json.dumps(snapshot_copy, separators=(",", ":"))
-        if len(encoded) + marker_overhead <= _MAX_CONTEXT_SNAPSHOT_BYTES:
-            break
-    snapshot_copy["_truncated"] = True
-    snapshot_copy["_dropped"] = dropped_count
-    encoded = json.dumps(snapshot_copy, separators=(",", ":"))
-    while len(encoded) > _MAX_CONTEXT_SNAPSHOT_BYTES and len(snapshot_copy) > 2:
-        remaining = [k for k in snapshot_copy if k not in ("_truncated", "_dropped")]
-        if not remaining:
-            break
-        smallest = min(
-            remaining,
-            key=lambda k: len(json.dumps(k, separators=(",", ":")))
-            + len(json.dumps(snapshot_copy[k], separators=(",", ":")))
-            + 1,
-        )
-        del snapshot_copy[smallest]
-        dropped_count += 1
-        snapshot_copy["_dropped"] = dropped_count
-        encoded = json.dumps(snapshot_copy, separators=(",", ":"))
-    note["context_snapshot"] = snapshot_copy
+    if dropped:
+        # Even the "...and N more" placeholder can be more than the room left;
+        # record that fields went missing rather than nothing at all.
+        candidates.append([])
+    for names in candidates:
+        marker = {"dropped_fields": names, "reason": _TRUNCATION_REASON}
+        if (
+            _object_bytes(entry_total + _entry_bytes("_truncated", marker), count + 1)
+            <= max_bytes
+        ):
+            return marker
+    return None
 
 
 def _load_or_synthesize_note(note_path: Path) -> dict:

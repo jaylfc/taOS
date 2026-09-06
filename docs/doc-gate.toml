@@ -129,6 +129,11 @@ hint = "agent-facing behaviour changed; review the agent manual or coordination 
 # The contributor skill documents how to contribute, test and ship. When CI,
 # packaging or the contribution rules move, it goes stale silently because
 # nothing imports it.
+# A workflow-file change that bumps only `uses: <action>@<ref>` pins (a
+# dependency-bot version update) is detected by scripts/check_doc_gate.py and
+# treated as non-structural, so it does NOT trip this rule and dependency-update
+# PRs for GitHub Actions can pass without a trailer the bot cannot author. The
+# exemption is content-based: a substantive workflow edit by any author still does.
 [[rules]]
 name = "contributor-skill"
 on_modify = true

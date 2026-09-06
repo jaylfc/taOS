@@ -1,0 +1,3 @@
+### Fixed
+- Board: the lead-only Unquarantine button is now reachable by keyboard (Enter or Space on the focused button activates onUnquarantine instead of bubbling to the card's role="button" handler and opening the task).
+- Board: a live `task.quarantined` SSE event now carries `strike_count` and `latest_strike` (producer: `ProjectTaskStore.quarantine_task`), so the badge stops reporting "0 strikes" until reload after a card is quarantined mid-session.

@@ -25,11 +25,13 @@ export interface AppManifest {
    */
   pwa?: boolean;
   /**
-   * Launcher tiering (issue #2143). Controls which apps the desktop launcher
-   * (launchpad, search) surfaces:
+   * Launcher tiering (issue #2143). Controls which apps the desktop launchpad
+   * (the default surface) surfaces, distinct from the searchable selection.
+   * The search palette uses a separate predicate (see `getSearchableApps`):
+   * default-surface apps plus installed optional apps plus tier-3 apps.
    *   1 - always shown (default for apps without an explicit tier)
    *   2 - shown, grouped under `group` (e.g. "System")
-   *   3 - hidden from launcher (lives in Settings)
+   *   3 - hidden from launcher (lives in Settings) but searchable
    *   4 - file handler (hidden from launcher, openable by id)
    *   5 - Store-optional, off by default
    */
@@ -51,6 +53,7 @@ export const apps: AppManifest[] = [
   { id: "store", name: "Store", icon: "shopping-bag", category: "platform", component: () => import("@/apps/StoreApp").then((m) => ({ default: m.StoreApp })), defaultSize: { w: 1000, h: 700 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: true, launchpadOrder: 4 },
   { id: "guides", name: "Guides", icon: "book-open", category: "platform", component: () => import("@/apps/GuidesApp").then((m) => ({ default: m.GuidesApp })), defaultSize: { w: 900, h: 650 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 4.25 },
   { id: "settings", name: "Settings", icon: "settings", category: "platform", component: () => import("@/apps/SettingsApp").then((m) => ({ default: m.SettingsApp })), defaultSize: { w: 800, h: 550 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: true, launchpadOrder: 5 },
+  { id: "notifications", name: "Notifications", icon: "bell", category: "platform", component: () => import("@/apps/NotificationsApp").then((m) => ({ default: m.NotificationsApp })), defaultSize: { w: 900, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: true, launchpadOrder: 5.5 },
   { id: "models", name: "Models", icon: "brain", category: "platform", component: () => import("@/apps/ModelsApp").then((m) => ({ default: m.ModelsApp })), defaultSize: { w: 900, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 6, tier: 2, group: "System" },
   { id: "providers", name: "Providers", icon: "cloud", category: "platform", component: () => import("@/apps/ProvidersApp").then((m) => ({ default: m.ProvidersApp })), defaultSize: { w: 950, h: 640 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: false, launchpadOrder: 6.5, tier: 3 },
   { id: "dashboard", name: "Activity", icon: "activity", category: "platform", component: () => import("@/apps/ActivityApp").then((m) => ({ default: m.ActivityApp })), defaultSize: { w: 1100, h: 720 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: false, launchpadOrder: 7 },
@@ -80,7 +83,7 @@ export const apps: AppManifest[] = [
   { id: "agent-browsers", name: "Browsers", icon: "globe", category: "platform", component: () => import("@/apps/AgentBrowsersApp").then((m) => ({ default: m.AgentBrowsersApp })), defaultSize: { w: 1000, h: 650 }, minSize: { w: 550, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16 },
   { id: "feedback", name: "Feedback", icon: "flag", category: "platform", component: () => import("@/apps/FeedbackApp").then((m) => ({ default: m.FeedbackApp })), defaultSize: { w: 700, h: 560 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.5 },
   { id: "decisions", name: "Decisions", icon: "inbox", category: "platform", component: () => import("@/apps/DecisionsApp").then((m) => ({ default: m.DecisionsApp })), defaultSize: { w: 640, h: 620 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.6 },
-  { id: "notification-archive", name: "Archive", icon: "archive", category: "platform", component: () => import("@/apps/NotificationArchiveApp").then((m) => ({ default: m.NotificationArchiveApp })), defaultSize: { w: 800, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.65 },
+  { id: "notification-archive", name: "Archive", icon: "archive", category: "platform", component: () => import("@/apps/NotificationArchiveApp").then((m) => ({ default: m.NotificationArchiveApp })), defaultSize: { w: 800, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.65, tier: 3 },
   { id: "observatory", name: "Observatory", icon: "radar", category: "platform", component: () => import("@/apps/ObservatoryApp").then((m) => ({ default: m.ObservatoryApp })), defaultSize: { w: 620, h: 600 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.7, tier: 2, group: "System" },
   { id: "notes", name: "Notes", icon: "sticky-note", category: "platform", component: () => import("@/apps/NotesApp").then((m) => ({ default: m.NotesApp })), defaultSize: { w: 860, h: 620 }, minSize: { w: 520, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.8 },
   { id: "todo", name: "Todo", icon: "list-checks", category: "platform", component: () => import("@/apps/TodoApp").then((m) => ({ default: m.TodoApp })), defaultSize: { w: 860, h: 620 }, minSize: { w: 520, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.85 },
@@ -159,21 +162,101 @@ export function getOptionalApps(): AppManifest[] {
  * optional apps the user has installed. `installedOptional` is the set of
  * installed optional app ids (from /api/apps/optional/installed).
  */
-export const APP_REDIRECTS: Record<string, { appId: string; section?: string }> = {};
+/** What a dock pin launches: the app, plus the section it should open on. */
+export interface ResolvedPinnedId {
+  id: string;
+  section?: string;
+}
+
+/** Window props that put the launched app on the pin's section. */
+export type PinnedLaunchProps = { section?: string };
+
+/**
+ * Pin ids that are not app ids: retired launcher entries the dock may still
+ * hold, mapped to the app (and section) they open today.
+ *
+ * The dock stores *pin ids*, never these resolved targets. Rewriting a pin to
+ * its target throws the section away — `notifications` alone cannot say the
+ * pin meant the Archive tab — and the dock auto-save then persists the
+ * stripped id, so one reload destroys the pin for good (#2677). Resolution
+ * therefore happens where a pin is used: `pinnedAppId` for the icon,
+ * `pinnedLaunchProps` for the launch.
+ */
+export const APP_REDIRECTS: Record<string, { appId: string; section?: string }> = {
+  "notification-archive": { appId: "notifications", section: "archive" },
+};
+
+/**
+ * Whether an app belongs on the default surface: the desktop launcher's
+ * always-on grid AND the mobile home default grid. This is the single source
+ * of truth for the tier rule that landed in bfc40c1e6 -- reuse it here instead
+ * of hand-rolling a second predicate that can drift:
+ *   tier 1 (default) / 2 - shown on the default surface
+ *   tier 3            - hidden from the default surface, searchable
+ *   tier 4            - file handler, hidden from the default surface
+ *   tier 5            - Store-optional, hidden from the default surface
+ * Optional apps and file handlers are excluded here; optional apps only
+ * surface once installed (see getLaunchableApps).
+ */
+export function isDefaultSurfaceApp(app: AppManifest): boolean {
+  return (
+    !app.optional &&
+    app.handler !== true &&
+    (app.tier === undefined || app.tier <= 2)
+  );
+}
+
+/**
+ * Apps the desktop search should surface: every always-on app, installed
+ * optional apps, and tier-3 registry apps (providers, mcp, channels,
+ * notification-archive). Tier-3 apps remain hidden from the launcher grids
+ * and mobile home default surface; they are reachable here via search and
+ * still openable by direct id.
+ */
+export function getSearchableApps(installedOptional: Set<string>): AppManifest[] {
+  return getAllApps().filter(
+    (a) =>
+      a.optional
+        ? installedOptional.has(a.id)
+        : (isDefaultSurfaceApp(a) || a.tier === 3),
+  );
+}
 
 export function getLaunchableApps(installedOptional: Set<string>): AppManifest[] {
   return getAllApps().filter(
     (a) =>
-      (!a.optional || installedOptional.has(a.id)) &&
-      a.handler !== true &&
-      (a.tier === undefined || a.tier <= 2 || (a.tier === 5 && installedOptional.has(a.id))),
+      isDefaultSurfaceApp(a) ||
+      (a.optional && installedOptional.has(a.id)),
   );
 }
 
-export function resolvePinnedId(id: string): string | undefined {
+/**
+ * Resolve a dock pin id to the app it launches, or undefined when no app
+ * (yet) claims it — a userspace app can register after the dock restores.
+ */
+export function resolvePinnedId(id: string): ResolvedPinnedId | undefined {
   const redirect = APP_REDIRECTS[id];
   const targetId = redirect?.appId ?? id;
-  return getApp(targetId) ? targetId : undefined;
+  if (!getApp(targetId)) return undefined;
+  return { id: targetId, ...(redirect?.section ? { section: redirect.section } : {}) };
+}
+
+/**
+ * The app id a pin renders and launches as. Unknown pins keep their own id so
+ * an app that registers later still lines up with the pin the user saved.
+ */
+export function pinnedAppId(id: string): string {
+  return resolvePinnedId(id)?.id ?? id;
+}
+
+/**
+ * The props a pin's launch must carry, or undefined when it opens the app's
+ * default view. Every launch site goes through this so a section can never be
+ * declared in APP_REDIRECTS and then quietly dropped on the way to the window.
+ */
+export function pinnedLaunchProps(id: string): PinnedLaunchProps | undefined {
+  const section = resolvePinnedId(id)?.section;
+  return section ? { section } : undefined;
 }
 
 const prefetched = new Set<string>();

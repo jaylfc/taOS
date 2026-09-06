@@ -26,7 +26,7 @@ the evidence at the granularity of the audit:
     2  ERROR -- infrastructure failure (network, auth, 404, etc.).
 
 Usage:
-    python scripts/check_bot_review.py <pr-number> [--owner OWNER] [--repo REPO]
+    python scripts/check_bot_review.py <pr-number> [--owner OWNER] [--repo REPO] [--label LABEL]
 """
 from __future__ import annotations
 
@@ -69,10 +69,55 @@ RATE_LIMIT_RE = re.compile(
 # scaffolding rather than review content: the acknowledgement reply posted
 # when a @coderabbitai full review trigger is accepted but no review follows,
 # and the auto-summary comment posted on merge/close. Both carry no findings
-# and must never read as a review.
+# and must never read as a real review.
+#
+# Split into per-fragment detectors so each stub kind can be neutered in
+# isolation without another masking the gap (see TestDetectorIsolation). A
+# single combined regex would read green with one half untested: the audit
+# measured that at 43/43 and it is exactly the false-green the gate exists to
+# catch.
+CODERABBIT_ACKNOWLEDGEMENT_RE = re.compile(
+    r"<!-- CodeRabbit review command invocation:[^>]+ -->",
+    re.IGNORECASE,
+)
+CODERABBIT_AUTO_SUMMARY_RE = re.compile(
+    r"<!-- This is an auto-generated comment: summarize by coderabbit\.ai -->",
+    re.IGNORECASE,
+)
 CODERABBIT_SCAFFOLDING_RE = re.compile(
-    r"<!-- (?:This is an auto-generated comment: summarize by coderabbit\.ai"
-    r"|CodeRabbit review command invocation:[^>]+) -->",
+    rf"{CODERABBIT_ACKNOWLEDGEMENT_RE.pattern}|{CODERABBIT_AUTO_SUMMARY_RE.pattern}",
+    re.IGNORECASE,
+)
+
+# A CodeRabbit auto-summary comment that reports a completed review with zero
+# findings carries ALL THREE of the following markers (the three-marker rule):
+#   (a) "No actionable comments were generated in the recent review" -- the
+#       no-findings assertion.
+#   (b) "**Run ID**: <uuid>" -- a CodeRabbit run id, only present when an
+#       actual review ran.
+#   (c) "Files selected for processing (N)" with N >= 1 -- at least one file
+#       was in scope for the review (everything path-filtered -> stub).
+# The previous discriminator used the quota-consumed "Included review
+# availability:" line, which only appears on manually-triggered reviews
+# (e.g. @coderabbitai full review) and is absent on the AUTOMATIC review
+# posted at PR-open -- the very case the gate exists to clear.
+CODERABBIT_ZERO_FINDING_PHRASE_RE = re.compile(
+    r"No actionable comments were generated in the recent review",
+    re.IGNORECASE,
+)
+# Informational: the quota-consumed line is retained for reference but is no
+# longer required by the predicate. Automatic reviews carry it only after a
+# manual re-trigger rewrites the comment.
+CODERABBIT_QUOTA_RE = re.compile(
+    r"Included review availability:.*?remain after this review",
+    re.DOTALL | re.IGNORECASE,
+)
+CODERABBIT_RUN_ID_RE = re.compile(
+    r"\*\*Run ID\*\*:\s*(\S+)",
+    re.IGNORECASE,
+)
+CODERABBIT_FILES_SELECTED_RE = re.compile(
+    r"Files selected for processing\s*\((\d+)\)",
     re.IGNORECASE,
 )
 
@@ -80,7 +125,35 @@ EXIT_OK = 0
 EXIT_STUB = 1
 EXIT_ERROR = 2
 
+# A human-placed label that explicitly waives the bot-review gate for a PR
+# whose only CodeRabbit output is a rate-limit stub or auto-generated
+# scaffolding -- an infrastructure condition (CodeRabbit rate-limited, or a
+# review trigger accepted with no review produced), not a defect in the PR.
+# Applied by a lead; never by automation in a PR lane. Mirrors
+# `gate-integrity-allow` for the gate-integrity guard. Read from the API at
+# run time, never from a stale event payload.
+DEFAULT_ALLOW_LABEL = "bot-review-allow"
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The check-run that this gate publishes / reads back, and the mapping from
+# this gate's exit verdict to the GitHub check-run conclusion. The gate only
+# writes a terminal conclusion (success/failure) -- it never reports in_progress
+# or neutral, so a check-run conclusion is authoritative for the head SHA.
+CHECK_RUN_NAME = "Bot review gate"
+
+# A single GitHub workflow emits TWO distinct check runs on the same head SHA:
+# one named after the workflow DISPLAY name ("Bot review gate") and one named
+# after the workflow JOB id ("bot-review-gate"), which is the runner-owned run
+# GitHub creates for the Actions job itself. mergeStateStatus keys off ANY
+# failing check run, so the read filter must match both names -- matching only
+# the display name drops the job-id run that is what actually pins a
+# self-healed PR on UNSTABLE (see PR #2573).
+CHECK_RUN_NAMES = frozenset({CHECK_RUN_NAME, "bot-review-gate"})
+VERDICT_TO_CONCLUSION = {
+    EXIT_OK: "success",
+    EXIT_STUB: "failure",
+}
 
 
 @dataclass
@@ -159,10 +232,80 @@ def is_coderabbit_scaffolding(body: str | None) -> bool:
     review follows, and (b) the auto-summary comment posted on merge/close.
     Neither carries findings; both are machine-identifiable stubs that must
     not read as a real review, exactly as a rate-limit stub does.
+
+    Kept as a union of the per-fragment detectors so legacy callers that do a
+    single stub check see the same coverage; internal callers should prefer the
+    per-fragment detectors so a regression in one cannot be hidden by the other.
     """
+    return is_coderabbit_acknowledgement(body) or is_coderabbit_auto_summary(body)
+
+
+def is_coderabbit_acknowledgement(body: str | None) -> bool:
+    """Return True if a body is CodeRabbit's review-trigger acknowledgement
+    reply -- posted when a @coderabbitai review trigger is accepted but no
+    review content follows."""
     if not body:
         return False
-    return bool(CODERABBIT_SCAFFOLDING_RE.search(body))
+    return bool(CODERABBIT_ACKNOWLEDGEMENT_RE.search(body))
+
+
+def is_coderabbit_auto_summary(body: str | None) -> bool:
+    """Return True if a body is CodeRabbit's auto-generated summary comment
+    posted on merge/close -- carries no findings."""
+    if not body:
+        return False
+    return bool(CODERABBIT_AUTO_SUMMARY_RE.search(body))
+
+
+def is_coderabbit_zero_finding_review(body: str | None) -> tuple[bool, str | None, int]:
+    """Return (True, run_id, files_selected) if a body is a CodeRabbit
+    auto-summary comment reporting a completed review with zero findings,
+    else (False, None, 0).
+
+    A completed zero-finding review is an auto-summary comment whose body
+    contains ALL THREE of:
+      (a) "No actionable comments were generated in the recent review" --
+          the no-findings assertion.
+      (b) a "**Run ID**: <uuid>" line -- only present when an actual review
+          ran.
+      (c) "Files selected for processing (N)" with N >= 1 -- at least one
+          file was in scope for the review; N == 0 means everything was
+          path-filtered and nothing was reviewed (a stub the lead labels).
+
+    A rate-limit stub is rejected outright, ahead of the three markers.
+    CodeRabbit's real rate-limit comment (see PRs #2765/#2766) already
+    carries the auto-summary marker, a "**Run ID**:" line AND a non-zero
+    "Files selected for processing (N)" list -- three of the four gates --
+    so the ONLY thing separating it from a genuine zero-finding review is
+    the absence of the no-actionable phrase. That is a one-phrase margin on
+    the exact body class this gate exists to reject, so the stub check is
+    made explicit rather than left implied: a stub must fail because it is
+    a stub, not because one phrase happened not to appear in it.
+
+    The previous version also required the quota-consumed "Included review
+    availability:" line, but that line appears ONLY on manually-triggered
+    reviews (@coderabbitai full review) and is absent on the AUTOMATIC
+    review posted at PR-open -- so the very case the gate exists to clear
+    stayed red on every clean lane PR.
+    """
+    if not body:
+        return False, None, 0
+    if is_rate_limit_stub(body):
+        return False, None, 0
+    if not is_coderabbit_auto_summary(body):
+        return False, None, 0
+    if not CODERABBIT_ZERO_FINDING_PHRASE_RE.search(body):
+        return False, None, 0
+    run_id_match = CODERABBIT_RUN_ID_RE.search(body)
+    if not run_id_match:
+        return False, None, 0
+    files_match = CODERABBIT_FILES_SELECTED_RE.search(body)
+    if not files_match:
+        return False, None, 0
+    files_selected = int(files_match.group(1))
+    if files_selected < 1:
+        return False, None, 0
+    return True, run_id_match.group(1), files_selected
 
 
 def is_real_item(item: CRItem) -> bool:
@@ -198,6 +341,22 @@ def _is_coderabbit(user: dict | None) -> bool:
     if not user:
         return False
     return (user.get("login") or "").lower() in CODERABBIT_LOGINS
+
+
+def _is_job_owned_run(run: dict) -> bool:
+    """Return True if a check run is runner-owned and cannot be PATCHed.
+
+    GitHub Actions creates a runner-owned check run for each job (app.slug
+    = github-actions, external_id set to the job GUID). The Actions API
+    token cannot update these runs, so they must be skipped during
+    reconcile and ignored when reading the head-SHA verdict.
+    """
+    if run.get("external_id"):
+        return True
+    details_url = run.get("details_url") or ""
+    if "/actions/runs/" in details_url:
+        return True
+    return False
 
 
 def collect_coderabbit_items(
@@ -265,18 +424,49 @@ def collect_coderabbit_items(
     return items
 
 
+def collect_pr_labels(
+    owner: str, repo: str, pr_number: int, token: str | None = None,
+) -> set[str] | None:
+    """Fetch the PR's label NAMES via the GitHub REST API.
+
+    Returns None on infrastructure failure (network error, auth failure,
+    404, bad JSON), so cannot-see is never mistaken for "no waiver label set".
+    Returns a set of label names (possibly empty) on success. The label is
+    read here, at run time, from the API -- never from a stale event payload,
+    which is the contract that makes `labeled`/`unlabeled` activity reliable.
+    """
+    data = _api_get(f"{API}/repos/{owner}/{repo}/pulls/{pr_number}", token)
+    if data is None:
+        return None
+    pr = data[0] if isinstance(data, list) and data else {}
+    if not isinstance(pr, dict):
+        return None
+    return {
+        lbl.get("name", "") for lbl in pr.get("labels", [])
+        if isinstance(lbl, dict)
+    }
+
+
 def classify(items: list[CRItem]) -> tuple[int, str]:
     """Classify CR items and determine the exit code + message.
 
     Returns (exit_code, message):
     - (0, "PASS ...")            -- a real CodeRabbit review exists.
     - (0, "PASS (absent, ...)")  -- CodeRabbit is entirely absent.
+    - (0, "PASS ...")            -- a completed zero-finding CodeRabbit review
+                                   exists: an auto-summary carrying ALL THREE
+                                   markers -- the no-actionable-comments
+                                   phrase, a "**Run ID**:" line, and
+                                   "Files selected for processing (N)" with
+                                   N >= 1. The quota-consumed "Included review
+                                   availability:" line is NOT required; it is
+                                   absent on the automatic PR-open review.
     - (1, "FAIL ...")            -- only stubs exist, i.e. rate-limit stubs
-                                  or CodeRabbit auto-generated scaffolding
-                                  (acknowledgement / auto-summary), neither
-                                  of which is review content.
+                                   or CodeRabbit auto-generated scaffolding
+                                   (acknowledgement / auto-summary), neither
+                                   of which is review content.
     - (0, "PASS ...")            -- CR output exists but is neither a stub
-                                  nor substantive (edge case, not fake-green).
+                                   nor substantive (edge case, not fake-green).
     """
     if not items:
         return EXIT_OK, "PASS (absent, not stubbed): no CodeRabbit output on this PR"
@@ -287,6 +477,19 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
             f"PASS: {len(real_items)} real CodeRabbit review item(s) "
             f"(exit {EXIT_OK})"
         )
+
+    # Check for a completed zero-finding review before falling through to the
+    # stub verdict. An auto-summary comment carrying the three-marker shape
+    # (no-actionable + Run ID + Files selected N>=1) means CodeRabbit ran and
+    # found nothing -- that is a real review outcome, not fake-green.
+    for item in items:
+        is_zf, run_id, files_selected = is_coderabbit_zero_finding_review(item.body)
+        if is_zf:
+            return EXIT_OK, (
+                f"PASS: real CodeRabbit review, 0 findings "
+                f"(run {run_id}, {files_selected} file(s) selected) "
+                f"(exit {EXIT_OK})"
+            )
 
     # No real review threads. A trigger was accepted but produced no review
     # content: that is the fake-green condition. This covers both the
@@ -319,13 +522,29 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
 
 
 def check_bot_review(
-    owner: str, repo: str, pr_number: int, token: str | None = None,
+    owner: str, repo: str, pr_number: int,
+    allow_label: str = DEFAULT_ALLOW_LABEL,
+    token: str | None = None,
 ) -> tuple[int, str]:
     """Check a PR's CodeRabbit output for rate-limit stubs.
 
     Returns (exit_code, message). EXIT_ERROR (2) is returned when the
     GitHub API cannot be reached or returns an error, so a cannot-see
     state is never mistaken for a clean pass.
+
+    When the PR carries `allow_label` (read fresh from the GitHub API at
+    run time) AND the only CodeRabbit output is a stub -- a rate-limit stub
+    or CodeRabbit auto-generated scaffolding (acknowledgement reply /
+    auto-summary) -- the FAIL verdict is waived to exit 0 with a message
+    that explicitly says WAIVED. It is never reported as a genuine PASS, so
+    a human reading the check output always knows the gate was overridden by
+    a conscious lead act, not cleared by the bot.
+
+    The waiver covers only the EXIT_STUB verdict class (both stub kinds,
+    because both are infrastructural: CodeRabbit was rate-limited or its
+    trigger was accepted with no review produced -- neither is a defect in
+    the PR). It does NOT cover EXIT_ERROR (cannot fetch CR items), which
+    must stay fail-closed on a genuine cannot-see.
     """
     items = collect_coderabbit_items(owner, repo, pr_number, token)
     if items is None:
@@ -333,7 +552,255 @@ def check_bot_review(
             f"error: could not fetch CodeRabbit output for PR #{pr_number} "
             f"(exit {EXIT_ERROR})"
         )
-    return classify(items)
+    exit_code, message = classify(items)
+    if exit_code == EXIT_STUB:
+        labels = collect_pr_labels(owner, repo, pr_number, token)
+        if labels is not None and allow_label in labels:
+            return EXIT_OK, (
+                f"bot-review-gate: WAIVED -- `{allow_label}` label overrides the "
+                f"stub-only verdict (rate-limit stub / auto-generated scaffolding). "
+                f"A lead confirmed this is an infrastructural CodeRabbit condition, "
+                f"not a PR defect. Underlying verdict waived: {message}"
+            )
+    return exit_code, message
+
+
+def list_check_runs(
+    owner: str, repo: str, ref: str, token: str | None = None,
+) -> list[dict] | None:
+    """List bot-review-gate check runs for a commit ref (a head SHA).
+
+     Reads GET /repos/{owner}/{repo}/commits/{ref}/check-runs and keeps only the
+     runs named in ``CHECK_RUN_NAMES`` (the workflow display name and the
+     GitHub Actions job id, which is the runner-owned run that actually pins
+     mergeStateStatus). Returns None on infrastructure failure, [] if
+    the ref exists but has no bot-review-gate runs (so callers can distinguish
+    cannot-see from a legitimately-empty head SHA).
+    """
+    token = token or _get_token()
+    url = f"{API}/repos/{owner}/{repo}/commits/{ref}/check-runs"
+    data = _api_get(url, token)
+    if data is None:
+        return None
+    # _api_get wraps a single dict response as [dict] and leaves a list response
+    # as a list. The check-runs endpoint returns a single {"total_count": N,
+    # "check_runs": [...]} object, which _api_get thus hands back as a
+    # one-element list; a flat list of run dicts is handled too.
+    # Aggregate check_runs across ALL pages instead of reading only page 1
+    if isinstance(data, list) and data and isinstance(data[0], dict) and "check_runs" in data[0]:
+        # Multiple pages: aggregate check_runs from ALL pages
+        runs = [r for page in data for r in page.get("check_runs", [])]
+    elif isinstance(data, dict) and "check_runs" in data:
+        runs = data["check_runs"]
+    elif isinstance(data, list):
+        # Flat list of runs (edge case)
+        runs = data
+    else:
+        runs = []
+    return [r for r in runs if isinstance(r, dict) and r.get("name") in CHECK_RUN_NAMES]
+
+
+def filter_head_sha_check_runs(check_runs: list[dict]) -> list[dict]:
+    """Drop non-terminal and job-owned runs; keep only completed bot-review-gate
+    check runs the script can actually write, sorted most-recent-first by
+    (started_at, id).
+
+    Runner-owned job check runs (app.slug=github-actions) cannot be PATCHed
+    via the Actions API token, so they are irrelevant to the verdict: the
+    merge box keys off the latest check run per name, and the script's own
+    runs are the only ones it can correct.
+    """
+    completed = [
+        r for r in check_runs
+        if r.get("status") == "completed" and r.get("conclusion") is not None
+        and not _is_job_owned_run(r)
+    ]
+    return sorted(
+        completed,
+        key=lambda r: (r.get("started_at") or "", r.get("id") or 0),
+        reverse=True,
+    )
+
+
+def latest_check_run_conclusion(check_runs: list[dict]) -> str | None:
+    """Return the conclusion of the most-recent COMPLETED bot-review-gate run,
+    or None if there is no completed run (e.g. all in_progress)."""
+    completed = filter_head_sha_check_runs(check_runs)
+    return completed[0]["conclusion"] if completed else None
+
+
+def check_run_verdict(
+    owner: str, repo: str, head_sha: str, token: str | None = None,
+) -> tuple[int, str]:
+    """Read the bot-review-gate verdict anchored to a head SHA.
+
+    The gate publishes a fresh check run for every workflow run on the SHA, so a
+    later SUCCESS never deletes an earlier FAILURE -- they coexist as separate
+    runs. ``mergeStateStatus`` keys off ANY failing check run, so a stale FAILURE
+    left behind by a self-heal pins the SHA on UNSTABLE forever.
+
+    Anchoring: the LATEST COMPLETED bot-review-gate run on the SHA is
+    authoritative -- a later SUCCESS supersedes an earlier FAILURE. This is the
+    read side of the #2493 fix; the write side is
+    :func:`reconcile_head_sha_check_run`.
+
+    Returns (exit_code, message):
+    - (EXIT_OK, "pass ...")            -- latest run is success, or no run yet.
+    - (EXIT_STUB, "fail ...")          -- latest completed run is failure.
+    - (EXIT_ERROR, "error ...")        -- cannot read the check-runs list.
+    """
+    runs = list_check_runs(owner, repo, head_sha, token)
+    if runs is None:
+        return EXIT_ERROR, (
+            f"error: could not list bot-review-gate check runs for {head_sha} "
+            f"(exit {EXIT_ERROR})"
+        )
+    conclusion = latest_check_run_conclusion(runs)
+    if conclusion is None:
+        return EXIT_OK, (
+            f"pass: no bot-review-gate check run on {head_sha} "
+            f"(exit {EXIT_OK})"
+        )
+    if conclusion == "success":
+        return EXIT_OK, f"pass: latest bot-review-gate run is success (exit {EXIT_OK})"
+    if conclusion == "failure":
+        return EXIT_STUB, f"fail: latest bot-review-gate run is failure (exit {EXIT_STUB})"
+    # Any other conclusion (neutral, cancelled, timed_out, ...) is not a
+    # self-heal outcome -- do not let a stale FAILURE hide behind it.
+    return EXIT_STUB, (
+        f"fail: latest bot-review-gate run is {conclusion} (exit {EXIT_STUB})"
+    )
+
+
+def _api_mutate(
+    url: str, payload: dict, token: str | None = None, method: str = "POST",
+) -> bool | None:
+    """Issue a write request to a GitHub REST API endpoint.
+
+    Returns True on a 2xx, False on a non-2xx response, None on
+    infrastructure failure (network error, auth failure). PATCH uses JSON
+    body; POST uses JSON body as well.
+    """
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "taos-bot-review-gate",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = json.dumps(payload).encode("utf-8")
+    req = Request(url, data=data, headers=headers, method=method)
+    try:
+        with urlopen(req, timeout=30) as r:
+            return 200 <= r.status < 300
+    except Exception as e:
+        print(f"error: {method} {url} failed: {e}", file=sys.stderr)
+        return None
+
+
+def reconcile_head_sha_check_run(
+    owner: str, repo: str, head_sha: str, conclusion: str,
+    token: str | None = None,
+) -> dict | None:
+    """Make the head-SHA bot-review-gate check-run verdict match ``conclusion``.
+
+    Write side of the #2493 fix. The gate runs on every relevant PR event and
+    republishes its check run for the head SHA each time; a later SUCCESS must
+    not leave an earlier FAILURE coexisting on the same SHA, because
+    ``mergeStateStatus`` keys off ANY failing run and would pin the PR on
+    UNSTABLE forever. So:
+
+    - If a completed bot-review-gate run already exists on the SHA whose
+      conclusion differs from ``conclusion`` (the stale case), PATCH the stale
+      runs to the new conclusion.
+    - If none exist, POST a new terminal check run for the SHA.
+
+    Returns the GitHub response dict on a successful write, or None if there
+    was no write to make (all runs already matched) or on infrastructure
+    failure.
+    """
+    runs = list_check_runs(owner, repo, head_sha, token)
+    if runs is None:
+        return None
+    token = token or _get_token()
+    patched_any = False
+    # A PATCH that fails on INFRASTRUCTURE (None, not False) means we cannot
+    # know whether the stale run was updated. Treating that as a plain no-op is
+    # what makes this function defeat its own purpose: `patched_any` stays
+    # False, the `any()` check below finds no run matching `conclusion` (the
+    # only run IS the stale failure we just failed to patch), and we POST a
+    # fresh success alongside it. mergeStateStatus keys off ANY failing run, so
+    # the stale FAILURE still pins the SHA on UNSTABLE -- while reconcile
+    # returns a dict that reads as a successful write. Fail closed instead.
+    mutate_failed = False
+    for run in runs:
+        status = run.get("status")
+        existing = run.get("conclusion")
+        # Don't touch in-flight runs; the job's exit code settles them, and a
+        # half-written run must not be mistaken for a verdict.
+        if status != "completed" or existing is None:
+            continue
+        if existing == conclusion:
+            continue
+        # Runner-owned job check runs (app.slug=github-actions) cannot be
+        # PATCHed via the Actions API token; skip them. Their staleness is
+        # irrelevant because mergeStateStatus keys off the latest check run
+        # per name, not any coexisting run.
+        if _is_job_owned_run(run):
+            continue
+        url = f"{API}/repos/{owner}/{repo}/check-runs/{run['id']}"
+        result = _api_mutate(
+            url,
+            {"conclusion": conclusion, "status": "completed", "completed_at": run.get("completed_at") or ""},
+            token=token,
+            method="PATCH",
+        )
+        # ONLY a 2xx (True) counts as patched. None (infrastructure failure)
+        # and False (GitHub refused the write) both leave the stale run in
+        # place, and the consequence is identical either way, so both fail
+        # closed.
+        if result is True:
+            patched_any = True
+        else:
+            mutate_failed = True
+    if mutate_failed:
+        # Do NOT fall through to the POST below: publishing a fresh run while a
+        # stale FAILURE survives is strictly worse than writing nothing, because
+        # it leaves the SHA pinned on UNSTABLE and looks reconciled.
+        print(
+            f"error: could not PATCH one or more stale bot-review-gate runs on "
+            f"{head_sha}; refusing to publish a new run that would coexist with "
+            f"them", file=sys.stderr,
+        )
+        return None
+    if patched_any:
+        return {"reconciled": True, "action": "patched", "head_sha": head_sha}
+
+    # No stale run to update. If a matching conclusion already exists on a
+    # writable run, nothing to do; if none exists at all, publish a fresh
+    # terminal check run. Job-owned runs are not writable, so they do not
+    # suppress a fresh POST.
+    if any(
+        r.get("status") == "completed" and r.get("conclusion") == conclusion
+        and not _is_job_owned_run(r)
+        for r in runs
+    ):
+        return None
+    payload = {
+        "name": CHECK_RUN_NAME,
+        "head_sha": head_sha,
+        "status": "completed",
+        "conclusion": conclusion,
+        "output": {
+            "title": "Bot review gate",
+            "summary": f"verdict: {conclusion}",
+        },
+    }
+    url = f"{API}/repos/{owner}/{repo}/check-runs"
+    if _api_mutate(url, payload, token=token, method="POST"):
+        return {"reconciled": True, "action": "created", "head_sha": head_sha}
+    return None
 
 
 def _detect_repo() -> tuple[str, str]:
@@ -386,6 +853,16 @@ def main(argv: list[str] | None = None) -> int:
         "--token", default=None,
         help="GitHub token (default: $GH_TOKEN or $GITHUB_TOKEN)",
     )
+    parser.add_argument(
+        "--label", default=DEFAULT_ALLOW_LABEL,
+        help=f"Allow label that waives the stub verdict (default: {DEFAULT_ALLOW_LABEL}).",
+    )
+    parser.add_argument(
+        "--head-sha", default=None,
+        help="PR head SHA to anchor the bot-review-gate check run verdict on "
+             "(default: $PR_HEAD). When provided, the gate reconciles its check "
+             "run on the SHA so a stale FAILURE never pins the PR on UNSTABLE.",
+    )
     args = parser.parse_args(argv)
 
     owner = args.owner
@@ -395,10 +872,38 @@ def main(argv: list[str] | None = None) -> int:
         owner = owner or detected_owner
         repo = repo or detected_repo
 
+    token = args.token or _get_token()
+    head_sha = args.head_sha or os.environ.get("PR_HEAD")
+
     exit_code, message = check_bot_review(
-        owner, repo, args.pr_number, args.token,
+        owner, repo, args.pr_number, args.label, token,
     )
     print(message)
+
+    # Reconcile the bot-review-gate check run on the head SHA when the verdict
+    # is terminal (success/failure). An infrastructure ERROR (2) is never
+    # written as a check-run conclusion: it is reported by the job failure and
+    # must not self-clear a stale run, so the write is skipped.
+    if head_sha and exit_code in VERDICT_TO_CONCLUSION:
+        reconcile_head_sha_check_run(
+            owner, repo, head_sha, VERDICT_TO_CONCLUSION[exit_code], token,
+        )
+        # Read back the reconciled verdict (the read side of the #2493 fix).
+        # If a stale FAILURE survived the reconcile -- e.g. the runner-owned
+        # job check run rejected the PATCH, leaving mergeStateStatus at
+        # UNSTABLE -- the gate must not report green. check_run_verdict is
+        # the production read site for this anchoring; wiring it here closes
+        # the "uncalled function described as load-bearing" gap.
+        verified_code, _ = check_run_verdict(
+            owner, repo, head_sha, token,
+        )
+        if verified_code == EXIT_STUB and exit_code == EXIT_OK:
+            print(
+                f"fail: stale bot-review-gate FAILURE on {head_sha} "
+                f"survived reconcile -- PR stays UNSTABLE "
+                f"(exit {EXIT_STUB})"
+            )
+            return EXIT_STUB
     return exit_code
 
 

@@ -1,3 +1,3 @@
 ### Fixed
 
-- `_cap_context_snapshot()` in `tinyagentos/restart_orchestrator.py` now accounts for the `_truncated` and `_dropped` marker overhead inside the capping loop and records `_dropped` as a bounded count rather than an unbounded list, so a snapshot of many fields with small values can no longer return over the 32768-byte limit with zero real fields preserved.
+- Added regression coverage for `_cap_context_snapshot()` on many-small-fields snapshots (long field names and short values, and many short-named fields) staying within the 32768-byte limit. The marker-overhead accounting fix this card targeted was independently landed with a more thorough byte-precise budget in tsk-kkxn6f's `_build_truncated_marker()`; this fold pass kept that implementation and this card's added tests.

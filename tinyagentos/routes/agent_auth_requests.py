@@ -7,6 +7,7 @@ GET    /api/agents/auth-requests/{request_id}          — poll request status (
 POST   /api/agents/auth-requests/{request_id}/approve  — approve + mint identity (admin only)
 POST   /api/agents/auth-requests/{request_id}/deny     — deny the request (admin only)
 GET    /api/agents/auth-requests                       — list pending requests (admin only)
+GET    /api/agents/scope-vocabulary                    — grantable scopes + the project-bound subset
 
 The two public endpoints (create + status poll) are added to auth_middleware.EXEMPT_PATHS
 so unauthenticated external agents can reach them.  The opaque UUID request_id acts as a
@@ -31,13 +32,16 @@ from pydantic import BaseModel
 from aiosqlite import IntegrityError
 from tinyagentos.agent_registry_store import _slugify, mint_registry_token
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
+from tinyagentos.base_store import PendingCapExceeded
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 # Maximum number of unresolved pending requests allowed from the same
-# identity_claim + framework before new submissions are rate-limited.
+# identity_claim + framework before new submissions are rate-limited. Handed to
+# the store's create(), which compares it inside the INSERT — never counted
+# here first (see create_auth_request).
 _PENDING_CAP = 5
 
 # Closed vocabulary of grantable scopes — surfaced to the user in the
@@ -231,6 +235,35 @@ def _get_approve_lock(request: Request, request_id: str) -> asyncio.Lock:
 
 
 # ---------------------------------------------------------------------------
+# Routes — scope vocabulary (authenticated)
+# ---------------------------------------------------------------------------
+
+@router.get("/api/agents/scope-vocabulary")
+# The dependency is the point: it is what makes this route authenticated. The
+# handler needs nothing from the user -- the vocabulary is the same for all.
+async def get_scope_vocabulary(_user: CurrentUser = Depends(current_user)):
+    """Publish the grantable scope vocabulary and the project-bound subset.
+
+    The consent surface (desktop/src/components/ConsentActions.tsx) has to know
+    which scopes cannot be granted without a project_id, because that is what
+    decides whether it renders the project picker at all. It used to know by
+    keeping its own copy of `_PROJECT_SCOPES`, which fell six scopes behind:
+    approving `files_write` rendered no picker, POSTed no project_id, and the
+    approve handler answered 400 with nothing on screen the operator could act
+    on. Every scope added below would have re-broken it the same silent way.
+
+    So the list is written down once, here, and the client reads it. Note this
+    route must stay ahead of `/api/agents/{name}` (routes/agents.py) in the
+    include order in routes/__init__.py, or that path parameter swallows it —
+    tests/test_consent_actions_scopes.py pins that.
+    """
+    return {
+        "valid_scopes": sorted(VALID_SCOPES),
+        "project_scopes": sorted(_PROJECT_SCOPES),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Routes — public (EXEMPT)
 # ---------------------------------------------------------------------------
 
@@ -254,27 +287,29 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
         )
 
     # Abuse cap: reject if too many pending requests from the same identity.
-    pending_count = await store.count_pending_for(
-        body.identity_claim, body.framework
-    )
-    if pending_count >= _PENDING_CAP:
+    # The cap is passed INTO create() and compared inside its INSERT rather
+    # than counted here first: this route takes no credentials, so a burst of
+    # concurrent posts is free, and a count-then-insert check hands every
+    # request in that burst the same pre-insert count.
+    try:
+        record = await store.create(
+            identity_claim=body.identity_claim,
+            framework=body.framework,
+            requested_scopes=body.requested_scopes,
+            requested_skills=body.requested_skills,
+            reason=body.reason,
+            duration_secs=body.duration_secs,
+            project_id=body.project_id,
+            pending_cap=_PENDING_CAP,
+        )
+    except PendingCapExceeded as exc:
         raise HTTPException(
             status_code=429,
             detail=(
                 f"too many pending requests from identity {body.identity_claim!r} "
-                f"({pending_count} pending; resolve existing requests first)"
+                f"({exc.pending} pending; resolve existing requests first)"
             ),
-        )
-
-    record = await store.create(
-        identity_claim=body.identity_claim,
-        framework=body.framework,
-        requested_scopes=body.requested_scopes,
-        requested_skills=body.requested_skills,
-        reason=body.reason,
-        duration_secs=body.duration_secs,
-        project_id=body.project_id,
-    )
+        ) from None
 
     # Surface the request as a non-blocking bell + toast notification. The
     # data payload carries everything the inline consent actions need to
@@ -294,6 +329,13 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
                     "identity_claim": record["identity_claim"],
                     "framework": record["framework"],
                     "requested_scopes": list(scopes),
+                    # Carry the requested project_id to the consent UI so the
+                    # approve screen can preselect and label it. The id is NOT
+                    # trusted as a binding here -- the operator still picks from
+                    # the projects they can see -- but without it the dropdown is
+                    # blank and the approver cannot tell what they are consenting
+                    # to (#tsk-flc5sp).
+                    "project_id": record.get("project_id"),
                 },
             )
         except Exception:
@@ -462,8 +504,46 @@ async def approve_request_record(
     display_name = (display_name or "").strip() or _claim or record["framework"]
 
     handle = _slugify(_claim)
+    # The handle column is NOT uniformly slugified: internal driver agents are
+    # seeded with their RAW sigilled spelling (@taOSmd-dev, @Hermes, ...) while
+    # this path registers the slugified claim (`taosmd-dev`). An exact lookup on
+    # the slug therefore MISSES an active internal row holding the same logical
+    # handle, and without the normalised fallback below the guard would fall
+    # through and mint a SECOND active identity under one handle. The
+    # ux_agent_active_handle index cannot catch that either: it is keyed on the
+    # raw column and the two spellings (@taOSmd-dev vs taosmd-dev) genuinely
+    # differ. The slug comparison is direction-free -- slugifying either
+    # spelling lands on the same key -- and the exact lookup still runs first as
+    # the indexed common case (see get_by_handle_normalised).
     existing_active = await registry.get_by_handle(handle, status="active")
+    collision_via_normalised = False
+    if existing_active is None:
+        existing_active = await registry.get_by_handle_normalised(
+            handle, status="active"
+        )
+        collision_via_normalised = existing_active is not None
     if existing_active is not None:
+        # The consent approve flow is the only origin that registers here
+        # (external-selfjoin). A normalised match whose origin is anything else
+        # (taos-internal driver agents, taos-deployed, ...) is a foreign
+        # identity the external requester is trying to claim. Taking the reuse
+        # arm below would mint a registry JWT for THAT canonical_id -- a straight
+        # impersonation of an internal identity. Fail closed instead; the
+        # requester must pick a different identity_claim. This mirrors the
+        # default-deny in agent_registry._mint_internal_identity, where a
+        # non-internal owner is only reused with adopt=true. Exact-match reuse
+        # for a genuine same-origin (external-selfjoin) re-approval is
+        # unaffected -- it never reaches this branch because its handle matches
+        # exactly and collision_via_normalised stays False.
+        if existing_active.get("origin") not in (None, "external-selfjoin"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"handle '{handle}' collides with an active identity of a "
+                    f"different origin ({existing_active.get('origin')!r}); "
+                    f"pick a different identity_claim"
+                ),
+            )
         # The handle already maps to an ACTIVE identity. In the multi-project
         # model (taOS #1862) this is NOT a hard collision when the approval is
         # for a project-scoped grant: instead of 409ing, ADD the existing agent
@@ -930,10 +1010,25 @@ async def list_auth_requests(
 # the agent's OWN registry token (self-request) OR the owner/admin, because the
 # agent already has credentials — an anonymous caller must never be able to
 # escalate an existing identity. Approve/deny are owner/admin only.
+#
+# The two READ routes (list + get-by-id) share the create gate exactly. They
+# exist because the request_id was otherwise handed out once, inside a
+# notification payload: dismiss the notification and the row stayed pending,
+# kept consuming _SCOPE_REQUEST_PENDING_CAP, and was addressable by nobody — so
+# a failed approval was indistinguishable from a successful one and a retry
+# meant minting a duplicate request.
 # ---------------------------------------------------------------------------
 
 # Maximum unresolved scope requests per canonical_id before new ones are 429'd.
+# Handed to the store's create(), which compares it inside the INSERT — never
+# counted here first (see create_scope_request).
 _SCOPE_REQUEST_PENDING_CAP = 10
+
+# Closed vocabulary of scope-request lifecycle states, mirroring the store's
+# state machine (pending -> accepted | refused). Used to validate the ?status
+# filter on the list route so a typo is a 400 rather than a silently empty list
+# that reads as "no such request".
+_SCOPE_REQUEST_STATUSES = frozenset({"pending", "accepted", "refused"})
 
 # Scopes that bind a grant to a specific project (and add a membership row), so
 # a real project_id is required for them. decisions_read/decisions_write are
@@ -1025,23 +1120,27 @@ async def create_scope_request(
             detail=f"unknown scopes: {unknown}; valid: {sorted(VALID_SCOPES)}",
         )
 
+    # The cap is passed INTO create() and compared inside its INSERT rather
+    # than counted here first: an agent holds its own token, so it can fire a
+    # burst of self-requests that would all read the same pre-insert count and
+    # all insert — the approver-flood the cap exists to stop.
     store = _get_scope_requests_store(request)
-    pending_count = await store.count_pending_for(canonical_id)
-    if pending_count >= _SCOPE_REQUEST_PENDING_CAP:
+    try:
+        rec = await store.create(
+            canonical_id=canonical_id,
+            requested_scopes=body.requested_scopes,
+            project_id=body.project_id,
+            reason=body.reason,
+            pending_cap=_SCOPE_REQUEST_PENDING_CAP,
+        )
+    except PendingCapExceeded as exc:
         raise HTTPException(
             status_code=429,
             detail=(
                 f"too many pending scope requests for {canonical_id!r} "
-                f"({pending_count} pending; resolve existing requests first)"
+                f"({exc.pending} pending; resolve existing requests first)"
             ),
-        )
-
-    rec = await store.create(
-        canonical_id=canonical_id,
-        requested_scopes=body.requested_scopes,
-        project_id=body.project_id,
-        reason=body.reason,
-    )
+        ) from None
 
     # Surface the request as a bell + toast for the owner/admin. Best effort: a
     # notification failure must not fail the created request (mirrors the
@@ -1068,6 +1167,113 @@ async def create_scope_request(
             pass
 
     return {"request_id": rec["id"], "status": "pending"}
+
+
+async def _authorized_scope_request_agent(request: Request, canonical_id: str) -> dict:
+    """Resolve *canonical_id* and authorize the caller to READ its scope requests.
+
+    Reads are gated EXACTLY like create: the agent's own registry bearer token,
+    or the owning user / an admin. Returns the registry record on success and
+    raises the uniform existence-hiding 404 otherwise, so an unauthorized caller
+    cannot use the read routes as an oracle for which canonical_ids exist or
+    which agents another user owns.
+    """
+    registry = _get_registry_store(request)
+    record = await registry.get(canonical_id)
+    if record is None or record.get("status") != "active":
+        logger.info("scope request read 404-unknown for %s", canonical_id)
+        raise HTTPException(status_code=404, detail="agent not found or not active")
+
+    await _authorize_scope_request_creation(request, canonical_id, record)
+    return record
+
+
+# The public projection of a scope-request row. Whitelisted, not blacklisted:
+# the store does `SELECT *`, so a column added later must be opted IN to the
+# response rather than leaking by default.
+#
+# `decided_by` is deliberately absent. It holds the OWNER/ADMIN user_id that
+# approved or denied, and the agent's own registry token is allowed to read
+# these routes — returning the raw row would hand an agent its owner's internal
+# user id, which no other agent-reachable route discloses. The decision stays
+# fully observable through `status`, `decided_ts` and `granted_scopes`; only
+# the deciding identity is withheld, and the store keeps recording it for the
+# audit trail.
+_PUBLIC_SCOPE_REQUEST_FIELDS = (
+    "id",
+    "canonical_id",
+    "requested_scopes",
+    "project_id",
+    "reason",
+    "status",
+    "granted_scopes",
+    "created_ts",
+    "decided_ts",
+)
+
+
+def _public_scope_request(rec: dict) -> dict:
+    """Project a stored scope-request row onto its public response shape."""
+    return {field: rec.get(field) for field in _PUBLIC_SCOPE_REQUEST_FIELDS}
+
+
+@router.get("/api/agents/registry/{canonical_id}/scope-requests")
+async def list_scope_requests(
+    request: Request, canonical_id: str, status: Optional[str] = None
+):
+    """List an agent's scope requests, oldest first, optionally by status.
+
+    Auth: the agent's own registry bearer token (sub == canonical_id) OR the
+    owning user / an admin — the same gate as create, so nobody can enumerate
+    another user's agents' requests.
+
+    This is what makes a pending request recoverable: the request_id handed out
+    at create time only ever lived in the notification payload, so dismissing
+    the notification stranded the row — still counting against
+    ``_SCOPE_REQUEST_PENDING_CAP``, still ungranted, and addressable by nobody.
+    """
+    await _authorized_scope_request_agent(request, canonical_id)
+
+    # Validate the filter only AFTER authorizing, mirroring create: an
+    # unauthorized caller must not be able to tell a rejected filter value from
+    # a rejected identity.
+    #
+    # The stored vocabulary is lowercase, and the comparison is case-folded so
+    # that `?status=Pending` selects the pending rows instead of 400-ing an
+    # authorized caller over a casing typo. The FOLDED value is what reaches
+    # the store, so the SQL parameter still matches the stored spelling — an
+    # accepted filter never yields a silently empty list.
+    if status is not None:
+        status = status.lower()
+        if status not in _SCOPE_REQUEST_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"unknown status {status!r}; valid: "
+                    f"{sorted(_SCOPE_REQUEST_STATUSES)}"
+                ),
+            )
+
+    store = _get_scope_requests_store(request)
+    rows = await store.list_for(canonical_id, status)
+    return {"requests": [_public_scope_request(r) for r in rows]}
+
+
+@router.get("/api/agents/registry/{canonical_id}/scope-requests/{req_id}")
+async def get_scope_request(request: Request, canonical_id: str, req_id: str):
+    """Read a single scope request. Auth is identical to the list route.
+
+    A request id belonging to a DIFFERENT agent is 404 on this path even for a
+    caller who owns both, so the {canonical_id} segment stays load-bearing
+    rather than decorative (same check the approve/deny paths make).
+    """
+    await _authorized_scope_request_agent(request, canonical_id)
+
+    store = _get_scope_requests_store(request)
+    req = await store.get(req_id)
+    if req is None or req.get("canonical_id") != canonical_id:
+        raise HTTPException(status_code=404, detail="scope request not found")
+    return _public_scope_request(req)
 
 
 @router.post("/api/agents/registry/{canonical_id}/scope-requests/{req_id}/approve")

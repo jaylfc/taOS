@@ -88,6 +88,35 @@ share flow), state it in the PR body and file a follow-up issue. Example: PR
 permissions. Wire the real value or do not add the parameter yet. Example:
 PR #2036 `handleSaveGrants`.
 
+**24. Persist state through `tinyagentos.atomic_io`, never a hand-rolled
+temp-plus-replace.**
+`tmp.write_text(...)` then `tmp.replace(target)` is atomic but *not durable*:
+it fsyncs neither the temp file nor the parent directory, so a power cut can
+land the rename while the bytes are still in page cache and the file comes back
+the right size and full of NULs. That is the 2026-08-21 account-store wipe.
+Ten copies of those five lines had accumulated (`save_config`, the star cache,
+the beads and canvas snapshots, the hub and mesh credential stores, the
+observatory pause state, the GitHub installations file, the wake budget, the
+Fernet key). Call `atomic_write_text` / `atomic_write_bytes` instead — they
+also randomise the temp name, so two concurrent writers cannot share one temp
+inode. `tests/test_config_atomic.py` fails the build on a new copy; a promotion
+that genuinely cannot use `atomic_io` (swapping a symlink, say) is waived in
+place with a `# atomic-io-exempt: <reason>` comment on the same line.
+
+Two follow-on rules the writers get wrong:
+
+- One-time key material is *created*, not written. `atomic_write_bytes` is a
+  durable replace, so two processes sharing a data dir that both observe an
+  absent `.secrets_key` (or `hub/identity.json`) both generate and the last one
+  wins -- the loser goes on encrypting under a key that is not on disk, and
+  everything it wrote is unreadable after a restart. Use `atomic_create_bytes`,
+  which claims the name with `link(2)` and hands a losing process the bytes that
+  actually persisted.
+- A durable write from `async` code goes through
+  `await asyncio.to_thread(atomic_write_text, ...)`. The two fsyncs are blocking
+  syscalls; on an SD card they are tens of milliseconds in which no other
+  request, dispatch tick or heartbeat can run.
+
 **17. A new view must be wired into every surface it has: desktop AND mobile.**
 The desktop tab list and the mobile tab order are separate registries; updating
 one and not the other ships a view that is unreachable on phones (#2042:
@@ -118,6 +147,27 @@ upgraded DBs lose the feature at runtime. Use the guarded `_post_init` pattern
 `knowledge_store._migration_v1_add_user_id`) and add an upgrade test that
 builds the PRE-change schema first. Fresh-DB tests are structurally blind to
 this class (#2043: `peer_fingerprint`).
+
+**19. Adding a column straight into SCHEMA bricks every existing install.**
+`CREATE TABLE IF NOT EXISTS` is a no-op on existing tables, so a new column
+slotted into the `CREATE TABLE` body is silently absent on upgrade; the first
+INSERT that touches it crashes with `table <t> has no column named <c>`. The
+two existing migration guards cannot see this because neither has a migration
+entry to inspect (both clean by vacuity), and CI cannot see it because tests
+build fresh databases. The fix is the same guarded `_post_init` pattern as
+pitfall 18; the check is `scripts/check_schema_column_migrations.py` (added
+tsk-hrzgip after PR #2416 proved both old guards passed on this exact brick).
+It compares the working tree against the PR's own base branch (`--base`,
+defaulting to `origin/dev`), and only a `_post_init` defined as a METHOD of
+the store class silences a column - a module-level helper of that name is not
+the hook `BaseStore.init()` calls. A `SCHEMA` the guard cannot resolve to a
+static string in its own file (an f-string with a runtime value, or a constant
+imported from another module) is reported on stderr as NOT checked rather than
+skipped silently; keep the SQL literal in the same file if you want the guard
+to cover your store.
+A brand-new table is not diffed at all - `CREATE TABLE IF NOT
+EXISTS` builds it in full on every install, so only columns added to a table
+that already exists on the base branch can brick an upgrade.
 
 ## Process
 

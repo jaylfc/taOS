@@ -112,6 +112,7 @@ export function UpdatesPanel() {
   const [rebuilding, setRebuilding] = useState(false);
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [prefs, setPrefs] = useState<AutoUpdatePrefs>({ check_enabled: true });
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [showRestartModal, setShowRestartModal] = useState(false);
@@ -189,17 +190,20 @@ export function UpdatesPanel() {
   const checkUpdates = async () => {
     setChecking(true);
     setStatus(null);
+    setError(null);
     try {
       const res = await fetch("/api/settings/update-check");
       if (res.ok) {
         const data = (await res.json()) as UpdateInfo;
         setInfo(data);
         setStatus(data.has_updates ? "A new version is available." : "You are up to date.");
+        // Clear any previous error on success
+        setError(null);
       } else {
-        setStatus("Update check not available.");
+        setError("Update check not available.");
       }
     } catch {
-      setStatus("Could not reach update server.");
+      setError("Could not reach update server.");
     }
     setChecking(false);
   };
@@ -207,6 +211,7 @@ export function UpdatesPanel() {
   const applyUpdate = async () => {
     setApplying(true);
     setStatus(null);
+    setError(null);
     try {
       const res = await fetch("/api/settings/update", { method: "POST" });
       if (res.ok) {
@@ -214,10 +219,10 @@ export function UpdatesPanel() {
         setShowRestartModal(true);
       } else {
         const err = await res.json().catch(() => ({}));
-        setStatus((err as { error?: string }).error ?? "Update failed.");
+        setError((err as { error?: string }).error ?? "Update failed.");
       }
     } catch {
-      setStatus("Could not apply update.");
+      setError("Could not apply update.");
     }
     setApplying(false);
   };
@@ -225,30 +230,32 @@ export function UpdatesPanel() {
   const rebuildFrontend = async () => {
     setRebuilding(true);
     setStatus(null);
+    setError(null);
     try {
       const res = await fetch("/api/settings/rebuild-frontend", { method: "POST" });
       const data = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
       if (res.ok) {
         setStatus(data.message ?? "Frontend rebuilt — hard-refresh the browser to see changes.");
       } else {
-        setStatus(data.error ?? "Frontend rebuild failed.");
+        setError(data.error ?? "Frontend rebuild failed.");
       }
     } catch {
-      setStatus("Could not reach rebuild endpoint.");
+      setError("Could not reach rebuild endpoint.");
     }
     setRebuilding(false);
   };
 
   const triggerRestart = async () => {
+    setError(null);
     try {
       const res = await fetch("/api/system/restart/prepare", { method: "POST" });
       if (res.ok) {
         setShowRestartModal(true);
       } else {
-        setStatus("Could not start restart.");
+        setError("Could not start restart.");
       }
     } catch {
-      setStatus("Could not reach the restart endpoint.");
+      setError("Could not reach the restart endpoint.");
     }
   };
 
@@ -269,10 +276,10 @@ export function UpdatesPanel() {
           setCustomBranch(ch ? "" : data.current);
           branchFetched.current = true;
         } else {
-          setStatus("Could not load branch list.");
+          setError("Could not load branch list.");
         }
       } catch {
-        setStatus("Could not reach branch endpoint.");
+        setError("Could not reach branch endpoint.");
       }
     })();
   }, [advancedOpen]);
@@ -281,6 +288,7 @@ export function UpdatesPanel() {
     setShowSwitchConfirm(false);
     setSwitching(true);
     setStatus(null);
+    setError(null);
     // When a channel option was selected (and custom is blank), use the
     // channel's branch. Otherwise use the free-text custom branch input.
     const branch = customBranch.trim() || selectedBranch;
@@ -296,10 +304,10 @@ export function UpdatesPanel() {
         setStatus(data.message ?? data.snapshot ?? `Switching to ${data.branch ?? branch}…`);
         setShowRestartModal(true);
       } else {
-        setStatus(data.error ?? "Branch switch failed.");
+        setError(data.error ?? "Branch switch failed.");
       }
     } catch {
-      setStatus("Could not reach the update-channel endpoint.");
+      setError("Could not reach the update-channel endpoint.");
     }
     setSwitching(false);
   };
@@ -396,6 +404,13 @@ export function UpdatesPanel() {
             {rebuilding ? "Rebuilding..." : "Rebuild Frontend"}
           </Button>
         </div>
+
+        {error && (
+          <div className="flex items-start gap-2 text-xs" role="alert">
+            <AlertCircle size={14} className="text-amber-400 shrink-0 mt-0.5" />
+            <span className="text-amber-400">{error}</span>
+          </div>
+        )}
 
         {status && (
           <div className="flex items-start gap-2 text-xs">

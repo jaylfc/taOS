@@ -150,7 +150,7 @@ function AddUserModal({ onClose, onAdded }: { onClose: () => void; onAdded: () =
               onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
             />
           </div>
-          {error && <p className="text-xs text-red-400">{error}</p>}
+          {error && <p className="text-xs text-red-400" role="alert">{error}</p>}
           <div className="flex gap-2 justify-end">
             <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
             <Button size="sm" onClick={submit} disabled={loading || !username.trim()}>
@@ -206,7 +206,7 @@ function ResetPasswordModal({ username, onClose, onReset }: { username: string; 
           <p className="text-sm text-shell-text-secondary">
             This will revoke {username}'s current password and sessions. A new invite code will be generated.
           </p>
-          {error && <p className="text-xs text-red-400">{error}</p>}
+          {error && <p className="text-xs text-red-400" role="alert">{error}</p>}
           <div className="flex gap-2 justify-end">
             <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
             <Button size="sm" onClick={doReset} disabled={loading}>
@@ -281,9 +281,9 @@ function ChangePasswordModal({ username, onClose }: { username: string; onClose:
               className="mt-1"
               aria-invalid={confirm.length > 0 && !matches}
             />
-            {confirm.length > 0 && !matches && <p className="text-[11px] text-red-400 mt-1">Passwords don't match.</p>}
+            {confirm.length > 0 && !matches && <p className="text-[11px] text-red-400 mt-1" role="alert">Passwords don't match.</p>}
           </div>
-          {error && <p className="text-xs text-red-400">{error}</p>}
+          {error && <p className="text-xs text-red-400" role="alert">{error}</p>}
           <div className="flex gap-2 justify-end">
             <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
             <Button size="sm" disabled={!valid || loading} onClick={submit}>
@@ -327,7 +327,7 @@ function DeleteUserModal({ username, onClose, onDeleted }: { username: string; o
         <p className="text-sm text-shell-text-secondary">
           This will remove {username} and revoke all their sessions. This cannot be undone.
         </p>
-        {error && <p className="text-xs text-red-400">{error}</p>}
+        {error && <p className="text-xs text-red-400" role="alert">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
           <Button size="sm" onClick={doDelete} disabled={loading}
@@ -457,7 +457,7 @@ export function UsersSection() {
         </div>
 
         {profileError && (
-          <p className="text-xs text-red-400 flex items-center gap-1.5"><AlertCircle size={12} /> {profileError}</p>
+          <p className="text-xs text-red-400 flex items-center gap-1.5" role="alert"><AlertCircle size={12} /> {profileError}</p>
         )}
 
         <div className="flex items-center gap-2">

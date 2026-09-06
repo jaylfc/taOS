@@ -1,4 +1,6 @@
 import asyncio
+import json
+import time
 
 import pytest
 
@@ -667,6 +669,96 @@ async def test_device_bearer_history_rejects_other_user(client, app):
     assert resp.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_device_bearer_execution_gate_refused(client, app):
+    """A device bearer must not approve an execution_gate decision: the phone
+    is a notification surface, not an approval channel for agent execution."""
+    admin_uid = _admin_uid(app)
+    device = await _register_device(app, admin_uid)
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "agent-a",
+        "question": "Agent agent-a wants to run code_exec (code-exec)",
+        "type": "approve_deny",
+        "priority": "blocking",
+        "metadata": {"kind": "execution_gate", "agent_name": "agent-a",
+                     "action_class": "code-exec", "tool": "code_exec"},
+    })
+    assert resp.status_code == 200
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": "approve"},
+        headers=_bearer(device["scoped_token"]),
+    )
+    assert resp.status_code == 409
+    assert await app.state.execution_policies.has_live_grant("agent-a", "code-exec") is False
+
+
+@pytest.mark.asyncio
+async def test_device_bearer_delegation_gate_refused(client, app):
+    """A device bearer must not approve a delegation_gate decision."""
+    admin_uid = _admin_uid(app)
+    device = await _register_device(app, admin_uid)
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "agent-a",
+        "question": "Delegate task to agent-b?",
+        "type": "approve_deny",
+        "priority": "blocking",
+        "metadata": {"kind": "delegation_gate", "from_agent": "agent-a",
+                     "to_agent": "agent-b", "task_id": "task-1", "task_title": "Task 1"},
+    })
+    assert resp.status_code == 200
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": "approve"},
+        headers=_bearer(device["scoped_token"]),
+    )
+    assert resp.status_code == 409
+    # No delegate grant must be written.
+    policies = getattr(app.state, "execution_policies", None)
+    if policies is not None:
+        assert await policies.has_live_grant("agent-a", "delegate") is False
+
+
+@pytest.mark.asyncio
+async def test_device_bearer_ordinary_consent_still_answered(client, app):
+    """Control: a device bearer can still answer a non-gate consent decision
+    (e.g. a plain approve_deny with no gate kind)."""
+    admin_uid = _admin_uid(app)
+    device = await _register_device(app, admin_uid)
+    decision = await _decision_for_user(
+        app, admin_uid, question="Notify me?", type="approve_deny",
+    )
+    resp = await client.post(
+        f"/api/decisions/{decision['id']}/answer",
+        json={"value": "approve"},
+        headers=_bearer(device["scoped_token"]),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "answered"
+    assert resp.json()["answer"]["value"] == "approve"
+
+
+@pytest.mark.asyncio
+async def test_session_user_execution_gate_still_approved(client, app):
+    """Control: a real session user can still approve an execution_gate."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "agent-a",
+        "question": "Agent agent-a wants to run code_exec (code-exec)",
+        "type": "approve_deny",
+        "priority": "blocking",
+        "metadata": {"kind": "execution_gate", "agent_name": "agent-a",
+                     "action_class": "code-exec", "tool": "code_exec"},
+    })
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer", json={"value": "approve"},
+    )
+    assert resp.status_code == 200
+    assert await app.state.execution_policies.has_live_grant("agent-a", "code-exec") is True
+
+
 # --------------------------------------------------------------------------- #
 # Other / free-text answer tests
 # --------------------------------------------------------------------------- #
@@ -967,3 +1059,50 @@ async def test_second_answer_409_no_duplicate_event(client, monkeypatch):
         if ev.kind == "decision.answered":
             count += 1
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_dec_sfdooy_wake_budget_decision_created_and_closed(client, app):
+    """Create the dec-sfdooy decision card for wake-budget design and close it."""
+    store = app.state.decision_store
+    await store.init()
+    now = time.time()
+    await store._db.execute(
+        """INSERT INTO decisions
+           (id, from_agent, project_id, user_id, question, type, options, context,
+            priority, status, created_at, deadline, parent_decision_id,
+            checkpoint_ref, timeline_id, metadata)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)""",
+        (
+            "dec-sfdooy",
+            "@taOS-dev",
+            None,
+            "admin",
+            "Wake-budget config: per-agent + global default + per-project override, OS-enforced",
+            "approve_deny",
+            json.dumps([
+                {"label": "Approve", "value": "approve", "recommended": True, "rationale": "Matches Jay direction on dec-sfdooy"},
+                {"label": "Deny", "value": "deny"},
+            ]),
+            "Fleet default stays at 2/day until this ships. Most specific wins: per-project > per-agent > global_default. Mention wakes exempt but countable.",
+            "normal",
+            now,
+            None,
+            None,
+            None,
+            None,
+            json.dumps({"kind": "design_decision", "card": "dec-sfdooy"}),
+        ),
+    )
+    await store._db.commit()
+    decision = await store.get("dec-sfdooy")
+    assert decision is not None
+    assert decision["status"] == "pending"
+
+    updated = await store.answer("dec-sfdooy", "approve", answered_by="admin", source="in_app")
+    assert updated is not None
+    assert updated["status"] == "answered"
+    answer_value = updated["answer"]
+    if isinstance(answer_value, str):
+        answer_value = json.loads(answer_value)
+    assert answer_value["value"] == "approve"

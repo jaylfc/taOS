@@ -117,12 +117,33 @@ without limit if the agent dumps its transcript or memory into it. An oversized
 snapshot saturates the framework's input window at wake, so the agent restarts
 into the same overflow every time and the recovery note is never consumed.
 
-`_cap_context_snapshot()` in `tinyagentos/restart_orchestrator.py` drops the largest
-fields from the snapshot until its serialized form fits within 32768 bytes, then
-adds a `_truncated` marker and a `_dropped` count of the removed keys. The
-result is always valid JSON and preserves as much of the remaining structure as
-possible. Do not bypass it: any code that writes a resume note by hand must still
-route it through that guard, lest an unbounded transcript become a 32 KB failure.
+`_cap_context_snapshot()` in `tinyagentos/restart_orchestrator.py` caps the
+snapshot by dropping the largest fields first until the serialized form fits
+within 32768 bytes. `agent_id` and `session_id` are never candidates while any
+other field remains - a note that cannot say which agent or session it belongs
+to is not worth resuming - and they are dropped only if they alone still breach
+the cap, because an over-limit note re-triggers the overflow the cap exists to
+prevent. Preservation is by name, not by size: ordering the drop by value size
+(or by serialized entry size) keeps a required field only while its value
+happens to be the smaller one.
+
+The dropped field names are recorded in a `_truncated` marker. The marker is
+size-budgeted and room for a bare one is held back before the drop loop stops,
+so a snapshot never goes out flush against the cap with no way to say what it
+lost; the name list is then filled from whatever room is left, down to
+`...and N more` and finally to an empty list. Payload fields are never dropped
+just to widen that list.
+
+**The snapshot is only an object by convention.** A framework that answers
+/prepare-for-shutdown writes `resume_note.json` itself, so `context_snapshot`
+can arrive as a string, a list or a number. There are no fields to drop from
+those, so an oversized non-object value is replaced wholesale by the marker
+(with `dropped_fields: ["context_snapshot"]`), which is bounded by construction
+and puts the note back in the documented object shape. A small non-object value
+is left exactly as it is - only the size is the cap's business.
+
+Do not bypass the guard: any code that writes a resume note by hand must still
+route it through it, lest a 32 KB transcript become a 32 KB failure.
 
 ## Credentials, grants and the things that bite
 
@@ -175,6 +196,26 @@ helper rather than parsing inline - it follows the module's existing
 - Fold every must-fix review finding (a real bug, a security issue, or an
   edge-case correctness problem) before merging. Style and preference nits can
   be deferred or taken in a follow-up.
+
+### Gate-integrity-allow label for CI/gate changes
+
+The `gate-integrity` required check (`.github/workflows/gate-integrity.yml`) runs
+on `pull_request_target` from the base branch and inspects the PR diff via the
+GitHub API only. It blocks any PR that touches protected paths under `.github/`
+or `scripts/check_*.py` unless the PR carries the `gate-integrity-allow` label.
+
+This label must be set manually by the lead after a human review of the gate
+change. Legitimate changes that touch these paths and need the label include:
+
+- Editing `.github/workflows/*.yml` to fix or extend a required check
+- Editing `scripts/check_*.py` (any gate checker, including nested ones)
+- Editing `.github/actions/**` (composite actions used by workflows)
+- Editing `.github/scripts/**` (gate scripts collocated under `.github`)
+
+The label is the explicit human-set waiver: automation must never apply it, and
+a PR without it that touches a protected path fails the gate. When reviewing a PR
+that legitimately changes these files, apply `gate-integrity-allow` after
+confirming the change is intentional and reviewed.
 
 ## Spend model tokens on judgement, not on waiting
 
@@ -330,11 +371,45 @@ Minted by `ensure_native_agent_identity()` in `tinyagentos/native_agent_identity
 - **The revocation feed covers agent identities only, and that is a decision rather than a gap.** `GET /api/agents/registry/revoked` reads `agent_registry` and returns `{canonical_id, revoked_at}` per entry. Human credential withdrawal is handled through the session/auth layer, so humans will never appear here. Decided 2026-08-13, after a downstream spec was written assuming the opposite. If you are building something that needs to learn a *human's* credential was withdrawn, this feed is the wrong source and the requirement should be raised rather than implemented against it -- `tests/test_agent_registry.py::test_revoked_feed_shape` fails if the feed is widened, deliberately.
 - **Nothing in the chat runtime reads the token yet.** The identity is minted; wiring it into what the agent sends is a separate change. It is deliberately absent from the agent manual until then -- the manual is injected into the agent's prompt and sits at its size ceiling, so it should not describe a capability the agent does not yet have.
 
+## Response caching (`Cache-Control: no-store` on `/api/` and `/agent/`)
+
+`SecurityHeadersMiddleware` (`tinyagentos/middleware/security_headers.py`) adds
+`Cache-Control: no-store` to every response whose path starts with `/api/` or
+`/agent/`. Those responses are per-user -- account data, secrets metadata,
+grants, project files -- and without the header a shared proxy, or the browser's
+back/forward cache on a shared machine, can hand one user's response to the
+next.
+
+It is a `setdefault`, never an overwrite, so a handler that picked its own
+policy keeps it:
+
+- SSE streams (`GET /api/os/events`, `GET /api/events/stream`, the per-project
+  and per-agent streams) keep `no-cache` plus `X-Accel-Buffering: no`, which is
+  what stops a reverse proxy buffering them.
+- `GET /api/userspace-apps/sdk.js` keeps `no-cache`, and the browser proxy's
+  own assets keep their `public, max-age=...`.
+
+Static files are mounted at `/static/` and `/data/workspace/`, outside both
+prefixes, so their long cache is unchanged.
+
+A client that caches `/api/` responses itself must therefore do so in memory for
+the life of the session, not on disk.
+
 ## Agent API surface (scoped registry JWT)
 
 A registered external agent authenticates with its registry JWT
 (`Authorization: Bearer`) and reaches exactly the routes its granted SCOPES
 allow, nothing else: the middleware allowlist is a closed set, no skeleton key.
+
+**A refused request says WHICH thing was wrong, and a dead credential is never
+flattered.** Off the allowlist the handler never runs, and the status code
+splits three ways: no route matches the path -> 404 (a live credential at a
+wrong URL); the route exists but this token is not authorised for it -> 401
+from the session gate (a right URL, an unauthorised credential); the credential
+itself is dead -- revoked, or superseded by `rotate-tokens` because its `iat`
+predates the identity's `token_min_iat` -> 401 on every path, existing or not.
+An anonymous caller gets 401 everywhere, so status codes cannot be used to
+enumerate routes.
 
 A SEPARATE credential class exists for the Agent-as-a-Model surface:
 `GET /v1/models` and `POST /v1/chat/completions` are reachable without a
@@ -359,6 +434,14 @@ The registry-JWT surface, by scope:
   `POST .../tasks/{id}/unquarantine` is also reachable, but LEAD-only: the
   route (`_authorize_project_lead`) refuses a plain project_tasks worker.
   It returns a quarantined card to the open pool and clears its strikes.
+  The cross-project aggregate `GET /api/projects/tasks/aggregate` (Kanban
+  Viewer S1) is also `project_tasks`: it returns EVERY project the caller may
+  see -- its own boards for a session owner/admin, or only the projects it
+  holds an active `project_tasks` grant for as an agent -- each with that
+  project's tasks. The grant (not the token's advisory `project_id` claim) is
+  the sole per-project gate, so an agent granted board A can never receive
+  board B in the aggregate. Optional `?status=open|claimed|closed` filters
+  tasks and is validated up front (400 on anything else).
 - **project_tasks_create**: `POST /api/projects/{pid}/tasks` (author new cards).
   This is a SEPARATE scope from project_tasks and is off by default; grant it
   explicitly when an agent needs to create cards.
@@ -366,7 +449,15 @@ The registry-JWT surface, by scope:
   whitelisted fields (title, body, labels, priority), own-or-lead cards only.
   Also SEPARATE from project_tasks - a plain project_tasks token gets 403 on
   PATCH. The seeded internal lead (@taOS-dev) carries it by default so it can
-  edit its own board's cards; assignee_id and parent_task_id stay human-only.
+  edit its own board's cards; assignee_id and parent_task_id stay human-only -
+  the whitelist keys on which fields the body SENDS, so sending one of them as
+  `null` (a clear) is refused 403 like any other edit of it.
+  The route writes exactly the fields the body sends: an omitted field is left
+  unchanged, `assignee_id`/`parent_task_id`/`element_id` take `null` as a real
+  clear (`element_id` also takes the legacy `"none"` string), and anything the
+  route cannot write - a `null` on a non-nullable field, a misspelled key, a
+  read-only column such as `id`/`created_by`/`claimed_by` - is a 422 rather
+  than a 200 echoing a task it never changed.
 - **project_doc_review**: read and write doc-review stamps for a project.
   `GET /api/projects/{pid}/doc-reviews` (list), `GET /api/projects/{pid}/doc-review/{path}`
   (read one), and `PUT /api/projects/{pid}/doc-review/{path}` (set state).
@@ -398,10 +489,10 @@ The registry-JWT surface, by scope:
   (`_is_agent_decisions_path` in `tinyagentos/auth_middleware.py`).
 - **observatory_control**: the Observatory fleet dials.
   `GET|POST /api/observatory/pause`, `GET|POST /api/observatory/throttle`,
-  `GET|POST /api/observatory/approval-mode`, and `GET /api/observatory/fleet`
-  (read-only, there is no POST). Writes require a global (null-project) grant;
-  reads admit any active grant. Admin session and local token are always
-  allowed.
+  `GET|POST /api/observatory/approval-mode`, `GET /api/observatory/fleet`,
+  and `GET /api/observatory/wake-budget` (read-only). Writes require a global
+  (null-project) grant; reads admit any active grant. Admin session and local
+  token are always allowed.
 - **a2a_receive**: the bus READ routes only -- `GET /api/a2a/bus/channels`,
   `GET /api/a2a/bus/messages`, `GET /api/a2a/bus/stream`.
   **a2a_send**: `POST /api/a2a/bus/send` only, which forces `from` to the
@@ -440,12 +531,35 @@ not resolve that 409 by minting a second identity: canonical ids are issued once
 per agent (`{slug}-{YYYYMMDD}-{HHMMSS}`), and a duplicate splits the agent's
 memory and grants across two ids that never reconcile.
 
+The collision guard is not blind to internal handles. Internal driver agents are
+seeded with their raw sigilled handle (`@taOSmd-dev`, `@Hermes`, ...) while the
+consent-approve path registers the slugified claim (`taosmd-dev`, `hermes`), so
+an exact lookup on the slug misses an active internal row that holds the same
+logical handle. The guard therefore chains an exact-then-normalised handle lookup;
+an external-selfjoin approval that collides (via the normalised handle) with an
+identity owned by a foreign origin (`taos-internal` or `taos-deployed`) fails
+closed with **409** instead of reusing that identity's `canonical_id`. A token
+minted for an internal driver id from an unauthenticated consent claim would be a
+straight impersonation of that driver, so the requester must pick a different
+`identity_claim`. A genuine same-origin re-approval (an already-active
+external-selfjoin handle) still reuses the identity per the multi-project rule
+above.
+
 Reserved name prefixes: registration rejects any name whose slug is or starts
 with `user-`, `human-`, `admin-` or `taos-` (including casing, spacing and
 punctuation obfuscations like `U s e r`), so an external agent cannot mint an
 identity that reads as a person or as an internal taOS agent. The public
 register route returns 422. The admin-only internal mint/seed path is exempt -
 internal driver agents (`taos-dev`, ...) legitimately live under `taos-`.
+
+The approve surface is the desktop `ConsentActions` component, driven by the
+`auth_requests` notification raised when a request is created. That notification's
+`data` payload carries `request_id`, `requested_scopes`, `identity_claim`,
+`framework`, and the request's `project_id` (when one was named by the
+requester). The id is carried for display only -- the approve screen resolves it
+against the operator's visible project list and lets the operator confirm or
+correct the binding before minting -- so an unapproved or unseen project id is
+never trusted as a grant target.
 
 ## Console-only PIN sign-in (third passthrough, narrowest)
 
@@ -583,10 +697,12 @@ Two properties hold this together and both are enforced in code and tests:
 Device identity always comes from the verified bearer, never from the path or
 body, and a device is never admin.
 
-Note for reviewers: answering a decision on this path can apply app, execution
-and delegation grants, so a device bearer carries real authority for its own
-user. Device scoped tokens do not expire and cannot be self-rotated; the only
-revocation is `DELETE /api/devices/{id}` from a session.
+Note for reviewers: a device bearer can answer ordinary decisions for its own
+user, but gate-kind decisions (execution_gate, delegation_gate, app_grant) are
+refused with 409 on this path. The phone is a notification surface, not an
+approval channel for privileged grants. Device scoped tokens do not expire and
+cannot be self-rotated; the only revocation is `DELETE /api/devices/{id}` from
+a session.
 
 ## Share destinations (device bearer)
 
@@ -635,7 +751,19 @@ that SAME canonical_id instead:
   this is CREDENTIALLED: the caller must be the agent's OWN registry bearer token
   (`sub` == `canonical_id`) OR the owning user / an admin. An anonymous caller can
   never escalate an existing identity. The middleware allowlist exposes only the
-  create path to a registry JWT; the route re-checks identity == canonical_id.
+  create path and the two READ paths below to a registry JWT -- approve/deny are
+  POST with an extra trailing segment and match no pattern, so an agent can
+  never self-approve; the routes re-check identity == canonical_id.
+  The bearer must also be LIVE: identity-only auth honours the identity's
+  `token_min_iat` rotation cutoff, so a token superseded by `rotate-tokens` can
+  no longer create a request (the route answers the same existence-hiding 404
+  it gives any other bad credential). This matters more here than anywhere
+  else -- it is the one route whose whole purpose is asking for MORE
+  privilege, and it needs no scope grant to reach. At most
+  `_SCOPE_REQUEST_PENDING_CAP` (10) requests may be pending per canonical_id;
+  further creates are 429. The cap is compared INSIDE the store's INSERT, not
+  counted by the route first, so a burst of concurrent self-requests cannot
+  slip past it and flood the approver's queue.
 - `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/approve`
   `{granted_scopes, project_id?}`: owner/admin only. The admin may narrow but
   never widen the requested scopes; each granted scope is added via
@@ -644,11 +772,70 @@ that SAME canonical_id instead:
   new identity is created.
 - `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/deny`:
   owner/admin only.
+- `GET /api/agents/registry/{canonical_id}/scope-requests` (optional
+  `?status=pending|accepted|refused`): list an agent's scope requests, oldest
+  first. Authorized EXACTLY like create -- the agent's own registry bearer
+  token, or the owning user / an admin -- so nobody can enumerate another
+  user's agents' requests. The `status` filter is matched case-insensitively
+  (`?status=Pending` selects the pending rows); a value outside the vocabulary
+  is 400, never a silently empty list.
+- `GET /api/agents/registry/{canonical_id}/scope-requests/{req_id}`: read one
+  request (same gate). A `req_id` belonging to a different agent is 404 on this
+  path even for a caller who owns both, so the `{canonical_id}` segment is
+  load-bearing.
+
+Both reads return the same PUBLIC shape -- `{id, canonical_id,
+requested_scopes, project_id, reason, status, granted_scopes, created_ts,
+decided_ts}` -- projected explicitly from the stored row rather than returned
+raw. `decided_by` (the owner/admin user_id that approved or denied) is
+deliberately withheld: an agent's own registry token may read these routes, and
+no other agent-reachable route discloses its owner's internal user id. The
+store still records it, and the decision itself stays observable through
+`status` / `decided_ts` / `granted_scopes` -- only the deciding identity is
+hidden. The projection is a whitelist, so a column added to
+`agent_scope_requests` later has to be opted IN rather than leaking by default.
+
+The list is BOUNDED (`DEFAULT_LIST_LIMIT`, 200, in
+`tinyagentos/agent_scope_requests_store.py`). Decided rows are never deleted --
+there is no retention sweep -- so an unbounded list would grow with an agent's
+whole decision history. The two lifecycle groups truncate in OPPOSITE
+directions, and that is the point:
+
+- **Pending** rows are taken oldest-first and ahead of everything else. The
+  oldest pending request is the one whose notification is long gone and whose
+  id nobody holds any more -- the row these reads exist to recover -- so it is
+  the LAST thing a full page drops. The read path deliberately does not
+  depend on the ten-per-agent pending cap holding, so a page stays correct
+  however many pending rows an agent has.
+- **Decided** rows fill whatever is left of the page, newest-first, so a caller
+  checking on a recent approval still sees it.
+
+The page itself is returned oldest-first. Each group is a separate indexed
+query with its own `LIMIT` rather than one sort over the whole history, so
+`idx_scope_requests_canonical_created` lets SQLite stop reading once the page is
+full: the read cost is bounded by the page size, not by how much history the
+agent has accumulated. `tests/test_agent_scope_requests.py::test_list_for_page_does_not_sort_the_whole_history`
+asserts on the query plans the store actually issues and fails if a
+`TEMP B-TREE` sort reappears.
+
+The two reads exist because the `request_id` was otherwise handed out exactly
+once, inside the notification payload raised at create time. Dismiss that
+notification and the row stayed alive in `agent_scope_requests` -- still
+pending, still counting against `_SCOPE_REQUEST_PENDING_CAP` (10 per
+canonical_id, then 429), and addressable by nobody. A *failed* approval was
+therefore indistinguishable from a successful one, and a retry meant minting a
+duplicate request that pushed the agent closer to locking itself out. Agents
+should poll the list route rather than re-requesting a scope they cannot see.
+The desktop Agents app renders each active agent's pending requests inline
+(`PendingScopeRequests` in `desktop/src/apps/agents/RegistryPanel.tsx`, reusing
+the same `ConsentActions` Allow/Deny control the notification renders), so
+approval no longer depends on an ephemeral toast.
 
 All owner-gated registry routes are existence-hiding (#2106): an authenticated
 caller who is not the owner gets the same 404 body as a nonexistent
-`canonical_id`, on the scope-request create/approve/deny routes above and on
-registry PATCH, DELETE (revoke), rotate-tokens, and `PUT /api/agents/{id}/org`.
+`canonical_id`, on the scope-request create/read/approve/deny routes above and
+on registry PATCH, DELETE (revoke), rotate-tokens, and
+`PUT /api/agents/{id}/org`.
 Agents must not treat a 404 from these routes as proof an id does not exist,
 and must not expect a 403 to distinguish "exists, not yours". Admin-only
 lifecycle routes (approve/reject/suspend/reactivate) still 403 non-admins
@@ -672,7 +859,20 @@ previously grantable without a `project_id`, which minted an inert note grant
 the operator believed was usable; it now follows the same rule as
 `project_tasks`. `decisions_read` /
 `decisions_write` (and the other global scopes) may be granted globally
-(`project_id=None`) or per-project. Creation
+(`project_id=None`) or per-project.
+
+`_PROJECT_SCOPES` is published, not duplicated. `GET /api/agents/scope-vocabulary`
+(authenticated) returns `{"valid_scopes": [...], "project_scopes": [...]}`, and the
+desktop consent surface renders the project picker from that response rather than
+from any list of its own. Adding a scope to `_PROJECT_SCOPES` therefore needs no
+client change; keeping a second copy anywhere is the bug that made Approve answer
+400 for `files_write` with no picker on screen to supply the `project_id`. If the
+vocabulary cannot be read, the consent surface disables Allow and says so — it
+does not fall back to a built-in list. The route lives in `agent_auth_requests.py`
+and must stay ahead of `/api/agents/{name}` in the router include order in
+`tinyagentos/routes/__init__.py`, or that path parameter captures it.
+
+Creation
 surfaces a bell notification (`source: agent_scope_requests`) to the owner/admin,
 retired when the request is decided.
 
@@ -704,8 +904,10 @@ A project invite lets an external agent join without going through the consent
 UI. The mint dialog (admin, in the project's Members panel) creates the invite;
 the agent redeems it. Two endpoints are auth-EXEMPT (the PIN is the proof of
 possession), added method-sensitively to `tinyagentos/auth_middleware.py` exactly
-like `POST /api/cluster/pairing/claim`, and per-IP rate-limited (20 requests per
-10s, reusing the pairing throttle helper):
+like `POST /api/cluster/pairing/claim`, and per-IP rate-limited (at most 20
+requests in any 10s span, from the shared limiter in
+`tinyagentos/rate_limit.py` that the pairing throttle also uses). A throttled
+request gets a 429 carrying `Retry-After` in whole seconds:
 
 - `POST /api/projects/invites/redeem`: body `{invite_id, pin, harness, label?}`.
   Verifies the PIN (wrong PIN / expired / attempt-capped -> 403; already redeemed
@@ -805,10 +1007,71 @@ that also happened there; setting up in the handler leaked a subscription per
 client that disconnected before the stream started.
 
 The desktop side is `desktop/src/hooks/use-os-events.ts`:
-`useOsEvents(kinds, onEvent)` holds one connection, returns `connected` /
-`stale`, dedupes by event id, reconnects with exponential backoff, and reopens
-the stream when `kinds` changes (the URL is fixed for the life of a
-connection, so a widened list needs a new one).
+`useOsEvents(kinds, onEvent)` multiplexes one EventSource across all callers
+in the same window, returns `connected` / `stale`, dedupes by event id, and
+reconnects with exponential backoff.
+
+The stream is opened with `?kinds=` set to the UNION of every live
+subscriber's list, and each subscriber's own list is applied again in the
+browser so it only sees what it asked for. The union is what goes on the wire
+because the relay filters BEFORE its bounded queue (above): a kind nobody
+subscribed to must never occupy one of those 256 slots, evict an event
+somebody did ask for, and raise an `events.lagged` that from the subscriber's
+side never happened. A subscriber whose list is empty means "all kinds", which
+collapses the union to no filter at all.
+
+The union only ever GROWS while subscribers exist; it is never narrowed when
+one leaves. Narrowing would only buy another reopen the next time a subscriber
+asks for that kind again, so a monotone union converges instead: at most one
+reopen per distinct kind, and none when a subscriber widens into kinds the
+union already covers. That guarantee spans one continuous run of subscribers,
+not the whole page -- the last subscriber to unmount closes the stream and
+resets the union with it, so a later mount starts the count over.
+
+Coverage is tracked as what is SERVED, separately from what is wanted. A
+widening that fails must not look served: if it did, the union would already
+contain the kind it added, nothing would notice the shortfall, and that kind
+would stay filtered out server-side while its subscriber sat in silence. The
+mismatch is retried on the next mount or `kinds` change rather than on a timer.
+
+A reopen does not interrupt delivery. The widened stream is opened alongside
+the narrow one and the narrow one is closed only once the widened one fires
+`open`, so there is no window with nothing listening -- which matters because
+this endpoint has no resume. The overlap delivers some events twice; the
+per-subscriber dedup window below is what absorbs that. If the widened stream
+fails instead of opening, it is dropped and the narrow one stays: the next
+mount or `kinds` change retries the widening.
+
+While a widened stream is in flight it IS the reconnect. If the narrow stream
+dies during the handoff, no backoff is scheduled on top of it -- that would
+open a third stream the handoff then immediately closes -- and the backoff is
+scheduled only if the widened stream dies as well, leaving nothing listening.
+
+The stream is open exactly while the subscriber map is non-empty -- that map
+is the only thing consulted on teardown, and it is consulted a microtask after
+the last subscriber leaves, once the React commit has settled. React runs every
+effect cleanup in a commit before any setup, so the map is briefly empty in any
+commit that swaps one subscriber for another; reading it mid-teardown would
+close a stream someone is still listening to and immediately reopen it.
+A subscriber that mounts while a reconnect is already scheduled leaves that
+retry alone -- connecting immediately on every mount would let a view that
+mounts callers in a loop retry at mount frequency instead of the 5 s -> 30 s
+backoff.
+
+`connected` / `stale` come from a shared snapshot through
+`useSyncExternalStore`, replaced only on a real transition, so the repeated
+`error` events a browser fires while it retries do not re-render every
+subscriber. An `error` does mark the stream stale even while the browser is
+still retrying: the endpoint has no resume, so the gap is real and a
+subscriber must refetch once it reconnects.
+
+The 128-id dedup window is kept PER SUBSCRIBER, not once for the stream. One
+stream carries the union of every subscribed kind, and the replay buffer above
+is per channel, so a shared window would let a busy kind evict a quiet
+subscriber's ids and hand that subscriber a replayed event it already handled
+-- a refetch for nothing. Per subscriber, each caller keeps the window it had
+when it owned a stream of its own, and the same window is what makes the
+overlap during a filter widening invisible to callers.
 
 ## LoRA Studio routes (session-only, no agent scope)
 
@@ -875,6 +1138,41 @@ Python**, so an agent holding grants on several projects and carrying more than
 500 decisions in total can still lose allowed-project rows to the limit. Same
 shape as the original bug, narrower blast radius.
 
+## MCP tool calls (`POST /api/mcp/call`)
+
+Route module `tinyagentos/routes/mcp.py`, backed by `tinyagentos/mcp/proxy.py`.
+Body: `{"server_id", "tool", "agent_name", "agent_groups"?, "arguments"?,
+"resource"?}`.
+
+Admin session or host local token only (`require_admin`): a non-admin member
+gets `403 {"detail": "forbidden"}` before any permission lookup, as do the
+server start/stop/restart/uninstall, config, env and permission-attach routes.
+
+**The JSON-RPC transport is NOT wired yet, and the route says so.** Three
+answers are possible today:
+
+| status | body | meaning |
+|---|---|---|
+| `403` | `{"error": "permission_denied", "reason": ...}` | the attachment does not grant this agent that tool/resource |
+| `503` | `{"error": "server_unavailable", ...}` | the server is not running and could not be started |
+| `501` | `{"error": "not_implemented", "reason": "MCP JSON-RPC transport is not wired yet; no tool call was made"}` | permissions passed, the server is up, and nothing was called |
+
+Until issue-time this route answered `200` with
+`{"ok": true, "result": "stub — MCP JSON-RPC call not yet wired"}`, which no
+caller could tell apart from a real tool result. **Do not write a caller that
+treats a 2xx from this route as proof a tool ran** — there is no success shape
+on this path yet. When the transport lands, the 501 becomes a real result; the
+403 and 503 arms keep their meaning.
+
+`MCPSupervisor` spawns stdio servers with both pipes captured and **drains
+both**. `GET /api/mcp/servers/{id}/logs` and its `/logs/stream` SSE tail carry
+entries tagged `"stream": "stdout"` or `"stream": "stderr"` so the two can be
+told apart; `level` stays `"error"`/`"info"` for the colour-coded tail. A
+server that writes more than a pipe buffer to stdout used to block in `write()`
+forever while `get_status()` still reported it `running` — for a
+stdio-transport server stdout is the JSON-RPC channel, so that was the primary
+data path, not an edge case.
+
 ## Config save and restore (`/api/config`, session-only)
 
 Route module `tinyagentos/routes/settings.py`. Owner routes behind the session
@@ -886,7 +1184,16 @@ cookie plus the CSRF double-submit on writes; no registry scope reaches them.
 - `POST /api/restore` -- multipart `file`, restores a backup tarball into the
   data dir. **The path is `/api/restore`, NOT `/api/settings/restore`**, even
   though the handler sits in `routes/settings.py` beside the `/api/settings/*`
-  routes.
+  routes. The upload is capped at 64 MB and the tarball goes
+  through `tinyagentos/safe_archive.py`: over the shared bomb caps (256 MB
+  declared uncompressed, 64 MB per member, 10000 members) or carrying a member
+  the path-safe tar filter rejects, the whole restore answers `400` and writes
+  nothing. `POST /api/themes/install` is capped the same way at 32 MB and
+  `POST /api/userspace-apps/install` at 64 MB. The upload caps are enforced by
+  `tinyagentos/middleware/upload_body_limit.py` while the body is still
+  arriving -- a handler cannot do it, because FastAPI has already spooled a
+  multipart file part to temporary storage by the time it runs -- and answer
+  `413`.
 
 **Both write paths REBUILD `AppConfig` field by field**, and a field missing
 from either rebuild is silently dropped on the next save, wiping whatever the
@@ -1048,13 +1355,71 @@ session. When you change the allowlist in `tinyagentos/auth_middleware.py`,
 record the change here so the agent-facing surface stays reviewable in one
 place.
 
-Task checklist items (added with the OS-owned objective checklist, #2415):
+Task checklist items (`/api/projects/{project_id}/tasks/{task_id}/checklist-items`)
 
-- `GET /api/projects/{project_id}/tasks/{task_id}/checklist-items` -- list;
-  Bearer-reachable so the handler's `project_tasks_create` scope check runs
-  instead of the middleware refusing 401 at the gate.
-- `POST /api/projects/{project_id}/tasks/{task_id}/checklist-items` -- create;
-  same scope check.
+Route module `tinyagentos/routes/projects.py`.
+
+- `POST .../checklist-items` takes a JSON body `{"text": "..."}` and creates one
+  item. A missing `text` is a `422`.
+- `GET .../checklist-items` lists items, newest state included. Takes
+  `?include_archived=true`; the default hides archived items.
+- Both answer `404` when the task is not in the named project, so a task id from
+  another project is existence-hiding rather than merely forbidden.
+- Creating an item logs `checklist.item.created` to the project activity feed
+  with the actor, task id, item id and text.
+- Both `checklist.item.created` and `checklist.item.archived` are published on
+  the broker under the task's **`project_id`**, because project subscribers
+  subscribe at project scope. The store therefore resolves the parent task
+  first and raises `ValueError: task not found: <task_id>` when it is gone —
+  create refuses before inserting the row, archive refuses before flipping
+  `archived`. `task_checklist_items.task_id` declares a foreign key but the
+  store never sets `PRAGMA foreign_keys = ON`, so an item can outlive its task;
+  without the guard the event went to a topic nobody listens to and was
+  silently lost.
+- Archiving is store-level only and refuses unless the item is both **verified**
+  and **reported**; there is no archive route.
 - `DELETE` and per-item subpaths (`.../checklist-items/{item_id}`) stay
   session-only: no agent-reachable handler exists, and the allowlist must not
   widen past list + create.
+
+The handlers call `_authorize_task_actor(...)` and accept EITHER a session
+owner/admin OR a project-bound agent's registry JWT. The Bearer allowlist in
+`tinyagentos/auth_middleware.py` now matches both `GET` and `POST .../checklist-items`
+(see `## Agent-token API surface (Bearer allowlist)` above), so the middleware
+gate no longer refuses agent tokens with `401` and the handler scope check now
+runs: `POST` (create) requires the narrower `project_tasks_create` grant, while
+`GET` (list) takes the default `project_tasks` read grant. A `project_tasks`
+worker lane is therefore refused on `POST` (it lacks the create grant, `403`)
+and authorised on `GET`. `tests/test_routes_task_checklist.py` pins this scope
+split directly, not behind an xfail.
+
+Container provisioning request (P1 + P2, agent-container-provisioning spec):
+
+- `POST /api/containers/requests` and `POST /api/container-requests` -- an active agent submits a container provisioning request with its own registry JWT. The route resolves the canonical_id from the token (never from the request body) and applies the provisioning policy (per-agent quota + threshold). Under quota the request is auto-approved; over quota it lands in `pending-approval`; over threshold it is escalated to a Decisions-app item for Jay. This is an identity-only check (no scope grant required), matching the scope-request create flow's use of `check_agent_identity`.
+- `POST /api/containers/requests/{id}/provision` -- provisions an incus/LXC container for an `approved` request. Only the requesting agent may call this, and only when the request is in the `approved` state. On success the request transitions to `provisioned` and the container name is recorded. The container is bound to the agent + project via environment variables (`TAOS_AGENT_CANONICAL_ID`, `TAOS_PROJECT_ID`).
+- `POST /api/containers/requests/{id}/destroy` -- deletes the request row and, if the request was already `provisioned`, destroys the underlying incus container. Quota is returned to the agent on deletion.
+- `GET /api/agents/containers/quota` -- returns the calling agent's quota, threshold, current active (non-terminal) request count, and remaining slots.
+
+## Skill-exec agent identity (credential-bound, not body-supplied)
+
+`POST /api/skill-exec/{skill_id}/call` and `GET /api/skill-exec/tools` now
+derive the agent identity from the PRESENTED CREDENTIAL, not from the request
+body. Each agent is issued a distinct per-agent token at deploy time
+(`AuthManager.mint_agent_local_token` in `tinyagentos/auth.py`; called from
+`tinyagentos/deployer.py`), and that minted token -- not the shared host token
+-- is what lands in the agent's `TAOS_LOCAL_TOKEN`. The auth middleware sets
+`request.state.agent_name` from that binding, and the route rejects any
+bound-token caller whose body claims a different `agent_name` with 403.
+The shared host local token stays unbound: admin/system callers presenting it
+(and admin sessions) may still supply `agent_name` in the body, and agents
+deployed before this change keep the host token until their next redeploy,
+which rotates them onto a bound per-agent token.
+
+Blast radius: `_resolve_agent_workspace`, `_capture_tool_receipt`,
+`_check_execution_policy`, `execute_notes_list_shared_docs`, and the todo tools
+all key off the same `agent_name` string, so binding it at the credential layer
+closes the hole for every downstream consumer in one place. Per-agent tokens
+replace the earlier shared-token binding: each deploy mints a fresh token,
+eliminating the last-deploy-wins collision where two agents bound to the same
+host token would overwrite each other's identity. The shared host token remains
+valid for admin/system callers but is no longer bound to any agent name.

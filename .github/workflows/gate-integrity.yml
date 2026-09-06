@@ -53,12 +53,26 @@ jobs:
       contents: read
       pull-requests: read
     steps:
+      - name: Resolve PR base ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          base=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }} --jq .base.ref)
+          if [ -z "$base" ]; then
+            echo "::error::Resolved base ref is empty" >&2
+            exit 1
+          fi
+          echo "BASE_REF=$base" >> $GITHUB_ENV
+
       # On `pull_request_target` checkout defaults to the base branch,
       # not the merge ref. Pinning `ref` to base_ref guarantees
       # the base-ref checker (and this workflow) execute from base.
+      # The resolve step above sets BASE_REF to the PR's actual base
+      # branch via the GitHub API; github.base_ref is the fallback.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.base_ref }}
+          ref: ${{ env.BASE_REF || github.base_ref }}
           fetch-depth: 1
 
       - uses: actions/setup-python@v7

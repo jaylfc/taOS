@@ -37,9 +37,8 @@ variants:
   format: hef
   size_mb: 2250
   min_ram_mb: 0
-  sha256: 5310176848638505fbc28add04ba60c97abe345cdb0ec7e3b8ffaa4b0a8c65dd
-  download_url: https://dev-public.hailo.ai/v5.1.1/blob/Qwen2.5-1.5B-Instruct.hef
-  context_window: 2048
+  hef_h10h: 0856a10c2b804cfe1590b80aa5e28369eb7169a9b36de836420a0b8cdf5b8d05
+  ollama_name: qwen2.5:1.5b
   requires:
     backends:
     - id: hailo-ollama

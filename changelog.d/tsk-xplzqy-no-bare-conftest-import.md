@@ -1,0 +1,3 @@
+### Fixed
+
+- `pytest tests/` run from the repo root no longer aborts collection with `Interrupted: 1 error during collection` (exit 2, zero tests run). `tests/test_core_deps.py` bound the shared core-dependency guard helpers with a bare `from conftest import`, a name resolved by `sys.path` order; on a full-suite run pytest put `tests/e2e/conftest.py` first, so the import resolved to the e2e shim (which lacks the helpers) and aborted the whole suite, while CI stayed green only because CI runs `pytest tests/ --ignore=tests/e2e`. The helpers are now loaded from `tests/conftest.py` by absolute file path, and a new regression sweep fails if any `tests/`.py file binds the bare `conftest` name again (tsk-xplzqy).

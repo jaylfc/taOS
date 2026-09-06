@@ -904,3 +904,280 @@ class TestGitHooksTrailerEnforcement:
             cwd=repo, capture_output=True,
         )
         assert result.returncode != 0, "Commit should have failed with empty trailer"
+
+
+CONTRIBUTOR_SKILL_CONFIG = {
+    "gate": {"trailer": "Docs-Reviewed:"},
+    "rules": [
+        {
+            "name": "contributor-skill",
+            "on_modify": True,
+            "when_changed": [".github/workflows/*.yml", "pyproject.toml", "CONTRIBUTING.md"],
+            "require_doc": [".claude/skills/taos-development-skill/*.md", "docs/*.md"],
+            "hint": "CI, packaging or contribution rules changed; review the contributor skill and docs",
+        }
+    ],
+}
+
+
+class TestUsesPinOnlyDiff:
+    """Content-based detection of a pure `uses:` action-pin version bump."""
+
+    def test_pin_bump_diff_is_pin_only(self):
+        """The exact shape of the #2507 dependabot bump: v7 -> v9 on one line."""
+        diff = (
+            "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n"
+            "--- a/.github/workflows/ci.yml\n"
+            "+++ b/.github/workflows/ci.yml\n"
+            "@@ -42,1 +42,1 @@\n"
+            "-        uses: actions/github-script@v7\n"
+            "+        uses: actions/github-script@v9\n"
+        )
+        assert dg._path_diff_is_uses_pin_only(diff) is True
+
+    def test_two_parallel_pin_bumps_are_pin_only(self):
+        diff = (
+            "-        uses: actions/checkout@v4\n"
+            "+        uses: actions/checkout@v5\n"
+            "-      - uses: actions/setup-python@v4\n"
+            "+      - uses: actions/setup-python@v5\n"
+        )
+        assert dg._path_diff_is_uses_pin_only(diff) is True
+
+    def test_sha_pin_with_trailing_comment_is_pin_only(self):
+        """A SHA pin carrying a `# vX` comment is still just a pin line."""
+        diff = (
+            "-        uses: org/action@1111111111111111111111111111111111111111  # v2.6.1\n"
+            "+        uses: org/action@2222222222222222222222222222222222222222  # v2.6.1\n"
+        )
+        assert dg._path_diff_is_uses_pin_only(diff) is True
+
+    def test_new_step_makes_diff_substantive(self):
+        diff = (
+            "--- a/.github/workflows/ci.yml\n"
+            "+++ b/.github/workflows/ci.yml\n"
+            "@@ -10,1 +10,2 @@\n"
+            "-        uses: actions/checkout@v4\n"
+            "+        uses: actions/checkout@v5\n"
+            "+      - run: echo bye\n"
+        )
+        assert dg._path_diff_is_uses_pin_only(diff) is False
+
+    def test_adding_a_with_input_is_substantive(self):
+        diff = (
+            "-        uses: actions/checkout@v4\n"
+            "+        uses: actions/checkout@v5\n"
+            "+          persist-credentials: false\n"
+        )
+        assert dg._path_diff_is_uses_pin_only(diff) is False
+
+    def test_non_pinned_uses_is_substantive(self):
+        """A `uses:` with no @ref is not a pin; changing it is substantive."""
+        diff = (
+            "-        uses: actions/checkout\n"
+            "+        uses: actions/checkout@v5\n"
+        )
+        assert dg._path_diff_is_uses_pin_only(diff) is False
+
+    def test_action_target_replacement_is_substantive(self):
+        """A swapped action TARGET must never be exempt (supply-chain swap).
+
+        Both sides are syntactically `uses: <x>@<ref>` pin lines, so a
+        per-line classifier calls this a pin bump and lets an attacker-owned
+        action through the gate. Only pairing removed with added entries
+        catches it.
+        """
+        diff = (
+            "@@ -10,1 +10,1 @@\n"
+            "-        uses: actions/checkout@v4\n"
+            "+        uses: attacker/checkout@v1\n"
+        )
+        assert dg._path_diff_is_uses_pin_only(diff) is False
+
+    def test_target_replacement_keeping_the_ref_is_substantive(self):
+        """Same ref, different owner — the ref alone proves nothing."""
+        diff = (
+            "@@ -10,1 +10,1 @@\n"
+            "-        uses: actions/checkout@v4\n"
+            "+        uses: evil/checkout@v4\n"
+        )
+        assert dg._path_diff_is_uses_pin_only(diff) is False
+
+    def test_real_bump_in_one_hunk_does_not_launder_a_swap_in_another(self):
+        """A genuine bump must not vouch for a target swap elsewhere."""
+        diff = (
+            "@@ -10,1 +10,1 @@\n"
+            "-        uses: actions/checkout@v4\n"
+            "+        uses: actions/checkout@v5\n"
+            "@@ -40,1 +40,1 @@\n"
+            "-        uses: actions/setup-python@v4\n"
+            "+        uses: attacker/setup-python@v4\n"
+        )
+        assert dg._path_diff_is_uses_pin_only(diff) is False
+
+    def test_added_pin_line_without_a_removed_counterpart_is_substantive(self):
+        """A brand-new action added to the file is not a version bump."""
+        diff = (
+            "@@ -10,0 +11,1 @@\n"
+            "+        uses: actions/cache@v4\n"
+        )
+        assert dg._path_diff_is_uses_pin_only(diff) is False
+
+    def test_empty_diff_is_vacuously_pin_only(self):
+        assert dg._path_diff_is_uses_pin_only("") is True
+
+
+class TestEvaluateRulesPinOnlyPaths:
+    """The CONTRIBUTOR-SKILL half of #2507: a version-only workflow bump is
+    exempt, a substantive workflow edit is not -- regardless of author.
+
+    The exemption is content-based (driven by a caller-computed pin_only_paths
+    set), so evaluate_rules itself never inspects identity.
+    """
+
+    WF = ".github/workflows/distrust-green-gate.yml"
+
+    def test_version_only_bump_goes_green_without_trailer(self):
+        """RED -> GREEN: a version-only workflow change marked pin-only trips no
+        rule, so no Docs-Reviewed trailer is needed."""
+        changed = [("M", self.WF)]
+        failures = dg.evaluate_rules(
+            changed, [], CONTRIBUTOR_SKILL_CONFIG, pin_only_paths={self.WF}
+        )
+        assert failures == []
+
+    def test_substantive_workflow_edit_is_red_without_trailer(self):
+        """GREEN must not go inert: a substantive (non-pin) workflow edit still
+        fails without a trailer."""
+        changed = [("M", self.WF)]
+        failures = dg.evaluate_rules(
+            changed, [], CONTRIBUTOR_SKILL_CONFIG, pin_only_paths=set()
+        )
+        assert len(failures) == 1
+        assert "contributor-skill" in failures[0]
+
+    def test_substantive_bot_edit_is_red_without_trailer(self):
+        """The escape hatch is NOT identity-based: a bot (or any author) making a
+        substantive workflow edit still fails without a trailer."""
+        changed = [("M", self.WF)]
+        messages = ["chore: edit workflow\n\nSigned-off-by: dependabot[bot] <x@x.com>\n"]
+        failures = dg.evaluate_rules(
+            changed, messages, CONTRIBUTOR_SKILL_CONFIG, pin_only_paths=set()
+        )
+        assert len(failures) == 1
+        assert "contributor-skill" in failures[0]
+
+    def test_default_pin_only_paths_keeps_rule_firing(self):
+        """Omitting pin_only_paths (the pre-fix behaviour) still fails a bare M."""
+        changed = [("M", self.WF)]
+        failures = dg.evaluate_rules(changed, [], CONTRIBUTOR_SKILL_CONFIG)
+        assert len(failures) == 1
+        assert "contributor-skill" in failures[0]
+
+    def test_added_workflow_file_is_not_exempt(self):
+        """A brand-new (status A) workflow file is substantive even if its only
+        lines are `uses:` pins -- pin-only detection is M-only."""
+        changed = [("A", ".github/workflows/new-ci.yml")]
+        failures = dg.evaluate_rules(changed, [], CONTRIBUTOR_SKILL_CONFIG)
+        assert len(failures) == 1
+        assert "contributor-skill" in failures[0]
+
+
+class TestEndToEndPinOnlyWorkflowBump:
+    """End-to-end over a real temp git repo, exercising `diff-gate --base` with
+    the live diff and the live pin-only detection (no mocking of git).
+
+    A dependabot-style version-only bump (no Docs-Reviewed trailer) goes GREEN;
+    a substantive workflow edit by a human still goes RED (#2507).
+    """
+
+    CONTRIBUTOR_CONFIG = (
+        '[gate]\ntrailer = "Docs-Reviewed:"\n\n'
+        '[[rules]]\n'
+        'name = "contributor-skill"\n'
+        'on_modify = true\n'
+        'when_changed = [".github/workflows/*.yml", "pyproject.toml", "CONTRIBUTING.md"]\n'
+        'require_doc = [".claude/skills/taos-development-skill/*.md", "docs/*.md"]\n'
+        'hint = "CI, packaging or contribution rules changed"\n'
+    )
+
+    def _setup_repo(self, tmp_path: Path) -> tuple[Path, Path]:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "ci.yml").write_text(
+            "name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - uses: actions/checkout@v4\n"
+        )
+        docs_dir = repo / "docs"
+        docs_dir.mkdir()
+        config_path = docs_dir / "doc-gate.toml"
+        config_path.write_text(self.CONTRIBUTOR_CONFIG)
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "dev@example.com"], cwd=repo, check=True
+        )
+        subprocess.run(["git", "config", "user.name", "dev"], cwd=repo, check=True)
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "initial"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        return repo, config_path
+
+    def test_version_only_bump_is_green(self, tmp_path: Path, monkeypatch):
+        repo, cfg = self._setup_repo(tmp_path)
+        wf = repo / ".github" / "workflows" / "ci.yml"
+        wf.write_text(wf.read_text().replace("actions/checkout@v4", "actions/checkout@v5"))
+        # Author it like the bot that actually produces these bumps.
+        subprocess.run(
+            ["git", "-c", "user.name=dependabot[bot]", "-c", "user.email=bot@bot", "add", "."],
+            cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "chore(deps): bump actions/checkout from 4 to 5"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        monkeypatch.setattr(dg, "REPO_ROOT", repo)
+        rc = dg.main(["--config", str(cfg), "diff-gate", "--base", "HEAD~1"])
+        assert rc == dg.EXIT_OK
+
+    def test_version_only_bump_is_green_staged(self, tmp_path: Path, monkeypatch):
+        """The pre-commit/commit-msg hooks run `diff-gate --staged`; the same
+        exemption must apply there so a local version-only bump is not wedged."""
+        repo, cfg = self._setup_repo(tmp_path)
+        wf = repo / ".github" / "workflows" / "ci.yml"
+        wf.write_text(wf.read_text().replace("actions/checkout@v4", "actions/checkout@v5"))
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        monkeypatch.setattr(dg, "REPO_ROOT", repo)
+        rc = dg.main(["--config", str(cfg), "diff-gate", "--staged"])
+        assert rc == dg.EXIT_OK
+
+    def test_substantive_workflow_change_is_red_staged(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        repo, cfg = self._setup_repo(tmp_path)
+        wf = repo / ".github" / "workflows" / "ci.yml"
+        wf.write_text(wf.read_text() + "      - run: echo bye\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        monkeypatch.setattr(dg, "REPO_ROOT", repo)
+        rc = dg.main(["--config", str(cfg), "diff-gate", "--staged"])
+        assert rc == dg.EXIT_VIOLATION
+        assert "contributor-skill" in capsys.readouterr().out
+
+    def test_substantive_workflow_change_is_red(self, tmp_path: Path, monkeypatch, capsys):
+        """A substantive (non-pin) workflow edit by a human still fails the gate
+        under the real --base diff path."""
+        repo, cfg = self._setup_repo(tmp_path)
+        wf = repo / ".github" / "workflows" / "ci.yml"
+        wf.write_text(wf.read_text() + "      - run: echo bye\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "human edit: add a run step"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        monkeypatch.setattr(dg, "REPO_ROOT", repo)
+        rc = dg.main(["--config", str(cfg), "diff-gate", "--base", "HEAD~1"])
+        assert rc == dg.EXIT_VIOLATION
+        assert "contributor-skill" in capsys.readouterr().out

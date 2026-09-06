@@ -5,6 +5,8 @@ GET  /api/library/items   — list library items
 GET  /api/library/items/{item_id} — item detail with artifacts
 DELETE /api/library/items/{item_id} — remove item and its files
 POST /api/library/items/{item_id}/reprocess — re-run the pipeline
+GET  /api/library/jobs    — list processing jobs
+POST /api/library/jobs/{job_id}/retry — retry a failed job
 """
 
 from __future__ import annotations
@@ -333,6 +335,37 @@ async def delete_item(request: Request, item_id: str):
 
     await store.delete_item(item_id)
     return {"status": "deleted", "item_id": item_id}
+
+
+@router.get("/api/library/jobs")
+async def list_jobs(
+    request: Request,
+    state: str | None = None,
+    limit: int = 100,
+):
+    """List processing jobs, optionally filtered by state."""
+    store = await _get_library_store(request)
+    jobs = await store.list_jobs(state=state, limit=limit)
+    return {"jobs": jobs, "count": len(jobs)}
+
+
+@router.post("/api/library/jobs/{job_id}/retry")
+async def retry_job(request: Request, job_id: str):
+    """Retry a failed job. Returns 404 for unknown jobs and 409 for jobs
+    that are not in the error state."""
+    store = await _get_library_store(request)
+    job = await store.get_job(job_id)
+    if not job:
+        return JSONResponse({"error": f"Job {job_id!r} not found"}, status_code=404)
+
+    if job.get("state") != "error":
+        return JSONResponse(
+            {"error": f"Job {job_id!r} is not in error state (current: {job.get('state')})"},
+            status_code=409,
+        )
+
+    await store.update_job(job_id, state="queued", error="")
+    return {"job_id": job_id, "status": "queued"}
 
 
 @router.post("/api/library/items/{item_id}/reprocess")

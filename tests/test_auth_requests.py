@@ -19,11 +19,13 @@ Covers:
     - Approve already-decided → 409
     - Deny → refused
     - Deny already-decided → 409
-    - Abuse cap → 429
+    - Abuse cap → 429 (including under a concurrent burst)
     - List pending (admin) → returns pending records
     - List pending (non-admin) → 403
 """
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 import pytest_asyncio
@@ -31,6 +33,7 @@ from httpx import ASGITransport, AsyncClient
 from taos_test_csrf import csrf_event_hooks
 
 from tinyagentos.auth_requests_store import AuthRequestsStore
+from tinyagentos.base_store import PendingCapExceeded
 from tinyagentos.agent_grants_store import AgentGrantsStore
 
 
@@ -169,6 +172,45 @@ class TestAuthRequestsStore:
             assert await store.count_pending_for("agent-x", "hermes") == 2
             assert await store.count_pending_for("agent-y", "hermes") == 1
             assert await store.count_pending_for("nobody", "hermes") == 0
+        finally:
+            await store.close()
+
+    async def test_create_enforces_pending_cap_atomically(self, tmp_path):
+        """``create(pending_cap=N)`` admits exactly N pending rows under a burst.
+
+        The guard lives in the INSERT itself, so it holds however the caller's
+        awaits interleave; a caller that counted first would hand every racer
+        the same stale answer. ``pending_cap=None`` keeps the store uncapped
+        for the callers that mint one row per freshly-deduped identity.
+        """
+        store = await self._make_store(tmp_path / "ar.db")
+        try:
+            results = await asyncio.gather(
+                *[
+                    store.create(
+                        identity_claim="agent-x",
+                        framework="hermes",
+                        requested_scopes=[],
+                        pending_cap=2,
+                    )
+                    for _ in range(6)
+                ],
+                return_exceptions=True,
+            )
+            created = [r for r in results if isinstance(r, dict)]
+            refused = [r for r in results if isinstance(r, PendingCapExceeded)]
+            assert len(created) == 2, f"expected 2 inserts, got {results}"
+            assert len(refused) == 4, f"expected 4 refusals, got {results}"
+            assert await store.count_pending_for("agent-x", "hermes") == 2
+
+            # The cap is per (identity_claim, framework), not global.
+            other = await store.create(
+                identity_claim="agent-x",
+                framework="claude",
+                requested_scopes=[],
+                pending_cap=2,
+            )
+            assert other["framework"] == "claude"
         finally:
             await store.close()
 
@@ -315,6 +357,35 @@ class TestAuthRequestRoutes:
         data = resp.json()
         assert "request_id" in data
         assert data["status"] == "pending"
+
+    async def test_create_carries_requested_project_id_in_notification(self, consent_client):
+        """The consent notification must surface the requested project_id so the
+        approve screen is never a blank dropdown: an access request bound to a
+        project must let the approver see and confirm that project before
+        granting (#tsk-flc5sp)."""
+        notif_store = consent_client._transport.app.state.notifications
+        if notif_store._db is None:
+            await notif_store.init()
+        try:
+            transport = ASGITransport(app=consent_client._transport.app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as bare:
+                resp = await bare.post(
+                    "/api/agents/auth-requests",
+                    json={**_CREATE_BODY, "project_id": "prj-btrdrl"},
+                )
+            assert resp.status_code == 200
+            items = await notif_store.list()
+            auth = [i for i in items if i.get("source") == "auth_requests"]
+            assert auth, "creating a request should raise an access-request notification"
+            payload = auth[0]["data"]
+            assert payload["project_id"] == "prj-btrdrl"
+            assert payload["request_id"] == resp.json()["request_id"]
+        finally:
+            if notif_store._db is not None:
+                await notif_store.close()
+
 
     async def test_get_status_pending_no_token(self, consent_client):
         """GET status on a pending request returns status but NOT a token."""
@@ -498,6 +569,39 @@ class TestAuthRequestRoutes:
                 json={**_CREATE_BODY, "identity_claim": "flood-agent"},
             )
             assert r.status_code == 429
+
+    async def test_concurrent_creates_cannot_bypass_abuse_cap(self, consent_client):
+        """A concurrent burst from one identity must not exceed _PENDING_CAP.
+
+        The route is unauthenticated, so this is the cheapest flood there is:
+        with a count-then-insert cap every request in the burst reads the same
+        pre-insert count, passes, and inserts.
+        """
+        from tinyagentos.routes.agent_auth_requests import _PENDING_CAP
+
+        app = consent_client._transport.app
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            async def _create():
+                return await bare.post(
+                    "/api/agents/auth-requests",
+                    json={**_CREATE_BODY, "identity_claim": "burst-agent"},
+                )
+
+            # No return_exceptions: a server-side crash must fail the test, not
+            # shrink the status list into a vacuous pass.
+            results = await asyncio.gather(
+                *[_create() for _ in range(2 * _PENDING_CAP)]
+            )
+
+        statuses = sorted(r.status_code for r in results)
+        assert statuses == [200] * _PENDING_CAP + [429] * _PENDING_CAP, (
+            f"cap race: expected exactly {_PENDING_CAP} accepted, got {statuses}"
+        )
+        pending = await app.state.auth_requests.count_pending_for(
+            "burst-agent", _CREATE_BODY["framework"]
+        )
+        assert pending == _PENDING_CAP
 
     async def test_list_pending_admin(self, consent_client):
         transport = ASGITransport(app=consent_client._transport.app)

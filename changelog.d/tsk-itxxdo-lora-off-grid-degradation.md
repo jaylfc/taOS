@@ -1,0 +1,2 @@
+### Fixed
+- _degrade now reads response.buttons, response.images, response.cards and emits one-time notices; chunks on encoded bytes with [part N/M] prefix byte-accounting; total derived from byte-accurate chunking

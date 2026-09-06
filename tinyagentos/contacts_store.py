@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 import sqlite3
 import time
@@ -8,15 +9,19 @@ from pathlib import Path
 from typing import Optional
 
 from tinyagentos.base_store import BaseStore
+from tinyagentos.hub.identity import fingerprint as _compute_fingerprint
+
+logger = logging.getLogger(__name__)
 
 
 CONTACTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS contacts (
-    contact_id        TEXT PRIMARY KEY,       -- "hub:{username}" e.g. "hub:hogne"
-    hub_username      TEXT NOT NULL UNIQUE,
+    contact_id        TEXT PRIMARY KEY,       -- "hub:{fingerprint}" — canonical key, never the username
+    hub_username      TEXT NOT NULL,          -- display column; not unique (distinct peers may share a name)
     display_name      TEXT NOT NULL,
-    ed25519_pub       TEXT NOT NULL,          -- pinned at friend-accept
-    x25519_pub        TEXT NOT NULL,
+    ed25519_pub       TEXT NOT NULL,          -- pinned at friend-accept; verified via signature challenge
+    x25519_pub        TEXT NOT NULL,          -- accepted unverified — no verification protocol exists at this head; re-pinned every accept/re-accept
+    peer_fingerprint  TEXT NOT NULL DEFAULT '', -- signing-key fingerprint; stable lookup key
     status            TEXT NOT NULL DEFAULT 'pending',  -- pending|active|blocked|revoked
     local_crm_id      TEXT,                   -- optional link to existing CRM row
     created_at        REAL NOT NULL,
@@ -75,6 +80,112 @@ class ContactsStore(BaseStore):
 
     MIGRATIONS: list = []
 
+    async def _post_init(self) -> None:
+        """Add ``peer_fingerprint`` column on pre-existing databases.
+
+        The ``peer_fingerprint`` column was added after contacts_store shipped
+        to dev (PR #2025).  BaseStore's migration runner uses baseline-at-latest
+        semantics, so a MIGRATIONS entry would stamp existing DBs at the latest
+        version without executing the ALTER, leaving the column absent.  We
+        use the guarded PRAGMA pattern instead: check if the column exists, and
+        ALTER only when it is missing.  Fresh databases get the column from
+        SCHEMA; upgraded databases get it here.
+        """
+        existing_cols = {
+            row[1]
+            for row in await (
+                await self._db.execute("PRAGMA table_info(contacts)")
+            ).fetchall()
+        }
+        if "peer_fingerprint" not in existing_cols:
+            await self._db.execute(
+                "ALTER TABLE contacts ADD COLUMN peer_fingerprint TEXT NOT NULL DEFAULT ''"
+            )
+            await self._db.commit()
+
+        # Drop the legacy UNIQUE constraint on hub_username.  Contacts are now
+        # keyed on the peer's signing-key fingerprint (contact_id = "hub:{fp}"),
+        # so username is a non-unique display column: two distinct peers may
+        # share a name without one overwriting the other's pinned key material.
+        # SQLite refuses to drop an inline UNIQUE auto-index, so we rebuild the
+        # table without it (same pattern as db_migrations' namespace rebuild).
+        if await self._hub_username_unique_index_exists():
+            await self._db.execute("BEGIN")
+            try:
+                await self._db.execute(
+                    "CREATE TABLE contacts_new ("
+                    "    contact_id        TEXT PRIMARY KEY,"
+                    "    hub_username      TEXT NOT NULL,"
+                    "    display_name      TEXT NOT NULL,"
+                    "    ed25519_pub       TEXT NOT NULL,"
+                    "    x25519_pub        TEXT NOT NULL,"
+                    "    peer_fingerprint  TEXT NOT NULL DEFAULT '',"
+                    "    status            TEXT NOT NULL DEFAULT 'pending',"
+                    "    local_crm_id      TEXT,"
+                    "    created_at        REAL NOT NULL,"
+                    "    revoked_at        REAL"
+                    ")"
+                )
+                await self._db.execute(
+                    "INSERT INTO contacts_new "
+                    "(contact_id, hub_username, display_name, ed25519_pub, x25519_pub, "
+                    " peer_fingerprint, status, local_crm_id, created_at, revoked_at) "
+                    "SELECT contact_id, hub_username, display_name, ed25519_pub, x25519_pub, "
+                    " peer_fingerprint, status, local_crm_id, created_at, revoked_at "
+                    "FROM contacts"
+                )
+                await self._db.execute("DROP TABLE contacts")
+                await self._db.execute(
+                    "ALTER TABLE contacts_new RENAME TO contacts"
+                )
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
+
+        # Backfill peer_fingerprint for pre-existing contacts that predate the
+        # column.  The ALTER TABLE above seeds them with DEFAULT '', and the
+        # rebuild copies those empty values verbatim.  Without backfill, these
+        # contacts are invisible to block_peer (which resolves by fingerprint),
+        # so the block path fails open — the peer link is never revoked.
+        async with self._db.execute(
+            "SELECT contact_id, ed25519_pub FROM contacts "
+            "WHERE peer_fingerprint = '' AND ed25519_pub != ''"
+        ) as cursor:
+            stale = await cursor.fetchall()
+        for contact_id, ed25519_pub in stale:
+            try:
+                fp = _compute_fingerprint(ed25519_pub)
+            except (ValueError, TypeError) as exc:
+                logger.warning(
+                    "contacts: cannot backfill fingerprint for %s: %s",
+                    contact_id, exc,
+                )
+                continue
+            await self._db.execute(
+                "UPDATE contacts SET peer_fingerprint = ? WHERE contact_id = ?",
+                (fp, contact_id),
+            )
+        if stale:
+            await self._db.commit()
+
+    async def _hub_username_unique_index_exists(self) -> bool:
+        """True when the legacy UNIQUE auto-index on hub_username still exists."""
+        for idx in await (
+            await self._db.execute("PRAGMA index_list('contacts')")
+        ).fetchall():
+            # index_list row: (seq, name, unique, origin, partial)
+            if idx[2] and idx[3] == "u":
+                cols = [
+                    r[2]
+                    for r in await (
+                        await self._db.execute(f"PRAGMA index_info('{idx[1]}')")
+                    ).fetchall()
+                ]
+                if cols == ["hub_username"]:
+                    return True
+        return False
+
     # ------------------------------------------------------------------
     # contacts
     # ------------------------------------------------------------------
@@ -87,6 +198,7 @@ class ContactsStore(BaseStore):
         display_name: str,
         ed25519_pub: str,
         x25519_pub: str,
+        peer_fingerprint: str = "",
         status: str = "active",
         local_crm_id: str | None = None,
     ) -> None:
@@ -104,17 +216,18 @@ class ContactsStore(BaseStore):
         await self._db.execute(
             """INSERT INTO contacts
                (contact_id, hub_username, display_name, ed25519_pub, x25519_pub,
-                status, local_crm_id, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                peer_fingerprint, status, local_crm_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(contact_id) DO UPDATE SET
                  ed25519_pub = excluded.ed25519_pub,
                  x25519_pub = excluded.x25519_pub,
+                 peer_fingerprint = excluded.peer_fingerprint,
                  display_name = excluded.display_name,
                  status = excluded.status,
                  local_crm_id = excluded.local_crm_id,
                  revoked_at = NULL""",
             (contact_id, hub_username, display_name, ed25519_pub, x25519_pub,
-             status, local_crm_id, now),
+             peer_fingerprint, status, local_crm_id, now),
         )
         await self._db.commit()
 
@@ -133,6 +246,44 @@ class ContactsStore(BaseStore):
             rows = await cursor.fetchall()
             columns = [desc[0] for desc in cursor.description]
         return _row_to_dict(columns, rows[0]) if rows else None
+
+    async def get_contacts_by_fingerprint(
+        self, peer_fingerprint: str
+    ) -> list[dict]:
+        """Return every contact row pinned to a peer signing-key fingerprint.
+
+        Under fingerprint keying there is at most one row per fingerprint
+        (contact_id == "hub:{fingerprint}"), but legacy username-keyed rows or a
+        mid-flight rename can leave several contacts sharing a fingerprint.
+        Revocation flows must act on ALL matches — never silently pick the
+        first — so this returns the full list rather than ``rows[0]``.
+        """
+        if not peer_fingerprint:
+            return []
+        async with self._db.execute(
+            "SELECT * FROM contacts WHERE peer_fingerprint = ?",
+            (peer_fingerprint,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+        return [_row_to_dict(columns, r) for r in rows]
+
+    async def get_contact_by_fingerprint(
+        self, peer_fingerprint: str
+    ) -> Optional[dict]:
+        """Look up a contact by its peer signing-key fingerprint.
+
+        Returns the contact row, or None if no contact is pinned to this
+        fingerprint.  This is the canonical lookup: the contact is keyed on the
+        fingerprint (the stable, peer-independent identifier), so it is the
+        primary path for the block cascade and any revocation flow.
+
+        Single-row convenience wrapper around :meth:`get_contacts_by_fingerprint`
+        for flows that expect at most one match; revocation flows should use the
+        plural form so a stale duplicate is never silently skipped.
+        """
+        matches = await self.get_contacts_by_fingerprint(peer_fingerprint)
+        return matches[0] if matches else None
 
     async def set_contact_status(self, contact_id: str, status: str) -> None:
         if status not in VALID_CONTACT_STATUSES:
@@ -287,18 +438,26 @@ class ContactsStore(BaseStore):
         )
         await self._db.commit()
 
-    async def revoke_peer_link(self, contact_id: str) -> None:
-        """Revoke the peer link (cascades to block contact)."""
+    async def revoke_peer_link(self, contact_id: str) -> bool:
+        """Revoke the peer link (cascades to block contact).
+
+        Returns True when a peer_link row actually matched the ``contact_id``
+        (i.e. there was a link to revoke), False when the UPDATE matched zero
+        rows.  A safety revoke that matched nothing must never be reported as
+        success, so callers are expected to act on the return value.
+        """
         now = time.time()
-        await self._db.execute(
+        cursor = await self._db.execute(
             "UPDATE peer_links SET revoked_at = ? WHERE contact_id = ?",
             (now, contact_id),
         )
+        matched = (cursor.rowcount or 0) > 0
         await self._db.execute(
             "UPDATE contacts SET status = 'revoked', revoked_at = ? WHERE contact_id = ?",
             (now, contact_id),
         )
         await self._db.commit()
+        return matched
 
 
 # ---------------------------------------------------------------------------

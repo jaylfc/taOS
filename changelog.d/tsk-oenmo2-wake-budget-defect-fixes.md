@@ -1,0 +1,6 @@
+### Fixed
+
+- Bare or empty `wake_budget:` YAML keys (parsed as `None`) are now tolerated as defaults (the documented 2-wake global default applies) instead of raising `wake_budget must be a mapping`. The b4vs65 changelog claimed this shipped but the actual code change did not land; load_config now treats a `None` `wake_budget` the same as an absent one, and `validate_config` no longer rejects `None`. Live regression risk for existing configs whose `wake_budget:` line is empty.
+- Damaged wake_budget.json rows in `get_fleet_wake_info` now carry an explicit `state: "damaged"` marker. A `consumed:0/remaining:0` row from a failed state read was previously indistinguishable from a genuinely exhausted agent; the marker names the failed read so the fleet UI can tell the two apart.
+- `validate_config` now rejects float values for `per_agent` and `per_project` budgets (the strict `isinstance(val, int)` check). Previously these sections silently accepted floats via `int(val)`, truncating `0.9` to `0` and disabling scheduled wakes fleet-wide for the affected agent/project. (Coverage test added; the strict check was already in place for `global_default`.)
+- Fleet wake-info now preserves the first successful read when the second read fails (b4vs65 claim made concrete), and degrades both branches with the `state: "damaged"` marker.
