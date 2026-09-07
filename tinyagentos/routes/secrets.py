@@ -6,8 +6,19 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
+from tinyagentos.auth_context import (
+    CurrentUser,
+    current_user,
+    require_admin,
+    require_agent_owner_or_admin,
+    require_owner_or_admin,
+)
 
+# The keystore is system-global (one store, plaintext values on read), so every
+# handler is admin-or-local-token EXCEPT the two agent-scoped reads, which stay
+# owner-or-admin so a member (or its deployed agent) can read grants for an
+# agent it owns. Applied per handler rather than at router level for that
+# reason -- see tinyagentos.auth_context.require_admin.
 router = APIRouter()
 
 
@@ -26,7 +37,7 @@ class SecretUpdate(BaseModel):
     agents: Optional[list[str]] = None
 
 
-@router.get("/api/secrets/categories")
+@router.get("/api/secrets/categories", dependencies=[Depends(require_admin)])
 async def list_categories(request: Request):
     store = request.app.state.secrets
     categories = await store.get_categories()
@@ -34,7 +45,19 @@ async def list_categories(request: Request):
 
 
 @router.get("/api/secrets/agent/{agent_name}")
-async def get_agent_secrets(request: Request, agent_name: str):
+async def get_agent_secrets(
+    request: Request,
+    agent_name: str,
+    user: CurrentUser = Depends(current_user),
+):
+    """Return the secrets granted to *agent_name* -- values in PLAINTEXT.
+
+    Owner-or-admin: the registry must attribute the agent to the caller. An
+    agent the registry cannot attribute (unknown, or config-only) is readable
+    by an admin only -- a non-admin never learns another agent's secrets by
+    guessing its name.
+    """
+    await require_agent_owner_or_admin(request, user, agent_name)
     store = request.app.state.secrets
     secrets = await store.get_agent_secrets(agent_name)
     return secrets
@@ -67,7 +90,7 @@ async def get_agent_github_grants(
     return installations
 
 
-@router.get("/api/secrets/{name:path}")
+@router.get("/api/secrets/{name:path}", dependencies=[Depends(require_admin)])
 async def get_secret(request: Request, name: str):
     store = request.app.state.secrets
     secret = await store.get(name)
@@ -76,7 +99,7 @@ async def get_secret(request: Request, name: str):
     return secret
 
 
-@router.get("/api/secrets")
+@router.get("/api/secrets", dependencies=[Depends(require_admin)])
 async def list_secrets(request: Request, category: str | None = None):
     store = request.app.state.secrets
     secrets = await store.list(category=category)
@@ -86,7 +109,7 @@ async def list_secrets(request: Request, category: str | None = None):
     return secrets
 
 
-@router.post("/api/secrets")
+@router.post("/api/secrets", dependencies=[Depends(require_admin)])
 async def add_secret(request: Request, body: SecretCreate):
     store = request.app.state.secrets
     # Check for duplicate
@@ -103,7 +126,7 @@ async def add_secret(request: Request, body: SecretCreate):
     return {"id": secret_id, "status": "created"}
 
 
-@router.put("/api/secrets/{name:path}")
+@router.put("/api/secrets/{name:path}", dependencies=[Depends(require_admin)])
 async def update_secret(request: Request, name: str, body: SecretUpdate):
     store = request.app.state.secrets
     updated = await store.update(
@@ -118,7 +141,7 @@ async def update_secret(request: Request, name: str, body: SecretUpdate):
     return {"status": "updated"}
 
 
-@router.delete("/api/secrets/{name:path}")
+@router.delete("/api/secrets/{name:path}", dependencies=[Depends(require_admin)])
 async def delete_secret(request: Request, name: str):
     store = request.app.state.secrets
     deleted = await store.delete(name)

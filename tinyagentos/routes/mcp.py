@@ -3,14 +3,22 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, model_validator
 
+from tinyagentos.auth_context import require_admin
 from tinyagentos.mcp.proxy import call_tool
 from tinyagentos.themes.schema import ThemeError, theme_vocabulary, validate_theme_config
 
+# MCP servers are a system-global integration surface. Every lifecycle /
+# config / env / permission mutation and the tool-call proxy is gated
+# admin-or-local-token per handler (tinyagentos.auth_context.require_admin);
+# the non-key-bearing reads (server list, logs, capabilities, config, used-by)
+# stay open to any signed-in user so the MCP app renders for members. The env
+# read is gated too: its key NAMES are part of the secret surface.
 router = APIRouter()
+_ADMIN = [Depends(require_admin)]
 
 
 class AttachRequest(BaseModel):
@@ -55,7 +63,7 @@ async def list_servers(request: Request):
     return JSONResponse({"servers": servers})
 
 
-@router.post("/api/mcp/servers/{server_id}/start")
+@router.post("/api/mcp/servers/{server_id}/start", dependencies=_ADMIN)
 async def start_server(server_id: str, request: Request):
     supervisor = request.app.state.mcp_supervisor
     ok = await supervisor.start(server_id)
@@ -64,14 +72,14 @@ async def start_server(server_id: str, request: Request):
     return JSONResponse({"ok": True, "server_id": server_id})
 
 
-@router.post("/api/mcp/servers/{server_id}/stop")
+@router.post("/api/mcp/servers/{server_id}/stop", dependencies=_ADMIN)
 async def stop_server(server_id: str, request: Request):
     supervisor = request.app.state.mcp_supervisor
     ok = await supervisor.stop(server_id)
     return JSONResponse({"ok": ok, "server_id": server_id})
 
 
-@router.post("/api/mcp/servers/{server_id}/restart")
+@router.post("/api/mcp/servers/{server_id}/restart", dependencies=_ADMIN)
 async def restart_server(server_id: str, request: Request):
     supervisor = request.app.state.mcp_supervisor
     ok = await supervisor.restart(server_id)
@@ -80,7 +88,7 @@ async def restart_server(server_id: str, request: Request):
     return JSONResponse({"ok": True, "server_id": server_id})
 
 
-@router.delete("/api/mcp/servers/{server_id}")
+@router.delete("/api/mcp/servers/{server_id}", dependencies=_ADMIN)
 async def uninstall_server(server_id: str, request: Request):
     store = request.app.state.mcp_store
     supervisor = request.app.state.mcp_supervisor
@@ -148,7 +156,7 @@ async def list_permissions(server_id: str, request: Request):
     return JSONResponse({"server_id": server_id, "attachments": attachments})
 
 
-@router.post("/api/mcp/servers/{server_id}/permissions")
+@router.post("/api/mcp/servers/{server_id}/permissions", dependencies=_ADMIN)
 async def attach_permission(server_id: str, body: AttachRequest, request: Request):
     store = request.app.state.mcp_store
     server = await store.get_server(server_id)
@@ -164,7 +172,7 @@ async def attach_permission(server_id: str, body: AttachRequest, request: Reques
     return JSONResponse({"ok": True, "attachment_id": attachment_id})
 
 
-@router.delete("/api/mcp/servers/{server_id}/permissions/{attachment_id}")
+@router.delete("/api/mcp/servers/{server_id}/permissions/{attachment_id}", dependencies=_ADMIN)
 async def delete_permission(server_id: str, attachment_id: int, request: Request):
     store = request.app.state.mcp_store
     removed = await store.delete_attachment(attachment_id)
@@ -180,7 +188,7 @@ async def get_config(server_id: str, request: Request):
     return JSONResponse({"server_id": server_id, "config": config})
 
 
-@router.put("/api/mcp/servers/{server_id}/config")
+@router.put("/api/mcp/servers/{server_id}/config", dependencies=_ADMIN)
 async def put_config(server_id: str, body: ConfigBody, request: Request):
     store = request.app.state.mcp_store
     server = await store.get_server(server_id)
@@ -190,7 +198,7 @@ async def put_config(server_id: str, body: ConfigBody, request: Request):
     return JSONResponse({"ok": True, "server_id": server_id})
 
 
-@router.get("/api/mcp/servers/{server_id}/env")
+@router.get("/api/mcp/servers/{server_id}/env", dependencies=_ADMIN)
 async def get_env(server_id: str, request: Request):
     secrets_store = request.app.state.secrets
     prefix = f"mcp:{server_id}:"
@@ -204,7 +212,7 @@ async def get_env(server_id: str, request: Request):
     return JSONResponse({"server_id": server_id, "env_keys": list(env.keys())})
 
 
-@router.put("/api/mcp/servers/{server_id}/env")
+@router.put("/api/mcp/servers/{server_id}/env", dependencies=_ADMIN)
 async def put_env(server_id: str, body: EnvBody, request: Request):
     secrets_store = request.app.state.secrets
     prefix = f"mcp:{server_id}:"
@@ -230,7 +238,7 @@ async def used_by(server_id: str, request: Request):
     return JSONResponse({"server_id": server_id, "agents": agents})
 
 
-@router.post("/api/mcp/call")
+@router.post("/api/mcp/call", dependencies=_ADMIN)
 async def proxy_call(request: Request):
     body = await request.json()
     missing = [f for f in ("server_id", "tool", "agent_name") if not body.get(f)]

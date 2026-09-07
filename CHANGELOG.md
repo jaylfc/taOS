@@ -7,6 +7,15 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.51] - 2026-09-07
+
+Security hotfix release cut from 1.0.0-beta.50. Every install with more than one user account should update.
+
+### Security
+
+- Non-admin members can no longer read or change global resources they were never meant to reach: the secrets keystore (`/api/secrets` get/list/add/update/delete), controller restart and AI-stack restart (`/api/system/restart/prepare`, `/api/system/ai-stack/restart`, remote `prepare-shutdown`), provider create/patch/start/stop/delete (with `api_key` redacted from `GET /api/providers` for non-admins), MCP server start/stop/restart/uninstall, config, env, permission attach/detach and tool calls, and the cluster fleet mutations (`DELETE /api/cluster/workers/{name}`, `deploy`, `remote`, `move`, `route`, `promote-archived`) now answer `403 forbidden` unless the caller is an admin session or holds the host local token. A member still reads the granted secrets of, and mints Agent-as-a-Model consent keys for, agents it owns (ownership resolved through the agent registry); single-user installs are unaffected. The MCP part of this closes a host command execution reachable by any non-admin member (store an arbitrary `cmd` for an installed server, then start it), reported by MR-pentestGuy (GHSA-5ppx-4q94-9v48).
+- Fixed a path traversal in `POST /api/import/upload` and `POST /api/import/embed`: a client-supplied filename such as an absolute path or `../` escaped the upload directory, letting any authenticated user write or read files the server process can reach, including the auth store. Names must now be a plain basename that resolves inside the upload directory, and `agent_name` is validated. Reported by EQSTLab (GHSA-rwrp-hfc4-qg2w).
+
 ## [1.0.0-beta.50] - 2026-08-21
 
 ### Added
