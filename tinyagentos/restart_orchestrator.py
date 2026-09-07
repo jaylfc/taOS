@@ -10,6 +10,8 @@ from typing import Literal
 
 import httpx
 
+from tinyagentos.atomic_io import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 Reason = Literal["pause", "stop", "system-shutdown"]
@@ -44,8 +46,8 @@ def _pending_restart_path() -> Path:
 def write_pending_restart(target_sha: str) -> None:
     path = _pending_restart_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"target_sha": target_sha, "pulled_at": int(time.time())})
+    atomic_write_text(
+        path, json.dumps({"target_sha": target_sha, "pulled_at": int(time.time())})
     )
 
 
@@ -199,7 +201,7 @@ class RestartOrchestrator:
             "next_step_hint": "controller-side fallback — agent framework did not implement /prepare-for-shutdown",
             "context_snapshot": {},
         }
-        note_path.write_text(json.dumps(note, indent=2))
+        await asyncio.to_thread(atomic_write_text, note_path, json.dumps(note, indent=2))
         return str(note_path)
 
 
@@ -235,6 +237,8 @@ async def apply_pending_restart_check(app_state) -> None:
         )
         clear_pending_restart()
     else:
+        if not current_sha:
+            clear_pending_restart()
         await notif.add(
             title="Restart happened but code didn't update",
             message=f"Still on {short_current}, expected {short_target}. Check git pull output.",
