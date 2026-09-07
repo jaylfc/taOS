@@ -69,6 +69,30 @@ def detect_kind(source_url: str = "", content_type: str = "",
     # File extension fallback
     if file_path:
         ext = Path(file_path).suffix.lower()
+        
+        # Explicit overrides for extensions that mimetypes might get wrong
+        # Keep .py as file processor even though mimetypes returns text/x-python
+        # .py is an explicit override to NOT use TextProcessor (per audit)
+        if ext == ".py":
+            return "file"
+        
+        # Explicit override for .log files: even though mimetypes returns None,
+        # the audit requires .log files to use TextProcessor for text extraction
+        if ext == ".log":
+            return "text"
+        
+        # Check mimetypes for modern extensions (yaml, toml, etc.)
+        mime_type, _ = mimetypes.guess_type(file_path)
+        
+        # If mimetypes returns a text/* MIME type or other known text-based MIME type,
+        # use text processor. This handles .txt, .md, .csv, .json, .xml, .html,
+        # .yaml, .yml, .toml and similar extensions that should extract text.
+        if mime_type and (mime_type.startswith("text/") or 
+                         mime_type in ("application/json", "application/xml", 
+                                     "application/yaml", "application/toml")):
+            return "text"
+        
+        # Other extensions from the original ext_map
         ext_map = {
             ".txt": "text", ".md": "text", ".csv": "text",
             ".json": "text", ".xml": "text", ".html": "text",
