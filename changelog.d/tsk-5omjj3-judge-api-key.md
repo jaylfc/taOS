@@ -1,0 +1,2 @@
+### Fixed
+- The Phase 4 reasoning judge sent the placeholder key `taos-internal` to the LiteLLM proxy on every call, so `litellm_auth` rejected it with 401 and the judge has been dead since introduction. `app.py` now passes the real per-install master key (`get_litellm_master_key`) — the same source the deployer and LLMProxy use — and `ReasoningJudge`'s `litellm_api_key` parameter is required (the `"taos-internal"` default is removed) so a missing key fails loudly at construction instead of silently producing a dead judge.

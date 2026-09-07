@@ -1147,8 +1147,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # can call it after each write.
         app.state.trace_registry.set_emitter(_otel_emitter)
         # Phase 4: reasoning judge — fire on lifecycle session_end.
+        from tinyagentos.litellm_config import get_litellm_master_key
         from tinyagentos.otel.judge import ReasoningJudge
-        _judge = ReasoningJudge(litellm_base_url=f"http://localhost:{app.state.llm_proxy.port}/v1")
+        _judge = ReasoningJudge(
+            litellm_base_url=f"http://localhost:{app.state.llm_proxy.port}/v1",
+            litellm_api_key=get_litellm_master_key(data_dir),
+        )
         app.state.trace_registry.set_judge(_judge)
 
         # Bridge session registry — per-agent queue + accumulator for openclaw.

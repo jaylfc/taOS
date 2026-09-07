@@ -17,9 +17,11 @@ import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 import pytest_asyncio
 
+from tinyagentos.litellm_config import get_litellm_master_key
 from tinyagentos.otel.judge import ReasoningJudge, _format_trace, _resolve_judge_model
 from tinyagentos.trace_store import AgentTraceStore
 
@@ -128,7 +130,7 @@ def test_resolve_judge_model_from_taosmd():
 @pytest.mark.asyncio
 async def test_judge_skips_trivial_no_tool(tmp_path):
     store = _store(tmp_path)
-    judge = ReasoningJudge()
+    judge = ReasoningJudge(litellm_api_key="test-key")
 
     store_list = AsyncMock(return_value=_events(with_llm=True, with_tool=False))
     with patch.object(store, "list", store_list):
@@ -142,7 +144,7 @@ async def test_judge_skips_trivial_no_tool(tmp_path):
 @pytest.mark.asyncio
 async def test_judge_skips_trivial_no_llm(tmp_path):
     store = _store(tmp_path)
-    judge = ReasoningJudge()
+    judge = ReasoningJudge(litellm_api_key="test-key")
 
     store_list = AsyncMock(return_value=_events(with_llm=False, with_tool=True))
     with patch.object(store, "list", store_list):
@@ -160,7 +162,7 @@ async def test_judge_skips_trivial_no_llm(tmp_path):
 @pytest.mark.asyncio
 async def test_judge_pass_verdict(tmp_path):
     store = _store(tmp_path)
-    judge = ReasoningJudge(judge_model="test-model")
+    judge = ReasoningJudge(judge_model="test-model", litellm_api_key="test-key")
 
     mock_resp = _mock_llm_response("pass", [])
     mock_client = AsyncMock()
@@ -186,7 +188,7 @@ async def test_judge_pass_verdict(tmp_path):
 @pytest.mark.asyncio
 async def test_judge_fail_verdict_with_flags(tmp_path):
     store = _store(tmp_path)
-    judge = ReasoningJudge(judge_model="test-model")
+    judge = ReasoningJudge(judge_model="test-model", litellm_api_key="test-key")
 
     flags = ["tool result ignored", "conclusion contradicts evidence"]
     mock_resp = _mock_llm_response("fail", flags)
@@ -208,7 +210,7 @@ async def test_judge_fail_verdict_with_flags(tmp_path):
 @pytest.mark.asyncio
 async def test_judge_unwraps_markdown_fences(tmp_path):
     store = _store(tmp_path)
-    judge = ReasoningJudge(judge_model="test-model")
+    judge = ReasoningJudge(judge_model="test-model", litellm_api_key="test-key")
 
     fenced_json = '```json\n{"verdict": "warn", "flags": ["slight drift"]}\n```'
     resp = MagicMock()
@@ -232,7 +234,7 @@ async def test_judge_unwraps_markdown_fences(tmp_path):
 @pytest.mark.asyncio
 async def test_judge_unknown_verdict_becomes_warn(tmp_path):
     store = _store(tmp_path)
-    judge = ReasoningJudge(judge_model="test-model")
+    judge = ReasoningJudge(judge_model="test-model", litellm_api_key="test-key")
 
     resp = MagicMock()
     resp.json.return_value = {"choices": [{"message": {"content": '{"verdict": "maybe", "flags": []}'}}]}
@@ -256,7 +258,7 @@ async def test_judge_unknown_verdict_becomes_warn(tmp_path):
 @pytest.mark.asyncio
 async def test_judge_http_error_is_swallowed(tmp_path):
     store = _store(tmp_path)
-    judge = ReasoningJudge(judge_model="test-model")
+    judge = ReasoningJudge(judge_model="test-model", litellm_api_key="test-key")
 
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -277,7 +279,7 @@ async def test_judge_http_error_is_swallowed(tmp_path):
 
 def test_judge_schedule_noop_outside_asyncio(tmp_path):
     store = _store(tmp_path)
-    judge = ReasoningJudge()
+    judge = ReasoningJudge(litellm_api_key="test-key")
     # Should not raise even outside a running event loop.
     judge.schedule(store, "trace-xyz")
     assert len(judge._pending_tasks) == 0
@@ -344,3 +346,59 @@ async def test_trace_store_no_judge_is_noop(tmp_path):
         trace_id="trace-abc",
         payload={"event": "session_end"},
     )
+
+
+# ---------------------------------------------------------------------------
+# R2-9: judge must send the real LiteLLM master key, not "taos-internal"
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_judge_sends_real_proxy_key(tmp_path):
+    """R2-9: construct the judge as app.py does and verify the Authorization
+    header carries the real LiteLLM master key, not the 'taos-internal' default.
+
+    Before the fix, app.py:1151 passed only the base URL, so the judge
+    defaulted to "taos-internal" and every call was rejected by litellm_auth
+    with 401 — the judge has been dead since introduction.
+    """
+    real_key = get_litellm_master_key(tmp_path)
+
+    # Construct the judge as app.py does, passing the real proxy key.
+    judge = ReasoningJudge(
+        litellm_base_url="http://testserver/v1",
+        litellm_api_key=real_key,
+    )
+
+    captured: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request.headers.get("authorization", ""))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": '{"verdict": "pass", "flags": []}'}}
+                ]
+            },
+        )
+
+    mock_transport = httpx.MockTransport(handler)
+    store = _store(tmp_path)
+    with patch.object(store, "list", AsyncMock(return_value=_events())), \
+         patch.object(store, "record", AsyncMock()), \
+         patch(
+             "tinyagentos.otel.judge.httpx.AsyncClient",
+             return_value=httpx.AsyncClient(transport=mock_transport),
+         ):
+        await judge._run_inner(store, "trace-key-check")
+
+    assert captured == [f"Bearer {real_key}"]
+    assert real_key != "taos-internal"
+
+
+def test_judge_requires_api_key():
+    """R2-9: removing the 'taos-internal' placeholder default — a missing key
+    must fail loudly at construction rather than silently sending a key that
+    litellm_auth rejects with 401."""
+    with pytest.raises(TypeError):
+        ReasoningJudge(litellm_base_url="http://localhost:7834/v1")
