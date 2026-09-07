@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Sparkle-sign the DMG and produce an appcast snippet.
 #
-# Args: --dmg <PATH> --version <X.Y.Z> --output <DIR>
+# Args: --dmg <PATH> --version <X.Y.Z> --output <DIR> [--notes-file <PATH>]
 set -euo pipefail
 
 DMG=""
 VERSION=""
 OUTPUT=""
+NOTES_FILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dmg) DMG="$2"; shift 2 ;;
     --version) VERSION="$2"; shift 2 ;;
     --output) OUTPUT="$2"; shift 2 ;;
+    --notes-file) NOTES_FILE="$2"; shift 2 ;;
     *) echo "sparkle_sign.sh: unknown arg $1" >&2; exit 2 ;;
   esac
 done
@@ -44,13 +46,15 @@ echo -n "$SIG_FIELD" > "${DMG}.sig"
 # Build the appcast snippet
 mkdir -p "$OUTPUT"
 SNIPPET="$OUTPUT/appcast-snippet.xml"
-NOTES_FILE="$REPO_ROOT/CHANGELOG.md"
-NOTES="$(awk -v v="$VERSION" 'BEGIN{p=0} /^## /{p=($2==v)} p' "$NOTES_FILE" 2>/dev/null || echo "")"
+: "${NOTES_FILE:=$REPO_ROOT/CHANGELOG.md}"
+NOTES="$(awk -v v="$VERSION" 'BEGIN{p=0} /^## /{p=($2=="["v"]")} p' "$NOTES_FILE" 2>/dev/null || echo "")"
+NOTES="${NOTES//]]>/]]]]><![CDATA[>}"
 
 cat > "$SNIPPET" <<XML
     <item>
       <title>v${VERSION}</title>
       <sparkle:version>${VERSION}</sparkle:version>
+      <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
       <description><![CDATA[${NOTES}]]></description>
       <enclosure
