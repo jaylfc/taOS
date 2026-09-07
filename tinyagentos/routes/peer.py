@@ -209,6 +209,10 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
     # Mark peer as seen
     await store.mark_peer_seen(contact_id)
 
+    # Drain outbox — the peer is now considered online, so any pending
+    # delivery attempts can be retried.
+    await request.app.state.peer_outbox.dequeue_due(contact_id, limit=50)
+
     # Dispatch the envelope by kind.
     kind = envelope.get("kind", "unknown")
     body_data = envelope.get("body", {})
@@ -309,6 +313,10 @@ async def peer_chat(body: PeerEnvelope, request: Request):
 
     await store.mark_peer_seen(contact_id)
 
+    # Drain outbox — the peer is now considered online, so any pending
+    # delivery attempts can be retried.
+    await request.app.state.peer_outbox.dequeue_due(contact_id, limit=50)
+
     logger.info(
         "peer_chat: contact=%s nonce=%s",
         contact_id, envelope.get("nonce", "?"),
@@ -348,6 +356,10 @@ async def peer_ack(body: PeerAck, request: Request):
         raise HTTPException(status_code=409, detail="ack replay detected")
 
     await store.mark_peer_seen(contact_id)
+
+    # Drain outbox — the peer is now considered online, so any pending
+    # delivery attempts can be retried.
+    await request.app.state.peer_outbox.dequeue_due(contact_id, limit=50)
 
     logger.info(
         "peer_ack: contact=%s envelope_nonce=%s",

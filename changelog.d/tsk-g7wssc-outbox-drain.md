@@ -1,0 +1,2 @@
+### Added
+- outbox drain on peer last_seen refresh: when a peer link's ``last_seen_at`` is refreshed (via ``/api/peer/inbox``, ``/api/peer/chat``, or ``/api/peer/ack``), pending outbox entries for that contact are drained so delivery attempts can resume

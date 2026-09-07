@@ -14,11 +14,13 @@ import sqlite3
 import time
 from pathlib import Path
 
+import httpx
 import pytest
 import pytest_asyncio
 
 from tinyagentos.chat.message_store import ChatMessageStore
 from tinyagentos.chat.peer_outbox import PeerOutboxStore
+from tinyagentos.contacts_store import ContactsStore, generate_peer_token, _hash_token
 
 
 # ---------------------------------------------------------------------------
@@ -410,3 +412,57 @@ class TestPeerOutboxUpgrade:
             assert count == 1
         finally:
             await s2.close()
+
+
+# ---------------------------------------------------------------------------
+# Outbox drain on peer last_seen refresh
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestOutboxDrainOnLastSeenRefresh:
+    async def test_drain_outbox_when_peer_seen(self, tmp_path):
+        from tinyagentos.contacts_store import generate_peer_token, _hash_token
+
+        # Setup contacts store with a peer link
+        contact_db = tmp_path / "contacts.db"
+        cs = ContactsStore(contact_db)
+        await cs.init()
+        try:
+            await cs.add_contact(
+                contact_id="hub:drain-test",
+                hub_username="drain-test",
+                display_name="Drain Test",
+                ed25519_pub="pk",
+                x25519_pub="ek",
+            )
+            inbound = generate_peer_token()
+            await cs.establish_peer_link(
+                contact_id="hub:drain-test",
+                inbound_token=inbound,
+                outbound_token=generate_peer_token(),
+            )
+
+            # Setup outbox store and enqueue a message
+            ob_db = tmp_path / "outbox.db"
+            ob = PeerOutboxStore(ob_db)
+            await ob.init()
+            try:
+                rid = await ob.enqueue(
+                    contact_id="hub:drain-test",
+                    envelope={"kind": "chat", "body": {"content": "hello"}},
+                )
+                assert rid
+
+                # Simulate peer coming back online by marking as seen
+                await cs.mark_peer_seen("hub:drain-test")
+
+                # Drain the outbox — pending delivery attempts can now resume
+                due = await ob.dequeue_due("hub:drain-test", limit=10)
+                assert len(due) == 1
+                assert due[0]["contact_id"] == "hub:drain-test"
+                env = json.loads(due[0]["envelope"])
+                assert env["kind"] == "chat"
+            finally:
+                await ob.close()
+        finally:
+            await cs.close()

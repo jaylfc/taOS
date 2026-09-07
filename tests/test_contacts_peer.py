@@ -512,6 +512,13 @@ async def app_with_contacts(tmp_data_dir, monkeypatch):
         await store.close()
     await store.init()
 
+    # Initialise peer_outbox store (also not done by create_app in test context)
+    ob = _app.state.peer_outbox
+    if ob is not None and ob._db is not None:
+        await ob.close()
+    if ob is not None:
+        await ob.init()
+
     # Bootstrap a hub identity so resolve_local_identity_id() works in tests.
     # Must set TAOS_DATA_DIR so hub.identity module resolves to tmp_data_dir.
     monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_data_dir))
