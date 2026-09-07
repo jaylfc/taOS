@@ -10,12 +10,10 @@ license: AGPL-3.0
 requires:
   ram_mb: 2048
   disk_mb: 4000
-  ports: [1337]
-
 install:
   method: docker
   image: ghcr.io/janhq/jan-server:latest
-  ports: [1337]
+  ports: ["1337:1337"]
 
 hardware_tiers:
   arm-npu-16gb: full

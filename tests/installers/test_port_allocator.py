@@ -71,7 +71,7 @@ class TestDockerComposeMultiPort:
         installer.apps_dir = tmp_path
         compose, host_port = installer._generate_compose(
             "multi-port-compose-app",
-            {"image": "example/image:latest", "requires": {"ports": [8080, 9090, 7070]}},
+            {"image": "example/image:latest", "ports": [8080, 9090, 7070]},
         )
         mappings = compose["services"]["multi-port-compose-app"]["ports"]
         host_side = [int(m.split(":")[0]) for m in mappings]
@@ -96,7 +96,7 @@ class TestDockerComposeMultiPort:
             s.listen(1)
             compose, _ = installer._generate_compose(
                 app_id,
-                {"image": "example/image:latest", "requires": {"ports": [8080, 9090]}},
+                {"image": "example/image:latest", "ports": [8080, 9090]},
             )
             host_side = [
                 int(m.split(":")[0])

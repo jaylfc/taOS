@@ -10,15 +10,13 @@ license: GPL-3.0
 requires:
   ram_mb: 2048
   disk_mb: 8000
-  ports: [7865]
-
 install:
   method: docker
   image: ghcr.io/lllyasviel/fooocus:latest
   volumes:
     - data:/content/data
     - outputs:/content/outputs
-  ports: [7865]
+  ports: ["7865:7865"]
 
 hardware_tiers:
   arm-npu-16gb: unsupported

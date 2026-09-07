@@ -10,8 +10,6 @@ license: AGPL-3.0
 requires:
   ram_mb: 2048
   disk_mb: 10000
-  ports: [7860]
-
 install:
   method: docker
   image: ghcr.io/ai-dock/stable-diffusion-webui:latest
@@ -19,7 +17,7 @@ install:
     - data:/workspace
     - models:/workspace/stable-diffusion-webui/models
     - outputs:/workspace/stable-diffusion-webui/outputs
-  ports: [7860]
+  ports: ["7860:7860"]
 
 hardware_tiers:
   arm-npu-16gb: unsupported

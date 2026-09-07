@@ -10,14 +10,12 @@ license: MIT
 requires:
   ram_mb: 128
   disk_mb: 200
-  ports: [3001]
-
 install:
   method: docker
   image: louislam/uptime-kuma:1
   volumes:
     - data:/app/data
-  ports: [3001]
+  ports: ["3001:3001"]
 
 lifecycle:
   health_check: "curl -sf http://localhost:3001"

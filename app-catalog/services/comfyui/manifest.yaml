@@ -10,15 +10,13 @@ license: GPL-3.0
 requires:
   ram_mb: 2048
   disk_mb: 10000
-  ports: [8188]
-
 install:
   method: docker
   image: ghcr.io/ai-dock/comfyui:latest
   volumes:
     - data:/workspace
     - models:/workspace/ComfyUI/models
-  ports: [8188]
+  ports: ["8188:8188"]
 
 hardware_tiers:
   arm-npu-16gb: unsupported

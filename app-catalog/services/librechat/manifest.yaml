@@ -10,12 +10,10 @@ license: MIT
 requires:
   ram_mb: 1024
   disk_mb: 4000
-  ports: [3080]
-
 install:
   method: docker
   image: ghcr.io/danny-avila/librechat-dev:latest
-  ports: [3080]
+  ports: ["3080:3080"]
   env:
     HOST: "0.0.0.0"
 

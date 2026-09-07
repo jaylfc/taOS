@@ -331,16 +331,14 @@ def _docker_published_port(install_config: dict) -> int:
 
     DockerInstaller maps each declared port as ``{allocated_host_port}:{container_port}``
     so the container-side port is distinct from the host port.  This function
-    reads the container ports from the manifest (install.ports or
-    install.requires.ports) for use as a fallback when the installer
-    doesn't return a host_port.  Ports may be declared either at the top
-    level (``install.ports``) or nested under ``install.requires.ports`` —
-    mirror the precedence DockerInstaller._generate_compose uses (requires
-    first).
+    reads the container ports from the manifest's ``install.ports`` list
+    (the canonical key since lib-audit R2-34; ``install.requires.ports`` is
+    no longer used by any manifest) for use as a fallback when the installer
+    doesn't return a host_port.
     """
     if not isinstance(install_config, dict):
         return 0
-    ports = (install_config.get("requires") or {}).get("ports") or install_config.get("ports") or []
+    ports = install_config.get("ports") or []
     for p in ports:
         try:
             return int(p)

@@ -18,7 +18,7 @@ install:
     - ./settings.yml:/etc/searxng/settings.yml:ro
   # 8080 is the container-internal port; the host port is allocated from the
   # managed pool (30000-40000) by the installer — never bound to 8080 on the host.
-  ports: [8080]
+  ports: ["8080:8080"]
   config_files:
     - path: settings.yml
       content: |

@@ -10,14 +10,12 @@ license: MIT
 requires:
   ram_mb: 256
   disk_mb: 500
-  ports: [10200]
-
 install:
   method: docker
   image: rhasspy/wyoming-piper:latest
   volumes:
     - voices:/data
-  ports: [10200]
+  ports: ["10200:10200"]
   env:
     PIPER_VOICE: "en_US-lessac-medium"
 

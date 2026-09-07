@@ -10,14 +10,12 @@ license: AGPL-3.0
 requires:
   ram_mb: 256
   disk_mb: 500
-  ports: [3000]
-
 install:
   method: docker
   image: ghcr.io/linkwarden/linkwarden:latest
   volumes:
     - data:/data/data
-  ports: [3000]
+  ports: ["3000:3000"]
   env:
     NEXTAUTH_SECRET: "{secret_key}"
     NEXTAUTH_URL: "http://localhost:3000"

@@ -10,15 +10,13 @@ license: MIT
 requires:
   ram_mb: 256
   disk_mb: 500
-  ports: [3000]
-
 install:
   method: docker
   image: gitea/gitea:1.22
   volumes:
     - data:/data
     - config:/etc/gitea
-  ports: [3000]
+  ports: ["3000:3000"]
   env:
     GITEA__server__ROOT_URL: "http://localhost:3000"
     GITEA__server__SSH_PORT: "2222"

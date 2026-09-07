@@ -10,14 +10,12 @@ license: MIT
 requires:
   ram_mb: 32
   disk_mb: 50
-  ports: [8000]
-
 install:
   method: docker
   image: qmcgaw/ddns-updater:latest
   volumes:
     - data:/updater/data
-  ports: [8000]
+  ports: ["8000:8000"]
   env:
     PERIOD: "5m"
 

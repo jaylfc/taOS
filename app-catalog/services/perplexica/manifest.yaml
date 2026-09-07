@@ -10,14 +10,12 @@ license: MIT
 requires:
   ram_mb: 512
   disk_mb: 1000
-  ports: [3001]
-
 install:
   method: docker
   image: itzcrazykns/perplexica:latest
   volumes:
     - data:/home/perplexica/data
-  ports: [3001]
+  ports: ["3001:3001"]
   env:
     SEARXNG_URL: "http://host.docker.internal:8888"
 

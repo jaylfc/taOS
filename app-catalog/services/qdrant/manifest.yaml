@@ -10,8 +10,6 @@ license: Apache-2.0
 requires:
   ram_mb: 1024
   disk_mb: 2000
-  ports: [6333, 6334]
-
 install:
   method: docker
   image: qdrant/qdrant:v1.13.0

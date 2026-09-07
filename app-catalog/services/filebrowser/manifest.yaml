@@ -10,15 +10,13 @@ license: Apache-2.0
 requires:
   ram_mb: 64
   disk_mb: 100
-  ports: [8080]
-
 install:
   method: docker
   image: filebrowser/filebrowser:latest
   volumes:
     - data:/srv
     - config:/config
-  ports: [8080]
+  ports: ["8080:8080"]
 
 lifecycle:
   health_check: "curl -sf http://localhost:8080"

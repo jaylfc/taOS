@@ -52,8 +52,24 @@ def audit(root: Path) -> int:
         backend_ids.add(sd.get("id", sp.parent.name))
         if (sd.get("requires") or {}).get("backends"):
             issues.append(
-                f"{sp}: service manifest declares requires.backends — "
+                f"{sp}: service manifest declares requires.backends -- "
                 "backends must be leaves (one-level recursion guard)"
+            )
+        # lib-audit R2-34: requires.ports and install.ports are an
+        # accidental second source of truth -- pick one.  The installer
+        # used to prefer requires.ports and silently ignore install.ports,
+        # so a manifest with both declared would have its install-side
+        # port list ignored.  Some manifests (qdrant, mailserver) carried
+        # "host:container" strings under install.ports while requires.ports
+        # held bare ints; the int() cast in the dead elif branch crashed
+        # on the strings.  install.ports is the canonical key.
+        if (sd.get("requires") or {}).get("ports") is not None and (
+            (sd.get("install") or {}).get("ports") is not None
+        ):
+            issues.append(
+                f"{sp}: declares both requires.ports and install.ports -- "
+                "pick one source of truth (lib-audit R2-34; install.ports "
+                "is canonical)"
             )
 
     models_root = root / "models"

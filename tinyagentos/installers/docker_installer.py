@@ -159,12 +159,42 @@ class DockerInstaller(AppInstaller):
                 }
             service["environment"] = env
 
-        # Collect the container-internal ports from the manifest.
+        # Collect the container-internal ports from install.ports. The
+        # ``install.ports`` list is the single source of truth (lib-audit
+        # R2-34) -- ``requires.ports`` used to duplicate it but that path
+        # was the dead elif branch below (always shadowed by the live
+        # ``requires.ports`` check) and on a couple of manifests (qdrant,
+        # mailserver) the install-side values were "host:container"
+        # strings that crashed the ``int()`` cast here. Each entry may be
+        # a bare int (legacy: ``container == host``) or a "host:container"
+        # string. We only care about the container side; the host side
+        # comes from allocate_host_port.
+        install_ports = install_config.get("ports") or []
         container_ports: list[int] = []
-        if "ports" in install_config.get("requires", {}):
-            container_ports = [int(p) for p in install_config["requires"]["ports"]]
-        elif "ports" in install_config:
-            container_ports = [int(p) for p in install_config["ports"]]
+        for entry in install_ports:
+            if isinstance(entry, int):
+                container_ports.append(entry)
+                continue
+            text = str(entry).strip()
+            if ":" in text:
+                _, _, cport = text.partition(":")
+                container_ports.append(int(cport.strip()))
+                continue
+            container_ports.append(int(text))
+
+        # When the manifest's env references ``host.docker.internal``
+        # (e.g. perplexica → SEARXNG_URL, open-webui → OLLAMA_BASE_URL),
+        # Linux Docker Engine does not resolve the magic hostname by
+        # default and the container cannot reach the host. Inject an
+        # ``extra_hosts`` mapping so the magic name resolves to the
+        # Docker gateway address (``host-gateway`` is the documented
+        # special value Docker expands to the host's gateway IP).
+        env_values = [
+            v for v in install_config.get("env", {}).values()
+            if isinstance(v, str)
+        ]
+        if any("host.docker.internal" in v for v in env_values):
+            service["extra_hosts"] = ["host.docker.internal:host-gateway"]
 
         allocated_host_port: int | None = None
         if container_ports:

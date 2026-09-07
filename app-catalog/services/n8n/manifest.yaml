@@ -10,14 +10,12 @@ license: Sustainable Use License
 requires:
   ram_mb: 384
   disk_mb: 500
-  ports: [5678]
-
 install:
   method: docker
   image: n8nio/n8n:latest
   volumes:
     - data:/home/node/.n8n
-  ports: [5678]
+  ports: ["5678:5678"]
   env:
     N8N_SECURE_COOKIE: "false"
 

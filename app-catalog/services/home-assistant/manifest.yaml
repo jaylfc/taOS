@@ -10,14 +10,12 @@ license: Apache-2.0
 requires:
   ram_mb: 512
   disk_mb: 1000
-  ports: [8123]
-
 install:
   method: docker
   image: ghcr.io/home-assistant/home-assistant:stable
   volumes:
     - config:/config
-  ports: [8123]
+  ports: ["8123:8123"]
   env:
     TZ: "UTC"
 

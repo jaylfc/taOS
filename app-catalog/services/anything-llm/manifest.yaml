@@ -10,14 +10,12 @@ license: MIT
 requires:
   ram_mb: 1024
   disk_mb: 3000
-  ports: [3001]
-
 install:
   method: docker
   image: mintplexlabs/anythingllm:latest
   volumes:
     - storage:/app/server/storage
-  ports: [3001]
+  ports: ["3001:3001"]
   env:
     STORAGE_DIR: "/app/server/storage"
 

@@ -10,15 +10,13 @@ license: MIT
 requires:
   ram_mb: 512
   disk_mb: 1000
-  ports: [8443]
-
 install:
   method: docker
   image: lscr.io/linuxserver/code-server:latest
   volumes:
     - config:/config
     - workspace:/home/coder/workspace
-  ports: [8443]
+  ports: ["8443:8443"]
   env:
     PUID: "1000"
     PGID: "1000"

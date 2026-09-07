@@ -10,8 +10,6 @@ license: MIT
 requires:
   ram_mb: 512
   disk_mb: 2000
-  ports: [25, 143, 587, 993]
-
 install:
   method: docker
   image: ghcr.io/docker-mailserver/docker-mailserver:latest
@@ -20,7 +18,7 @@ install:
     - mail-state:/var/mail-state
     - mail-logs:/var/log/mail
     - config:/tmp/docker-mailserver
-  ports: [25, 143, 587, 993]
+  ports: ["25:25", "143:143", "587:587", "993:993"]
   env:
     ENABLE_SPAMASSASSIN: "0"
     ENABLE_CLAMAV: "0"

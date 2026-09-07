@@ -9,12 +9,11 @@ license: MIT
 requires:
   ram_mb: 512
   disk_mb: 500
-  ports: [8080]
 install:
   method: docker
   image: frooodle/s-pdf:latest
   volumes: [data:/usr/share/tesseract-ocr]
-  ports: [8080]
+  ports: ["8080:8080"]
 hardware_tiers:
   arm-npu-16gb: full
   arm-cpu-8gb: full

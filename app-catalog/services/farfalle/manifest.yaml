@@ -10,12 +10,10 @@ license: Apache-2.0
 requires:
   ram_mb: 1024
   disk_mb: 1500
-  ports: [3002]
-
 install:
   method: docker
   image: ghcr.io/rashadphz/farfalle:latest
-  ports: [3002]
+  ports: ["3002:3002"]
 
 hardware_tiers:
   arm-npu-16gb: full

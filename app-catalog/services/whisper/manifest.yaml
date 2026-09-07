@@ -10,14 +10,12 @@ license: MIT
 requires:
   ram_mb: 2048
   disk_mb: 5000
-  ports: [9000]
-
 install:
   method: docker
   image: onerahmet/openai-whisper-asr-webservice:latest
   volumes:
     - cache:/root/.cache/whisper
-  ports: [9000]
+  ports: ["9000:9000"]
   env:
     ASR_MODEL: "base"
     ASR_ENGINE: "openai_whisper"

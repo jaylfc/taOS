@@ -10,12 +10,10 @@ license: MIT
 requires:
   ram_mb: 128
   disk_mb: 200
-  ports: [3000]
-
 install:
   method: docker
   image: excalidraw/excalidraw:latest
-  ports: [3000]
+  ports: ["3000:3000"]
 
 lifecycle:
   health_check: "curl -sf http://localhost:3000"
