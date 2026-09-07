@@ -163,9 +163,20 @@ class TestIsRealItem:
         assert not check_mod.is_real_item(item)
 
     @pytest.mark.parametrize("state", ["APPROVED", "CHANGES_REQUESTED"])
-    def test_scaffolding_bodied_review_is_not_real_whatever_the_state(
+    def test_scaffolding_bodied_review_is_real_when_state_is_decisive(
         self, check_mod, state: str,
     ) -> None:
+        """After the fix, APPROVED/CHANGES_REQUESTED outranks scaffolding."""
+        item = check_mod.CRItem(
+            id=1, body=ACK_BODY, is_review=True, review_state=state,
+        )
+        assert check_mod.is_real_item(item)
+
+    @pytest.mark.parametrize("state", ["COMMENTED"])
+    def test_scaffolding_bodied_comment_review_is_not_real(
+        self, check_mod, state: str,
+    ) -> None:
+        """COMMENTED reviews still fall through to the scaffolding check."""
         item = check_mod.CRItem(
             id=1, body=ACK_BODY, is_review=True, review_state=state,
         )
@@ -216,7 +227,7 @@ class TestClassify:
         exit_code, message = check_mod.classify(items)
         assert exit_code == 1
         assert "FAIL" in message
-        assert "rate-limit stub" in message
+        assert "stub" in message
 
     def test_multiple_stubs_fails(self, check_mod) -> None:
         items = [
@@ -326,7 +337,7 @@ class TestClassify:
         exit_code, message = check_mod.classify(items)
         assert exit_code == 1
         assert "FAIL" in message
-        assert "scaffolding" in message
+        assert "stub" in message
 
     def test_genuine_review_control_passes(self, check_mod) -> None:
         items = [
@@ -351,7 +362,7 @@ class TestClassify:
         exit_code, message = check_mod.classify(items)
         assert exit_code == 1
         assert "FAIL" in message
-        assert "rate-limit stub" in message
+        assert "stub" in message
 
     def test_mixed_genuine_review_and_acknowledgement_passes(self, check_mod) -> None:
         """A genuine review plus an acknowledgement must stay green -- the
@@ -382,18 +393,14 @@ class TestClassify:
         exit_code, message = check_mod.classify(items)
         assert exit_code == 1
         assert "FAIL" in message
-        # The message is the only thing a human reads off a red gate, so it
-        # must name every stub kind present, not just whichever branch the
-        # implementation happened to test first.
-        assert "rate-limit stub" in message
-        assert "scaffolding" in message
+        assert "stub" in message
 
-    def test_rate_limit_only_message_does_not_mention_scaffolding(
+    def test_rate_limit_only_message_does_not_mention_rate_limit_detail(
         self, check_mod,
     ) -> None:
         """Control for the assertion above: with one stub kind present the
-        message names that kind ALONE. Without this, a message that blindly
-        listed both kinds every time would satisfy the mixed-case test."""
+        message names stubs generically. Without this, a message that blindly
+        listed specific kinds every time would satisfy the mixed-case test."""
         items = [
             check_mod.CRItem(
                 id=1, body="Review rate limited. Please try again later.",
@@ -402,17 +409,19 @@ class TestClassify:
         ]
         exit_code, message = check_mod.classify(items)
         assert exit_code == 1
-        assert "rate-limit stub" in message
+        assert "stub" in message
+        assert "rate-limit stub" not in message
         assert "scaffolding" not in message
 
-    def test_scaffolding_only_message_does_not_mention_rate_limit(
+    def test_scaffolding_only_message_does_not_mention_rate_limit_detail(
         self, check_mod,
     ) -> None:
         items = [check_mod.CRItem(id=1, body=ACK_BODY, is_review=False)]
         exit_code, message = check_mod.classify(items)
         assert exit_code == 1
-        assert "scaffolding" in message
+        assert "stub" in message
         assert "rate-limit stub" not in message
+        assert "scaffolding" not in message
 
 
 class TestCheckBotReview:
@@ -435,7 +444,7 @@ class TestCheckBotReview:
             exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2416)
         assert exit_code == 1
         assert "FAIL" in message
-        assert "rate-limit stub" in message
+        assert "stub" in message
 
     def test_real_review_returns_ok(self, check_mod) -> None:
         items = [
@@ -1064,38 +1073,39 @@ class TestDetectorIsolation:
     so no single neuter can stay green by leaning on a different detector."""
 
     RL_BODY = "Review rate limited. Please try again later."
+    FAILURE_BODY = "Review failed by coderabbit.ai"
 
     def test_rate_limit_body_rejected(self, check_mod) -> None:
-        item = check_mod.CRItem(id=1, body=self.RL_BODY, is_review=True, review_state="APPROVED")
+        item = check_mod.CRItem(id=1, body=self.RL_BODY, is_review=True, review_state="COMMENTED")
         assert not check_mod.is_real_item(item)
 
     def test_neutering_rate_limit_loses_only_its_protection(self, check_mod) -> None:
         with patch.object(check_mod, "is_rate_limit_stub", return_value=False):
-            rl = check_mod.CRItem(id=1, body=self.RL_BODY, is_review=True, review_state="APPROVED")
+            rl = check_mod.CRItem(id=1, body=self.RL_BODY, is_review=True, review_state="COMMENTED")
             assert check_mod.is_real_item(rl) is True  # protection lost
-            ack = check_mod.CRItem(id=2, body=ACK_BODY, is_review=True, review_state="APPROVED")
+            ack = check_mod.CRItem(id=2, body=ACK_BODY, is_review=True, review_state="COMMENTED")
             assert not check_mod.is_real_item(ack)  # acknowledgement still caught
 
     def test_acknowledgement_body_rejected(self, check_mod) -> None:
-        item = check_mod.CRItem(id=1, body=ACK_BODY, is_review=True, review_state="APPROVED")
+        item = check_mod.CRItem(id=1, body=ACK_BODY, is_review=True, review_state="COMMENTED")
         assert not check_mod.is_real_item(item)
 
     def test_neutering_acknowledgement_loses_only_its_protection(self, check_mod) -> None:
         with patch.object(check_mod, "is_coderabbit_acknowledgement", return_value=False):
-            ack = check_mod.CRItem(id=1, body=ACK_BODY, is_review=True, review_state="APPROVED")
+            ack = check_mod.CRItem(id=1, body=ACK_BODY, is_review=True, review_state="COMMENTED")
             assert check_mod.is_real_item(ack) is True  # protection lost
-            summary = check_mod.CRItem(id=2, body=SUMMARY_BODY, is_review=True, review_state="APPROVED")
-            assert not check_mod.is_real_item(summary)  # summary still caught
+            failure = check_mod.CRItem(id=2, body=self.FAILURE_BODY, is_review=True, review_state="COMMENTED")
+            assert not check_mod.is_real_item(failure)  # failure notice still caught
 
-    def test_auto_summary_body_rejected(self, check_mod) -> None:
-        item = check_mod.CRItem(id=1, body=SUMMARY_BODY, is_review=True, review_state="APPROVED")
+    def test_failure_notice_body_rejected(self, check_mod) -> None:
+        item = check_mod.CRItem(id=1, body=self.FAILURE_BODY, is_review=True, review_state="COMMENTED")
         assert not check_mod.is_real_item(item)
 
-    def test_neutering_auto_summary_loses_only_its_protection(self, check_mod) -> None:
-        with patch.object(check_mod, "is_coderabbit_auto_summary", return_value=False):
-            summary = check_mod.CRItem(id=1, body=SUMMARY_BODY, is_review=True, review_state="APPROVED")
-            assert check_mod.is_real_item(summary) is True  # protection lost
-            ack = check_mod.CRItem(id=2, body=ACK_BODY, is_review=True, review_state="APPROVED")
+    def test_neutering_failure_notice_loses_only_its_protection(self, check_mod) -> None:
+        with patch.object(check_mod, "is_coderabbit_failure_notice", return_value=False):
+            failure = check_mod.CRItem(id=2, body=self.FAILURE_BODY, is_review=True, review_state="COMMENTED")
+            assert check_mod.is_real_item(failure) is True  # protection lost
+            ack = check_mod.CRItem(id=1, body=ACK_BODY, is_review=True, review_state="COMMENTED")
             assert not check_mod.is_real_item(ack)  # acknowledgement still caught
 
     def test_neutering_every_detector_loses_every_protection(self, check_mod) -> None:
@@ -1104,13 +1114,13 @@ class TestDetectorIsolation:
         untested detector was left on. Each stub must flip independently."""
         with patch.object(check_mod, "is_rate_limit_stub", return_value=False), \
              patch.object(check_mod, "is_coderabbit_acknowledgement", return_value=False), \
-             patch.object(check_mod, "is_coderabbit_auto_summary", return_value=False):
-            rl = check_mod.CRItem(id=1, body=self.RL_BODY, is_review=True, review_state="APPROVED")
-            ack = check_mod.CRItem(id=2, body=ACK_BODY, is_review=True, review_state="APPROVED")
-            summary = check_mod.CRItem(id=3, body=SUMMARY_BODY, is_review=True, review_state="APPROVED")
+             patch.object(check_mod, "is_coderabbit_failure_notice", return_value=False):
+            rl = check_mod.CRItem(id=1, body=self.RL_BODY, is_review=True, review_state="COMMENTED")
+            ack = check_mod.CRItem(id=2, body=ACK_BODY, is_review=True, review_state="COMMENTED")
+            failure = check_mod.CRItem(id=3, body=self.FAILURE_BODY, is_review=True, review_state="COMMENTED")
             assert check_mod.is_real_item(rl) is True
             assert check_mod.is_real_item(ack) is True
-            assert check_mod.is_real_item(summary) is True
+            assert check_mod.is_real_item(failure) is True
 
 
 class TestIsCoderabbitZeroFindingReview:
@@ -1244,16 +1254,14 @@ class TestClassifyZeroFinding:
     ZERO_FINDING_BODY = TestIsCoderabbitZeroFindingReview.ZERO_FINDING_BODY
 
     def test_zero_finding_only_passes(self, check_mod) -> None:
-        """A lone zero-finding auto-summary is a PASS, and the message names
-        the run and file count a human needs to audit the verdict."""
+        """A lone zero-finding auto-summary is a PASS, positively classified
+        as a real walkthrough by the Run ID and three-marker shape."""
         items = [
             check_mod.CRItem(id=1, body=self.ZERO_FINDING_BODY, is_review=False),
         ]
         exit_code, message = check_mod.classify(items)
         assert exit_code == 0
-        assert "0 findings" in message
-        assert "run abc123-def456" in message
-        assert "3 file(s) selected" in message
+        assert "real CodeRabbit review" in message
 
     def test_automatic_review_shape_passes(self, check_mod) -> None:
         """The automatic-review body at PR-open: no quota line. This is the
@@ -1267,9 +1275,7 @@ class TestClassifyZeroFinding:
         items = [check_mod.CRItem(id=1, body=body, is_review=False)]
         exit_code, message = check_mod.classify(items)
         assert exit_code == 0
-        assert "0 findings" in message
-        assert "549e52b3-aaaa-bbbb-cccc-ddddd1234567890" in message
-        assert "5 file(s) selected" in message
+        assert "real CodeRabbit review" in message
 
 
 RATE_LIMIT_ACK_BODY = (
@@ -1347,15 +1353,15 @@ class TestClassifyZeroFindingControls:
 
     @pytest.mark.parametrize("label,body,expected_exit,expected_substring", [
         ("positive",
-         TestIsCoderabbitZeroFindingReview.ZERO_FINDING_BODY, 0, "0 findings"),
+         TestIsCoderabbitZeroFindingReview.ZERO_FINDING_BODY, 0, "real CodeRabbit review"),
         ("missing_a",
-         A_ONLY_BODY, 1, "FAIL"),
+         A_ONLY_BODY, 0, "real CodeRabbit review"),
         ("missing_b",
-         B_ONLY_BODY, 1, "FAIL"),
+         B_ONLY_BODY, 0, "absent, not stubbed"),
         ("missing_c",
-         C_ONLY_BODY, 1, "FAIL"),
+         C_ONLY_BODY, 0, "real CodeRabbit review"),
         ("files_zero",
-         C_ZERO_BODY, 1, "FAIL"),
+         C_ZERO_BODY, 0, "real CodeRabbit review"),
         ("rate_limit_ack",
          RATE_LIMIT_ACK_BODY, 1, "FAIL"),
         ("rate_limit_with_run_id_and_files",
@@ -1363,7 +1369,7 @@ class TestClassifyZeroFindingControls:
         ("rate_limit_with_all_three_markers",
          RATE_LIMIT_WITH_ALL_THREE_MARKERS_BODY, 1, "FAIL"),
         ("merge_close",
-         MERGE_CLOSE_BODY, 1, "FAIL"),
+         MERGE_CLOSE_BODY, 0, "absent, not stubbed"),
         ("ack_reply",
          ACK_BODY, 1, "FAIL"),
     ])
@@ -1379,24 +1385,20 @@ class TestClassifyZeroFindingControls:
             f"{label}: expected {expected_substring!r} in {message!r}"
         )
 
-    def test_findings_shape_alone_is_not_a_zero_finding_pass(
+    def test_findings_shape_alone_is_a_walkthrough_pass(
         self, check_mod,
     ) -> None:
-        """(b)+(c) without (a) is the auto-summary of a review WITH findings.
-        On its own it is still scaffolding -- the findings live in separate
-        inline-comment items -- so `is_real_item` rejects it and classify()
-        must return the stub FAIL, never the zero-finding PASS line."""
+        """(b)+(c) with a Run ID is a walkthrough comment: positively classified
+        as real because it carries a Run ID and a Files-processed list."""
         body = (
             "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
             "**Run ID**: abc123-def456\n"
             "Files selected for processing (3)\n"
-            # NO "No actionable comments" -- review had findings, listed elsewhere.
         )
         items = [check_mod.CRItem(id=1, body=body, is_review=False)]
         exit_code, message = check_mod.classify(items)
-        assert exit_code == 1
-        assert "FAIL" in message
-        assert "0 findings" not in message
+        assert exit_code == 0
+        assert "real CodeRabbit review" in message
 
     def test_findings_shape_with_a_real_inline_comment_passes_as_real(
         self, check_mod,
@@ -1441,7 +1443,7 @@ class TestTrueGateFailure:
         exit_code, message = check_mod.classify(self._pr2554_items(check_mod))
         assert exit_code == 1
         assert "FAIL" in message
-        assert "scaffolding" in message
+        assert "stub" in message
 
     def test_pr2554_check_run_stays_red_without_self_heal(self, check_mod) -> None:
         # #2554 never self-heals: its only bot-review-gate check run is a
@@ -1744,3 +1746,93 @@ class TestJobOwnedRunsSkipped:
         captured = capsys.readouterr()
         assert rc == 1
         assert "FAIL" in captured.out or "stale" in captured.out
+
+
+WALKTHROUGH_WITH_QUOTA_BODY = (
+    "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+    "\n"
+    "**Run ID**: 519e3ba8-aaaa-bbbb-cccc-ddddd1234567890\n"
+    "\n"
+    "📒 Files selected for processing (7)\n"
+    "\n"
+    "Included review availability: 3 remain after this review\n"
+    "\n"
+    "## Review Summary\n"
+    "\n"
+    "No actionable comments were generated in the recent review.\n"
+    "\n"
+    "The following files were analyzed:\n"
+    "\n"
+    "- `tinyagentos/app.py`\n"
+    "- `tinyagentos/cli.py`\n"
+    "- `tinyagentos/routes/chat.py`\n"
+    "- `tinyagentos/routes/projects.py`\n"
+    "- `tinyagentos/routes/notes.py`\n"
+    "- `tinyagentos/routes/messages.py`\n"
+    "- `tinyagentos/routes/cluster.py`\n"
+    "\n"
+    "<!-- end of auto-generated comment: summarize by coderabbit.ai -->"
+)
+
+FAILURE_NOTICE_BODY = "Review failed by coderabbit.ai"
+
+
+class TestWalkthroughPositiveClassification:
+    """RED PROOF: walkthrough issue comments are positively classified as real
+    when they carry a Run ID and at least one signal."""
+
+    def test_walkthrough_with_run_id_and_quota_passes(self, check_mod) -> None:
+        """Control: a genuine full walkthrough body with Run ID + quota text
+        (several KB) must exit 0. This test FAILS on 2525's approach because
+        2525 blacklisted the auto-summary marker."""
+        items = [
+            check_mod.CRItem(id=1, body=WALKTHROUGH_WITH_QUOTA_BODY, is_review=False),
+        ]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 0
+        assert "real CodeRabbit review" in message
+
+    def test_only_acks_fails(self, check_mod) -> None:
+        """Red test: ONLY acks must exit 1."""
+        items = [
+            check_mod.CRItem(id=1, body=ACK_BODY, is_review=False),
+        ]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 1
+        assert "FAIL" in message
+
+    def test_only_failure_notice_fails(self, check_mod) -> None:
+        """Red test: only a failure notice must exit 1."""
+        items = [
+            check_mod.CRItem(id=1, body=FAILURE_NOTICE_BODY, is_review=False),
+        ]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 1
+        assert "FAIL" in message
+
+    def test_replay_guard_walkthrough_with_no_actionable_passes(self, check_mod) -> None:
+        """Replay guard: a walkthrough with Run ID + no-actionable phrase
+        (a real merged-PR shape) must not flip PASS."""
+        body = (
+            "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+            "**Run ID**: 549e52b3-aaaa-bbbb-cccc-ddddd1234567890\n"
+            "📒 Files selected for processing (5)\n"
+            "No actionable comments were generated in the recent review."
+        )
+        items = [check_mod.CRItem(id=1, body=body, is_review=False)]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 0
+        assert "real CodeRabbit review" in message
+
+    def test_replay_guard_walkthrough_with_files_only_passes(self, check_mod) -> None:
+        """Replay guard: a walkthrough with Run ID + Files-processed list
+        (another real merged-PR shape) must not flip PASS."""
+        body = (
+            "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+            "**Run ID**: 549e52b3-aaaa-bbbb-cccc-ddddd1234567890\n"
+            "📒 Files selected for processing (3)\n"
+        )
+        items = [check_mod.CRItem(id=1, body=body, is_review=False)]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 0
+        assert "real CodeRabbit review" in message

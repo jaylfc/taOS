@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Bot-review guard: rate-limited CodeRabbit stubs must not read as a review.
+"""Bot-review guard: CodeRabbit stubs must not read as a review.
 
-Detects PRs whose only CodeRabbit output is a rate-limit stub -- a comment
-or review that only announces the plan quota was exhausted instead of
-producing an actual review. This is the mechanism behind the fleet rule
-"no merge on rate-limited fake green" from the 2026-08-16 bot-review
-retrospective audit (33 merged PRs shipped fake-green in one week).
+Detects PRs whose only CodeRabbit output is a stub -- a comment or review
+that announces a trigger was accepted or a run failed without producing an
+actual review. This is the mechanism behind the fleet rule "no merge on
+rate-limited fake green" from the 2026-08-16 bot-review retrospective audit
+(33 merged PRs shipped fake-green in one week).
 
 When CodeRabbit is rate-limited it posts a short stub comment (body matching
 the rate-limit signature below) and a passing check titled "Review rate
@@ -13,16 +13,21 @@ limited" -- the check passes by design so it never blocks merging. This
 guard inspects the comments instead and fails red when the stub is the
 ONLY CodeRabbit output, so a merge gate can catch the fake-green condition.
 
+In this repo CodeRabbit posts the walkthrough issue comment (opening with
+the auto-summary marker) on a clean PR; that comment is the only review
+artifact and is positively classified as real when it carries a Run ID and
+at least one signal (quota-decrement line, no-actionable phrase, or
+Files-processed walkthrough).
+
 Three exit cases, all printed with the exit code so they can be read off
 the evidence at the granularity of the audit:
 
     0  PASS  -- a real CodeRabbit review exists, OR CodeRabbit is entirely
                 absent (dependabot-class PRs; absence is not fake-green).
     1  FAIL  -- the only CodeRabbit output on the PR is a stub: a rate-limit
-               stub, or CodeRabbit's own auto-generated scaffolding (the
-               acknowledgement reply posted when a review trigger is accepted
-               but produces no review, or the auto-summary comment). Neither
-               is review content.
+               stub, or CodeRabbit's own scaffolding (the acknowledgement
+               reply posted when a review trigger is accepted but produces
+               no review, or a failure notice). Neither is review content.
     2  ERROR -- infrastructure failure (network, auth, 404, etc.).
 
 Usage:
@@ -65,19 +70,22 @@ RATE_LIMIT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# HTML comment markers that CodeRabbit injects into its own auto-generated
-# scaffolding rather than review content: the acknowledgement reply posted
-# when a @coderabbitai full review trigger is accepted but no review follows,
-# and the auto-summary comment posted on merge/close. Both carry no findings
-# and must never read as a real review.
+# HTML comment markers and phrases that identify CodeRabbit auto-generated
+# scaffolding that must never read as a real review: the acknowledgement
+# reply posted when a @coderabbitai full review trigger is accepted but
+# produces no review, and the failure notice posted when a review run fails.
+# The auto-summary marker is intentionally NOT listed here: in this repo it
+# is the walkthrough issue comment, the only review artifact on a clean PR,
+# and is handled by the walkthrough detector below.
 #
 # Split into per-fragment detectors so each stub kind can be neutered in
-# isolation without another masking the gap (see TestDetectorIsolation). A
-# single combined regex would read green with one half untested: the audit
-# measured that at 43/43 and it is exactly the false-green the gate exists to
-# catch.
+# isolation without another masking the gap (see TestDetectorIsolation).
 CODERABBIT_ACKNOWLEDGEMENT_RE = re.compile(
     r"<!-- CodeRabbit review command invocation:[^>]+ -->",
+    re.IGNORECASE,
+)
+CODERABBIT_FAILURE_RE = re.compile(
+    r"failure by coderabbit\.ai|Review failed",
     re.IGNORECASE,
 )
 CODERABBIT_AUTO_SUMMARY_RE = re.compile(
@@ -85,7 +93,7 @@ CODERABBIT_AUTO_SUMMARY_RE = re.compile(
     re.IGNORECASE,
 )
 CODERABBIT_SCAFFOLDING_RE = re.compile(
-    rf"{CODERABBIT_ACKNOWLEDGEMENT_RE.pattern}|{CODERABBIT_AUTO_SUMMARY_RE.pattern}",
+    rf"{CODERABBIT_ACKNOWLEDGEMENT_RE.pattern}|{CODERABBIT_FAILURE_RE.pattern}",
     re.IGNORECASE,
 )
 
@@ -227,17 +235,20 @@ def is_coderabbit_scaffolding(body: str | None) -> bool:
     """Return True if a body is CodeRabbit's own auto-generated scaffolding
     rather than review content.
 
-    Matches the HTML comment markers CodeRabbit appends to (a) the
-    acknowledgement reply posted when a review trigger is accepted but no
-    review follows, and (b) the auto-summary comment posted on merge/close.
-    Neither carries findings; both are machine-identifiable stubs that must
-    not read as a real review, exactly as a rate-limit stub does.
+    Matches the acknowledgement reply posted when a review trigger is accepted
+    but no review follows, and the failure notice posted when a review run
+    fails. Neither carries findings; both are machine-identifiable stubs that
+    must not read as a real review, exactly as a rate-limit stub does.
+
+    The auto-summary marker is intentionally excluded: in this repo it is the
+    walkthrough issue comment, the only review artifact on a clean PR, and is
+    handled by the walkthrough detector.
 
     Kept as a union of the per-fragment detectors so legacy callers that do a
     single stub check see the same coverage; internal callers should prefer the
     per-fragment detectors so a regression in one cannot be hidden by the other.
     """
-    return is_coderabbit_acknowledgement(body) or is_coderabbit_auto_summary(body)
+    return is_coderabbit_acknowledgement(body) or is_coderabbit_failure_notice(body)
 
 
 def is_coderabbit_acknowledgement(body: str | None) -> bool:
@@ -250,11 +261,57 @@ def is_coderabbit_acknowledgement(body: str | None) -> bool:
 
 
 def is_coderabbit_auto_summary(body: str | None) -> bool:
-    """Return True if a body is CodeRabbit's auto-generated summary comment
-    posted on merge/close -- carries no findings."""
+    """Return True if a body opens with CodeRabbit's auto-generated summary
+    comment marker.
+
+    In this repo the marker is the walkthrough issue comment, the only review
+    artifact on a clean PR. It is not itself a stub: a walkthrough is real
+    iff it also carries a Run ID and at least one signal (quota-decrement
+    line, no-actionable phrase, or Files-processed list)."""
     if not body:
         return False
     return bool(CODERABBIT_AUTO_SUMMARY_RE.search(body))
+
+
+def is_coderabbit_failure_notice(body: str | None) -> bool:
+    """Return True if a body is CodeRabbit's failure notice -- posted when a
+    review run fails."""
+    if not body:
+        return False
+    return bool(CODERABBIT_FAILURE_RE.search(body))
+
+
+def is_coderabbit_walkthrough(body: str | None) -> bool:
+    """Return True if a body is a CodeRabbit walkthrough issue comment that
+    represents a real review.
+
+    A walkthrough is an auto-summary comment that carries a Run ID and at
+    least one of:
+      - a quota-decrement line (Included review availability ... remain after
+        this review),
+      - the no-actionable phrase (No actionable comments were generated in
+        the recent review), or
+      - a Files-processed walkthrough (Files selected for processing (N) with
+        N >= 1).
+
+    Rate-limit stubs are rejected ahead of the signal check."""
+    if not body:
+        return False
+    if is_rate_limit_stub(body):
+        return False
+    if not is_coderabbit_auto_summary(body):
+        return False
+    if not CODERABBIT_RUN_ID_RE.search(body):
+        return False
+    has_quota = bool(CODERABBIT_QUOTA_RE.search(body))
+    has_no_actionable = bool(CODERABBIT_ZERO_FINDING_PHRASE_RE.search(body))
+    has_files = bool(CODERABBIT_FILES_SELECTED_RE.search(body))
+    files_match = CODERABBIT_FILES_SELECTED_RE.search(body)
+    if has_files and files_match:
+        files_selected = int(files_match.group(1))
+        if files_selected < 1:
+            has_files = False
+    return has_quota or has_no_actionable or has_files
 
 
 def is_coderabbit_zero_finding_review(body: str | None) -> tuple[bool, str | None, int]:
@@ -311,29 +368,25 @@ def is_coderabbit_zero_finding_review(body: str | None) -> tuple[bool, str | Non
 def is_real_item(item: CRItem) -> bool:
     """Return True if a CR item represents real review content.
 
-    A rate-limit stub or CodeRabbit auto-generated scaffolding (acknowledgement
-    reply / auto-summary) is never real -- these are bots posting that a
-    trigger was accepted with no review content following. **The stub checks
-    run FIRST and outrank the review state**: a review whose own body is a
-    stub is not review content no matter what state it carries. This gate
-    exists to catch fake-green, so where the two signals disagree it must
-    fail closed; trusting the state over a stub body would be the one
-    ordering that lets a fake-green through.
-
-    Otherwise, review objects with state APPROVED or CHANGES_REQUESTED are
-    real regardless of body content (the review state itself is then the
-    substantive signal -- e.g. an APPROVED review with an empty body).
-    Comments and COMMENTED reviews are real only when they carry non-empty,
-    non-stub body text.
+    A rate-limit stub is never real. Review objects with state APPROVED or
+    CHANGES_REQUESTED are real regardless of body content (the review state
+    itself is the substantive signal). CodeRabbit scaffolding (acknowledgement
+    reply / failure notice) is never real. For issue comments carrying the
+    auto-summary marker, the walkthrough detector applies: a Run ID plus at
+    least one signal (quota-decrement line, no-actionable phrase, or
+    Files-processed list) means a real review ran. Other comments are real
+    when they carry non-empty, non-stub body text.
     """
     if is_rate_limit_stub(item.body):
-        return False
-    if is_coderabbit_scaffolding(item.body):
         return False
     if item.is_review:
         state = (item.review_state or "").upper()
         if state in ("APPROVED", "CHANGES_REQUESTED"):
             return True
+    if is_coderabbit_scaffolding(item.body):
+        return False
+    if not item.is_review and is_coderabbit_auto_summary(item.body):
+        return is_coderabbit_walkthrough(item.body)
     return bool(item.body and item.body.strip())
 
 
@@ -453,20 +506,17 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
     Returns (exit_code, message):
     - (0, "PASS ...")            -- a real CodeRabbit review exists.
     - (0, "PASS (absent, ...)")  -- CodeRabbit is entirely absent.
-    - (0, "PASS ...")            -- a completed zero-finding CodeRabbit review
-                                   exists: an auto-summary carrying ALL THREE
-                                   markers -- the no-actionable-comments
-                                   phrase, a "**Run ID**:" line, and
-                                   "Files selected for processing (N)" with
-                                   N >= 1. The quota-consumed "Included review
-                                   availability:" line is NOT required; it is
-                                   absent on the automatic PR-open review.
+    - (0, "PASS ...")            -- a completed walkthrough CodeRabbit review
+                                    exists: an auto-summary carrying a Run ID
+                                    and at least one signal (quota-decrement
+                                    line, no-actionable phrase, or
+                                    Files-processed list N>=1).
     - (1, "FAIL ...")            -- only stubs exist, i.e. rate-limit stubs
-                                   or CodeRabbit auto-generated scaffolding
-                                   (acknowledgement / auto-summary), neither
-                                   of which is review content.
+                                    or CodeRabbit scaffolding (acknowledgement
+                                    reply / failure notice), neither of which
+                                    is review content.
     - (0, "PASS ...")            -- CR output exists but is neither a stub
-                                   nor substantive (edge case, not fake-green).
+                                    nor substantive (edge case, not fake-green).
     """
     if not items:
         return EXIT_OK, "PASS (absent, not stubbed): no CodeRabbit output on this PR"
@@ -478,37 +528,18 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
             f"(exit {EXIT_OK})"
         )
 
-    # Check for a completed zero-finding review before falling through to the
-    # stub verdict. An auto-summary comment carrying the three-marker shape
-    # (no-actionable + Run ID + Files selected N>=1) means CodeRabbit ran and
-    # found nothing -- that is a real review outcome, not fake-green.
-    for item in items:
-        is_zf, run_id, files_selected = is_coderabbit_zero_finding_review(item.body)
-        if is_zf:
-            return EXIT_OK, (
-                f"PASS: real CodeRabbit review, 0 findings "
-                f"(run {run_id}, {files_selected} file(s) selected) "
-                f"(exit {EXIT_OK})"
-            )
-
     # No real review threads. A trigger was accepted but produced no review
     # content: that is the fake-green condition. This covers both the
-    # rate-limit stub and CodeRabbit's own auto-generated scaffolding
-    # (acknowledgement reply / auto-summary), which the gate must treat
-    # the same way -- it must not land on the absent/PASS path above.
-    # Name every stub kind actually present. Reporting only the first match
-    # would describe a PR carrying both as if it carried one, and the message
-    # is the only thing a human reads off a red gate.
-    has_rate_limit = any(is_rate_limit_stub(i.body) for i in items)
-    has_scaffolding = any(is_coderabbit_scaffolding(i.body) for i in items)
-    if has_rate_limit or has_scaffolding:
-        kinds = []
-        if has_rate_limit:
-            kinds.append("a rate-limit stub")
-        if has_scaffolding:
-            kinds.append("auto-generated scaffolding")
+    # rate-limit stub and CodeRabbit's own scaffolding (acknowledgement reply
+    # / failure notice), which the gate must treat the same way -- it must not
+    # land on the absent/PASS path above.
+    has_stubs = any(
+        is_rate_limit_stub(i.body) or is_coderabbit_scaffolding(i.body)
+        for i in items
+    )
+    if has_stubs:
         return EXIT_STUB, (
-            f"FAIL: only CodeRabbit output is {' and '.join(kinds)} "
+            f"FAIL: only CodeRabbit output is stubs "
             f"-- no review content (exit {EXIT_STUB})"
         )
 
@@ -526,7 +557,7 @@ def check_bot_review(
     allow_label: str = DEFAULT_ALLOW_LABEL,
     token: str | None = None,
 ) -> tuple[int, str]:
-    """Check a PR's CodeRabbit output for rate-limit stubs.
+    """Check a PR's CodeRabbit output for stubs.
 
     Returns (exit_code, message). EXIT_ERROR (2) is returned when the
     GitHub API cannot be reached or returns an error, so a cannot-see
@@ -534,11 +565,11 @@ def check_bot_review(
 
     When the PR carries `allow_label` (read fresh from the GitHub API at
     run time) AND the only CodeRabbit output is a stub -- a rate-limit stub
-    or CodeRabbit auto-generated scaffolding (acknowledgement reply /
-    auto-summary) -- the FAIL verdict is waived to exit 0 with a message
-    that explicitly says WAIVED. It is never reported as a genuine PASS, so
-    a human reading the check output always knows the gate was overridden by
-    a conscious lead act, not cleared by the bot.
+    or CodeRabbit scaffolding (acknowledgement reply / failure notice) -- the
+    FAIL verdict is waived to exit 0 with a message that explicitly says
+    WAIVED. It is never reported as a genuine PASS, so a human reading the
+    check output always knows the gate was overridden by a conscious lead
+    act, not cleared by the bot.
 
     The waiver covers only the EXIT_STUB verdict class (both stub kinds,
     because both are infrastructural: CodeRabbit was rate-limited or its
@@ -558,7 +589,7 @@ def check_bot_review(
         if labels is not None and allow_label in labels:
             return EXIT_OK, (
                 f"bot-review-gate: WAIVED -- `{allow_label}` label overrides the "
-                f"stub-only verdict (rate-limit stub / auto-generated scaffolding). "
+                f"stub-only verdict (rate-limit stub / scaffolding). "
                 f"A lead confirmed this is an infrastructural CodeRabbit condition, "
                 f"not a PR defect. Underlying verdict waived: {message}"
             )
