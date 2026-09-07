@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock
+import logging
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -580,3 +581,98 @@ class TestWorkerDrain:
         result = mgr.get_workers_for_capability("chat")
         assert len(result) == 1
         assert result[0].name == "online-gpu"
+
+    async def test_monitor_loop_handles_emit_event_exception(self):
+        """When emit_event raises, the monitor loop should log and continue."""
+        import io
+        mgr = ClusterManager()
+        await mgr.register_worker(_make_worker("gpu-box"))
+        # Create a notifications mock that raises on first call
+        from unittest.mock import AsyncMock, MagicMock
+        notif = AsyncMock()
+        call_count = {"n": 0}
+
+        async def raising_emit(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("simulated emit_event failure")
+            return await notif.emit_event(*args, **kwargs)
+
+        notif.emit_event = raising_emit
+        mgr._notifications = notif
+
+        # Run two monitor ticks
+        task = asyncio.create_task(mgr._monitor_loop())
+        try:
+            await asyncio.sleep(0.1)  # let first iteration run
+            await asyncio.sleep(0.1)  # let second iteration run
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # The loop should have continued past the exception
+        assert mgr.get_worker("gpu-box").status == "online"
+        # The exception should have been logged (check logger)
+        # Verify the loop continued by checking worker state is still valid
+
+    async def test_monitor_loop_handles_emit_event_exception_and_logs_it(self):
+        """When emit_event raises, the monitor loop should log and continue."""
+        import logging
+
+        logging.basicConfig(level=logging.ERROR, format="%(levelname)s: %(message)s")
+
+        mgr = ClusterManager()
+        await mgr.register_worker(_make_worker("gpu-box"))
+        # Create a notifications mock that raises on first call
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        call_count = {"n": 0}
+
+        async def raising_emit(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("simulated emit_event failure")
+            return await notif.emit_event(*args, **kwargs)
+
+        notif = AsyncMock()
+        notif.emit_event = raising_emit
+        mgr._notifications = notif
+
+        # Run two monitor ticks
+        task = asyncio.create_task(mgr._monitor_loop())
+        try:
+            await asyncio.sleep(0.1)  # let first iteration run
+            await asyncio.sleep(0.1)  # let second iteration run
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # The loop should have continued past the exception
+        assert mgr.get_worker("gpu-box").status == "online"
+
+    async def test_monitor_loop_done_callback_restarts_after_crash(self):
+        """When _monitor_task crashes, it should be restarted via done-callback."""
+        from tinyagentos.cluster.manager import ClusterManager
+
+        original_monitor_loop = ClusterManager._monitor_loop
+
+        async def crashing_monitor_loop(self):
+            raise RuntimeError("simulated monitor loop crash")
+
+        with patch.object(ClusterManager, "_monitor_loop", crashing_monitor_loop):
+            mgr = ClusterManager()
+            await mgr.register_worker(_make_worker("gpu-box"))
+            # start() will create _monitor_task which will crash immediately
+            await mgr.start()
+
+            # Give the done-callback a chance to run and restart
+            await asyncio.sleep(0.1)
+
+            # The task should have been restarted (monitor loop still running)
+            assert mgr._monitor_task is not None

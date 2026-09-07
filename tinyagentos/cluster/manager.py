@@ -117,6 +117,7 @@ class ClusterManager:
             # re-register or heartbeat before being used for routing.
             await self._load_persisted_workers()
         self._monitor_task = asyncio.create_task(self._monitor_loop())
+        self._monitor_task.add_done_callback(self._monitor_task_done)
 
     async def stop(self):
         if self._monitor_task:
@@ -138,6 +139,190 @@ class ClusterManager:
                     "Timed out waiting for %d background tasks to complete",
                     len(self._background_tasks),
                 )
+
+    async def _monitor_loop(self):
+        """Monitor worker heartbeats, mark stale workers as offline, and
+        sweep expired GPU leases.  Auto-completes draining workers
+        whose leases have all been released (taOS #890)."""
+        while True:
+            try:
+                # taOS #640: controller fence — if another controller instance
+                # has advanced the durable generation beyond ours, self-disable
+                # to prevent split-brain (CodeRabbit PR #1928).
+                if (
+                    not self._fenced
+                    and self._registry_store is not None
+                ):
+                    try:
+                        durable_gen = await self._registry_store.current_generation()
+                        if durable_gen > self._generation:
+                            logger.warning(
+                                "Controller fenced: durable generation %d > local %d — "
+                                "disabling worker acceptance and routing",
+                                durable_gen, self._generation,
+                            )
+                            self._fenced = True
+                    except Exception:
+                        logger.exception("Failed to check durable generation")
+                if self._fenced:
+                    # Fenced controller — release all leases, cancel arbiter tasks,
+                    # mark all workers offline and stop routing.
+                    for worker in list(self._workers.values()):
+                        if worker.name == "local":
+                            continue
+                        if worker.status in ("online", "update-available"):
+                            worker.status = "offline"
+                            logger.info("Worker '%s' marked offline (controller fenced)", worker.name)
+                        # Release any active leases for this worker's resources —
+                        # for every non-local worker regardless of status: a
+                        # draining worker can still hold leases, and the fenced
+                        # branch skips the normal stale-drain cleanup below.
+                        # Match on the exact worker name (not a resource_id
+                        # prefix) so "gpu-node" and "gpu-node-2" don't collide.
+                        async with self._lease_lock:
+                            offline_lids = [
+                                lid for lid, lease in self._leases.items()
+                                if (parsed := self._parse_resource_id(lease.resource_id))
+                                and parsed[0] == worker.name
+                            ]
+                            for lid in offline_lids:
+                                self._leases.pop(lid, None)
+                                logger.debug("Lease %s released — worker %s fenced", lid, worker.name)
+                        # Cancel any running GPU arbiter tasks for the
+                        # released leases (taOS cross-cutting wiring).
+                        if offline_lids and self._gpu_arbiter is not None:
+                            try:
+                                cancelled, already_done = await self._gpu_arbiter.cancel_running_for_leases(set(offline_lids))
+                                logger.info(
+                                    "Controller fenced: arbiter cancelled %d tasks, %d already done",
+                                    cancelled, already_done)
+                            except Exception:
+                                logger.exception(
+                                    "gpu-arbiter: cancel for fenced controller of '%s' failed",
+                                    worker.name)
+                    await asyncio.sleep(5)
+                    continue
+                now = time.time()
+                for worker in list(self._workers.values()):
+                    # The 'local' worker is the controller itself, kept alive by
+                    # local_heartbeat_loop (15s) rather than remote heartbeats. It
+                    # must never be marked offline or drained here: doing so would
+                    # drop the controller's own leases and remove local backends
+                    # from routing and the aggregate catalog (taOS #1690).
+                    if worker.name == "local":
+                        continue
+                    # Handle online / update-available workers that haven't heartbeated
+                    if worker.status in ("online", "update-available") and (now - worker.last_heartbeat) > HEARTBEAT_TIMEOUT:
+                        worker.status = "offline"
+                        logger.warning(f"Worker '{worker.name}' marked offline (no heartbeat for {HEARTBEAT_TIMEOUT}s)")
+                        if self._notifications:
+                            try:
+                                await self._notifications.emit_event(
+                                    "worker.leave",
+                                    f"Worker '{worker.name}' went offline",
+                                    f"No heartbeat for {HEARTBEAT_TIMEOUT}s. Capabilities may be reduced.",
+                                    level="warning",
+                                )
+                            except Exception:
+                                logger.exception("Failed to emit worker.leave event")
+                        # Release any active leases for this worker's resources.
+                        # Match on the exact worker name (not a resource_id
+                        # prefix) so "gpu-node" and "gpu-node-2" don't collide.
+                        async with self._lease_lock:
+                            offline_lids = [
+                                lid for lid, lease in self._leases.items()
+                                if (parsed := self._parse_resource_id(lease.resource_id))
+                                and parsed[0] == worker.name
+                            ]
+                            for lid in offline_lids:
+                                self._leases.pop(lid, None)
+                                logger.debug("Lease %s released — worker %s went offline", lid, worker.name)
+                        # Cancel any running GPU arbiter tasks for the
+                        # released leases (taOS #890 C2 — cross-cutting wiring).
+                        # This mirrors the cancellation done for stale-drain and
+                        # stale-update workers; the update-available path was
+                        # previously missing it, leaving orphaned arbiter tasks.
+                        if offline_lids and self._gpu_arbiter is not None:
+                            try:
+                                cancelled, already_done = await self._gpu_arbiter.cancel_running_for_leases(set(offline_lids))
+                                logger.info(
+                                    "Worker '%s' stale-update-available: arbiter cancelled %d tasks, %d already done",
+                                    worker.name, cancelled, already_done)
+                            except Exception:
+                                logger.exception(
+                                    "gpu-arbiter: cancel for stale-update-available of '%s' failed",
+                                    worker.name)
+
+                    # Handle draining workers: auto-complete if no active leases (taOS #890)
+                    elif worker.status == "draining":
+                        active_leases = [
+                            lid for lid, lease in self._leases.items()
+                            if (parsed := self._parse_resource_id(lease.resource_id))
+                            and parsed[0] == worker.name
+                        ]
+                        if not active_leases:
+                            worker.status = "offline"
+                            logger.info(
+                                "Worker '%s' drained — all leases released, marked offline",
+                                worker.name,
+                            )
+
+                    # Handle updating workers: if they stop heartbeating they're
+                    # stuck in a bad state — force-offline them so they can re-onboard.
+                    elif worker.status == "updating":
+                        if (now - worker.last_heartbeat) > HEARTBEAT_TIMEOUT:
+                            worker.status = "offline"
+                            logger.warning(
+                                "Worker '%s' stuck in 'updating' (no heartbeat for %ds) — marked offline",
+                                worker.name, HEARTBEAT_TIMEOUT,
+                            )
+                            if self._notifications:
+                                try:
+                                    await self._notifications.emit_event(
+                                        "worker.leave",
+                                        f"Worker '{worker.name}' timed out during update",
+                                        f"Worker was stuck in 'updating' state. Forced offline to allow re-onboarding.",
+                                        level="warning",
+                                    )
+                                except Exception:
+                                    logger.exception("Failed to emit worker.leave event")
+                            async with self._lease_lock:
+                                update_lids = [
+                                    lid for lid, lease in self._leases.items()
+                                    if (parsed := self._parse_resource_id(lease.resource_id))
+                                    and parsed[0] == worker.name
+                                ]
+                                for lid in update_lids:
+                                    self._leases.pop(lid, None)
+                            # Cancel any running GPU arbiter tasks for the
+                            # released leases (taOS cross-cutting wiring).
+                            if update_lids and self._gpu_arbiter is not None:
+                                try:
+                                    cancelled, already_done = await self._gpu_arbiter.cancel_running_for_leases(set(update_lids))
+                                    logger.info(
+                                        "Worker '%s' stale-update: arbiter cancelled %d tasks, %d already done",
+                                        worker.name, cancelled, already_done)
+                                except Exception:
+                                    logger.exception(
+                                        "gpu-arbiter: cancel for stale-update of '%s' failed",
+                                        worker.name)
+                async with self._lease_lock:
+                    self._sweep_expired_leases()
+                await asyncio.sleep(5)
+            except Exception:
+                logger.exception("Monitor loop iteration error")
+
+    def _monitor_task_done(self, task: asyncio.Task) -> None:
+        """Called when _monitor_task finishes unexpectedly.
+
+        Logs the exception and restarts the monitor loop task so that
+        liveness detection, lease sweep and the split-brain fence remain
+        active for the rest of the process lifetime.
+        """
+        exception = task.exception()
+        if exception:
+            logger.exception("Monitor loop crashed: %s", exception)
+        self._monitor_task = asyncio.create_task(self._monitor_loop())
 
     async def register_worker(
         self, info: WorkerInfo, generation: int | None = None
@@ -1065,201 +1250,174 @@ class ClusterManager:
             except Exception:
                 logger.exception("Failed to deserialize persisted worker '%s'", name)
 
-    async def _monitor_loop(self):
+async def _monitor_loop(self):
         """Monitor worker heartbeats, mark stale workers as offline, and
         sweep expired GPU leases.  Auto-completes draining workers
         whose leases have all been released (taOS #890)."""
         while True:
-            # taOS #640: controller fence — if another controller instance
-            # has advanced the durable generation beyond ours, self-disable
-            # to prevent split-brain (CodeRabbit PR #1928).
-            if (
-                not self._fenced
-                and self._registry_store is not None
-            ):
-                try:
-                    durable_gen = await self._registry_store.current_generation()
-                    if durable_gen > self._generation:
-                        logger.warning(
-                            "Controller fenced: durable generation %d > local %d — "
-                            "disabling worker acceptance and routing",
-                            durable_gen, self._generation,
-                        )
-                        self._fenced = True
-                except Exception:
-                    logger.exception("Failed to check durable generation")
-            if self._fenced:
-                # Fenced controller — release all leases, cancel arbiter tasks,
-                # mark all workers offline and stop routing.
+            try:
+                # taOS #640: controller fence — if another controller instance
+                # has advanced the durable generation beyond ours, self-disable
+                # to prevent split-brain (CodeRabbit PR #1928).
+                if (
+                    not self._fenced
+                    and self._registry_store is not None
+                ):
+                    try:
+                        durable_gen = await self._registry_store.current_generation()
+                        if durable_gen > self._generation:
+                            logger.warning(
+                                "Controller fenced: durable generation %d > local %d — "
+                                "disabling worker acceptance and routing",
+                                durable_gen, self._generation,
+                            )
+                            self._fenced = True
+                    except Exception:
+                        logger.exception("Failed to check durable generation")
+                if self._fenced:
+                    # Fenced controller — release all leases, cancel arbiter tasks,
+                    # mark all workers offline and stop routing.
+                    for worker in list(self._workers.values()):
+                        if worker.name == "local":
+                            continue
+                        if worker.status in ("online", "update-available"):
+                            worker.status = "offline"
+                            logger.info("Worker '%s' marked offline (controller fenced)", worker.name)
+                        # Release any active leases for this worker's resources —
+                        # for every non-local worker regardless of status: a
+                        # draining worker can still hold leases, and the fenced
+                        # branch skips the normal stale-drain cleanup below.
+                        # Match on the exact worker name (not a resource_id
+                        # prefix) so "gpu-node" and "gpu-node-2" don't collide.
+                        async with self._lease_lock:
+                            offline_lids = [
+                                lid for lid, lease in self._leases.items()
+                                if (parsed := self._parse_resource_id(lease.resource_id))
+                                and parsed[0] == worker.name
+                            ]
+                            for lid in offline_lids:
+                                self._leases.pop(lid, None)
+                                logger.debug("Lease %s released — worker %s fenced", lid, worker.name)
+                        # Cancel any running GPU arbiter tasks for the
+                        # released leases (taOS cross-cutting wiring).
+                        if offline_lids and self._gpu_arbiter is not None:
+                            try:
+                                cancelled, already_done = await self._gpu_arbiter.cancel_running_for_leases(set(offline_lids))
+                                logger.info(
+                                    "Controller fenced: arbiter cancelled %d tasks, %d already done",
+                                    cancelled, already_done)
+                            except Exception:
+                                logger.exception(
+                                    "gpu-arbiter: cancel for fenced controller of '%s' failed",
+                                    worker.name)
+                    await asyncio.sleep(5)
+                    continue
+                now = time.time()
                 for worker in list(self._workers.values()):
+                    # The 'local' worker is the controller itself, kept alive by
+                    # local_heartbeat_loop (15s) rather than remote heartbeats. It
+                    # must never be marked offline or drained here: doing so would
+                    # drop the controller's own leases and remove local backends
+                    # from routing and the aggregate catalog (taOS #1690).
                     if worker.name == "local":
                         continue
-                    if worker.status in ("online", "update-available"):
+                    # Handle online / update-available workers that haven't heartbeated
+                    if worker.status in ("online", "update-available") and (now - worker.last_heartbeat) > HEARTBEAT_TIMEOUT:
                         worker.status = "offline"
-                        logger.info("Worker '%s' marked offline (controller fenced)", worker.name)
-                    # Release any active leases for this worker's resources —
-                    # for every non-local worker regardless of status: a
-                    # draining worker can still hold leases, and the fenced
-                    # branch skips the normal stale-drain cleanup below.
-                    # Match on the exact worker name (not a resource_id
-                    # prefix) so "gpu-node" and "gpu-node-2" don't collide.
-                    async with self._lease_lock:
-                        offline_lids = [
-                            lid for lid, lease in self._leases.items()
-                            if (parsed := self._parse_resource_id(lease.resource_id))
-                            and parsed[0] == worker.name
-                        ]
-                        for lid in offline_lids:
-                            self._leases.pop(lid, None)
-                            logger.debug("Lease %s released — worker %s fenced", lid, worker.name)
-                    # Cancel any running GPU arbiter tasks for the
-                    # released leases (taOS cross-cutting wiring).
-                    if offline_lids and self._gpu_arbiter is not None:
-                        try:
-                            cancelled, already_done = await self._gpu_arbiter.cancel_running_for_leases(set(offline_lids))
-                            logger.info(
-                                "Controller fenced: arbiter cancelled %d tasks, %d already done",
-                                cancelled, already_done)
-                        except Exception:
-                            logger.exception(
-                                "gpu-arbiter: cancel for fenced controller of '%s' failed",
-                                worker.name)
-                await asyncio.sleep(5)
-                continue
-            now = time.time()
-            for worker in list(self._workers.values()):
-                # The 'local' worker is the controller itself, kept alive by
-                # local_heartbeat_loop (15s) rather than remote heartbeats. It
-                # must never be marked offline or drained here: doing so would
-                # drop the controller's own leases and remove local backends
-                # from routing and the aggregate catalog (taOS #1690).
-                if worker.name == "local":
-                    continue
-                # Handle online / update-available workers that haven't heartbeated
-                if worker.status in ("online", "update-available") and (now - worker.last_heartbeat) > HEARTBEAT_TIMEOUT:
-                    worker.status = "offline"
-                    logger.warning(f"Worker '{worker.name}' marked offline (no heartbeat for {HEARTBEAT_TIMEOUT}s)")
-                    if self._notifications:
-                        await self._notifications.emit_event(
-                            "worker.leave",
-                            f"Worker '{worker.name}' went offline",
-                            f"No heartbeat for {HEARTBEAT_TIMEOUT}s. Capabilities may be reduced.",
-                            level="warning",
-                        )
-                    # Release any active leases for this worker's resources.
-                    # Match on the exact worker name (not a resource_id
-                    # prefix) so "gpu-node" and "gpu-node-2" don't collide.
-                    async with self._lease_lock:
-                        offline_lids = [
-                            lid for lid, lease in self._leases.items()
-                            if (parsed := self._parse_resource_id(lease.resource_id))
-                            and parsed[0] == worker.name
-                        ]
-                        for lid in offline_lids:
-                            self._leases.pop(lid, None)
-                            logger.debug("Lease %s released — worker %s went offline", lid, worker.name)
-                    # Cancel any running GPU arbiter tasks for the
-                    # released leases (taOS #890 C2 — cross-cutting wiring).
-                    # This mirrors the cancellation done for stale-drain and
-                    # stale-update workers; the update-available path was
-                    # previously missing it, leaving orphaned arbiter tasks.
-                    if offline_lids and self._gpu_arbiter is not None:
-                        try:
-                            cancelled, already_done = await self._gpu_arbiter.cancel_running_for_leases(set(offline_lids))
-                            logger.info(
-                                "Worker '%s' stale-update-available: arbiter cancelled %d tasks, %d already done",
-                                worker.name, cancelled, already_done)
-                        except Exception:
-                            logger.exception(
-                                "gpu-arbiter: cancel for stale-update-available of '%s' failed",
-                                worker.name)
+                        logger.warning(f"Worker '{worker.name}' marked offline (no heartbeat for {HEARTBEAT_TIMEOUT}s)")
+                        if self._notifications:
+                            try:
+                                await self._notifications.emit_event(
+                                    "worker.leave",
+                                    f"Worker '{worker.name}' went offline",
+                                    f"No heartbeat for {HEARTBEAT_TIMEOUT}s. Capabilities may be reduced.",
+                                    level="warning",
+                                )
+                            except Exception:
+                                logger.exception("Failed to emit worker.leave event")
+                        # Release any active leases for this worker's resources.
+                        # Match on the exact worker name (not a resource_id
+                        # prefix) so "gpu-node" and "gpu-node-2" don't collide.
+                        async with self._lease_lock:
+                            offline_lids = [
+                                lid for lid, lease in self._leases.items()
+                                if (parsed := self._parse_resource_id(lease.resource_id))
+                                and parsed[0] == worker.name
+                            ]
+                            for lid in offline_lids:
+                                self._leases.pop(lid, None)
+                                logger.debug("Lease %s released — worker %s went offline", lid, worker.name)
+                        # Cancel any running GPU arbiter tasks for the
+                        # released leases (taOS #890 C2 — cross-cutting wiring).
+                        # This mirrors the cancellation done for stale-drain and
+                        # stale-update workers; the update-available path was
+                        # previously missing it, leaving orphaned arbiter tasks.
+                        if offline_lids and self._gpu_arbiter is not None:
+                            try:
+                                cancelled, already_done = await self._gpu_arbiter.cancel_running_for_leases(set(offline_lids))
+                                logger.info(
+                                    "Worker '%s' stale-update-available: arbiter cancelled %d tasks, %d already done",
+                                    worker.name, cancelled, already_done)
+                            except Exception:
+                                logger.exception(
+                                    "gpu-arbiter: cancel for stale-update-available of '%s' failed",
+                                    worker.name)
 
-                # Handle draining workers: auto-complete if no active leases (taOS #890)
-                elif worker.status == "draining":
-                    active_leases = [
-                        lid for lid, lease in self._leases.items()
-                        if (parsed := self._parse_resource_id(lease.resource_id))
-                        and parsed[0] == worker.name
-                    ]
-                    if not active_leases:
-                        worker.status = "offline"
-                        logger.info(
-                            "Worker '%s' drained — all leases released, marked offline",
-                            worker.name,
-                        )
-                        if self._notifications:
-                            await self._notifications.emit_event(
-                                "worker.leave",
-                                f"Worker '{worker.name}' drained and went offline",
-                                "All tasks completed; worker detached gracefully.",
-                                level="info",
-                            )
-                    elif (now - worker.last_heartbeat) > HEARTBEAT_TIMEOUT:
-                        # Draining worker went stale — force-finish the drain.
-                        # Hold _lease_lock so mutation is serialized with
-                        # claim/release/sweep (taOS #1690 lock fix).
-                        async with self._lease_lock:
-                            lids = [
-                                lid for lid, lease in self._leases.items()
-                                if (parsed := self._parse_resource_id(lease.resource_id))
-                                and parsed[0] == worker.name
-                            ]
-                            for lid in lids:
-                                self._leases.pop(lid, None)
+                    # Handle draining workers: auto-complete if no active leases (taOS #890)
+                    elif worker.status == "draining":
+                        active_leases = [
+                            lid for lid, lease in self._leases.items()
+                            if (parsed := self._parse_resource_id(lease.resource_id))
+                            and parsed[0] == worker.name
+                        ]
+                        if not active_leases:
                             worker.status = "offline"
-                        logger.warning(
-                            "Worker '%s' drain timed out (no heartbeat for %ds) — "
-                            "force-released %d leases, marked offline",
-                            worker.name, HEARTBEAT_TIMEOUT, len(lids),
-                        )
-                        # Cancel any running GPU arbiter tasks for the
-                        # released leases (taOS cross-cutting wiring).
-                        if lids and self._gpu_arbiter is not None:
-                            try:
-                                cancelled, already_done = await self._gpu_arbiter.cancel_running_for_leases(set(lids))
-                                logger.info(
-                                    "Worker '%s' stale-drain: arbiter cancelled %d tasks, %d already done",
-                                    worker.name, cancelled, already_done)
-                            except Exception:
-                                logger.exception(
-                                    "gpu-arbiter: cancel for stale-drain of '%s' failed",
-                                    worker.name)
-                # Handle updating workers: if they stop heartbeating they're
-                # stuck in a bad state — force-offline them so they can re-onboard.
-                elif worker.status == "updating":
-                    if (now - worker.last_heartbeat) > HEARTBEAT_TIMEOUT:
-                        worker.status = "offline"
-                        logger.warning(
-                            "Worker '%s' stuck in 'updating' (no heartbeat for %ds) — marked offline",
-                            worker.name, HEARTBEAT_TIMEOUT,
-                        )
-                        if self._notifications:
-                            await self._notifications.emit_event(
-                                "worker.leave",
-                                f"Worker '{worker.name}' timed out during update",
-                                f"Worker was stuck in 'updating' state. Forced offline to allow re-onboarding.",
-                                level="warning",
+                            logger.info(
+                                "Worker '%s' drained — all leases released, marked offline",
+                                worker.name,
                             )
-                        async with self._lease_lock:
-                            update_lids = [
-                                lid for lid, lease in self._leases.items()
-                                if (parsed := self._parse_resource_id(lease.resource_id))
-                                and parsed[0] == worker.name
-                            ]
-                            for lid in update_lids:
-                                self._leases.pop(lid, None)
-                        # Cancel any running GPU arbiter tasks for the
-                        # released leases (taOS cross-cutting wiring).
-                        if update_lids and self._gpu_arbiter is not None:
-                            try:
-                                cancelled, already_done = await self._gpu_arbiter.cancel_running_for_leases(set(update_lids))
-                                logger.info(
-                                    "Worker '%s' stale-update: arbiter cancelled %d tasks, %d already done",
-                                    worker.name, cancelled, already_done)
-                            except Exception:
-                                logger.exception(
-                                    "gpu-arbiter: cancel for stale-update of '%s' failed",
-                                    worker.name)
-            async with self._lease_lock:
-                self._sweep_expired_leases()
-            await asyncio.sleep(5)
+
+                    # Handle updating workers: if they stop heartbeating they're
+                    # stuck in a bad state — force-offline them so they can re-onboard.
+                    elif worker.status == "updating":
+                        if (now - worker.last_heartbeat) > HEARTBEAT_TIMEOUT:
+                            worker.status = "offline"
+                            logger.warning(
+                                "Worker '%s' stuck in 'updating' (no heartbeat for %ds) — marked offline",
+                                worker.name, HEARTBEAT_TIMEOUT,
+                            )
+                            if self._notifications:
+                                try:
+                                    await self._notifications.emit_event(
+                                        "worker.leave",
+                                        f"Worker '{worker.name}' timed out during update",
+                                        f"Worker was stuck in 'updating' state. Forced offline to allow re-onboarding.",
+                                        level="warning",
+                                    )
+                                except Exception:
+                                    logger.exception("Failed to emit worker.leave event")
+                            async with self._lease_lock:
+                                update_lids = [
+                                    lid for lid, lease in self._leases.items()
+                                    if (parsed := self._parse_resource_id(lease.resource_id))
+                                    and parsed[0] == worker.name
+                                ]
+                                for lid in update_lids:
+                                    self._leases.pop(lid, None)
+                            # Cancel any running GPU arbiter tasks for the
+                            # released leases (taOS cross-cutting wiring).
+                            if update_lids and self._gpu_arbiter is not None:
+                                try:
+                                    cancelled, already_done = await self._gpu_arbiter.cancel_running_for_leases(set(update_lids))
+                                    logger.info(
+                                        "Worker '%s' stale-update: arbiter cancelled %d tasks, %d already done",
+                                        worker.name, cancelled, already_done)
+                                except Exception:
+                                    logger.exception(
+                                        "gpu-arbiter: cancel for stale-update of '%s' failed",
+                                        worker.name)
+                async with self._lease_lock:
+                    self._sweep_expired_leases()
+                await asyncio.sleep(5)
+            except Exception:
+                logger.exception("Monitor loop iteration error")
