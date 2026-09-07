@@ -1530,6 +1530,8 @@ async def add_comment(
     guard = await _require_task_in_project(store, project_id, task_id)
     if isinstance(guard, JSONResponse):
         return guard
+    if not payload.body or not payload.body.strip():
+        return JSONResponse({"error": "comment body must not be empty"}, status_code=422)
     try:
         return await store.add_comment(
             task_id=task_id,
