@@ -259,23 +259,27 @@ def find_violations(path: Path) -> list[Violation]:
 
     # Get all ALTER TABLE ADD COLUMN statements in the file
     added_columns = _extract_add_column_statements(source)
+    added_columns_normalized = {(t, c.lower()) for t, c in added_columns}
 
     violations: list[Violation] = []
     for schema in schema_strings:
         # Extract tables and columns from CREATE TABLE statements
         tables = _extract_table_columns(schema)
+        tables_normalized = {t: {c.lower() for c in cols} for t, cols in tables.items()}
 
         # Extract index references
         index_refs = _extract_index_column_refs(schema)
 
         # Check each index reference
         for table, col in index_refs:
+            table_lower = table.lower()
+            col_lower = col.lower()
             # Check if this column was added by an ALTER TABLE statement
-            if (table, col) in added_columns:
+            if (table_lower, col_lower) in added_columns_normalized:
                 # Check if the column is already defined in the table
                 safe = False
-                if table in tables:
-                    safe = col.lower() in tables[table]
+                if table_lower in tables_normalized:
+                    safe = col_lower in tables_normalized[table_lower]
 
                 if not safe:
                     # Find the original index statement for reporting

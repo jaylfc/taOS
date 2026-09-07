@@ -36,7 +36,9 @@ Invoked by the ``retrofit-migration-guard`` step in
 Prints ``retrofit-migration-guard: clean`` and exits 0 when no violations,
 or prints each violation and exits 1.
 
-Dependency-light: stdlib only (ast + re + pathlib).
+Dependency-light: sqlglot is a CI/dev-only dependency -- it never lands on
+a Pi (ARM64) because its Rust/C accelerators are opt-in extras. The
+pure-Python version (30.18.0) has zero required runtime deps.
 """
 from __future__ import annotations
 
@@ -46,26 +48,129 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    import sqlglot
+    from sqlglot import exp
+    SQLGLOT_AVAILABLE = True
+except ImportError:
+    SQLGLOT_AVAILABLE = False
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STORES_ROOT = REPO_ROOT / "tinyagentos"
 
 # ALTER TABLE <table> ADD [COLUMN] <col> ...
 _ADD_COLUMN_RE = re.compile(
-    r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+(?:COLUMN\s+)?(\w+)",
+    r"ALTER\s+TABLE\s+([\"\w]+)\s+ADD\s+(?:COLUMN\s+)?([\"\w]+)",
     re.IGNORECASE,
 )
 
 # CREATE [UNIQUE] INDEX [IF NOT EXISTS] <name> ON <table> (col, col, ...)
 _CREATE_INDEX_RE = re.compile(
-    r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\w+\s+ON\s+(\w+)",
+    r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\w+\s+ON\s+([\"\w]+)",
     re.IGNORECASE,
 )
 
 # CREATE TABLE [IF NOT EXISTS] <table> ( ... )
 _CREATE_TABLE_RE = re.compile(
-    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s*\(",
+    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\"\w]+)\s*\(",
     re.IGNORECASE,
 )
+
+
+def _parse_with_sqlglot(sql: str):
+    """Parse SQL using sqlglot, returns a list of expressions."""
+    if not SQLGLOT_AVAILABLE:
+        return None
+    try:
+        parsed = sqlglot.parse(sql, dialect="sqlite")
+        return parsed if isinstance(parsed, list) else [parsed]
+    except Exception:
+        return None
+
+
+def _extract_table_name_from_node(node) -> str | None:
+    """Extract a table name from a sqlglot expression node."""
+    if isinstance(node, exp.Table):
+        return node.name
+    if isinstance(node, exp.Identifier):
+        return node.name
+    return None
+
+
+def _extract_schema_tables_sqlglot(schema_sql: str) -> set[str]:
+    """Return the set of table names declared in CREATE TABLE statements using sqlglot."""
+    tables: set[str] = set()
+    parsed = _parse_with_sqlglot(schema_sql)
+    if parsed is not None:
+        for stmt in parsed:
+            if isinstance(stmt, exp.Create) and isinstance(stmt.this, exp.Table):
+                tables.add(stmt.this.name)
+    return tables
+
+
+def _extract_schema_tables_regex(schema_sql: str) -> set[str]:
+    """Return the set of table names declared in CREATE TABLE statements using regex."""
+    tables: set[str] = set()
+    for m in _CREATE_TABLE_RE.finditer(schema_sql):
+        table = m.group(1).strip('"\'')
+        tables.add(table)
+    return tables
+
+
+def _extract_schema_tables(schema_sql: str) -> set[str]:
+    """Return the set of table names declared in CREATE TABLE statements."""
+    tables = _extract_schema_tables_sqlglot(schema_sql)
+    if tables:
+        return tables
+    return _extract_schema_tables_regex(schema_sql)
+
+
+def _extract_migration_table_sqlglot(sql: str) -> str | None:
+    """Extract the table name from an ALTER TABLE or CREATE INDEX statement using sqlglot."""
+    parsed = _parse_with_sqlglot(sql)
+    if parsed is not None:
+        for stmt in parsed:
+            if isinstance(stmt, exp.Alter):
+                table_name = _extract_table_name_from_node(stmt.this)
+                if table_name:
+                    return table_name
+            if isinstance(stmt, exp.Create) and isinstance(stmt.this, exp.Index):
+                for child in stmt.this.iter_expressions():
+                    if isinstance(child, exp.Table):
+                        return child.name
+    return None
+
+
+def _extract_migration_table_regex(sql: str) -> str | None:
+    """Extract the table name from an ALTER TABLE or CREATE INDEX statement using regex."""
+    for m in _ADD_COLUMN_RE.finditer(sql):
+        return m.group(1).strip('"\'')
+    for m in _CREATE_INDEX_RE.finditer(sql):
+        return m.group(1).strip('"\'')
+    return None
+
+
+def _resolve_string(node: ast.AST, string_constants: dict[str, str]) -> str | None:
+    """Resolve an AST node to a string value, following constant references."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name) and node.id in string_constants:
+        return string_constants[node.id]
+    return None
+
+
+def _resolve_list_node(node: ast.AST, list_constants: dict[str, ast.List]) -> ast.List | None:
+    """Resolve an AST node to a list node, following constant references."""
+    if isinstance(node, ast.List):
+        return node
+    if isinstance(node, ast.Name) and node.id in list_constants:
+        return list_constants[node.id]
+    return None
+
+
+def _normalize(sql: str) -> str:
+    """Normalize SQL for comparison: collapse whitespace, lowercase."""
+    return re.sub(r"\s+", " ", sql).strip().lower()
 
 
 @dataclass
@@ -96,34 +201,6 @@ class Violation:
         )
 
 
-def _resolve_string(node: ast.AST, string_constants: dict[str, str]) -> str | None:
-    """Resolve an AST node to a string value, following constant references."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.Name) and node.id in string_constants:
-        return string_constants[node.id]
-    return None
-
-
-def _resolve_list_node(node: ast.AST, list_constants: dict[str, ast.List]) -> ast.List | None:
-    """Resolve an AST node to a list node, following constant references."""
-    if isinstance(node, ast.List):
-        return node
-    if isinstance(node, ast.Name) and node.id in list_constants:
-        return list_constants[node.id]
-    return None
-
-
-def _normalize(sql: str) -> str:
-    """Normalize SQL for comparison: collapse whitespace, lowercase."""
-    return re.sub(r"\s+", " ", sql).strip().lower()
-
-
-def _extract_schema_tables(schema_sql: str) -> set[str]:
-    """Return the set of table names declared in CREATE TABLE statements."""
-    return {m.group(1) for m in _CREATE_TABLE_RE.finditer(schema_sql)}
-
-
 def _check_migration_sql(
     sql: str,
     schema_tables: set[str],
@@ -141,31 +218,26 @@ def _check_migration_sql(
     if _normalize(sql) == schema_sql_normalized:
         return violations
 
-    # ALTER TABLE <schema_table> ADD COLUMN <col> -> retrofit
-    for m in _ADD_COLUMN_RE.finditer(sql):
-        table = m.group(1)
-        if table in schema_tables:
-            violations.append(Violation(
-                path=path,
-                store=store,
-                version=version,
-                table=table,
-                kind="ALTER TABLE ADD COLUMN",
-                detail=m.group(0).strip(),
-            ))
+    # Try sqlglot first for robust table extraction (handles quoted identifiers)
+    table = _extract_migration_table_sqlglot(sql)
+    if table is None:
+        table = _extract_migration_table_regex(sql)
+    if table is None:
+        return violations
 
-    # CREATE INDEX ... ON <schema_table> -> retrofit (baseline skips it)
-    for m in _CREATE_INDEX_RE.finditer(sql):
-        table = m.group(1)
-        if table in schema_tables:
-            violations.append(Violation(
-                path=path,
-                store=store,
-                version=version,
-                table=table,
-                kind="CREATE INDEX",
-                detail=m.group(0).strip(),
-            ))
+    table_lower = table.lower()
+    if table_lower in schema_tables:
+        kind = "CREATE INDEX" if re.search(
+            r"CREATE\s+(?:UNIQUE\s+)?INDEX", sql, re.IGNORECASE
+        ) else "ALTER TABLE ADD COLUMN"
+        violations.append(Violation(
+            path=path,
+            store=store,
+            version=version,
+            table=table,
+            kind=kind,
+            detail=sql.strip(),
+        ))
 
     return violations
 
@@ -237,10 +309,11 @@ def find_violations(path: Path) -> list[Violation]:
 
     if module_schema and module_migrations:
         schema_tables = _extract_schema_tables(module_schema)
+        schema_tables_normalized = {t.lower() for t in schema_tables}
         schema_norm = _normalize(module_schema)
         store_name = path.stem
         violations.extend(
-            _check_migrations_list(module_migrations, string_constants, schema_tables, schema_norm, path, store_name)
+            _check_migrations_list(module_migrations, string_constants, schema_tables_normalized, schema_norm, path, store_name)
         )
 
     # --- Class-level stores (e.g. contacts_store.py, invite_store.py) ---
@@ -267,9 +340,10 @@ def find_violations(path: Path) -> list[Violation]:
 
         if class_schema and class_migrations:
             schema_tables = _extract_schema_tables(class_schema)
+            schema_tables_normalized = {t.lower() for t in schema_tables}
             schema_norm = _normalize(class_schema)
             violations.extend(
-                _check_migrations_list(class_migrations, string_constants, schema_tables, schema_norm, path, node.name)
+                _check_migrations_list(class_migrations, string_constants, schema_tables_normalized, schema_norm, path, node.name)
             )
 
     return violations
@@ -278,7 +352,7 @@ def find_violations(path: Path) -> list[Violation]:
 def _check_migrations_list(
     migrations_node: ast.List,
     string_constants: dict[str, str],
-    schema_tables: set[str],
+    schema_tables_normalized: set[str],
     schema_norm: str,
     path: Path,
     store_name: str,
@@ -303,7 +377,7 @@ def _check_migrations_list(
             continue
 
         violations.extend(
-            _check_migration_sql(sql, schema_tables, schema_norm, path, store_name, version)
+            _check_migration_sql(sql, schema_tables_normalized, schema_norm, path, store_name, version)
         )
 
     return violations
