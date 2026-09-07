@@ -4,6 +4,7 @@ id: hailo-ollama
 license: Proprietary (Hailo EULA, accepted at install)
 name: hailo-ollama (Hailo-10H NPU LLM)
 type: service
+version: 0.1.0
 category: llm-runtime
 description: "Ollama-compatible LLM server on the Hailo-10H NPU (Raspberry Pi 5 + AI HAT+2)"
 requires:

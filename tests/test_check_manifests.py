@@ -24,7 +24,9 @@ def _write(root: Path, sid: str, manifest: dict) -> None:
 def _managed_ok(sid: str = "rkllama") -> dict:
     return {
         "id": sid,
+        "name": sid,
         "type": "service",
+        "version": "1.0.0",
         "category": "llm-runtime",
         "lifecycle": {
             "backend_type": "rkllama",
@@ -70,7 +72,9 @@ def test_non_managed_service_is_ignored(tmp_path: Path) -> None:
     # auto_manage false -> not claiming managed, no unit/health required
     m = {
         "id": "rk-llama-cpp",
+        "name": "rk-llama-cpp",
         "type": "service",
+        "version": "1.0.0",
         "category": "llm-runtime",
         "lifecycle": {"backend_type": "openai-compatible", "auto_manage": False},
     }
@@ -79,7 +83,9 @@ def test_non_managed_service_is_ignored(tmp_path: Path) -> None:
 
 
 def test_service_without_lifecycle_is_ignored(tmp_path: Path) -> None:
-    _write(tmp_path, "ollama", {"id": "ollama", "type": "service"})
+    _write(tmp_path, "ollama", {
+        "id": "ollama", "name": "ollama", "type": "service", "version": "1.0.0",
+    })
     assert check_manifests.lint_managed(tmp_path) == []
 
 
