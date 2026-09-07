@@ -472,6 +472,7 @@ class LLMProxy:
         # deployer uses when auth'ing /key/generate and agent requests.
         env = os.environ.copy()
         env["LITELLM_MASTER_KEY"] = get_litellm_master_key(self._data_dir)
+        env["TAOS_TRACE_URL"] = f"http://127.0.0.1:{self.port}/api/trace"
         # Forward the local auth token so the TaosLiteLLMCallback inside
         # the subprocess can POST to taOS's /api/trace (otherwise 401).
         if self.local_token:
@@ -559,7 +560,7 @@ class LLMProxy:
                 async with httpx.AsyncClient(timeout=3) as client:
                     resp = await client.get(f"{self.url}/health/readiness")
                     if resp.status_code == 200:
-                        logger.info(f"LiteLLM proxy started on port {self.port}")
+                        logger.info("LiteLLM proxy started on port %d (trace URL: %s)", self.port, env.get("TAOS_TRACE_URL"))
                         return True
             except Exception:
                 pass
