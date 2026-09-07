@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -13,7 +14,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".html", ".json", ".csv"}
+
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "tinyagentos_imports"
+
+_SAFE_AGENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _upload_path(filename: str) -> Path | None:
+    """Map a client-supplied filename to a path INSIDE ``UPLOAD_DIR``.
+
+    ``Path("a") / "/etc/x"`` silently discards the left operand, so an
+    absolute or ``..`` filename would let any authenticated user write
+    (upload) or read (embed) any file the server process can reach
+    (GHSA-rwrp-hfc4-qg2w). Browsers only ever send a bare basename, so
+    anything with a separator, a NUL, or a leading dot is rejected outright.
+    """
+    if not filename or "/" in filename or "\\" in filename or "\x00" in filename:
+        return None
+    if filename in {".", ".."} or filename.startswith("."):
+        return None
+    dest = UPLOAD_DIR / filename
+    if dest.resolve().parent != UPLOAD_DIR.resolve():
+        return None
+    return dest
 
 
 @router.post("/api/import/upload")
@@ -28,15 +51,17 @@ async def upload_file(request: Request, file: UploadFile):
             status_code=400,
         )
 
+    dest = _upload_path(file.filename)
+    if dest is None:
+        return JSONResponse({"error": "Invalid filename"}, status_code=400)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    dest = UPLOAD_DIR / file.filename
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
     size = dest.stat().st_size
     return {
         "status": "uploaded",
-        "filename": file.filename,
+        "filename": dest.name,
         "size": size,
         "path": str(dest),
     }
@@ -52,9 +77,20 @@ async def embed_files(request: Request):
         return JSONResponse({"error": "agent_name is required"}, status_code=400)
     if not filenames:
         return JSONResponse({"error": "No files specified"}, status_code=400)
+    if not isinstance(agent_name, str) or not _SAFE_AGENT_NAME.match(agent_name):
+        return JSONResponse({"error": "Invalid agent_name"}, status_code=400)
+
+    # Resolve every name INSIDE UPLOAD_DIR before touching the filesystem;
+    # a traversal name is a 400, not a read of whatever it points at.
+    resolved: dict[str, Path] = {}
+    for f in filenames:
+        p = _upload_path(f) if isinstance(f, str) else None
+        if p is None:
+            return JSONResponse({"error": f"Invalid filename: {f!r}"}, status_code=400)
+        resolved[f] = p
 
     # Verify files exist
-    missing = [f for f in filenames if not (UPLOAD_DIR / f).exists()]
+    missing = [f for f, p in resolved.items() if not p.exists()]
     if missing:
         return JSONResponse({"error": f"Files not found: {', '.join(missing)}"}, status_code=404)
 
@@ -74,7 +110,7 @@ async def embed_files(request: Request):
     all_embedded = True
 
     for fname in filenames:
-        fpath = UPLOAD_DIR / fname
+        fpath = resolved[fname]
         text = fpath.read_text(errors="replace")
         file_embedded = False
 
