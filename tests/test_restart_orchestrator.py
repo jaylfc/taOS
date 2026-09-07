@@ -116,6 +116,19 @@ class TestPendingRestartFlag:
         flag.write_text("not json")
         assert ro.read_pending_restart() is None
 
+    def test_write_pending_restart_uses_atomic_rename(self, tmp_path, monkeypatch):
+        """write_pending_restart must use os.replace, never plain write_text."""
+        monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_path))
+        replaces = []
+
+        def spy_replace(src, dst):
+            replaces.append((src, dst))
+
+        with patch("os.replace", side_effect=spy_replace):
+            ro.write_pending_restart("abc123")
+
+        assert replaces, "os.replace was never called by write_pending_restart"
+
 
 # ---------------------------------------------------------------------------
 # _load_or_synthesize_note
@@ -416,6 +429,21 @@ class TestWriteControllerNote:
         )
         assert data["context_snapshot"] == {}
 
+    @pytest.mark.asyncio
+    async def test_write_controller_note_uses_atomic_rename(self, tmp_path):
+        """_write_controller_note must use os.replace, never plain write_text."""
+        agent = {"name": "agent1"}
+        orch = ro.RestartOrchestrator(_app_state(tmp_path))
+        replaces = []
+
+        def spy_replace(src, dst):
+            replaces.append((src, dst))
+
+        with patch("os.replace", side_effect=spy_replace):
+            await orch._write_controller_note(agent, "stop", tmp_path)
+
+        assert replaces, "os.replace was never called by _write_controller_note"
+
 
 # ---------------------------------------------------------------------------
 # apply_pending_restart_check
@@ -485,7 +513,27 @@ class TestApplyPendingRestartCheck:
 
         titles = [c.kwargs["title"] for c in state.notifications.add.await_args_list]
         assert any("Restart happened but code didn't update" in t for t in titles)
-        ro.clear_pending_restart.assert_not_called()
+        ro.clear_pending_restart.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_empty_current_sha_clears_flag(self, tmp_path, monkeypatch):
+        """When current_sha is empty the restart flag must be cleared."""
+        monkeypatch.setattr(ro, "read_pending_restart", lambda: {"target_sha": "abc123"})
+        monkeypatch.setattr(ro, "clear_pending_restart", MagicMock())
+
+        mock_stdout = MagicMock()
+        mock_stdout.decode.return_value = "\n"
+        mock_proc = MagicMock()
+        mock_proc.communicate = AsyncMock(return_value=(mock_stdout, b""))
+
+        async def fake_create(*args, **kwargs):
+            return mock_proc
+
+        state = _app_state(tmp_path)
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
+            await ro.apply_pending_restart_check(state)
+
+        ro.clear_pending_restart.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
