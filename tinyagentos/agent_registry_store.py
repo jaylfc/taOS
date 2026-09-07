@@ -265,10 +265,11 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
 
     Generates an Ed25519 keypair on first call and persists the private key
     PEM to ``<data_dir>/agent_registry_signing.pem`` with mode 0600.
-    Subsequent calls load and return the same keypair.  Idempotent under
-    concurrent processes - the writer uses O_EXCL so only one process
-    creates the file.
+    Subsequent calls load and return the same keypair.  Uses filelock to
+    serialize the generate-or-load and atomic_write (tmp + rename) for the
+    write so concurrent processes never see an empty or partial key.
     """
+    from filelock import FileLock
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import (
         Encoding,
@@ -277,26 +278,21 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
         PublicFormat,
         load_pem_private_key,
     )
+    from tinyagentos.atomic_io import atomic_write_bytes
 
     data_dir.mkdir(parents=True, exist_ok=True)
     pem_path = data_dir / _REGISTRY_KEY_FILENAME
+    lock_path = data_dir / (_REGISTRY_KEY_FILENAME + ".lock")
 
-    if pem_path.exists():
-        private_key = load_pem_private_key(pem_path.read_bytes(), password=None)
-    else:
-        private_key = Ed25519PrivateKey.generate()
-        pem_bytes = private_key.private_bytes(
-            Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()
-        )
-        try:
-            fd = os.open(str(pem_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                os.write(fd, pem_bytes)
-            finally:
-                os.close(fd)
-        except FileExistsError:
-            # Lost the race - load the winner's key instead.
+    with FileLock(str(lock_path)):
+        if pem_path.exists():
             private_key = load_pem_private_key(pem_path.read_bytes(), password=None)
+        else:
+            private_key = Ed25519PrivateKey.generate()
+            pem_bytes = private_key.private_bytes(
+                Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()
+            )
+            atomic_write_bytes(pem_path, pem_bytes, mode=0o600)
 
     private_pem = private_key.private_bytes(
         Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()

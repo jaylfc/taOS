@@ -319,6 +319,65 @@ class TestSigningKeypair:
         assert pem_file.exists()
 
 
+class TestSigningKeypairConcurrentRace:
+    """RED test: concurrent calls must always get the same non-empty key.
+
+    The current load_or_create_signing_keypair has a race condition where two
+    concurrent processes can both see the key file as absent, then one creates
+    it with O_EXCL while the other waits. The second process then reads the
+    empty file (created but not yet written to) and gets an empty key, breaking
+    boot.
+    """
+
+    def test_concurrent_threads_always_get_same_nonempty_key(self, tmp_path):
+        import threading
+        from pathlib import Path
+
+        key_path = tmp_path / "keys"
+        results: list[tuple[bytes, bytes]] = []
+        errors: list[BaseException] = []
+
+        def call_loader():
+            try:
+                priv, pub = load_or_create_signing_keypair(key_path)
+                results.append((priv, pub))
+            except Exception as e:
+                errors.append(e)
+
+        # Run 50 concurrent threads
+        threads = []
+        for _ in range(50):
+            t = threading.Thread(target=call_loader)
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        # Fail if any errors occurred
+        assert (
+            len(errors) == 0
+        ), f"Unexpected errors during concurrent load: {errors}"
+
+        # All must have gotten a non-empty key
+        assert len(results) == 50, f"Expected 50 results, got {len(results)}"
+
+        first_priv = results[0][0]
+        # Every result must have the same non-empty private key
+        for i, (priv, pub) in enumerate(results):
+            assert priv == first_priv, (
+                f"Result {i} has different private key"
+            )
+            assert len(priv) > 0, f"Result {i} has empty private key"
+            assert b"PRIVATE" in priv, f"Result {i} private key is malformed"
+
+        # Verify file mode is 0o600
+        pem_file = key_path / "agent_registry_signing.pem"
+        assert pem_file.exists(), "Key file was never created"
+        mode = pem_file.stat().st_mode & 0o777
+        assert mode == 0o600, f"Key file mode is {oct(mode)}, expected 0o600"
+
+
 # ---------------------------------------------------------------------------
 # AgentRegistryStore: registration
 # ---------------------------------------------------------------------------
