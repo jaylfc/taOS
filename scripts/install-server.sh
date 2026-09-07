@@ -2548,18 +2548,74 @@ fi
 # warn the user; verified ones log a quiet success. Failures are non-blocking
 # — the controller runs regardless — but are prominently displayed so the
 # user knows what's broken before they walk away from the install (#370).
+#
+# The /api/system/hardware/refresh route is registered as POST, so a GET
+# against it returns 405 and `curl -sf` exits non-zero -- which is exactly
+# what produced taOS #2's silent skip on the Orange Pi 5B run. We POST, and
+# we retry briefly: a fresh install can hit this endpoint while the controller
+# is still finishing first-boot init, in which case the right behaviour is to
+# wait, not to silently walk away (taOS #2).
+
+# Globals consumed by the success banner below. Set to "unknown" if verification
+# never ran so the banner still renders something sensible.
+HW_PROFILE_ID="${HW_PROFILE_ID:-unknown}"
+HW_NPU_TYPE="${HW_NPU_TYPE:-none}"
+HW_NPU_DEVICE="${HW_NPU_DEVICE:-}"
 
 verify_hardware_capabilities() {
     local claimed_vulkan=0 claimed_cuda=0 claimed_rocm=0 claimed_rknpu=0 claimed_mlx=0
     local verified_ok=0 verified_warn=0
 
-    # Fetch the hardware profile from the now-running controller.
-    local hw_json
-    hw_json=$(curl -sf "http://localhost:$TAOS_PORT/api/system/hardware/refresh" 2>/dev/null || true)
+    # Fetch the hardware profile from the now-running controller. POST is the
+    # only method the route accepts; a GET gets 405 and looks like "empty".
+    # Retry for up to 30 s so the controller can finish first-boot init
+    # (litellm prisma migration, store creation) without us declaring failure.
+    local hw_json=""
+    local _hw_tries=0
+    local _hw_deadline=$(( SECONDS + 30 ))
+    while [[ $_hw_tries -lt 30 ]]; do
+        _remaining=$(( _hw_deadline - SECONDS ))
+        [[ $_remaining -le 0 ]] && break
+        _curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))
+        hw_json=$(curl -sf --max-time "$_curl_timeout" -X POST \
+            "http://localhost:$TAOS_PORT/api/system/hardware/refresh" 2>/dev/null || true)
+        [[ -n "$hw_json" ]] && break
+        _remaining=$(( _hw_deadline - SECONDS ))
+        [[ $_remaining -le 1 ]] && break
+        sleep 1
+        _hw_tries=$((_hw_tries + 1))
+    done
+
     if [[ -z "$hw_json" ]]; then
-        warn "hardware verification skipped — controller did not return a profile"
-        return 0
+        # Loud failure: the controller never answered hardware/refresh. The old
+        # code swallowed this with a quiet warn and the user never learned
+        # whether their NPU was recognised (taOS #2 -- Orange Pi 5B / RK3588).
+        warn "controller did not return a hardware profile within 30 s"
+        warn "  checked: POST http://localhost:$TAOS_PORT/api/system/hardware/refresh"
+        warn "  the controller is up (port-open + /api/cluster/workers already passed),"
+        warn "  so this is a hardware-detection failure inside the controller."
+        warn "  what to check:"
+        warn "    1. journalctl -u tinyagentos --no-pager -n 80 | grep -i 'hardware'"
+        warn "    2. ls -l /dev/rknpu   (for Rockchip boards)"
+        warn "    3. the controller data dir is writable:"
+        warn "         data_dir=\$(systemctl show -p Environment tinyagentos | tr ',' '\\n' | grep TAOS_DATA_DIR | cut -d= -f2)"
+        warn "         test -w \"\$data_dir\""
+        if command -v journalctl >/dev/null 2>&1; then
+            warn "latest journal output:"
+            journalctl -u tinyagentos --no-pager -n 30 2>/dev/null || true
+        fi
+        die "hardware verification failed -- fix the controller-side hardware detection above and re-run the install"
     fi
+
+    # Pull a few fields out of the profile for the success banner. The
+    # controller returns the dataclass serialised with asdict() plus the
+    # profile_id field appended (see tinyagentos/routes/system.py:hardware_refresh).
+    HW_PROFILE_ID=$(echo "$hw_json" | grep -o '"profile_id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    [[ -z "$HW_PROFILE_ID" ]] && HW_PROFILE_ID="unknown"
+    HW_NPU_TYPE=$(echo "$hw_json" | grep -o '"npu"[[:space:]]*:[[:space:]]*{[^}]*"type"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"type"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    [[ -z "$HW_NPU_TYPE" ]] && HW_NPU_TYPE="none"
+    HW_NPU_DEVICE=$(echo "$hw_json" | grep -o '"npu"[[:space:]]*:[[:space:]]*{[^}]*"device"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"device"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    [[ -z "$HW_NPU_DEVICE" ]] && HW_NPU_DEVICE=""
 
     # Parse claimed capabilities from the JSON response. Uses grep+sed
     # instead of jq to avoid a dependency. The API response is a flat
@@ -2739,6 +2795,20 @@ if [[ "$TAOS_BROWSER_PROXY_PORT" != "0" ]]; then
 fi
 log "  Install dir : $INSTALL_DIR"
 log "  Storage pool: ${COW_EFFECTIVE_MODE:-n/a} (detected fs: ${COW_FS_TYPE:-unknown})"
+# Surface what the controller actually detected so a tester can confirm at
+# a glance (taOS #2 -- installer used to silently skip, so testers had no
+# way to tell whether the NPU was recognised). HW_PROFILE_ID/HW_NPU_TYPE
+# are set by verify_hardware_capabilities; if that never ran, the defaults
+# above render as "unknown" / "none".
+if [[ "$HW_NPU_TYPE" == "none" || -z "$HW_NPU_TYPE" ]]; then
+    log "  Hardware    : $HW_PROFILE_ID (no NPU detected)"
+else
+    if [[ -n "$HW_NPU_DEVICE" ]]; then
+        log "  Hardware    : $HW_PROFILE_ID (NPU: $HW_NPU_TYPE, device: $HW_NPU_DEVICE)"
+    else
+        log "  Hardware    : $HW_PROFILE_ID (NPU: $HW_NPU_TYPE detected)"
+    fi
+fi
 if [[ "${COW_EFFECTIVE_MODE:-}" == "btrfs" || "${COW_EFFECTIVE_MODE:-}" == "zfs" ]]; then
     log "    * CoW clones enabled - container deploys <=5 seconds"
 elif [[ "${COW_EFFECTIVE_MODE:-}" == "dir" ]]; then
