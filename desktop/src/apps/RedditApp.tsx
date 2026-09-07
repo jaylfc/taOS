@@ -119,7 +119,7 @@ function CommentNode({ comment, maxDepth = 4 }: CommentNodeProps) {
             <span className="rd-cmt-meta">{formatScore(comment.score)} pts</span>
             <span className="rd-cmt-meta">·</span>
             <span className="rd-cmt-meta">{timeAgo(comment.created_utc)}</span>
-            {comment.edited && (
+            {comment.edited !== false && (
               <span className="rd-cmt-meta" style={{ fontStyle: "italic" }}>
                 (edited)
               </span>

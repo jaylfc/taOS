@@ -50,7 +50,7 @@ class RedditComment:
     depth: int
     parent_id: str
     replies: list["RedditComment"]
-    edited: bool | float
+    edited: bool | float | None
     distinguished: str | None
 
 
@@ -80,30 +80,37 @@ def _normalise_url(url: str, token: str | None = None) -> str:
 # Comment tree builder
 # ---------------------------------------------------------------------------
 
-def _parse_comment(data: dict, depth: int = 0) -> RedditComment:
-    """Recursively parse a comment data dict into a RedditComment."""
-    replies_raw = data.get("replies")
-    replies: list[RedditComment] = []
-    if isinstance(replies_raw, dict):
-        for child in replies_raw.get("data", {}).get("children", []):
-            if child.get("kind") == "t1":
-                replies.append(_parse_comment(child["data"], depth + 1))
-            # "more" nodes inside replies are skipped (stub)
+_MAX_COMMENT_DEPTH = 2000
+_MAX_COMMENT_COUNT = 10_000
 
+
+def _normalise_edited(edited_raw) -> bool | float | None:
+    """Normalise the Reddit ``edited`` field.
+
+    Reddit returns:
+      - ``False``  — comment was not edited.
+      - ``True``   — legacy boolean meaning "edited, no timestamp".
+      - a number   — epoch timestamp of the edit.
+
+    ``bool`` is a subclass of ``int``, so ``isinstance(True, (int, float))``
+    is true.  We must check ``bool`` *first* to avoid coercing ``True`` to
+    ``float(True)`` == ``1.0`` (the 1970 epoch).
+    """
+    if isinstance(edited_raw, bool):
+        return None if edited_raw else False
+    if isinstance(edited_raw, (int, float)):
+        return float(edited_raw)
+    return False
+
+
+def _build_comment_from_data(data: dict, depth: int) -> RedditComment:
+    """Build a RedditComment from raw data (without recursing into replies)."""
     author = data.get("author", "[deleted]") or "[deleted]"
     body = data.get("body", "[deleted]") or "[deleted]"
-    # Normalise deleted authors/bodies
     if author in ("", None):
         author = "[deleted]"
     if body in ("", None):
         body = "[deleted]"
-
-    edited_raw = data.get("edited", False)
-    edited: bool | float
-    if isinstance(edited_raw, (int, float)) and edited_raw is not False:
-        edited = float(edited_raw)
-    else:
-        edited = bool(edited_raw)
 
     return RedditComment(
         id=data.get("id", ""),
@@ -113,10 +120,38 @@ def _parse_comment(data: dict, depth: int = 0) -> RedditComment:
         created_utc=float(data.get("created_utc", 0.0)),
         depth=depth,
         parent_id=data.get("parent_id", ""),
-        replies=replies,
-        edited=edited,
+        replies=[],
+        edited=_normalise_edited(data.get("edited", False)),
         distinguished=data.get("distinguished"),
     )
+
+
+def _parse_comment(data: dict, depth: int = 0) -> RedditComment:
+    """Parse a comment data dict into a RedditComment.
+
+    Uses an explicit stack instead of recursion so that arbitrarily deep
+    comment trees (e.g. 2 000-level chains) do not exhaust the Python stack.
+    """
+    root = _build_comment_from_data(data, depth)
+    stack: list[tuple[RedditComment, dict]] = [(root, data)]
+    count = 0
+    while stack:
+        node, node_data = stack.pop()
+        count += 1
+        if count >= _MAX_COMMENT_COUNT:
+            break
+        if node.depth >= _MAX_COMMENT_DEPTH:
+            continue
+        replies_raw = node_data.get("replies")
+        if isinstance(replies_raw, dict):
+            for child in replies_raw.get("data", {}).get("children", []):
+                if child.get("kind") == "t1":
+                    child_data = child["data"]
+                    child_comment = _build_comment_from_data(child_data, node.depth + 1)
+                    node.replies.append(child_comment)
+                    stack.append((child_comment, child_data))
+                # "more" nodes inside replies are skipped (stub)
+    return root
 
 
 def _parse_comments_listing(listing: dict) -> list[RedditComment]:
@@ -324,13 +359,21 @@ async def fetch_saved(
 # ---------------------------------------------------------------------------
 
 def _flatten_comment(comment: RedditComment, lines: list[str]) -> None:
-    indent = "  " * comment.depth
-    lines.append(f"{indent}**{comment.author}** (score: {comment.score})")
-    for body_line in comment.body.splitlines():
-        lines.append(f"{indent}{body_line}")
-    lines.append("")
-    for reply in comment.replies:
-        _flatten_comment(reply, lines)
+    """Flatten a comment tree into text lines (iterative to avoid RecursionError)."""
+    stack: list[RedditComment] = [comment]
+    count = 0
+    while stack:
+        node = stack.pop()
+        count += 1
+        if count >= _MAX_COMMENT_COUNT:
+            break
+        indent = "  " * node.depth
+        lines.append(f"{indent}**{node.author}** (score: {node.score})")
+        for body_line in node.body.splitlines():
+            lines.append(f"{indent}{body_line}")
+        lines.append("")
+        for reply in reversed(node.replies):
+            stack.append(reply)
 
 
 def flatten_to_text(post: RedditPost, comments: list[RedditComment]) -> str:
