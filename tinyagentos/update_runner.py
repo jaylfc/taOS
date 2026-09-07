@@ -51,150 +51,35 @@ def _record_rollback_target(project_dir, branch: str, sha: str, ts: int) -> None
         logger.warning("update_runner: failed to record rollback target", exc_info=True)
 
 
-async def _run(args: list[str], cwd: Path) -> tuple[int, str]:
-    """Run a subprocess safely (no shell) and return (returncode, output)."""
+async def _run(args: list[str], cwd: Path, timeout: float = 30) -> tuple[int, str]:
+    """Run a subprocess safely (no shell) and return (returncode, output).
+
+    Raises ``asyncio.TimeoutError`` if the process does not finish within
+    *timeout* seconds; the child is killed before the exception propagates.
+
+    Raises ``RuntimeError`` if the subprocess exits with a non-zero return code.
+    """
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=str(cwd),
     )
-    stdout, _ = await proc.communicate()
-    return proc.returncode or 0, (stdout.decode() if stdout else "")
-
-
-async def update_to_master(
-    project_dir: Path,
-) -> UpdateResult:
-    """Pull origin/master robustly, handling dirty trees, branches, and divergence.
-
-    Returns an UpdateResult describing what happened. On network failure the
-    result carries a descriptive message and no destructive action has been taken.
-
-    GPG signature verification is handled upstream in ``switch_to_branch``
-    (the production code path) and ``auto_update._verify_gpg`` (the notification
-    path).  This function is an internal helper that does not duplicate those
-    checks.
-    """
-    ts = int(time.time())
-
-    # 1. Fetch — bail early if unreachable so we never destroy local state
-    logger.info("update_runner: fetching origin/master")
-    rc, out = await _run(["git", "fetch", "origin", "master"], project_dir)
-    if rc != 0:
-        logger.warning("update_runner: fetch failed: %s", out[:500])
-        return UpdateResult(
-            previous_sha="",
-            new_sha="",
-            message=f"Fetch failed — no changes applied. ({out.strip()[:200]})",
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        raise
+    if proc.returncode != 0:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        raise RuntimeError(
+            f"Command {args[0]!r} exited with non-zero exit code {proc.returncode}"
         )
-
-    merge_target = "origin/master"
-
-    # 2. Probe current state
-    _, branch_out = await _run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"], project_dir
-    )
-    branch = branch_out.strip()
-
-    _, sha_out = await _run(["git", "rev-parse", "HEAD"], project_dir)
-    current_sha = sha_out.strip()
-    short_sha = current_sha[:7]
-
-    # Use -u so untracked files also trigger a stash (matches git stash -u).
-    _, status_out = await _run(
-        ["git", "status", "--porcelain", "-u"], project_dir
-    )
-    dirty = bool(status_out.strip())
-
-    # Record the rollback target AFTER the dirty probe so the (gitignored) state
-    # file never counts as a dirty working tree and triggers a spurious stash.
-    _record_rollback_target(project_dir, branch, current_sha, ts)
-
-    result = UpdateResult(previous_sha=current_sha, new_sha=current_sha)
-
-    # 3. Switch to master if on another branch
-    if branch != "master":
-        safe_branch = branch.replace("/", "-")
-        branch_tag = f"taos-pre-update-{safe_branch}-{ts}"
-        logger.info("update_runner: not on master (%s); tagging as %s", branch, branch_tag)
-        await _run(["git", "tag", branch_tag, "HEAD"], project_dir)
-        await _run(["git", "checkout", "master"], project_dir)
-        result.branch_tag = branch_tag
-
-    # 4. Stash dirty working tree
-    stash_msg = f"taos-update-{ts}"
-    if dirty:
-        logger.info("update_runner: stashing dirty working tree as '%s'", stash_msg)
-        await _run(
-            ["git", "stash", "push", "-u", "-m", stash_msg], project_dir
-        )
-        result.stash_ref = "stash@{0}"
-
-    # 5. Attempt fast-forward merge
-    logger.info("update_runner: attempting ff-only merge to %s", merge_target)
-    rc_merge, merge_out = await _run(
-        ["git", "merge", "--ff-only", merge_target], project_dir
-    )
-
-    # 6. Diverged — tag local HEAD then hard-reset
-    if rc_merge != 0:
-        recovery_tag = f"taos-pre-update-{short_sha}-{ts}"
-        logger.info(
-            "update_runner: diverged; tagging %s as %s then hard-resetting",
-            short_sha,
-            recovery_tag,
-        )
-        await _run(["git", "tag", recovery_tag, "HEAD"], project_dir)
-        rc_reset, reset_out = await _run(
-            ["git", "reset", "--hard", merge_target], project_dir,
-        )
-        if rc_reset != 0:
-            result.ok = False
-            result.recovery_tag = recovery_tag
-            result.message = (
-                f"Merge failed (diverged) and recovery hard-reset also failed. "
-                f"Local state preserved under tag '{recovery_tag}'. "
-                f"({reset_out.strip()[:200]})"
-            )
-            return result
-        result.recovery_tag = recovery_tag
-
-    # 7. Stash restore (best-effort)
-    if result.stash_ref:
-        logger.info("update_runner: restoring stash")
-        rc_pop, pop_out = await _run(["git", "stash", "pop"], project_dir)
-        if rc_pop == 0:
-            result.stash_restored = True
-        else:
-            logger.warning(
-                "update_runner: stash pop had conflicts — leaving stash in place. %s",
-                pop_out[:300],
-            )
-            # Do NOT drop the stash on conflict.
-
-    # 8. Record new sha and build human-readable summary
-    _, new_sha_out = await _run(["git", "rev-parse", "HEAD"], project_dir)
-    result.new_sha = new_sha_out.strip()
-
-    parts: list[str] = [
-        f"Updated {result.previous_sha[:7]} -> {result.new_sha[:7]}."
-    ]
-    if result.branch_tag:
-        parts.append(f"Previous branch tip saved as tag '{result.branch_tag}'.")
-    if result.recovery_tag:
-        parts.append(f"Diverged commits saved as tag '{result.recovery_tag}'.")
-    if result.stash_ref and not result.stash_restored:
-        parts.append(
-            f"Your local changes are preserved in stash (use `git stash list` to find it,"
-            f" message: '{stash_msg}')."
-        )
-    elif result.stash_ref and result.stash_restored:
-        parts.append("Local changes restored from stash.")
-
-    result.message = " ".join(parts)
-    logger.info("update_runner: done — %s", result.message)
-    return result
+    return proc.returncode, (stdout.decode() if stdout else "")
 
 
 async def switch_to_branch(
@@ -226,9 +111,14 @@ async def switch_to_branch(
 
     logger.info("update_runner: fetching origin/%s", branch)
     # `--` forces `branch` to be read as a refspec, never an option.
-    rc, out = await _run(["git", "fetch", "origin", "--", branch], project_dir)
+    try:
+        rc, out = await _run(["git", "fetch", "origin", "--", branch], project_dir)
+    except RuntimeError as exc:
+        logger.warning("update_runner: fetch failed: %s", exc)
+        return UpdateResult(previous_sha="", new_sha="", ok=False,
+                            message=f"Fetch failed — no changes applied. ({exc})")
     if rc != 0:
-        logger.warning("update_runner: fetch failed: %s", out[:500])
+        logger.warning("update_runner: fetch returned non-zero: %s", out[:500])
         return UpdateResult(previous_sha="", new_sha="", ok=False,
                             message=f"Fetch failed — no changes applied. ({out.strip()[:200]})")
 
@@ -249,12 +139,19 @@ async def switch_to_branch(
                 "update_runner: cannot import GPG key %s — verification will fail",
                 gpg_fingerprint[:16],
             )
-        rc_gpg, gpg_out = await _run(
-            ["git", "rev-parse", f"origin/{branch}"], project_dir,
-        )
+        try:
+            rc_gpg, gpg_out = await _run(
+                ["git", "rev-parse", f"origin/{branch}"], project_dir,
+            )
+        except RuntimeError as exc:
+            rc_gpg = 1
+            gpg_out = str(exc)
         if rc_gpg == 0:
             remote_sha = gpg_out.strip()
-            gpg_result = await verify_commit(project_dir, remote_sha, gpg_fingerprint)
+            try:
+                gpg_result = await verify_commit(project_dir, remote_sha, gpg_fingerprint)
+            except RuntimeError as exc:
+                gpg_result = type("GpgResult", (), {"ok": False, "status": str(exc)})()
             if not gpg_result.ok:
                 logger.warning("update_runner: GPG verification failed: %s", gpg_result.status)
                 if gpg_required:
@@ -266,12 +163,8 @@ async def switch_to_branch(
                     )
                 logger.warning("update_runner: GPG verification failed (warn-only) — proceeding")
             else:
-                # Pin to the verified SHA so origin/<branch> cannot change
-                # between verification and merge (no TOCTOU).
                 merge_target = remote_sha
         elif gpg_required:
-            # Could not resolve origin/<branch> — required GPG check is impossible,
-            # abort rather than falling through to an unverified switch.
             logger.warning("update_runner: could not resolve origin/%s for GPG check (required)", branch)
             return UpdateResult(
                 previous_sha="",
@@ -282,70 +175,119 @@ async def switch_to_branch(
         else:
             logger.warning("update_runner: could not resolve origin/%s for GPG check", branch)
 
-    _, cur_branch_out = await _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], project_dir)
-    cur_branch = cur_branch_out.strip()
-    _, sha_out = await _run(["git", "rev-parse", "HEAD"], project_dir)
-    current_sha = sha_out.strip()
+    try:
+        _, cur_branch_out = await _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], project_dir)
+        cur_branch = cur_branch_out.strip()
+        _, sha_out = await _run(["git", "rev-parse", "HEAD"], project_dir)
+        current_sha = sha_out.strip()
+    except RuntimeError as exc:
+        logger.warning("update_runner: state probe failed: %s", exc)
+        return UpdateResult(previous_sha="", new_sha="", ok=False,
+                            message=f"Could not read current branch/sha — no switch performed. ({exc})")
     short_sha = current_sha[:7]
 
-    _, status_out = await _run(["git", "status", "--porcelain", "-u"], project_dir)
-    dirty = bool(status_out.strip())
+    try:
+        _, status_out = await _run(["git", "status", "--porcelain", "-u"], project_dir)
+        dirty = bool(status_out.strip())
+    except RuntimeError as exc:
+        logger.warning("update_runner: status probe failed: %s", exc)
+        dirty = False
 
-    # After the dirty probe (see update_to_master) so the gitignored state file
+    # After the dirty probe so the gitignored state file
     # never triggers a spurious stash.
     _record_rollback_target(project_dir, cur_branch, current_sha, ts)
 
     result = UpdateResult(previous_sha=current_sha, new_sha=current_sha)
 
     recovery_tag = f"taos-pre-switch-{short_sha}-{ts}"
-    await _run(["git", "tag", recovery_tag, "HEAD"], project_dir)
+    try:
+        await _run(["git", "tag", recovery_tag, "HEAD"], project_dir)
+    except RuntimeError as exc:
+        logger.warning("update_runner: recovery tag failed: %s", exc)
+        return UpdateResult(
+            previous_sha=current_sha, new_sha=current_sha, ok=False,
+            message=f"Could not create recovery tag — no switch performed. ({exc})",
+        )
     result.recovery_tag = recovery_tag
 
     stash_msg = f"taos-switch-{ts}"
     if dirty:
-        rc_stash, stash_out = await _run(
-            ["git", "stash", "push", "-u", "-m", stash_msg], project_dir
-        )
-        # A failed stash must NOT set stash_ref — otherwise the later `stash pop`
-        # would apply an unrelated older stash. Abort before anything
-        # destructive so the working tree is left exactly as we found it.
-        if rc_stash != 0:
-            logger.warning("update_runner: stash failed: %s", stash_out[:300])
+        try:
+            await _run(
+                ["git", "stash", "push", "-u", "-m", stash_msg], project_dir,
+            )
+        except RuntimeError as exc:
+            logger.warning("update_runner: stash failed: %s", exc)
             result.ok = False
             result.message = (
-                f"Could not stash local changes — no switch performed. "
-                f"({stash_out.strip()[:200]})"
+                f"Could not stash local changes — no switch performed. ({exc})"
             )
             return result
         result.stash_ref = "stash@{0}"
 
-    rc_co, co_out = await _run(
-        ["git", "checkout", "-B", branch, f"origin/{branch}"], project_dir
-    )
-    # A failed checkout must NOT fall through to merge/reset — a hard reset would
-    # rewrite the CURRENT branch to origin/<target>. Restore the stash and bail.
-    if rc_co != 0:
-        logger.warning("update_runner: checkout failed: %s", co_out[:300])
+    try:
+        rc_co, co_out = await _run(
+            ["git", "checkout", "-B", branch, f"origin/{branch}"], project_dir,
+        )
+    except RuntimeError as exc:
+        logger.warning("update_runner: checkout failed: %s", exc)
         if result.stash_ref:
-            rc_pop, _ = await _run(["git", "stash", "pop"], project_dir)
-            result.stash_restored = rc_pop == 0
+            try:
+                rc_pop, _ = await _run(["git", "stash", "pop"], project_dir)
+                result.stash_restored = rc_pop == 0
+            except RuntimeError:
+                pass
         result.ok = False
         result.message = (
-            f"Checkout to {branch} failed — no switch performed. "
-            f"({co_out.strip()[:200]})"
+            f"Checkout to {branch} failed — no switch performed. ({exc})"
+        )
+        return result
+    if rc_co != 0:
+        logger.warning("update_runner: checkout returned non-zero: %s", co_out[:300])
+        if result.stash_ref:
+            try:
+                rc_pop, _ = await _run(["git", "stash", "pop"], project_dir)
+                result.stash_restored = rc_pop == 0
+            except RuntimeError:
+                pass
+        result.ok = False
+        result.message = (
+            f"Checkout to {branch} failed — no switch performed. ({co_out.strip()[:200]})"
         )
         return result
 
-    rc_merge, _ = await _run(["git", "merge", "--ff-only", merge_target], project_dir)
+    try:
+        rc_merge, _ = await _run(["git", "merge", "--ff-only", merge_target], project_dir)
+    except RuntimeError:
+        rc_merge = 1
+
     if rc_merge != 0:
-        rc_reset, reset_out = await _run(
-            ["git", "reset", "--hard", merge_target], project_dir,
-        )
-        if rc_reset != 0:
-            logger.warning("update_runner: hard-reset also failed: %s", reset_out[:300])
+        try:
+            rc_reset, reset_out = await _run(
+                ["git", "reset", "--hard", merge_target], project_dir,
+            )
+        except RuntimeError as exc:
+            logger.warning("update_runner: hard-reset raised: %s", exc)
             if result.stash_ref:
-                rc_pop, _ = await _run(["git", "stash", "pop"], project_dir)
-                result.stash_restored = rc_pop == 0
+                try:
+                    rc_pop, _ = await _run(["git", "stash", "pop"], project_dir)
+                    result.stash_restored = rc_pop == 0
+                except RuntimeError:
+                    pass
+            result.ok = False
+            result.message = (
+                f"Merge to {merge_target[:7]} failed and recovery hard-reset raised. "
+                f"Previous tip saved as tag '{result.recovery_tag}'. "
+            )
+            return result
+        if rc_reset != 0:
+            logger.warning("update_runner: hard-reset returned non-zero: %s", reset_out[:300])
+            if result.stash_ref:
+                try:
+                    rc_pop, _ = await _run(["git", "stash", "pop"], project_dir)
+                    result.stash_restored = rc_pop == 0
+                except RuntimeError:
+                    pass
             result.ok = False
             result.message = (
                 f"Merge to {merge_target[:7]} failed and recovery hard-reset also failed. "
@@ -355,11 +297,16 @@ async def switch_to_branch(
             return result
 
     if result.stash_ref:
-        rc_pop, pop_out = await _run(["git", "stash", "pop"], project_dir)
+        try:
+            rc_pop, pop_out = await _run(["git", "stash", "pop"], project_dir)
+        except RuntimeError:
+            rc_pop = 1
         if rc_pop == 0:
             result.stash_restored = True
         else:
-            logger.warning("update_runner: stash pop conflicts — left in place. %s", pop_out[:300])
+            logger.warning(
+                "update_runner: stash pop conflicts — left in place. %s", pop_out[:300],
+            )
 
     _, new_sha_out = await _run(["git", "rev-parse", "HEAD"], project_dir)
     result.new_sha = new_sha_out.strip()
