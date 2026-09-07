@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
+import time
+import uuid
 from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, Request
@@ -20,8 +22,11 @@ from tinyagentos.cluster.worker_protocol import WorkerInfo
 from tinyagentos.auth_context import require_admin
 from tinyagentos.rate_limit import MovingWindowLimiter, rate_limited_response
 from tinyagentos.routes.auth import _require_admin
+from tinyagentos.task_utils import _create_supervised_task
 
 router = APIRouter()
+
+_update_jobs: dict[str, dict] = {}
 
 # Admin-only fleet mutations / worker execution (tsk-exyzu4). Same gate as
 # revoke/block/unblock but as a dependency so the host local token (taosctl,
@@ -1518,8 +1523,9 @@ async def update_all_workers(request: Request):
     After a successful update, the route waits (with a timeout) for the worker
     to re-register as ``online`` before proceeding to the next target.
 
-    Returns an aggregate ``{updated: [...], failed: [{name, error}], skipped: [...]}``
-    so the admin can see exactly which workers were touched and which failed.
+    Returns 202 with a ``job_id`` immediately; the actual roll runs as a
+    tracked background task. Poll ``GET /api/cluster/workers/update-all/<job_id>``
+    for progress and final results.
     """
     ok, err = _require_admin(request)
     if not ok:
@@ -1533,19 +1539,50 @@ async def update_all_workers(request: Request):
         if w.name == "local" or w.status not in ("online", "draining")
     ]
     if not targets:
-        return {
+        return JSONResponse({
             "updated": [],
             "failed": [],
             "skipped": skipped,
             "total_targets": 0,
             "message": "No online remote workers to update",
-        }
+        }, status_code=202)
 
+    job_id = uuid.uuid4().hex
+    _update_jobs[job_id] = {
+        "job_id": job_id,
+        "status": "running",
+        "updated": [],
+        "failed": [],
+        "skipped": skipped,
+        "total_targets": len(targets),
+        "created_at": time.time(),
+        "completed_at": None,
+    }
+
+    async def _run() -> None:
+        try:
+            await _run_update_all_job(cluster, targets, job_id)
+        except Exception:
+            logger.exception("update-all job %s crashed", job_id)
+            job = _update_jobs.get(job_id)
+            if job is not None:
+                job["status"] = "failed"
+                job["completed_at"] = time.time()
+
+    bg = getattr(request.app.state, "_background_tasks", None)
+    _create_supervised_task(_run(), bg)
+
+    return JSONResponse({"job_id": job_id, "status": "running"}, status_code=202)
+
+
+async def _run_update_all_job(cluster, targets, job_id: str) -> None:
+    """Execute the rolling update and record results in ``_update_jobs``."""
+    job = _update_jobs[job_id]
     updated: list[str] = []
     failed: list[dict] = []
 
-    RE_REGISTER_TIMEOUT = 300  # seconds to wait for worker to come back online
-    RE_REGISTER_POLL = 5       # seconds between status checks
+    RE_REGISTER_TIMEOUT = 300
+    RE_REGISTER_POLL = 5
 
     for worker in targets:
         try:
@@ -1560,9 +1597,6 @@ async def update_all_workers(request: Request):
 
         if result["success"]:
             updated.append(worker.name)
-            # Wait for the worker to re-register as "online" before proceeding
-            # to the next target. This guarantees at most one worker is actively
-            # updating at any moment (never more than one draining concurrently).
             waited = 0
             while waited < RE_REGISTER_TIMEOUT:
                 await asyncio.sleep(RE_REGISTER_POLL)
@@ -1575,8 +1609,6 @@ async def update_all_workers(request: Request):
                     )
                     break
             else:
-                # Timeout: worker didn't come back online in time. Log it but
-                # continue the roll -- the worker's status will resolve on its own.
                 logger.warning(
                     "update-all: worker '%s' did not re-register within %ds timeout; "
                     "continuing roll",
@@ -1589,9 +1621,16 @@ async def update_all_workers(request: Request):
                 worker.name, result.get("error", "unknown"),
             )
 
-    return {
-        "updated": updated,
-        "failed": failed,
-        "skipped": skipped,
-        "total_targets": len(targets),
-    }
+    job["updated"] = updated
+    job["failed"] = failed
+    job["status"] = "completed"
+    job["completed_at"] = time.time()
+
+
+@router.get("/api/cluster/workers/update-all/{job_id}")
+async def get_update_all_job_status(request: Request, job_id: str):
+    """Poll the status of a fleet update started by POST /api/cluster/workers/update-all."""
+    job = _update_jobs.get(job_id)
+    if job is None:
+        return JSONResponse({"error": f"Job '{job_id}' not found"}, status_code=404)
+    return job
