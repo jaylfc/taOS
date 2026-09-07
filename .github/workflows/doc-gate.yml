@@ -54,5 +54,5 @@ jobs:
 
       - name: Managed backend manifest lint
         run: |
-          python -m pip install --quiet pyyaml
+          python -m pip install --quiet pyyaml pydantic
           python scripts/check_manifests.py managed-lint

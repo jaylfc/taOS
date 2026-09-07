@@ -11,6 +11,7 @@ from typing import Any
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic_core import PydanticCustomError
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +78,14 @@ class AppManifest(BaseModel):
                 title=cls.__name__,
                 line_errors=[
                     {
-                        "type": "yaml_parse_error",
+                        "type": PydanticCustomError(
+                            "yaml_parse_error",
+                            "manifest {path} has invalid YAML",
+                            {"path": str(path)},
+                        ),
                         "loc": (),
                         "input": str(exc),
-                        "ctx": {"manifest_path": str(path)},
+                        "ctx": {},
                     }
                 ],
             ) from exc
@@ -89,10 +94,14 @@ class AppManifest(BaseModel):
                 title=cls.__name__,
                 line_errors=[
                     {
-                        "type": "manifest_not_mapping",
+                        "type": PydanticCustomError(
+                            "manifest_not_mapping",
+                            "manifest {path} top level is not a mapping",
+                            {"path": str(path)},
+                        ),
                         "loc": (),
                         "input": data,
-                        "ctx": {"manifest_path": str(path)},
+                        "ctx": {},
                     }
                 ],
             )
@@ -113,6 +122,22 @@ class AppManifest(BaseModel):
 
     @classmethod
     def from_dict(cls, data: dict, manifest_dir: Path | None = None) -> AppManifest:
+        if not isinstance(data, dict):
+            raise ValidationError.from_exception_data(
+                title=cls.__name__,
+                line_errors=[
+                    {
+                        "type": PydanticCustomError(
+                            "manifest_not_mapping",
+                            "manifest {path} top level is not a mapping",
+                            {"path": str(manifest_dir) if manifest_dir else "<unknown>"},
+                        ),
+                        "loc": (),
+                        "input": data,
+                        "ctx": {},
+                    }
+                ],
+            )
         payload = {**data, "manifest_dir": manifest_dir}
         return cls.model_validate(payload)
 
@@ -214,6 +239,12 @@ class AppRegistry:
                     logger.warning(
                         "skipping manifest %s: unparseable YAML (%s)",
                         app_dir, exc,
+                    )
+                    continue
+                if not isinstance(raw_dict, dict):
+                    logger.warning(
+                        "skipping manifest %s: top level is not a mapping",
+                        app_dir,
                     )
                     continue
                 # schema-validate at the boundary; one malformed manifest

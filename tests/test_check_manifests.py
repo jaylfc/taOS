@@ -132,6 +132,22 @@ def test_non_string_expect_is_flagged(tmp_path: Path) -> None:
     assert any("expect must be a string" in e for e in errors)
 
 
+def test_requires_string_reports_schema_validation_failure(tmp_path: Path) -> None:
+    """A string ``requires`` field fails the same AppManifest schema the
+    runtime loads with and is reported as a schema validation failure."""
+    _write(tmp_path, "bad-requires", {
+        "id": "bad-requires",
+        "name": "bad",
+        "type": "service",
+        "version": "1.0.0",
+        "requires": "ollama",
+    })
+    errors = check_manifests.lint_managed(tmp_path)
+    assert len(errors) == 1
+    assert "bad-requires" in errors[0]
+    assert "failed schema validation" in errors[0]
+
+
 def test_real_catalog_is_clean() -> None:
     """The shipped app-catalog must pass the managed-service lint."""
     root = Path(__file__).resolve().parent.parent / "app-catalog"

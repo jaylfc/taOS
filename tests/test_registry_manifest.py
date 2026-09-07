@@ -10,6 +10,8 @@ bad manifest does not abort the rest of the catalog.
 """
 from __future__ import annotations
 
+import logging
+
 import pytest
 import yaml
 from pydantic import ValidationError
@@ -110,3 +112,39 @@ class TestWellFormedManifestStillLoads:
         m = AppManifest.from_file(d / "manifest.yaml")
         assert m.id == "happy"
         assert m.type == "agent-framework"
+
+
+class TestNonMappingYAML:
+    def test_list_yaml_skipped_with_warning(self, tmp_path, caplog):
+        """A manifest whose YAML top level is a list is skipped with a
+        warning naming its directory, and the rest of the catalog still
+        loads."""
+        catalog = tmp_path
+        services = catalog / "services"
+        _write_manifest(services / "good", _good_manifest("good"))
+        listy = services / "listy"
+        listy.mkdir(parents=True, exist_ok=True)
+        (listy / "manifest.yaml").write_text("- a\n- b\n")
+        empty = services / "empty"
+        empty.mkdir(parents=True, exist_ok=True)
+        (empty / "manifest.yaml").write_text("")
+        with caplog.at_level(logging.WARNING):
+            reg = AppRegistry(
+                catalog_dir=catalog,
+                installed_path=tmp_path / "installed.json",
+            )
+            apps = reg.list_available()
+        ids = {a.id for a in apps}
+        assert "good" in ids
+        assert any("listy" in r.getMessage() for r in caplog.records)
+        assert any("empty" in r.getMessage() for r in caplog.records)
+
+    def test_from_file_list_yaml_raises_validation_error(self, tmp_path, caplog):
+        """from_file on a list-YAML manifest must raise ValidationError
+        whose string contains the manifest path."""
+        d = tmp_path / "services" / "listy"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "manifest.yaml").write_text("- a\n- b\n")
+        with pytest.raises(ValidationError) as exc:
+            AppManifest.from_file(d / "manifest.yaml")
+        assert str(d / "manifest.yaml") in str(exc.value)
