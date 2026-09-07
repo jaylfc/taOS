@@ -23,6 +23,8 @@ NUL-filled one.
 from __future__ import annotations
 
 import errno
+import hashlib
+import psutil
 import logging
 import os
 import secrets
@@ -39,6 +41,57 @@ logger = logging.getLogger(__name__)
 # enough not to wedge a boot.
 _CLAIM_POLL_ATTEMPTS = 20
 _CLAIM_POLL_INTERVAL = 0.1
+
+def _get_boot_id() -> str:
+    """Return a stable boot ID for the current system.
+
+    This ID should remain constant across reboots and is used to identify
+    the boot session for claim ownership validation.
+    """
+    # Use psutil.boot_time() to get the system boot time in seconds since epoch
+    # Hash it to get a stable 8-character ID
+    boot_time = psutil.boot_time()
+    return hashlib.sha256(str(int(boot_time)).encode()).hexdigest()[:8]
+
+
+def _is_process_alive(pid: int, boot_id: str) -> bool:
+    """Check if a process with given PID is alive and on the current boot.
+
+    Returns True only if:
+    1. The process is alive (kill(pid, 0) raises ProcessLookupError)
+    2. The boot ID matches (same boot session)
+    """
+    try:
+        os.kill(pid, 0)
+        # Process exists (kill didn'''t raise ProcessLookupError)
+        return True
+    except ProcessLookupError:
+        # Process does not exist
+        return False
+    except PermissionError:
+        # Process exists but we don'''t have permission - assume alive
+        return True
+
+
+def _read_claim(claim_path: Path) -> tuple[int | None, str | None]:
+    """Read and parse a claim file.
+
+    Returns (pid, boot_id) if the claim file exists and is well-formed.
+    Otherwise returns (None, None).
+    """
+    try:
+        with open(claim_path, "r") as f:
+            content = f.read().strip()
+            if not content:
+                return None, None
+            parts = content.split()
+            if len(parts) != 2:
+                return None, None
+            pid_str, claim_boot_id = parts
+            return int(pid_str), claim_boot_id
+    except (OSError, ValueError):
+        return None, None
+
 
 
 def _fsync_dir(directory: Path) -> None:
@@ -114,8 +167,8 @@ def _create_via_claim(path: Path, data: bytes, mode: int | None) -> bytes:
     """``atomic_create_bytes`` on a filesystem with no hard links.
 
     ``os.link`` is what makes the normal path race-safe: it is the kernel
-    that decides who wins, and a loser can only ever see the winner's
-    complete bytes because the link cannot exist before the winner's
+    that decides who wins, and a loser can only ever see the winner'''s
+    complete bytes because the link cannot exist before the winner'''s
     ``fsync`` returned. exFAT/FAT (a removable data dir on a Pi) have no hard
     links, so exclusivity has to come from a *sidecar* claim file instead:
 
@@ -134,12 +187,17 @@ def _create_via_claim(path: Path, data: bytes, mode: int | None) -> bytes:
       failure raises rather than ever handing back non-durable bytes.
     """
     claim = path.with_name(path.name + ".claim")
+    current_boot_id = _get_boot_id()
+    
     for _ in range(2):  # the initial attempt, plus one retry after a stale claim
         try:
             fd = os.open(claim, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
             pass
         else:
+            # Write pid and boot_id to the claim file
+            with open(claim, 'w') as f:
+                f.write(f"{os.getpid()} {current_boot_id}\n")
             os.close(fd)
             logger.warning(
                 "%s: filesystem has no hard links; falling back to a sidecar "
@@ -152,7 +210,7 @@ def _create_via_claim(path: Path, data: bytes, mode: int | None) -> bytes:
                 # not decide who wins. `atomic_write_bytes` replaces `path`
                 # rather than creating it exclusively, so if some other
                 # route landed `path` durably in the window between this
-                # call's initial existence check and the claim being
+                # call'''s initial existence check and the claim being
                 # acquired here, writing now would clobber it. Recheck and
                 # hand back whatever is already there instead.
                 try:
@@ -175,13 +233,31 @@ def _create_via_claim(path: Path, data: bytes, mode: int | None) -> bytes:
             time.sleep(_CLAIM_POLL_INTERVAL)
         else:
             # Poll bound exceeded and the claim is still there.
-            if not path.exists() or not path.read_bytes():
-                # The winner crashed before ever producing durable bytes.
-                # Reclaim the name and retry the whole fallback once.
+            # Read the claim to check if owner is alive and on current boot
+            claim_pid, claim_boot_id = _read_claim(claim)
+            if claim_pid is None or claim_boot_id is None:
+                # Claim exists but malformed - treat as stale
                 try:
                     os.unlink(claim)
                 except OSError:
                     pass
+                continue
+            
+            # Check if owner is alive and on the same boot
+            owner_alive = _is_process_alive(claim_pid, claim_boot_id)
+            
+            if not owner_alive or claim_boot_id != current_boot_id:
+                # Owner is dead or on a different boot - reclaim the claim
+                try:
+                    os.unlink(claim)
+                except OSError:
+                    pass
+                continue
+            
+            # Owner is alive and on the same boot - check if target exists
+            if not path.exists() or not path.read_bytes():
+                # Winner is alive but has not yet produced durable bytes.
+                # Do NOT reclaim the claim; keep waiting.
                 continue
             # else: path is already complete even though the winner has not
             # unlinked its claim yet -- fall through to read it below.
@@ -199,8 +275,6 @@ def _create_via_claim(path: Path, data: bytes, mode: int | None) -> bytes:
     raise OSError(
         f"could not persist {path}: filesystem without hard links and a stale claim"
     )
-
-
 def atomic_create_bytes(path: Path, data: bytes, *, mode: int | None = None) -> bytes:
     """Durably create *path* holding *data*, but only if it is not there yet.
 

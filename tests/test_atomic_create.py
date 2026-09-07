@@ -317,3 +317,53 @@ class TestNoHardlinkFallback:
             f"expected exactly one warning about the no-hard-link fallback, got "
             f"{len(warnings)}"
         )
+
+    def test_live_claim_is_never_reclaimed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A claim acquired by a live writer must never be unlinked by a loser.
+
+        The fallback's loser polls a claim for ``_CLAIM_POLL_ATTEMPTS``
+        iterations (usually 2s) before deciding it is stale.  If the owner is
+        alive and on the same boot, the loser must keep waiting and never
+        unlink the claim, even with a tiny poll budget.
+
+        This test creates a claim manually (simulating a live owner) and then
+        runs a loser that polls the claim. Since the owner is alive and on the
+        same boot, the loser should never unlink the claim, even after its
+        tiny poll budget is exhausted.
+        """
+        target = tmp_path / "key.bin"
+        claim = target.with_name(target.name + ".claim")
+        claim.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Create a claim file manually (simulating a live owner)
+        # Write current pid and boot_id to the claim
+        import tinyagentos.atomic_io as atomic_io
+        current_boot_id = atomic_io._get_boot_id()
+        with open(claim, 'w') as f:
+            f.write(f"{os.getpid()} {current_boot_id}\n")
+        
+        # Use very small poll budget so the test runs quickly
+        monkeypatch.setattr(atomic_io, "_CLAIM_POLL_ATTEMPTS", 2)
+        monkeypatch.setattr(atomic_io, "_CLAIM_POLL_INTERVAL", 0.01)
+        monkeypatch.setattr(os, "link", _no_hardlinks)
+
+        # Now run a loser that will poll the claim
+        # The claim should be seen as live (owner alive, same boot)
+        # The target does not exist (since we haven't written it yet)
+        try:
+            returned = atomic_create_bytes(target, b"loser-bytes")
+            assert False, "Expected OSError from exhausted poll budget"
+        except OSError as e:
+            # Should raise OSError due to stale claim after budget exhausted
+            assert "could not persist" in str(e)
+        
+        # CRITICAL ASSERTION: Claim should still exist and point to the live owner
+        assert claim.exists(), "FAIL: Claim was unlinked (should not happen for live owner)"
+        pid, boot_id = atomic_io._read_claim(claim)
+        assert pid == os.getpid(), "Claim PID should still be the current process"
+        assert boot_id == current_boot_id, "Claim boot_id should still be current"
+        
+        # Verify the owner is actually alive
+        assert atomic_io._is_process_alive(pid, boot_id), "Owner should be alive"
