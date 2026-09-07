@@ -120,8 +120,8 @@ What works:
 
 - **Debian 12 unprivileged container with glibc 2.36** - the C++ header
   declaration matches what CUDA expects and the build completes cleanly.
-- We keep a dedicated `taos-debian-cuda` container for builds and
-  benchmarks, and the live GPU worker runs in the same container.
+- We keep a dedicated `taos-debian-cuda` container for builds, and the live
+  GPU worker runs in the same container.
 
 Upstream fix tracking: NVIDIA is aware of the glibc 2.42 incompatibility.
 Once CUDA ships a toolkit whose `math_functions.h` matches modern glibc's
