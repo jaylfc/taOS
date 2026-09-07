@@ -864,7 +864,11 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
             finally:
                 await save_config_locked(config, config.config_path)
 
-        asyncio.create_task(_background_deploy())
+        cm = getattr(request.app.state, "cluster_manager", None)
+        if cm is not None:
+            cm._spawn_background_task(_background_deploy())
+        else:
+            asyncio.create_task(_background_deploy())
 
         # Archive smoke-check: verify trace path end-to-end after provisioning.
         # A failure here does NOT abort the deploy — it surfaces a warning flag.
