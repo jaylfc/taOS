@@ -248,9 +248,9 @@ class DownloadManager:
                 # Fallback for a caller that did not stream the hash. Reading a
                 # potentially multi-GB model is offloaded to a thread so it
                 # never blocks the event loop.
-                digest = await asyncio.to_thread(
-                    lambda: hashlib.sha256(path.read_bytes()).hexdigest()
-                )
+                with open(path, "rb") as f:
+                    digest = await asyncio.to_thread(hashlib.file_digest, f, "sha256")
+                digest = digest.hexdigest()
             # Hex digests are case-insensitive; a caller passing an uppercase
             # expected value must not be treated as a mismatch.
             if digest.lower() != expected_sha256.lower():
