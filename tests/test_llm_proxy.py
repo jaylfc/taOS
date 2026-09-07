@@ -384,6 +384,9 @@ class TestTraceUrlPropagation:
         class _FakePopen:
             def __init__(self, *args, **kwargs):
                 captured["env"] = kwargs.get("env") or {}
+            # R2-29 readiness loop calls proc.poll(); None = still running.
+            def poll(self):
+                return None
 
         monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
 
@@ -418,6 +421,9 @@ class TestTraceUrlPropagation:
         class _FakePopen:
             def __init__(self, *a, **kw):
                 pass
+            # R2-29 readiness loop calls proc.poll(); None = still running.
+            def poll(self):
+                return None
 
         monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
 
