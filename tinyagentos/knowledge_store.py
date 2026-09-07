@@ -238,13 +238,19 @@ class KnowledgeStore(BaseStore):
             f"UPDATE knowledge_items SET {', '.join(set_clauses)} WHERE id = ?",
             params,
         )
-        # Sync FTS for content-bearing fields
+        # Sync FTS for content-bearing fields.  knowledge_fts is a standalone
+        # (non-external-content) FTS5 table, so INSERT OR REPLACE does not
+        # de-duplicate: it appends a new row each time and stale text remains
+        # searchable.  Delete first, then insert, within this same transaction.
         fts_fields = {"title", "content", "summary", "author"}
         if fts_fields & set(fields.keys()):
             item = await self.get_item(item_id)
             if item:
                 await self._db.execute(
-                    "INSERT OR REPLACE INTO knowledge_fts (id, title, content, summary, author) VALUES (?,?,?,?,?)",
+                    "DELETE FROM knowledge_fts WHERE id = ?", (item_id,)
+                )
+                await self._db.execute(
+                    "INSERT INTO knowledge_fts (id, title, content, summary, author) VALUES (?,?,?,?,?)",
                     (item_id, item["title"], item["content"], item["summary"], item["author"]),
                 )
         await self._db.commit()
