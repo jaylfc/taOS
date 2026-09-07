@@ -40,6 +40,53 @@ _DEFAULT_MONITOR: dict[str, dict] = {
     "manual":  {"frequency": 0,     "decay_rate": 1.0, "stop_after_days": 0,   "pinned": False, "last_poll": 0, "current_interval": 0},
 }
 
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _chunk_text(text: str, max_chars: int = 2000, overlap_chars: int = 200) -> list[str]:
+    """Split *text* into chunks at sentence boundaries with overlap.
+
+    Sentences are split on ``.`` / ``!`` / ``?`` followed by whitespace.
+    Chunks accumulate complete sentences until *max_chars* is reached, then
+    the last sentence(s) that fit within *overlap_chars* are prepended to the
+    next chunk so context is preserved across boundaries.
+
+    Falls back to a sliding character window (with overlap) when no sentence
+    boundaries are present.  Text shorter than *max_chars* is returned as a
+    single chunk.
+    """
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+
+    sentences = [s.strip() for s in _SENTENCE_END_RE.split(text) if s.strip()]
+
+    if not sentences:
+        step = max(1, max_chars - overlap_chars)
+        return [text[i : i + max_chars] for i in range(0, len(text), step)]
+
+    chunks: list[str] = []
+    current: list[str] = []
+
+    for sent in sentences:
+        if current and len(" ".join(current)) + 1 + len(sent) > max_chars:
+            chunks.append(" ".join(current))
+            overlap: list[str] = []
+            for s in reversed(current):
+                trial = " ".join([*overlap, s]) if overlap else s
+                if len(trial) <= overlap_chars:
+                    overlap.insert(0, s)
+                else:
+                    break
+            current = overlap
+        current.append(sent)
+
+    if current:
+        chunks.append(" ".join(current))
+
+    return chunks
+
 
 def resolve_source_type(url: str) -> str:
     """Identify the content platform from a URL.
@@ -226,9 +273,9 @@ class IngestPipeline:
             summary = await self._summarise(title, content)
 
             # Step 4: embed via QMD (best-effort, non-fatal)
-            await self._embed(item_id, title, content)
+            embed_failures = await self._embed(item_id, title, content)
 
-            # Step 5: write final data and mark ready
+            # Step 5: write final data
             await self._store.update_item(
                 item_id,
                 title=title or item["source_url"],
@@ -238,7 +285,10 @@ class IngestPipeline:
                 categories=categories,
                 metadata=metadata,
             )
-            await self._store.update_status(item_id, "ready")
+            if embed_failures:
+                await self._store.update_status(item_id, "partial")
+            else:
+                await self._store.update_status(item_id, "ready")
 
             # Step 6: notify subscribed agents
             await self._notify(item_id, title, categories)
@@ -415,17 +465,33 @@ class IngestPipeline:
     # Embed step
     # ------------------------------------------------------------------
 
-    async def _embed(self, item_id: str, title: str, content: str) -> None:
-        """Send content to QMD for vector embedding into the 'knowledge' collection."""
+    async def _embed(self, item_id: str, title: str, content: str) -> int:
+        """Send content to QMD for vector embedding into the 'knowledge' collection.
+
+        Returns the number of chunks that failed to embed.
+        """
         if not self._qmd_base_url or not content:
-            return
+            return 0
         text_to_embed = f"{title}\n\n{content}"
-        # Chunk if content is very long (simple fixed-size chunking)
-        chunk_size = 2000
-        chunks = [text_to_embed[i:i + chunk_size] for i in range(0, len(text_to_embed), chunk_size)]
+        chunks = _chunk_text(text_to_embed, max_chars=2000, overlap_chars=200)
+        # Delete old chunks for this item before inserting new ones so that
+        # re-embedding (e.g. after an update or algorithm change) does not leave
+        # orphaned chunks from a previous run.
+        try:
+            await self._http_client.post(
+                f"{self._qmd_base_url}/delete-chunk",
+                json={
+                    "collection": "knowledge",
+                    "path": f"knowledge/{item_id}",
+                },
+                timeout=30,
+            )
+        except Exception as exc:
+            logger.warning("QMD delete-chunk failed for item %s: %s", item_id, exc)
+        failures = 0
         for seq, chunk in enumerate(chunks):
             try:
-                await self._http_client.post(
+                resp = await self._http_client.post(
                     f"{self._qmd_base_url}/ingest",
                     json={
                         "collection": "knowledge",
@@ -435,8 +501,11 @@ class IngestPipeline:
                     },
                     timeout=60,
                 )
+                resp.raise_for_status()
             except Exception as exc:
+                failures += 1
                 logger.warning("QMD embed failed for item %s chunk %d: %s", item_id, seq, exc)
+        return failures
 
     # ------------------------------------------------------------------
     # Notify step
