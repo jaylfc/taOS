@@ -1,36 +1,43 @@
-"""RED test for R2-31: importing each benchmarks module fails.
+"""Test that the benchmarks/ directory is removed and no stale references remain.
 
-This test proves that every script in benchmarks/ imports modules
-that do not exist in the tree (tinyagentos.* modules), as documented
-in the library-replacement audit pass 2 (R2-31).
+R2-31 (card tsk-sphbbu): benchmarks/ was deleted because every script imports
+tinyagentos.* modules that do not exist.  This test asserts the removal is
+complete -- the directory must not exist and no references to it should remain
+in README.md, docs/, .github/, scripts/, or tinyagentos/ (excluding changelog.d/
+and docs/audit/).  References to the /api/benchmarks/ API endpoint are excluded
+as legitimate URL routes, not directory references.
 """
 
 from __future__ import annotations
 
-import importlib
-import sys
+import subprocess
+from pathlib import Path
 
-import pytest
-
-
-BENCHMARK_MODULES = [
-    "benchmarks.longmemeval_granularity",
-    "benchmarks.longmemeval_recall",
-    "benchmarks.longmemeval_runner",
-    "benchmarks.model_shootout",
-    "benchmarks.realworld_agent_benchmark",
-    "benchmarks.taosmd_benchmark",
-    "benchmarks.taosmd_iteration5",
-    "benchmarks.taosmd_vs_qmd",
-    "benchmarks.test_llm_extraction",
-    "benchmarks.test_pi_llm_extraction",
-]
+REPO_ROOT = Path(__file__).resolve().parent.parent
+BENCHMARKS_DIR = REPO_ROOT / "benchmarks"
 
 
-class TestR231BenchmarksImportFailure:
-    """RED test: importing any benchmarks module should fail."""
+class TestR231BenchmarksRemoved:
+    """Assert benchmarks/ directory and all references are removed."""
 
-    @pytest.mark.parametrize("module_name", BENCHMARK_MODULES)
-    def test_import_fails(self, module_name: str) -> None:
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module(module_name)
+    def test_benchmarks_directory_does_not_exist(self) -> None:
+        assert not BENCHMARKS_DIR.exists(), (
+            f"benchmarks/ directory still exists at {BENCHMARKS_DIR}"
+        )
+
+    def test_no_stale_benchmarks_references(self) -> None:
+        result = subprocess.run(
+            ["grep", "-rn",
+             "--exclude-dir=changelog.d",
+             "--exclude-dir=audit",
+             "benchmarks/",
+             "README.md", "docs/", ".github/", "scripts/", "tinyagentos/"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        lines = [l for l in result.stdout.strip().split("\n") if l]
+        stale = [l for l in lines if "/api/benchmarks" not in l]
+        assert not stale, (
+            "Stale benchmarks/ directory references found:\n" + "\n".join(stale)
+        )
