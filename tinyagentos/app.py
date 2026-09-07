@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -178,6 +179,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             import shutil
             shutil.copy2(example, config_path)
     config = load_config(config_path)
+    controller_port = int(os.environ.get("TAOS_PORT", config.server.get("port", 6969)))
 
     # Sweep config.backends for duplicates accumulated over restarts —
     # auto-register and the manual /api/providers POST both write here,
@@ -392,6 +394,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     local_token = local_token_path.read_text().strip() if local_token_path.exists() else None
     llm_proxy = LLMProxy(
         port=config.server.get("litellm_port", 7834),
+        controller_port=controller_port,
         database_url=db_url,
         local_token=local_token,
         # registry lets generate_litellm_config register installed local

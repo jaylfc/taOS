@@ -362,10 +362,9 @@ class TestDatabaseUrlPropagation:
 
 class TestTraceUrlPropagation:
     @pytest.mark.asyncio
-    async def test_start_exports_trace_url_with_proxy_port(self, tmp_path, monkeypatch):
-        """The proxy must export TAOS_TRACE_URL pointing at its bound port so the
-        LiteLLM callback inside the subprocess can POST traces to the right
-        controller, not silently drop them on non-default ports."""
+    async def test_start_exports_trace_url_with_controller_port(self, tmp_path, monkeypatch):
+        """TAOS_TRACE_URL must carry the controller port, not the LiteLLM proxy
+        port, so the callback POSTs to the taOS controller's /api/trace."""
         import shutil
         import tinyagentos.llm_proxy as mod
 
@@ -390,10 +389,12 @@ class TestTraceUrlPropagation:
 
         monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
 
-        p = mod.LLMProxy(port=7117)
+        proxy_port = 7117
+        controller_port = 6969
+        p = mod.LLMProxy(port=proxy_port, controller_port=controller_port)
         await p.start(backends=[])
 
-        assert captured["env"]["TAOS_TRACE_URL"] == "http://127.0.0.1:7117/api/trace"
+        assert captured["env"]["TAOS_TRACE_URL"] == f"http://127.0.0.1:{controller_port}/api/trace"
 
     @pytest.mark.asyncio
     async def test_start_logs_trace_url(self, tmp_path, monkeypatch, caplog):
@@ -422,13 +423,15 @@ class TestTraceUrlPropagation:
 
         monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
 
-        p = mod.LLMProxy(port=7117)
+        proxy_port = 7117
+        controller_port = 6969
+        p = mod.LLMProxy(port=proxy_port, controller_port=controller_port)
         with caplog.at_level(logging.INFO, logger="tinyagentos.llm_proxy"):
             result = await p.start(backends=[])
 
         assert result is True
         assert any(
-            "trace URL" in rec.getMessage() and "7117" in rec.getMessage()
+            "trace URL" in rec.getMessage() and str(controller_port) in rec.getMessage()
             for rec in caplog.records
         ), [rec.getMessage() for rec in caplog.records]
 

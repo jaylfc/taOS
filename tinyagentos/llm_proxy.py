@@ -88,8 +88,10 @@ class LLMProxy:
         registry=None,
         data_dir: Path | None = None,
         inhouse_keys: bool = False,
+        controller_port: int = 6969,
     ):
         self.port = port
+        self.controller_port = controller_port
         # S2-10: config lives under <data_dir>/litellm (0700) so the master key,
         # backend keys and callback shims are not world-readable in a shared
         # /tmp. Fall back to /tmp/taos-litellm only when data_dir is unknown
@@ -472,7 +474,7 @@ class LLMProxy:
         # deployer uses when auth'ing /key/generate and agent requests.
         env = os.environ.copy()
         env["LITELLM_MASTER_KEY"] = get_litellm_master_key(self._data_dir)
-        env["TAOS_TRACE_URL"] = f"http://127.0.0.1:{self.port}/api/trace"
+        env["TAOS_TRACE_URL"] = f"http://127.0.0.1:{self.controller_port}/api/trace"
         # Forward the local auth token so the TaosLiteLLMCallback inside
         # the subprocess can POST to taOS's /api/trace (otherwise 401).
         if self.local_token:
