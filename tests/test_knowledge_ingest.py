@@ -261,9 +261,9 @@ async def test_embed_called_when_qmd_url_set(store):
     """When qmd_base_url is set, the /ingest endpoint should be called with collection=knowledge."""
     from tinyagentos.knowledge_ingest import IngestPipeline
 
-    qmd_response = AsyncMock()
+    qmd_response = MagicMock()
     qmd_response.status_code = 200
-    qmd_response.raise_for_status = AsyncMock()
+    qmd_response.raise_for_status = MagicMock()
 
     mock_http = AsyncMock()
     mock_http.get = AsyncMock(side_effect=Exception("no HTTP in this test"))
@@ -574,3 +574,144 @@ async def test_download_article_rejects_non_text_content_type(store):
         await pipeline._download_article("https://example.com/bin", "", {})
 
     assert resp.bytes_read == 0, "Non-text response should not be buffered at all"
+
+
+# ------------------------------------------------------------------
+# R2-26: Sentence-boundary chunking with overlap, delete-before-embed,
+# and failure-aware status.
+# ------------------------------------------------------------------
+
+def test_chunk_text_short_text_single_chunk():
+    """Text shorter than max_chars returns as a single chunk."""
+    from tinyagentos.knowledge_ingest import _chunk_text
+
+    short = "This is a short sentence."
+    assert _chunk_text(short, max_chars=2000, overlap_chars=200) == [short]
+
+
+def test_chunk_text_long_text_multiple_chunks():
+    """Long text produces multiple chunks at sentence boundaries."""
+    from tinyagentos.knowledge_ingest import _chunk_text
+
+    text = "Sentence one here. " * 100
+    chunks = _chunk_text(text, max_chars=100, overlap_chars=30)
+    assert len(chunks) > 1
+
+
+def test_chunk_text_chunks_overlap():
+    """Consecutive chunks must share text (tail of chunk N == prefix of N+1)."""
+    from tinyagentos.knowledge_ingest import _chunk_text
+
+    text = "Sentence one here. " * 100
+    chunks = _chunk_text(text, max_chars=100, overlap_chars=30)
+    assert len(chunks) > 1
+    for i in range(len(chunks) - 1):
+        found = False
+        for L in range(min(len(chunks[i]), len(chunks[i + 1])) - 1, 5, -1):
+            if chunks[i][-L:] == chunks[i + 1][:L]:
+                found = True
+                break
+        assert found, f"Chunks {i} and {i + 1} should overlap"
+
+
+def test_chunk_text_ends_at_sentence_boundary():
+    """Each chunk (except possibly the last) ends at a sentence terminator."""
+    from tinyagentos.knowledge_ingest import _chunk_text
+
+    text = "First sentence. Second sentence. Third sentence. Fourth sentence. " * 20
+    chunks = _chunk_text(text, max_chars=100, overlap_chars=30)
+    assert len(chunks) > 1
+    for chunk in chunks[:-1]:
+        assert chunk.rstrip()[-1] in ".!?", "Chunk should end at sentence boundary"
+
+
+@pytest.mark.asyncio
+async def test_embed_deletes_old_chunks_before_inserting(store):
+    """R2-26a: re-embedding an item must delete old chunks before inserting
+    new ones so no chunks from a previous run remain."""
+    from tinyagentos.knowledge_ingest import IngestPipeline
+
+    qmd_response = MagicMock()
+    qmd_response.status_code = 200
+    qmd_response.raise_for_status = MagicMock()
+
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(side_effect=Exception("no HTTP in this test"))
+    mock_http.post = AsyncMock(return_value=qmd_response)
+
+    notif = AsyncMock()
+    notif.emit_event = AsyncMock()
+    cat_engine = AsyncMock()
+    cat_engine.categorise = AsyncMock(return_value=[])
+
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+        qmd_base_url="http://localhost:7832",
+        llm_base_url="",
+    )
+
+    item_id = "test-item-id"
+    content = "This is test content. " * 200  # Long enough to produce multiple chunks
+
+    await pipeline._embed(item_id, "Test Title", content)
+
+    calls = [str(call) for call in mock_http.post.call_args_list]
+    assert any("/delete-chunk" in c for c in calls), (
+        "Expected /delete-chunk call before inserting new chunks"
+    )
+
+    delete_idx = next((i for i, c in enumerate(calls) if "/delete-chunk" in c), -1)
+    ingest_idx = next((i for i, c in enumerate(calls) if "/ingest" in c), -1)
+    assert delete_idx != -1 and ingest_idx != -1, (
+        "Expected both /delete-chunk and /ingest calls"
+    )
+    assert delete_idx < ingest_idx, "delete-chunk must precede ingest calls"
+
+
+@pytest.mark.asyncio
+async def test_embed_failure_sets_partial_status(store):
+    """R2-26b: when QMD embedding calls fail, the item status should be
+    'partial', not 'ready'."""
+    from tinyagentos.knowledge_ingest import IngestPipeline
+
+    qmd_response = MagicMock()
+    qmd_response.status_code = 500
+    qmd_response.raise_for_status = MagicMock(side_effect=Exception("QMD error"))
+
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(side_effect=Exception("no HTTP in this test"))
+    mock_http.post = AsyncMock(return_value=qmd_response)
+
+    notif = AsyncMock()
+    notif.emit_event = AsyncMock()
+    cat_engine = AsyncMock()
+    cat_engine.categorise = AsyncMock(return_value=[])
+
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+        qmd_base_url="http://localhost:7832",
+        llm_base_url="",
+    )
+
+    item_id = await pipeline.submit(
+        url="https://example.com/embed-fail",
+        title="Fail Test",
+        text="Content long enough to trigger embedding. " * 50,
+        categories=[],
+        source="test",
+    )
+    await pipeline.run(item_id)
+
+    item = await store.get_item(item_id)
+    assert item["status"] != "ready", "Status should not be 'ready' when embed fails"
+    assert item["status"] == "partial", (
+        f"Expected 'partial' status on embed failure, got '{item['status']}'"
+    )
