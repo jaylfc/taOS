@@ -1,0 +1,3 @@
+### Fixed
+
+- `bridge_session.py:264`: changed `trace_id = body.get("trace_id") or _new_id()` to `trace_id = body.get("trace_id")` with a `logger.warning` when `trace_id` is absent. The `or _new_id()` was converting "this payload has no trace" into "this payload has a trace that matches nothing", causing silent no-ops in downstream `_pending_msg_ids` lookups at `:286` and `:457`. Now the two conditions are distinguishable: a warning is logged when `trace_id` is genuinely absent, rather than silently generating a random ID that matches nothing.

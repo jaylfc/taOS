@@ -261,7 +261,13 @@ class BridgeSessionRegistry:
 
     async def _handle_reply(self, slug: str, body: dict) -> None:
         kind = body.get("kind", "")
-        trace_id = body.get("trace_id") or _new_id()
+        trace_id = body.get("trace_id")
+        if trace_id is None:
+            logger.warning(
+                "bridge_session: reply without trace_id for agent %s, "
+                "pending message lookups will miss",
+                slug,
+            )
         msg_id = body.get("id") or _new_id()
         content = body.get("content") or ""
 

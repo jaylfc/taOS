@@ -424,3 +424,69 @@ async def test_request_decision_no_pending_message_no_block():
         {"kind": "decision", "decision_id": "dec-orphan"} in (m.get("content_blocks") or [])
         for m in msg_store.messages.values()
     )
+
+@pytest.mark.asyncio
+async def test_request_decision_tool_result_no_trace_id_after_delta_silent_mismatch():
+    """Bug repro: delta with trace_id=t1, then tool_result with no trace_id.
+
+    When trace_id is absent from the tool_result, _new_id() generates a random
+    id that does NOT match the delta's trace_id. The decision block lookup at
+    line 457 (session._pending_msg_ids.get trace_id) returns None silently,
+    so no inline decision block renders — even though the tool_result carries
+    a decision_id.
+
+    This test documents the current silent-mismatch behaviour.
+    """
+    reg, msg_store, ch_store, hub, tr = _make_registry()
+
+    # Step 1: Send a delta with a specific trace_id, creating a pending message.
+    await reg.record_reply("bot1", {
+        "kind": "delta", "trace_id": "t-del", "content": "Let me fetch a decision...",
+    })
+    pending_msg_id = reg._sessions["bot1"]._pending_msg_ids["t-del"]
+    assert pending_msg_id is not None, "Delta should create a pending message"
+
+    # Step 2: Send a tool_result for request_decision WITHOUT trace_id.
+    # The _new_id() will mint a fresh random id that matches nothing.
+    await reg.record_reply("bot1", {
+        "kind": "tool_result",
+        "tool": "request_decision",
+        "result": {"ok": True, "decision_id": "dec-abc", "status": "pending"},
+        "success": True,
+    })
+
+    # Step 3: The decision block should NOT be attached, because the random
+    # trace_id from _new_id() does not match the delta's trace_id "t-del".
+    # This is the current silent no-op / mismatch bug.
+    msg = msg_store.messages[pending_msg_id]
+    blocks = msg.get("content_blocks", [])
+    assert {"kind": "decision", "decision_id": "dec-abc"} not in blocks, (
+        "Decision block should NOT be attached when trace_id is absent — "
+        "the random _new_id() mismatches the delta's trace_id, causing a silent "
+        "no-op. This bug is tracked in tsk-hpee75."
+    )
+
+
+@pytest.mark.asyncio
+async def test_request_decision_tool_result_no_trace_id_no_pending():
+    """tool_result with no trace_id and no preceding delta: purely silent no-op.
+
+    When trace_id is absent and there is no pending message, _new_id() generates
+    a random id that matches nothing. All lookups return None, guarded by
+    `if msg_id:`, so nothing happens — no exception, no block, no log.
+    """
+    reg, msg_store, ch_store, hub, tr = _make_registry()
+
+    # No preceding delta, no pending message.
+    await reg.record_reply("bot1", {
+        "kind": "tool_result",
+        "tool": "request_decision",
+        "result": {"ok": True, "decision_id": "dec-xyz", "status": "pending"},
+        "success": True,
+    })
+
+    # No message should have been modified; no exception should have been raised.
+    # This confirms the current silent-no-op behaviour is at leastharmless.
+    assert msg_store.messages == {}
+
+
