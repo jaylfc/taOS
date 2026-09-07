@@ -358,6 +358,82 @@ class TestDatabaseUrlPropagation:
         assert "DATABASE_URL" not in captured["env"]
 
 
+class TestTraceUrlPropagation:
+    @pytest.mark.asyncio
+    async def test_start_exports_trace_url_with_controller_port(self, tmp_path, monkeypatch):
+        """TAOS_TRACE_URL must carry the controller port, not the LiteLLM proxy
+        port, so the callback POSTs to the taOS controller's /api/trace."""
+        import shutil
+        import tinyagentos.llm_proxy as mod
+
+        class _FakeResp:
+            status_code = 200
+
+        class _FakeClient:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *exc): return False
+            async def get(self, url): return _FakeResp()
+
+        monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
+        monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
+        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, *args, **kwargs):
+                captured["env"] = kwargs.get("env") or {}
+
+        monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
+
+        proxy_port = 7117
+        controller_port = 6969
+        p = mod.LLMProxy(port=proxy_port, controller_port=controller_port)
+        await p.start(backends=[])
+
+        assert captured["env"]["TAOS_TRACE_URL"] == f"http://127.0.0.1:{controller_port}/api/trace"
+
+    @pytest.mark.asyncio
+    async def test_start_logs_trace_url(self, tmp_path, monkeypatch, caplog):
+        """On successful start, the proxy must log the trace URL it exported so
+        operators can verify traces are targeting the correct port."""
+        import logging
+        import shutil
+        import tinyagentos.llm_proxy as mod
+
+        class _FakeResp:
+            status_code = 200
+
+        class _FakeClient:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *exc): return False
+            async def get(self, url): return _FakeResp()
+
+        monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
+        monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
+        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+
+        class _FakePopen:
+            def __init__(self, *a, **kw):
+                pass
+
+        monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
+
+        proxy_port = 7117
+        controller_port = 6969
+        p = mod.LLMProxy(port=proxy_port, controller_port=controller_port)
+        with caplog.at_level(logging.INFO, logger="tinyagentos.llm_proxy"):
+            result = await p.start(backends=[])
+
+        assert result is True
+        assert any(
+            "trace URL" in rec.getMessage() and str(controller_port) in rec.getMessage()
+            for rec in caplog.records
+        ), [rec.getMessage() for rec in caplog.records]
+
+
 class TestLLMProxyOwnership:
     def test_is_running_false_by_default(self):
         from tinyagentos.llm_proxy import LLMProxy

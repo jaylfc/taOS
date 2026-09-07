@@ -342,3 +342,46 @@ async def test_success_event_without_budget_env_does_not_crash(monkeypatch):
 
     # Must not raise even though TAOS_AGENT_BUDGETS is unset.
     await cb.async_log_success_event(kwargs, resp, t0, t1)
+
+
+def test_callback_uses_taos_port_as_trace_url_fallback(monkeypatch):
+    """When TAOS_TRACE_URL is unset, the callback falls back to TAOS_PORT
+    (defaulting to 6969) so non-default controller ports are not silently
+    dropped."""
+    try:
+        from tinyagentos.litellm_callback import TaosLiteLLMCallback
+    except ImportError:
+        pytest.skip("litellm not installed")
+    monkeypatch.setenv("TAOS_PORT", "7117")
+    monkeypatch.delenv("TAOS_TRACE_URL", raising=False)
+    cb = TaosLiteLLMCallback()
+    assert cb._trace_url == "http://127.0.0.1:7117/api/trace"
+    monkeypatch.delenv("TAOS_PORT", raising=False)
+
+
+@pytest.mark.asyncio
+async def test_success_posts_trace_to_taos_port(monkeypatch):
+    """Trace POST must target the TAOS_PORT-derived URL, not the hard-coded
+    6969 fallback, so agents on non-default ports still emit trace events."""
+    try:
+        from tinyagentos.litellm_callback import TaosLiteLLMCallback
+    except ImportError:
+        pytest.skip("litellm not installed")
+    monkeypatch.setenv("TAOS_PORT", "7117")
+    monkeypatch.delenv("TAOS_TRACE_URL", raising=False)
+    cb = TaosLiteLLMCallback()
+    posted = []
+
+    async def _mock_post(url, payload):
+        posted.append(url)
+
+    cb._post = _mock_post
+
+    from datetime import datetime, timezone
+    t0 = datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2024, 1, 1, 10, 0, 1, tzinfo=timezone.utc)
+    await cb.async_log_success_event(_make_kwargs(), _make_response(), t0, t1)
+
+    assert len(posted) >= 1
+    assert "7117" in posted[0]
+    monkeypatch.delenv("TAOS_PORT", raising=False)
