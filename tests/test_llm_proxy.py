@@ -306,15 +306,13 @@ class TestDatabaseUrlPropagation:
 
         monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
         monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
-        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+        monkeypatch.setattr(mod.LLMProxy, "_resolve_litellm_cmd", lambda self: "/fake/litellm")
 
         captured: dict = {}
 
         class _FakePopen:
             def __init__(self, *args, **kwargs):
                 captured["env"] = kwargs.get("env") or {}
-                # Raise so start() exits without spawning; the env we
-                # cared about was already captured.
                 raise FileNotFoundError("stubbed")
 
         monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
@@ -340,7 +338,7 @@ class TestDatabaseUrlPropagation:
 
         monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
         monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
-        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+        monkeypatch.setattr(mod.LLMProxy, "_resolve_litellm_cmd", lambda self: "/fake/litellm")
         # Scrub any ambient DATABASE_URL from the test runner so we can
         # assert the proxy didn't invent one.
         monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -802,11 +800,10 @@ class TestStderrLogHandling:
         and a fresh 0600 inode opened. A reader holding a descriptor to the
         old inode cannot observe new output."""
         import os as os_mod
-        import shutil
         import tinyagentos.llm_proxy as mod
 
         monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
-        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+        monkeypatch.setattr(mod.LLMProxy, "_resolve_litellm_cmd", lambda self: "/fake/litellm")
 
         class _FakePopen:
             def __init__(self, *a, **kw):
@@ -863,11 +860,10 @@ class TestStderrLogHandling:
         """When .log and .log.1 both exist, rotation replaces .log.1 with the
         old .log, keeping only one previous generation."""
         import os as os_mod
-        import shutil
         import tinyagentos.llm_proxy as mod
 
         monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
-        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+        monkeypatch.setattr(mod.LLMProxy, "_resolve_litellm_cmd", lambda self: "/fake/litellm")
 
         class _FakePopen:
             def __init__(self, *a, **kw):
@@ -901,7 +897,6 @@ class TestStderrLogHandling:
         it must close its own copy right after Popen() succeeds, or a
         repeated start() leaks one descriptor per attempt."""
         import os as os_mod
-        import shutil
         import tinyagentos.llm_proxy as mod
 
         class _FakeResp:
@@ -915,11 +910,13 @@ class TestStderrLogHandling:
 
         monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
         monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
-        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+        monkeypatch.setattr(mod.LLMProxy, "_resolve_litellm_cmd", lambda self: "/fake/litellm")
 
         class _FakePopen:
             def __init__(self, *a, **kw):
                 pass
+            def poll(self):
+                return None
 
         monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
 
@@ -945,11 +942,10 @@ class TestStderrLogHandling:
         """Same cleanup is required on the failed-spawn path (litellm binary
         missing) — the handle must not leak just because Popen() failed."""
         import os as os_mod
-        import shutil
         import tinyagentos.llm_proxy as mod
 
         monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
-        monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
+        monkeypatch.setattr(mod.LLMProxy, "_resolve_litellm_cmd", lambda self: "/fake/litellm")
 
         class _FakePopen:
             def __init__(self, *a, **kw):
@@ -973,6 +969,57 @@ class TestStderrLogHandling:
         assert result is False
         assert len(captured_handles) == 1
         assert captured_handles[0].closed, "parent must close its stderr log handle even on failed spawn"
+
+
+class TestReadinessPollCrashDetection:
+    """R2-29: the readiness poll must detect a crashed proxy process and
+    fail fast, surfacing the stderr tail, not block for the full 120 s."""
+
+    @pytest.mark.asyncio
+    async def test_readiness_fails_fast_when_proxy_crashes_at_startup(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A proxy that exits at startup must cause start() to return False
+        within <2 s with the stderr tail in the error log."""
+        import asyncio
+        import logging
+        import time
+        import tinyagentos.llm_proxy as mod
+
+        crash_script = tmp_path / "fake_litellm"
+        crash_script.write_text(
+            "#!/bin/sh\necho 'ERROR: proxy startup failure' >&2\nexit 1\n"
+        )
+        crash_script.chmod(0o755)
+
+        monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
+        monkeypatch.setattr(mod.LLMProxy, "_resolve_litellm_cmd", lambda self: str(crash_script))
+
+        class _FakeClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get(self, url):
+                raise ConnectionError("connection refused")
+
+        monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
+
+        p = mod.LLMProxy(port=14021, data_dir=tmp_path)
+
+        with caplog.at_level(logging.ERROR, logger="tinyagentos.llm_proxy"):
+            start_time = time.monotonic()
+            result = await asyncio.wait_for(p.start(backends=[]), timeout=5)
+            elapsed = time.monotonic() - start_time
+
+        assert result is False
+        assert elapsed < 2, f"expected failure in <2 s, took {elapsed:.1f}s"
+        assert "ERROR: proxy startup failure" in caplog.text
 
 
 class TestConfigDirPermissions:

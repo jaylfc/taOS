@@ -69,6 +69,20 @@ def _pids_listening_on(port: int) -> list[int]:
     return pids
 
 
+def _read_stderr_tail(log_path: Path, max_bytes: int = 2000) -> str:
+    """Read the tail of a stderr log file for crash diagnostics."""
+    try:
+        size = log_path.stat().st_size
+        with open(log_path, "rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+            return f.read().decode(errors="replace")
+    except FileNotFoundError:
+        return "(no stderr captured)"
+    except OSError:
+        return "(could not read stderr log)"
+
+
 class LLMProxy:
     """Manages LiteLLM proxy as a subprocess.
 
@@ -376,6 +390,20 @@ class LLMProxy:
         )
         return False
 
+    def _resolve_litellm_cmd(self) -> str | None:
+        """Return the path to the litellm binary, or None if not found.
+
+        Checks the venv bin first (``<sys.executable parent>/litellm``) so
+        systemd-launched instances find the proxy even when PATH does not
+        include the venv. Falls back to ``shutil.which`` for hand-run
+        dev instances.
+        """
+        import shutil
+        import sys
+        from pathlib import Path
+        venv_bin = Path(sys.executable).parent / "litellm"
+        return str(venv_bin) if venv_bin.exists() else shutil.which("litellm")
+
     async def start(
         self,
         backends: list[dict],
@@ -448,10 +476,7 @@ class LLMProxy:
         # a bare "litellm" lookup fails even when the package is installed
         # in the venv. Falling back to PATH lets hand-run dev instances
         # still work.
-        import shutil
-        import sys
-        venv_bin = Path(sys.executable).parent / "litellm"
-        litellm_cmd = str(venv_bin) if venv_bin.exists() else shutil.which("litellm")
+        litellm_cmd = self._resolve_litellm_cmd()
         if not litellm_cmd and not self._selfheal_attempted:
             # The proxy is a core dependency. A pre-fix update ran a bare
             # `uv sync --frozen` and stripped the proxy extra, so a fresh boot
@@ -460,8 +485,7 @@ class LLMProxy:
             # install does not block controller startup.
             self._selfheal_attempted = True
             if await self._selfheal_proxy_extra():
-                venv_bin = Path(sys.executable).parent / "litellm"
-                litellm_cmd = str(venv_bin) if venv_bin.exists() else shutil.which("litellm")
+                litellm_cmd = self._resolve_litellm_cmd()
         if not litellm_cmd:
             logger.warning("LiteLLM not installed — proxy disabled. Install with: pip install litellm[proxy]")
             return False
@@ -555,6 +579,17 @@ class LLMProxy:
         # (requires master key → 401 for the polling client).
         for _ in range(120):
             await asyncio.sleep(1)
+            # R2-29: a proxy that crashed at startup would otherwise burn
+            # the full 120 s poll; check proc.poll() and fail fast,
+            # surfacing the stderr tail that explains why it died.
+            if self._process is not None and self._process.poll() is not None:
+                stderr_tail = _read_stderr_tail(stderr_log_path)
+                logger.error(
+                    "LiteLLM proxy process exited early (rc=%s); stderr tail:\n%s",
+                    self._process.returncode,
+                    stderr_tail,
+                )
+                return False
             try:
                 async with httpx.AsyncClient(timeout=3) as client:
                     resp = await client.get(f"{self.url}/health/readiness")

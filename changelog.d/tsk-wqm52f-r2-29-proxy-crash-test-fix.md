@@ -1,0 +1,2 @@
+### Fixed
+- `TestReadinessPollCrashDetection::test_readiness_fails_fast_when_proxy_crashes_at_startup` was environment-dependent: `LLMProxy.start()` resolves the litellm binary via `Path(sys.executable).parent / 'litellm'` before falling back to `shutil.which`, so any checkout whose venv has litellm installed would launch the real proxy and the test would time out. Extracted the resolution into `_resolve_litellm_cmd()` so tests can monkeypatch it directly, making the test deterministic regardless of what is installed in the venv.
