@@ -341,3 +341,55 @@ async def test_category_filter_exact_match(store):
     results = await store.list_items(category="Rockchip")
     assert len(results) == 1
     assert results[0]["title"] == "Exact Match"
+
+
+# ---------------------------------------------------------------------------
+# R2-7: INSERT OR REPLACE on a standalone FTS5 table duplicates rows
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fts_upsert_does_not_duplicate_rows(store):
+    """Re-indexing the same item must leave exactly one FTS row and must
+    not keep stale text searchable.
+
+    A standalone (non-external-content) FTS5 table does not honour
+    INSERT OR REPLACE on a non-rowid column: each upsert inserts a new
+    row, so re-indexing N times yields N rows and old text stays matchable.
+    """
+    item_id = await store.add_item(
+        source_type="article",
+        source_url="https://example.com/upsert",
+        title="Alpha Article",
+        author="tester",
+        content="apple content here",
+        summary="alpha summary",
+        categories=[],
+        tags=[],
+        metadata={},
+    )
+
+    # Re-index the same item two more times with different searchable text.
+    await store.update_item(
+        item_id, title="Beta Article", content="banana content here",
+        summary="beta summary",
+    )
+    await store.update_item(
+        item_id, title="Gamma Article", content="cherry content here",
+        summary="gamma summary",
+    )
+
+    # Exactly one FTS row must exist for this item after three upserts.
+    cursor = await store._db.execute(
+        "SELECT COUNT(*) FROM knowledge_fts WHERE id = ?", (item_id,)
+    )
+    count = (await cursor.fetchone())[0]
+    assert count == 1, f"expected 1 FTS row, got {count}"
+
+    # Only the latest text should be searchable.
+    latest = await store.search_fts("cherry")
+    assert len(latest) == 1
+    assert latest[0]["title"] == "Gamma Article"
+
+    # Stale text from earlier upserts must no longer be searchable.
+    stale = await store.search_fts("apple")
+    assert len(stale) == 0
