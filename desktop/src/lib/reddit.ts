@@ -27,7 +27,7 @@ export interface RedditComment {
   depth: number;
   parent_id: string;
   replies: RedditComment[];
-  edited: boolean;
+  edited: boolean | number | null;
   distinguished: string | null;
 }
 
