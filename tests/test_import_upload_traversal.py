@@ -6,6 +6,7 @@ name must resolve INSIDE UPLOAD_DIR or be refused with a 400 before the
 filesystem is touched."""
 
 import io
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -33,8 +34,8 @@ class TestUploadTraversal:
         assert not target.exists(), "upload escaped UPLOAD_DIR via an absolute filename"
 
     @pytest.mark.asyncio
-    async def test_dotdot_filename_is_refused_and_not_written(self, client):
-        escaped = mod.UPLOAD_DIR.parent / "traversal_probe.txt"
+    async def test_dotdot_filename_is_refused_and_not_written(self, client, app):
+        escaped = Path(app.state.data_dir) / "imports" / "traversal_probe.txt"
         escaped.unlink(missing_ok=True)
         resp = await client.post(
             "/api/import/upload",
@@ -55,13 +56,14 @@ class TestUploadTraversal:
         assert resp.status_code == 400, resp.text
 
     @pytest.mark.asyncio
-    async def test_plain_basename_still_uploads_inside_upload_dir(self, client):
+    async def test_plain_basename_still_uploads_inside_upload_dir(self, client, app):
         resp = await client.post(
             "/api/import/upload",
             files={"file": ("plain_ok.txt", io.BytesIO(b"hello"), "text/plain")},
         )
         assert resp.status_code == 200, resp.text
-        assert resp.json()["path"] == str(mod.UPLOAD_DIR / "plain_ok.txt")
+        expected = Path(app.state.data_dir) / "imports" / "uploads" / "plain_ok.txt"
+        assert resp.json()["path"] == str(expected)
 
 
 class TestEmbedTraversal:
@@ -90,3 +92,44 @@ class TestEmbedTraversal:
         )
         assert resp.status_code == 400, resp.text
         http.post.assert_not_called()
+
+
+class TestUploadDirSecurity:
+    @pytest.mark.asyncio
+    async def test_symlink_upload_dir_is_refused(self, client, tmp_path, app):
+        victim = tmp_path / "victim"
+        victim.mkdir()
+        upload_dir = Path(app.state.data_dir) / "imports" / "uploads"
+        upload_dir.parent.mkdir(parents=True, exist_ok=True)
+        if upload_dir.exists():
+            if upload_dir.is_dir() and not upload_dir.is_symlink():
+                import shutil
+                shutil.rmtree(upload_dir)
+            else:
+                upload_dir.unlink()
+        upload_dir.symlink_to(victim)
+
+        resp = await client.post(
+            "/api/import/upload",
+            files={"file": ("x.json", io.BytesIO(b'{}'), "application/json")},
+        )
+        assert resp.status_code == 500, resp.text
+        assert not any(victim.iterdir()), f"files leaked into victim: {list(victim.iterdir())}"
+
+    @pytest.mark.asyncio
+    async def test_regular_file_upload_dir_is_refused(self, client, app):
+        upload_dir = Path(app.state.data_dir) / "imports" / "uploads"
+        upload_dir.parent.mkdir(parents=True, exist_ok=True)
+        if upload_dir.exists():
+            if upload_dir.is_dir() and not upload_dir.is_symlink():
+                import shutil
+                shutil.rmtree(upload_dir)
+            else:
+                upload_dir.unlink()
+        upload_dir.write_text("not a directory")
+
+        resp = await client.post(
+            "/api/import/upload",
+            files={"file": ("x.json", io.BytesIO(b'{}'), "application/json")},
+        )
+        assert resp.status_code == 500, resp.text
