@@ -390,6 +390,20 @@ class LLMProxy:
         )
         return False
 
+    def _resolve_litellm_cmd(self) -> str | None:
+        """Return the path to the litellm binary, or None if not found.
+
+        Checks the venv bin first (``<sys.executable parent>/litellm``) so
+        systemd-launched instances find the proxy even when PATH does not
+        include the venv. Falls back to ``shutil.which`` for hand-run
+        dev instances.
+        """
+        import shutil
+        import sys
+        from pathlib import Path
+        venv_bin = Path(sys.executable).parent / "litellm"
+        return str(venv_bin) if venv_bin.exists() else shutil.which("litellm")
+
     async def start(
         self,
         backends: list[dict],
@@ -462,10 +476,7 @@ class LLMProxy:
         # a bare "litellm" lookup fails even when the package is installed
         # in the venv. Falling back to PATH lets hand-run dev instances
         # still work.
-        import shutil
-        import sys
-        venv_bin = Path(sys.executable).parent / "litellm"
-        litellm_cmd = str(venv_bin) if venv_bin.exists() else shutil.which("litellm")
+        litellm_cmd = self._resolve_litellm_cmd()
         if not litellm_cmd and not self._selfheal_attempted:
             # The proxy is a core dependency. A pre-fix update ran a bare
             # `uv sync --frozen` and stripped the proxy extra, so a fresh boot
@@ -474,8 +485,7 @@ class LLMProxy:
             # install does not block controller startup.
             self._selfheal_attempted = True
             if await self._selfheal_proxy_extra():
-                venv_bin = Path(sys.executable).parent / "litellm"
-                litellm_cmd = str(venv_bin) if venv_bin.exists() else shutil.which("litellm")
+                litellm_cmd = self._resolve_litellm_cmd()
         if not litellm_cmd:
             logger.warning("LiteLLM not installed — proxy disabled. Install with: pip install litellm[proxy]")
             return False
