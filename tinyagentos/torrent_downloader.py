@@ -303,7 +303,8 @@ class TorrentDownloader:
             task.status = "error"
             task.error = "download produced no data"
             raise TorrentError("torrent download produced no data")
-        actual = hashlib.sha256(dest.read_bytes()).hexdigest()
+        with open(dest, "rb") as f:
+            actual = hashlib.file_digest(f, "sha256").hexdigest()
         if actual.lower() != expected_sha256.lower():
             task.status = "error"
             task.error = "sha256 mismatch"

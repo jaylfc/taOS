@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import time
+import tracemalloc
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -688,6 +689,34 @@ class TestStartInstallerTask:
         assert task.status == "complete"
         assert task.downloaded_bytes == 0
         assert task.total_bytes == 0
+
+
+class TestSha256MemoryBudget:
+    """R2-19: SHA-256 verification must not load the whole file into RAM."""
+
+    @pytest.mark.asyncio
+    async def test_validate_download_sha256_under_memory_budget(self, tmp_path):
+        path = tmp_path / "sparse.bin"
+        with open(path, "wb") as f:
+            f.seek(64 * 1024 * 1024 - 1)
+            f.write(b"\x00")
+        reference = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                reference.update(chunk)
+        reference = reference.hexdigest()
+
+        dm = DownloadManager()
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=path)
+
+        tracemalloc.start()
+        tracemalloc.reset_peak()
+        error = await dm._validate_download(task, path, expected_sha256=reference)
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
+        assert error is None
+        assert peak < 5 * 1024 * 1024, f"peak allocation {peak} bytes exceeds 5 MB budget"
 
 
 # ---------------------------------------------------------------------------
