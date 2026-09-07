@@ -13,6 +13,7 @@ from tinyagentos.auth_context import (
     require_agent_owner_or_admin,
     require_owner_or_admin,
 )
+from tinyagentos.http_headers import no_store
 
 # The keystore is system-global (one store, plaintext values on read), so every
 # handler is admin-or-local-token EXCEPT the two agent-scoped reads, which stay
@@ -60,7 +61,9 @@ async def get_agent_secrets(
     await require_agent_owner_or_admin(request, user, agent_name)
     store = request.app.state.secrets
     secrets = await store.get_agent_secrets(agent_name)
-    return secrets
+    resp = JSONResponse(secrets)
+    no_store(resp)
+    return resp
 
 
 @router.get("/api/secrets/agent/{agent_name}/github")
@@ -87,7 +90,9 @@ async def get_agent_github_grants(
             require_owner_or_admin(user, agent["user_id"])
     store = request.app.state.secrets
     installations = await store.get_agent_github_installations(agent_name)
-    return installations
+    resp = JSONResponse(installations)
+    no_store(resp)
+    return resp
 
 
 @router.get("/api/secrets/{name:path}", dependencies=[Depends(require_admin)])
@@ -96,7 +101,9 @@ async def get_secret(request: Request, name: str):
     secret = await store.get(name)
     if not secret:
         return JSONResponse({"error": "Secret not found"}, status_code=404)
-    return secret
+    resp = JSONResponse(secret)
+    no_store(resp)
+    return resp
 
 
 @router.get("/api/secrets", dependencies=[Depends(require_admin)])

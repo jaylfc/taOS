@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from tinyagentos.auth_context import require_admin
 from tinyagentos.backend_adapters import get_adapter
 from tinyagentos.config import save_config_locked, VALID_BACKEND_TYPES
+from tinyagentos.http_headers import no_store
 from tinyagentos.lifecycle_manager import LifecycleManager
 from tinyagentos.litellm_config import get_litellm_master_key
 from tinyagentos.providers import CLOUD_TYPES
@@ -518,7 +519,9 @@ async def list_providers(request: Request):
             # whole endpoint, just skip remote backends.
             pass
 
-    return providers
+    resp = JSONResponse(providers)
+    no_store(resp)
+    return resp
 
 @router.post("/api/providers/test")
 async def test_provider(request: Request, body: ProviderTest):

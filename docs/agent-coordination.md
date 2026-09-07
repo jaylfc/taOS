@@ -380,6 +380,11 @@ grants, project files -- and without the header a shared proxy, or the browser's
 back/forward cache on a shared machine, can hand one user's response to the
 next.
 
+Routes that return secret material inline (`GET /api/providers` with `api_key`,
+`GET /api/secrets/{name}`, `GET /api/secrets/agent/{name}`) call the shared
+`tinyagentos.http_headers.no_store` helper so the header is present even if the
+middleware stack is bypassed in tests.
+
 It is a `setdefault`, never an overwrite, so a handler that picked its own
 policy keeps it:
 
