@@ -920,6 +920,8 @@ class TestStderrLogHandling:
         class _FakePopen:
             def __init__(self, *a, **kw):
                 pass
+            def poll(self):
+                return None
 
         monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
 
@@ -973,6 +975,58 @@ class TestStderrLogHandling:
         assert result is False
         assert len(captured_handles) == 1
         assert captured_handles[0].closed, "parent must close its stderr log handle even on failed spawn"
+
+
+class TestReadinessPollCrashDetection:
+    """R2-29: the readiness poll must detect a crashed proxy process and
+    fail fast, surfacing the stderr tail, not block for the full 120 s."""
+
+    @pytest.mark.asyncio
+    async def test_readiness_fails_fast_when_proxy_crashes_at_startup(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A proxy that exits at startup must cause start() to return False
+        within <2 s with the stderr tail in the error log."""
+        import asyncio
+        import logging
+        import shutil
+        import time
+        import tinyagentos.llm_proxy as mod
+
+        crash_script = tmp_path / "fake_litellm"
+        crash_script.write_text(
+            "#!/bin/sh\necho 'ERROR: proxy startup failure' >&2\nexit 1\n"
+        )
+        crash_script.chmod(0o755)
+
+        monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
+        monkeypatch.setattr(shutil, "which", lambda _: str(crash_script))
+
+        class _FakeClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get(self, url):
+                raise ConnectionError("connection refused")
+
+        monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
+
+        p = mod.LLMProxy(port=14021, data_dir=tmp_path)
+
+        with caplog.at_level(logging.ERROR, logger="tinyagentos.llm_proxy"):
+            start_time = time.monotonic()
+            result = await asyncio.wait_for(p.start(backends=[]), timeout=5)
+            elapsed = time.monotonic() - start_time
+
+        assert result is False
+        assert elapsed < 2, f"expected failure in <2 s, took {elapsed:.1f}s"
+        assert "ERROR: proxy startup failure" in caplog.text
 
 
 class TestConfigDirPermissions:

@@ -69,6 +69,20 @@ def _pids_listening_on(port: int) -> list[int]:
     return pids
 
 
+def _read_stderr_tail(log_path: Path, max_bytes: int = 2000) -> str:
+    """Read the tail of a stderr log file for crash diagnostics."""
+    try:
+        size = log_path.stat().st_size
+        with open(log_path, "rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+            return f.read().decode(errors="replace")
+    except FileNotFoundError:
+        return "(no stderr captured)"
+    except OSError:
+        return "(could not read stderr log)"
+
+
 class LLMProxy:
     """Manages LiteLLM proxy as a subprocess.
 
@@ -555,6 +569,17 @@ class LLMProxy:
         # (requires master key → 401 for the polling client).
         for _ in range(120):
             await asyncio.sleep(1)
+            # R2-29: a proxy that crashed at startup would otherwise burn
+            # the full 120 s poll; check proc.poll() and fail fast,
+            # surfacing the stderr tail that explains why it died.
+            if self._process is not None and self._process.poll() is not None:
+                stderr_tail = _read_stderr_tail(stderr_log_path)
+                logger.error(
+                    "LiteLLM proxy process exited early (rc=%s); stderr tail:\n%s",
+                    self._process.returncode,
+                    stderr_tail,
+                )
+                return False
             try:
                 async with httpx.AsyncClient(timeout=3) as client:
                     resp = await client.get(f"{self.url}/health/readiness")
