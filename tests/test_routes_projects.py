@@ -369,6 +369,40 @@ async def test_add_comment_rejects_cross_task_reply(client):
 
 
 @pytest.mark.asyncio
+async def test_add_comment_rejects_empty_and_whitespace_body(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    t = (await client.post(f"/api/projects/{pid}/tasks", json={"title": "T"})).json()
+
+    # Empty body -> 422, nothing stored.
+    resp = await client.post(
+        f"/api/projects/{pid}/tasks/{t['id']}/comments",
+        json={"body": "", "author_id": "u"},
+    )
+    assert resp.status_code == 422
+
+    # Whitespace-only body -> 422, nothing stored.
+    resp = await client.post(
+        f"/api/projects/{pid}/tasks/{t['id']}/comments",
+        json={"body": "   \n", "author_id": "u"},
+    )
+    assert resp.status_code == 422
+
+    # Follow-up GET: neither empty nor whitespace comment was stored.
+    thread = (await client.get(f"/api/projects/{pid}/tasks/{t['id']}/comments")).json()["items"]
+    assert len(thread) == 0
+
+    # Positive control: a real non-empty body is accepted and stored.
+    resp = await client.post(
+        f"/api/projects/{pid}/tasks/{t['id']}/comments",
+        json={"body": "hello world", "author_id": "u"},
+    )
+    assert resp.status_code == 200
+    thread = (await client.get(f"/api/projects/{pid}/tasks/{t['id']}/comments")).json()["items"]
+    assert len(thread) == 1
+    assert thread[0]["body"] == "hello world"
+
+
+@pytest.mark.asyncio
 async def test_claim_release_close_reject_cross_project(client):
     p1 = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
     p2 = (await client.post("/api/projects", json={"name": "B", "slug": "b"})).json()["id"]
