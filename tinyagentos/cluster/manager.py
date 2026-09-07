@@ -5,7 +5,7 @@ import logging
 import re
 import secrets
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Coroutine
 
 from tinyagentos.cluster.worker_protocol import GpuLease, WorkerInfo
 
@@ -83,6 +83,28 @@ class ClusterManager:
         self._fenced: bool = False  # True when another controller has advanced generation
         # Maximum number of leases a single worker can hold (prevents DoS)
         self._max_leases_per_worker = max_leases_per_worker
+
+    def _spawn_background_task(self, coro: Coroutine) -> asyncio.Task:
+        """Create a fire-and-forget task that survives garbage collection.
+
+        Uses the asyncio-recommended pattern: the task is held in
+        ``_background_tasks`` so the garbage collector cannot collect it
+        mid-flight, and removed via ``add_done_callback(discard)`` on
+        completion.  Exceptions are logged so silently-failing tasks do not
+        disappear into the void.
+        """
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+
+        def _on_done(t: asyncio.Task) -> None:
+            self._background_tasks.discard(t)
+            if not t.cancelled():
+                exc = t.exception()
+                if exc is not None:
+                    logger.exception("Background task failed: %s", exc, exc_info=exc)
+
+        task.add_done_callback(_on_done)
+        return task
 
     async def start(self):
         # taOS #640: increment generation on each controller start (split-brain
@@ -222,9 +244,7 @@ class ClusterManager:
                     info.name,
                 )
 
-        task = asyncio.create_task(_promote_bg())
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        self._spawn_background_task(_promote_bg())
         return (True, "")
 
     def kv_quant_union(self) -> list[str]:
@@ -444,7 +464,7 @@ class ClusterManager:
                 "updating": f"Worker '{worker.name}' is applying an update (reason: {reason}). It will restart when done.",
             }
             try:
-                asyncio.get_running_loop().create_task(
+                self._spawn_background_task(
                     self._notifications.emit_event(
                         event_type,
                         title_map.get(status, f"Worker '{worker.name}' {status}"),
@@ -469,9 +489,7 @@ class ClusterManager:
                     logger.exception("Failed to persist worker '%s'", worker.name)
 
             try:
-                task = asyncio.get_running_loop().create_task(_safe_persist())
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
+                self._spawn_background_task(_safe_persist())
             except RuntimeError:
                 pass  # no running loop (e.g. sync tests) — skip gracefully
         # Fire worker.online notification when a previously-offline worker recovers.
@@ -481,7 +499,7 @@ class ClusterManager:
         # trigger a false "back online" event (taOS #890 C2).
         if self._notifications and prev_status in ("offline", "stale") and worker.status == "online":
             try:
-                asyncio.get_running_loop().create_task(
+                self._spawn_background_task(
                     self._notifications.emit_event(
                         "worker.online",
                         f"Worker '{worker.name}' came back online",
@@ -780,7 +798,7 @@ class ClusterManager:
                 f"{'Tasks will complete before detach.' if graceful else 'All leases released immediately.'}"
             )
             try:
-                task = asyncio.get_running_loop().create_task(
+                self._spawn_background_task(
                     self._notifications.emit_event(
                         "worker.drain",
                         f"Worker '{name}' draining",
@@ -788,8 +806,6 @@ class ClusterManager:
                         level="info",
                     )
                 )
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
             except RuntimeError:
                 pass
 
@@ -816,7 +832,7 @@ class ClusterManager:
 
         if self._notifications:
             try:
-                task = asyncio.get_running_loop().create_task(
+                self._spawn_background_task(
                     self._notifications.emit_event(
                         "worker.online",
                         f"Worker '{name}' drain cancelled",
@@ -824,8 +840,6 @@ class ClusterManager:
                         level="info",
                     )
                 )
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
             except RuntimeError:
                 pass
 
