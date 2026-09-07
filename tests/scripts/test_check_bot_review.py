@@ -1836,3 +1836,86 @@ class TestWalkthroughPositiveClassification:
         exit_code, message = check_mod.classify(items)
         assert exit_code == 0
         assert "real CodeRabbit review" in message
+
+
+class TestReplayGuardRealBodies:
+    """Replay guard: a fixture set drawn from real comment bodies of recent
+    merged PRs must not flip any PASS.
+
+    Each fixture under tests/scripts/fixtures/coderabbit/<pr>.md is the raw
+    JSON array of coderabbitai[bot] comment objects pulled via
+    gh api repos/jaylfc/taOS/issues/<pr>/comments.
+    """
+
+    FIXTURE_DIR = REPO_ROOT / "tests" / "scripts" / "fixtures" / "coderabbit"
+
+    VERDICTS = {
+        "2482.md": 0,   # zero-finding walkthrough
+        "2870.md": 0,   # zero-finding walkthrough
+        "2871.md": 1,   # rate-limit stub
+        "2873.md": 0,   # zero-finding walkthrough
+        "2890.md": 0,   # zero-finding walkthrough
+    }
+
+    def test_fixture_set_does_not_flip_any_pass(self, check_mod) -> None:
+        """Every real-body fixture must produce its expected verdict."""
+        import json
+
+        for filename, expected_exit in self.VERDICTS.items():
+            path = self.FIXTURE_DIR / filename
+            assert path.exists(), f"fixture missing: {path}"
+            with open(path, encoding="utf-8") as fh:
+                comments = json.load(fh)
+            items = [
+                check_mod.CRItem(
+                    id=c.get("id", 0),
+                    body=c["body"],
+                    is_review=False,
+                    created_at=c.get("created_at"),
+                )
+                for c in comments
+            ]
+            exit_code, message = check_mod.classify(items)
+            assert exit_code == expected_exit, (
+                f"{filename}: expected exit {expected_exit}, got {exit_code}: "
+                f"{message[:200]}"
+            )
+
+    def test_walkthrough_detector_recognises_real_bodies(self, check_mod) -> None:
+        """is_coderabbit_walkthrough must return True for the walkthrough
+        comments in the PASS fixtures. This is the regression guard the
+        card demanded: a zero-finding walkthrough with Run ID + at least
+        one signal must be positively classified as real."""
+        import json
+
+        walkthrough_fixtures = ["2482.md", "2870.md", "2873.md", "2890.md"]
+        for filename in walkthrough_fixtures:
+            path = self.FIXTURE_DIR / filename
+            with open(path, encoding="utf-8") as fh:
+                comments = json.load(fh)
+            # The first comment from coderabbitai[bot] on these PRs is the
+            # walkthrough issue comment.
+            walkthrough_body = comments[0]["body"]
+            assert check_mod.is_coderabbit_walkthrough(walkthrough_body), (
+                f"{filename}: walkthrough comment not recognised as real"
+            )
+
+    def test_rate_limit_stub_fixture_fails(self, check_mod) -> None:
+        """The #2871 fixture is a rate-limit stub and must classify as FAIL."""
+        import json
+
+        path = self.FIXTURE_DIR / "2871.md"
+        with open(path, encoding="utf-8") as fh:
+            comments = json.load(fh)
+        items = [
+            check_mod.CRItem(
+                id=c.get("id", 0),
+                body=c["body"],
+                is_review=False,
+                created_at=c.get("created_at"),
+            )
+            for c in comments
+        ]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 1
+        assert "FAIL" in message
