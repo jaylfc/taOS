@@ -110,8 +110,12 @@ grep -q "rknpu.*claimed_rknpu" "$SCRIPT"
 echo "test: verification detects Apple Silicon for MLX"
 grep -q "Darwin.*claimed_mlx" "$SCRIPT"
 
-echo "test: verification is non-blocking (return 0 on skip, not die)"
-grep -q "verification skipped" "$SCRIPT" && grep -q "return 0" "$SCRIPT"
+echo "test: verification dies loud on persistent empty profile (taOS#2)"
+# The old "skipped -- controller did not return a profile" + return 0 path was
+# the silent failure mode the OP hit on Orange Pi 5B; the new behaviour must
+# be a die() with what to check.
+grep -q "die \"hardware verification failed" "$SCRIPT"
+! grep -q "warn \"hardware verification skipped — controller did not return a profile\"" "$SCRIPT"
 
 echo "test: verification counts verified_ok and verified_warn"
 grep -q "verified_ok=" "$SCRIPT" && grep -q "verified_warn=" "$SCRIPT"
