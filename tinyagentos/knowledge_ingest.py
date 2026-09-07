@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     import httpx
@@ -44,15 +45,24 @@ def resolve_source_type(url: str) -> str:
     """Identify the content platform from a URL.
 
     Returns one of: reddit, youtube, x, github, article.
+
+    Matching keys off the URL *hostname* (exact or a subdomain of the
+    platform) so a platform name appearing in a query string or a foreign
+    path cannot spoof a different source type.
     """
-    url_lower = url.lower()
-    if re.search(r"(^|[./])reddit\.com/", url_lower):
+    hostname = (urlsplit(url).hostname or "").lower()
+    if hostname == "reddit.com" or hostname.endswith(".reddit.com"):
         return "reddit"
-    if re.search(r"(^|[./])youtube\.com/watch|youtu\.be/", url_lower):
+    if hostname == "youtube.com" or hostname.endswith(".youtube.com") or hostname == "youtu.be":
         return "youtube"
-    if re.search(r"(^|[./])(x\.com|twitter\.com)/", url_lower):
+    if (
+        hostname == "x.com"
+        or hostname.endswith(".x.com")
+        or hostname == "twitter.com"
+        or hostname.endswith(".twitter.com")
+    ):
         return "x"
-    if re.search(r"(^|[./])github\.com/", url_lower):
+    if hostname == "github.com" or hostname == "www.github.com":
         return "github"
     return "article"
 

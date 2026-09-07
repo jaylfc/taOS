@@ -1,0 +1,2 @@
+### Fixed
+- Knowledge source resolution (R2-14): `resolve_source_type` now keys platform detection off the URL hostname (exact or a subdomain) via `urlsplit()`, so a platform name in a query string or foreign path (`evil.com/?x=youtu.be/abc`) can no longer spoof a classification; `parse_github_url` rejects non-`github.com` hosts; the GitHub fetcher omits the `Authorization` header when no token is configured (no more `Bearer None`); and 403/429 responses with `Retry-After` or `X-RateLimit-Reset` are honoured with a single retry.

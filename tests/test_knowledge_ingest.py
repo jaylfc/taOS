@@ -29,6 +29,14 @@ def test_resolve_github():
     assert resolve_source_type("https://github.com/org/repo/issues/1") == "github"
 
 
+def test_resolve_spoofed_query_param_not_platform():
+    """R2-14: a platform name inside a query string or a foreign path must not
+    be matched. Resolution keys off the URL hostname, not a substring scan, so a
+    hostile URL cannot be misclassified as a known platform."""
+    assert resolve_source_type("https://evil.com/?x=youtu.be/abc") == "article"
+    assert resolve_source_type("https://evil.com/x/github.com/owner/repo") == "article"
+
+
 def test_resolve_article_fallback():
     assert resolve_source_type("https://news.ycombinator.com/item?id=123") == "article"
     assert resolve_source_type("https://blog.example.com/some-post") == "article"
