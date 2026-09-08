@@ -90,3 +90,15 @@ async def test_migrate_raises_when_prisma_cli_missing(tmp_path):
     data_dir = _write_db_url(tmp_path)
     with pytest.raises(RuntimeError, match="not supported"):
         await litellm_migrate.migrate(data_dir)
+
+
+def test_prisma_declared_nowhere_in_packaging():
+    """R2-18: the prisma dependency is gone from BOTH pyproject.toml and uv.lock.
+
+    pyproject alone is not enough -- a stale lock keeps shipping the package
+    (and its runtime query-engine download) to every `uv sync`.
+    """
+    root = Path(__file__).resolve().parents[1]
+    for name in ("pyproject.toml", "uv.lock"):
+        text = (root / name).read_text(encoding="utf-8")
+        assert "prisma" not in text.lower(), f"{name} still references prisma"
