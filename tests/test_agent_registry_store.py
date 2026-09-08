@@ -377,6 +377,106 @@ class TestSigningKeypairConcurrentRace:
         mode = pem_file.stat().st_mode & 0o777
         assert mode == 0o600, f"Key file mode is {oct(mode)}, expected 0o600"
 
+    def test_deterministic_race_reader_sees_empty_file_before_write(
+        self, tmp_path, monkeypatch
+    ):
+        """Deterministic variant of the R2-28 keypair race (the 50-thread test
+        above only catches it ~1 in 10 runs).
+
+        Forces the exact interleaving the bug requires: the writer has created
+        the key file (so it exists on disk) but has NOT yet written its bytes,
+        and a concurrent reader observes that empty file.
+
+        A controllable seam patches the file-CREATION step -- os.open on the
+        signing-key path -- to create an empty file, release the reader, and
+        only return so the writer can then populate the file. Against the pre-fix
+        load_or_create_signing_keypair (no FileLock; os.open creates the file
+        before os.write populates it) the reader observes b"" and
+        load_pem_private_key raises, so the test fails EVERY run. Against the
+        fixed code the FileLock serializes the reader behind the writer, so the
+        reader never sees the empty file and the test passes EVERY run.
+
+        The seam is deliberately narrow: it only intercepts an os.open whose
+        target path ends in the signing-key filename. The FileLock's *.lock fd,
+        atomic_write_bytes' temp file, and the sqlite store db all use different
+        paths and flow through untouched, so on the fixed code the seam is a pure
+        no-op and only the FileLock enforces safety.
+        """
+        import os
+        import threading
+
+        key_path = tmp_path / "keys"
+        results: list[tuple[str, bytes, bytes]] = []
+        errors: list[BaseException] = []
+
+        pem_name = "agent_registry_signing.pem"
+        # reader_may_go is set by the seam right after the writer creates the
+        # empty file (pre-fix path), releasing the reader to observe it. On the
+        # fixed code the seam never fires, so the writer sets reader_may_go in
+        # its own finally -- by then atomic_write_bytes has persisted real bytes.
+        reader_may_go = threading.Event()
+        # reader_done is set by the reader once it has attempted its load; the
+        # seam waits on it so the writer does not write over the reader's
+        # observation.
+        reader_done = threading.Event()
+        real_os_open = os.open
+
+        def seam_os_open(path, *args, **kwargs):
+            if isinstance(path, str) and path.endswith(pem_name):
+                fd = real_os_open(path, *args, **kwargs)
+                reader_may_go.set()
+                reader_done.wait(timeout=30)
+                return fd
+            return real_os_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", seam_os_open)
+
+        def writer():
+            try:
+                priv, pub = load_or_create_signing_keypair(key_path)
+                results.append(("writer", priv, pub))
+            except Exception as e:
+                errors.append(("writer", e))
+            finally:
+                reader_may_go.set()
+
+        def reader():
+            reader_may_go.wait(timeout=30)
+            try:
+                priv, pub = load_or_create_signing_keypair(key_path)
+                results.append(("reader", priv, pub))
+            except Exception as e:
+                errors.append(("reader", e))
+            finally:
+                reader_done.set()
+
+        w = threading.Thread(target=writer)
+        r = threading.Thread(target=reader)
+        w.start()
+        r.start()
+        w.join(timeout=60)
+        r.join(timeout=60)
+
+        assert not w.is_alive(), "writer thread did not finish"
+        assert not r.is_alive(), "reader thread did not finish"
+
+        # The race: a concurrent reader must never observe an empty/partial key.
+        assert not errors, f"expected no errors, got: {errors!r}"
+
+        by_role = {role: (priv, pub) for role, priv, pub in results}
+        assert set(by_role) == {"writer", "reader"}, f"incomplete results: {results!r}"
+
+        writer_priv = by_role["writer"][0]
+        reader_priv = by_role["reader"][0]
+        assert writer_priv == reader_priv, "reader observed a different key than writer"
+        assert b"PRIVATE" in writer_priv, "writer private key is malformed"
+        assert b"PRIVATE" in reader_priv, "reader private key is malformed"
+
+        pem_file = key_path / pem_name
+        assert pem_file.exists(), "key file was never created"
+        mode = pem_file.stat().st_mode & 0o777
+        assert mode == 0o600, f"key file mode is {oct(mode)}, expected 0o600"
+
 
 # ---------------------------------------------------------------------------
 # AgentRegistryStore: registration
