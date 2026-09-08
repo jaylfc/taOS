@@ -19,6 +19,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from tinyagentos.db_migrations import apply_wal_pragmas
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_budgets (
     agent           TEXT PRIMARY KEY,
@@ -45,8 +47,7 @@ class AgentBudgetStore:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=5)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
+        apply_wal_pragmas(conn)
         return conn
 
     def _init(self) -> None:
