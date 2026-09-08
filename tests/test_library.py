@@ -356,6 +356,54 @@ class TestImageProcessor:
         artifacts = await proc.process(item)
         assert len(artifacts) == 0
 
+    @pytest.mark.asyncio
+    async def test_process_pa_mode_image(self, lib_store, storage_dir):
+        """RED-FIRST: a PA-mode (palette + alpha) image must convert to JPEG
+        without raising, producing a thumbnail artifact."""
+        from PIL import Image
+
+        file_path = storage_dir / "test_pa.tiff"
+        img = Image.new("PA", (100, 50), color=(128, 255))
+        img.save(file_path, format="TIFF")
+
+        item_id = await lib_store.create_item(
+            kind="image", title="test_pa.tiff", storage_path=str(file_path)
+        )
+        item = await lib_store.get_item(item_id)
+
+        proc = ImageProcessor(lib_store, storage_dir)
+        artifacts = await proc.process(item)
+
+        kinds = {a["kind"] for a in artifacts}
+        assert "thumbnail" in kinds, (
+            f"PA-mode image should produce a thumbnail, got kinds: {kinds}"
+        )
+        thumb_art = [a for a in artifacts if a["kind"] == "thumbnail"][0]
+        assert Path(thumb_art["path"]).exists()
+
+    @pytest.mark.asyncio
+    async def test_process_la_mode_image(self, lib_store, storage_dir):
+        """RED-FIRST: an LA-mode (grayscale + alpha) PNG must convert to JPEG
+        without raising, producing a thumbnail artifact."""
+        from PIL import Image
+
+        file_path = storage_dir / "test_la.png"
+        img = Image.new("LA", (100, 50), color=(128, 255))
+        img.save(file_path, format="PNG")
+
+        item_id = await lib_store.create_item(
+            kind="image", title="test_la.png", storage_path=str(file_path)
+        )
+        item = await lib_store.get_item(item_id)
+
+        proc = ImageProcessor(lib_store, storage_dir)
+        artifacts = await proc.process(item)
+
+        kinds = {a["kind"] for a in artifacts}
+        assert "thumbnail" in kinds, (
+            f"LA-mode image should produce a thumbnail, got kinds: {kinds}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # run_pipeline

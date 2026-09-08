@@ -278,6 +278,27 @@ class TestTokenMinting:
         with pytest.raises(ValueError):
             verify_registry_token("one", pub)
 
+    def test_verify_non_dict_payload_raises(self, signing_keypair):
+        """RED-FIRST: a token whose payload JSON decodes to a non-dict
+        (e.g. a JSON list) must raise ValueError mentioning the field name,
+        not silently return the non-dict value."""
+        from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+        priv, pub = signing_keypair
+        private_key = load_pem_private_key(priv, password=None)
+
+        header = _b64url_encode(
+            json.dumps({"alg": "EdDSA", "typ": "JWT"}, separators=(",", ":")).encode()
+        )
+        # Payload is a JSON array, NOT a dict
+        payload = _b64url_encode(json.dumps([1, 2, 3]).encode())
+        signing_input = f"{header}.{payload}".encode()
+        signature = _b64url_encode(private_key.sign(signing_input))
+        token = f"{header}.{payload}.{signature}"
+
+        with pytest.raises(ValueError, match="payload"):
+            verify_registry_token(token, pub)
+
     def test_token_has_jti(self, signing_keypair):
         priv, pub = signing_keypair
         token = mint_registry_token("agent-006", priv)

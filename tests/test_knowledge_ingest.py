@@ -715,3 +715,46 @@ async def test_embed_failure_sets_partial_status(store):
     assert item["status"] == "partial", (
         f"Expected 'partial' status on embed failure, got '{item['status']}'"
     )
+
+
+# ------------------------------------------------------------------
+# Q2-4 RED-FIRST: title HTML entities must be unescaped
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_download_article_unescapes_title_entities(store):
+    """RED-FIRST: a <title> containing HTML entities (e.g. &amp;) must be
+    unescaped to the bare character in the returned title.
+    &amp; must become &."""
+    html = (
+        "<html><head><title>Test &amp; Demo Title</title></head>"
+        "<body><article>"
+        "<p>This is a long enough article body for readability extraction.</p>"
+        "</article></body></html>"
+    )
+    resp = _TrackedResponse([html.encode("utf-8")])
+
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(return_value=resp)
+
+    notif = AsyncMock()
+    notif.emit_event = AsyncMock()
+    cat_engine = AsyncMock()
+    cat_engine.categorise = AsyncMock(return_value=[])
+
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+    )
+
+    content, title, author, metadata = await pipeline._download_article(
+        "https://example.com/test", "", {}
+    )
+
+    assert title == "Test & Demo Title", (
+        f"Expected unescaped title 'Test & Demo Title', got: {title!r}"
+    )

@@ -394,6 +394,10 @@ def verify_registry_token(token: str, public_key_pem: bytes) -> dict:
         raise ValueError("token signature verification failed") from None
 
     payload = json.loads(_b64url_decode(payload_b64))
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"payload must be a JSON object, got {type(payload).__name__}"
+        )
     return payload
 
 
