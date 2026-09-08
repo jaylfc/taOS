@@ -190,3 +190,55 @@ async def test_lifecycle_notify_no_manager(client):
             app.state.lifecycle_manager = original
         else:
             app.state.lifecycle_manager = None
+
+
+# ---------------------------------------------------------------------------
+# S2-9: path-traversal guard on agent_name in trace routes
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("bad_name", [
+    "../x",
+    "a/b",
+    "..",
+    "../../escaped-agent",
+    "",
+])
+@pytest.mark.asyncio
+async def test_post_trace_rejects_path_traversal_agent_name(client, tmp_path, bad_name):
+    """POST /api/trace with a traversal slug must 400 and not write outside data_dir."""
+    _inject_registry(client._transport.app, tmp_path)
+    resp = await client.post("/api/trace", json={
+        "agent_name": bad_name,
+        "kind": "message_in",
+        "payload": {"from": "u", "text": "hi"},
+    })
+    assert resp.status_code == 400, (
+        f"expected 400 for slug {bad_name!r}, got {resp.status_code}: {resp.text}"
+    )
+    # Confirm nothing was written outside data_dir.
+    for p in tmp_path.rglob("*"):
+        try:
+            if p.is_relative_to(tmp_path):
+                continue
+        except Exception:
+            pass
+        assert not p.is_file(), f"file created outside data_dir: {p}"
+
+
+@pytest.mark.asyncio
+async def test_post_trace_valid_slug_round_trip(client, tmp_path):
+    """A valid slug still works end-to-end through the route."""
+    _inject_registry(client._transport.app, tmp_path)
+    resp = await client.post("/api/trace", json={
+        "agent_name": "valid-agent-42",
+        "kind": "message_in",
+        "payload": {"from": "u", "text": "hello"},
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["agent_name"] == "valid-agent-42"
+    assert body["id"]
+
+    events_resp = await client.get("/api/agents/valid-agent-42/trace")
+    assert events_resp.status_code == 200
+    assert len(events_resp.json()["events"]) == 1
