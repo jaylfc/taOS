@@ -627,7 +627,7 @@ The correct default is **asymmetric** K and V quantization: keys need more bits 
 
 Symmetric configs (same type for K and V) are a quality landmine on Qwen2.5 family specifically -- PPL goes astronomical without boundary layer protection. The deploy wizard exposes separate `K bits`, `V bits`, and `boundary layers` knobs when the worker reports a backend that supports them. Default is always `f16 / f16 / 0` unless the user explicitly opts in or the per-model manifest recommends otherwise.
 
-The llama.cpp CUDA build works on Debian 12 (glibc 2.36) and older distributions. On Fedora 43 and other distros shipping glibc 2.42+, CUDA 12.8 and 12.9 headers conflict with the libc `noexcept` declarations -- the workaround is to build inside a Debian 12 LXC, documented in `docs/deploy/fedora-lxc-setup.md`. The CPU build is production-ready and the config surface is fully plumbed through the cluster and deploy wizard.
+The llama.cpp CUDA build works on Debian 12 (glibc 2.36) and older distributions. On Fedora 43 and other distros shipping glibc 2.42+, CUDA 12.8 and 12.9 headers conflict with the libc `noexcept` declarations -- the workaround is to build inside a Debian 12 LXC, documented in `docs/deploy/fedora-lxc-setup.md`. The CPU build is production-ready and the config surface is fully plumbed through the cluster and deploy wizard. Full benchmark details at `docs/benchmarks/turboquant-qwen35-9b.md`.
 
 ## Exo Distributed Inference
 

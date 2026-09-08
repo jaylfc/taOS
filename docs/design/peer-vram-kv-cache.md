@@ -4,7 +4,7 @@
 
 A single GPU runs out of VRAM long before the model runs out of useful
 context. A 9B model on a 12GB card tops out around 786K tokens with
-aggressive TurboQuant (see the v0.2 design overview). Once a user has two
+aggressive TurboQuant (see the v0.2 benchmarks). Once a user has two
 boxes on the LAN, a 4060Ti and a 3090, the 3090 is sitting half-idle
 while the 4060Ti suffocates on KV cache. Peer-VRAM KV cache is the
 scheduler's answer: **offload overflow KV pages to the peer worker

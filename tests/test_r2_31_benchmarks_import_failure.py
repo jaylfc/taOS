@@ -27,14 +27,18 @@ class TestR231BenchmarksRemoved:
 
     def test_no_stale_benchmarks_references(self) -> None:
         result = subprocess.run(
-            ["grep", "-rn",
+            ["grep", "-rnE",
              "--exclude-dir=changelog.d",
              "--exclude-dir=audit",
-             "benchmarks/",
+             r"(^|[^A-Za-z0-9_./-])benchmarks/",
              "README.md", "docs/", ".github/", "scripts/", "tinyagentos/"],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
+        )
+        assert result.returncode in (0, 1), (
+            f"grep exited {result.returncode} (expected 0 or 1); stderr:\n"
+            f"{result.stderr}"
         )
         lines = [l for l in result.stdout.strip().split("\n") if l]
         stale = [l for l in lines if "/api/benchmarks" not in l]

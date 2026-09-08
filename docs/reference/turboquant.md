@@ -19,7 +19,7 @@ On a 12GB RTX 3060 running Qwen3.5-9B-Q4_K_M:
 Decode speed stays flat at 52-62 t/s across the whole range — TurboQuant
 is not a latency feature, it is a *capacity* feature.
 
-Full numbers: [TurboQuant results](https://example.com/turboquant-results).
+Full numbers: [`docs/benchmarks/turboquant-qwen35-9b.md`](../benchmarks/turboquant-qwen35-9b.md).
 
 ## Asymmetric K/V is the important part
 
