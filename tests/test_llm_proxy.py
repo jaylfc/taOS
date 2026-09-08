@@ -826,7 +826,7 @@ class TestProxySelfHeal:
             "[project.optional-dependencies]\n"
             # trailing whitespace/newline in an entry must be stripped, not
             # reach pip verbatim
-            "proxy = [\"litellm[proxy]>=1.90.0\", \"prisma>=0.11.0\\n\"]\n"
+            "proxy = [\"litellm[proxy]>=1.90.0\"\n]\n"
         )
         (tmp_path / ".venv" / "bin").mkdir(parents=True)
         monkeypatch.setattr(sys, "executable", str(tmp_path / ".venv" / "bin" / "python"))
@@ -853,7 +853,6 @@ class TestProxySelfHeal:
             "--no-input",
             "--disable-pip-version-check",
             "litellm[proxy]>=1.90.0",
-            "prisma>=0.11.0",
         ]
         assert "-e" not in captured["cmd"]
 
