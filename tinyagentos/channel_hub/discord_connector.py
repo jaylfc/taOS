@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import time
 import httpx
 from tinyagentos.channel_hub.message import IncomingMessage, OutgoingMessage
 
@@ -19,6 +20,7 @@ class DiscordConnector:
         self._last_message_ids: dict[str, str] = {}
         self._task = None
         self._bot_user_id: str | None = None
+        self._last_rate_limit: dict[str, float] = {}  # channel_id -> deadline time
 
     async def start(self):
         self._running = True
@@ -40,6 +42,14 @@ class DiscordConnector:
             while self._running:
                 try:
                     for channel_id in self.channel_ids:
+                        # Check if channel is in rate limit backoff
+                        if channel_id in self._last_rate_limit:
+                            if time.time() < self._last_rate_limit[channel_id]:
+                                # Still rate limited, skip this channel
+                                continue
+                            else:
+                                # Backoff period expired, clear it
+                                del self._last_rate_limit[channel_id]
                         await self._check_channel(client, channel_id)
                     await asyncio.sleep(2)  # Poll every 2s
                 except asyncio.CancelledError:
@@ -58,6 +68,25 @@ class DiscordConnector:
             f"{self.base_url}/channels/{channel_id}/messages",
             headers=self.headers, params=params,
         )
+        
+        # Handle rate limits: distinguish 429 from empty result
+        if resp.status_code == 429:
+            # Rate limited - respect Retry-After header
+            retry_after = resp.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    delay = float(retry_after)
+                    # Arm a back-off window by storing the last rate limit time
+                    # This follows the same pattern as store_popularity.py
+                    self._last_rate_limit[channel_id] = time.time() + delay
+                except ValueError:
+                    # If we can't parse the header, sleep 2s as before
+                    await asyncio.sleep(2)
+            else:
+                # No Retry-After header, default backoff
+                await asyncio.sleep(2)
+            return
+        
         if resp.status_code != 200:
             return
 
@@ -73,6 +102,11 @@ class DiscordConnector:
             if msg.get("author", {}).get("id") == self._bot_user_id:
                 continue  # Skip own messages
             await self._handle_message(client, channel_id, msg)
+            
+        # Remove from rate limit tracking after successful processing
+        # This allows the connector to make new requests once the backoff window passes
+        if channel_id in self._last_rate_limit:
+            del self._last_rate_limit[channel_id]
 
     async def _handle_message(self, client: httpx.AsyncClient, channel_id: str, msg: dict):
         incoming = IncomingMessage(
