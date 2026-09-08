@@ -1,6 +1,7 @@
 import pytest
 import pytest_asyncio
 from tinyagentos.user_memory import UserMemoryStore
+from taos_test_csrf import csrf_event_hooks
 
 
 @pytest_asyncio.fixture
@@ -127,7 +128,8 @@ async def mem_client(app, tmp_data_dir):
     app.state._startup_complete = True
     transport = ASGITransport(app=app)
     async with HttpxAsyncClient(
-        transport=transport, base_url="http://test", cookies={"taos_session": token}
+        transport=transport, base_url="http://test", cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c, store
     await store.close()

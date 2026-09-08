@@ -180,3 +180,107 @@ describe("UpdatesPanel -- optional apps section", () => {
     expect(screen.getByRole("button", { name: /scroll to system update/i })).toBeInTheDocument();
   });
 });
+
+describe("UpdatesPanel -- error announcements", () => {
+  it("announces an update-check failure (non-ok) via role=alert", async () => {
+    let checkCalls = 0;
+    (global.fetch as any) = vi.fn(async (url: string) => {
+      if (url === "/api/preferences/auto-update") return jResp({ check_enabled: true });
+      if (url === "/api/settings/update-check") {
+        checkCalls++;
+        if (checkCalls === 1) return jResp({ has_updates: false, current_version: "1.0.0-beta.2", current_commit: "abc x" });
+        return new Response(null, { status: 500 });
+      }
+      if (url === "/api/settings/update-status") return jResp({ current_sha: "abc", pending_restart_sha: null });
+      if (url === "/api/apps/optional/catalog") return jResp({ apps: [] });
+      return jResp({});
+    });
+    render(<UpdatesPanel />);
+    await screen.findByText("1.0.0-beta.2");
+    fireEvent.click(screen.getByRole("button", { name: /check now/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Update check not available.");
+  });
+
+  it("announces a network error during update check via role=alert", async () => {
+    let checkCalls = 0;
+    (global.fetch as any) = vi.fn(async (url: string) => {
+      if (url === "/api/preferences/auto-update") return jResp({ check_enabled: true });
+      if (url === "/api/settings/update-check") {
+        checkCalls++;
+        if (checkCalls === 1) return jResp({ has_updates: false, current_version: "1.0.0-beta.2", current_commit: "abc x" });
+        return Promise.reject(new Error("network"));
+      }
+      if (url === "/api/settings/update-status") return jResp({ current_sha: "abc", pending_restart_sha: null });
+      if (url === "/api/apps/optional/catalog") return jResp({ apps: [] });
+      return jResp({});
+    });
+    render(<UpdatesPanel />);
+    await screen.findByText("1.0.0-beta.2");
+    fireEvent.click(screen.getByRole("button", { name: /check now/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not reach update server.");
+  });
+
+  it("announces an apply-update failure via role=alert", async () => {
+    (global.fetch as any) = vi.fn(async (url: string) => {
+      if (url === "/api/preferences/auto-update") return jResp({ check_enabled: true });
+      if (url === "/api/settings/update-check")
+        return jResp({ has_updates: true, current_version: "1.0.0", new_version: "1.0.1", current_commit: "abc", new_commit: "xyz" });
+      if (url === "/api/settings/update-status") return jResp({ current_sha: "abc", pending_restart_sha: null });
+      if (url === "/api/apps/optional/catalog") return jResp({ apps: [] });
+      if (url === "/api/settings/update") return new Response(null, { status: 500 });
+      return jResp({});
+    });
+    render(<UpdatesPanel />);
+    await screen.findByText("1.0.0");
+    fireEvent.click(screen.getByRole("button", { name: /install update/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Update failed.");
+  });
+
+  it("announces a frontend-rebuild failure via role=alert", async () => {
+    (global.fetch as any) = vi.fn(async (url: string) => {
+      if (url === "/api/preferences/auto-update") return jResp({ check_enabled: true });
+      if (url === "/api/settings/update-check") return jResp({ has_updates: false, current_version: "1.0.0", current_commit: "abc" });
+      if (url === "/api/settings/update-status") return jResp({ current_sha: "abc", pending_restart_sha: null });
+      if (url === "/api/apps/optional/catalog") return jResp({ apps: [] });
+      if (url === "/api/settings/rebuild-frontend") return new Response(null, { status: 500 });
+      return jResp({});
+    });
+    render(<UpdatesPanel />);
+    await screen.findByText("1.0.0");
+    fireEvent.click(screen.getByRole("button", { name: /force rebuild/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Frontend rebuild failed.");
+  });
+
+  it("does not render an alert on a successful update check (no success chatter)", async () => {
+    render(<UpdatesPanel />);
+    await screen.findByText("1.0.0-beta.2");
+    fireEvent.click(screen.getByRole("button", { name: /check now/i }));
+    await waitFor(() => expect(screen.getByText("You are up to date.")).toBeInTheDocument());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("clears a previous update-check error when a subsequent check succeeds", async () => {
+    let checkCalls = 0;
+    (global.fetch as any) = vi.fn(async (url: string) => {
+      if (url === "/api/preferences/auto-update") return jResp({ check_enabled: true });
+      if (url === "/api/settings/update-check") {
+        checkCalls++;
+        if (checkCalls === 1) return jResp({ has_updates: false, current_version: "1.0.0-beta.2", current_commit: "abc x" });
+        if (checkCalls === 2) return new Response(null, { status: 500 });
+        return jResp({ has_updates: false, current_version: "1.0.0-beta.2", current_commit: "abc x" });
+      }
+      if (url === "/api/settings/update-status") return jResp({ current_sha: "abc", pending_restart_sha: null });
+      if (url === "/api/apps/optional/catalog") return jResp({ apps: [] });
+      return jResp({});
+    });
+    render(<UpdatesPanel />);
+    await screen.findByText("1.0.0-beta.2");
+
+    fireEvent.click(screen.getByRole("button", { name: /check now/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Update check not available.");
+
+    fireEvent.click(screen.getByRole("button", { name: /check now/i }));
+    await waitFor(() => expect(screen.getByText("You are up to date.")).toBeInTheDocument());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});

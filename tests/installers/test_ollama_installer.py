@@ -185,3 +185,119 @@ class TestGetInstallerWiring:
 
         i = get_installer("ollama")
         assert isinstance(i, OllamaInstaller)
+
+
+class TestHefH10hVerification:
+    """Mutation tests for the hef_h10h content-pin check.
+
+    The hef_h10h field must be enforced by OllamaInstaller: a matching
+    digest passes, a wrong one fails the install with a mismatch error
+    naming both the expected and actual digest. Without these tests the
+    pin is decorative -- a tampered .hef would silently install, which is
+    exactly the defect #2620 shipped.
+    """
+
+    _VALID_HEF = "0a0d378c530fb120d81ffcd1bde1b367c7bb1ce6e2d8f3fb8166558eee40536e"
+
+    def _patch_client(self, mock_client_class, pull_events):
+        """Wire mock_client_class (patch target for httpx.AsyncClient) so
+        install() sees a healthy daemon and a streaming pull response
+        yielding the given NDJSON event strings."""
+        client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = client
+        client.get.return_value = MagicMock(
+            raise_for_status=MagicMock(), status_code=200
+        )
+        stream_resp = _make_pull_response(pull_events)
+        client.stream = MagicMock(return_value=_MockStreamCtx(stream_resp))
+        return client
+
+    @pytest.mark.asyncio
+    async def test_hef_h10h_matches_pulled_digest_passes(self):
+        """When the manifest pin matches a digest reported by hailo-ollama
+        pull, the install succeeds -- the pin is enforced, not decorative."""
+        from tinyagentos.installers.ollama_installer import OllamaInstaller
+
+        i = OllamaInstaller(host="http://localhost:7836")
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            self._patch_client(
+                mock_client_class,
+                [
+                    '{"status":"Pulling layer digest",'
+                    '"digest":"sha256:' + self._VALID_HEF + '"}',
+                    '{"status":"success"}',
+                ],
+            )
+
+            result = await i.install(
+                "llama-3.2-1b",
+                install_config={},
+                variant={
+                    "ollama_name": "llama3.2:1b",
+                    "hef_h10h": self._VALID_HEF,
+                },
+            )
+
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_hef_h10h_mismatch_fails(self):
+        """A mutated (wrong) hef_h10h must FAIL the install with a mismatch
+        error naming both the expected and actual digest."""
+        from tinyagentos.installers.ollama_installer import OllamaInstaller
+
+        i = OllamaInstaller(host="http://localhost:7836")
+        actual_digest = "f" * 64
+        wrong_expected = "1" * 64
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            self._patch_client(
+                mock_client_class,
+                [
+                    '{"status":"Pulling layer digest",'
+                    '"digest":"sha256:' + actual_digest + '"}',
+                    '{"status":"success"}',
+                ],
+            )
+
+            result = await i.install(
+                "llama-3.2-1b",
+                install_config={},
+                variant={
+                    "ollama_name": "llama3.2:1b",
+                    "hef_h10h": wrong_expected,
+                },
+            )
+
+        assert result["success"] is False
+        assert "mismatch" in result["error"].lower()
+        assert wrong_expected in result["error"]
+        assert actual_digest in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_hef_h10h_no_digest_fails(self):
+        """If hailo-ollama reports no layer digest (empty/corrupted pull)
+        but the manifest declares a hef_h10h pin, the install must fail."""
+        from tinyagentos.installers.ollama_installer import OllamaInstaller
+
+        i = OllamaInstaller(host="http://localhost:7836")
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            self._patch_client(
+                mock_client_class,
+                ['{"status":"success"}'],
+            )
+
+            result = await i.install(
+                "llama-3.2-1b",
+                install_config={},
+                variant={
+                    "ollama_name": "llama3.2:1b",
+                    "hef_h10h": self._VALID_HEF,
+                },
+            )
+
+        assert result["success"] is False
+        assert "mismatch" in result["error"].lower()
+        assert self._VALID_HEF in result["error"]

@@ -17,6 +17,12 @@ Two layers:
                  a rule by matching a require_doc glob; a renamed, copied, or
                  deleted require_doc does NOT count.
 
+  A workflow-file modification whose diff changes only `uses: <action>@<ref>`
+  pins -- a pure version bump, as a dependency bot produces -- is treated as
+  non-structural, so it does not trip the contributor-skill rule on its own.
+  Any other changed line in the same file keeps the change substantive,
+  regardless of author (the exemption is content-based, not identity-based).
+
 Config lives in docs/doc-gate.toml. Rules are data, not code: add more by
 editing the TOML, no changes to this file required.
 
@@ -304,10 +310,77 @@ def _is_test_path(path: str) -> bool:
     )
 
 
+# A `uses:` pin line as it appears in a workflow file, after the diff's leading
+# +/- marker has been stripped: optional indent, an optional YAML list marker
+# (- or *), then `uses: <owner>/<repo>@<ref>`. The ref excludes whitespace and
+# `#` so a trailing comment (e.g. `@<sha>  # v2.6.1`) does not poison the match.
+# A `uses:` without an `@<ref>` (a non-pinned or local action) is NOT a pin
+# line and keeps the change substantive.
+_USES_PIN_LINE = re.compile(r"^\s*[-*]?\s*uses:\s+(?P<target>[^@\s]+)@[^@\s#]+")
+
+
+def _uses_pin_target(line: str) -> str | None:
+    """Return the action TARGET (the text before `@`) of a `uses:` pin line,
+    or None when the line is not a pin line at all."""
+    m = _USES_PIN_LINE.match(line)
+    return m.group("target") if m else None
+
+
+def _path_diff_is_uses_pin_only(diff_output: str) -> bool:
+    """True iff `git diff --unified=0` output is a pure `uses:` pin bump --
+    every content line is a `uses: <action>@<ref>` pin AND, within each hunk,
+    the removed and added lines name the SAME set of action targets.
+
+    A dependency-bot version bump changes nothing but the `@ref` on existing
+    `uses:` lines -- e.g. `uses: actions/checkout@v4` -> `@v5`. Such a change
+    does not alter CI behaviour, packaging, or contribution rules, so it must
+    not trip the contributor-skill rule even though the file lives under
+    `.github/workflows/`.
+
+    Any other changed line -- a new step, an altered `with:` input, a `name:`
+    tweak, an environment change -- makes this False, so a substantive workflow
+    rewrite still fails the gate without a trailer. Author is irrelevant: a
+    human who also changes only pins is exempt, and a bot that rewrites steps
+    is not -- the decision is content-based, not identity-based.
+
+    THE TARGETS MUST BE PAIRED, NOT MERELY CLASSIFIED (#2568 review). Both
+    sides of
+
+        -        uses: actions/checkout@v4
+        +        uses: attacker/checkout@v1
+
+    are syntactically pin lines, so a per-line classifier calls that a version
+    bump and hands an attacker-owned action a gate exemption. Comparing the
+    removed against the added targets is what makes a swapped action, a newly
+    introduced action, or a removed one substantive again. Pairing is per hunk
+    so a genuine bump in one hunk cannot vouch for a swap in another.
+    """
+    hunks: list[tuple[list[str], list[str]]] = [([], [])]
+    for line in diff_output.splitlines():
+        if line.startswith("@@"):
+            hunks.append(([], []))
+            continue
+        if not line or line[0] not in "+-":
+            continue
+        # Skip the +++ / --- extended file headers; they are not content.
+        if line.startswith(("+++", "---")):
+            continue
+        target = _uses_pin_target(line[1:])
+        if target is None:
+            return False
+        hunks[-1][0 if line[0] == "-" else 1].append(target)
+
+    for removed, added in hunks:
+        if sorted(removed) != sorted(added):
+            return False
+    return True
+
+
 def evaluate_rules(
     changed_status: list[tuple[str, str]],
     commit_messages: list[str],
     config: dict,
+    pin_only_paths: set[str] | None = None,
 ) -> list[str]:
     """Layer B: run every configured rule against a changeset.
 
@@ -322,9 +395,15 @@ def evaluate_rules(
     Test paths are never structural and are always excluded.
     commit_messages: full text of each commit message in range (empty list
     when there is no finalized commit yet, i.e. --staged mode).
+    pin_only_paths: paths whose modification changes only `uses:` action pins
+    (a dependency-bot version bump); these are not structural and so never
+    trigger a rule. Computed by _collect_pin_only_paths from the live diff.
     """
     trailer = get_trailer(config)
     rules = config.get("rules", [])
+
+    if pin_only_paths is None:
+        pin_only_paths = set()
 
     all_paths = [path for status, path in changed_status if status in ("A", "M")]
 
@@ -346,6 +425,7 @@ def evaluate_rules(
             path for status, path in changed_status
             if (status in ("A", "D", "R", "C") or (on_modify and status == "M"))
             and not _is_test_path(path)
+            and path not in pin_only_paths
         ]
 
         triggered = any(_match_any(p, when_changed) for p in rule_structural_paths)
@@ -427,6 +507,38 @@ def _git_commits_with_messages(base_ref: str) -> list[tuple[str, str, str]]:
     return commits
 
 
+def _collect_pin_only_paths(
+    changed: list[tuple[str, str]], base_ref: str | None = None
+) -> set[str]:
+    """Return the subset of MODIFIED (status M) workflow files whose diff
+    against `base_ref` changes only `uses: <action>@<ref>` pins.
+
+    When `base_ref` is None the diff is read from the staged index (--cached),
+    used by the pre-commit / commit-msg hooks; otherwise it is the
+    `<base_ref>...HEAD` range used by CI. Only `.github/workflows/` files are
+    inspected: those are the only paths the contributor-skill structural rule
+    matches, and a pin-only change is meaningless for `pyproject.toml` or
+    `CONTRIBUTING.md`, which are always re-evaluated by the rule.
+
+    A git failure diffing a single path is treated as "not known to be
+    pin-only" (that path is skipped), never as a gate failure: a workflow
+    change that cannot be inspected is re-evaluated by the rule as-is, which
+    is the fail-closed side. Author is never consulted.
+    """
+    pin_only: set[str] = set()
+    range_arg = "--cached" if base_ref is None else f"{base_ref}...HEAD"
+    for status, path in changed:
+        if status != "M" or not path.startswith(".github/workflows/"):
+            continue
+        try:
+            diff = _run_git(["diff", "--unified=0", range_arg, "--", path], ref=base_ref)
+        except GitCommandError:
+            continue
+        if _path_diff_is_uses_pin_only(diff):
+            pin_only.add(path)
+    return pin_only
+
+
 def _log_trailer_usage(commits: list[tuple[str, str, str]], trailer: str) -> None:
     """Print a log line for each commit that carries a non-empty trailer."""
     for commit_hash, author, message in commits:
@@ -498,7 +610,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"doc-gate: git error: {e}", file=sys.stderr)
         return EXIT_GIT_ERROR
 
-    failures = evaluate_rules(changed, commit_messages, config)
+    # A workflow-file change that only bumps `uses:` action pins (a dependabot
+    # version bump) is not a contribution-rules change: detect it here, against
+    # the live diff, so bot-authored bumps can go green without a trailer that
+    # the bot cannot author. Author is NOT consulted -- a substantive edit by
+    # any identity is still red.
+    pin_only_paths = _collect_pin_only_paths(changed, args.base)
+
+    failures = evaluate_rules(changed, commit_messages, config, pin_only_paths=pin_only_paths)
     return _report(failures)
 
 

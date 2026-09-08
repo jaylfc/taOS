@@ -258,6 +258,39 @@ async def test_reregistration_without_hardware_preserves_stored(client, app):
 
 
 @pytest.mark.asyncio
+async def test_reregistration_with_zero_ram_updates_capability_map(client, app):
+    """A worker reporting ram_mb=0 must update the map to 0, not preserve the old value."""
+    import json
+
+    await app.state.capability_map.init()
+    await app.state.cluster_pairing.init()
+    key = await pair_worker(client, app, "rig-4", "http://10.4.0.1:9000")
+    reg1 = json.dumps({
+        "name": "rig-4", "url": "http://10.4.0.1:9000", "platform": "linux",
+        "hardware": {"ram_mb": 16000},
+    }).encode()
+    h1 = sign_worker_request(key, "rig-4", "POST", "/api/cluster/workers", reg1)
+    h1["Content-Type"] = "application/json"
+    assert (await client.post("/api/cluster/workers", content=reg1, headers=h1)).status_code == 200
+
+    node = await app.state.capability_map.get("rig-4")
+    assert node["ram_mb"] == 16000
+
+    # Re-register with ram_mb=0 (worker is in a zero-memory state).
+    reg2 = json.dumps({
+        "name": "rig-4", "url": "http://10.4.0.1:9000", "platform": "linux",
+        "hardware": {"ram_mb": 0},
+    }).encode()
+    h2 = sign_worker_request(key, "rig-4", "POST", "/api/cluster/workers", reg2)
+    h2["Content-Type"] = "application/json"
+    assert (await client.post("/api/cluster/workers", content=reg2, headers=h2)).status_code == 200
+
+    node = await app.state.capability_map.get("rig-4")
+    assert node["ram_mb"] == 0
+    await app.state.capability_map.close()
+
+
+@pytest.mark.asyncio
 async def test_sweep_offlines_stale_online_nodes(client, app):
     """The sweep endpoint flips stale online nodes offline, keeping the row."""
     await app.state.capability_map.init()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import stat
 
 import pytest
@@ -78,6 +79,59 @@ class TestFernetKeyFile:
         key_path.write_bytes(b"")
         with pytest.raises(ValueError, match="Corrupt Fernet key file"):
             _get_fernet_key(tmp_path)
+
+    def test_a_key_persisted_mid_generation_is_adopted_not_clobbered(
+        self, tmp_path, monkeypatch
+    ):
+        """Two processes sharing a data dir must converge on one key.
+
+        Both can observe an absent ``.secrets_key`` and both generate. The
+        write is atomic but it is a *replace*, so the last writer wins and the
+        loser keeps encrypting with key material that is not on disk — every
+        secret it wrote is undecryptable after a restart. Fault-injects that
+        interleave: another process persists its key while we are generating
+        ours, so ours must be discarded in favour of what is on disk.
+        """
+        rival = bytes(range(32))
+        key_path = tmp_path / ".secrets_key"
+        real_urandom = os.urandom
+
+        def racing_urandom(n):
+            if not key_path.exists():
+                key_path.write_bytes(rival)
+            return real_urandom(n)
+
+        monkeypatch.setattr(sec_mod.os, "urandom", racing_urandom)
+
+        key = _get_fernet_key(tmp_path)
+
+        assert key_path.read_bytes() == rival, (
+            "the key another process had already persisted was overwritten — "
+            "every secret encrypted under it is now unreadable"
+        )
+        assert key == rival, (
+            "returned key material that is not the key on disk: this process "
+            "would encrypt secrets nothing can decrypt after a restart"
+        )
+
+    def test_a_key_persisted_mid_generation_still_round_trips(
+        self, tmp_path, monkeypatch
+    ):
+        """The adopted key must actually be usable, not just equal on disk."""
+        rival = bytes(range(32))
+        key_path = tmp_path / ".secrets_key"
+        real_urandom = os.urandom
+
+        def racing_urandom(n):
+            if not key_path.exists():
+                key_path.write_bytes(rival)
+            return real_urandom(n)
+
+        monkeypatch.setattr(sec_mod.os, "urandom", racing_urandom)
+
+        token = _encrypt("hunter2", key_dir=tmp_path)
+        sec_mod._fernet_key_cache.clear()
+        assert _decrypt(token, key_dir=tmp_path) == "hunter2"
 
 
 class TestFernetEncryptDecrypt:

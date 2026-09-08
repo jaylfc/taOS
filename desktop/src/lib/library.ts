@@ -126,6 +126,50 @@ export async function reprocessLibraryItem(itemId: string): Promise<boolean> {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Jobs                                                               */
+/* ------------------------------------------------------------------ */
+
+export interface ListLibraryJobsParams {
+  state?: string;
+  limit?: number;
+}
+
+/** List ingest pipeline jobs (queued, processing, error, done, ...).
+ *  Throws when the endpoint is unreachable so the caller can distinguish
+ *  "no jobs" from "route missing".
+ */
+export async function listLibraryJobs(
+  params?: ListLibraryJobsParams,
+): Promise<{ jobs: LibraryJob[] }> {
+  const qs = new URLSearchParams();
+  if (params?.state) qs.set("state", params.state);
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  const query = qs.toString();
+  const url = `/api/library/jobs${query ? `?${query}` : ""}`;
+  const headers = new Headers();
+  headers.set("Accept", "application/json");
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(`Library jobs endpoint returned ${res.status}`);
+  const ct = res.headers.get("content-type") ?? "";
+  if (!ct.includes("application/json")) throw new Error("Library jobs endpoint returned non-JSON");
+  const data = await res.json();
+  return { jobs: Array.isArray(data.jobs) ? data.jobs : [] };
+}
+
+/** Retry a failed job. */
+export async function retryLibraryJob(jobId: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `/api/library/jobs/${encodeURIComponent(jobId)}/retry`,
+      withCsrf({ method: "POST", headers: { Accept: "application/json" } }),
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Ingest                                                             */
 /* ------------------------------------------------------------------ */
 

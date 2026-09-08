@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import csrf_event_hooks
 
 
 @pytest.mark.asyncio
@@ -34,6 +35,7 @@ def _auth_client(app):
         transport=ASGITransport(app=app),
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     )
 
 

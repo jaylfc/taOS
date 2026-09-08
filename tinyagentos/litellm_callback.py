@@ -78,7 +78,7 @@ try:
 
         def __init__(self) -> None:
             super().__init__()
-            self._trace_url: str = os.environ.get("TAOS_TRACE_URL", "http://127.0.0.1:6969/api/trace")
+            self._trace_url: str = os.environ.get("TAOS_TRACE_URL", f"http://127.0.0.1:{os.environ.get('TAOS_PORT', '6969')}/api/trace")
             self._notify_url: str = self._trace_url.replace("/api/trace", "/api/lifecycle/notify")
 
         async def _post(self, url: str, payload: dict) -> None:

@@ -19,6 +19,7 @@ import { Button, Card, Input } from "@/components/ui";
 import { projectsApi } from "@/lib/projects";
 import { AssignAgentToProjectDialog } from "./AssignAgentToProjectDialog";
 import { InviteAgentDialog } from "@/apps/ProjectsApp/InviteAgentDialog";
+import { ConsentActions } from "@/components/ConsentActions";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                               */
@@ -123,6 +124,134 @@ async function registryAction(
     throw new Error((err as { error?: string }).error ?? `HTTP ${resp.status}`);
   }
   return resp.json();
+}
+
+/* ------------------------------------------------------------------ */
+/*  PendingScopeRequests                                                */
+/* ------------------------------------------------------------------ */
+
+export interface ScopeRequest {
+  id: string;
+  canonical_id: string;
+  requested_scopes: string[];
+  project_id: string | null;
+  reason: string;
+  status: string;
+  created_ts: string;
+}
+
+/**
+ * Pending scope requests for one registered agent, rendered inline in its
+ * registry row.
+ *
+ * Approval used to depend entirely on the bell notification raised at create
+ * time: the request_id lived only in that payload, so dismissing the toast
+ * stranded the request -- still pending, still counting against the server's
+ * pending cap, and addressable by nobody. This list reads the requests back
+ * from the server instead, so the durable record is the source of truth and a
+ * dismissed notification costs nothing.
+ *
+ * The Allow / Deny controls are the SAME ConsentActions component the
+ * notification renders (source "agent_scope_requests"), so the two surfaces
+ * cannot drift apart in what they send to approve.
+ */
+function PendingScopeRequests({
+  canonicalId,
+  agentLabel,
+}: {
+  canonicalId: string;
+  agentLabel: string;
+}) {
+  const [requests, setRequests] = useState<ScopeRequest[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const loadSeq = useRef(0);
+
+  const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    try {
+      const res = await fetch(
+        `/api/agents/registry/${encodeURIComponent(canonicalId)}/scope-requests?status=pending`,
+        { credentials: "include" },
+      );
+      if (seq !== loadSeq.current) return;
+      if (!res.ok) {
+        // A 404 here is the existence-hiding response for a caller who is
+        // neither the owner nor an admin -- render nothing rather than an
+        // error, since there is no action for them to take.
+        setRequests([]);
+        setErr(res.status === 404 ? null : `Failed to load scope requests (${res.status})`);
+        return;
+      }
+      const data = (await res.json()) as { requests?: ScopeRequest[] };
+      if (seq !== loadSeq.current) return;
+      setRequests(Array.isArray(data.requests) ? data.requests : []);
+      setErr(null);
+    } catch (e: unknown) {
+      if (seq !== loadSeq.current) return;
+      setErr(e instanceof Error ? e.message : "Network error");
+    }
+  }, [canonicalId]);
+
+  useEffect(() => {
+    load();
+    // Refresh on return-to-window rather than on a timer: one poll per agent
+    // per tick would multiply the panel's request rate by the number of
+    // registered agents, and the problem this list solves is durability (the
+    // request outliving its notification), not sub-second latency.
+    const refresh = () => {
+      if (!document.hidden) void load();
+    };
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [load]);
+
+  if (err) {
+    return (
+      <p className="text-[11px] text-red-400" role="alert">
+        {err}
+      </p>
+    );
+  }
+  if (requests.length === 0) return null;
+
+  return (
+    <section
+      className="mt-1 rounded-md border border-amber-500/20 bg-amber-500/[0.06] px-3 py-2"
+      aria-label={`Pending scope requests for ${agentLabel}`}
+    >
+      <h4 className="text-[11px] font-medium uppercase tracking-wide text-amber-300">
+        {requests.length === 1
+          ? "1 pending scope request"
+          : `${requests.length} pending scope requests`}
+      </h4>
+      <ul className="mt-1 flex flex-col gap-2">
+        {requests.map((req) => (
+          <li key={req.id}>
+            {req.reason && (
+              <p className="text-[11px] text-shell-text-secondary">{req.reason}</p>
+            )}
+            <p className="text-[10px] text-shell-text-tertiary">
+              requested {relativeTime(req.created_ts)}
+              {" \u00b7 "}
+              <code className="font-mono">{req.id}</code>
+            </p>
+            <ConsentActions
+              requestId={req.id}
+              canonicalId={req.canonical_id}
+              source="agent_scope_requests"
+              scopes={req.requested_scopes}
+              requestedProjectId={req.project_id ?? undefined}
+              onResolved={load}
+            />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -371,6 +500,12 @@ function RegistryEntryRow({
       </div>
       {err && (
         <p className="text-[11px] text-red-400" role="alert">{err}</p>
+      )}
+      {entry.status === "active" && (isAdmin || isOwner) && (
+        <PendingScopeRequests
+          canonicalId={entry.canonical_id}
+          agentLabel={stripAt(entry.display_name) || entry.canonical_id}
+        />
       )}
     </Card>
   );

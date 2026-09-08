@@ -33,33 +33,38 @@ def test_session_has_dht_disabled(downloader):
     assert settings.get("enable_dht") is False
 
 
-def test_passkey_injected_as_private_tracker(downloader, tmp_path):
-    params = downloader._build_params(MAGNET, tmp_path, passkey="secretpasskey")
+@pytest.mark.asyncio
+async def test_passkey_injected_as_private_tracker(downloader, tmp_path):
+    params = await downloader._build_params(MAGNET, tmp_path, passkey="secretpasskey")
     trackers = [t if isinstance(t, str) else t.url for t in params.trackers]
     assert trackers == ["https://tracker.taos.my/secretpasskey/announce"]
 
 
-def test_web_seeds_added(downloader, tmp_path):
+@pytest.mark.asyncio
+async def test_web_seeds_added(downloader, tmp_path):
     seeds = ["https://huggingface.co/x/resolve/main/model.gguf"]
-    params = downloader._build_params(MAGNET, tmp_path, web_seeds=seeds)
+    params = await downloader._build_params(MAGNET, tmp_path, web_seeds=seeds)
     assert list(params.url_seeds) == seeds
 
 
-def test_no_passkey_leaves_trackers_empty(downloader, tmp_path):
-    params = downloader._build_params(MAGNET, tmp_path)
+@pytest.mark.asyncio
+async def test_no_passkey_leaves_trackers_empty(downloader, tmp_path):
+    params = await downloader._build_params(MAGNET, tmp_path)
     assert list(params.trackers) == []
 
 
-def test_unsupported_source_rejected(downloader, tmp_path):
+@pytest.mark.asyncio
+async def test_unsupported_source_rejected(downloader, tmp_path):
     with pytest.raises(TorrentError):
-        downloader._build_params("ftp://nope/file.torrent", tmp_path)
+        await downloader._build_params("ftp://nope/file.torrent", tmp_path)
 
 
-def test_torrent_url_fetch_parses_metadata(downloader, tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_torrent_url_fetch_parses_metadata(downloader, tmp_path, monkeypatch):
     import libtorrent as lt
 
     # Build a real .torrent for a small file, then serve its bytes via a
-    # monkeypatched httpx.get so _params_from_torrent_url can parse it.
+    # monkeypatched asyncio.to_thread so _params_from_torrent_url can parse it.
     data_file = tmp_path / "weights.bin"
     data_file.write_bytes(b"taosnet-test-weights" * 1024)
 
@@ -76,8 +81,9 @@ def test_torrent_url_fetch_parses_metadata(downloader, tmp_path, monkeypatch):
         def raise_for_status(self):
             return None
 
+    import asyncio
     monkeypatch.setattr(
-        "httpx.get", lambda *a, **k: _Resp(), raising=True
+        "asyncio.to_thread", lambda fn, *a, **k: _Resp(), raising=True
     )
-    params = downloader._params_from_torrent_url("https://taos.my/taosnet/x.torrent")
+    params = await downloader._params_from_torrent_url("https://taos.my/taosnet/x.torrent")
     assert str(params.ti.info_hash()) == expected_ih

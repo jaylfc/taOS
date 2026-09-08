@@ -223,3 +223,63 @@ class TestDeviceRoutes:
         await client.post(f"/api/devices/{blocked_id}/unblock")
         resp = await client.post("/api/devices/register", json={"platform": "ios"})
         assert resp.status_code == 200
+
+    async def test_register_android_accepts_url_push_token(self, client):
+        reg = await client.post(
+            "/api/devices/register",
+            json={"platform": "android", "push_token": "https://example.com/endpoint"},
+        )
+        assert reg.status_code == 200
+        assert reg.json()["push_token"] == "https://example.com/endpoint"
+
+    async def test_register_android_rejects_non_url_push_token(self, client):
+        resp = await client.post(
+            "/api/devices/register",
+            json={"platform": "android", "push_token": "not-a-url"},
+        )
+        assert resp.status_code == 422
+
+    async def test_android_push_token_round_trips_url(self, client, app):
+        reg = (await client.post(
+            "/api/devices/register",
+            json={"platform": "android", "push_token": "https://example.com/old"},
+        )).json()
+        resp = await client.patch(
+            f"/api/devices/{reg['device_id']}/push-token",
+            json={"push_token": "https://example.com/new"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["push_token"] == "https://example.com/new"
+
+    async def test_android_push_token_rejects_non_url_on_patch(self, client, app):
+        reg = (await client.post(
+            "/api/devices/register",
+            json={"platform": "android", "push_token": "https://example.com/ok"},
+        )).json()
+        resp = await client.patch(
+            f"/api/devices/{reg['device_id']}/push-token",
+            json={"push_token": "not-a-url"},
+        )
+        assert resp.status_code == 422
+
+    async def test_register_rejects_loopback_push_endpoint(self, client):
+        resp = await client.post(
+            "/api/devices/register",
+            json={"platform": "android", "push_token": "http://127.0.0.1:7900/a2a/send"},
+        )
+        assert resp.status_code == 400
+
+    async def test_register_rejects_decimal_encoded_loopback(self, client):
+        resp = await client.post(
+            "/api/devices/register",
+            json={"platform": "android", "push_token": "http://2130706433:7900/"},
+        )
+        assert resp.status_code == 400
+
+    async def test_register_accepts_rfc1918_lan_push_endpoint(self, client):
+        resp = await client.post(
+            "/api/devices/register",
+            json={"platform": "android", "push_token": "http://192.168.1.50/ntfy_topic"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["push_token"] == "http://192.168.1.50/ntfy_topic"

@@ -24,6 +24,8 @@ class BrowserWorkerError(Exception):
 IDLE_TIMEOUT_S = 600
 
 BROWSER_SESSIONS_SCHEMA = """
+PRAGMA journal_mode=WAL;
+PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS browser_sessions (
     id           TEXT PRIMARY KEY,
     owner_type   TEXT NOT NULL,

@@ -19,6 +19,7 @@ def test_create_app_registers_routers(tmp_data_dir):
         "/api/cluster/workers",
         "/api/settings/platform",
         "/api/store/app/{app_id}",
+        "/api/containers/requests",
     }
     missing = expected - paths
     assert not missing, f"expected routes missing (router not registered?): {sorted(missing)}"

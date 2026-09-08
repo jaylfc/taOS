@@ -22,6 +22,7 @@ export interface ProjectBoardProps {
   projectId: string;
   currentUserId: string;
   onOpenTask?: (id: string) => void;
+  isLead?: boolean;
   /** When set, the board is scoped to this element and the element filter bar
    *  is hidden (the element is the active filter). Used by element drill-in. */
   elementId?: string | null;
@@ -36,10 +37,12 @@ const MOBILE_COLUMNS: ReadonlyArray<MobileBoardColumn> = [
   { id: "ready", label: "Ready" },
   { id: "claimed", label: "Claimed" },
   { id: "closed", label: "Closed" },
+  { id: "quarantined", label: "Quarantined" },
+  { id: "parked", label: "Parked" },
 ];
-type ColStatus = "ready" | "claimed" | "closed";
+type ColStatus = "ready" | "claimed" | "closed" | "quarantined" | "parked";
 
-export function ProjectBoard({ projectId, currentUserId, onOpenTask, elementId }: ProjectBoardProps) {
+export function ProjectBoard({ projectId, currentUserId, onOpenTask, isLead, elementId }: ProjectBoardProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("lanes");
   const [groupBy, setGroupBy] = useState<GroupBy>("assignee");
   const [filters, setFilters] = useState<Filters>({ ...EMPTY_FILTERS, elementId: elementId ?? null });
@@ -87,6 +90,8 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask, elementId }
     ready: filtered.filter((t) => t.status === "open"),
     claimed: filtered.filter((t) => t.status === "claimed"),
     closed: filtered.filter((t) => t.status === "closed"),
+    quarantined: filtered.filter((t) => t.status === "quarantined"),
+    parked: filtered.filter((t) => t.status === "parked"),
   }), [filtered]);
 
   const lanes = useMemo(() => {
@@ -99,6 +104,8 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask, elementId }
     ready: filtered.filter(t => t.status === "open").length,
     claimed: filtered.filter(t => t.status === "claimed").length,
     closed: filtered.filter(t => t.status === "closed").length,
+    quarantined: filtered.filter(t => t.status === "quarantined").length,
+    parked: filtered.filter(t => t.status === "parked").length,
   }), [filtered]);
 
   const elementNameById = useMemo(
@@ -107,11 +114,12 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask, elementId }
   );
   const showElementBadge = filters.elementId === null;
 
-  const onCardDragStart = (e: DragEvent<HTMLButtonElement>, task: Task) => {
+  const onCardDragStart = (e: DragEvent<HTMLDivElement>, task: Task) => {
     e.dataTransfer.setData("text/plain", task.id);
   };
 
   const dispatchDnd = async (taskId: string, columnStatus: ColStatus, laneKey?: string) => {
+    if (columnStatus === "quarantined" || columnStatus === "parked") return;
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
     const result = dndAction({
@@ -144,18 +152,35 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask, elementId }
     if (moved) setAnnouncement(`Moved ${moved.title} to ${columnStatus}`);
   };
 
-  const renderCard = (t: Task, drag = true) => (
-    <TaskCard
-      key={t.id}
-      task={t}
-      onOpen={(id) => onOpenTask?.(id)}
-      onMove={(id) => setMovePopover(id)}
-      justClaimed={justClaimed === t.id}
-      draggable={drag}
-      elementName={showElementBadge && t.element_id ? (elementNameById[t.element_id] ?? null) : null}
-      onDragStart={drag ? onCardDragStart : undefined}
-    />
-  );
+  const renderCard = (t: Task, drag = true) => {
+    const handleUnquarantine = async () => {
+      if (t.status !== "quarantined" || !isLead) return;
+      try {
+        await projectsApi.tasks.unquarantine(projectId, t.id);
+      } catch (err) {
+        console.error("Unquarantine failed", err);
+        if (err instanceof Error && err.message.includes("409")) {
+          window.alert("This task is no longer quarantined.");
+        } else {
+          window.alert("Could not unquarantine task.");
+        }
+      }
+    };
+    return (
+      <TaskCard
+        key={t.id}
+        task={t}
+        onOpen={(id) => onOpenTask?.(id)}
+        onMove={t.status === "quarantined" || t.status === "parked" ? undefined : (id) => setMovePopover(id)}
+        justClaimed={justClaimed === t.id}
+        draggable={drag && t.status !== "quarantined" && t.status !== "parked"}
+        elementName={showElementBadge && t.element_id ? (elementNameById[t.element_id] ?? null) : null}
+        onDragStart={drag && t.status !== "quarantined" && t.status !== "parked" ? onCardDragStart : undefined}
+        isLead={isLead}
+        onUnquarantine={t.status === "quarantined" && isLead ? handleUnquarantine : undefined}
+      />
+    );
+  };
 
   if (isMobile) {
     return (
@@ -197,11 +222,11 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask, elementId }
       />
       {viewMode === "kanban" ? (
         <div className={styles.cols}>
-          {(["ready", "claimed", "closed"] as ColStatus[]).map(s => {
+          {(["ready", "claimed", "closed", "quarantined", "parked"] as ColStatus[]).map(s => {
             const dataStatus = s === "ready" ? "open" : s;
             const cards = filtered.filter(t => t.status === dataStatus);
             return (
-              <BoardColumn key={s} status={s} count={cards.length} onDropTask={(id) => dispatchDnd(id, s)}>
+              <BoardColumn key={s} status={s} count={cards.length} onDropTask={s === "quarantined" || s === "parked" ? undefined : (id) => dispatchDnd(id, s)}>
                 {cards.map(t => renderCard(t))}
               </BoardColumn>
             );
@@ -214,6 +239,8 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask, elementId }
             <span>Ready · {counts.ready}</span>
             <span>Claimed · {counts.claimed}</span>
             <span>Closed · {counts.closed}</span>
+            <span>Quarantined · {counts.quarantined}</span>
+            <span>Parked · {counts.parked}</span>
           </div>
           {lanes!.map(lane => (
             <BoardLane
@@ -223,6 +250,8 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask, elementId }
                 ready: lane.cards.filter(t => t.status === "open").map(t => renderCard(t)),
                 claimed: lane.cards.filter(t => t.status === "claimed").map(t => renderCard(t)),
                 closed: lane.cards.filter(t => t.status === "closed").map(t => renderCard(t, false)),
+                quarantined: lane.cards.filter(t => t.status === "quarantined").map(t => renderCard(t, false)),
+                parked: lane.cards.filter(t => t.status === "parked").map(t => renderCard(t, false)),
               }}
               onDropTask={(id, status, laneKey) => dispatchDnd(id, status, laneKey)}
             />

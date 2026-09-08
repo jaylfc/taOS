@@ -180,6 +180,18 @@ def promote_model(model: dict) -> bool:
     archive_root_path = manifest_path.parent
     model_files_dir = archive_root_path / model_id
 
+    # Path traversal guard: ensure the resolved model_files_dir stays within the
+    # archive root so a crafted model_id (e.g. "../victim") cannot escape the
+    # archive tree even if target_dir still resolves inside active_root.
+    try:
+        model_files_dir.resolve().relative_to(archive_root_path.resolve())
+    except ValueError:
+        logger.warning(
+            "model_archive: refusing to promote %s — model files dir outside archive root (%s)",
+            model_id, model_files_dir,
+        )
+        return False
+
     # Resolve target directory in the active models tree.
     # Use the backend from the manifest if present; otherwise guess.
     backend = model.get("backend", "uncategorised")
@@ -187,6 +199,19 @@ def promote_model(model: dict) -> bool:
     # The family is derived from the model_id's first token or from the manifest.
     family = model.get("family", model_id.split("-", 1)[0] if "-" in model_id else model_id)
     target_dir = _active_models_root() / backend / family / model_id
+
+    # Path traversal guard: ensure the resolved target stays within the
+    # active models root so a crafted model_id (e.g. "../../etc/passwd")
+    # cannot escape the intended tree.
+    active_root = _active_models_root().resolve()
+    try:
+        target_dir.resolve().relative_to(active_root)
+    except ValueError:
+        logger.warning(
+            "model_archive: refusing to promote %s outside active models root (%s)",
+            model_id, target_dir,
+        )
+        return False
 
     if not model_files_dir.is_dir():
         logger.warning(

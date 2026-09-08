@@ -11,16 +11,30 @@ from tinyagentos.containers import (
 
 class TestParseMemory:
     def test_gb(self):
-        assert _parse_memory("2GB") == 2048
+        # incus reads "GB" as SI: limits.memory=2GB is 2,000,000,000 bytes,
+        # which is 1907 MiB -- not 2 GiB. The old expectation of 2048 encoded
+        # the parser's own GB/GiB conflation.
+        assert _parse_memory("2GB") == 1907
 
     def test_mb(self):
-        assert _parse_memory("512MB") == 512
+        assert _parse_memory("512MB") == 488
+
+    def test_gib(self):
+        # incus renders limits.memory back in IEC; this is what production reads.
+        assert _parse_memory("2GiB") == 2048
+
+    def test_bare_unit_letter(self):
+        # docker's own form -- userspace/container_deploy.py writes "512m".
+        assert _parse_memory("512m") == 512
 
     def test_zero(self):
         assert _parse_memory("0") == 0
 
     def test_empty(self):
         assert _parse_memory("") == 0
+
+    def test_garbage_is_zero(self):
+        assert _parse_memory("not-a-size") == 0
 
 
 class TestListContainers:
@@ -55,7 +69,8 @@ class TestListContainers:
             assert containers[0].name == "taos-agent-naira"
             assert containers[0].status == "Running"
             assert containers[0].ip == "10.0.0.5"
-            assert containers[0].memory_mb == 2048
+            # "2GB" is SI: 2e9 bytes = 1907 MiB.
+            assert containers[0].memory_mb == 1907
 
     @pytest.mark.asyncio
     async def test_handles_incus_failure(self):

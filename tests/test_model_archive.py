@@ -399,6 +399,153 @@ class TestPromoteModel:
         # Manifest remains
         assert (archive_dir / "orphan-model.json").exists()
 
+    def test_promote_rejects_path_traversal_model_id(self, tmp_path: Path, monkeypatch):
+        """A ".." model_id is refused. It escapes the archive root too, so the
+        archive-side guard is the one that trips here — the active-model-root
+        guard is covered separately by
+        :meth:`test_promote_rejects_traversal_outside_active_root`.
+        """
+        archive_dir = tmp_path / "archive"
+        active_dir = tmp_path / "active"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        active_dir.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(
+            "tinyagentos.cluster.model_archive._archive_root",
+            lambda: archive_dir,
+        )
+        monkeypatch.setattr(
+            "tinyagentos.cluster.model_archive._active_models_root",
+            lambda: active_dir,
+        )
+
+        # Write a normal manifest but with a malicious model_id that escapes
+        # the active models root via ".." components.
+        manifest = {
+            "model_id": "../../../etc/passwd",
+            "backend": "llama-cpp",
+            "family": "qwen3",
+            "files": ["model.gguf"],
+            "requirements": {},
+            "archived_at": 1700000000.0,
+        }
+        manifest_path = archive_dir / "evil.json"
+        manifest_path.write_text(json.dumps(manifest))
+        files_dir = archive_dir / "evil"
+        files_dir.mkdir(parents=True, exist_ok=True)
+        (files_dir / "model.gguf").write_text("fake")
+
+        models = list_archived_models(archive_dir)
+        assert len(models) == 1
+        ok = promote_model(models[0])
+        assert ok is False
+
+    def test_promote_rejects_path_traversal_model_files_dir(self, tmp_path: Path, monkeypatch):
+        """A crafted model_id that escapes the archive root for model_files_dir
+        must be rejected even if target_dir still resolves inside active_root."""
+        archive_dir = tmp_path / "archive"
+        active_dir = tmp_path / "active"
+        sibling_dir = tmp_path / "sibling"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        active_dir.mkdir(parents=True, exist_ok=True)
+        sibling_dir.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(
+            "tinyagentos.cluster.model_archive._archive_root",
+            lambda: archive_dir,
+        )
+        monkeypatch.setattr(
+            "tinyagentos.cluster.model_archive._active_models_root",
+            lambda: active_dir,
+        )
+
+        # model_id="../victim" makes target_dir resolve inside active_root
+        # (active/llama-cpp/qwen3/../victim -> active/llama-cpp/victim),
+        # but model_files_dir = archive/../victim = sibling/victim escapes archive.
+        manifest = {
+            "model_id": "../victim",
+            "backend": "llama-cpp",
+            "family": "qwen3",
+            "files": ["model.gguf"],
+            "requirements": {},
+            "archived_at": 1700000000.0,
+        }
+        manifest_path = archive_dir / "evil.json"
+        manifest_path.write_text(json.dumps(manifest))
+        files_dir = sibling_dir / "victim"
+        files_dir.mkdir(parents=True, exist_ok=True)
+        (files_dir / "model.gguf").write_text("fake")
+
+        models = list_archived_models(archive_dir)
+        assert len(models) == 1
+        ok = promote_model(models[0])
+        assert ok is False
+        # Sibling files must NOT be moved
+        assert (sibling_dir / "victim" / "model.gguf").exists()
+
+    @pytest.mark.parametrize(
+        "traversal_field,traversal_value",
+        [("backend", "../outside"), ("family", "../../outside")],
+    )
+    def test_promote_rejects_traversal_outside_active_root(
+        self, tmp_path: Path, monkeypatch, traversal_field: str, traversal_value: str
+    ):
+        """A traversal in ``backend``/``family`` must be refused by the
+        active-model-root guard.
+
+        The ``model_id`` is valid here, so ``model_files_dir`` stays inside the
+        archive root and the archive-side guard passes. Only the active-root
+        guard can reject this, and nothing may be written outside that root.
+        """
+        archive_dir = tmp_path / "archive"
+        active_dir = tmp_path / "active"
+        outside_dir = tmp_path / "outside"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        active_dir.mkdir(parents=True, exist_ok=True)
+        outside_dir.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(
+            "tinyagentos.cluster.model_archive._archive_root",
+            lambda: archive_dir,
+        )
+        monkeypatch.setattr(
+            "tinyagentos.cluster.model_archive._active_models_root",
+            lambda: active_dir,
+        )
+
+        # target_dir is active/<backend>/<family>/<model_id>; enough ".."
+        # segments in the chosen component walk it out to tmp_path/outside/...,
+        # which is outside the active models root.
+        manifest = {
+            "model_id": "qwen3-4b",
+            "backend": "llama-cpp",
+            "family": "qwen3",
+            "files": ["model.gguf"],
+            "requirements": {},
+            "archived_at": 1700000000.0,
+        }
+        manifest[traversal_field] = traversal_value
+        manifest_path = archive_dir / "qwen3-4b.json"
+        manifest_path.write_text(json.dumps(manifest))
+        files_dir = archive_dir / "qwen3-4b"
+        files_dir.mkdir(parents=True, exist_ok=True)
+        (files_dir / "model.gguf").write_text("fake")
+
+        models = list_archived_models(archive_dir)
+        assert len(models) == 1
+        # Sanity: model_files_dir stays inside the archive root, so the
+        # archive-side guard cannot be what rejects this promotion.
+        assert files_dir.resolve().is_relative_to(archive_dir.resolve())
+
+        ok = promote_model(models[0])
+        assert ok is False
+
+        # Nothing was created or moved outside the active models root.
+        assert list(outside_dir.iterdir()) == []
+        # Archive entry is left intact for a later, legitimate promotion.
+        assert manifest_path.exists()
+        assert (files_dir / "model.gguf").read_text() == "fake"
+
 
 # ---------------------------------------------------------------------------
 # Archive root env var override

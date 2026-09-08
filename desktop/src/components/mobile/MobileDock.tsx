@@ -2,6 +2,7 @@ import * as icons from "lucide-react";
 import { useMobileHomeStore } from "@/stores/mobile-home-store";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
+import { useIsSquareViewport } from "@/hooks/use-is-square-viewport";
 
 interface Props {
   onOpenApp: (appId: string) => void;
@@ -30,7 +31,20 @@ export function MobileDock({ onOpenApp, onToggleSwitcher, onOpenLaunchpad, activ
   // content that ends just above it) always clears the home indicator. In PWA
   // mode the inset is non-zero (notch devices); in browser mode it is 0, so we
   // add extra room to keep the dock above Safari's ~50 px URL/tab bar.
-  const dockBaseGap = isBrowserMobile ? 54 : 12;
+  //
+  // That browser reserve is a fixed guess, and on a square screen it is a bad
+  // trade. The root is already sized with 100dvh (see .taos-mobile-root), and
+  // the dynamic viewport unit ALREADY excludes whatever browser chrome is
+  // showing — so the reserve is belt-and-braces on top of a fit that is
+  // correct. On a tall phone the extra 54px is barely noticeable; on a roughly
+  // square display it strands the dock well above the bottom edge, because the
+  // same fixed cost is a much larger share of a much shorter screen.
+  //
+  // So keep the full reserve where it was measured and is cheap, and shrink it
+  // to the PWA gap on square screens, where dvh is doing the real work anyway.
+  const isSquareViewport = useIsSquareViewport();
+  const browserGap = isSquareViewport ? 12 : 54;
+  const dockBaseGap = isBrowserMobile ? browserGap : 12;
   const dockPaddingBottom = `calc(env(safe-area-inset-bottom, 0px) + ${dockBaseGap}px)`;
 
   return (

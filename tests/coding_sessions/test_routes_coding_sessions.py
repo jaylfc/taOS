@@ -3,6 +3,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.app import create_app
+from taos_test_csrf import csrf_event_hooks
 
 
 def _make_body(**overrides):
@@ -47,7 +48,7 @@ async def test_create_returns_starting_status(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         resp = await c.post("/api/coding-sessions", json=_make_body())
         assert resp.status_code == 200
         data = resp.json()
@@ -67,7 +68,7 @@ async def test_invalid_cli_returns_400(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         resp = await c.post("/api/coding-sessions", json=_make_body(cli="vim"))
         assert resp.status_code == 400
         assert "cli" in resp.json()["error"]
@@ -82,7 +83,7 @@ async def test_invalid_launch_target_returns_400(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         resp = await c.post("/api/coding-sessions", json=_make_body(launch_target="docker"))
         assert resp.status_code == 400
         assert "launch_target" in resp.json()["error"]
@@ -97,7 +98,7 @@ async def test_worker_lxc_without_worker_returns_400(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         resp = await c.post("/api/coding-sessions", json=_make_body(
             launch_target="worker-lxc", worker=None
         ))
@@ -114,7 +115,7 @@ async def test_worker_lxc_with_worker_succeeds(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         resp = await c.post("/api/coding-sessions", json=_make_body(
             launch_target="worker-lxc", worker="pi-worker-01"
         ))
@@ -131,7 +132,7 @@ async def test_list_returns_created_session(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         create_resp = await c.post("/api/coding-sessions", json=_make_body())
         sid = create_resp.json()["id"]
 
@@ -150,7 +151,7 @@ async def test_get_returns_session(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         create_resp = await c.post("/api/coding-sessions", json=_make_body())
         sid = create_resp.json()["id"]
         get_resp = await c.get(f"/api/coding-sessions/{sid}")
@@ -167,7 +168,7 @@ async def test_get_missing_returns_404(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         resp = await c.get("/api/coding-sessions/cs-missing")
         assert resp.status_code == 404
     await app.state.coding_session_store.close()
@@ -201,7 +202,7 @@ async def test_non_owner_gets_404(tmp_path):
     # non-existent user_id (the auth middleware will still accept any valid token).
     fake_token = app.state.auth.create_session(user_id="fake-user-id", long_lived=True)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": fake_token}) as c:
+                           cookies={"taos_session": fake_token}, event_hooks=csrf_event_hooks()) as c:
         resp = await c.get(f"/api/coding-sessions/{sid}")
         assert resp.status_code == 404
 
@@ -216,7 +217,7 @@ async def test_stop_transitions_status(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         create_resp = await c.post("/api/coding-sessions", json=_make_body())
         sid = create_resp.json()["id"]
         stop_resp = await c.post(f"/api/coding-sessions/{sid}/stop")
@@ -233,7 +234,7 @@ async def test_archive_transitions_status(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         create_resp = await c.post("/api/coding-sessions", json=_make_body())
         sid = create_resp.json()["id"]
         archive_resp = await c.post(f"/api/coding-sessions/{sid}/archive")
@@ -250,7 +251,7 @@ async def test_list_excludes_archived_by_default(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         s1 = (await c.post("/api/coding-sessions", json=_make_body(alias="active"))).json()
         s2 = (await c.post("/api/coding-sessions", json=_make_body(alias="archived"))).json()
         await c.post(f"/api/coding-sessions/{s2['id']}/archive")
@@ -275,7 +276,7 @@ async def test_create_registers_in_agent_registry(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         resp = await c.post("/api/coding-sessions", json=_make_body(alias="reg-test"))
         assert resp.status_code == 200
         sid = resp.json()["id"]
@@ -301,7 +302,7 @@ async def test_create_succeeds_even_if_registry_unavailable(tmp_path):
     app.state.agent_registry = None
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         resp = await c.post("/api/coding-sessions", json=_make_body(alias="no-registry"))
         assert resp.status_code == 200
         assert resp.json()["status"] == "starting"
@@ -315,7 +316,7 @@ async def test_rename_updates_alias_and_registry(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         create_resp = await c.post("/api/coding-sessions", json=_make_body(alias="old-name"))
         sid = create_resp.json()["id"]
         resp = await c.patch(f"/api/coding-sessions/{sid}", json={"alias": "new-name"})
@@ -364,7 +365,7 @@ async def test_rename_empty_alias_returns_400(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         sid = (await c.post("/api/coding-sessions", json=_make_body())).json()["id"]
         resp = await c.patch(f"/api/coding-sessions/{sid}", json={"alias": "   "})
         assert resp.status_code == 400
@@ -380,7 +381,7 @@ async def test_start_host_folder_runs_and_captures(tmp_path):
     app.state.coding_launcher = _FakeLauncher()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         sid = (await c.post("/api/coding-sessions", json=_make_body())).json()["id"]
         resp = await c.post(f"/api/coding-sessions/{sid}/start")
         assert resp.status_code == 200
@@ -403,7 +404,7 @@ async def test_rename_missing_session_returns_404(tmp_path):
     uid, token = await _make_client(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         resp = await c.patch("/api/coding-sessions/cs-does-not-exist", json={"alias": "x"})
         assert resp.status_code == 404
     await app.state.coding_session_store.close()
@@ -418,7 +419,7 @@ async def test_start_non_host_folder_returns_501(tmp_path):
     app.state.coding_launcher = _FakeLauncher()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         body = _make_body(launch_target="worker-lxc", worker="linstation")
         sid = (await c.post("/api/coding-sessions", json=body)).json()["id"]
         resp = await c.post(f"/api/coding-sessions/{sid}/start")
@@ -435,7 +436,7 @@ async def test_stop_kills_tmux_and_records_status(tmp_path):
     app.state.coding_launcher = _FakeLauncher()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         sid = (await c.post("/api/coding-sessions", json=_make_body())).json()["id"]
         await c.post(f"/api/coding-sessions/{sid}/start")
         resp = await c.post(f"/api/coding-sessions/{sid}/stop")
@@ -454,7 +455,7 @@ async def test_stop_does_not_resurrect_archived_session(tmp_path):
     app.state.coding_launcher = _FakeLauncher()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         sid = (await c.post("/api/coding-sessions", json=_make_body())).json()["id"]
         await c.post(f"/api/coding-sessions/{sid}/archive")
         resp = await c.post(f"/api/coding-sessions/{sid}/stop")
@@ -473,7 +474,7 @@ async def test_start_missing_session_returns_404(tmp_path):
     app.state.coding_launcher = _FakeLauncher()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                           cookies={"taos_session": token}) as c:
+                           cookies={"taos_session": token}, event_hooks=csrf_event_hooks()) as c:
         resp = await c.post("/api/coding-sessions/cs-nope/start")
         assert resp.status_code == 404
     await app.state.coding_session_store.close()

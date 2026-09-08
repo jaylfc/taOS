@@ -1646,9 +1646,13 @@ class TestDeferBindingApproval:
             framework="openclaw",
             display_name="defer-bot",
             user_id="user-existing",
-            origin="taos-deployed",
+            origin="external-selfjoin",
             handle="defer-bot",
         )
+        # external-selfjoin rows seed as "pending" (approval is what activates
+        # them); the defer arm below only triggers for an ACTIVE handle, so flip
+        # this seeded row to active to model the "already approved once" case.
+        await registry.set_status(existing["canonical_id"], "active")
 
         record = await auth_store.create(
             identity_claim="@defer-bot",
@@ -1678,3 +1682,444 @@ class TestDeferBindingApproval:
         await registry.close()
         await auth_store.close()
         await grants.close()
+
+    @pytest.mark.asyncio
+    async def test_defer_with_foreign_active_handle_returns_409_pick_other(
+        self, client, monkeypatch, tmp_path
+    ):
+        """Control: defer_binding=true when the handle already maps to an active
+        FOREIGN-origin identity (taos-deployed) must 409 with 'pick a different
+        identity_claim' and NOT steer the operator at assign-agent — binding a
+        foreign identity via assign-agent is exactly the class this PR closes.
+        Red on pre-e891b7473 code: the old collision_via_normalised guard skips
+        the exact-match row and the defer arm answers with assign-agent."""
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-defer-foreign.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-defer-foreign.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants-defer-foreign.db")
+        await grants.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-defer-foreign")
+
+        existing = await registry.register(
+            framework="openclaw",
+            display_name="defer-bot",
+            user_id="user-existing",
+            origin="taos-deployed",
+            handle="defer-bot",
+        )
+
+        record = await auth_store.create(
+            identity_claim="@defer-bot",
+            framework="defer-cli",
+            requested_scopes=["memory_read"],
+            requested_skills=None,
+            reason="",
+            duration_secs=None,
+            project_id=None,
+        )
+
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(
+            client._transport.app.state, "agent_registry_keypair", (priv, pub)
+        )
+
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={"granted_scopes": ["memory_read"], "defer_binding": True},
+        )
+        assert resp.status_code == 409, resp.text
+        assert "pick a different identity_claim" in resp.text
+        assert "assign-agent" not in resp.text
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+
+
+class TestConsentApproveHandleCollisionGuard:
+    """The consent-approve collision guard must NOT be blind to internal handles.
+
+    Internal driver agents are stored with their RAW sigilled handle
+    (@Hermes, @taOSmd-dev, ...) while the consent-approve path slugifies the
+    claim before lookup. The guard must chain an exact-then-normalised lookup
+    and, on a normalised match owned by a foreign origin (taos-internal,
+    taos-deployed, ...), fail CLOSED with 409 -- never reuse that identity,
+    which would mint a token for the REAL internal canonical_id (impersonation).
+    """
+
+    async def _seed_stores(self, client, monkeypatch, tmp_path, with_project=False):
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-coll.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-coll.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants-coll.db")
+        await grants.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-coll")
+
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(
+            client._transport.app.state, "agent_registry_keypair", (priv, pub)
+        )
+
+        pstore = None
+        pid = None
+        if with_project:
+            from tinyagentos.projects.project_store import ProjectStore
+
+            pstore = ProjectStore(tmp_path / "projects-coll.db")
+            await pstore.init()
+            monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+            project = await pstore.create_project(
+                name="CollProj", slug="coll-proj", created_by="u"
+            )
+            pid = project["id"]
+
+        return {
+            "registry": registry,
+            "auth_store": auth_store,
+            "grants": grants,
+            "priv": priv,
+            "pub": pub,
+            "pstore": pstore,
+            "pid": pid,
+        }
+
+    async def _shutdown(self, stores):
+        for key in ("registry", "auth_store", "grants", "pstore"):
+            s = stores.get(key)
+            if s is not None:
+                await s.close()
+
+    async def _seed_internal(self, registry, handle, slug):
+        """Register an active taos-internal driver identity with a RAW handle."""
+        return await registry.register(
+            framework="taos-internal",
+            display_name=slug,
+            user_id="admin",
+            origin="taos-internal",
+            handle=handle,
+            capabilities=["a2a_send", "a2a_receive"],
+            allow_reserved=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_claim_internal_handle_with_project_scope_409s_and_reuses_not_internal_id(
+        self, client, monkeypatch, tmp_path
+    ):
+        """The trap, routed: an external-selfjoin approval claiming @Hermes (with
+        project_tasks) must 409 and must NOT mint a token for the internal
+        canonical_id. Asserted on the canonical_id/registry/grants, not just the
+        409 status -- a 409 for the wrong reason (e.g. the non-project arm) would
+        still pass a status-only check."""
+        stores = await self._seed_stores(client, monkeypatch, tmp_path, with_project=True)
+        registry = stores["registry"]
+        auth_store = stores["auth_store"]
+        grants = stores["grants"]
+        pid = stores["pid"]
+
+        internal = await self._seed_internal(registry, "@Hermes", "hermes")
+        internal_cid = internal["canonical_id"]
+
+        record = await auth_store.create(
+            identity_claim="@Hermes",
+            framework="openclaw",
+            requested_scopes=["project_tasks"],
+            requested_skills=None,
+            reason="",
+            duration_secs=None,
+            project_id=pid,
+        )
+
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": pid},
+        )
+
+        # The guard must fail CLOSED before the reuse arm can mint a token for
+        # the internal canonical_id.
+        assert resp.status_code == 409, resp.text
+        assert "different origin" in resp.text, resp.text
+
+        # The request must NOT have been accepted -- no token, no canonical_id,
+        # definitely not the internal canonical_id.
+        approved = await auth_store.get(record["id"])
+        assert approved["status"] != "accepted"
+        assert approved["canonical_id"] is None
+        assert approved["token"] is None
+
+        # The internal identity is untouched: still the single active row whose
+        # slugified handle == hermes, and it is NOT the approved canonical_id.
+        from tinyagentos.agent_registry_store import _slugify
+
+        active = await registry.list_all(status="active")
+        hermes_rows = [
+            a for a in active if _slugify(a.get("handle") or "") == "hermes"
+        ]
+        assert len(hermes_rows) == 1
+        assert hermes_rows[0]["canonical_id"] == internal_cid
+        assert hermes_rows[0]["origin"] == "taos-internal"
+
+        # No grant may have been minted on the internal canonical_id for this
+        # project/scope -- the reuse arm never ran.
+        agent_grants = await grants.list_grants(internal_cid)
+        assert not any(
+            g["scope"] == "project_tasks" and g["project_id"] == pid
+            for g in agent_grants
+        ), "internal identity must not receive the approved grant"
+
+        await self._shutdown(stores)
+
+    @pytest.mark.asyncio
+    async def test_claim_internal_handle_global_scope_409s(
+        self, client, monkeypatch, tmp_path
+    ):
+        """Same guard, non-project grant: a global-scope consent claim on an
+        internal handle still fails closed (it would otherwise mint a second
+        active identity under the internal handle)."""
+        stores = await self._seed_stores(client, monkeypatch, tmp_path)
+        registry = stores["registry"]
+        auth_store = stores["auth_store"]
+
+        internal = await self._seed_internal(registry, "@Hermes", "hermes")
+
+        record = await auth_store.create(
+            identity_claim="@Hermes",
+            framework="openclaw",
+            requested_scopes=["memory_read"],
+            requested_skills=None,
+            reason="",
+            duration_secs=None,
+            project_id=None,
+        )
+
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={"granted_scopes": ["memory_read"]},
+        )
+
+        assert resp.status_code == 409, resp.text
+        assert "different origin" in resp.text, resp.text
+
+        from tinyagentos.agent_registry_store import _slugify
+
+        active = await registry.list_all(status="active")
+        hermes_rows = [
+            a for a in active if _slugify(a.get("handle") or "") == "hermes"
+        ]
+        assert len(hermes_rows) == 1
+        assert hermes_rows[0]["canonical_id"] == internal["canonical_id"]
+
+        await self._shutdown(stores)
+
+    @pytest.mark.asyncio
+    async def test_foreign_origin_slug_shaped_handle_is_refused(
+        self, client, monkeypatch, tmp_path
+    ):
+        """A foreign-origin row whose handle is ALREADY its own slug is found by
+        the EXACT lookup, so collision_via_normalised stays False. The guard
+        must key on the matched row's ORIGIN, not on which lookup hit: a
+        taos-deployed agent seeded as 'worker-01' must refuse an external claim
+        for 'worker-01' (409) instead of letting the reuse arm mint a registry
+        JWT for the foreign canonical_id (impersonation). Asserted on the
+        canonical_id/registry/grants, not just the status -- a 409 for the
+        wrong reason (e.g. the non-project arm) would still pass a status-only
+        check."""
+        stores = await self._seed_stores(client, monkeypatch, tmp_path, with_project=True)
+        registry = stores["registry"]
+        auth_store = stores["auth_store"]
+        grants = stores["grants"]
+        pid = stores["pid"]
+
+        # Seed a taos-deployed identity whose handle is ALREADY slug-shaped:
+        # 'worker-01' slugs to itself, so get_by_handle() finds it exactly and
+        # collision_via_normalised never becomes True.
+        foreign = await registry.register(
+            framework="taos-deployed",
+            display_name="worker-01",
+            user_id="admin",
+            origin="taos-deployed",
+            handle="worker-01",
+            capabilities=["a2a_send", "a2a_receive"],
+        )
+        foreign_cid = foreign["canonical_id"]
+
+        record = await auth_store.create(
+            identity_claim="worker-01",
+            framework="openclaw",
+            requested_scopes=["project_tasks"],
+            requested_skills=None,
+            reason="",
+            duration_secs=None,
+            project_id=pid,
+        )
+
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": pid},
+        )
+
+        # The guard must fail CLOSED before the reuse arm can mint a token for
+        # the foreign canonical_id. Assert the identity-level invariant first:
+        # the request must carry no canonical_id / token.
+        approved = await auth_store.get(record["id"])
+        assert approved["canonical_id"] is None
+        assert approved["token"] is None
+        assert approved["status"] != "accepted"
+
+        assert resp.status_code == 409, resp.text
+        assert "different origin" in resp.text, resp.text
+
+        # The foreign identity is untouched: still the single active row whose
+        # slugified handle == worker-01, with its original origin.
+        from tinyagentos.agent_registry_store import _slugify
+
+        active = await registry.list_all(status="active")
+        worker_rows = [
+            a for a in active if _slugify(a.get("handle") or "") == "worker-01"
+        ]
+        assert len(worker_rows) == 1
+        assert worker_rows[0]["canonical_id"] == foreign_cid
+        assert worker_rows[0]["origin"] == "taos-deployed"
+
+        # No grant may have been minted on the foreign canonical_id for this
+        # project/scope -- the reuse arm never ran.
+        agent_grants = await grants.list_grants(foreign_cid)
+        assert not any(
+            g["scope"] == "project_tasks" and g["project_id"] == pid
+            for g in agent_grants
+        ), "foreign identity must not receive the approved grant"
+
+        await self._shutdown(stores)
+
+    @pytest.mark.asyncio
+    async def test_same_origin_reapproval_reuses_existing_identity(
+        self, client, monkeypatch, tmp_path
+    ):
+        """Control: a genuine same-origin (external-selfjoin) re-approval of an
+        already-active handle must still REUSE the identity (200, same
+        canonical_id) -- the fail-closed guard must not fire for a same-origin
+        exact match. This is the case the old blind guard already handled; it must
+        keep working unchanged."""
+        stores = await self._seed_stores(client, monkeypatch, tmp_path, with_project=True)
+        registry = stores["registry"]
+        auth_store = stores["auth_store"]
+        grants = stores["grants"]
+        pstore = stores["pstore"]
+        pid = stores["pid"]
+        pub = stores["pub"]
+
+        # First approval mints the external-selfjoin identity (slugified handle).
+        rA = await auth_store.create(
+            identity_claim="@dev", framework="openclaw",
+            requested_scopes=["project_tasks"], requested_skills=None, reason="",
+            duration_secs=None, project_id=pid,
+        )
+        respA = await client.post(
+            f"/api/agents/auth-requests/{rA['id']}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": pid},
+        )
+        assert respA.status_code == 200, respA.text
+        cid = respA.json()["canonical_id"]
+        assert cid
+
+        created = await registry.get(cid)
+        assert created["origin"] == "external-selfjoin"
+        assert created["handle"] == "dev"
+
+        # Second approval, same handle, second project -> reuse, no 409.
+        pB = await pstore.create_project(name="B", slug="proj-b", created_by="u")
+        rB = await auth_store.create(
+            identity_claim="@dev", framework="openclaw",
+            requested_scopes=["project_tasks"], requested_skills=None, reason="",
+            duration_secs=None, project_id=pB["id"],
+        )
+        respB = await client.post(
+            f"/api/agents/auth-requests/{rB['id']}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": pB["id"]},
+        )
+        assert respB.status_code == 200, respB.text
+        assert respB.json()["canonical_id"] == cid
+
+        # The reuse arm hands back the SAME identity token (sub == cid), not a
+        # fresh identity for this second approval.
+        from tinyagentos.agent_registry_store import verify_registry_token
+
+        approvedB = await auth_store.get(rB["id"])
+        claims = verify_registry_token(approvedB["token"], pub)
+        assert claims.get("sub") == cid
+
+        # Exactly one active identity for the handle -- no duplicate minted.
+        from tinyagentos.agent_registry_store import _slugify
+
+        active = await registry.list_all(status="active")
+        dev_rows = [a for a in active if _slugify(a.get("handle") or "") == "dev"]
+        assert len(dev_rows) == 1
+        assert dev_rows[0]["canonical_id"] == cid
+
+        # Reused identity, so the second approval added a grant on project B.
+        agent_grants = await grants.list_grants(cid)
+        assert any(
+            g["scope"] == "project_tasks" and g["project_id"] == pB["id"]
+            for g in agent_grants
+        )
+
+        await self._shutdown(stores)
+
+    @pytest.mark.asyncio
+    async def test_unrelated_handle_registers_normally(
+        self, client, monkeypatch, tmp_path
+    ):
+        """Control: an unrelated external handle with no collision still
+        registers a fresh identity (no spurious 409)."""
+        stores = await self._seed_stores(client, monkeypatch, tmp_path)
+        registry = stores["registry"]
+        auth_store = stores["auth_store"]
+
+        record = await auth_store.create(
+            identity_claim="@brand-new-agent",
+            framework="openclaw",
+            requested_scopes=["memory_read"],
+            requested_skills=None,
+            reason="",
+            duration_secs=None,
+            project_id=None,
+        )
+
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={"granted_scopes": ["memory_read"]},
+        )
+        assert resp.status_code == 200, resp.text
+        cid = resp.json()["canonical_id"]
+        assert cid
+
+        from tinyagentos.agent_registry_store import _slugify
+
+        active = await registry.list_all(status="active")
+        brand_rows = [
+            a for a in active if _slugify(a.get("handle") or "") == "brand-new-agent"
+        ]
+        assert len(brand_rows) == 1
+        assert brand_rows[0]["canonical_id"] == cid
+
+        await self._shutdown(stores)
+

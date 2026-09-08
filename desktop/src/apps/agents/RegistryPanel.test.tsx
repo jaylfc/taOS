@@ -827,3 +827,119 @@ describe("RegistryPanel fail-open guard", () => {
   });
 });
 
+
+
+/* ------------------------------------------------------------------ */
+/*  Pending scope requests (recoverable without the notification)       */
+/* ------------------------------------------------------------------ */
+
+describe("RegistryPanel pending scope requests", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function makeScopeFetch(
+    scopeResponse: { ok: boolean; status?: number; body?: unknown },
+  ) {
+    return vi.fn().mockImplementation((url: string) => {
+      if (url === "/auth/status") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ user: { is_admin: true, id: "user-1" } }),
+        });
+      }
+      if (url === "/api/agents/registry") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([fakeEntry]),
+        });
+      }
+      if (url.includes("/scope-requests")) {
+        return Promise.resolve({
+          ok: scopeResponse.ok,
+          status: scopeResponse.status ?? (scopeResponse.ok ? 200 : 404),
+          json: () => Promise.resolve(scopeResponse.body ?? {}),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+  }
+
+  it("renders a pending request inline so approval survives a dismissed notification", async () => {
+    const mockFetch = makeScopeFetch({
+      ok: true,
+      body: {
+        requests: [
+          {
+            id: "b315b330bea444c2b02958ebf572a4d7",
+            canonical_id: fakeEntry.canonical_id,
+            requested_scopes: ["memory_read", "a2a_send"],
+            project_id: null,
+            reason: "needs to read its own memory",
+            status: "pending",
+            created_ts: new Date().toISOString(),
+          },
+        ],
+      },
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    render(<RegistryPanel />);
+    const toggle = screen.getByRole("button", { name: /agent registry/i });
+    await act(async () => {
+      toggle.click();
+    });
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole("region", {
+            name: /pending scope requests for taOSmd-dev/i,
+          }),
+        ).toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
+
+    expect(screen.getByText("1 pending scope request")).toBeInTheDocument();
+    expect(screen.getByText("needs to read its own memory")).toBeInTheDocument();
+    // The request_id is on screen, so it is recoverable without the toast.
+    expect(
+      screen.getByText("b315b330bea444c2b02958ebf572a4d7"),
+    ).toBeInTheDocument();
+    // The shared ConsentActions control is what offers Allow / Deny.
+    expect(screen.getByRole("button", { name: "Allow" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Deny" })).toBeInTheDocument();
+
+    // The list is fetched from the server, narrowed to pending.
+    const scopeCalls = mockFetch.mock.calls.filter((c: unknown[]) =>
+      String(c[0]).includes("/scope-requests"),
+    );
+    expect(scopeCalls.length).toBeGreaterThan(0);
+    expect(String(scopeCalls[0][0])).toBe(
+      `/api/agents/registry/${encodeURIComponent(fakeEntry.canonical_id)}/scope-requests?status=pending`,
+    );
+  }, 10_000);
+
+  it("renders nothing (and no error) when the read is refused with the existence-hiding 404", async () => {
+    vi.stubGlobal("fetch", makeScopeFetch({ ok: false, status: 404 }));
+
+    render(<RegistryPanel />);
+    const toggle = screen.getByRole("button", { name: /agent registry/i });
+    await act(async () => {
+      toggle.click();
+    });
+
+    await waitFor(
+      () => {
+        expect(screen.getByText("taOSmd-dev")).toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
+
+    expect(
+      screen.queryByRole("region", { name: /pending scope requests/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  }, 10_000);
+});

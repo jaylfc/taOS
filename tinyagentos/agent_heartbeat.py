@@ -33,6 +33,8 @@ import logging
 import time
 import uuid
 
+from tinyagentos.wake_budget import can_wake, record_scheduled_wake
+
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_INTERVAL = 60  # seconds between agent queue sweeps
@@ -156,6 +158,15 @@ async def _heartbeat_tick(app_state) -> None:
     project_task_store = app_state.project_task_store
     debounce = _debounce_map(app_state)
     now = time.time()
+    data_dir = getattr(app_state, "data_dir", None)
+    # Wake-budget enforcement needs a persistent data_dir to read/write
+    # wake_budget.json. Validate here, at the tick entry, rather than inside the
+    # per-agent try below: a missing data_dir is a fatal misconfiguration, not a
+    # per-agent hiccup, so it must surface at the tick/sweep level (propagates to
+    # the loop's sweep-level handler) instead of being silently logged per agent
+    # and leaving the whole fleet silently unwakeable.
+    if data_dir is None:
+        raise RuntimeError("data_dir is required for wake-budget enforcement")
 
     woke_this_tick = 0
     staggered_seconds = 0.0
@@ -165,6 +176,7 @@ async def _heartbeat_tick(app_state) -> None:
         agent_id = agent.get("id")
         if not agent_id:
             continue
+        woke_with_task = None
         try:
             if await project_task_store.held_task(agent_id) is not None:
                 continue
@@ -173,6 +185,11 @@ async def _heartbeat_tick(app_state) -> None:
                 continue
             task = ready[0]
             if not _should_wake(debounce, agent_id, task["id"], now):
+                continue
+            project_id = task.get("project_id")
+            if not can_wake(
+                data_dir, agent_id, agent.get("name", agent_id), project_id, config
+            ):
                 continue
             # Spread successive wakes within a tick so the downstream LLM turns
             # don't all fire at one instant on a large fleet. Deterministic (not
@@ -187,9 +204,20 @@ async def _heartbeat_tick(app_state) -> None:
             # failed enqueue retries next tick instead of silencing the agent
             # for the whole cooldown.
             if await _wake_agent_with_task(app_state, agent, task):
-                debounce[agent_id] = (task["id"], now)
+                woke_with_task = task
         except Exception:
             logger.exception("heartbeat: tick failed for agent %s", agent.get("name"))
+            continue
+
+        if woke_with_task is not None:
+            # Record the scheduled wake BEFORE stamping the debounce, and
+            # outside the per-agent try/except above. A persistence failure
+            # (disk-full, permission error) must propagate to the sweep-level
+            # handler instead of being swallowed per-agent -- otherwise the
+            # wake was sent but never charged and the agent is silenced for
+            # REWAKE_COOLDOWN on a budget that was never consumed.
+            record_scheduled_wake(data_dir, agent_id, woke_with_task.get("project_id"))
+            debounce[agent_id] = (woke_with_task["id"], now)
 
 
 async def agent_heartbeat_loop(app_state, interval: float = HEARTBEAT_INTERVAL) -> None:

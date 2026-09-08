@@ -70,6 +70,12 @@ CREATE TABLE IF NOT EXISTS agent_knowledge_subscriptions (
 );
 """
 
+_ALLOWED_UPDATE_FIELDS = frozenset({
+    "source_type", "source_url", "source_id", "title", "author", "summary",
+    "content", "media_path", "thumbnail", "categories", "tags", "metadata",
+    "status", "monitor", "updated_at", "user_id",
+})
+
 
 def _row_to_item(row: tuple) -> dict:
     return {
@@ -221,6 +227,8 @@ class KnowledgeStore(BaseStore):
         set_clauses = []
         params = []
         for k, v in fields.items():
+            if k not in _ALLOWED_UPDATE_FIELDS:
+                raise ValueError(f"unknown column: {k!r}")
             set_clauses.append(f"{k} = ?")
             params.append(json.dumps(v) if k in json_fields else v)
         set_clauses.append("updated_at = ?")
@@ -230,13 +238,19 @@ class KnowledgeStore(BaseStore):
             f"UPDATE knowledge_items SET {', '.join(set_clauses)} WHERE id = ?",
             params,
         )
-        # Sync FTS for content-bearing fields
+        # Sync FTS for content-bearing fields.  knowledge_fts is a standalone
+        # (non-external-content) FTS5 table, so INSERT OR REPLACE does not
+        # de-duplicate: it appends a new row each time and stale text remains
+        # searchable.  Delete first, then insert, within this same transaction.
         fts_fields = {"title", "content", "summary", "author"}
         if fts_fields & set(fields.keys()):
             item = await self.get_item(item_id)
             if item:
                 await self._db.execute(
-                    "INSERT OR REPLACE INTO knowledge_fts (id, title, content, summary, author) VALUES (?,?,?,?,?)",
+                    "DELETE FROM knowledge_fts WHERE id = ?", (item_id,)
+                )
+                await self._db.execute(
+                    "INSERT INTO knowledge_fts (id, title, content, summary, author) VALUES (?,?,?,?,?)",
                     (item_id, item["title"], item["content"], item["summary"], item["author"]),
                 )
         await self._db.commit()
@@ -333,7 +347,7 @@ class KnowledgeStore(BaseStore):
                        content, media_path, thumbnail, categories, tags, metadata,
                        status, monitor, created_at, updated_at, user_id
                 FROM knowledge_items
-                WHERE (title LIKE ? OR content LIKE ? OR summary LIKE ?) AND user_id = ?
+                WHERE (title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\') AND user_id = ?
                 ORDER BY created_at DESC LIMIT ?
             """
         else:
@@ -355,7 +369,7 @@ class KnowledgeStore(BaseStore):
                        content, media_path, thumbnail, categories, tags, metadata,
                        status, monitor, created_at, updated_at, user_id
                 FROM knowledge_items
-                WHERE title LIKE ? OR content LIKE ? OR summary LIKE ?
+                WHERE title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\'
                 ORDER BY created_at DESC LIMIT ?
             """
         try:
@@ -363,7 +377,8 @@ class KnowledgeStore(BaseStore):
             rows = await cursor.fetchall()
         except Exception:
             # Fallback to LIKE when FTS query syntax is invalid
-            pattern = f"%{query}%"
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped}%"
             cursor = await self._db.execute(fallback_sql, fallback_params_fn(pattern))
             rows = await cursor.fetchall()
         return [_row_to_item(r) for r in rows]

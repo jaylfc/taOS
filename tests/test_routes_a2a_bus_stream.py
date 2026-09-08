@@ -253,6 +253,42 @@ class TestBusStreamProxy:
 
 
 @pytest.mark.asyncio
+class TestStreamInputValidation:
+    async def test_stream_since_rejects_non_finite_cursors(self, agent_app, client):
+        """`since` is a message ts, not an id. A NaN/inf cursor must not be
+        forwarded to the bus -- the same silent-empty-window defect that was
+        fixed on the sibling messages endpoint must not exist here."""
+        _, token = await _mint_agent(agent_app, scopes=("a2a_receive",))
+        for bad in ("nan", "NaN", "inf", "-inf", "Infinity"):
+            resp = await client.get(
+                "/api/a2a/bus/stream",
+                params={"channel": "general", "since": bad},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 400, f"{bad} was accepted as a cursor"
+            assert "finite" in resp.json()["error"]
+
+    async def test_stream_unknown_query_param_is_400(self, agent_app, client):
+        """An ignored cursor param is indistinguishable from one that works.
+
+        Measured on the live proxy before the fix on the messages endpoint:
+        `since_id=2430` was silently dropped and returned 500 messages starting
+        at id 1890. The stream endpoint must reject unknown params for the same
+        reason."""
+        _, token = await _mint_agent(agent_app, scopes=("a2a_receive",))
+        for bad in ("since_id", "after", "from_id"):
+            resp = await client.get(
+                "/api/a2a/bus/stream",
+                params={"channel": "general", bad: "2430"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 400, f"{bad} was accepted"
+            body = resp.json()
+            assert bad in body["error"]
+            assert "since" in body["hint"]
+
+
+@pytest.mark.asyncio
 class TestMessagesSincePassthrough:
     async def test_messages_forwards_since(self, agent_app, client):
         payload = {"messages": [{"id": "m1", "ts": 1, "from": "a", "body": "hi"}]}

@@ -25,6 +25,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from packaging.version import InvalidVersion, Version
+
 import tinyagentos
 
 logger = logging.getLogger(__name__)
@@ -125,57 +127,62 @@ def save_config(state_dir: Path, config: WorkerUpdateConfig) -> None:
         logger.debug("Failed to save update-check config", exc_info=True)
 
 
-def _parse_version(version_str: str) -> tuple[int, ...]:
-    """Parse a version string like '1.0.0-beta.40' into a numeric tuple.
+def _parse_version(version_str: str) -> Version | None:
+    """Parse a version string like '1.0.0-beta.40' into a PEP 440 ``Version``.
 
-    Pre-release markers are stripped for comparison; only the numeric
-    components are kept. Returns an empty tuple on parse failure.
+    ``packaging`` accepts the release-train form taOS publishes (it normalises
+    '1.0.0-beta.50' to 1.0.0b50) as well as a leading 'v' and surrounding
+    whitespace, and it orders pre-releases against each other and against the
+    GA of the same release. Returns None when the string is not a version at
+    all, so callers degrade to "no update" instead of guessing an ordering.
     """
     try:
-        # Strip 'v' prefix (single leading 'v' or 'V' only)
-        v = version_str.strip()
-        if v.startswith("v") or v.startswith("V"):
-            v = v[1:]
-        # Take only the portion before any '-' or '+'
-        v = v.split("-")[0].split("+")[0]
-        parts = [int(p) for p in v.split(".") if p]
-        return tuple(parts) if parts else ()
-    except (ValueError, TypeError):
-        return ()
+        return Version(version_str)
+    except (InvalidVersion, TypeError):
+        return None
 
 
 def is_newer_version(latest: str, current: str) -> bool:
     """True if *latest* is strictly newer than *current*.
 
-    Compares numeric components only; pre-release markers are ignored.
-    A version with fewer components is padded with zeros for comparison.
-    Returns False when either string is unparseable.
+    Full PEP 440 ordering, so beta.51 is newer than beta.50 and the GA of a
+    release is newer than any of its pre-releases. A version with fewer
+    components is zero-padded ('1.2' == '1.2.0'). Returns False when either
+    string is unparseable.
     """
-    latest_parts = _parse_version(latest)
-    current_parts = _parse_version(current)
-    if not latest_parts or not current_parts:
+    latest_version = _parse_version(latest)
+    current_version = _parse_version(current)
+    if latest_version is None or current_version is None:
         return False
-    # Pad shorter tuple with zeros
-    max_len = max(len(latest_parts), len(current_parts))
-    l = list(latest_parts) + [0] * (max_len - len(latest_parts))
-    c = list(current_parts) + [0] * (max_len - len(current_parts))
-    for lp, cp in zip(l, c):
-        if lp > cp:
-            return True
-        if lp < cp:
-            return False
-    return False  # equal
+    return latest_version > current_version
 
 
 def _channel_from_version(version: str) -> str:
     """Infer the channel from a version string.
 
-    Returns 'dev', 'beta', or 'stable' based on pre-release markers.
+    Returns 'dev', 'beta', or 'stable' from the parsed pre-release segments
+    rather than by searching the raw string for those words -- a substring
+    match classified a GA release carrying build metadata such as
+    '1.0.0+devbuild' as a dev build and withheld it from everyone else.
+    An unparseable version belongs to no published channel, so it is reported
+    as 'dev' and only the catch-all channel accepts it. That withholds it from
+    stable- and beta-channel workers, which is the safe direction but is
+    invisible from the outside, so the parse failure is logged rather than
+    swallowed.
     """
-    v = version.strip().lower()
-    if "dev" in v:
+    v = _parse_version(version)
+    if v is None:
+        logger.debug(
+            "update check: version %r is not a PEP 440 version; "
+            "treating it as the dev channel",
+            version,
+        )
         return "dev"
-    if "beta" in v or "alpha" in v or "rc" in v:
+    if v.is_devrelease:
+        return "dev"
+    # is_prerelease covers every PEP 440 pre-release spelling -- alpha/a,
+    # beta/b, c, rc, pre and preview all normalise to a, b or rc.
+    if v.is_prerelease:
         return "beta"
     return "stable"
 

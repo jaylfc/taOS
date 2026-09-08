@@ -48,6 +48,9 @@ def register_all_routers(app):
     from tinyagentos.routes.agents import router as agents_router
     app.include_router(agents_router, dependencies=_csrf)
 
+    from tinyagentos.routes.agent_versions import router as agent_versions_router
+    app.include_router(agent_versions_router, dependencies=_csrf)
+
     from tinyagentos.routes.librarian import router as librarian_router
     app.include_router(librarian_router, dependencies=_csrf)
 
@@ -179,6 +182,9 @@ def register_all_routers(app):
 
     from tinyagentos.routes.agent_workspace import router as agent_workspace_router
     app.include_router(agent_workspace_router, dependencies=_csrf)
+
+    from tinyagentos.routes.agent_desktop import router as agent_desktop_router
+    app.include_router(agent_desktop_router, dependencies=_csrf)
 
     from tinyagentos.routes.project_files import router as project_files_router
     app.include_router(project_files_router, dependencies=_csrf)
@@ -381,6 +387,9 @@ def register_all_routers(app):
     from tinyagentos.routes.account_proxy import router as account_proxy_router
     app.include_router(account_proxy_router, dependencies=_csrf)
 
+    from tinyagentos.routes.taosgo import router as taosgo_router
+    app.include_router(taosgo_router, dependencies=_csrf)
+
     # Local hub API (hub social slice 2): the node's own profile + object store.
     from tinyagentos.routes.hub import router as hub_router
     app.include_router(hub_router, dependencies=_csrf)
@@ -417,6 +426,9 @@ def register_all_routers(app):
 
     from tinyagentos.routes.agent_images import router as agent_images_router
     app.include_router(agent_images_router, dependencies=_csrf)
+
+    from tinyagentos.routes.container_requests import router as container_requests_router
+    app.include_router(container_requests_router, dependencies=_csrf)
 
     from tinyagentos.routes.notes import router as notes_router
     app.include_router(notes_router, dependencies=_csrf)

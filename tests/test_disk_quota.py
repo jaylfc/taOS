@@ -342,6 +342,48 @@ class TestDefaultQuota:
 
 
 # ------------------------------------------------------------------
+# _sample_usage strategy chain: _sample_btrfs_qgroup and
+# _sample_incus_info share the same section-aware parser, so they can
+# never disagree on a given `incus info` output. Whenever the parser
+# finds nothing, the two strategies must not both spend a subprocess
+# call proving that (tsk-j67fpt fold, #2783 [4]).
+# ------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestSampleUsageIncusInfoCallCount:
+    async def test_incus_info_invoked_once_when_no_disk_usage_data(self):
+        agent = {"name": "alice", "disk_quota_gib": 40}
+        cfg = _make_config([agent])
+        notif = _make_notif()
+        backend = _make_backend()
+        monitor = DiskQuotaMonitor(cfg, backend, notif)
+
+        calls: list[list[str]] = []
+
+        async def fake_run(cmd, timeout=None):
+            calls.append(cmd)
+            if cmd[:2] == ["incus", "info"]:
+                # No "Disk usage" section at all -- e.g. a non-btrfs pool.
+                return 0, "Name: alice\nStatus: Running\n"
+            if cmd[:2] == ["incus", "exec"]:
+                return 0, (
+                    "Filesystem     1G-blocks  Used Available Use% Mounted on\n"
+                    "/dev/sda1            40G   10G       30G  25% /\n"
+                )
+            return 1, ""
+
+        with patch("tinyagentos.disk_quota._run", side_effect=fake_run):
+            used_gib = await monitor._sample_usage("taos-agent-alice")
+
+        assert used_gib == 10.0
+        incus_info_calls = [c for c in calls if c[:2] == ["incus", "info"]]
+        assert len(incus_info_calls) == 1, (
+            f"expected exactly one `incus info` call before falling back to "
+            f"df, got {len(incus_info_calls)}: {incus_info_calls}"
+        )
+
+
+# ------------------------------------------------------------------
 # CLI data_dir resolution — must be install-dir relative, not a
 # hardcoded /opt/tinyagentos literal and not $HOME-dependent.
 # ------------------------------------------------------------------

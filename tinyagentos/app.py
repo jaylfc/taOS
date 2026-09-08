@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -120,8 +121,8 @@ PROJECT_DIR = Path(__file__).parent.parent
 # Paths that must remain accessible before startup completes (health checks,
 # static assets, auth endpoints).  Everything else gets 503 until the lifespan
 # finishes its init sequence.
-_STARTUP_EXEMPT_PATHS = frozenset({"/api/health", "/api/version"})
-_STARTUP_EXEMPT_PREFIXES = ("/static/", "/desktop/", "/chat-pwa/", "/ws/", "/auth/", "/setup", "/shortcut/")
+_STARTUP_EXEMPT_PATHS = frozenset({"/api/health", "/api/version", "/setup"})
+_STARTUP_EXEMPT_PREFIXES = ("/static/", "/desktop/", "/chat-pwa/", "/ws/", "/auth/", "/setup/", "/shortcut/")
 
 from tinyagentos.task_utils import _create_supervised_task, cancel_and_wait  # noqa: E402
 
@@ -178,6 +179,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             import shutil
             shutil.copy2(example, config_path)
     config = load_config(config_path)
+    controller_port = int(os.environ.get("TAOS_PORT", config.server.get("port", 6969)))
 
     # Sweep config.backends for duplicates accumulated over restarts —
     # auto-register and the manual /api/providers POST both write here,
@@ -283,6 +285,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.auth_requests_store import AuthRequestsStore
     auth_requests_store = AuthRequestsStore(data_dir / "auth_requests.db")
+    from tinyagentos.password_reset_store import PasswordResetStore
+    password_reset_store = PasswordResetStore(data_dir / "password_resets.db")
     from tinyagentos.agent_scope_requests_store import AgentScopeRequestsStore
     agent_scope_requests_store = AgentScopeRequestsStore(data_dir / "agent_scope_requests.db")
     from tinyagentos.agent_grants_store import AgentGrantsStore
@@ -390,6 +394,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     local_token = local_token_path.read_text().strip() if local_token_path.exists() else None
     llm_proxy = LLMProxy(
         port=config.server.get("litellm_port", 7834),
+        controller_port=controller_port,
         database_url=db_url,
         local_token=local_token,
         # registry lets generate_litellm_config register installed local
@@ -454,6 +459,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.coding_sessions.store import CodingSessionStore
     coding_session_store = CodingSessionStore(data_dir / "coding_sessions.db")
     coding_launcher = CodingSessionLauncher()
+
+    from tinyagentos.container_requests_store import ContainerRequestStore
+    container_request_store = ContainerRequestStore(data_dir / "container_requests.db")
     projects_root = data_dir / "projects"
     chat_hub = ChatHub()
     canvas_store = CanvasStore(data_dir / "canvas.db")
@@ -464,6 +472,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     device_pair_requests_store = DevicePairRequestsStore(data_dir / "device_pair_requests.db")
     from tinyagentos.push.apns import apns_sender_from_env
     apns_sender = apns_sender_from_env()
+    from tinyagentos.push.unifiedpush import NullUnifiedPushSender
+    unifiedpush_sender = NullUnifiedPushSender()
     user_memory = UserMemoryStore(data_dir / "user_memory.db")
     user_personas = UserPersonaStore(data_dir / "user_personas.db")
     installed_apps = InstalledAppsStore(data_dir / "installed_apps.db")
@@ -532,6 +542,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state._startup_complete = False
         await agent_registry_store.init()
         await auth_requests_store.init()
+        await password_reset_store.init()
         await agent_scope_requests_store.init()
         await agent_grants_store.init()
         app.state.agent_grants = agent_grants_store
@@ -649,6 +660,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.todo_store = todo_store
         await coding_session_store.init()
         app.state.coding_launcher = coding_launcher
+        await container_request_store.init()
         projects_root.mkdir(parents=True, exist_ok=True)
         await canvas_store.init()
         await desktop_settings.init()
@@ -1072,8 +1084,38 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             ),
             name="local-heartbeat",
         )
+        # After the first probe, mark auto-managed backends that are not
+        # currently reachable as "stopped" so the scheduler knows to start
+        # them on demand rather than treating them as permanently broken.
+        # tsk-xjwolt: BackendCatalog.start() no longer blocks on the first
+        # probe, so this reconcile runs once via a one-shot subscriber
+        # instead of reading the (still-empty) entries dict immediately after
+        # start() returns. It has to be defined HERE, above the subscribe()
+        # call: a nested def is a local binding of lifespan(), so naming it
+        # any earlier raises UnboundLocalError and fails app startup.
+        _lifecycle_reconciled = {"done": False}
+
+        async def _reconcile_auto_manage_lifecycle() -> None:
+            """Reconcile auto-managed backend lifecycle state, once, against
+            the first completed probe pass."""
+            if _lifecycle_reconciled["done"]:
+                return
+            _lifecycle_reconciled["done"] = True
+            for _entry in backend_catalog.backends():
+                _b_conf = next(
+                    (b for b in config.backends if b["name"] == _entry.name), {}
+                )
+                if _b_conf.get("auto_manage") and _entry.status != "ok":
+                    backend_catalog.set_lifecycle_state(_entry.name, "stopped")
+
         # Start the live backend catalog — everything that asks "what's
         # available?" reads from this rather than the filesystem.
+        # tsk-xjwolt: start() does NOT block on the first probe anymore.
+        # Unreachable backends would otherwise stack their connect timeouts
+        # before :6969 can accept a single request. Probes run in the
+        # background; subscribe() is registered before start() so the very
+        # first probe pass cannot fire past an unregistered subscriber.
+        backend_catalog.subscribe(_reconcile_auto_manage_lifecycle)
         try:
             await backend_catalog.start()
         except Exception:
@@ -1108,8 +1150,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # can call it after each write.
         app.state.trace_registry.set_emitter(_otel_emitter)
         # Phase 4: reasoning judge — fire on lifecycle session_end.
+        from tinyagentos.litellm_config import get_litellm_master_key
         from tinyagentos.otel.judge import ReasoningJudge
-        _judge = ReasoningJudge(litellm_base_url=f"http://localhost:{app.state.llm_proxy.port}/v1")
+        _judge = ReasoningJudge(
+            litellm_base_url=f"http://localhost:{app.state.llm_proxy.port}/v1",
+            litellm_api_key=get_litellm_master_key(data_dir),
+        )
         app.state.trace_registry.set_judge(_judge)
 
         # Bridge session registry — per-agent queue + accumulator for openclaw.
@@ -1122,16 +1168,6 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             archive=getattr(app.state, "archive", None),
         )
         app.state.bridge_sessions._router = app.state.agent_chat_router
-
-        # After the first probe, mark auto-managed backends that are not
-        # currently reachable as "stopped" so the scheduler knows to start
-        # them on demand rather than treating them as permanently broken.
-        for _entry in backend_catalog.backends():
-            _b_conf = next(
-                (b for b in config.backends if b["name"] == _entry.name), {}
-            )
-            if _b_conf.get("auto_manage") and _entry.status != "ok":
-                backend_catalog.set_lifecycle_state(_entry.name, "stopped")
 
         # Joined view of the registry cache + live catalog probes.
         # Used by the Store / Dashboard / Models routes instead of
@@ -1338,7 +1374,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 targets=["broadcast"],
                 payload=row,
             )
-            await app.state.event_bus.broadcast(ev)
+            user_id = row.get("user_id")
+            if user_id:
+                await app.state.event_bus.publish_to(f"user:{user_id}", ev)
+            else:
+                await app.state.event_bus.broadcast(ev)
 
         notif_store.set_event_emitter(_notify_emitter)
 
@@ -1349,7 +1389,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # startup, and the sender itself is dispatched off-loop inside add().
         try:
             from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
-            from tinyagentos.notifications_push import send_web_push
+            from tinyagentos.notifications_push import send_web_push, send_device_push
 
             app.state.notif_vapid_keypair = load_or_create_vapid_keypair(
                 data_dir, filename="notif_vapid.pem"
@@ -1360,6 +1400,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                     row,
                     store=app.state.notif_push_store,
                     vapid=app.state.notif_vapid_keypair,
+                )
+                await send_device_push(
+                    row,
+                    device_store=app.state.device_store,
+                    apns_sender=app.state.apns_sender,
+                    up_sender=app.state.unifiedpush_sender,
                 )
 
             notif_store.set_push_sender(_web_push_sender)
@@ -1493,6 +1539,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 await _apns.aclose()
             except Exception:
                 logger.exception("apns sender aclose failed")
+        _up = getattr(app.state, "unifiedpush_sender", None)
+        if _up is not None and hasattr(_up, "aclose"):
+            try:
+                await _up.aclose()
+            except Exception:
+                logger.exception("unifiedpush sender aclose failed")
         await canvas_store.close()
         try:
             bb = getattr(app.state, "beads_bridge", None)
@@ -1545,6 +1597,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await license_acceptances_store.close()
         await agent_model_key_store.close()
         await auth_requests_store.close()
+        await password_reset_store.close()
         await cluster_pairing_store.close()
         await agent_registry_store.close()
         await github_identities_store.close()
@@ -1590,7 +1643,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             status_code=503,
         )
 
-    # Auth middleware — must be added before GZip so it runs first
+    # Auth middleware -- added first so it is innermost. Starlette builds the
+    # middleware stack in reverse add order (last added is outermost), so the
+    # first-added middleware wraps the route last in the request chain, keeping
+    # Auth sitting between the route and every downstream header/compression/
+    # cookie layer.
     from tinyagentos.auth_middleware import AuthMiddleware
     app.add_middleware(AuthMiddleware)
 
@@ -1600,11 +1657,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.middleware.security_headers import SecurityHeadersMiddleware
     app.add_middleware(SecurityHeadersMiddleware)
 
+    # GZip compression for faster transfers on slow SD card / network.
+    # Added BEFORE CSRF so it is innermost to the cookie-setting layer: the
+    # body is compressed but Set-Cookie headers are not (BREACH precondition).
+    app.add_middleware(GZipMiddleware, minimum_size=500)
+
     from tinyagentos.middleware.csrf import CSRFMiddleware
     app.add_middleware(CSRFMiddleware)
-
-    # GZip compression for faster transfers on slow SD card / network
-    app.add_middleware(GZipMiddleware, minimum_size=500)
 
     # Startup guard — return 503 for non-exempt requests that arrive before
     # the lifespan has finished initialising app state.  Added last so it is
@@ -1631,6 +1690,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             return await call_next(request)
 
     app.add_middleware(_StartupGuardMiddleware)
+
+    # Upload body caps — added last so it is the outermost layer and the cap is
+    # armed before anything downstream (FastAPI's multipart parsing included)
+    # pulls a byte of the body. See the module docstring for why a route-level
+    # read(cap + 1) is too late to stop the spooling.
+    from tinyagentos.middleware.upload_body_limit import UploadBodyLimitMiddleware
+    app.add_middleware(UploadBodyLimitMiddleware)
 
     # _background_tasks collects all fire-and-forget asyncio.Task handles so
     # they can be cancelled on shutdown and exceptions can be logged.
@@ -1709,6 +1775,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.shared_docs_store = shared_docs_store
     app.state.todo_store = todo_store
     app.state.coding_session_store = coding_session_store
+    app.state.container_request_store = container_request_store
+    from tinyagentos.containers.provisioning_policy import PolicyConfig, ProvisioningPolicy
+    app.state.provisioning_policy = ProvisioningPolicy(
+        PolicyConfig.from_app_config(config)
+    )
     app.state.beads_bridge = None
     app.state.canvas_snapshotter = None
     projects_root.mkdir(parents=True, exist_ok=True)
@@ -1723,6 +1794,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.device_store = device_store
     app.state.device_pair_requests = device_pair_requests_store
     app.state.apns_sender = apns_sender
+    app.state.unifiedpush_sender = unifiedpush_sender
     app.state.user_memory = user_memory
     app.state.user_personas = user_personas
     app.state.installed_apps = installed_apps
@@ -1769,6 +1841,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.agent_registry_keypair = agent_registry_keypair
     app.state.agent_model_keys = agent_model_key_store
     app.state.auth_requests = auth_requests_store
+    app.state.password_reset = password_reset_store
     app.state.agent_scope_requests = agent_scope_requests_store
     app.state.agent_grants = agent_grants_store
     app.state.app_grants = app_grants_store
@@ -1884,13 +1957,25 @@ def main():
         host=config.server.get("host", "0.0.0.0"),
         port=config.server.get("port", 6969),
         backlog=128,
+        server_header=False,
     )
 
 
 def gui():
     """Launch the TinyAgentOS web UI in a browser window."""
     import subprocess
+    import sys
     import webbrowser
+
+    spa_index = PROJECT_DIR / "static" / "desktop" / "index.html"
+    if not spa_index.exists():
+        print(
+            "Desktop shell not built -- the SPA bundle is missing. "
+            "Run: cd desktop && npm run build",
+            file=sys.stderr,
+        )
+        raise SystemExit(503)
+
     port = 6969
     url = f"http://localhost:{port}"
     # Try Chromium in app mode first (cleanest look), fall back to default browser

@@ -403,7 +403,9 @@ for T0, verified by a test that a guest node cannot reach a second node); persis
 after contact-revoke (cascade is transactional: contact row, peer link,
 memberships, sponsored identities, outbox purge).
 
-**Rate limits:** peer routes 60 req/min/contact, chat 600 msgs/day/contact,
+**Rate limits:** peer routes 60 req/min/contact (a moving window from the
+shared `tinyagentos/rate_limit.py`; the 429 carries `Retry-After`),
+chat 600 msgs/day/contact,
 pending delegation requests at most 3/contact (mirrors invite pending-cap 10
 spirit), envelope size at most 32KB. Hub relay: at most 200 queued
 envelopes/recipient.
@@ -427,6 +429,9 @@ lane (real build/test CI, fork-approval rules apply), FLEET = free-model builder
 - A1 LEAD: `contacts_store` plus `peer_links` plus envelope sign/verify plus peer
   route family plus rate limits.
 - A2 LEAD: friend-accept to contact-row plus handshake wiring (hub subscription).
+  **Deviation:** the peer-link token is minted locally without hub delivery —
+  the token exchange requires both instances to be online simultaneously, which
+  is acceptable for a pilot and avoids hub-trust assumptions for bearer tokens.
 - A3 HOGNEK: hub sealed-envelope relay endpoints on taos.my (T1, not pilot-blocking,
   can trail).
 - A4 FLEET (cards): ContactsApp taOS section UI; presence dots; request

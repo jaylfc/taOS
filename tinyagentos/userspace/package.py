@@ -6,6 +6,7 @@ from pathlib import Path
 
 import yaml
 
+from tinyagentos.safe_archive import ArchiveError, check_zip_limits
 from tinyagentos.userspace.capabilities import (
     KNOWN_CAPS,
     NET_ORIGIN_RE,
@@ -21,10 +22,8 @@ from tinyagentos.userspace.capabilities import (
 _ALLOWED_TYPES = {"web", "container", "tui"}
 _REQUIRED = ("id", "name", "version", "app_type")
 
-# Zip-bomb defenses: cap the declared uncompressed total, per-member size, and count.
-_MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
-_MAX_MEMBER_BYTES = 64 * 1024 * 1024
-_MAX_MEMBERS = 10000
+# Zip-bomb defenses live in tinyagentos/safe_archive.py, shared with the theme
+# package and backup-restore extractors.
 
 
 class PackageError(Exception):
@@ -129,18 +128,12 @@ def extract_package(data: bytes, apps_root: Path) -> dict:
         zf = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as exc:
         raise PackageError("not a valid .taosapp (zip) archive") from exc
-    infos = zf.infolist()
-    if len(infos) > _MAX_MEMBERS:
-        raise PackageError(f"package has too many files ({len(infos)} > {_MAX_MEMBERS})")
-    total_uncompressed = 0
-    for zi in infos:
-        if zi.file_size > _MAX_MEMBER_BYTES:
-            raise PackageError(f"package member too large: {zi.filename}")
-        total_uncompressed += zi.file_size
-    if total_uncompressed > _MAX_UNCOMPRESSED_BYTES:
-        raise PackageError(
-            f"package uncompressed size too large ({total_uncompressed} bytes)"
-        )
+    # Checked against the central directory before any zf.read(): read()
+    # inflates the declared size straight into memory.
+    try:
+        check_zip_limits(zf, kind="package")
+    except ArchiveError as exc:
+        raise PackageError(str(exc)) from exc
     try:
         manifest = parse_manifest(zf.read("manifest.yaml").decode("utf-8"))
     except KeyError as exc:

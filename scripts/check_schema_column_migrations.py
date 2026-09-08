@@ -1,0 +1,725 @@
+#!/usr/bin/env python3
+"""Static guard for SCHEMA-only column adds with no migration (tsk-hrzgip).
+
+``BaseStore.init()`` runs a store's ``SCHEMA`` string (CREATE TABLE + CREATE
+INDEX) at boot. ``CREATE TABLE IF NOT EXISTS`` is a no-op on existing
+databases, so a new column added straight into the ``CREATE TABLE`` body is
+silently absent on upgrade. The first INSERT or SELECT that touches it then
+crashes with ``table <t> has no column named <c>`` on every existing install.
+This is the brick that the two existing migration guards cannot see, because
+neither has a migration entry to inspect (taOS PR #2416 proved both clean on
+exactly this case).
+
+The mandated pattern is a guarded ``_post_init`` coroutine: ``PRAGMA
+table_info`` check + ``ALTER TABLE <t> ADD COLUMN <c>`` only when absent.
+
+This script statically inspects every Python file under ``tinyagentos/`` and
+flags, for every CREATE TABLE in a SCHEMA string: a column that
+
+  (a) is declared in that CREATE TABLE in the CURRENT file, AND
+  (b) has NO matching ``ALTER TABLE <t> ADD [COLUMN] <c>`` inside a
+      ``_post_init`` METHOD body in the SAME file (no _post_init migration
+      runs it), AND
+  (c) was NOT in the CREATE TABLE column list on the baseline ref (it is
+      newly added by this change -- so existing columns that have always
+      lived in SCHEMA do not trip the guard).
+
+Only tables that ALREADY EXIST on the baseline are diffed. A table absent
+there is built in full by its own ``CREATE TABLE IF NOT EXISTS`` on every
+install, columns and all, so no ALTER applies and there is no upgrade path to
+brick; diffing it would emit one violation per column on every new store.
+Known limitations, all of them per-file consequences of a static check and
+all deliberate rather than silent:
+
+  * A store file RENAMED in the same change gets an empty baseline at its new
+    path, so a column added in that same change is not seen. Move the file and
+    add the column in separate commits.
+  * A TABLE renamed inside SCHEMA is skipped as new, and the old table is left
+    behind on existing installs. That is a different brick from the one this
+    guard defines (an existing table gaining a column) and it wants its own
+    check; refusing to skip new tables is NOT the fix, because that is exactly
+    the one-violation-per-column noise on legitimately new tables.
+  * A ``_post_init`` INHERITED from a base class in another module is not seen,
+    so its ALTERs cannot silence a column. Every ``_post_init`` in the tree
+    today is defined in the same file as the store it serves; if that changes,
+    keep the migration next to the SCHEMA it migrates.
+
+The third condition is what keeps it from flagging every column in the
+repo: comparison is done against ``git show <baseline-ref>:<path>`` for the
+same file, only NEW columns relative to that snapshot count. The baseline ref
+defaults to ``origin/dev`` and follows the PR's base branch when ``--base`` or
+``BASE_REF`` is supplied, so a ``master``-targeted hotfix compares against
+``origin/master`` instead of demanding a ref its checkout never fetched.
+
+Both the current file and the baseline snapshot are parsed with ``ast``: only
+real ``SCHEMA`` assignments count, so a CREATE TABLE inside a docstring or an
+unrelated string on either side can neither invent a violation nor mask one.
+
+CI does NOT catch it because tests build fresh databases (which always have
+the column); this guard exists to fill that gap.
+
+Usage:
+    python scripts/check_schema_column_migrations.py [ROOT] [--base origin/dev]
+Invoked by the ``schema-column-guard`` step in
+``.github/workflows/doc-gate.yml``.
+
+Prints ``schema-column-guard: clean`` and exits 0 when no violations, prints
+each violation and exits 1 when there are, and exits 2 when a file or a
+baseline could not be read at all (a file the guard cannot parse is a hard
+failure, never a silent skip).
+
+Dependency-light: stdlib only (ast + re + pathlib + subprocess).
+"""
+from __future__ import annotations
+
+import argparse
+import ast
+import os
+import re
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+STORES_ROOT = REPO_ROOT / "tinyagentos"
+
+# Baseline the current tree is compared against when nothing else says
+# otherwise. CI passes the PR's own base branch instead (see --base).
+DEFAULT_BASELINE_REF = "origin/dev"
+
+# Tables that are not "user data" stores and therefore not subject to this
+# guard. The migration runner's bookkeeping table is created on first boot
+# before any store init runs, so columns added to it on the baseline are
+# genuinely new for the very DBs that need them and would generate noise.
+_EXCLUDED_TABLES = frozenset({"schema_migrations"})
+
+# CREATE TABLE [IF NOT EXISTS] <table> ( ... )
+_CREATE_TABLE_RE = re.compile(
+    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s*\((.*?)\)\s*;",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# ALTER TABLE <table> ADD [COLUMN] <col> ...
+_ADD_COLUMN_RE = re.compile(
+    r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+(?:COLUMN\s+)?(\w+)",
+    re.IGNORECASE,
+)
+
+
+class GuardError(Exception):
+    """A file the guard was asked to check could not be checked."""
+
+
+class RefError(GuardError):
+    """Raised when the baseline snapshot of a file cannot be read."""
+
+
+class SourceError(GuardError):
+    """Raised when a file in the working tree cannot be read or parsed."""
+
+
+@dataclass
+class Violation:
+    path: Path
+    table: str
+    column: str
+    detail: str
+
+    def __str__(self) -> str:
+        fix = (
+            "add a guarded _post_init coroutine that ALTERs this column "
+            "into place after a PRAGMA table_info check"
+        )
+        return (
+            f"{self.path}: table '{self.table}', column '{self.column}' "
+            f"added to SCHEMA with no migration\n"
+            f"    detail: {self.detail}\n"
+            f"    fix: {fix}"
+        )
+
+
+def _strip_sql_comments(sql: str) -> str:
+    """Remove ``--`` line comments and ``/* */`` blocks from SQL.
+
+    Quote state is tracked character by character so a ``--`` inside a string
+    literal (``DEFAULT '--'``) survives. Without this, the first commented
+    column swallows the rest of its line INCLUDING the comma that ends it, so
+    every column declared after it becomes invisible to the column splitter --
+    a silent false negative on any store that documents its columns inline,
+    which is the house style.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(sql)
+    in_single = False
+    in_double = False
+    while i < n:
+        ch = sql[i]
+        if in_single:
+            out.append(ch)
+            if ch == "'":
+                in_single = False
+            i += 1
+        elif in_double:
+            out.append(ch)
+            if ch == '"':
+                in_double = False
+            i += 1
+        elif ch == "'":
+            in_single = True
+            out.append(ch)
+            i += 1
+        elif ch == '"':
+            in_double = True
+            out.append(ch)
+            i += 1
+        elif ch == "-" and sql.startswith("--", i):
+            while i < n and sql[i] != "\n":
+                i += 1
+        elif ch == "/" and sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            out.append(" ")
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _split_columns(body: str) -> set[str]:
+    """Extract declared column names from a CREATE TABLE body.
+
+    Splits on commas that are not inside parentheses (so function/default
+    expressions and inline CHECK(...) are handled), then keeps the first
+    whitespace-delimited token of each segment as the column name (unless
+    that segment is an inline table-level constraint, which does not add
+    a column).
+
+    SQL comments are stripped first: an inline ``-- ...`` comment runs to the
+    end of the line and would otherwise hide every column declared after it.
+    Quote state is tracked while splitting, so a bracket or comma inside a
+    string literal (``DEFAULT ')'``) is not read as syntax. A doubled ``''``
+    toggles the state twice and lands back inside the literal, which is the
+    correct reading of the SQL escape.
+
+    NOTE: This scanner does not handle a DEFAULT expression that contains a
+    top-level comma, or a quoted column name that collides with one of the
+    non-column keywords. Neither is fatal for the current store schemas.
+    """
+    _INLINE_CONSTRAINT_RE = re.compile(
+        r"^\s*(?:CONSTRAINT\s+\w+\s+)?(?:PRIMARY\s+KEY|UNIQUE|CHECK|FOREIGN\s+KEY|REFERENCES)\b",
+        re.IGNORECASE,
+    )
+    # Second token captured so a column whose NAME collides with a SQL word
+    # ("key TEXT", "text TEXT" -- both live in this repo) is still recognised:
+    # a reserved word followed by a type is a column declaration, not a clause.
+    _COLUMN_NAME_RE = re.compile(r"^\s*(\w+)\s+(\w+)?", re.IGNORECASE)
+    _SQL_TYPES = {
+        "text", "integer", "int", "bigint", "smallint", "real", "blob",
+        "numeric", "decimal", "boolean", "bool", "varchar", "char", "json",
+        "datetime", "timestamp", "date", "float", "double",
+    }
+    _NON_COLUMN_KEYWORDS = {
+        "create", "table", "primary", "key", "unique", "check", "foreign",
+        "references", "constraint", "default", "not", "null", "integer",
+        "text", "real", "blob", "numeric", "autoincrement", "if", "exists",
+        "select", "on", "and", "or", "as", "collate", "generated", "always",
+    }
+
+    body = _strip_sql_comments(body)
+    columns: set[str] = set()
+    depth = 0
+    in_single = False
+    in_double = False
+    segments: list[str] = []
+    current: list[str] = []
+    for ch in body:
+        # Brackets and commas only mean anything OUTSIDE a string literal.
+        # A DEFAULT ')' used to drive depth to -1, after which the comma that
+        # ended that column stopped splitting and every later column was
+        # swallowed into the same segment.
+        if in_single:
+            current.append(ch)
+            if ch == "'":
+                in_single = False
+            continue
+        if in_double:
+            current.append(ch)
+            if ch == '"':
+                in_double = False
+            continue
+        if ch == "'":
+            in_single = True
+            current.append(ch)
+            continue
+        if ch == '"':
+            in_double = True
+            current.append(ch)
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            segments.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    segments.append("".join(current))
+
+    for seg in segments:
+        m = _COLUMN_NAME_RE.match(seg)
+        type_token = (m.group(2) or "").lower() if m else ""
+        # "<word> <TYPE>" is a column declaration whatever the word is; a
+        # table-level constraint is always followed by "(" or a name, never by
+        # a type. This is what lets a column called "check" or "key" through
+        # while PRIMARY KEY (...) / CHECK (...) are still skipped.
+        is_column_decl = type_token in _SQL_TYPES
+        if not is_column_decl and _INLINE_CONSTRAINT_RE.match(seg):
+            continue
+        if not m:
+            continue
+        name = m.group(1)
+        if not is_column_decl and name.lower() in _NON_COLUMN_KEYWORDS:
+            continue
+        columns.add(name)
+    return columns
+
+
+def _baseline_ref(explicit: str | None = None) -> str:
+    """Resolve the ref the working tree is compared against.
+
+    Precedence: an explicit ``--base`` value, then ``SCHEMA_COLUMN_BASE_REF``,
+    then ``BASE_REF`` (what the CI workflow exports from ``github.base_ref``),
+    then ``origin/dev``. A bare branch name is qualified to ``origin/<name>``
+    so the workflow can hand the check its own base branch verbatim.
+    """
+    raw = (
+        explicit
+        or os.environ.get("SCHEMA_COLUMN_BASE_REF")
+        or os.environ.get("BASE_REF")
+        or ""
+    ).strip()
+    if not raw:
+        return DEFAULT_BASELINE_REF
+    if raw.startswith(("origin/", "refs/")):
+        return raw
+    return f"origin/{raw}"
+
+
+def _check_base_ref(ref: str) -> bool:
+    """Return True if ``ref`` is a valid ref the local repo can read."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0
+    except OSError:
+        return False
+
+
+def _rel_spec(path: Path, ref: str) -> str:
+    """Build the ``<ref>:<path>`` revision spec for a working-tree file."""
+    try:
+        rel = path.resolve().relative_to(REPO_ROOT)
+    except ValueError:
+        rel = path
+    return f"{ref}:{rel.as_posix()}"
+
+
+def _baseline_columns(path: Path, ref: str) -> dict[str, set[str]] | None:
+    """Return {table: columns} for CREATE TABLE bodies declared in the file's
+    SCHEMA strings on ``ref``.
+
+    Returns ``{}`` when the file does not exist on ``ref`` (it is new).
+    Returns ``None`` when the ref or the file cannot be read, or the baseline
+    snapshot cannot be parsed (caller treats that as a hard error).
+
+    Existence is decided by ``git cat-file -e``'s exit status, never by
+    matching git's stderr wording, which is version-dependent and localized.
+    """
+    spec = _rel_spec(path, ref)
+    try:
+        exists = subprocess.run(
+            ["git", "cat-file", "-e", spec],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if exists.returncode != 0:
+            # Either the path is absent on ref (a new file, fine) or the ref
+            # itself is unusable (a hard error). Tell them apart by asking
+            # about the ref alone.
+            if _check_base_ref(ref):
+                return {}
+            print(
+                f"schema-column-guard: ERROR reading {ref} baseline for "
+                f"{spec}: ref is not readable",
+                file=sys.stderr,
+            )
+            return None
+        result = subprocess.run(
+            ["git", "show", spec],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        print(
+            f"schema-column-guard: ERROR reading {ref} baseline for "
+            f"{spec}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    if result.returncode != 0:
+        print(
+            f"schema-column-guard: ERROR reading {ref} baseline for "
+            f"{spec}: {result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        baseline_tree = ast.parse(result.stdout)
+    except SyntaxError as exc:
+        print(
+            f"schema-column-guard: ERROR: baseline {spec} does not parse: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+    out: dict[str, set[str]] = {}
+    for schema in _extract_schemas(baseline_tree, label=spec):
+        for tm in _CREATE_TABLE_RE.finditer(_strip_sql_comments(schema)):
+            out.setdefault(tm.group(1), set()).update(_split_columns(tm.group(2)))
+    return out
+
+
+def _method_sql_literals(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """String literals written directly in ``fn``'s own body.
+
+    Nested ``def``/``class``/``lambda`` bodies are not descended into and the
+    method's own docstring is skipped: a never-called helper defined inside
+    ``_post_init``, or a nested class's docstring, must not be able to silence
+    a violation with an ALTER it never executes. This is the same lexical rule
+    ``_extract_schemas`` applies to ``SCHEMA``.
+    """
+    out: list[str] = []
+    docstring_id: int | None = None
+    if (
+        fn.body
+        and isinstance(fn.body[0], ast.Expr)
+        and isinstance(fn.body[0].value, ast.Constant)
+        and isinstance(fn.body[0].value.value, str)
+    ):
+        docstring_id = id(fn.body[0].value)
+
+    def _descend(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(
+                child,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+            ):
+                continue
+            if (
+                isinstance(child, ast.Constant)
+                and isinstance(child.value, str)
+                and id(child) != docstring_id
+            ):
+                out.append(child.value)
+            _descend(child)
+
+    _descend(fn)
+    return out
+
+
+def _post_init_added_columns(tree: ast.AST) -> set[tuple[str, str]]:
+    """Collect ``(table, column)`` pairs ALTERed in ``_post_init`` METHODS.
+
+    Only a ``_post_init`` defined directly in a class body counts: a
+    module-level helper of the same name is not the migration hook
+    ``BaseStore.init()`` calls, so its ALTERs must not silence any store.
+
+    SQL is read out of the AST's string constants rather than out of stripped
+    source text, so ``#`` inside a SQL literal cannot chop the statement and a
+    triple-quoted SQL literal is not mistaken for a docstring.
+    """
+    added: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for item in node.body:
+            if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if item.name != "_post_init":
+                continue
+            for literal in _method_sql_literals(item):
+                for m in _ADD_COLUMN_RE.finditer(literal):
+                    added.add((m.group(1), m.group(2)))
+    return added
+
+
+def _resolve(node: ast.AST, scope: dict[str, str]) -> str | None:
+    """Resolve an assignment value to a string, or None if it is not static.
+
+    Handles plain constants, names bound in ``scope``, f-strings whose parts
+    all resolve, and ``+`` concatenation of resolvable parts.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return scope.get(node.id)
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            elif isinstance(value, ast.FormattedValue):
+                inner = _resolve(value.value, scope)
+                if inner is None:
+                    return None
+                parts.append(inner)
+            else:
+                return None
+        return "".join(parts)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _resolve(node.left, scope)
+        right = _resolve(node.right, scope)
+        if left is None or right is None:
+            return None
+        return left + right
+    return None
+
+
+def _bind_constants(stmt: ast.stmt, scope: dict[str, str]) -> None:
+    """Bind any string constant that ``stmt`` assigns into ``scope`` in place.
+
+    Called as the scan reaches each statement, so a name resolves to the value
+    it holds AT THAT POINT -- Python binds at the assignment statement, and a
+    constant reassigned further down the body must not reach back and change
+    what an earlier ``SCHEMA`` was built from.
+    """
+    if isinstance(stmt, ast.Assign):
+        value = _resolve(stmt.value, scope)
+        if value is None:
+            return
+        for target in stmt.targets:
+            if isinstance(target, ast.Name):
+                scope[target.id] = value
+    elif isinstance(stmt, ast.AnnAssign):
+        if isinstance(stmt.target, ast.Name) and stmt.value is not None:
+            value = _resolve(stmt.value, scope)
+            if value is not None:
+                scope[stmt.target.id] = value
+
+
+def _extract_schemas(tree: ast.AST, label: str = "<source>") -> list[str]:
+    """Find every module-level or class-level ``SCHEMA`` string in ``tree``.
+
+    Each ``SCHEMA`` is resolved in its own lexical scope, built in statement
+    order: module constants as of that line, then the constants of the class it
+    lives in as of that line. Same-named aliases in different classes stay
+    independent, a constant reassigned later in the body does not win, and a
+    forward reference resolves to nothing (it is a NameError at runtime).
+    Function-local bindings are never used to resolve a class or module
+    ``SCHEMA``.
+
+    A ``SCHEMA`` that cannot be resolved to a static string is reported on
+    stderr: the store it belongs to is not checked, and that must be visible
+    rather than a silent skip.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _record(value_node: ast.AST, scope: dict[str, str]) -> None:
+        value = _resolve(value_node, scope)
+        if value is None:
+            lineno = getattr(value_node, "lineno", "?")
+            print(
+                f"schema-column-guard: WARNING: {label}:{lineno}: SCHEMA is not a "
+                f"resolvable string constant; this store is NOT checked by the guard",
+                file=sys.stderr,
+            )
+            return
+        if value not in seen:
+            seen.add(value)
+            out.append(value)
+
+    def _scan(body: list[ast.stmt], scope: dict[str, str], in_function: bool) -> None:
+        """Walk ``body`` in order, mutating ``scope`` as bindings are reached.
+
+        ``scope`` belongs to the enclosing module or class body, so a name
+        bound inside a nested ``if``/``try`` is visible to later statements of
+        that body -- which is what Python does. A class or function body gets a
+        copy instead, so its own names cannot leak outwards.
+        """
+        for stmt in body:
+            if not in_function:
+                if isinstance(stmt, ast.Assign):
+                    for target in stmt.targets:
+                        if isinstance(target, ast.Name) and target.id == "SCHEMA":
+                            _record(stmt.value, scope)
+                elif isinstance(stmt, ast.AnnAssign):
+                    if (
+                        isinstance(stmt.target, ast.Name)
+                        and stmt.target.id == "SCHEMA"
+                        and stmt.value is not None
+                    ):
+                        _record(stmt.value, scope)
+
+            # Bind AFTER recording: "SCHEMA = SQL" reads the scope as it stood
+            # before this statement, exactly as the interpreter does.
+            if not in_function:
+                _bind_constants(stmt, scope)
+
+            if isinstance(stmt, ast.ClassDef):
+                _scan(stmt.body, dict(scope), False)
+            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # Descend so a class nested in a function is still found, but
+                # never let the function's own locals resolve a SCHEMA.
+                _scan(stmt.body, dict(scope), True)
+            else:
+                # Compound statements (if/try/with/for) at module or class
+                # level bind names in the body that contains them.
+                for _field, value in ast.iter_fields(stmt):
+                    if (
+                        isinstance(value, list)
+                        and value
+                        and all(isinstance(v, ast.stmt) for v in value)
+                    ):
+                        _scan(value, scope, in_function)
+
+    _scan(getattr(tree, "body", []), {}, False)
+    return out
+
+
+def find_violations(path: Path, ref: str | None = None) -> list[Violation]:
+    """Run the static check against a single Python file. Returns violations.
+
+    Raises ``SourceError`` when the file cannot be read or parsed and
+    ``RefError`` when its baseline cannot be read -- a file the guard cannot
+    inspect is a hard failure, not a silent pass.
+    """
+    ref = ref or _baseline_ref()
+    try:
+        source = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError as exc:
+        raise SourceError(
+            f"schema-column-guard: ERROR: cannot read {path}: {exc}"
+        ) from exc
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise SourceError(
+            f"schema-column-guard: ERROR: cannot parse {path}: {exc}; "
+            f"the guard cannot check this file"
+        ) from exc
+
+    schemas = _extract_schemas(tree, label=str(path))
+    if not schemas:
+        return []
+
+    baseline_cols = _baseline_columns(path, ref)
+    if baseline_cols is None:
+        raise RefError(f"failed to read {ref} baseline for {path}")
+
+    added_columns = _post_init_added_columns(tree)
+
+    violations: list[Violation] = []
+    for schema in schemas:
+        for tm in _CREATE_TABLE_RE.finditer(_strip_sql_comments(schema)):
+            table = tm.group(1)
+            if table in _EXCLUDED_TABLES:
+                continue
+            if table not in baseline_cols:
+                # The table itself is absent from the baseline, so
+                # CREATE TABLE IF NOT EXISTS builds it in full on every
+                # install, columns and all. There is nothing for an ALTER to
+                # add and no upgrade path to brick -- flagging it would mean
+                # one violation per column on every new store.
+                continue
+            current_cols = _split_columns(tm.group(2))
+            new_cols = current_cols - baseline_cols[table]
+            for col in sorted(new_cols):
+                if (table, col) not in added_columns:
+                    violations.append(Violation(
+                        path=path,
+                        table=table,
+                        column=col,
+                        detail=f"new column '{col}' in CREATE TABLE {table} with no ALTER TABLE {table} ADD COLUMN {col} in this file",
+                    ))
+    return violations
+
+
+def find_all_violations(
+    root: Path = STORES_ROOT, ref: str | None = None
+) -> tuple[list[Violation], bool]:
+    """Walk every Python file under the stores root and collect violations.
+    Returns (violations, had_error) where had_error is True if any file or
+    baseline could not be read or parsed."""
+    ref = ref or _baseline_ref()
+    violations: list[Violation] = []
+    had_error = False
+    if not root.is_dir():
+        return violations, had_error
+    for py_file in sorted(root.rglob("*.py")):
+        try:
+            violations.extend(find_violations(py_file, ref))
+        except GuardError as exc:
+            print(str(exc), file=sys.stderr)
+            had_error = True
+    return violations, had_error
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Flag SCHEMA columns added with no _post_init migration.",
+    )
+    parser.add_argument(
+        "root",
+        nargs="?",
+        default=None,
+        help="directory to scan (default: tinyagentos/)",
+    )
+    parser.add_argument(
+        "--base",
+        default=None,
+        help=(
+            "baseline ref new columns are measured against "
+            f"(default: $BASE_REF qualified to origin/<branch>, else {DEFAULT_BASELINE_REF})"
+        ),
+    )
+    ns = parser.parse_args(sys.argv[1:] if argv is None else argv)
+
+    ref = _baseline_ref(ns.base)
+    if not _check_base_ref(ref):
+        print(
+            f"schema-column-guard: ERROR: baseline ref {ref} is missing; "
+            "this guard requires it to compare new columns. "
+            f"Ensure {ref} is fetched and accessible, or pass --base.",
+            file=sys.stderr,
+        )
+        return 2
+
+    root = Path(ns.root) if ns.root else STORES_ROOT
+    violations, had_error = find_all_violations(root, ref)
+    # Print violations first so a single CI run shows the full picture even
+    # when some other file could not be checked at all.
+    for v in violations:
+        print(f"SCHEMA-COLUMN VIOLATION: {v}")
+    if had_error:
+        return 2
+    if not violations:
+        print("schema-column-guard: clean")
+        return 0
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

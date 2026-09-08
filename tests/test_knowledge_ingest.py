@@ -4,7 +4,7 @@ import pytest_asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from tinyagentos.knowledge_store import KnowledgeStore
-from tinyagentos.knowledge_ingest import IngestPipeline, resolve_source_type
+from tinyagentos.knowledge_ingest import IngestPipeline, resolve_source_type, _extract_text_readability
 
 
 # --- URL resolution ---
@@ -29,9 +29,44 @@ def test_resolve_github():
     assert resolve_source_type("https://github.com/org/repo/issues/1") == "github"
 
 
+def test_resolve_spoofed_query_param_not_platform():
+    """R2-14: a platform name inside a query string or a foreign path must not
+    be matched. Resolution keys off the URL hostname, not a substring scan, so a
+    hostile URL cannot be misclassified as a known platform."""
+    assert resolve_source_type("https://evil.com/?x=youtu.be/abc") == "article"
+    assert resolve_source_type("https://evil.com/x/github.com/owner/repo") == "article"
+
+
 def test_resolve_article_fallback():
     assert resolve_source_type("https://news.ycombinator.com/item?id=123") == "article"
     assert resolve_source_type("https://blog.example.com/some-post") == "article"
+
+
+# ---------------------------------------------------------------------------
+# Readability extraction (R2-13)
+# ---------------------------------------------------------------------------
+
+
+class TestReadabilityExtraction:
+    """Verify _extract_text_readability handles entities, `>` in attributes,
+    and short articles (no length threshold)."""
+
+    def test_gt_in_attribute_is_handled(self):
+        """`>` inside an HTML attribute must not break tag stripping."""
+        html = '<a title="x > y">text</a>'
+        assert _extract_text_readability(html) == "text"
+
+    def test_html_entities_are_unescaped(self):
+        """HTML entities like &amp; must be unescaped to their character form."""
+        assert _extract_text_readability("&amp;") == "&"
+
+    def test_short_article_is_kept(self):
+        """A 50-char article must be kept, not dropped by a length threshold."""
+        article = "Tom &amp; Jerry have exactly fifty chars in text end!!"
+        assert len(article.replace("&amp;", "&")) == 50
+        html = f"<html><body><article>{article}</article></body></html>"
+        result = _extract_text_readability(html)
+        assert result == "Tom & Jerry have exactly fifty chars in text end!!"
 
 
 # --- IngestPipeline ---
@@ -82,6 +117,7 @@ async def pipeline(store, mock_http):
     p = IngestPipeline(
         store=store,
         http_client=mock_http,
+        fetch_client=mock_http,
         notifications=notif,
         category_engine=cat_engine,
         qmd_base_url="",  # QMD disabled for unit tests
@@ -200,6 +236,7 @@ async def test_summarise_called_when_llm_url_set(store):
     pipeline = IngestPipeline(
         store=store,
         http_client=mock_http,
+        fetch_client=mock_http,
         notifications=notif,
         category_engine=cat_engine,
         qmd_base_url="",  # disable embed for this test
@@ -224,9 +261,9 @@ async def test_embed_called_when_qmd_url_set(store):
     """When qmd_base_url is set, the /ingest endpoint should be called with collection=knowledge."""
     from tinyagentos.knowledge_ingest import IngestPipeline
 
-    qmd_response = AsyncMock()
+    qmd_response = MagicMock()
     qmd_response.status_code = 200
-    qmd_response.raise_for_status = AsyncMock()
+    qmd_response.raise_for_status = MagicMock()
 
     mock_http = AsyncMock()
     mock_http.get = AsyncMock(side_effect=Exception("no HTTP in this test"))
@@ -240,6 +277,7 @@ async def test_embed_called_when_qmd_url_set(store):
     pipeline = IngestPipeline(
         store=store,
         http_client=mock_http,
+        fetch_client=mock_http,
         notifications=notif,
         category_engine=cat_engine,
         qmd_base_url="http://localhost:7832",
@@ -284,6 +322,7 @@ async def test_semaphore_custom_max_concurrent(store, mock_http):
     p = IngestPipeline(
         store=store,
         http_client=mock_http,
+        fetch_client=mock_http,
         notifications=notif,
         category_engine=cat_engine,
         max_concurrent=2,
@@ -301,6 +340,7 @@ async def test_max_concurrent_zero_raises(store, mock_http):
         IngestPipeline(
             store=store,
             http_client=mock_http,
+            fetch_client=mock_http,
             notifications=notif,
             category_engine=cat_engine,
             max_concurrent=0,
@@ -332,6 +372,7 @@ async def test_semaphore_limits_concurrent_tasks(store, mock_http):
     p = IngestPipeline(
         store=store,
         http_client=mock_http,
+        fetch_client=mock_http,
         notifications=notif,
         category_engine=cat_engine,
         max_concurrent=2,
@@ -373,6 +414,7 @@ async def test_categories_from_caller_are_preserved(store):
     pipeline = IngestPipeline(
         store=store,
         http_client=mock_http,
+        fetch_client=mock_http,
         notifications=notif,
         category_engine=cat_engine,
         qmd_base_url="",
@@ -413,3 +455,263 @@ async def test_download_article_blocks_internal_url(pipeline, store):
     # The guard raises before any HTTP call to the internal address.
     for call in pipeline._http_client.get.await_args_list:
         assert "127.0.0.1" not in str(call)
+
+
+@pytest.mark.asyncio
+async def test_fetch_client_must_be_guarded(store, mock_http):
+    """A caller-supplied fetch_client that IS an httpx.AsyncClient must carry
+    the SSRF-pinned transport. Otherwise a caller handing in a plain,
+    unguarded client (e.g. a shared app-wide client) would silently bypass
+    the guard for every article fetch through this pipeline."""
+    import httpx
+
+    def _handler(request):
+        # Should never actually be reached — the type check must fire first.
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text="<html><body><p>Should never be read.</p></body></html>",
+        )
+
+    notif = AsyncMock()
+    cat_engine = AsyncMock()
+    unguarded_client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=unguarded_client,
+        notifications=notif,
+        category_engine=cat_engine,
+    )
+    try:
+        with pytest.raises(TypeError, match="guarded_async_client"):
+            await pipeline._download_article("https://example.com/a", "", {})
+    finally:
+        await unguarded_client.aclose()
+
+
+# ------------------------------------------------------------------
+# S2-19: size cap and content-type gate on knowledge fetches
+# ------------------------------------------------------------------
+
+class _TrackedResponse:
+    """Mock response that tracks how many bytes are consumed."""
+
+    def __init__(self, chunks, content_type="text/html"):
+        self._chunks = list(chunks)
+        self._all_text = b"".join(self._chunks).decode("utf-8", errors="replace")
+        self.status_code = 200
+        self.headers = {"content-type": content_type}
+        self.is_redirect = False
+        self.bytes_read = 0
+
+    def raise_for_status(self):
+        pass
+
+    async def aiter_bytes(self, chunk_size=8192):
+        for chunk in self._chunks:
+            self.bytes_read += len(chunk)
+            yield chunk
+
+    @property
+    def text(self):
+        self.bytes_read = len(self._all_text.encode("utf-8"))
+        return self._all_text
+
+    @property
+    def encoding(self):
+        return "utf-8"
+
+
+@pytest.mark.asyncio
+async def test_download_article_rejects_oversized_body(store):
+    """A body larger than the cap must not be fully buffered."""
+    chunk_size = 8192
+    num_chunks = 2000  # ~15 MB total, over the 10 MB default cap
+    chunks = [b"x" * chunk_size] * num_chunks
+    resp = _TrackedResponse(chunks, content_type="text/html")
+
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(return_value=resp)
+
+    notif = AsyncMock()
+    cat_engine = AsyncMock()
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+    )
+
+    with pytest.raises(ValueError, match="exceeds"):
+        await pipeline._download_article("https://example.com/large", "", {})
+
+    assert resp.bytes_read <= 10 * 1024 * 1024 + chunk_size, (
+        f"Oversized body should not be fully buffered, but {resp.bytes_read} bytes were read"
+    )
+
+
+@pytest.mark.asyncio
+async def test_download_article_rejects_non_text_content_type(store):
+    """Non-text content-type must be rejected before buffering."""
+    resp = _TrackedResponse([b"binary data"], content_type="application/octet-stream")
+
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(return_value=resp)
+
+    notif = AsyncMock()
+    cat_engine = AsyncMock()
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+    )
+
+    with pytest.raises(ValueError, match="Non-text"):
+        await pipeline._download_article("https://example.com/bin", "", {})
+
+    assert resp.bytes_read == 0, "Non-text response should not be buffered at all"
+
+
+# ------------------------------------------------------------------
+# R2-26: Sentence-boundary chunking with overlap, delete-before-embed,
+# and failure-aware status.
+# ------------------------------------------------------------------
+
+def test_chunk_text_short_text_single_chunk():
+    """Text shorter than max_chars returns as a single chunk."""
+    from tinyagentos.knowledge_ingest import _chunk_text
+
+    short = "This is a short sentence."
+    assert _chunk_text(short, max_chars=2000, overlap_chars=200) == [short]
+
+
+def test_chunk_text_long_text_multiple_chunks():
+    """Long text produces multiple chunks at sentence boundaries."""
+    from tinyagentos.knowledge_ingest import _chunk_text
+
+    text = "Sentence one here. " * 100
+    chunks = _chunk_text(text, max_chars=100, overlap_chars=30)
+    assert len(chunks) > 1
+
+
+def test_chunk_text_chunks_overlap():
+    """Consecutive chunks must share text (tail of chunk N == prefix of N+1)."""
+    from tinyagentos.knowledge_ingest import _chunk_text
+
+    text = "Sentence one here. " * 100
+    chunks = _chunk_text(text, max_chars=100, overlap_chars=30)
+    assert len(chunks) > 1
+    for i in range(len(chunks) - 1):
+        found = False
+        for L in range(min(len(chunks[i]), len(chunks[i + 1])) - 1, 5, -1):
+            if chunks[i][-L:] == chunks[i + 1][:L]:
+                found = True
+                break
+        assert found, f"Chunks {i} and {i + 1} should overlap"
+
+
+def test_chunk_text_ends_at_sentence_boundary():
+    """Each chunk (except possibly the last) ends at a sentence terminator."""
+    from tinyagentos.knowledge_ingest import _chunk_text
+
+    text = "First sentence. Second sentence. Third sentence. Fourth sentence. " * 20
+    chunks = _chunk_text(text, max_chars=100, overlap_chars=30)
+    assert len(chunks) > 1
+    for chunk in chunks[:-1]:
+        assert chunk.rstrip()[-1] in ".!?", "Chunk should end at sentence boundary"
+
+
+@pytest.mark.asyncio
+async def test_embed_deletes_old_chunks_before_inserting(store):
+    """R2-26a: re-embedding an item must delete old chunks before inserting
+    new ones so no chunks from a previous run remain."""
+    from tinyagentos.knowledge_ingest import IngestPipeline
+
+    qmd_response = MagicMock()
+    qmd_response.status_code = 200
+    qmd_response.raise_for_status = MagicMock()
+
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(side_effect=Exception("no HTTP in this test"))
+    mock_http.post = AsyncMock(return_value=qmd_response)
+
+    notif = AsyncMock()
+    notif.emit_event = AsyncMock()
+    cat_engine = AsyncMock()
+    cat_engine.categorise = AsyncMock(return_value=[])
+
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+        qmd_base_url="http://localhost:7832",
+        llm_base_url="",
+    )
+
+    item_id = "test-item-id"
+    content = "This is test content. " * 200  # Long enough to produce multiple chunks
+
+    await pipeline._embed(item_id, "Test Title", content)
+
+    calls = [str(call) for call in mock_http.post.call_args_list]
+    assert any("/delete-chunk" in c for c in calls), (
+        "Expected /delete-chunk call before inserting new chunks"
+    )
+
+    delete_idx = next((i for i, c in enumerate(calls) if "/delete-chunk" in c), -1)
+    ingest_idx = next((i for i, c in enumerate(calls) if "/ingest" in c), -1)
+    assert delete_idx != -1 and ingest_idx != -1, (
+        "Expected both /delete-chunk and /ingest calls"
+    )
+    assert delete_idx < ingest_idx, "delete-chunk must precede ingest calls"
+
+
+@pytest.mark.asyncio
+async def test_embed_failure_sets_partial_status(store):
+    """R2-26b: when QMD embedding calls fail, the item status should be
+    'partial', not 'ready'."""
+    from tinyagentos.knowledge_ingest import IngestPipeline
+
+    qmd_response = MagicMock()
+    qmd_response.status_code = 500
+    qmd_response.raise_for_status = MagicMock(side_effect=Exception("QMD error"))
+
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(side_effect=Exception("no HTTP in this test"))
+    mock_http.post = AsyncMock(return_value=qmd_response)
+
+    notif = AsyncMock()
+    notif.emit_event = AsyncMock()
+    cat_engine = AsyncMock()
+    cat_engine.categorise = AsyncMock(return_value=[])
+
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+        qmd_base_url="http://localhost:7832",
+        llm_base_url="",
+    )
+
+    item_id = await pipeline.submit(
+        url="https://example.com/embed-fail",
+        title="Fail Test",
+        text="Content long enough to trigger embedding. " * 50,
+        categories=[],
+        source="test",
+    )
+    await pipeline.run(item_id)
+
+    item = await store.get_item(item_id)
+    assert item["status"] != "ready", "Status should not be 'ready' when embed fails"
+    assert item["status"] == "partial", (
+        f"Expected 'partial' status on embed failure, got '{item['status']}'"
+    )

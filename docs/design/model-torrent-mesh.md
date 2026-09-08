@@ -89,6 +89,15 @@ Remaining: DownloadManager passkey fetch via the account-session proxy + clean H
   3. If torrent completes: verify SHA256 against manifest, then done.
   4. If HTTP completes first (web seed from inside libtorrent, or direct
      fallback): still verify SHA256.
+- **HTTP path robustness** — the `download_url` fallback is not a bare fetch:
+  finite connect/read/write/pool timeouts (a half-open connection surfaces as
+  an error instead of a progress bar frozen at 63% forever), retry with
+  exponential backoff on transport errors and 5xx, and `Range`-header resume
+  so a 40 GB pull that dies at 39 GB does not restart from zero. Bytes are
+  staged in a `<dest>.part` file and renamed onto the canonical path only
+  after the SHA256 check passes, so a failed download can never leave a
+  corrupt weight where a later "is this model installed?" check would find it.
+  The stage file is kept on failure — it is what the next attempt resumes from.
 - **Seeding** — after a successful download, the torrent is kept in the
   libtorrent session. Seeding runs in the background with user-configurable
   upload limits.

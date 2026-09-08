@@ -1,7 +1,7 @@
 .frame { background: var(--board-bg); border-radius: 14px; border: 1px solid var(--board-hair); overflow: hidden; }
-.cols { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; padding: 16px; }
+.cols { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 14px; padding: 16px; }
 .lanes { padding: 0 16px 16px; }
-.colsHeader { display: grid; grid-template-columns: 200px 1fr 1fr 1fr; padding: 10px 4px; color: #86868b; font: 600 10.5px -apple-system; text-transform: uppercase; letter-spacing: .5px; }
+.colsHeader { display: grid; grid-template-columns: 200px 1fr 1fr 1fr 1fr; padding: 10px 4px; color: #86868b; font: 600 10.5px -apple-system; text-transform: uppercase; letter-spacing: .5px; }
 .sr { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
 .movePop { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #1f1f22; border: 1px solid var(--board-hair-strong); border-radius: 12px; padding: 16px; min-width: 240px; box-shadow: 0 20px 60px rgba(0,0,0,.5); z-index: 60; display: flex; flex-direction: column; gap: 8px; }
 .movePop p { margin: 0 0 4px; color: #d2d2d7; font: 600 12px -apple-system; }

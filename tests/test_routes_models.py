@@ -12,6 +12,7 @@ from tinyagentos.routes.models import (
     get_downloaded_models,
 )
 from tinyagentos.vram_reservation import VramReservationManager
+from taos_test_csrf import csrf_event_hooks
 
 
 class TestDefaultModelsDir:
@@ -107,7 +108,7 @@ async def models_client(models_app):
     _rec = models_app.state.auth.find_user("admin")
     _token = models_app.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
     transport = ASGITransport(app=models_app)
-    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}) as c:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}, event_hooks=csrf_event_hooks()) as c:
         yield c
     await store.close()
     await models_app.state.qmd_client.close()
@@ -586,7 +587,7 @@ async def _make_auth_client(app):
     _rec = app.state.auth.find_user("admin")
     _token = app.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
     transport = ASGITransport(app=app)
-    return AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token})
+    return AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}, event_hooks=csrf_event_hooks())
 
 
 @pytest.mark.asyncio

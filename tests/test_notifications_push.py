@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import pathlib
 import tempfile
 from unittest.mock import patch
@@ -12,8 +13,9 @@ import requests
 from pywebpush import WebPushException
 
 from tinyagentos.notifications import NotificationStore
-from tinyagentos.notifications_push import NotificationPushStore, send_web_push
+from tinyagentos.notifications_push import NotificationPushStore, send_web_push, send_device_push
 from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
+from taos_test_csrf import csrf_event_hooks
 
 # A real VAPID keypair once for the whole module - pywebpush parses the PEM,
 # but every send is mocked so no network call is ever made.
@@ -236,6 +238,50 @@ class TestSendWebPush:
             result = await send_web_push(_ROW, store=push_store, vapid=FAKE_VAPID)
         mock.assert_not_called()
         assert result == {"sent": 0, "failed": 0, "removed": 0}
+
+    async def test_payload_includes_image_when_row_carries_one(self, push_store):
+        # tsk-cf7wzc: web push carries the rich attachment on both top-level
+        # `image` (Notification API) and inner `data.image` so PWA service workers
+        # that only inspect one shape still see it. Non-native clients that
+        # ignore `image` still get a valid text notification.
+        await _seed(push_store, _ENDPOINT_A)
+        row = {
+            "id": 9,
+            "title": "Deploy",
+            "message": "queued",
+            "source": "decisions",
+            "data": {
+                "image": "https://cdn.example.com/run/42.png",
+                "decision_type": "approve_deny",
+            },
+        }
+        captured: list[bytes] = []
+
+        def capture(**kwargs):
+            captured.append(kwargs["data"].encode("utf-8"))
+
+        with patch("pywebpush.webpush", side_effect=capture):
+            await send_web_push(row, store=push_store, vapid=FAKE_VAPID)
+        assert len(captured) == 1
+        payload = json.loads(captured[0].decode("utf-8"))
+        assert payload["image"] == "https://cdn.example.com/run/42.png"
+        assert payload["data"]["image"] == "https://cdn.example.com/run/42.png"
+        # Non-native clients still see a valid text notification.
+        assert payload["title"] == "Deploy"
+        assert payload["body"] == "queued"
+
+    async def test_payload_omits_image_when_absent(self, push_store):
+        await _seed(push_store, _ENDPOINT_A)
+        captured: list[bytes] = []
+
+        def capture(**kwargs):
+            captured.append(kwargs["data"].encode("utf-8"))
+
+        with patch("pywebpush.webpush", side_effect=capture):
+            await send_web_push(_ROW, store=push_store, vapid=FAKE_VAPID)
+        payload = json.loads(captured[0].decode("utf-8"))
+        assert "image" not in payload
+        assert "image" not in payload["data"]
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +512,8 @@ class TestPushRoutes:
 
         cookies = {"taos_session": _admin_token(app)} if authed else {}
         return AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test", cookies=cookies
+            transport=ASGITransport(app=app), base_url="http://test", cookies=cookies,
+            event_hooks=csrf_event_hooks(),
         )
 
     async def test_vapid_public_key_requires_auth(self, route_app):
@@ -517,6 +564,7 @@ class TestPushRoutes:
             transport=ASGITransport(app=route_app),
             base_url="http://test",
             cookies={"taos_session": token_b},
+            event_hooks=csrf_event_hooks(),
         ) as cb:
             r = await cb.post(
                 "/api/notifications/push/unsubscribe", json={"endpoint": endpoint}
@@ -551,3 +599,377 @@ def test_vapid_signing_key_is_accepted_by_pywebpush_vapid():
         signing_key = _vapid_signing_key(private_pem)
         # The whole point: this must NOT raise. Raw PEM would.
         Vapid01.from_string(private_key=signing_key)
+
+
+# ---------------------------------------------------------------------------
+# Device push dispatch (APNs vs UnifiedPush by platform lookup)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestSendDevicePush:
+    async def test_android_posts_to_unifiedpush_endpoint(self):
+        import json
+
+        class FakeUP:
+            sent = []
+
+            async def send(self, push_token, payload):
+                FakeUP.sent.append((push_token, payload))
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeApns:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeStore:
+            async def list_for_user(self, user_id):
+                return [
+                    {
+                        "device_id": "d1",
+                        "platform": "android",
+                        "push_token": "https://up.example.com/endpoint",
+                        "user_id": "u1",
+                    }
+                ]
+
+        row = {
+            "id": 1,
+            "title": "Decide",
+            "message": "deploy?",
+            "source": "decisions",
+            "user_id": "u1",
+            "data": {"decision_type": "approve_deny", "options": []},
+        }
+        result = await send_device_push(
+            row,
+            device_store=FakeStore(),
+            apns_sender=FakeApns(),
+            up_sender=FakeUP(),
+        )
+        assert result["sent"] == 1
+        assert FakeUP.sent[0][0] == "https://up.example.com/endpoint"
+        body = FakeUP.sent[0][1]
+        assert body["title"] == "Decide"
+        assert body["actions"] == [
+            {"id": "approve", "label": "Approve"},
+            {"id": "reject", "label": "Reject"},
+            {"id": "add_note", "label": "Add note"},
+        ]
+
+    async def test_ios_routes_to_apns_unchanged(self):
+        class FakeApns:
+            sent = []
+
+            async def send(self, push_token, payload, *, topic=None):
+                FakeApns.sent.append((push_token, payload))
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeUP:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeStore:
+            async def list_for_user(self, user_id):
+                return [
+                    {
+                        "device_id": "d1",
+                        "platform": "ios",
+                        "push_token": "apns-tok",
+                        "user_id": "u1",
+                    }
+                ]
+
+        row = {
+            "id": 1,
+            "title": "Hi",
+            "message": "there",
+            "source": "system",
+            "user_id": "u1",
+            "data": {},
+        }
+        result = await send_device_push(
+            row,
+            device_store=FakeStore(),
+            apns_sender=FakeApns(),
+            up_sender=FakeUP(),
+        )
+        assert result["sent"] == 1
+        assert FakeApns.sent[0][0] == "apns-tok"
+
+    async def test_broadcast_row_is_noop_for_device_push(self):
+        class FakeApns:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeUP:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeStore:
+            async def list_for_user(self, user_id):
+                return []
+
+        row = {"id": 1, "title": "Broadcast", "message": "", "source": "system", "user_id": None, "data": {}}
+        result = await send_device_push(
+            row,
+            device_store=FakeStore(),
+            apns_sender=FakeApns(),
+            up_sender=FakeUP(),
+        )
+        assert result == {"sent": 0, "failed": 0, "skipped": 0, "removed": 0}
+
+    async def test_no_push_token_device_is_skipped(self):
+        class FakeApns:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeUP:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeStore:
+            async def list_for_user(self, user_id):
+                return [
+                    {"device_id": "d1", "platform": "android", "push_token": "", "user_id": "u1"},
+                    {"device_id": "d2", "platform": "ios", "push_token": "tok", "user_id": "u1"},
+                ]
+
+        row = {"id": 1, "title": "Hi", "message": "", "source": "system", "user_id": "u1", "data": {}}
+        result = await send_device_push(
+            row,
+            device_store=FakeStore(),
+            apns_sender=FakeApns(),
+            up_sender=FakeUP(),
+        )
+        assert result["sent"] == 1
+        assert result["skipped"] == 1
+
+    # -----------------------------------------------------------------------
+    # tsk-42q2qf: a 410 Unregistered must delete the dead device token
+    # -----------------------------------------------------------------------
+
+    async def test_apns_410_clears_the_dead_push_token(self, tmp_path):
+        # 410 Unregistered is permanent: the token must be dropped from the
+        # store, otherwise every later notification retries a dead device
+        # forever. Uses the real DeviceStore so the SQL is exercised.
+        from tinyagentos.device_store import DeviceStore
+        from tinyagentos.push.apns import ApnsUnregistered
+
+        store = DeviceStore(tmp_path / "devices.db")
+        await store.init()
+        try:
+            dev = await store.register(
+                user_id="u1", platform="ios", push_token="deadtoken"
+            )
+
+            class FakeApns:
+                async def send(self, push_token, payload, *, topic=None):
+                    raise ApnsUnregistered(push_token, apns_id="AAAA", reason="Unregistered")
+
+                async def aclose(self):
+                    pass
+
+            class FakeUP:
+                async def send(self, *args, **kwargs):
+                    return True
+
+                async def aclose(self):
+                    pass
+
+            row = {
+                "id": 1, "title": "Hi", "message": "", "source": "system",
+                "user_id": "u1", "data": {},
+            }
+            result = await send_device_push(
+                row, device_store=store, apns_sender=FakeApns(), up_sender=FakeUP(),
+            )
+            assert result["removed"] == 1
+            assert result["failed"] == 0
+            after = await store.get(dev["device_id"])
+            assert after is not None, "the device row itself must survive"
+            assert after["push_token"] == "", "expected the dead token removed from the store"
+        finally:
+            await store.close()
+
+    async def test_apns_410_leaves_a_freshly_re_registered_token_alone(self, tmp_path):
+        # A device that re-registered between fan-out and the 410 response must
+        # keep its NEW token: the prune is scoped to the token that actually
+        # failed, so a live registration is not collateral damage.
+        from tinyagentos.device_store import DeviceStore
+        from tinyagentos.push.apns import ApnsUnregistered
+
+        store = DeviceStore(tmp_path / "devices.db")
+        await store.init()
+        try:
+            dev = await store.register(
+                user_id="u1", platform="ios", push_token="oldtoken"
+            )
+
+            class FakeApns:
+                async def send(self, push_token, payload, *, topic=None):
+                    await store.update_push_token(dev["device_id"], "freshtoken")
+                    raise ApnsUnregistered(push_token, apns_id="AAAA", reason="Unregistered")
+
+                async def aclose(self):
+                    pass
+
+            class FakeUP:
+                async def send(self, *args, **kwargs):
+                    return True
+
+                async def aclose(self):
+                    pass
+
+            row = {
+                "id": 1, "title": "Hi", "message": "", "source": "system",
+                "user_id": "u1", "data": {},
+            }
+            await send_device_push(
+                row, device_store=store, apns_sender=FakeApns(), up_sender=FakeUP(),
+            )
+            after = await store.get(dev["device_id"])
+            assert after["push_token"] == "freshtoken"
+        finally:
+            await store.close()
+    async def test_ios_decision_sets_category_mutable_content_and_actions(self):
+        # tsk-cf7wzc: an approve_deny decision must reach iOS with the
+        # DECISION_APPROVE_DENY category so the native shell maps it to a
+        # UNNotificationCategory with approve / reject / add-note buttons, and
+        # mutable-content so the service extension can attach the image and
+        # wire the action callback that posts back to Decisions answer.
+        class FakeApns:
+            sent = []
+
+            async def send(self, push_token, payload, *, topic=None):
+                FakeApns.sent.append(payload)
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeUP:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeStore:
+            async def list_for_user(self, user_id):
+                return [
+                    {"device_id": "d1", "platform": "ios", "push_token": "apns-tok", "user_id": "u1"}
+                ]
+
+        row = {
+            "id": 1,
+            "title": "Deploy",
+            "message": "approve?",
+            "source": "decisions",
+            "user_id": "u1",
+            "data": {
+                "decision_type": "approve_deny",
+                "image": "https://cdn.example.com/run/42.png",
+            },
+        }
+        await send_device_push(
+            row,
+            device_store=FakeStore(),
+            apns_sender=FakeApns(),
+            up_sender=FakeUP(),
+        )
+        assert len(FakeApns.sent) == 1
+        payload = FakeApns.sent[0]
+        assert payload["aps"]["category"] == "DECISION_APPROVE_DENY"
+        assert payload["aps"]["mutable-content"] == 1
+        assert payload["aps"]["alert"] == {"title": "Deploy", "body": "approve?"}
+        # APNs flattens `data` into the top-level payload (per Apple docs), so
+        # the iOS shell + service extension read actions / image directly off
+        # the root, not under a nested `data` key.
+        assert payload["actions"] == [
+            {"id": "approve", "label": "Approve"},
+            {"id": "reject", "label": "Reject"},
+            {"id": "add_note", "label": "Add note"},
+        ]
+        assert payload["image"] == "https://cdn.example.com/run/42.png"
+        assert payload["decision_type"] == "approve_deny"
+
+    async def test_android_decision_carries_image_and_actions(self):
+        # tsk-cf7wzc: UnifiedPush distributors get a uniform shape -- top-level
+        # `image` for distributors that render attachments, `actions` for
+        # button rows, and the inner `data` mirror for clients that only read
+        # one of the two.
+        class FakeApns:
+            async def send(self, *args, **kwargs):
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeUP:
+            sent = []
+
+            async def send(self, push_token, payload):
+                FakeUP.sent.append(payload)
+                return True
+
+            async def aclose(self):
+                pass
+
+        class FakeStore:
+            async def list_for_user(self, user_id):
+                return [
+                    {"device_id": "d1", "platform": "android", "push_token": "https://up.example.com/e", "user_id": "u1"}
+                ]
+
+        row = {
+            "id": 1,
+            "title": "Deploy",
+            "message": "approve?",
+            "source": "decisions",
+            "user_id": "u1",
+            "data": {
+                "decision_type": "approve_deny",
+                "image": "https://cdn.example.com/run/42.png",
+            },
+        }
+        await send_device_push(
+            row,
+            device_store=FakeStore(),
+            apns_sender=FakeApns(),
+            up_sender=FakeUP(),
+        )
+        assert len(FakeUP.sent) == 1
+        body = FakeUP.sent[0]
+        assert body["image"] == "https://cdn.example.com/run/42.png"
+        assert body["actions"] == [
+            {"id": "approve", "label": "Approve"},
+            {"id": "reject", "label": "Reject"},
+            {"id": "add_note", "label": "Add note"},
+        ]
+        assert body["data"]["image"] == "https://cdn.example.com/run/42.png"
+        assert body["data"]["actions"] == body["actions"]

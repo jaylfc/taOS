@@ -1,4 +1,4 @@
-.row { display: grid; grid-template-columns: 200px 1fr 1fr 1fr; gap: 10px; padding: 12px 0; border-top: 1px solid var(--board-hair); }
+.row { display: grid; grid-template-columns: 200px 1fr 1fr 1fr 1fr; gap: 10px; padding: 12px 0; border-top: 1px solid var(--board-hair); }
 .row:first-child { border-top: 0; }
 .head { display: flex; align-items: center; gap: 10px; padding: 4px 8px; }
 .av { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg,#0891b2,#06b6d4); display: flex; align-items: center; justify-content: center; color: white; font: 600 13px -apple-system; }

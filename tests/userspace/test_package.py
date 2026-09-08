@@ -82,8 +82,8 @@ def test_extract_rejects_dot_member(tmp_path):
 def test_extract_rejects_zip_bomb(tmp_path, monkeypatch):
     # Zip-bomb defense: cap the declared uncompressed total low and confirm an
     # over-cap package is rejected before extraction.
-    import tinyagentos.userspace.package as pkg
-    monkeypatch.setattr(pkg, "_MAX_UNCOMPRESSED_BYTES", 8)
+    from tinyagentos import safe_archive
+    monkeypatch.setattr(safe_archive, "MAX_UNCOMPRESSED_BYTES", 8)
     data = _zip(WEB_MANIFEST, {"index.html": "<h1>more than eight bytes</h1>"})
     with pytest.raises(PackageError, match="uncompressed size too large"):
         extract_package(data, apps_root=tmp_path)

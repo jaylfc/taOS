@@ -109,3 +109,21 @@ class TestWorkerTierIdPiBucket:
             "ram_mb": 32768,
         }
         assert worker_tier_id(hw) == "x86-cuda-8gb"
+
+    def test_string_gpu_field_does_not_crash(self):
+        """Older agents may send gpu as a plain string instead of a dict."""
+        hw = {
+            "cpu": {"arch": "x86_64"},
+            "gpu": "nvidia",
+            "ram_mb": 16384,
+        }
+        assert worker_tier_id(hw) == "x86-cpu-16gb"
+
+    def test_string_npu_field_does_not_crash(self):
+        """Older agents may send npu as a plain string instead of a dict."""
+        hw = {
+            "cpu": {"arch": "aarch64"},
+            "npu": "rk3588",
+            "ram_mb": 16384,
+        }
+        assert worker_tier_id(hw) == "arm-cpu-16gb"

@@ -9,10 +9,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+
+from tinyagentos.atomic_io import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -203,12 +204,14 @@ class CanvasSnapshotter:
         canvas_dir = self._data_root / slug / "canvas"
         canvas_dir.mkdir(parents=True, exist_ok=True)
         target = canvas_dir / "board.tldr"
-        tmp = canvas_dir / f"board.tldr.{os.getpid()}.tmp"
 
         elements = await self._canvas_store.list_elements(project_id)
         snapshot = _build_tldraw_snapshot(elements)
-        tmp.write_text(json.dumps(snapshot, separators=(",", ":")))
-        os.replace(tmp, target)
+        # fsync of the file and of the parent dir are blocking syscalls; a board
+        # snapshot is the largest of these writes, so keep it off the event loop.
+        await asyncio.to_thread(
+            atomic_write_text, target, json.dumps(snapshot, separators=(",", ":"))
+        )
         return target
 
 

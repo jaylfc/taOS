@@ -88,5 +88,5 @@ async def test_frameworks_known_adapters_present(client):
     resp = await client.get("/api/frameworks")
     assert resp.status_code == 200
     ids = {e["id"] for e in resp.json()}
-    for expected in ("smolagents", "generic", "hermes", "openclaw", "langroid"):
+    for expected in ("smolagents", "generic", "hermes", "openclaw", "langroid", "omp"):
         assert expected in ids, f"expected adapter {expected!r} missing from response"

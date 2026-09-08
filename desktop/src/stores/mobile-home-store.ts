@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { getAllApps } from "@/registry/app-registry";
+import { getAllApps, isDefaultSurfaceApp } from "@/registry/app-registry";
 
 type WidgetItem = { type: "widget"; widgetType: string };
 type AppItem = { type: "app"; appId: string };
@@ -22,9 +22,12 @@ const DEFAULT_PAGES: HomePage[] = [
   },
   {
     // Optional apps (Reddit/YouTube/GitHub/X) are excluded from the default
-    // home grid; they ship uninstalled and are added from the Store.
+    // home grid; they ship uninstalled and are added from the Store. tier 3
+    // apps (providers, mcp, channels, notification-archive) are discoverable
+    // via Store/search rather than the default surface; the shared helper
+    // keeps this rule in lockstep with the desktop launcher (issue #2517).
     items: getAllApps()
-      .filter((a) => !a.optional && a.tier !== 4 && a.handler !== true)
+      .filter(isDefaultSurfaceApp)
       .map((a) => ({ type: "app", appId: a.id }) as AppItem),
   },
 ];

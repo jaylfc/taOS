@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.client_log_store import VALID_LEVELS
-from tinyagentos.rate_limit import RateLimiter
+from tinyagentos.rate_limit import RateLimiter, rate_limited_response
 
 router = APIRouter()
 
@@ -46,7 +46,9 @@ async def post_client_log(
     # Only valid writes are rate-limited (malformed requests already 400 above
     # and never reach the buffer), so a flood of real logs cannot evict others'.
     if not _post_limiter.check(user.user_id):
-        return JSONResponse({"error": "rate limited, slow down"}, status_code=429)
+        return rate_limited_response(
+            "rate limited, slow down", _post_limiter.retry_after(user.user_id)
+        )
     store = request.app.state.client_log_store
     rec = await store.create(
         user_id=user.user_id,

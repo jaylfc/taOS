@@ -172,6 +172,8 @@ class TestAgentCanDriveOwnBoard:
             )
         assert resp.status_code == 200, resp.text
         assert resp.json()["priority"] == 7
+        after = await ctx.client.get(f"/api/projects/{pid}/tasks/{tid}")
+        assert after.json()["priority"] == 7
 
     async def test_lead_agent_patch_labels_succeeds(self, ctx):
         pid = await _new_project(ctx, "alpha")
@@ -187,6 +189,8 @@ class TestAgentCanDriveOwnBoard:
             )
         assert resp.status_code == 200, resp.text
         assert resp.json()["labels"] == ["bug", "urgent"]
+        after = await ctx.client.get(f"/api/projects/{pid}/tasks/{tid}")
+        assert after.json()["labels"] == ["bug", "urgent"]
 
     async def test_lead_agent_patch_title_succeeds(self, ctx):
         pid = await _new_project(ctx, "alpha")
@@ -202,6 +206,8 @@ class TestAgentCanDriveOwnBoard:
             )
         assert resp.status_code == 200, resp.text
         assert resp.json()["title"] == "renamed by agent"
+        after = await ctx.client.get(f"/api/projects/{pid}/tasks/{tid}")
+        assert after.json()["title"] == "renamed by agent"
 
     async def test_agent_patch_assignee_id_rejected(self, ctx):
         """assignee_id stays human-only: an agent PATCH of it -> 403."""
@@ -232,6 +238,67 @@ class TestAgentCanDriveOwnBoard:
                 headers=_hdr(token),
             )
         assert resp.status_code == 403
+
+    async def test_agent_patch_null_assignee_rejected(self, ctx):
+        """An explicit null is a WRITE (it clears the column, tsk-5xq2mw), so the
+        agent whitelist must refuse it exactly like a non-null value -> 403.
+        Keyed on which fields the caller SENT, not on their value."""
+        pid = await _new_project(ctx, "alpha")
+        tid = await _new_task(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid, scopes=("project_tasks_update",))
+        await ctx.app.state.project_store.add_member(pid, cid, "native")
+        await ctx.app.state.project_store.set_lead(pid, cid)
+        await ctx.client.patch(
+            f"/api/projects/{pid}/tasks/{tid}", json={"assignee_id": "worker-1"}
+        )
+        async with _bare(ctx.app) as bare:
+            resp = await bare.patch(
+                f"/api/projects/{pid}/tasks/{tid}",
+                json={"assignee_id": None},
+                headers=_hdr(token),
+            )
+            assert resp.status_code == 403, resp.text
+        # Re-read as the admin session: this token carries project_tasks_update
+        # only, which does not authorize a read.
+        after = await ctx.client.get(f"/api/projects/{pid}/tasks/{tid}")
+        assert after.json()["assignee_id"] == "worker-1"
+
+    async def test_agent_patch_null_parent_rejected(self, ctx):
+        """Same for parent_task_id: clearing a hierarchy stays human-only."""
+        pid = await _new_project(ctx, "alpha")
+        parent = await _new_task(ctx, pid, title="Parent")
+        tid = await _new_task(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid, scopes=("project_tasks_update",))
+        await ctx.app.state.project_store.add_member(pid, cid, "native")
+        await ctx.app.state.project_store.set_lead(pid, cid)
+        await ctx.client.patch(
+            f"/api/projects/{pid}/tasks/{tid}", json={"parent_task_id": parent}
+        )
+        async with _bare(ctx.app) as bare:
+            resp = await bare.patch(
+                f"/api/projects/{pid}/tasks/{tid}",
+                json={"parent_task_id": None},
+                headers=_hdr(token),
+            )
+            assert resp.status_code == 403, resp.text
+        after = await ctx.client.get(f"/api/projects/{pid}/tasks/{tid}")
+        assert after.json()["parent_task_id"] == parent
+
+    async def test_agent_patch_unknown_field_is_422(self, ctx):
+        """A field this route cannot write is refused, not answered 200 with an
+        unchanged task (tsk-5xq2mw)."""
+        pid = await _new_project(ctx, "alpha")
+        tid = await _new_task(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid, scopes=("project_tasks_update",))
+        await ctx.app.state.project_store.add_member(pid, cid, "native")
+        await ctx.app.state.project_store.set_lead(pid, cid)
+        async with _bare(ctx.app) as bare:
+            resp = await bare.patch(
+                f"/api/projects/{pid}/tasks/{tid}",
+                json={"created_by": "someone-else"},
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 422, resp.text
 
     async def test_non_lead_agent_patch_rejected(self, ctx):
         """An agent that neither created nor leads the project cannot PATCH

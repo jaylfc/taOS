@@ -11,6 +11,10 @@ production use once the mirror seedbox is live (Phase 2).
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import sys
+import time
+import tracemalloc
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -263,3 +267,56 @@ async def test_download_manager_torrent_sha256_mismatch_falls_back_to_http(tmp_p
     # HTTP fallback succeeded, torrent was attempted
     assert fake_torrent.download.called
     assert dest.read_bytes() == http_data
+
+
+@pytest.mark.asyncio
+async def test_torrent_download_sha256_under_memory_budget(tmp_path: Path):
+    """R2-19: TorrentDownloader.download must not load the whole file into RAM."""
+    path = tmp_path / "sparse.bin"
+    with open(path, "wb") as f:
+        f.seek(64 * 1024 * 1024 - 1)
+        f.write(b"\x00")
+    reference = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            reference.update(chunk)
+    reference = reference.hexdigest()
+
+    mock_lt = MagicMock()
+    mock_status = MagicMock()
+    mock_status.state = "seeding"
+    mock_status.progress = 1.0
+    mock_status.num_peers = 1
+    mock_handle = MagicMock()
+    mock_handle.status.return_value = mock_status
+    mock_session = MagicMock()
+    mock_session.add_torrent.return_value = mock_handle
+    mock_lt.session.return_value = mock_session
+    mock_lt.torrent_status.seeding = "seeding"
+    mock_lt.parse_magnet_uri.return_value = MagicMock()
+
+    with patch.dict(sys.modules, {"libtorrent": mock_lt}), \
+         patch("tinyagentos.torrent_downloader.TORRENT_AVAILABLE", True), \
+         patch("tinyagentos.torrent_downloader.lt", mock_lt):
+        from tinyagentos.torrent_downloader import TorrentDownloader
+        downloader = TorrentDownloader.__new__(TorrentDownloader)
+        downloader.settings = MagicMock()
+        downloader.settings.seed_enabled = False
+        downloader._session = mock_session
+        downloader._peer_timeout = 30.0
+        downloader._handles = {}
+        downloader._tasks = {}
+
+        tracemalloc.start()
+        tracemalloc.reset_peak()
+        task = await downloader.download(
+            task_id="dl",
+            magnet_or_torrent="magnet:?xt=urn:btih:abc",
+            dest=path,
+            expected_sha256=reference,
+        )
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
+        assert task.status == "complete"
+        assert peak < 5 * 1024 * 1024, f"peak allocation {peak} bytes exceeds 5 MB budget"

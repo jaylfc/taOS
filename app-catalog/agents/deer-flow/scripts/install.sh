@@ -18,7 +18,32 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
 # ---------------------------------------------------------------------------
 # uv provisions Python 3.12 and the backend deps from backend/.python-version.
 if ! command -v uv >/dev/null 2>&1; then
-  curl -LsSf https://astral.sh/uv/install.sh | sh
+  UV_VERSION="0.12.10"
+  _fetch_and_verify() {
+    local url="$1"
+    local expected="$2"
+    local dest="$3"
+    if ! curl -fsSL -o "$dest" "$url"; then
+      echo "[deer-flow] FATAL: failed to download $url" >&2
+      exit 1
+    fi
+    local actual
+    actual=$(sha256sum "$dest" | awk '{print $1}')
+    if [ "$actual" != "$expected" ]; then
+      echo "[deer-flow] FATAL: hash mismatch for $url" >&2
+      echo "[deer-flow] expected: $expected" >&2
+      echo "[deer-flow] actual:   $actual" >&2
+      rm -f "$dest"
+      exit 1
+    fi
+  }
+  # Immutable, version-pinned installer (measured 2026-09-06):
+  #   url: https://github.com/astral-sh/uv/releases/download/0.12.10/uv-installer.sh
+  #   sha256sum: a3196b75f697a1adaa5e4af34ffba7629c710931ab1dac33bab59ecf228080bb
+  _fetch_and_verify "https://github.com/astral-sh/uv/releases/download/0.12.10/uv-installer.sh" \
+    "a3196b75f697a1adaa5e4af34ffba7629c710931ab1dac33bab59ecf228080bb" \
+    /tmp/uv-install.sh
+  UV_VERSION="${UV_VERSION}" sh /tmp/uv-install.sh
 fi
 
 # The installer drops uv into ~/.local/bin (or /root/.local/bin when run as

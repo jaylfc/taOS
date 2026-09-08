@@ -807,6 +807,7 @@ class GpuArbiter:
                     # _drain_queue skips cancelled entries at dequeue time.
             else:
                 self._dropped += 1
+                self._queued_entries.pop(entry.task.id, None)
                 future = getattr(entry.task, "_arbiter_future", None)
                 if future is not None and not future.done():
                     future.set_exception(NoResourceAvailableError("queue full, task dropped"))
@@ -869,11 +870,45 @@ class GpuArbiter:
             return bool(await self._evict_task(task_id))
         return False
 
+    async def cancel_queued_for_resource(self, resource_id: str | None) -> int:
+        """Cancel every queued GPU task targeting *resource_id*.
+
+        Fence-handler companion to ``cancel_running_for_leases``: when a worker
+        is fenced the arbiter must proactively cancel queued ops destined for it
+        rather than let them sit until ``claim_lease`` rejects them on
+        admission (a delayed error rather than a proactive cancel).
+
+        Reuses ``cancel_op``'s race-safe ``_cancelled_ids`` path so the
+        cooperative re-checks in ``_drain_queue`` (at dequeue, post-admit, and
+        post-re-queue) stay consistent, with no second cancellation mechanism
+        invented. If a victim was promoted to ``_running`` during the await
+        window, ``cancel_op`` falls through to eviction of the running task.
+
+        Returns the number of queued entries cancelled.
+        """
+        if resource_id is None:
+            return 0
+        victims = [
+            e.task.id for e in self._queued_entries.values()
+            if e.resource_id == resource_id
+        ]
+        cancelled = 0
+        for task_id in victims:
+            if await self.cancel_op(task_id):
+                cancelled += 1
+        if cancelled:
+            logger.info(
+                "gpu-arbiter: cancelled %d queued op(s) for fenced "
+                "resource %s", cancelled, resource_id,
+            )
+        return cancelled
+
     def queue_snapshot(self) -> list[dict]:
         now = time.time()
         return [
             {"task_id": e.task.id, "capability": e.task.capability.value,
              "op": e.op, "model": e.model, "backend_name": e.backend_name,
+             "resource_id": e.resource_id,
              "submitter": e.task.submitter, "priority": e.priority,
              "vram_mb": e.required_vram_mb,
              "queued_seconds": now - e.queued_at,

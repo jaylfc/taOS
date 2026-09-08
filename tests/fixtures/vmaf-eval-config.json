@@ -1,0 +1,14 @@
+{
+  "pairs": [
+    {
+      "video": "clip1",
+      "source": "tests/fixtures/clip1.mp4",
+      "variant": "tests/fixtures/clip1_low.mp4"
+    },
+    {
+      "video": "clip2",
+      "source": "tests/fixtures/clip2.mp4",
+      "variant": "tests/fixtures/clip2_low.mp4"
+    }
+  ]
+}

@@ -10,6 +10,7 @@ import yaml
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from taos_test_csrf import arm_test_client
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +53,7 @@ def authed_client(ws_app):
     token = ws_app.state.auth.create_session(user_id=record["id"], long_lived=True)
     with TestClient(ws_app, raise_server_exceptions=False) as c:
         c.cookies.set("taos_session", token)
+        arm_test_client(c)
         yield c
 
 
@@ -83,6 +85,7 @@ class TestTerminalWsAuth:
 
         with TestClient(ws_app, raise_server_exceptions=False) as c:
             c.cookies.set("taos_session", "not-a-real-session-token")
+            arm_test_client(c)
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 with c.websocket_connect("/ws/terminal") as ws:
                     ws.receive_text()
@@ -106,6 +109,7 @@ class TestChatWsAuth:
     def test_invalid_session_cookie_is_rejected(self, ws_app):
         with TestClient(ws_app, raise_server_exceptions=False) as c:
             c.cookies.set("taos_session", "invalid-token")
+            arm_test_client(c)
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 with c.websocket_connect("/ws/chat") as ws:
                     ws.receive_text()
@@ -135,6 +139,7 @@ class TestCanvasWsAuth:
     def test_invalid_session_cookie_is_rejected(self, ws_app):
         with TestClient(ws_app, raise_server_exceptions=False) as c:
             c.cookies.set("taos_session", "bad-token")
+            arm_test_client(c)
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 with c.websocket_connect("/ws/canvas/test-canvas-id") as ws:
                     ws.receive_text()
@@ -163,6 +168,7 @@ class TestWebchatWsAuth:
     def test_invalid_session_cookie_is_rejected(self, ws_app):
         with TestClient(ws_app, raise_server_exceptions=False) as c:
             c.cookies.set("taos_session", "bad-token")
+            arm_test_client(c)
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 with c.websocket_connect("/ws/chat/some-agent") as ws:
                     ws.receive_text()

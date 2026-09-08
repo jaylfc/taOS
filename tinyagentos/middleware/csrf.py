@@ -37,6 +37,42 @@ _COOKIE_NAME = "csrf_token"
 _HEADER_NAME = "x-csrf-token"
 _TOKEN_BYTES = 32  # 256 bits
 
+# Routes that ESTABLISH a credential rather than act on one.
+#
+# These are exempt by PATH, deliberately and permanently.  They used to be
+# exempt only as a side effect of the "no taos_session cookie" rule below,
+# which is a proxy for "not signed in" — and that proxy inverts at exactly the
+# wrong moment.  A browser holding an EXPIRED session cookie still SENDS it, so
+# the rule concluded "this request is cookie-authenticated, enforce CSRF" about
+# a user who was not authenticated at all and was trying to fix that.  The
+# server-rendered sign-in form cannot satisfy a double-submit check either: it
+# is a plain HTML form POST with no JavaScript to attach an X-CSRF-Token
+# header.  The result was a 403 on every sign-in surface, i.e. a lockout that
+# retrying cannot clear — terminal on a keyboard-less kiosk (#2081).
+#
+# Exempting them costs nothing that was ever being protected: there is no
+# session to hijack until one of these routes mints it.  Login CSRF (forcing a
+# victim to sign in as the attacker) remains possible, as it already was for
+# every cookie-less caller, which is the overwhelmingly common case.  Closing
+# that would need a signed hidden form field, not this dependency.
+#
+# Keep this list MINIMAL.  Anything that acts on an already-valid session must
+# stay protected; `tests/test_csrf_login_lockout.py` holds that direction.
+_CREDENTIAL_PATHS = frozenset(
+    {
+        "/auth/login",       # password form + SPA handoff
+        "/auth/pin-login",   # console PIN keypad
+        "/auth/setup",       # first-run account creation
+        "/auth/complete",    # invited user setting their password
+        "/setup/complete",   # first-boot wizard (dashboard router, form POST)
+    }
+)
+
+# Every entry above is also in ``auth_middleware.EXEMPT_PATHS`` -- that is the
+# authoritative list of paths reachable with no credential, and a path can only
+# need this exemption if it is on it.  ``test_csrf_login_lockout.py`` asserts
+# the containment so the two lists cannot drift apart.
+
 
 class CSRFMiddleware(BaseHTTPMiddleware):
     """Ensure every response carries a ``csrf_token`` cookie.
@@ -84,9 +120,12 @@ def verify_csrf(conn: HTTPConnection) -> None:
     * Safe HTTP methods (GET / HEAD / OPTIONS) are always exempt.
     * Requests authenticated via ``Authorization: Bearer …`` are exempt —
       the bearer token itself is unforgeable from a third-party origin.
+    * Credential-establishing routes (``_CREDENTIAL_PATHS``) are exempt by
+      path.  They must work for a browser that is holding a STALE session
+      cookie, which is precisely when the cookie rule below stops exempting
+      them.
     * Requests without a ``taos_session`` cookie are exempt — without an
-      active cookie-session there is nothing for CSRF to hijack (login and
-      setup endpoints fall into this category).
+      active cookie-session there is nothing for CSRF to hijack.
 
     For protected requests the ``X-CSRF-Token`` header must match the
     ``csrf_token`` cookie value (double-submit pattern).
@@ -99,6 +138,11 @@ def verify_csrf(conn: HTTPConnection) -> None:
     # Bearer-authenticated requests are not subject to CSRF.
     auth_header = conn.headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):
+        return
+
+    # Signing in must work while a stale cookie is present. Checked BEFORE the
+    # cookie rule, because the stale cookie is what defeats that rule.
+    if conn.url.path.rstrip("/") in _CREDENTIAL_PATHS:
         return
 
     # No session cookie → not cookie-authenticated → no CSRF risk.

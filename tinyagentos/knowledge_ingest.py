@@ -4,12 +4,17 @@ import asyncio
 import logging
 import re
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     import httpx
     from tinyagentos.knowledge_store import KnowledgeStore
     from tinyagentos.knowledge_categories import CategoryEngine
     from tinyagentos.notifications import NotificationStore
+
+# Import readability for extraction
+from readability import Document
+import html as _html_mod
 
 logger = logging.getLogger(__name__)
 
@@ -35,38 +40,106 @@ _DEFAULT_MONITOR: dict[str, dict] = {
     "manual":  {"frequency": 0,     "decay_rate": 1.0, "stop_after_days": 0,   "pinned": False, "last_poll": 0, "current_interval": 0},
 }
 
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _chunk_text(text: str, max_chars: int = 2000, overlap_chars: int = 200) -> list[str]:
+    """Split *text* into chunks at sentence boundaries with overlap.
+
+    Sentences are split on ``.`` / ``!`` / ``?`` followed by whitespace.
+    Chunks accumulate complete sentences until *max_chars* is reached, then
+    the last sentence(s) that fit within *overlap_chars* are prepended to the
+    next chunk so context is preserved across boundaries.
+
+    Falls back to a sliding character window (with overlap) when no sentence
+    boundaries are present.  Text shorter than *max_chars* is returned as a
+    single chunk.
+    """
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+
+    sentences = [s.strip() for s in _SENTENCE_END_RE.split(text) if s.strip()]
+
+    if not sentences:
+        step = max(1, max_chars - overlap_chars)
+        return [text[i : i + max_chars] for i in range(0, len(text), step)]
+
+    chunks: list[str] = []
+    current: list[str] = []
+
+    for sent in sentences:
+        if current and len(" ".join(current)) + 1 + len(sent) > max_chars:
+            chunks.append(" ".join(current))
+            overlap: list[str] = []
+            for s in reversed(current):
+                trial = " ".join([*overlap, s]) if overlap else s
+                if len(trial) <= overlap_chars:
+                    overlap.insert(0, s)
+                else:
+                    break
+            current = overlap
+        current.append(sent)
+
+    if current:
+        chunks.append(" ".join(current))
+
+    return chunks
+
 
 def resolve_source_type(url: str) -> str:
     """Identify the content platform from a URL.
 
     Returns one of: reddit, youtube, x, github, article.
+
+    Matching keys off the URL *hostname* (exact or a subdomain of the
+    platform) so a platform name appearing in a query string or a foreign
+    path cannot spoof a different source type.
     """
-    url_lower = url.lower()
-    if re.search(r"(^|[./])reddit\.com/", url_lower):
+    hostname = (urlsplit(url).hostname or "").lower()
+    if hostname == "reddit.com" or hostname.endswith(".reddit.com"):
         return "reddit"
-    if re.search(r"(^|[./])youtube\.com/watch|youtu\.be/", url_lower):
+    if hostname == "youtube.com" or hostname.endswith(".youtube.com") or hostname == "youtu.be":
         return "youtube"
-    if re.search(r"(^|[./])(x\.com|twitter\.com)/", url_lower):
+    if (
+        hostname == "x.com"
+        or hostname.endswith(".x.com")
+        or hostname == "twitter.com"
+        or hostname.endswith(".twitter.com")
+    ):
         return "x"
-    if re.search(r"(^|[./])github\.com/", url_lower):
+    if hostname == "github.com" or hostname == "www.github.com":
         return "github"
     return "article"
 
 
 def _extract_text_readability(html: str) -> str:
-    """Very lightweight readability extraction: strip tags, collapse whitespace.
-
-    A proper implementation would use a library like ``readability-lxml``.
-    This stub is sufficient for unit-tested pipeline flow; swap in a real
-    extractor in production without changing the interface.
+    """Extract readable text from HTML using readability-lxml.
+    
+    Uses readability-lxml when available; falls back to simple tag-stripping.
+    Handles HTML entities properly.
     """
-    # Remove script and style blocks
-    html = re.sub(r"<(script|style)[^>]*>.*?</(script|style)>", "", html, flags=re.DOTALL | re.IGNORECASE)
-    # Strip tags
-    text = re.sub(r"<[^>]+>", " ", html)
-    # Collapse whitespace
+    try:
+        doc = Document(html)
+        content = doc.summary()
+        # Strip remaining HTML from readability output
+        text = re.sub(r"<[^>]+>", " ", content)
+        text = re.sub(r"\s+", " ", text).strip()
+        return _html_mod.unescape(text)
+    except ImportError:
+        logger.debug("readability-lxml not installed — using simple extractor")
+    except Exception:
+        logger.warning("readability extraction failed", exc_info=True)
+
+    # Fallback: simple tag-stripping
+    cleaned = re.sub(
+        r"<(script|style)[^>]*>.*?</(script|style)>", "", html,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    text = re.sub(r"<[^>]+>", " ", cleaned)
     text = re.sub(r"\s+", " ", text).strip()
-    return text
+    return _html_mod.unescape(text)
 
 
 class IngestPipeline:
@@ -87,9 +160,20 @@ class IngestPipeline:
         qmd_base_url: str = "",
         llm_base_url: str = "",
         max_concurrent: int = _INGEST_SEMAPHORE_SLOTS,
+        fetch_client: "httpx.AsyncClient | None" = None,
     ) -> None:
+        """`http_client` talks to our own services (the LLM backend, qmd), so
+        it must stay unguarded — they live on loopback. Article URLs are
+        user-supplied and are fetched with `fetch_client` instead, which
+        defaults to a fresh SSRF-pinned client per download; pass one only if
+        it is guarded too. If the object passed in is an `httpx.AsyncClient`,
+        this is enforced at fetch time — it must carry the
+        `SsrfGuardedAsyncTransport`, or a `TypeError` is raised. Test doubles
+        that are not `httpx.AsyncClient` (mocks, fakes) are exempt.
+        """
         self._store = store
         self._http_client = http_client
+        self._fetch_client = fetch_client
         self._notifications = notifications
         self._category_engine = category_engine
         self._qmd_base_url = qmd_base_url
@@ -189,9 +273,9 @@ class IngestPipeline:
             summary = await self._summarise(title, content)
 
             # Step 4: embed via QMD (best-effort, non-fatal)
-            await self._embed(item_id, title, content)
+            embed_failures = await self._embed(item_id, title, content)
 
-            # Step 5: write final data and mark ready
+            # Step 5: write final data
             await self._store.update_item(
                 item_id,
                 title=title or item["source_url"],
@@ -201,7 +285,10 @@ class IngestPipeline:
                 categories=categories,
                 metadata=metadata,
             )
-            await self._store.update_status(item_id, "ready")
+            if embed_failures:
+                await self._store.update_status(item_id, "partial")
+            else:
+                await self._store.update_status(item_id, "ready")
 
             # Step 6: notify subscribed agents
             await self._notify(item_id, title, categories)
@@ -286,30 +373,56 @@ class IngestPipeline:
         against the loopback / link-local / private-range blocklist before the
         request is issued, so an attacker-supplied URL (or a public URL that
         302-redirects inward) cannot make the host fetch internal services.
+        The fetch itself goes through an SSRF-pinned client, so the address
+        that passed the blocklist is the address the socket is opened to.
         """
+        from contextlib import nullcontext
         from urllib.parse import urljoin
+
+        import httpx
 
         from tinyagentos.routes.desktop_browser.ssrf import (
             SsrfBlockedError,
+            SsrfGuardedAsyncTransport,
+            guarded_async_client,
             validate_url_or_raise,
         )
 
+        # A caller-supplied fetch_client that IS an httpx.AsyncClient must
+        # carry the SSRF-pinned transport, or the guard is silently bypassed
+        # for every article fetch through this pipeline (e.g. a shared
+        # app-wide client handed in by mistake). Test doubles that are not
+        # httpx.AsyncClient at all (mocks, fakes) pass through unchanged.
+        if self._fetch_client is not None and isinstance(self._fetch_client, httpx.AsyncClient):
+            if not isinstance(
+                getattr(self._fetch_client, "_transport", None), SsrfGuardedAsyncTransport
+            ):
+                raise TypeError("fetch_client must be built by guarded_async_client")
+
+        client_cm = (
+            nullcontext(self._fetch_client)
+            if self._fetch_client is not None
+            else guarded_async_client()
+        )
         current_url = url
         resp = None
-        for _hop in range(_MAX_ARTICLE_REDIRECTS + 1):
-            validate_url_or_raise(current_url)  # raises SsrfBlockedError
-            resp = await self._http_client.get(
-                current_url, timeout=30, follow_redirects=False
-            )
-            if resp.is_redirect and resp.headers.get("location"):
-                current_url = urljoin(current_url, resp.headers["location"])
-                continue
-            break
-        else:
-            raise SsrfBlockedError(f"too many redirects fetching {url!r}")
+        async with client_cm as http:
+            for _hop in range(_MAX_ARTICLE_REDIRECTS + 1):
+                validate_url_or_raise(current_url)  # raises SsrfBlockedError
+                resp = await http.get(
+                    current_url, timeout=30, follow_redirects=False
+                )
+                if resp.is_redirect and resp.headers.get("location"):
+                    current_url = urljoin(current_url, resp.headers["location"])
+                    continue
+                break
+            else:
+                raise SsrfBlockedError(f"too many redirects fetching {url!r}")
 
         resp.raise_for_status()
-        html = resp.text
+        from tinyagentos.web_fetch import stream_text_response
+        _, _, html_bytes = await stream_text_response(resp)
+        html = html_bytes.decode("utf-8", errors="replace")
         content = _extract_text_readability(html)
         if len(content) < _MIN_CONTENT_CHARS:
             logger.warning("Readability extraction returned short content for %s (%d chars)", url, len(content))
@@ -352,17 +465,33 @@ class IngestPipeline:
     # Embed step
     # ------------------------------------------------------------------
 
-    async def _embed(self, item_id: str, title: str, content: str) -> None:
-        """Send content to QMD for vector embedding into the 'knowledge' collection."""
+    async def _embed(self, item_id: str, title: str, content: str) -> int:
+        """Send content to QMD for vector embedding into the 'knowledge' collection.
+
+        Returns the number of chunks that failed to embed.
+        """
         if not self._qmd_base_url or not content:
-            return
+            return 0
         text_to_embed = f"{title}\n\n{content}"
-        # Chunk if content is very long (simple fixed-size chunking)
-        chunk_size = 2000
-        chunks = [text_to_embed[i:i + chunk_size] for i in range(0, len(text_to_embed), chunk_size)]
+        chunks = _chunk_text(text_to_embed, max_chars=2000, overlap_chars=200)
+        # Delete old chunks for this item before inserting new ones so that
+        # re-embedding (e.g. after an update or algorithm change) does not leave
+        # orphaned chunks from a previous run.
+        try:
+            await self._http_client.post(
+                f"{self._qmd_base_url}/delete-chunk",
+                json={
+                    "collection": "knowledge",
+                    "path": f"knowledge/{item_id}",
+                },
+                timeout=30,
+            )
+        except Exception as exc:
+            logger.warning("QMD delete-chunk failed for item %s: %s", item_id, exc)
+        failures = 0
         for seq, chunk in enumerate(chunks):
             try:
-                await self._http_client.post(
+                resp = await self._http_client.post(
                     f"{self._qmd_base_url}/ingest",
                     json={
                         "collection": "knowledge",
@@ -372,8 +501,11 @@ class IngestPipeline:
                     },
                     timeout=60,
                 )
+                resp.raise_for_status()
             except Exception as exc:
+                failures += 1
                 logger.warning("QMD embed failed for item %s chunk %d: %s", item_id, seq, exc)
+        return failures
 
     # ------------------------------------------------------------------
     # Notify step

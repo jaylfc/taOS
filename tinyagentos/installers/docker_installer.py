@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import secrets
 import shutil
 from pathlib import Path
@@ -18,6 +19,30 @@ class DockerInstaller(AppInstaller):
 
     def _compose_path(self, app_id: str) -> Path:
         return self.apps_dir / app_id / "docker-compose.yaml"
+
+    def _get_or_create_secret_key(self, app_id: str) -> str:
+        """Load or create the per-app secret key, persisted in ``<app_dir>/.secret_key``.
+
+        Reused by both ``_write_config_files`` and ``_generate_compose`` so that
+        apps shipping ``{secret_key}`` in either ``config_files`` content or
+        ``install.env`` values get the same stable per-app secret.  The key is
+        regenerated when a prior write left it missing, empty, or malformed.
+        """
+        app_dir = self.apps_dir / app_id
+        secret_key_path = app_dir / ".secret_key"
+        secret_key = ""
+        if secret_key_path.exists():
+            secret_key = secret_key_path.read_text().strip()
+        if len(secret_key) != 64 or not all(c in "0123456789abcdef" for c in secret_key):
+            secret_key = secrets.token_hex(32)
+            app_dir.mkdir(parents=True, exist_ok=True)
+            secret_key_path.write_text(secret_key)
+            secret_key_path.chmod(0o600)
+        return secret_key
+
+    def _substitute_secret_key(self, value: str, secret_key: str) -> str:
+        """Replace the ``{secret_key}`` placeholder in a single string value."""
+        return value.replace("{secret_key}", secret_key)
 
     def _write_config_files(self, app_id: str, install_config: dict) -> None:
         """Write declarative config files from the manifest to the app directory.
@@ -68,24 +93,20 @@ class DockerInstaller(AppInstaller):
         # Persist secret_key per app so re-installs don't rotate it. It signs
         # sessions, so keep it owner-only and regenerate if a prior write left
         # it empty or malformed.
-        secret_key_path = app_dir / ".secret_key"
-        secret_key = ""
-        if secret_key_path.exists():
-            secret_key = secret_key_path.read_text().strip()
-        if len(secret_key) != 64 or not all(c in "0123456789abcdef" for c in secret_key):
-            secret_key = secrets.token_hex(32)
-            app_dir.mkdir(parents=True, exist_ok=True)
-            secret_key_path.write_text(secret_key)
-            secret_key_path.chmod(0o600)
+        secret_key = self._get_or_create_secret_key(app_id)
 
         for entry in config_files:
             path = entry["path"]
             content = entry["content"]
             if "{secret_key}" in content:
-                content = content.replace("{secret_key}", secret_key)
+                content = self._substitute_secret_key(content, secret_key)
             full_path = app_dir / path
             full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text(content)
+            # Write config file with 0600 permissions to protect any secret substitutions
+            fd = os.open(full_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+            os.chmod(full_path, 0o600)
 
     @staticmethod
     def _is_named_volume(source: str) -> bool:
@@ -125,7 +146,18 @@ class DockerInstaller(AppInstaller):
                 if self._is_named_volume(source):
                     named_volumes[source] = None
         if "env" in install_config:
-            service["environment"] = install_config["env"]
+            # Substitute the per-app {secret_key} placeholder in every env
+            # string value (e.g. NEXTAUTH_SECRET), reusing the persisted key in
+            # <app_dir>/.secret_key so re-installs don't rotate it. The key is
+            # only created when an env value actually carries the placeholder.
+            env = install_config["env"]
+            if any("{secret_key}" in v for v in env.values() if isinstance(v, str)):
+                secret_key = self._get_or_create_secret_key(app_id)
+                env = {
+                    k: self._substitute_secret_key(v, secret_key) if isinstance(v, str) else v
+                    for k, v in env.items()
+                }
+            service["environment"] = env
 
         # Collect the container-internal ports from the manifest.
         container_ports: list[int] = []
@@ -172,7 +204,11 @@ class DockerInstaller(AppInstaller):
 
         compose, host_port = self._generate_compose(app_id, install_config)
         compose_path = self._compose_path(app_id)
-        compose_path.write_text(yaml.dump(compose, default_flow_style=False))
+        # Write docker-compose.yaml with 0600 permissions to protect any secret substitutions
+        fd = os.open(compose_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(yaml.dump(compose, default_flow_style=False))
+        os.chmod(compose_path, 0o600)
 
         # Pull image
         code, output = await run_cmd(

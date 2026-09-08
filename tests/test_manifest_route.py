@@ -35,6 +35,6 @@ async def test_manifest_non_pwa_app_returns_404(client):
 
 
 @pytest.mark.asyncio
-async def test_manifest_missing_param_returns_404(client):
+async def test_manifest_missing_param_returns_400(client):
     resp = await client.get("/manifest?app=")
-    assert resp.status_code == 404
+    assert resp.status_code == 400

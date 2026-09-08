@@ -7,6 +7,7 @@ import time
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import csrf_event_hooks
 
 from tinyagentos.auth import (
     AuthManager,
@@ -250,7 +251,14 @@ async def auth_client(app):
         await relationship_mgr.close()
     await relationship_mgr.init()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        # Tests here pass `cookies=login.cookies` per request rather than
+        # seeding the jar, so the hook is the only place that sees the
+        # csrf_token this client actually carries.
+        event_hooks=csrf_event_hooks(),
+    ) as c:
         yield c
     await relationship_mgr.close()
     await channel_store.close()
@@ -848,7 +856,14 @@ async def no_cookie_client(app):
     # Configure auth so the app isn't in onboarding mode
     app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        # Tests here pass `cookies=login.cookies` per request rather than
+        # seeding the jar, so the hook is the only place that sees the
+        # csrf_token this client actually carries.
+        event_hooks=csrf_event_hooks(),
+    ) as c:
         yield c
     await relationship_mgr.close()
     await channel_store.close()
@@ -1311,3 +1326,85 @@ class TestAuthStatusUserAgentSymmetry:
             "/auth/me", headers={"user-agent": "TaosPWA/2.0 (updated browser)"}
         )
         assert rotated.status_code == 401
+
+
+# --- Non-object JSON bodies must be a 400, never a 500 -------------------------
+#
+# request.json() accepts null / [] / 1 / "x" -- all valid JSON, none of them a
+# mapping. Every one of these routes then calls body.get(), which raises
+# AttributeError and surfaces as a 500 for what is plainly a malformed request.
+# /auth/login, /auth/setup and /auth/complete are all session-exempt, so the
+# 500 is reachable by anyone who can talk to the port.
+
+# Sent as raw content, not via json=, because httpx omits the body entirely
+# for json=None -- which would test "no body" rather than the literal null.
+_NON_OBJECT_BODIES = ["null", "[]", "1", '"x"']
+_JSON_CT = {"content-type": "application/json"}
+
+
+class TestNonObjectJsonBody:
+    @pytest.mark.parametrize("body", _NON_OBJECT_BODIES)
+    @pytest.mark.asyncio
+    async def test_login_rejects_non_object_body(self, auth_client, body):
+        resp = await auth_client.post("/auth/login", content=body, headers=_JSON_CT)
+        assert resp.status_code == 400, f"{body!r} produced {resp.status_code}"
+
+    @pytest.mark.parametrize("body", _NON_OBJECT_BODIES)
+    @pytest.mark.asyncio
+    async def test_setup_rejects_non_object_body(self, auth_client, body):
+        # Unconfigured store, so the is_configured() 409 short-circuit above the
+        # body.get() calls does not mask the defect.
+        resp = await auth_client.post("/auth/setup", content=body, headers=_JSON_CT)
+        assert resp.status_code == 400, f"{body!r} produced {resp.status_code}"
+
+    @pytest.mark.parametrize("body", _NON_OBJECT_BODIES)
+    @pytest.mark.asyncio
+    async def test_complete_rejects_non_object_body(self, auth_client, body):
+        resp = await auth_client.post("/auth/complete", content=body, headers=_JSON_CT)
+        assert resp.status_code == 400, f"{body!r} produced {resp.status_code}"
+
+    @pytest.mark.parametrize("body", _NON_OBJECT_BODIES)
+    @pytest.mark.asyncio
+    async def test_add_user_rejects_non_object_body(self, auth_client, body):
+        await auth_client.post(
+            "/auth/setup",
+            json={"username": "admin", "full_name": "Admin", "email": "", "password": "adminpass", "auto_login": False},
+        )
+        login = await auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "adminpass", "auto_login": False},
+        )
+        resp = await auth_client.post("/auth/users", content=body, headers=_JSON_CT, cookies=login.cookies)
+        assert resp.status_code == 400, f"{body!r} produced {resp.status_code}"
+
+    @pytest.mark.parametrize("body", _NON_OBJECT_BODIES)
+    @pytest.mark.asyncio
+    async def test_update_profile_rejects_non_object_body(self, auth_client, body):
+        await auth_client.post(
+            "/auth/setup",
+            json={"username": "admin", "full_name": "Admin", "email": "", "password": "adminpass", "auto_login": False},
+        )
+        login = await auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "adminpass", "auto_login": False},
+        )
+        resp = await auth_client.post(
+            "/auth/users/admin/profile", content=body, headers=_JSON_CT, cookies=login.cookies
+        )
+        assert resp.status_code == 400, f"{body!r} produced {resp.status_code}"
+
+    @pytest.mark.parametrize("body", _NON_OBJECT_BODIES)
+    @pytest.mark.asyncio
+    async def test_change_password_rejects_non_object_body(self, auth_client, body):
+        await auth_client.post(
+            "/auth/setup",
+            json={"username": "admin", "full_name": "Admin", "email": "", "password": "adminpass", "auto_login": False},
+        )
+        login = await auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "adminpass", "auto_login": False},
+        )
+        resp = await auth_client.post(
+            "/auth/users/admin/password", content=body, headers=_JSON_CT, cookies=login.cookies
+        )
+        assert resp.status_code == 400, f"{body!r} produced {resp.status_code}"

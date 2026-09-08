@@ -14,6 +14,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.app import create_app
+from taos_test_csrf import csrf_event_hooks
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +47,8 @@ async def apps_client(apps_app):
     )
     transport = ASGITransport(app=apps_app)
     async with AsyncClient(
-        transport=transport, base_url="http://test", cookies={"taos_session": token}
+        transport=transport, base_url="http://test", cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c, apps_app.state.installed_apps
 
@@ -272,6 +274,41 @@ class TestOptionalAppCatalog:
         # APP_VERSIONS["coding-studio"] is "1.0.0" which is > "0.9.0"
         assert app["update_available"] is True
         assert app["version"] == APP_VERSIONS["coding-studio"]
+
+    @pytest.mark.asyncio
+    async def test_unparseable_recorded_version_is_not_an_update(self, apps_client):
+        """An unrecognisable recorded version must not read as older than everything.
+
+        The old parser returned (0, 0, 0) on failure, so a row whose version
+        column held anything unparseable produced a permanent, unclearable
+        "update available" badge.
+        """
+        import json
+        client, store = apps_client
+        await store._db.execute(
+            "INSERT OR REPLACE INTO installed_apps (app_id, installed_at, version, metadata) VALUES (?, ?, ?, ?)",
+            ("coding-studio", 1000.0, "nightly", json.dumps({"kind": "frontend-app"})),
+        )
+        await store._db.commit()
+        resp = await client.get("/api/apps/optional/catalog")
+        app = next(a for a in resp.json()["apps"] if a["id"] == "coding-studio")
+        assert app["installed"] is True
+        assert app["update_available"] is False
+
+    @pytest.mark.asyncio
+    async def test_update_available_true_when_recorded_version_is_a_prerelease(self, apps_client):
+        """A recorded pre-release is behind the GA of the same version."""
+        import json
+        client, store = apps_client
+        await store._db.execute(
+            "INSERT OR REPLACE INTO installed_apps (app_id, installed_at, version, metadata) VALUES (?, ?, ?, ?)",
+            ("coding-studio", 1000.0, "1.0.0-beta.1", json.dumps({"kind": "frontend-app"})),
+        )
+        await store._db.commit()
+        resp = await client.get("/api/apps/optional/catalog")
+        app = next(a for a in resp.json()["apps"] if a["id"] == "coding-studio")
+        assert app["installed"] is True
+        assert app["update_available"] is True
 
     @pytest.mark.asyncio
     async def test_catalog_does_not_leak_unknown_ids(self, apps_client):

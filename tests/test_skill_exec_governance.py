@@ -219,6 +219,32 @@ class TestAllowedActionClass:
 
 
 @pytest.mark.asyncio
+class TestFailClosedOnAbsentStore:
+    async def test_absent_execution_policies_denies_with_403(self, client, app):
+        """When app.state.execution_policies is absent, the skill-exec gate
+        must deny rather than silently allow. This proves the None path is
+        fail-closed, not fail-open."""
+        await _ensure_skills_seeded(app)
+        original = getattr(app.state, "execution_policies", None)
+        app.state.execution_policies = None
+        try:
+            agent_client = _local_token_client(app)
+            try:
+                with patch("subprocess.run") as mock_run:
+                    resp = await agent_client.post(
+                        "/api/skill-exec/code_exec/call",
+                        json={"args": {"code": "print('no')"}, "agent_name": "agent-a"},
+                    )
+            finally:
+                await agent_client.aclose()
+            assert resp.status_code == 403
+            assert resp.json()["error"] == "execution_policies not configured"
+            mock_run.assert_not_called()
+        finally:
+            app.state.execution_policies = original
+
+
+@pytest.mark.asyncio
 class TestAdminSessionBypass:
     """Governance applies only to agent (local-token) callers. An admin HUMAN
     session is the user driving the OS directly and is never gated -- the same

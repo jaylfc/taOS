@@ -1,4 +1,7 @@
-"""Endpoint tests for tinyagentos/routes/mail.py."""
+"""Endpoint tests for tinyagentos/routes/mail.py.
+
+This file provides comprehensive tests for all the mail route endpoints.
+"""
 
 from __future__ import annotations
 
@@ -179,6 +182,26 @@ async def test_list_messages_mail_folder_error(client, _init_mail_store):
 
 
 @pytest.mark.asyncio
+async def test_list_messages_imap_error(client, _init_mail_store):
+    resp = await _post_account(client)
+    account_id = resp.json()["id"]
+    with patch("tinyagentos.routes.mail.mail_client.list_messages", side_effect=OSError("imap error")):
+        resp = await client.get(f"/api/mail/accounts/{account_id}/messages")
+    assert resp.status_code == 502
+    assert "imap error" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_list_messages_validation_error(client, _init_mail_store):
+    resp = await _post_account(client)
+    account_id = resp.json()["id"]
+    with patch("tinyagentos.routes.mail.mail_client.list_messages", side_effect=MailFolderError("invalid folder")):
+        resp = await client.get(f"/api/mail/accounts/{account_id}/messages?folder=badfolder")
+    assert resp.status_code == 400
+    assert "invalid folder" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
 async def test_get_message_success(client, _init_mail_store):
     resp = await _post_account(client)
     account_id = resp.json()["id"]
@@ -230,6 +253,16 @@ async def test_get_message_validation_error(client, _init_mail_store):
 
 
 @pytest.mark.asyncio
+async def test_get_message_imap_error(client, _init_mail_store):
+    resp = await _post_account(client)
+    account_id = resp.json()["id"]
+    with patch("tinyagentos.routes.mail.mail_client.get_message", side_effect=OSError("imap error")):
+        resp = await client.get(f"/api/mail/accounts/{account_id}/messages/1")
+    assert resp.status_code == 502
+    assert "imap error" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
 async def test_send_message_success(client, _init_mail_store):
     resp = await _post_account(client)
     account_id = resp.json()["id"]
@@ -264,3 +297,16 @@ async def test_send_message_validation_error(client, _init_mail_store):
         )
     assert resp.status_code == 400
     assert "bad header" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_send_message_imap_error(client, _init_mail_store):
+    resp = await _post_account(client)
+    account_id = resp.json()["id"]
+    with patch("tinyagentos.routes.mail.mail_client.send_message", side_effect=OSError("smtp error")):
+        resp = await client.post(
+            f"/api/mail/accounts/{account_id}/send",
+            json={"to": "recipient@example.com", "subject": "Hi", "body": "Hello"},
+        )
+    assert resp.status_code == 502
+    assert "smtp error" in resp.json()["error"]

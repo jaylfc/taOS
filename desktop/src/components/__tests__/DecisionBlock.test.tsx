@@ -763,4 +763,43 @@ describe("DecisionBlock", () => {
       expect(alert.textContent).toContain("already answered");
     });
   });
+
+  it("renders a recommended badge and accent border for recommended single_select options, and clicking the recommended option submits the answer", async () => {
+    mockDecisionFetch({
+      ...baseDecision,
+      id: "dec-rec",
+      question: "Pick a colour?",
+      type: "single_select",
+      options: [
+        { label: "Red", value: "red" },
+        { label: "Blue", value: "blue", recommended: true, rationale: "Better contrast" },
+      ],
+      context: "brand colour",
+    });
+
+    const block: DecisionContentBlock = {
+      kind: "decision",
+      decision_id: "dec-rec",
+    };
+    const { container } = render(<DecisionBlock block={block} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-decision-block="true"]')).not.toBeNull();
+    });
+
+    // Recommended option should have the badge
+    expect(container.textContent).toContain("Recommended");
+    expect(container.textContent).toContain("Better contrast");
+
+    // The recommended button should have the accent border class
+    const buttons = container.querySelectorAll('button');
+    const recommendedButton = Array.from(buttons).find((btn) =>
+      btn.textContent?.includes("Blue"),
+    );
+    expect(recommendedButton).not.toBeUndefined();
+    expect(recommendedButton.className).toContain("border-accent/40");
+
+    // Clicking the recommended option submits the answer
+    fireEvent.click(recommendedButton);
+  });
 });

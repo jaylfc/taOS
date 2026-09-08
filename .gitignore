@@ -114,7 +114,6 @@ desktop/node_modules
 /package-lock.json
 /vitest.config.ts
 /vitest.config.js
-
 # Local-only operational playbook (contains LAN IP + ops detail; agents read it from the working tree)
 docs/AGENT_HANDOFF.md
 docs/audit/
@@ -131,6 +130,7 @@ data/pending-restart.json
 # Stray dev screenshot artifacts
 desktop-initial.png
 venv/
+data/hub/
 
 # Credential material must never be committable. An agent stored a registry
 # token at /opt/taos/secrets/ on 2026-07-27 - correct permissions, but inside the
@@ -177,3 +177,29 @@ identity.json
 # closes the shorter spelling, which is the one people actually type.
 # Verified against every tracked file on origin/dev: 0 become ignored.
 *creds*.json
+
+# Key material, third pass. Added 2026-08-26 after data/store_signing_key.json
+# - an Ed25519 PRIVATE KEY, auto-generated on first boot - was committed and
+# pushed on PR #2540. The 2026-07-27 patterns above all missed it by one
+# character: *.key matches a .key SUFFIX, not a _key.json stem; *_private.json
+# needs the literal word "private"; identity.json is a different filename. The
+# generator writes {"private_pem": ...} under a name none of them match.
+# Verified against every tracked file on origin/dev: 0 become ignored.
+*_key.json
+*_keypair.json
+
+# SQLite sidecars and per-install runtime state. Added 2026-08-26: 145 of these
+# rode into PR #2540 on a stray `git add`, which pushed the PR to 155 files -
+# past CodeRabbit's 100-file ceiling, so the bot review SILENTLY SKIPPED and
+# still reported a green check. Ignoring them removes the accident, and keeping
+# the PR small is what keeps the review real. Enumerated rather than a blanket
+# data/ rule, per the note above: a blanket rule trades a credential risk for a
+# data-loss-by-invisibility one.
+# Verified against every tracked file on origin/dev: 0 become ignored.
+data/*.db-shm
+data/*.db-wal
+data/*.sqlite3-shm
+data/*.sqlite3-wal
+data/apps/
+data/.install_id
+data/store_popularity.json

@@ -32,6 +32,7 @@ from tinyagentos.auth import get_current_user
 from tinyagentos.routes.desktop_browser import router
 from tinyagentos.routes.desktop_browser.ssrf import (
     SsrfBlockedError,
+    guarded_async_client,
     validate_url_or_raise,
 )
 
@@ -110,7 +111,9 @@ async def extract_endpoint(
     # following a redirect to an internal address after the initial SSRF gate passes.
     _MAX_HOPS = 5
     response: httpx.Response | None = None
-    async with httpx.AsyncClient(follow_redirects=False, timeout=_FETCH_TIMEOUT) as http:
+    async with guarded_async_client(
+        follow_redirects=False, timeout=_FETCH_TIMEOUT,
+    ) as http:
         fetch_url = url
         for _hop in range(_MAX_HOPS):
             try:

@@ -5,9 +5,13 @@ and notifications from the GitHub API.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-import re
+import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     import httpx
@@ -22,8 +26,74 @@ _HEADERS_BASE = {
 }
 
 
-def _auth_headers(token: str) -> dict:
-    return {**_HEADERS_BASE, "Authorization": f"Bearer {token}"}
+def _auth_headers(token: str | None) -> dict:
+    """Build request headers, omitting Authorization when no token is set.
+
+    Emitting ``Authorization: Bearer None`` (the pre-fix behaviour) makes every
+    unauthenticated GitHub call fail server-side, so the header is only added
+    when a real token is present.
+    """
+    headers = dict(_HEADERS_BASE)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _retry_delay(resp: "httpx.Response") -> float | None:
+    """Return a retry delay (seconds) from Retry-After / X-RateLimit-Reset.
+
+    ``Retry-After`` may be delta-seconds or an HTTP-date; ``X-RateLimit-Reset``
+    is an epoch-second timestamp. Returns ``None`` when neither header is
+    present or parseable, so the caller only retries when GitHub asks it to.
+    """
+    ra = resp.headers.get("Retry-After")
+    if ra:
+        try:
+            return max(0.0, float(ra))
+        except ValueError:
+            pass
+        try:
+            dt = parsedate_to_datetime(ra)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return max(0.0, (dt - datetime.now(timezone.utc)).total_seconds())
+        except (ValueError, TypeError, OverflowError):
+            return None
+    reset = resp.headers.get("X-RateLimit-Reset")
+    if reset:
+        try:
+            return max(0.0, float(reset) - time.time())
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+async def _get_with_rate_limit_retry(
+    http_client: "httpx.AsyncClient",
+    url: str,
+    *,
+    headers: dict,
+    **kwargs,
+) -> "httpx.Response":
+    """GET ``url``, honouring Retry-After / X-RateLimit-Reset once on 403/429.
+
+    The caller still owns ``raise_for_status``, so non-rate-limit error handling
+    is unchanged. Only a single retry is performed (GitHub may send a reset far
+    in the future, which we do not want to block on indefinitely).
+    """
+    resp = await http_client.get(url, headers=headers, timeout=30, **kwargs)
+    if resp.status_code in (403, 429):
+        delay = _retry_delay(resp)
+        if delay is not None:
+            logger.warning(
+                "GitHub rate-limited on %s (status %s), retrying after %.1fs",
+                url,
+                resp.status_code,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            resp = await http_client.get(url, headers=headers, timeout=30, **kwargs)
+    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -49,14 +119,21 @@ def parse_github_url(url: str) -> tuple[str, str, str, int | None]:
     >>> parse_github_url("https://github.com/owner/repo/releases")
     ('owner', 'repo', 'releases', None)
     """
-    # Strip scheme and optional www
-    url = re.sub(r"^https?://", "", url)
-    url = re.sub(r"^www\.", "", url)
-    url = re.sub(r"^github\.com/", "", url, count=1)
-    # Remove trailing slashes / query / fragment
-    url = url.split("?")[0].split("#")[0].rstrip("/")
+    # Normalise scheme so urlsplit() can recover the hostname, then require the
+    # host to be github.com. A foreign host (e.g. gitlab.com) must not be
+    # mis-parsed as a GitHub owner/repo -- the old regex stripped a literal
+    # "github.com/" prefix and silently treated any host as GitHub.
+    if "://" not in url:
+        url = "https://" + url
+    parsed = urlsplit(url)
+    hostname = (parsed.hostname or "").lower()
+    if hostname not in ("github.com", "www.github.com"):
+        raise ValueError(f"Not a GitHub URL: {url!r}")
 
-    parts = url.split("/")
+    # Work from the path only; urlsplit() already separates query/fragment.
+    path = parsed.path.lstrip("/")
+    path = path.rstrip("/")
+    parts = path.split("/")
     if len(parts) < 2:
         raise ValueError(f"Cannot parse GitHub URL: {url!r}")
 
@@ -102,7 +179,7 @@ def parse_github_url(url: str) -> tuple[str, str, str, int | None]:
 async def fetch_repo(
     owner: str,
     repo: str,
-    token: str,
+    token: str | None,
     http_client: "httpx.AsyncClient",
 ) -> dict:
     """Fetch repo metadata and README from the GitHub API.
@@ -112,10 +189,10 @@ async def fetch_repo(
     """
     headers = _auth_headers(token)
 
-    meta_resp = await http_client.get(
+    meta_resp = await _get_with_rate_limit_retry(
+        http_client,
         f"{_GH_API}/repos/{owner}/{repo}",
         headers=headers,
-        timeout=30,
     )
     meta_resp.raise_for_status()
     meta = meta_resp.json()
@@ -123,10 +200,10 @@ async def fetch_repo(
     readme_content = ""
     try:
         readme_headers = {**headers, "Accept": "application/vnd.github.raw"}
-        readme_resp = await http_client.get(
+        readme_resp = await _get_with_rate_limit_retry(
+            http_client,
             f"{_GH_API}/repos/{owner}/{repo}/readme",
             headers=readme_headers,
-            timeout=30,
         )
         if readme_resp.status_code == 200:
             readme_content = readme_resp.text
@@ -159,7 +236,7 @@ async def fetch_issue(
     owner: str,
     repo: str,
     number: int,
-    token: str,
+    token: str | None,
     http_client: "httpx.AsyncClient",
 ) -> dict:
     """Fetch an issue (or PR) and its comments from the GitHub API.
@@ -169,18 +246,18 @@ async def fetch_issue(
     """
     headers = _auth_headers(token)
 
-    issue_resp = await http_client.get(
+    issue_resp = await _get_with_rate_limit_retry(
+        http_client,
         f"{_GH_API}/repos/{owner}/{repo}/issues/{number}",
         headers=headers,
-        timeout=30,
     )
     issue_resp.raise_for_status()
     issue = issue_resp.json()
 
-    comments_resp = await http_client.get(
+    comments_resp = await _get_with_rate_limit_retry(
+        http_client,
         f"{_GH_API}/repos/{owner}/{repo}/issues/{number}/comments",
         headers=headers,
-        timeout=30,
     )
     comments_resp.raise_for_status()
     raw_comments = comments_resp.json()
@@ -216,7 +293,7 @@ async def fetch_issue(
 async def fetch_releases(
     owner: str,
     repo: str,
-    token: str,
+    token: str | None,
     http_client: "httpx.AsyncClient",
     limit: int = 10,
 ) -> list[dict]:
@@ -227,11 +304,11 @@ async def fetch_releases(
     """
     headers = _auth_headers(token)
 
-    resp = await http_client.get(
+    resp = await _get_with_rate_limit_retry(
+        http_client,
         f"{_GH_API}/repos/{owner}/{repo}/releases",
         headers=headers,
         params={"per_page": limit},
-        timeout=30,
     )
     resp.raise_for_status()
     raw = resp.json()
@@ -265,7 +342,7 @@ async def fetch_releases(
 # ---------------------------------------------------------------------------
 
 async def fetch_starred(
-    token: str,
+    token: str | None,
     http_client: "httpx.AsyncClient",
     page: int = 1,
 ) -> tuple[list[dict], bool]:
@@ -275,11 +352,11 @@ async def fetch_starred(
     """
     headers = _auth_headers(token)
 
-    resp = await http_client.get(
+    resp = await _get_with_rate_limit_retry(
+        http_client,
         f"{_GH_API}/user/starred",
         headers=headers,
         params={"per_page": 30, "page": page},
-        timeout=30,
     )
     resp.raise_for_status()
     raw = resp.json()
@@ -310,7 +387,7 @@ async def fetch_starred(
 # ---------------------------------------------------------------------------
 
 async def fetch_notifications(
-    token: str,
+    token: str | None,
     http_client: "httpx.AsyncClient",
 ) -> list[dict]:
     """Fetch unread notifications for the authenticated user.
@@ -319,10 +396,10 @@ async def fetch_notifications(
     """
     headers = _auth_headers(token)
 
-    resp = await http_client.get(
+    resp = await _get_with_rate_limit_retry(
+        http_client,
         f"{_GH_API}/notifications",
         headers=headers,
-        timeout=30,
     )
     resp.raise_for_status()
     raw = resp.json()

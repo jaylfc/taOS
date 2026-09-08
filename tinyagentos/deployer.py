@@ -25,6 +25,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tinyagentos.secrets import SecretsStore
 
+# Per-framework AGENTS.md path inside the agent's container. Frameworks read
+# this file on every turn to pick up agent rules (per the taosmd contract —
+# see issue #378). It is defined in ``agent_git`` because the versioned scope
+# of the agent state repo derives from it; re-exported here under the name
+# callers have always used.
+from tinyagentos.agent_git import AGENTS_MD_PATHS
 from tinyagentos.agent_image import (
     GENERIC_BASE_ALIAS,
     base_image_alias,
@@ -102,13 +108,8 @@ _TAOSMD_END = "<!-- taosmd:rules-end -->"
 # that do not match are skipped rather than written outside ~/.ssh.
 _SAFE_SSH_KEY_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
-# Per-framework AGENTS.md path inside the agent's container.
-# Frameworks read this file on every turn to pick up agent rules
-# (per the taosmd contract — see issue #378).
-AGENTS_MD_PATHS: dict[str, str] = {
-    "openclaw": "/root/.openclaw/AGENTS.md",
-    "hermes": "/root/.hermes/AGENTS.md",
-}
+# Auto-committer pushed into every agent container (deploy step 4c).
+_COMMITTER_SCRIPT = Path(__file__).parent / "scripts" / "agent_committer.py"
 
 
 def _splice_taosmd_block(existing: str, new_rules: str) -> str:
@@ -330,11 +331,17 @@ async def deploy_agent(req: DeployRequest) -> dict:
 
     # Trace capture — local auth token + trace API URL.
     try:
-        local_token_path = req.data_dir / ".auth_local_token"
-        if local_token_path.exists():
-            env["TAOS_LOCAL_TOKEN"] = local_token_path.read_text().strip()
-    except Exception:
-        pass
+        from tinyagentos.auth import AuthManager
+        auth_mgr = AuthManager(req.data_dir)
+        agent_token = auth_mgr.mint_agent_local_token(req.name)
+        env["TAOS_LOCAL_TOKEN"] = agent_token
+    except Exception as exc:
+        logger.error("deploy %s: failed to mint agent local token: %s", req.name, exc)
+        return {
+            "success": False,
+            "error": f"failed to mint agent local token: {exc}",
+            "steps": steps,
+        }
     env["TAOS_TRACE_URL"] = f"http://{req.taos_host}:{req.taos_port}/api/trace"
 
     # Agent-bridge shared token (issue #672 — defense-in-depth auth guard).
@@ -710,6 +717,138 @@ async def deploy_agent(req: DeployRequest) -> dict:
             except Exception:
                 logger.exception("%s: AGENTS.md injection failed", req.framework)
 
+        # Step 4b: Initialise a git repo inside the container for agent state
+        # versioning. The repo root is the agent home (/root), so its
+        # .gitignore is an ALLOWLIST (agent_git._STATE_PATHS): workspace,
+        # memory and the per-framework AGENTS.md are versioned and everything
+        # else — framework config carrying api keys, caches, shell history —
+        # stays out of history entirely.
+        versioning = True
+        versioning_error = None
+        try:
+            from tinyagentos.agent_git import (
+                git_init,
+                write_gitignore,
+                git_config_user,
+                git_add_commit,
+            )
+            await git_init(container_name)
+            await write_gitignore(container_name)
+            await git_config_user(container_name, req.name, f"{req.name}@taos.local")
+            await git_add_commit(container_name, f"chore: initial state for {req.name}")
+            steps.append("git_init")
+        except Exception as exc:
+            logger.warning("Deploy %s: git init failed: %s", req.name, exc)
+            versioning = False
+            versioning_error = str(exc)
+
+        # Step 4c: Install the auto-committer script and start it as a
+        # background loop inside the container. Prefer a systemd unit so it
+        # survives reboots; fall back to nohup when systemctl is absent.
+        # Every terminal failure below raises: the enclosing handler is what
+        # turns versioning off. A deploy result that says versioning=True while
+        # no committer ever starts is a lie no caller can detect.
+        if versioning:
+            try:
+                if not _COMMITTER_SCRIPT.exists():
+                    raise RuntimeError(
+                        f"committer script missing at {_COMMITTER_SCRIPT}"
+                    )
+                _mkdir_rc, _mkdir_out = await exec_in_container(
+                    container_name, ["mkdir", "-p", "/root/.taos"],
+                )
+                if _mkdir_rc != 0:
+                    raise RuntimeError(
+                        f"failed to create /root/.taos (rc={_mkdir_rc}): {_mkdir_out[-300:]}"
+                    )
+                _push_rc, _push_out = await push_file(
+                    container_name,
+                    str(_COMMITTER_SCRIPT),
+                    "/root/.taos/agent_committer.py",
+                )
+                if _push_rc != 0:
+                    raise RuntimeError(
+                        f"failed to push committer script (rc={_push_rc}): {_push_out[-300:]}"
+                    )
+                await exec_in_container(
+                    container_name, ["chmod", "+x", "/root/.taos/agent_committer.py"]
+                )
+                _has_systemd = await exec_in_container(
+                    container_name, ["bash", "-c", "command -v systemctl >/dev/null 2>&1 && echo yes || echo no"]
+                )
+                _installed = False
+                if _has_systemd[0] == 0 and _has_systemd[1].strip() == "yes":
+                    _unit = """\
+[Unit]
+Description=taOS Agent Auto-Committer
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env python3 /root/.taos/agent_committer.py
+Restart=always
+RestartSec=5
+Environment=AGENT_STATE_REPO=/root
+Environment=COMMIT_INTERVAL=300
+
+[Install]
+WantedBy=multi-user.target
+"""
+                    import tempfile as _tf
+                    with _tf.NamedTemporaryFile("w", suffix=".service", delete=False) as _tfh:
+                        _tfh.write(_unit)
+                        _unit_path = _tfh.name
+                    try:
+                        _unit_rc, _unit_out = await push_file(
+                            container_name,
+                            _unit_path,
+                            "/etc/systemd/system/taos-agent-committer.service",
+                        )
+                    finally:
+                        os.unlink(_unit_path)
+                    if _unit_rc == 0:
+                        await exec_in_container(
+                            container_name,
+                            ["systemctl", "enable", "--now", "taos-agent-committer.service"],
+                        )
+                        _active = await exec_in_container(
+                            container_name, ["systemctl", "is-active", "taos-agent-committer.service"]
+                        )
+                        if _active[0] == 0 and _active[1].strip() == "active":
+                            steps.append("committer_installed")
+                            _installed = True
+                        else:
+                            # Not terminal: the nohup fallback below still gets
+                            # a turn, and only its failure disables versioning.
+                            logger.warning(
+                                "Deploy %s: committer systemd unit not active: %s",
+                                req.name, _active[1].strip(),
+                            )
+                    else:
+                        logger.warning(
+                            "Deploy %s: failed to push committer unit: %s",
+                            req.name, _unit_out[-200:],
+                        )
+                if not _installed:
+                    _nohup_rc, _nohup_out = await exec_in_container(
+                        container_name,
+                        [
+                            "bash", "-c",
+                            "nohup python3 /root/.taos/agent_committer.py "
+                            "> /root/.taos/committer.log 2>&1 &",
+                        ],
+                    )
+                    if _nohup_rc != 0:
+                        raise RuntimeError(
+                            f"nohup committer failed (rc={_nohup_rc}): {_nohup_out[-300:]}"
+                        )
+                    steps.append("committer_installed_nohup")
+            except Exception as exc:
+                logger.warning("Deploy %s: committer install failed: %s", req.name, exc)
+                versioning = False
+                versioning_error = str(exc)
+                steps.append("committer_failed")
+
         # Step 5: Get container IP
         code, output = await exec_in_container(container_name, ["hostname", "-I"])
         container_ip = output.strip().split()[0] if code == 0 and output.strip() else None
@@ -722,6 +861,8 @@ async def deploy_agent(req: DeployRequest) -> dict:
             "ip": container_ip,
             "llm_key": llm_key,
             "steps": steps,
+            "versioning": versioning,
+            "versioning_error": versioning_error,
         }
 
     except Exception as exc:
@@ -745,6 +886,11 @@ async def undeploy_agent(name: str, *, data_dir: Path | None = None, delete_stat
     result = await destroy_container(container_name)
     if delete_state and data_dir is not None:
         import shutil
+        # Delete the trace directory that was created for this agent
+        trace_dir = data_dir / "trace" / name
+        if trace_dir.exists():
+            shutil.rmtree(trace_dir, ignore_errors=True)
+        # Also delete workspaces and memory as before
         for sub in ("agent-workspaces", "agent-memory"):
             target = data_dir / sub / name
             if target.exists():

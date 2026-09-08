@@ -12,6 +12,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from tinyagentos.size_units import parse_size_bytes
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_POOL_PATH = "/var/lib/incus/storage-pools/taos-worker-pool"
@@ -20,12 +22,10 @@ DEFAULT_BEES_STATUS = Path("/var/lib/bees/status.txt")
 
 def _parse_size(value: str) -> int:
     """Parse btrfs sizes like '500.00GiB' / '12.34TiB' into bytes."""
-    value = value.strip()
-    units = {"B": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4}
-    m = re.match(r"^([0-9.]+)([KMGT]?iB|B)$", value)
-    if not m:
-        raise ValueError(f"unparsable btrfs size: {value!r}")
-    return int(float(m.group(1)) * units[m.group(2)])
+    try:
+        return parse_size_bytes(value)
+    except ValueError:
+        raise ValueError(f"unparsable btrfs size: {value!r}") from None
 
 
 def read_btrfs_pool_size(pool_path: str) -> tuple[int, int]:

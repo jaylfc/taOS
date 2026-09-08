@@ -51,6 +51,35 @@ def _seed_agents(app):
 
 
 @pytest.mark.asyncio
+class TestDelegationGateFailClosed:
+    async def test_absent_execution_policies_denies_with_403(self, client, app):
+        """When app.state.execution_policies is absent, the delegation gate
+        must deny rather than silently allow. This proves the None path is
+        fail-closed, not fail-open."""
+        original = getattr(app.state, "execution_policies", None)
+        app.state.execution_policies = None
+        try:
+            _project, task = await _make_project_and_task(app)
+
+            agent_client = _local_token_client(app)
+            try:
+                resp = await agent_client.post(
+                    "/api/agents/from-agent/delegate",
+                    json={"to_agent": "to-agent", "task_id": task["id"]},
+                )
+            finally:
+                await agent_client.aclose()
+
+            assert resp.status_code == 403
+            assert resp.json()["error"] == "execution_policies not configured"
+
+            unchanged = await app.state.project_task_store.get_task(task["id"])
+            assert unchanged["assignee_id"] is None
+        finally:
+            app.state.execution_policies = original
+
+
+@pytest.mark.asyncio
 class TestDelegationGateDeny:
     async def test_deny_policy_returns_403_and_does_not_assign(self, client, app):
         await app.state.execution_policies.set_policy("delegate", "deny", agent_name="from-agent")
@@ -512,3 +541,15 @@ class TestDelegationValidation:
         finally:
             await member_client.aclose()
         assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+class TestWiringCoupling:
+    async def test_execution_policies_is_wired_at_startup(self, app):
+        """The startup wiring in app.py must set app.state.execution_policies.
+        If the wiring is removed, this test fails."""
+        from tinyagentos.governance.policy_store import ExecutionPolicyStore
+
+        assert hasattr(app.state, "execution_policies")
+        assert app.state.execution_policies is not None
+        assert isinstance(app.state.execution_policies, ExecutionPolicyStore)

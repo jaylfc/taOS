@@ -36,6 +36,9 @@ async def test_subscriber_fires_on_status_change():
     )
     catalog.subscribe(subscriber)
     await catalog.start()
+    # tsk-xjwolt: start() no longer blocks on the first probe; tests
+    # that need the post-probe view await wait_initial_probe().
+    await catalog.wait_initial_probe()
     try:
         # Initial probe fired once on start
         assert call_count["n"] == 1

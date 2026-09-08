@@ -191,3 +191,124 @@ class TestDnsResolutionFailure:
         ):
             with pytest.raises(SsrfBlockedError):
                 validate_url_or_raise("http://dual-stack.test/")
+
+
+class TestPinnedTransport:
+    """The guarded client must connect to the address the guard checked."""
+
+    def test_validate_returns_the_addresses_it_approved(self):
+        from tinyagentos.routes.desktop_browser.ssrf import validate_url_or_raise
+
+        with patch(
+            "tinyagentos.routes.desktop_browser.ssrf.socket.getaddrinfo",
+            return_value=[
+                (2, 1, 6, "", ("93.184.216.34", 0)),
+                (2, 1, 6, "", ("93.184.216.35", 0)),
+            ],
+        ):
+            addrs = validate_url_or_raise("http://example.com/")
+
+        # Resolver order is preserved: the first answer is the one a pinned
+        # connection uses, so it must not come back through a set.
+        assert addrs == ["93.184.216.34", "93.184.216.35"]
+
+    def test_client_pins_the_connection_to_the_checked_address(self):
+        """The pin sits on the pool's network backend, below the request URL."""
+        from tinyagentos.routes.desktop_browser.ssrf import (
+            _PinnedResolutionBackend,
+            guarded_async_client,
+        )
+
+        client = guarded_async_client()
+        backend = client._transport._pool._network_backend
+        assert isinstance(backend, _PinnedResolutionBackend)
+
+    def test_pinned_backend_hands_the_socket_a_checked_literal(self):
+        """connect_tcp resolves once, validates, and connects to that answer."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from tinyagentos.routes.desktop_browser.ssrf import _PinnedResolutionBackend
+
+        inner = AsyncMock()
+        backend = _PinnedResolutionBackend(inner)
+
+        with patch(
+            "tinyagentos.routes.desktop_browser.ssrf.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
+        ):
+            asyncio.run(backend.connect_tcp("example.com", 443, timeout=5.0))
+
+        args, kwargs = inner.connect_tcp.await_args
+        assert args[0] == "93.184.216.34"
+        assert args[1] == 443
+        assert kwargs["timeout"] == 5.0
+
+    def test_pinned_backend_refuses_a_blocked_answer(self):
+        import asyncio
+
+        from tinyagentos.routes.desktop_browser.ssrf import (
+            SsrfBlockedError,
+            _PinnedResolutionBackend,
+        )
+        from unittest.mock import AsyncMock
+
+        inner = AsyncMock()
+        backend = _PinnedResolutionBackend(inner)
+
+        with patch(
+            "tinyagentos.routes.desktop_browser.ssrf.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("127.0.0.1", 0))],
+        ):
+            with pytest.raises(SsrfBlockedError):
+                asyncio.run(backend.connect_tcp("rebind.test", 80))
+
+        inner.connect_tcp.assert_not_awaited()
+
+    def test_allow_private_reaches_the_pin(self):
+        """A LAN-facing caller pins too — it just permits RFC1918."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from tinyagentos.routes.desktop_browser.ssrf import _PinnedResolutionBackend
+
+        inner = AsyncMock()
+        backend = _PinnedResolutionBackend(inner, allow_private=True)
+
+        with patch(
+            "tinyagentos.routes.desktop_browser.ssrf.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("192.168.1.50", 0))],
+        ):
+            asyncio.run(backend.connect_tcp("nas.example.com", 80))
+
+        assert inner.connect_tcp.await_args[0][0] == "192.168.1.50"
+
+    def test_tls_verification_stays_on_and_the_url_keeps_the_hostname(self):
+        """Pinning below the URL is what keeps certificate checks meaningful."""
+        import ssl
+
+        from tinyagentos.routes.desktop_browser.ssrf import guarded_async_client
+
+        client = guarded_async_client()
+        request = client.build_request("GET", "https://example.com/page")
+        # The URL is untouched, so httpcore derives SNI and the cert hostname
+        # from the real name rather than from a pinned literal.
+        assert request.url.host == "example.com"
+        assert request.headers["host"] == "example.com"
+
+        ssl_context = client._transport._pool._ssl_context
+        assert ssl_context.verify_mode == ssl.CERT_REQUIRED
+        assert ssl_context.check_hostname is True
+
+    def test_unix_sockets_are_refused(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from tinyagentos.routes.desktop_browser.ssrf import (
+            SsrfBlockedError,
+            _PinnedResolutionBackend,
+        )
+
+        backend = _PinnedResolutionBackend(AsyncMock())
+        with pytest.raises(SsrfBlockedError):
+            asyncio.run(backend.connect_unix_socket("/run/taos.sock"))

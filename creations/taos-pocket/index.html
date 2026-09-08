@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=240, height=282, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>taOS Pocket</title>
+  <style>
+    :root {
+      --bg: #1a1b2b;
+      --bg-deep: #131420;
+      --surface: rgba(150, 158, 230, 0.08);
+      --surface-hover: rgba(150, 158, 230, 0.14);
+      --text: rgba(255, 255, 255, 0.92);
+      --text-secondary: rgba(255, 255, 255, 0.55);
+      --text-tertiary: rgba(255, 255, 255, 0.42);
+      --accent: #8b93e6;
+      --accent-glow: rgba(139, 147, 230, 0.35);
+      --border: rgba(150, 158, 230, 0.12);
+      --dot-running: #28c840;
+      --dot-paused: #febc2e;
+      --dot-error: #f04438;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: #0d0e16;
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 15px;
+      line-height: 1.35;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    #app {
+      width: 240px;
+      height: 282px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(139, 147, 230, 0.08);
+    }
+
+    .topbar {
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-deep);
+      flex-shrink: 0;
+    }
+
+    .topbar-title {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: var(--text);
+    }
+
+    .topbar-indicator {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--dot-running);
+      box-shadow: 0 0 6px var(--dot-running);
+    }
+
+    .viewport {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card {
+      position: absolute;
+      inset: 0;
+      overflow-y: auto;
+      padding: 10px 12px;
+      opacity: 0;
+      transform: translateY(12px);
+      transition: opacity 0.18s ease, transform 0.18s ease;
+      pointer-events: none;
+      scrollbar-width: none;
+    }
+
+    .card::-webkit-scrollbar { display: none; }
+
+    .card.active {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+
+    .row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 9px 10px;
+      border-radius: 12px;
+      background: var(--surface);
+      border: 1px solid transparent;
+      margin-bottom: 8px;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+
+    .row.highlight {
+      background: var(--surface-hover);
+      border-color: var(--accent-glow);
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      min-width: 9px;
+      border-radius: 50%;
+      margin-top: 4px;
+      background: var(--text-tertiary);
+    }
+
+    .dot.running { background: var(--dot-running); box-shadow: 0 0 6px var(--dot-running); }
+    .dot.paused { background: var(--dot-paused); }
+    .dot.error { background: var(--dot-error); box-shadow: 0 0 6px var(--dot-error); }
+
+    .row-body { flex: 1; min-width: 0; }
+
+    .row-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .row-sub {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .notif {
+      display: flex;
+      gap: 10px;
+      padding: 9px 10px;
+      border-radius: 12px;
+      background: var(--surface);
+      border: 1px solid transparent;
+      margin-bottom: 8px;
+    }
+
+    .notif.highlight {
+      background: var(--surface-hover);
+      border-color: var(--accent-glow);
+    }
+
+    .notif-time {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      margin-top: 2px;
+      min-width: 36px;
+      text-align: right;
+    }
+
+    .notif-body { flex: 1; min-width: 0; }
+
+    .notif-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .notif-text {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+      line-height: 1.3;
+    }
+
+    .decision-q {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 10px;
+      line-height: 1.35;
+    }
+
+    .option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: var(--surface);
+      border: 1px solid transparent;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+
+    .option.highlight {
+      background: var(--surface-hover);
+      border-color: var(--accent-glow);
+    }
+
+    .option-marker {
+      width: 20px;
+      height: 20px;
+      min-width: 20px;
+      border-radius: 50%;
+      border: 2px solid var(--text-tertiary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .option.highlight .option-marker {
+      border-color: var(--accent);
+      box-shadow: 0 0 8px var(--accent-glow);
+    }
+
+    .option-label {
+      font-size: 14px;
+      color: var(--text);
+    }
+
+    .bottombar {
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-top: 1px solid var(--border);
+      background: var(--bg-deep);
+      flex-shrink: 0;
+      gap: 10px;
+    }
+
+    .tabs {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: auto;
+    }
+
+    .tab {
+      font: inherit;
+      font-size: 11px;
+      background: none;
+      border: 0;
+      color: var(--text-tertiary);
+      padding: 4px 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: color 0.12s ease, background 0.12s ease;
+    }
+
+    .tab:hover { color: var(--text-secondary); }
+
+    .tab.active {
+      color: var(--text);
+      background: var(--surface-hover);
+    }
+
+    .hint {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 16px;
+      height: 16px;
+      padding: 0 5px;
+      border-radius: 9px;
+      background: var(--accent);
+      color: var(--bg-deep);
+      font-size: 11px;
+      font-weight: 700;
+      margin-left: 4px;
+    }
+
+    .empty {
+      font-size: 13px;
+      color: var(--text-secondary);
+      padding: 16px 10px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="topbar">
+      <div class="topbar-title" id="topbar-title">Sessions</div>
+      <div class="topbar-indicator" id="topbar-indicator" title="Mock mode"></div>
+    </div>
+    <div class="viewport" id="viewport"></div>
+    <div class="bottombar" id="bottombar">
+      <div class="hint">&#8593;&#8595; scroll</div>
+      <div class="hint">&#9166; select</div>
+      <div class="tabs" id="tabs" role="tablist" aria-label="Cards">
+        <button type="button" class="tab active" role="tab" aria-selected="true" data-tab="0">Sessions</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" data-tab="1">Notifs</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" data-tab="2">Decision</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const BASE_URL = "";
+    const MOCK = true;
+
+    const mockSessions = [
+      { id: "s1", name: "assistant", status: "running", last_line: "Running task #4821..." },
+      { id: "s2", name: "coder", status: "paused", last_line: "Awaiting review..." },
+      { id: "s3", name: "planner", status: "running", last_line: "Refining plan v3" },
+      { id: "s4", name: "search", status: "error", last_line: "Timeout on /api/search" },
+      { id: "s5", name: "helper", status: "running", last_line: "Done in 1.2s" },
+    ];
+
+    const mockNotifications = [
+      { id: "n1", time: "2m", title: "assistant", text: "Task completed" },
+      { id: "n2", time: "8m", title: "planner", text: "Plan approved" },
+      { id: "n3", time: "14m", title: "coder", text: "Build failed" },
+      { id: "n4", time: "22m", title: "search", text: "Results ready" },
+      { id: "n5", time: "31m", title: "system", text: "Update available" },
+    ];
+
+    const mockDecision = {
+      id: "d1",
+      question: "Continue with plan v3?",
+      options: [
+        { id: "o1", label: "Approve" },
+        { id: "o2", label: "Revise" },
+        { id: "o3", label: "Archive" },
+      ],
+    };
+
+    async function api(path, options) {
+      if (MOCK) {
+        await new Promise((r) => setTimeout(r, 60));
+        if (path === "/api/sessions") return { ok: true, json: () => Promise.resolve(mockSessions) };
+        if (path === "/api/notifications") return { ok: true, json: () => Promise.resolve(mockNotifications) };
+        if (path === "/api/decisions/current") return { ok: true, json: () => Promise.resolve(mockDecision) };
+        if (path.startsWith("/api/decisions/")) {
+          return { ok: true, json: () => Promise.resolve({ accepted: true }) };
+        }
+        return { ok: false, status: 404, json: () => Promise.resolve({ error: "not found" }) };
+      }
+      const res = await fetch(BASE_URL + path, { credentials: "include", ...(options || {}) });
+      return res;
+    }
+
+    const state = {
+      screenIndex: 0,
+      sessions: [],
+      notifications: [],
+      decision: null,
+      highlightIndex: 0,
+      cards: [],
+      loading: false,
+    };
+
+    const viewport = document.getElementById("viewport");
+    const topbarTitle = document.getElementById("topbar-title");
+    const topbarIndicator = document.getElementById("topbar-indicator");
+    const tabs = document.getElementById("tabs");
+
+    function createCard(id, renderFn) {
+      const el = document.createElement("div");
+      el.className = "card";
+      el.id = id;
+      viewport.appendChild(el);
+      return el;
+    }
+
+    function renderSessions() {
+      const el = state.cards[0];
+      if (!state.sessions.length) {
+        el.innerHTML = '<div class="empty">No sessions yet</div>';
+        return;
+      }
+      el.innerHTML = state.sessions
+        .map(
+          (s, i) => `
+        <div class="row${i === state.highlightIndex ? " highlight" : ""}" data-index="${i}">
+          <div class="dot ${s.status}"></div>
+          <div class="row-body">
+            <div class="row-title">${escapeHtml(s.name)}</div>
+            <div class="row-sub">${escapeHtml(s.last_line)}</div>
+          </div>
+        </div>
+      `
+        )
+        .join("");
+    }
+
+    function renderNotifications() {
+      const el = state.cards[1];
+      if (!state.notifications.length) {
+        el.innerHTML = '<div class="empty">No notifications</div>';
+        return;
+      }
+      el.innerHTML = state.notifications
+        .map(
+          (n, i) => `
+        <div class="notif${i === state.highlightIndex ? " highlight" : ""}" data-index="${i}">
+          <div class="notif-time">${escapeHtml(n.time)}</div>
+          <div class="notif-body">
+            <div class="notif-title">${escapeHtml(n.title)}</div>
+            <div class="notif-text">${escapeHtml(n.text)}</div>
+          </div>
+        </div>
+      `
+        )
+        .join("");
+    }
+
+    function renderDecision() {
+      const el = state.cards[2];
+      if (!state.decision) {
+        el.innerHTML = '<div class="empty">No pending decisions</div>';
+        return;
+      }
+      const optionsHtml = state.decision.options
+        .map(
+          (o, i) => `
+        <div class="option${i === state.highlightIndex ? " highlight" : ""}" data-index="${i}">
+          <div class="option-marker"></div>
+          <div class="option-label">${escapeHtml(o.label)}</div>
+        </div>
+      `
+        )
+        .join("");
+      el.innerHTML = `<div class="decision-q">${escapeHtml(state.decision.question)}</div>${optionsHtml}`;
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function activateCard(index) {
+      state.cards.forEach((c, i) => c.classList.toggle("active", i === index));
+      state.screenIndex = index;
+      state.highlightIndex = 0;
+      if (index === 0) topbarTitle.textContent = "Sessions";
+      else if (index === 1) topbarTitle.textContent = "Notifications";
+      else topbarTitle.textContent = "Decision";
+      const tabEls = tabs.querySelectorAll(".tab");
+      tabEls.forEach((t) => {
+        const on = parseInt(t.dataset.tab, 10) === index;
+        t.classList.toggle("active", on);
+        t.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      renderCurrent();
+    }
+
+    function renderCurrent() {
+      if (state.screenIndex === 0) renderSessions();
+      else if (state.screenIndex === 1) renderNotifications();
+      else renderDecision();
+    }
+
+    function scrollToHighlight() {
+      const el = state.cards[state.screenIndex].querySelector(`[data-index="${state.highlightIndex}"]`);
+      if (el) el.scrollIntoView({ block: "nearest" });
+    }
+
+    async function load() {
+      state.loading = true;
+      try {
+        const [sRes, nRes, dRes] = await Promise.all([
+          api("/api/sessions"),
+          api("/api/notifications"),
+          api("/api/decisions/current"),
+        ]);
+        state.sessions = sRes.ok ? await sRes.json() : [];
+        state.notifications = nRes.ok ? await nRes.json() : [];
+        state.decision = dRes.ok ? await dRes.json() : null;
+        renderCurrent();
+      } catch (e) {
+        console.error("taOS Pocket load error", e);
+      } finally {
+        state.loading = false;
+      }
+    }
+
+    async function selectOption() {
+      if (state.screenIndex !== 2 || !state.decision) return;
+      const opt = state.decision.options[state.highlightIndex];
+      if (!opt) return;
+      try {
+        const res = await api(`/api/decisions/${state.decision.id}/accept`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ option_id: opt.id }),
+        });
+        if (!res || !res.ok) return;
+        state.decision = null;
+        state.highlightIndex = 0;
+        renderDecision();
+      } catch (e) {
+        // leave the decision visible so the user can retry
+      }
+    }
+
+    function clampHighlight() {
+      const max =
+        state.screenIndex === 0
+          ? state.sessions.length - 1
+          : state.screenIndex === 1
+            ? state.notifications.length - 1
+            : state.decision ? state.decision.options.length - 1 : -1;
+      if (max < 0) state.highlightIndex = 0;
+      else state.highlightIndex = Math.max(0, Math.min(state.highlightIndex, max));
+    }
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const delta = e.key === "ArrowDown" ? 1 : -1;
+        const max =
+          state.screenIndex === 0
+            ? state.sessions.length - 1
+            : state.screenIndex === 1
+              ? state.notifications.length - 1
+              : state.decision ? state.decision.options.length - 1 : -1;
+        if (max < 0) return;
+        state.highlightIndex = (state.highlightIndex + delta + max + 1) % (max + 1);
+        renderCurrent();
+        scrollToHighlight();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        if (state.screenIndex === 2) selectOption();
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        const delta = e.key === "ArrowRight" ? 1 : -1;
+        activateCard((state.screenIndex + delta + 3) % 3);
+      }
+    });
+
+    tabs.addEventListener("click", (e) => {
+      const tab = e.target.closest(".tab");
+      if (!tab) return;
+      const index = parseInt(tab.dataset.tab, 10);
+      if (Number.isNaN(index)) return;
+      activateCard(index);
+    });
+
+    viewport.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? 1 : -1;
+      const max =
+        state.screenIndex === 0
+          ? state.sessions.length - 1
+          : state.screenIndex === 1
+            ? state.notifications.length - 1
+            : state.decision ? state.decision.options.length - 1 : -1;
+      if (max < 0) return;
+      state.highlightIndex = (state.highlightIndex + delta + max + 1) % (max + 1);
+      renderCurrent();
+      scrollToHighlight();
+    }, { passive: false });
+
+    viewport.addEventListener("click", (e) => {
+      const row = e.target.closest("[data-index]");
+      if (!row) return;
+      const index = parseInt(row.dataset.index, 10);
+      if (state.screenIndex === 2) {
+        state.highlightIndex = index;
+        selectOption();
+      } else {
+        state.highlightIndex = index;
+        renderCurrent();
+        scrollToHighlight();
+      }
+    });
+
+    (function init() {
+      state.cards = [
+        createCard("card-sessions", renderSessions),
+        createCard("card-notifications", renderNotifications),
+        createCard("card-decisions", renderDecision),
+      ];
+      activateCard(0);
+      load();
+    })();
+  </script>
+</body>
+</html>

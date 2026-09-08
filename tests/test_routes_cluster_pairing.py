@@ -773,3 +773,22 @@ async def test_manual_claim_rate_limited(unauthed_client):
         )
     assert last.status_code == 429
     _cl._manual_claim_hits.clear()
+
+
+@pytest.mark.asyncio
+async def test_manual_claim_429_carries_retry_after(unauthed_client):
+    """A 429 must tell a well-behaved worker how long to wait."""
+    import tinyagentos.routes.cluster as _cl
+    _cl._manual_claim_hits.clear()
+    try:
+        last = None
+        for _ in range(_cl._MANUAL_CLAIM_MAX_PER_WINDOW + 3):
+            last = await unauthed_client.post(
+                "/api/cluster/pairing/manual-claim",
+                json={"name": "w-retry", "code": "GUESS234"},
+            )
+        assert last.status_code == 429
+        retry_after = int(last.headers["retry-after"])
+        assert 1 <= retry_after <= int(_cl._MANUAL_CLAIM_WINDOW_SECS)
+    finally:
+        _cl._manual_claim_hits.clear()

@@ -10,8 +10,9 @@ Registering the free taos.my username mints, *on the user's node*, two keypairs
 
 Private keys are generated locally and never leave the node. They persist in a
 single 0600 file under the data dir (``<data_dir>/hub/identity.json``),
-following the ``mesh_credentials.py`` pattern: atomic write (temp + os.replace),
-an allowlist of persisted fields, and the ``TAOS_DATA_DIR`` override so local
+following the ``mesh_credentials.py`` pattern: a durable atomic write via
+``tinyagentos.atomic_io``, an allowlist of persisted fields, and the
+``TAOS_DATA_DIR`` override so local
 dev and tests keep working. The node registers the two *public* keys with the
 directory, proving key possession with a signature over a server-issued
 challenge.
@@ -31,6 +32,13 @@ import time
 from pathlib import Path
 from typing import Optional
 
+# The repair lock's poll: how long a process waits for a rival's
+# corrupt-keystore repair to finish before treating its lock as stale, and
+# how many times. 100 * 20ms = 2s -- generous for one JSON write plus two
+# fsyncs, short enough not to wedge a boot.
+_REPAIR_POLL_ATTEMPTS = 100
+_REPAIR_POLL_INTERVAL = 0.02
+
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -43,6 +51,8 @@ from cryptography.hazmat.primitives.serialization import (
     PrivateFormat,
     PublicFormat,
 )
+
+from tinyagentos.atomic_io import atomic_create_bytes, atomic_write_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -86,13 +96,78 @@ def _pub_raw(key) -> bytes:
     return key.public_bytes(Encoding.Raw, PublicFormat.Raw)
 
 
-def _save(identity: dict) -> None:
-    """Persist the keystore, mode 0600, atomically.
+def _repair_corrupt(creds: dict) -> dict:
+    """Replace a corrupt keystore at ``_path()`` with *creds*, serialized.
 
-    Keeps only the ``_FIELDS`` allowlist. Atomic (write temp + ``os.replace``)
-    so a crash mid-write never leaves a partial file. The parent dir is created
-    0700; the file is created 0600 so private key material is never group- or
-    world-readable.
+    Two processes can each find the same corrupt file (the 2026-08-21
+    NUL-filled shape or similar) and both reach here with their own freshly
+    minted ``creds``. ``atomic_write_bytes`` is a durable *replace*: without
+    serialization the later write wins on disk and the earlier caller still
+    returns its own (now-orphaned) creds -- it signs (or encrypts) under a
+    fingerprint that is not what actually persisted, and loses it on the
+    next restart.
+
+    A sidecar ``.repair.lock`` claim -- the same exclusive-creation
+    technique ``atomic_create_bytes`` uses for the no-hard-link fallback --
+    makes exactly one process perform the repair; every other process
+    re-reads what the winner actually persisted instead of writing again.
+    """
+    lock = _path().with_name(_path().name + ".repair.lock")
+    for _ in range(2):  # the initial attempt, plus one retry after a stale lock
+        acquired = False
+        for _ in range(_REPAIR_POLL_ATTEMPTS):
+            try:
+                fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                time.sleep(_REPAIR_POLL_INTERVAL)
+                continue
+            else:
+                os.close(fd)
+                acquired = True
+                break
+
+        if acquired:
+            try:
+                # Someone else may have repaired the file while we polled;
+                # only write if it is still unusable.
+                current = _load()
+                if current is not None:
+                    return current
+                atomic_write_bytes(
+                    _path(), json.dumps(creds).encode("utf-8"), mode=0o600
+                )
+                return creds
+            finally:
+                try:
+                    os.unlink(lock)
+                except OSError:
+                    pass
+
+        # Poll bound exceeded: the lock holder likely crashed mid-repair.
+        # Reclaim the name and retry once rather than wedge every boot.
+        try:
+            os.unlink(lock)
+        except OSError:
+            pass
+
+    raise OSError(f"could not repair {_path()}: stale corrupt-keystore repair lock")
+
+
+def _save_new(identity: dict) -> dict:
+    """Persist a freshly minted keystore, mode 0600, durably -- if absent.
+
+    Keeps only the ``_FIELDS`` allowlist. Written through
+    ``tinyagentos.atomic_io``, which fsyncs the temp file and the parent
+    directory, so a crash mid-write leaves the complete old keystore or the
+    complete new one -- never a partial or NUL-filled file. The parent dir is
+    created 0700; the file is created 0600 so private key material is never
+    group- or world-readable.
+
+    Returns the credentials that are actually on disk afterwards, which are not
+    necessarily *identity*: two processes sharing the data dir can both find no
+    keystore and both mint. A replace would let the last one win and leave the
+    loser signing under a fingerprint it loses on the next restart, so this is a
+    *create*, and a caller that loses the race adopts the persisted identity.
     """
     creds = {k: identity.get(k) for k in _FIELDS}
 
@@ -103,17 +178,29 @@ def _save(identity: dict) -> None:
     except OSError:  # pragma: no cover - best effort on odd filesystems
         pass
 
-    p = _path()
-    tmp = p.with_name(p.name + ".tmp")
-    data = json.dumps(creds).encode("utf-8")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
-    os.replace(tmp, p)
+    # 0o600 is applied to the temp file before the rename, so the credentials
+    # are never briefly world-readable; the fsyncs mean a power cut cannot
+    # leave the file the right length and full of NULs.
+    persisted = atomic_create_bytes(
+        _path(), json.dumps(creds).encode("utf-8"), mode=0o600
+    )
     try:
-        os.chmod(p, 0o600)
-    except OSError:  # pragma: no cover
-        pass
+        on_disk = json.loads(persisted)
+    except ValueError:
+        # Something unparsable is already sitting at the path -- pre-existing
+        # corruption (the 2026-08-21 NUL-filled shape), since a winner's own
+        # write is always complete JSON. There is no identity in it to lose,
+        # and leaving it would wedge every future boot: `_load` treats it as
+        # absent, mints again, and races again forever. Repair it now so this
+        # recovery cycle ends with a usable keystore on disk -- serialized,
+        # so a concurrent repairer can't clobber (or be clobbered by) us.
+        return _repair_corrupt(creds)
+    if not isinstance(on_disk, dict) or not on_disk.get("signing_private"):
+        # Something unusable is already sitting at the path (a corrupt file the
+        # loader treats as absent). Replace it: there is no identity in it to
+        # lose, and refusing would wedge the node at every boot.
+        return _repair_corrupt(creds)
+    return on_disk
 
 
 def _load() -> Optional[dict]:
@@ -158,8 +245,9 @@ def load_or_create() -> dict:
         "encryption_public": _pub_raw(encryption.public_key()).hex(),
         "created_at": time.time(),
     }
-    _save(identity)
-    return identity
+    # A process that lost the mint race gets the persisted identity back, so
+    # every process on this node agrees on one author fingerprint.
+    return _save_new(identity)
 
 
 def signing_fingerprint() -> str:

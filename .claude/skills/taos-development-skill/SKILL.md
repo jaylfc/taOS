@@ -153,6 +153,78 @@ deps the project does not pin set `check_upgrade = false`.
 - SPA stubs: conftest creates stub `index.html`/`sw.js` so tests don't need `npm run build`
 - E2E (Playwright) tests excluded from CI and local gate
 
+### CSRF in tests - ON by default
+
+`verify_csrf` runs for real in tests. It used to be no-op'd by an autouse fixture for every
+file whose path lacked the substring `test_csrf` - measured at 788 test files, exactly ONE
+inside that carve-out, so 787 ran against an app whose CSRF dependency did nothing. That is
+what hid #2081: a repro written as an ordinary test returned 303 and PASSED, and the tell was
+that the CONTROL passed identically, which is the shape you get when the input never reaches
+the system under test.
+
+What this means when you write a test:
+
+- **The shared `client` fixture already does the right thing.** It echoes the `csrf_token`
+  cookie into `X-CSRF-Token` on mutating requests, exactly as `taosFetch` does in the SPA.
+  Nothing to remember.
+- **If you build your own `AsyncClient`, it will 403 on mutating routes** once it carries a
+  `taos_session` cookie. Fix it the way the real caller does - send the header - not by
+  disabling the check. One line does it:
+
+  ```python
+  from taos_test_csrf import csrf_event_hooks   # tests/taos_test_csrf.py
+
+  AsyncClient(
+      transport=ASGITransport(app=app),
+      base_url="http://test",
+      cookies={"taos_session": token},
+      event_hooks=csrf_event_hooks(),      # <- echoes the cookie into the header
+  )
+  ```
+
+  It lives in its own module, not in `conftest.py`, because `tests/` is not a package and
+  several `conftest.py` files exist, so a bare `from conftest import ...` binds whichever one
+  is on `sys.path` first.
+- **`verify_csrf` exempts** safe methods, `Authorization: Bearer` callers, `_CREDENTIAL_PATHS`
+  (the sign-in surfaces), and any request with no `taos_session` cookie. A test that never
+  authenticates is unaffected.
+- **`@pytest.mark.csrf_bypass` exists but nothing uses it, and
+  `tests/test_csrf_bypass_debt.py` asserts the list stays EMPTY.** Adding a marker turns that
+  guard red on purpose. Do NOT add it to silence a new red: a red means a route the real
+  caller could not reach the way your test reaches it - give the client the event hook
+  instead.
+- **A filename no longer changes behaviour.** The old carve-out was a substring match on the
+  path, so renaming a file silently re-armed the bypass with no failure anywhere.
+
+### Test markers
+
+Every pytest marker is declared once, in `pyproject.toml` under
+`[tool.pytest.ini_options] markers`. Do NOT register one from a
+`pytest_configure` hook in `tests/conftest.py`: that file already defines the
+canonical hook, and a second module-level `def pytest_configure` is last-wins
+rebinding rather than additive registration, so the earlier body never runs and
+its next edit is a silent no-op in CI.
+
+- **`@pytest.mark.skip_if_no_embed_backend` skips a test that cannot run without
+  an embedding backend** — a reachable qmd service, or an installed
+  `onnxruntime`. There is no opt-out marker and no `-o` switch: not applying it
+  IS the opt-out, and that is the default for every test.
+- **Like `csrf_bypass`, nothing uses it, and
+  `tests/test_embed_backend_marker_debt.py` asserts the list stays EMPTY.**
+  Before adding it, check what the test actually calls. A test driving an
+  `AsyncMock(spec=httpx.AsyncClient)`, a hand-built `_snapshot`, or a patched
+  `_run_setup` never reaches a backend, so the marker does not protect it from
+  anything — it just deletes it from every CI row while the suite stays green.
+- **Probe the capability, not a proxy for it.** The backend check opens a socket
+  against the packaged default qmd URL and looks for `onnxruntime` (what executes a
+  model), not `onnx` (the model-format library taOS does not depend on) and not
+  an environment variable no module under `tinyagentos/` reads. A proxy answers
+  "no backend" on a box that works and "backend" for a host that does not exist.
+
+Patch timing matters if you ever stub it yourself: `register_all_routers` does
+`from ... import verify_csrf` and freezes the object into `Depends(...)` at `include_router`
+time, so patching the module attribute AFTER `create_app` does nothing.
+
 ### CI matrix
 
 - Python 3.12 + 3.13 on every PR/push; 3.11 on nightly cron only
@@ -160,8 +232,12 @@ deps the project does not pin set `check_upgrade = false`.
 - Uses `uv sync --frozen` and `pytest -n auto`
 - Also required: `spa-build` (npm build + tsc + **vitest** - a desktop type error or failing
   component test fails CI), a "Verify app starts" `create_app` import smoke, `lint`
-  (`compileall`), and `cla`. The doc-gate, store-wiring gate, bot-review gate, and
-  distrust-green gate are separate workflows.
+  (`compileall`), and `cla`. The doc-gate, store-wiring gate, bot-review gate,
+  distrust-green gate, and evil-merge gate (`.github/workflows/evil-merge-gate.yml`,
+  implementation in `scripts/check_evil_merge.py` — fails a PR whose merge resolution
+  invents test-file content differing from the `git merge-tree` baseline; the workflow
+  selftests that it fires RED on the known evil merge `ad5cdfb0c` before checking the
+  PR) are separate workflows.
 - `check-all-skip` (`.github/workflows/distrust-green-gate.yml`, implementation in
   `.github/scripts/check_all_skip.py`) fails a PR when a test file it adds or modifies
   has tests and ALL of them skip (e.g. `pytest.importorskip` on a module that does not
@@ -249,7 +325,31 @@ The rate-limited no-op is now also machine-gated: `.github/workflows/bot-review-
 only CodeRabbit output on a PR is a rate-limit stub, and a companion `re-run-on-stub-comment`
 job re-runs the gate against the PR head SHA when a stub comment lands *after* the initial
 run went green. A red `bot-review-gate` check means the PR has no substantive CodeRabbit
-review yet — wait for (or retrigger) a real review; do not merge on the stub.
+review yet — wait for (or retrigger) a real review; do not merge on the
+stub. A lead may waive a known rate-limit/stub false positive by applying the
+`bot-review-allow` label (see below).
+
+Enforcement parity is a GitHub-side branch-protection setting, not in-repo config:
+`bot-review-gate` is REQUIRED on `master` but only ADVISORY on `dev` (absent from dev's
+`required_status_checks.contexts`), so a red check can merge through dev and block only at the
+dev->master promotion. The hardening target is to add `bot-review-gate` to dev's required
+contexts too; that edit is Jay's standing GitHub configuration (master is left unchanged) and
+is not performed by a repo commit.
+
+Two things to know before applying it (both recorded in the workflow header):
+
+- **An override label (`bot-review-allow`) ships first.** `scripts/check_bot_review.py` fails
+  on a CodeRabbit rate-limit stub, which is an infrastructure condition, not a code problem.
+  Making the context required on `dev` before there is an escape hatch would block every merge
+  to `dev` for the length of a rate-limit window. The `bot-review-allow` label (lead-applied,
+  never by automation) waives the stub-only FAIL verdict to exit 0 with an explicit WAIVED
+  message -- it covers only the stub verdict class (EXIT_STUB), not a cannot-fetch ERROR, so
+  fail-closed is preserved. The script reads the label from the API at run time (never a stale
+  event payload) and the workflow re-runs on `labeled`/`unlabeled` so the waiver is revokable.
+- **Use the right API shape.** The contexts endpoint takes a top-level `contexts` ARRAY. A
+  `-f required_status_checks='[...]'` string field is the wrong shape and the update silently
+  does not apply. Send `{"contexts":[...]}` via `gh api -X PATCH ... --input <file>`, carrying
+  the branch's existing contexts plus the new one -- the call replaces the whole list.
 
 ### Procedure
 
@@ -420,6 +520,19 @@ items by number (for example "pitfall 5").
   `test_config.py`.
 - **Catalog entry:** `manifest.yaml` under `app-catalog/<category>/<id>/` → add to `catalog.yaml` →
   `pytest tests/test_catalog_sync.py`.
+- **Writing a state file:** call `atomic_write_text` / `atomic_write_bytes` from
+  `tinyagentos.atomic_io` (it creates the parent dir, fsyncs the temp file and the parent
+  directory, applies `mode` before the rename, and randomises the temp name). Never hand-roll
+  `tmp.write_text(...)` + `tmp.replace(target)` — that fsyncs nothing, so a power cut brings the
+  file back the right size and full of NULs, which is the 2026-08-21 account-store wipe.
+  `tests/test_config_atomic.py` fails the build on a new copy; a promotion that genuinely cannot
+  use `atomic_io` (a symlink swap) is waived in place with `# atomic-io-exempt: <reason>`
+  (pitfall 24). From `async` code, wrap it: `await asyncio.to_thread(atomic_write_text, ...)` --
+  the fsyncs are blocking syscalls and stall the event loop.
+- **Creating one-time key material:** call `atomic_create_bytes`, not `atomic_write_bytes`. A write
+  is a durable *replace*, so two processes that both find the key file absent both write and the
+  last one wins; the loser keeps encrypting/signing with material that is not on disk.
+  `atomic_create_bytes` claims the name with `link(2)` and returns whatever actually persisted.
 - **Debugging a test:** confirm it uses the async `client` fixture and that `tmp_data_dir` setup is
   complete; check the store's `init()`; isolate with `pytest <path>::<test> -v`.
 
@@ -429,9 +542,11 @@ Every mutating route requires `X-CSRF-Token` on cookie-session requests (`verify
 router-wide). Any SPA `fetch` that POSTs/PUTs/PATCHes/DELETEs must attach the double-submit header:
 use `withCsrf(init)` from `desktop/src/lib/csrf.ts`, or the `taosFetch` wrapper
 (`desktop/src/lib/taos-fetch.ts`) which applies it automatically. **A raw
-`fetch("/api/...", {method:"POST"})` passes vitest AND pytest (tests bypass CSRF) but 403s
-"CSRF token missing" in production** - this exact class shipped as a bug (#1977). Bearer-token
+`fetch("/api/...", {method:"POST"})` passes vitest but 403s "CSRF token missing" in
+production** - this exact class shipped as a bug (#1977). Bearer-token
 (agent JWT) calls are CSRF-exempt; only cookie sessions need the header.
+
+pytest used to miss this class too, and no longer does - see "CSRF in tests" above.
 
 ## Agent auth model (Bearer JWT vs session)
 
@@ -505,6 +620,14 @@ blocks PRs that add a new `BaseStore` subclass without wiring it into `tinyagent
 Routes reach stores ONLY via `request.app.state`, so an unwired store is unreachable dead
 code. The check is name-level (the class name must appear in `app.py`) and polices only
 classes added by the PR - pre-existing orphans are skipped.
+
+A class that some other class under `tinyagentos/` subclasses **and** that declares no
+`SCHEMA` of its own is skipped too, and the gate prints the exemption. Such a base exists
+to be inherited from, never to be assigned to `app.state` - `ProjectsDBStore` in
+`tinyagentos/projects/tx.py` carries the shared `projects.db` transaction helper for the
+eight stores on that file, owns no tables and is never instantiated. A class that declares
+`SCHEMA` owns tables, so it is a store and stays policed however many subclasses it grows:
+subclassing an unwired store does not launder it past the gate.
 
 For a store genuinely constructed elsewhere (tests, CLI, workers), waive it with a PR-body
 trailer, which is logged by the gate:

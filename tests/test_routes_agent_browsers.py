@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.app import create_app
 from tinyagentos.agent_browsers import AgentBrowsersManager
+from taos_test_csrf import csrf_event_hooks
 
 
 @pytest_asyncio.fixture
@@ -43,7 +44,7 @@ async def browsers_client(tmp_path):
     _rec = app.state.auth.find_user("admin")
     _token = app.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}) as c:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}, event_hooks=csrf_event_hooks()) as c:
         yield c
 
     await browsers_mgr.close()

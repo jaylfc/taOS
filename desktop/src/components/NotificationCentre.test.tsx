@@ -127,7 +127,7 @@ describe("NotificationCentre click routing", () => {
     expect(screen.queryByText(/more in archive/)).not.toBeInTheDocument();
   });
 
-  it("renders a View archive button that opens the notification-archive window", () => {
+  it("renders a View archive button that opens the notifications window with section archive", () => {
     notifications = [
       notif({ id: "srv-1", title: "Active note" }),
       { ...notif({ id: "srv-x", title: "Old note" }), archived: true } as Notification,
@@ -141,8 +141,9 @@ describe("NotificationCentre click routing", () => {
     fireEvent.click(viewArchive);
 
     expect(openWindow).toHaveBeenCalledWith(
-      "notification-archive",
-      expect.objectContaining({ w: 800, h: 600 }),
+      "notifications",
+      expect.objectContaining({ w: 900, h: 600 }),
+      { section: "archive" },
     );
   });
 
@@ -171,9 +172,20 @@ describe("NotificationCentre click routing", () => {
   });
 
   it("archives (not just removes) the notification when a consent decision is made", async () => {
+    // ConsentActions will not enable Allow until the server has told it which
+    // scopes need a project, so the stub has to answer that route like the
+    // real one does -- an empty {} is a malformed vocabulary, not a no-op.
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) }),
+      vi.fn().mockImplementation((url: string) => {
+        const body = String(url).startsWith("/api/agents/scope-vocabulary")
+          ? {
+              valid_scopes: ["memory_read", "project_tasks"],
+              project_scopes: ["project_tasks"],
+            }
+          : {};
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+      }),
     );
     notifications = [
       notif({
@@ -185,6 +197,9 @@ describe("NotificationCentre click routing", () => {
     ];
     render(<NotificationCentre />);
 
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /allow/i })).not.toBeDisabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: /allow/i }));
 
     // Resolution archives + reads (lands in History), it is NOT a plain dismiss.

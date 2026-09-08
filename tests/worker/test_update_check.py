@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
+from packaging.version import Version
 
 from tinyagentos.worker.update_check import (
     WorkerUpdateService,
@@ -23,34 +25,36 @@ from tinyagentos.worker.update_check import (
 
 
 class TestParseVersion:
-    """Tests for _parse_version — version string → numeric tuple."""
+    """Tests for _parse_version — version string → PEP 440 Version."""
 
     def test_simple_semver(self):
-        assert _parse_version("1.2.3") == (1, 2, 3)
+        assert _parse_version("1.2.3") == Version("1.2.3")
 
     def test_two_component(self):
-        assert _parse_version("2.0") == (2, 0)
+        assert _parse_version("2.0") == Version("2.0")
 
     def test_single_component(self):
-        assert _parse_version("3") == (3,)
+        assert _parse_version("3") == Version("3")
 
     def test_strips_v_prefix(self):
-        assert _parse_version("v1.2.3") == (1, 2, 3)
+        assert _parse_version("v1.2.3") == Version("1.2.3")
 
-    def test_strips_prerelease(self):
-        assert _parse_version("1.0.0-beta.40") == (1, 0, 0)
+    def test_keeps_prerelease(self):
+        """The pre-release is kept — betas of a release must order."""
+        assert _parse_version("1.0.0-beta.40") == Version("1.0.0b40")
+        assert _parse_version("1.0.0-beta.40") != _parse_version("1.0.0-beta.41")
 
-    def test_strips_build_metadata(self):
-        assert _parse_version("1.2.3+build.42") == (1, 2, 3)
+    def test_keeps_build_metadata(self):
+        assert _parse_version("1.2.3+build.42") == Version("1.2.3+build.42")
 
-    def test_unparseable_returns_empty(self):
-        assert _parse_version("not-a-version") == ()
+    def test_unparseable_returns_none(self):
+        assert _parse_version("not-a-version") is None
 
     def test_empty_string(self):
-        assert _parse_version("") == ()
+        assert _parse_version("") is None
 
     def test_whitespace_only(self):
-        assert _parse_version("   ") == ()
+        assert _parse_version("   ") is None
 
 
 class TestIsNewerVersion:
@@ -81,13 +85,10 @@ class TestIsNewerVersion:
         assert not is_newer_version("1.2", "1.2.0")  # 1.2.0 == 1.2.0
         assert not is_newer_version("1.2", "1.2.1")  # 1.2.0 < 1.2.1
 
-    def test_prerelease_tags_stripped(self):
-        """Pre-release markers are stripped before comparison.
-        
-        Both become (1,0,0) after stripping — they're equal, not newer/older.
-        """
-        assert not is_newer_version("1.0.0-beta.41", "1.0.0-beta.40")
-        # But a higher major version IS newer even with pre-release:
+    def test_prerelease_tags_ordered(self):
+        """Pre-release markers take part in the comparison."""
+        assert is_newer_version("1.0.0-beta.41", "1.0.0-beta.40")
+        # And a higher major version is newer even with a pre-release:
         assert is_newer_version("2.0.0-beta.1", "1.0.0-beta.40")
 
     def test_v_prefix_ignored(self):
@@ -98,6 +99,37 @@ class TestIsNewerVersion:
 
     def test_unparseable_current(self):
         assert not is_newer_version("2.0.0", "garbage")
+
+
+class TestPrereleaseOrdering:
+    """Pre-release ordering — taOS ships 1.0.0-beta.N, so betas must order.
+
+    Regression cover for tsk-loeced: the comparator used to strip everything
+    after the first '-', which collapsed every beta of a release onto the same
+    numeric tuple. No beta ever saw a newer beta and no worker could cross from
+    a beta to the GA of the same release.
+    """
+
+    def test_beta_is_newer_than_earlier_beta(self):
+        assert is_newer_version("1.0.0-beta.51", "1.0.0-beta.50") is True
+
+    def test_earlier_beta_is_not_newer(self):
+        assert is_newer_version("1.0.0-beta.49", "1.0.0-beta.50") is False
+
+    def test_ga_is_newer_than_beta_of_same_release(self):
+        assert is_newer_version("1.0.0", "1.0.0-beta.50") is True
+
+    def test_beta_is_not_newer_than_its_ga(self):
+        assert is_newer_version("1.0.0-beta.50", "1.0.0") is False
+
+    def test_pin_rejects_a_later_beta_than_the_pin(self):
+        assert version_matches_pin("1.0.0-beta.99", "1.0.0-beta.40") is False
+
+    def test_pin_allows_the_pinned_beta_itself(self):
+        assert version_matches_pin("1.0.0-beta.40", "1.0.0-beta.40") is True
+
+    def test_pin_rejects_ga_above_a_beta_pin(self):
+        assert version_matches_pin("1.0.0", "1.0.0-beta.40") is False
 
 
 class TestVersionMatchesChannel:
@@ -139,6 +171,28 @@ class TestVersionMatchesChannel:
         assert version_matches_channel("1.0.0-beta.1", "dev")
         assert version_matches_channel("1.0.0-dev.5", "dev")
         assert version_matches_channel("1.0.0-alpha.3", "dev")
+
+    def test_local_build_metadata_does_not_make_a_release_a_dev_build(self):
+        """A GA release carrying build metadata is still stable.
+
+        The old channel guess was a substring match, so any version string
+        merely containing "dev" was classified as the dev channel and so
+        withheld from stable- and beta-channel users.
+        """
+        assert version_matches_channel("1.0.0+devbuild", "stable") is True
+        assert version_matches_channel("1.0.0+devbuild", "beta") is True
+
+    def test_unparseable_version_reaches_only_the_dev_channel(self, caplog):
+        """An unrecognisable version is withheld from stable and beta, and logged.
+
+        Withholding is the safe direction, but silently is not: without the log
+        an operator sees a worker that simply never updates and no reason why.
+        """
+        with caplog.at_level(logging.DEBUG, logger="tinyagentos.worker.update_check"):
+            assert version_matches_channel("nightly", "stable") is False
+            assert version_matches_channel("nightly", "beta") is False
+            assert version_matches_channel("nightly", "dev") is True
+        assert "not a PEP 440 version" in caplog.text
 
     def test_channel_detection_case_insensitive(self):
         """Channel detection from version should be case-insensitive."""
@@ -375,6 +429,6 @@ class TestVersionComparisonEdgeCases:
 
     def test_single_digit_newer(self):
         """Explicitly: 2 > 1."""
-        assert _parse_version("2") == (2,)
-        assert _parse_version("1") == (1,)
+        assert _parse_version("2") == Version("2")
+        assert _parse_version("1") == Version("1")
         assert is_newer_version("2", "1")

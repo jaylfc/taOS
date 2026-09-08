@@ -85,6 +85,13 @@ vi.mock("@/registry/app-registry", () => ({
     pinned: true,
     launchpadOrder: 1,
   }),
+  // This fixture declares no redirects, so every pin id is its own app id and
+  // no pin carries a section. Mirrors the real contract for that table rather
+  // than stubbing it away (#2677).
+  APP_REDIRECTS: {},
+  resolvePinnedId: (id: string) => ({ id }),
+  pinnedAppId: (id: string) => id,
+  pinnedLaunchProps: () => undefined,
 }));
 
 vi.mock("@/hooks/use-is-mobile", () => ({

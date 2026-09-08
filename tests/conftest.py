@@ -1,7 +1,10 @@
+import functools
 import hashlib
 import hmac
+import importlib.util
 import json as _json
 import os
+import socket
 import sqlite3
 import sys
 import time
@@ -17,15 +20,126 @@ from tinyagentos.routes.desktop import SPA_DIR
 
 
 # ---------------------------------------------------------------------------
-# Test-mode CSRF bypass — the verify_csrf dependency is enforced globally
-# on all routers via register_all_routers().  Existing tests were written
-# before CSRF was enforced and do not include CSRF tokens.  Rather than
-# updating every test fixture, we monkey-patch verify_csrf to a no-op
-# during test runs.  The dedicated CSRF tests (test_csrf.py) import the
-# real function directly and test it in isolation.
+# CSRF in tests — ON by default, opted OUT explicitly.
+#
+# This used to be inverted: an autouse fixture no-op'd `verify_csrf` for every
+# test file whose path did not contain the substring "test_csrf".  Measured on
+# dev at the time of the change: 788 test files, exactly ONE inside that
+# carve-out, so 787 ran against an app whose CSRF dependency did nothing, and
+# 223 of those issue POSTs.
+#
+# That is an over-privileged fixture: it grants the test more privilege than
+# the real caller has, so the test cannot observe the check the real caller
+# must satisfy.  It is what hid #2081 (the CSRF login lockout).  A first repro
+# written as an ordinary test returned 303 and PASSED, and the tell was that
+# the CONTROL passed identically — the shape you get when the input never
+# reaches the system under test.
+#
+# Two properties of the replacement matter:
+#
+#   * The default is the REAL implementation.  A test written tomorrow gets
+#     production behaviour without anyone remembering to ask for it, and a new
+#     CSRF regression is red by default rather than invisible by default.
+#   * Opting out is an explicit MARKER, not a filename.  The old carve-out was
+#     a substring match on the path, so renaming a file silently re-armed the
+#     bypass with no failure anywhere.  A marker cannot be triggered by
+#     accident, it is greppable, and `tests/test_csrf_bypass_debt.py` holds the
+#     list of modules that still use it so the debt cannot grow unnoticed.
+#
+# To opt a whole module out, put this at module scope:
+#
+#     pytestmark = pytest.mark.csrf_bypass
+#
+# Do NOT add it to silence a new red.  A red here is a route that the real
+# caller could not reach the way the test reaches it.
 # ---------------------------------------------------------------------------
 
 from starlette.requests import HTTPConnection as _HTTPConnection
+
+CSRF_BYPASS_MARKER = "csrf_bypass"
+
+# ---------------------------------------------------------------------------
+# skip_if_no_embed_backend — an opt-in skip for a test that CANNOT run without
+# an embedding backend.
+#
+#     @pytest.mark.skip_if_no_embed_backend
+#     def test_something(self): ...
+#
+#     pytestmark = pytest.mark.skip_if_no_embed_backend   # whole module
+#
+# There is no opt-out marker and no `-o` switch: not applying the marker IS the
+# opt-out, and that is the default for every test in the tree.
+#
+# The list of tests carrying it is meant to stay EMPTY, and
+# `tests/test_embed_backend_marker_debt.py` asserts that.  A skip marker is a
+# way to turn a red green without fixing it, so before adding one, check what
+# the test actually calls: a test driving an `AsyncMock(spec=httpx.AsyncClient)`,
+# a hand-built `_snapshot`, or a patched `_run_setup` never reaches a backend
+# and does not need the marker — marking it only deletes it from every CI row.
+# ---------------------------------------------------------------------------
+
+EMBED_BACKEND_MARKER = "skip_if_no_embed_backend"
+_EMBED_BACKEND_SKIP_REASON = "no embed backend: qmd unreachable and onnxruntime not installed"
+
+
+def _qmd_reachable(timeout: float = 0.25) -> bool:
+    """True when something is listening at the qmd URL the product would use.
+
+    A reachability probe, not an environment-variable read.  The previous
+    version of this check asked whether `TAOSMD_URL` was set to a non-default
+    value — a variable no module under `tinyagentos/` reads — so it answered
+    "no backend" on a box running qmd on the configured default, and "backend"
+    for a URL pointing at a host that does not exist.  Both answers are the
+    opposite of the capability the marker is asking about.
+    """
+    from urllib.parse import urlparse
+
+    from tinyagentos.config import DEFAULT_CONFIG
+
+    # The packaged default, not a loaded `config.yaml`: a test box's verdict
+    # must not depend on whichever config file happens to sit in this user's
+    # home directory, or the same commit skips different tests per machine.
+    parsed = urlparse(DEFAULT_CONFIG["qmd"]["url"])
+    host, port = parsed.hostname, parsed.port
+    if not host or not port:
+        return False
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+@functools.lru_cache(maxsize=1)
+def _is_embed_backend_available() -> bool:
+    """True when this box can produce an embedding.
+
+    Either backend suffices: a reachable qmd service, or the ONNX runtime.
+    The package to probe is `onnxruntime` (what executes a model), NOT `onnx`
+    (the model-format library) — taOS depends on the former and not the
+    latter, so probing `onnx` reports "no backend" on every developer box and
+    every CI row.
+
+    Cached for the whole process (``maxsize=1``): the body runs once per
+    interpreter, not once per collected item, so a qmd that starts after
+    collection is not seen until the next pytest run. That is deliberate: the
+    verdict for one run must be one verdict, or half a session skips and the
+    other half runs.
+
+    The reachability probe is a TCP connect to qmd's configured host:port. Any
+    listener on that port satisfies it; a foreign service squatting the default
+    port makes the marked tests run and fail loudly on the protocol mismatch
+    rather than skip. That direction (a false run) is the one we can see in CI;
+    a false skip is the one this gate exists to end.
+    """
+    return _qmd_reachable() or importlib.util.find_spec("onnxruntime") is not None
+
+
+def pytest_collection_modifyitems(items):
+    """Skip items marked skip_if_no_embed_backend when no backend can serve them."""
+    for item in items:
+        if item.get_closest_marker(EMBED_BACKEND_MARKER) and not _is_embed_backend_available():
+            item.add_marker(pytest.mark.skip(reason=_EMBED_BACKEND_SKIP_REASON))
 
 
 def _noop_verify_csrf(conn: _HTTPConnection) -> None:
@@ -36,14 +150,33 @@ def _noop_verify_csrf(conn: _HTTPConnection) -> None:
     return
 
 
+# The header-echoing hook lives in its own module so that the ~11 test modules
+# building their own AsyncClient can import it without a bare
+# `from conftest import ...` -- `tests/` is not a package and several
+# conftest.py files exist, so that import binds whichever one is on sys.path
+# first (card `tsk-xplzqy`).  Re-exported here under the old private names so
+# the shared `client` fixture below reads unchanged.
+from taos_test_csrf import (  # noqa: E402
+    TEST_CSRF_TOKEN as _TEST_CSRF_TOKEN,
+    csrf_event_hooks,
+    echo_csrf_cookie_into_header as _echo_csrf_cookie_into_header,
+)
+
+
 @pytest.fixture(autouse=True)
 def _bypass_csrf_in_tests(request):
-    """Replace verify_csrf with a no-op in the module under test.
+    """Run against the REAL verify_csrf unless the test opts out.
 
-    Skips patching when the test file is test_csrf.py so those tests
-    exercise the real implementation.
+    Opt out with ``@pytest.mark.csrf_bypass`` on the test, its class, or the
+    module (``pytestmark``).  ``get_closest_marker`` sees all three.
+
+    The patch must be in place BEFORE the app is built: `register_all_routers`
+    does ``from ... import verify_csrf`` and freezes the resulting object into
+    ``Depends(...)`` at ``include_router`` time, so patching the module
+    attribute after ``create_app`` changes nothing.  Wrapping the whole test —
+    as this fixture does — is what makes it take effect.
     """
-    if "test_csrf" in str(request.node.fspath):
+    if request.node.get_closest_marker(CSRF_BYPASS_MARKER) is None:
         yield
         return
 
@@ -340,6 +473,13 @@ def _verify_core_deps() -> None:
     raise RuntimeError("\n".join(lines))
 
 
+# THE canonical `pytest_configure` for tests/.  Do not add a second one: two
+# module-level `def pytest_configure` in one file is last-wins rebinding, not
+# additive registration, so the earlier body never runs and its next edit is a
+# silent no-op in CI.  Markers are declared in `pyproject.toml` under
+# `[tool.pytest.ini_options] markers`, not here.
+# `tests/test_embed_backend_marker_debt.py` asserts this file defines the hook
+# exactly once.
 def pytest_configure(config):
     """Stub the SPA bundle so the test suite doesn't depend on a real
     `npm run build`. Two tests need actual files on disk to exercise
@@ -520,6 +660,10 @@ async def client(app, tmp_data_dir):
     if coding_session_store._db is not None:
         await coding_session_store.close()
     await coding_session_store.init()
+    container_request_store = app.state.container_request_store
+    if container_request_store._db is not None:
+        await container_request_store.close()
+    await container_request_store.init()
     app.state.projects_root.mkdir(parents=True, exist_ok=True)
     canvas_store = app.state.canvas_store
     if canvas_store._db is not None:
@@ -617,6 +761,12 @@ async def client(app, tmp_data_dir):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": _token},
+        # Supplies the CSRF half of a signed-in browser's state on mutating
+        # requests -- see _echo_csrf_cookie_into_header. Without it this client
+        # is authenticated but holds no CSRF cookie, a state no real browser is
+        # ever in, and every mutating request 403s for a reason that has
+        # nothing to do with the route under test.
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
     await canvas_store.close()
@@ -814,6 +964,9 @@ async def client_with_qmd(app_with_qmd):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": _token},
+        # Same reason as the `client` fixture above: this is a signed-in
+        # browser, so every mutating request needs the double-submit header.
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
     await canvas_store.close()

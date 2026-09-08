@@ -134,9 +134,13 @@ async def _check_delegation_policy(
 
     policies = getattr(request.app.state, "execution_policies", None)
     if policies is None:
-        # Not wired in this deployment; fail open rather than break
-        # delegation over an additive, not-yet-present store.
-        return None
+        # The startup wiring in app.py sets app.state.execution_policies
+        # unconditionally, so an absent store here signals a misconfigured
+        # app. Deny rather than silently allow.
+        return JSONResponse(
+            {"error": "execution_policies not configured"},
+            status_code=403,
+        )
 
     effect = await policies.effective_effect(from_agent, ACTION_CLASS)
     if effect == "allow":

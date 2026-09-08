@@ -42,6 +42,7 @@ WAL / synchronous helpers
 ``apply_wal_pragmas_async(conn)``  — async aiosqlite.Connection
 
 Both set:
+    PRAGMA busy_timeout = 5000
     PRAGMA journal_mode = WAL
     PRAGMA synchronous  = NORMAL
 
@@ -247,7 +248,13 @@ def run_migrations(
 
 
 async def apply_wal_pragmas_async(conn) -> None:
-    """Enable WAL journal mode and NORMAL synchronous on an aiosqlite *conn*."""
+    """Enable WAL journal mode and NORMAL synchronous on an aiosqlite *conn*.
+
+    busy_timeout is set explicitly (as in the sync variant) so a connection that
+    meets a concurrent short write on the same file waits for it instead of
+    failing the request with "database is locked".
+    """
+    await conn.execute("PRAGMA busy_timeout = 5000")
     await conn.execute("PRAGMA journal_mode = WAL")
     await conn.execute("PRAGMA synchronous = NORMAL")
 

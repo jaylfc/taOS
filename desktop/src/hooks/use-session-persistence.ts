@@ -96,6 +96,13 @@ export function useSessionPersistence() {
       .then((r) => r.json())
       .then((data: { pinned?: string[]; iconSize?: string; position?: string }) => {
         if (data.pinned && Array.isArray(data.pinned)) {
+          // Saved pins are restored verbatim. Resolving a redirect id to its
+          // target here (`notification-archive` -> `notifications`) dropped
+          // the section the pin existed to express before the dock, the
+          // shortcuts or the app could read it, and the auto-save below then
+          // wrote the stripped id back, so one reload lost the pin for good
+          // (#2677). Redirects resolve where a pin is used instead; an id no
+          // app claims yet is kept for the same reason it always was (#2668).
           useDockStore.getState().reorder(data.pinned);
         }
         if (data.iconSize === "small" || data.iconSize === "medium" || data.iconSize === "large") {

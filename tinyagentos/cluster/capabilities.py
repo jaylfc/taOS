@@ -65,13 +65,14 @@ def worker_tier_id(hardware: dict) -> str:
         return "cpu-only"
 
     cpu_raw = hardware.get("cpu") or {}
-    # Guard: workers running older agent versions may send cpu as a plain string
     cpu: dict = cpu_raw if isinstance(cpu_raw, dict) else {}
     arch_raw = cpu.get("arch", "")
     arch = "arm" if arch_raw in ("aarch64", "armv7l", "arm64") else "x86"
 
-    gpu = hardware.get("gpu") or {}
-    npu = hardware.get("npu") or {}
+    gpu_raw = hardware.get("gpu") or {}
+    gpu: dict = gpu_raw if isinstance(gpu_raw, dict) else {}
+    npu_raw = hardware.get("npu") or {}
+    npu: dict = npu_raw if isinstance(npu_raw, dict) else {}
     ram_mb = hardware.get("ram_mb", 0)
 
     gpu_type = gpu.get("type", "none") or "none"
@@ -139,8 +140,10 @@ def hardware_to_targets(hardware: dict) -> list[str]:
     arch_raw = cpu.get("arch", "")
     arch = "arm" if arch_raw in ("aarch64", "armv7l", "arm64") else "x86"
 
-    npu = hardware.get("npu") or {}
-    gpu = hardware.get("gpu") or {}
+    npu_raw = hardware.get("npu") or {}
+    npu: dict = npu_raw if isinstance(npu_raw, dict) else {}
+    gpu_raw = hardware.get("gpu") or {}
+    gpu: dict = gpu_raw if isinstance(gpu_raw, dict) else {}
 
     npu_type = npu.get("type", "none") or "none"
     gpu_type = gpu.get("type", "none") or "none"

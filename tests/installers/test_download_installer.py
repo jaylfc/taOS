@@ -302,7 +302,7 @@ class TestDownloadFileSsrf:
         """Exceeding max redirects must raise ValueError."""
         dest = tmp_path / "out.bin"
         redirect = _FakeResponse(302, body=b"",
-                                  headers={"location": "https://safe.example/loop"})
+                                   headers={"location": "https://safe.example/loop"})
 
         mock_client, mock_send = _mock_async_client(redirect)
 
@@ -310,3 +310,71 @@ class TestDownloadFileSsrf:
             with patch("httpx.AsyncClient", return_value=mock_client):
                 with pytest.raises(ValueError, match="Too many redirects"):
                     await download_file("https://safe.example/model.bin", dest)
+
+
+# ── proxy / trust_env pairing ────────────────────────────────────────
+
+class TestDownloadFileProxyTrustEnv:
+    @pytest.mark.asyncio
+    async def test_proxy_implies_trust_env_false(self, tmp_path):
+        """An explicit proxy must imply trust_env=False, even though the caller
+        does not pass trust_env. This prevents an ambient HTTPS_PROXY env var
+        from silently overriding the caller's explicit proxy choice on the
+        download path that installs models and apps.
+        """
+        dest = tmp_path / "out.bin"
+        fake = _FakeResponse(200, body=b"ok", headers={"content-length": "2"})
+        mock_client, _mock_send = _mock_async_client(fake)
+
+        with patch("socket.getaddrinfo", return_value=_gai("93.184.216.34")):
+            with patch("httpx.AsyncClient", return_value=mock_client) as patched_client:
+                await download_file(
+                    "https://example.com/model.bin",
+                    dest,
+                    proxy="socks5://geo.example:1080",
+                )
+
+        kwargs = patched_client.call_args.kwargs
+        assert kwargs["proxy"] == "socks5://geo.example:1080"
+        assert kwargs["trust_env"] is False
+
+    @pytest.mark.asyncio
+    async def test_no_proxy_resolves_trust_env_true(self, tmp_path):
+        """Control: with no proxy (proxy=None), trust_env must resolve to True
+        so ambient env vars (proxies, certs) still apply for the no-proxy path
+        used by callers such as hf_multi_installer.
+        """
+        dest = tmp_path / "out.bin"
+        fake = _FakeResponse(200, body=b"ok", headers={"content-length": "2"})
+        mock_client, _mock_send = _mock_async_client(fake)
+
+        with patch("socket.getaddrinfo", return_value=_gai("93.184.216.34")):
+            with patch("httpx.AsyncClient", return_value=mock_client) as patched_client:
+                await download_file(
+                    "https://example.com/model.bin",
+                    dest,
+                )
+
+        kwargs = patched_client.call_args.kwargs
+        assert kwargs["proxy"] is None
+        assert kwargs["trust_env"] is True
+
+    @pytest.mark.asyncio
+    async def test_explicit_trust_env_wins_over_proxy(self, tmp_path):
+        """A caller that genuinely wants ambient env together with a proxy must
+        be able to pass trust_env=True explicitly and have it honored."""
+        dest = tmp_path / "out.bin"
+        fake = _FakeResponse(200, body=b"ok", headers={"content-length": "2"})
+        mock_client, _mock_send = _mock_async_client(fake)
+
+        with patch("socket.getaddrinfo", return_value=_gai("93.184.216.34")):
+            with patch("httpx.AsyncClient", return_value=mock_client) as patched_client:
+                await download_file(
+                    "https://example.com/model.bin",
+                    dest,
+                    proxy="socks5://geo.example:1080",
+                    trust_env=True,
+                )
+
+        kwargs = patched_client.call_args.kwargs
+        assert kwargs["trust_env"] is True

@@ -40,6 +40,15 @@ def lint_managed(root: Path) -> list[str]:
     ``lifecycle.health.expect`` is a literal substring matched against the
     backend's health-endpoint response body (a 200 body must contain it).
     """
+    # Validate every manifest against the same pydantic model the runtime
+    # uses, so a typo'd manifest (e.g. ``requires: ollama`` as a string)
+    # fails the gate instead of silently shipping. The CI mirror-image
+    # bug was: `if not isinstance(lifecycle, dict): continue` skipped
+    # malformed manifests, so a bad one passed the gate.
+    from pydantic import ValidationError
+
+    from tinyagentos.registry import AppManifest
+
     errors: list[str] = []
     services_dir = root / "services"
     for manifest in sorted(services_dir.glob("*/manifest.yaml")):
@@ -54,6 +63,13 @@ def lint_managed(root: Path) -> list[str]:
             continue
         if not isinstance(data, dict):
             errors.append(f"{sid_dir}: manifest.yaml top-level is not a mapping")
+            continue
+
+        # Boundary validation: same model the runtime loads with.
+        try:
+            AppManifest.model_validate({**data, "manifest_dir": manifest.parent})
+        except ValidationError as exc:
+            errors.append(f"{sid_dir}: manifest failed schema validation: {exc}")
             continue
 
         sid = str(data.get("id") or sid_dir)

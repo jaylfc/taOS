@@ -5,10 +5,16 @@ Drop ONE file per pull request into `changelog.d/` instead of editing
 
     changelog.d/2291-notes-area.md
 
-Name it `<pr-number>-<short-slug>.md` and write the bullet exactly as it should
-appear in the changelog, including the trailing `(#PR)`:
+Name it `<pr-number>-<short-slug>.md` or, when the change is tracked by a
+task card, `tsk-<cardid>-<short-slug>.md`. Write the bullet exactly as it should
+appear in the changelog. The trailing `(#PR)` is NOT required: the fragment is
+authored inside the commit that does the work, before the pull request number
+exists. Nothing attaches the reference later either — the collator does not
+inject one (see "At release time" below). Add it by hand if you want it and
+you know the number; a `tsk-<cardid>` filename carries the card id instead,
+which is the traceable link for fragments written by a lane.
 
-    - Projects gain a Notes area: title + markdown notes per project (#2291).
+    - Projects gain a Notes area: title + markdown notes per project.
 
 Put `### Added`, `### Fixed`, `### Changed`, `### Removed` or `### Security` on
 its own first line when the section matters; the collator groups by section and
@@ -53,3 +59,8 @@ not insert a duplicate. It consumes only leftover fragments whose content is
 already present in `CHANGELOG.md`; a fragment that landed after the failed run
 is folded nowhere, so it is kept on disk and the rerun exits non-zero naming
 it — fold it by rerunning with the correct (next) target version.
+
+The collator does not currently inject `(#PR)` references into the folded
+output. If that is ever needed, the injection point would live in
+`scripts/collate_changelog.py` alongside the bullet-grouping logic; that is a
+separate card.

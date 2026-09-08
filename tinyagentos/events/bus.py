@@ -163,11 +163,24 @@ class EventBus:
                 )
 
         # e. In-process pub/sub — deduplicate, then ensure broadcast is published
-        #    exactly once even if it appeared in targets.
+        #    exactly once even if it appeared in targets. Events whose targets
+        #    contain a ``user:<id>`` channel are scoped to that user and must
+        #    NOT leak to the broadcast channel, so they are published only to
+        #    the per-user channel(s). The ``user`` sentinel alone (no id) is a
+        #    notification trigger, not a channel, so it is skipped here.
         async with self._lock:
+            has_user_channel = False
             for target in _seen_targets:
-                await self._publish_to_channel(target, event)
-            if _BROADCAST_CHANNEL not in _seen_targets:
+                if target.startswith("user:"):
+                    await self._publish_to_channel(target, event)
+                    has_user_channel = True
+                elif target == _BROADCAST_CHANNEL:
+                    await self._publish_to_channel(target, event)
+                elif target == "user":
+                    continue
+                else:
+                    await self._publish_to_channel(target, event)
+            if not has_user_channel and _BROADCAST_CHANNEL not in _seen_targets:
                 await self._publish_to_channel(_BROADCAST_CHANNEL, event)
 
 

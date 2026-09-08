@@ -11,20 +11,12 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-fail=0
-
 if ! python3 scripts/check_doc_gate.py invariants; then
-    fail=1
+    echo "(pre-commit) invariants check printed advice above -- CI is the enforcement point"
 fi
 
 if ! python3 scripts/check_doc_gate.py diff-gate --staged; then
-    fail=1
-fi
-
-if [ "$fail" -ne 0 ]; then
-    echo ""
-    echo "Fix the docs, or add a 'Docs-Reviewed: <why>' line to your commit message (the commit-msg hook accepts that). CI enforces this regardless of --no-verify."
-    exit 1
+    echo "(pre-commit) diff-gate check printed advice above -- commit-msg hook will enforce with trailer support"
 fi
 
 exit 0

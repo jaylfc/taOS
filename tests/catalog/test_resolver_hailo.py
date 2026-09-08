@@ -84,7 +84,9 @@ class TestHailoNewManifestsResolve:
             "qwen2.5-1.5b",
             "qwen2.5-coder-1.5b",
             "qwen2-1.5b",
+            "llama-3.2-1b",
             "llama-3.2-3b",
+            "qwen3",
             "deepseek-r1-1.5b",
         ],
     )
@@ -111,7 +113,9 @@ class TestHailoNewManifestsResolve:
             "qwen2.5-1.5b",
             "qwen2.5-coder-1.5b",
             "qwen2-1.5b",
+            "llama-3.2-1b",
             "llama-3.2-3b",
+            "qwen3",
             "deepseek-r1-1.5b",
         ],
     )

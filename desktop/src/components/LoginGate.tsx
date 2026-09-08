@@ -13,17 +13,61 @@ type AuthStatus =
   | { phase: "loading" }
   | { phase: "onboarding" }
   | { phase: "invite"; username: string; inviteCode: string; multiUser: boolean }
-  | { phase: "login"; legacy: boolean; multiUser: boolean }
+  // No fields: the SPA no longer renders a sign-in form, so it has no use for
+  // `legacy` / `multiUser`. The server login page reads both for itself.
+  | { phase: "login" }
   | { phase: "unreachable" }
   | { phase: "ready" };
 
+// One login surface. The SPA does NOT render its own password form: it hands
+// off to the server-rendered /auth/login, which is where PIN sign-in and the
+// on-screen keyboard live.
+//
+// This is the contract auth_middleware.py:285-292 always documented ("the SPA
+// checks /auth/status on boot and redirects to /auth/login"); LoginGate never
+// honoured it, and the drift had teeth. /desktop is in EXEMPT_PATHS, so the
+// session gate never fires for the shell HTML: the kiosk booted straight to
+// this component's own password-only form and never saw the PIN screen at all.
+// On a keyboard-less touchscreen that is a hard lockout -- the exact failure
+// tsk-2qaisb exists to remove. Proven on the real pitop kiosk, 2026-08-26.
+const LOGIN_PATH = "/auth/login";
+const REDIRECT_GUARD_KEY = "taos.login-redirected";
+
+// sessionStorage throws outright in some privacy modes, so every access is
+// guarded. A storage failure must not be able to stop the redirect.
+function readGuard(): boolean {
+  try {
+    return sessionStorage.getItem(REDIRECT_GUARD_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+// Both the automatic handoff and the manual fallback link must carry the same
+// destination. The shell has no client-side routing today, so this is
+// `/desktop/` in practice -- the point is that the two paths cannot drift if
+// that ever changes. No fragment: nothing in the SPA reads location.hash.
+function loginHref(): string {
+  const next = window.location.pathname + window.location.search;
+  return `${LOGIN_PATH}?next=${encodeURIComponent(next)}`;
+}
+
+function writeGuard(value: boolean): void {
+  try {
+    if (value) sessionStorage.setItem(REDIRECT_GUARD_KEY, "1");
+    else sessionStorage.removeItem(REDIRECT_GUARD_KEY);
+  } catch {
+    /* storage unavailable — the redirect still happens, just unguarded */
+  }
+}
+
 export function LoginGate({ children }: Props) {
   const [status, setStatus] = useState<AuthStatus>({ phase: "loading" });
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [autoLogin, setAutoLogin] = useState(true);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  // Set when we have already bounced to /auth/login once and come back still
+  // unauthenticated. Redirecting again would loop the browser between two URLs
+  // forever, which on a kiosk is worse than any login form: the device is
+  // unusable and nothing on screen explains why.
+  const [redirectBlocked, setRedirectBlocked] = useState(false);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -48,7 +92,7 @@ export function LoginGate({ children }: Props) {
           setStatus({ phase: "ready" });
         }
       } else {
-        setStatus({ phase: "login", legacy: !data.user, multiUser: !!data.multi_user });
+        setStatus({ phase: "login" });
       }
     } catch {
       // A thrown fetch (network failure, not an HTTP error) means the host is
@@ -87,43 +131,30 @@ export function LoginGate({ children }: Props) {
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
   }, [refreshStatus]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError("");
-    try {
-      const res = await fetch("/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          username: username.trim() || undefined,
-          password,
-          auto_login: autoLogin,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json().catch(() => ({}));
-        if (data.needs_onboarding && data.user?.username) {
-          // Pending user — route to invite completion
-          setStatus({
-            phase: "invite",
-            username: data.user.username,
-            inviteCode: password,  // the invite code they just typed as password
-            multiUser: true,
-          });
-        } else {
-          await refreshStatus();
-        }
-      } else {
-        const data = await res.json().catch(() => ({}));
-        setError(data?.error ?? "Incorrect username or password");
-      }
-    } catch {
-      setError("Login failed");
+  // Hand off to the server login page as soon as we know we are signed out.
+  // The invite flow is unaffected: POST /auth/login creates a session for a
+  // pending user and returns them to /desktop, where /auth/status reports
+  // needs_onboarding and the "invite" phase below renders the completion
+  // screen. routes/auth.py already documents that handoff at its form path.
+  useEffect(() => {
+    if (status.phase !== "login") return;
+    if (readGuard()) {
+      setRedirectBlocked(true);
+      return;
     }
-    setLoading(false);
-  };
+    writeGuard(true);
+    window.location.assign(loginHref());
+  }, [status.phase]);
+
+  // Clear the loop guard once a session actually exists, so a later expiry in
+  // the same tab can redirect again rather than landing on the manual link.
+  // "invite" counts: refreshStatus only reaches it on `authenticated: true`, so
+  // the bounce that set the guard has already succeeded. Leaving it set there
+  // would strand an invited user on the manual link if their session expired
+  // part-way through completing their profile.
+  useEffect(() => {
+    if (status.phase === "ready" || status.phase === "invite") writeGuard(false);
+  }, [status.phase]);
 
   if (status.phase === "loading") {
     return (
@@ -153,87 +184,39 @@ export function LoginGate({ children }: Props) {
   }
 
   if (status.phase === "login") {
-    const showUsername = !status.legacy;
-    // Default auto-login to false in multi-user mode
-    const defaultAutoLogin = !status.multiUser;
-
+    // The redirect fires from the effect above. This renders only for the
+    // instant before navigation, or -- if the loop guard tripped -- as a
+    // manual way out. It deliberately offers a LINK and never a password
+    // field: a second sign-in form here is the split that caused this bug.
     return (
       <div
         className="h-screen w-screen flex items-center justify-center p-4"
         style={{ background: "var(--color-shell-bg)" }}
       >
-        <form
-          onSubmit={handleSubmit}
-          className="w-full max-w-sm p-6 rounded-2xl border border-white/10"
-          style={{
-            backgroundColor: "rgba(255,255,255,0.04)",
-            backdropFilter: "blur(20px)",
-          }}
-        >
-          <div className="flex flex-col items-center gap-3 mb-6">
-            <div
-              className="w-14 h-14 rounded-2xl flex items-center justify-center"
-              style={{ background: "linear-gradient(135deg, #8b92a3, #5b6170)" }}
-            >
-              <Lock size={24} className="text-white" />
-            </div>
-            <h1 className="text-lg font-semibold text-shell-text">taOS</h1>
-            <p className="text-xs text-shell-text-secondary">Sign in to continue</p>
+        <div className="w-full max-w-sm p-6 rounded-2xl border border-white/10 flex flex-col items-center gap-3 text-center">
+          <div
+            className="w-14 h-14 rounded-2xl flex items-center justify-center"
+            style={{ background: "linear-gradient(135deg, #8b92a3, #5b6170)" }}
+          >
+            <Lock size={24} className="text-white" />
           </div>
-
-          {showUsername && (
+          <h1 className="text-lg font-semibold text-shell-text">taOS</h1>
+          {redirectBlocked ? (
             <>
-              <label htmlFor="login-username" className="sr-only">Username or email</label>
-              <input
-                id="login-username"
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="username"
-                autoFocus
-                placeholder="Username or email"
-                className="w-full px-4 py-2.5 mb-2 rounded-lg bg-shell-bg-deep border border-white/10 text-sm text-shell-text outline-none focus:border-accent/40 transition-colors"
-              />
+              <p className="text-xs text-shell-text-secondary" role="alert">
+                Could not reach the sign-in page automatically.
+              </p>
+              <a
+                href={loginHref()}
+                className="mt-1 px-4 py-2.5 rounded-lg bg-accent text-white text-sm font-medium hover:brightness-110 transition-all"
+              >
+                Go to sign in
+              </a>
             </>
+          ) : (
+            <p className="text-xs text-shell-text-secondary">Taking you to sign in...</p>
           )}
-
-          <label htmlFor="login-password" className="sr-only">Password</label>
-          <input
-            id="login-password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-            autoFocus={!showUsername}
-            placeholder={showUsername ? "Password or invite code" : "Password"}
-            className="w-full px-4 py-2.5 rounded-lg bg-shell-bg-deep border border-white/10 text-sm text-shell-text outline-none focus:border-accent/40 transition-colors"
-          />
-
-          {error && <p className="text-xs text-red-400 mt-2" role="alert">{error}</p>}
-
-          <label
-            htmlFor="login-autologin"
-            className="flex items-center gap-2 mt-3 cursor-pointer select-none"
-          >
-            <input
-              id="login-autologin"
-              type="checkbox"
-              checked={autoLogin}
-              onChange={(e) => setAutoLogin(e.target.checked)}
-              defaultChecked={defaultAutoLogin}
-              className="w-4 h-4 accent-accent cursor-pointer"
-            />
-            <span className="text-xs text-shell-text-secondary">Stay signed in on this device</span>
-          </label>
-
-          <button
-            type="submit"
-            disabled={loading || !password || (showUsername && !username)}
-            className="w-full mt-4 px-4 py-2.5 rounded-lg bg-accent text-white text-sm font-medium hover:brightness-110 disabled:opacity-50 transition-all"
-          >
-            {loading ? "Signing in..." : "Sign In"}
-          </button>
-        </form>
+        </div>
       </div>
     );
   }

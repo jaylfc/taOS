@@ -6,8 +6,10 @@ import time
 import pytest
 
 from tinyagentos.channel_hub.message import (
+    MAX_PAYLOAD,
     IncomingMessage,
     OutgoingMessage,
+    _degrade,
     parse_inline_hints,
 )
 
@@ -459,6 +461,145 @@ class TestParseInlineHints:
     def test_only_whitespace_content_becomes_empty(self):
         result = parse_inline_hints("   ")
         assert result.content == ""
+
+    def _assert_denominator_matches_part_count(self, parts):
+        # The [part N/M] denominator (M) must equal the number of emitted parts.
+        for part in parts:
+            denom = part.split("/")[1].split("]")[0]
+            assert denom == str(len(parts)), (
+                f"label denominator {denom} != emitted part count "
+                f"{len(parts)}: {parts}"
+            )
+
+    def test_degrade_drops_buttons_and_images(self):
+        # Build a real OutgoingMessage using parse_inline_hints
+        text = "Reboot the node? [button:Yes:reboot] [image:/tmp/node.png]"
+        msg = parse_inline_hints(text)
+        parts, notices = _degrade(msg)
+        # Buttons and images must be dropped (structured fields cleared)
+        assert msg.buttons == [], f"buttons not dropped: {msg.buttons}"
+        assert msg.images == [], f"images not dropped: {msg.images}"
+        # Notices must be returned, not discarded -- they reach the transport.
+        assert "[button dropped: Meshtastic is text-only]" in notices
+        assert "[image dropped: Meshtastic is text-only]" in notices
+        # Chunk size must be byte-accurate
+        for part in parts:
+            assert len(part.encode("utf-8")) <= 237, (
+                f"part exceeds 237 bytes: {part!r} len={len(part.encode('utf-8'))}"
+            )
+        # Denominator equals the emitted part count (not len(text)/237).
+        self._assert_denominator_matches_part_count(parts)
+        assert len(parts) >= 1
+
+    def test_degrade_drops_cards_and_emits_notices(self):
+        # Build a real OutgoingMessage with cards
+        from tinyagentos.channel_hub.message import OutgoingMessage
+        msg = OutgoingMessage(
+            content="Use /help",
+            cards=[{"title": "Help", "body": "Show help"}],
+        )
+        parts, notices = _degrade(msg)
+        # Cards must be dropped
+        assert msg.cards == [], f"cards not dropped: {msg.cards}"
+        # The one-time notice must be surfaced, not discarded.
+        assert "[card dropped: Meshtastic is text-only]" in notices
+        # At least one part produced
+        assert len(parts) >= 1
+        # Each part respects the byte budget including prefix
+        for part in parts:
+            assert len(part.encode("utf-8")) <= 237
+        self._assert_denominator_matches_part_count(parts)
+
+    def test_degrade_chunks_large_payload(self):
+        # Build a real OutgoingMessage with content exceeding 237 bytes
+        long_text = "A" * 500  # 500 ASCII chars > 237 bytes
+        msg = OutgoingMessage(content=long_text)
+        parts, notices = _degrade(msg)
+        # Every part must satisfy the byte budget including [part N/M] prefix
+        for part in parts:
+            assert len(part.encode("utf-8")) <= 237, (
+                f"part exceeds 237 bytes: {part!r}"
+            )
+        # total must be derived from byte-accurate chunking
+        assert len(parts) > 1
+        # Denominator equals the emitted part count, not len(text)/237.
+        self._assert_denominator_matches_part_count(parts)
+
+    def test_degrade_denominator_matches_part_count_at_474_bytes(self):
+        # Regression for #2623: 474 bytes of content. total = ceil(474/237)
+        # = 2 undercounts because the [part N/M] prefix eats into the budget,
+        # so the old code emitted [part 1/2], [part 2/2], [part 3/2]. The
+        # denominator must equal the actual number of parts (3).
+        msg = OutgoingMessage(content="A" * 474)
+        parts, notices = _degrade(msg)
+        assert len(parts) == 3
+        self._assert_denominator_matches_part_count(parts)
+        for part in parts:
+            assert len(part.encode("utf-8")) <= 237
+
+    def test_degrade_with_multibyte_content(self):
+        # Non-ASCII (multibyte UTF-8) text to verify byte-accurate chunking
+        # and that the label denominator equals the emitted part count even as
+        # the [part N/M] prefix width grows across single- and double-digit
+        # part numbers. Enough text to require multiple parts.
+        text = ("héllo wörld " + "日本語 ") * 20
+        msg = OutgoingMessage(content=text)
+        parts, notices = _degrade(msg)
+        # Every part must satisfy the byte budget including [part N/M] prefix
+        for part in parts:
+            byte_len = len(part.encode("utf-8"))
+            assert byte_len <= 237, (
+                f"chunk over 237 bytes: {part!r} ({byte_len} bytes)"
+            )
+        # Must have chunked into multiple parts since text > 237 bytes
+        assert len(parts) > 1, f"Expected multiple parts but got {len(parts)}"
+        # Denominator equals the emitted part count (stronger than "consistent").
+        self._assert_denominator_matches_part_count(parts)
+        # Reassembly must be byte-identical to the original content.
+        reencoded = "".join(p.split("] ", 1)[1] for p in parts).encode("utf-8")
+        assert reencoded == text.encode("utf-8")
+
+    def test_degrade_multibyte_frame_boundaries(self):
+        # Regression: '日'*76 (76 * 3 = 228 bytes) and '🌍'*57 (57 * 4 = 228
+        # bytes) each cross the 237-byte boundary and, under the byte-slice
+        # bug, produced a 239-byte part with a U+FFFD injected. Every frame
+        # must be <= 237 bytes and the parts must reassemble byte-identical.
+        for text in ("日" * 76, "🌍" * 57):
+            msg = OutgoingMessage(content=text)
+            parts, _notices = _degrade(msg)
+            for part in parts:
+                byte_len = len(part.encode("utf-8"))
+                assert byte_len <= MAX_PAYLOAD, (
+                    f"{text[:6]!r}...: part over {MAX_PAYLOAD} bytes: "
+                    f"{part!r} ({byte_len} bytes)"
+                )
+            self._assert_denominator_matches_part_count(parts)
+            reencoded = "".join(p.split("] ", 1)[1] for p in parts).encode("utf-8")
+            assert reencoded == text.encode("utf-8"), (
+                f"reassembly not byte-identical for {text[:6]!r}...: "
+                f"U+FFFD injected or data lost"
+            )
+
+    def test_degrade_multibyte_sweep(self):
+        # Sweep across the 237-byte boundary for 3-byte and 4-byte chars.
+        # Zero over-budget or corrupting cases across all lengths.
+        for char, limit in (("日", 399), ("🌍", 299)):
+            for n in range(1, limit + 1):
+                text = char * n
+                msg = OutgoingMessage(content=text)
+                parts, _notices = _degrade(msg)
+                for part in parts:
+                    byte_len = len(part.encode("utf-8"))
+                    assert byte_len <= MAX_PAYLOAD, (
+                        f"char={char!r} n={n}: part over {MAX_PAYLOAD}: "
+                        f"{part!r} ({byte_len} bytes)"
+                    )
+                reencoded = "".join(
+                    p.split("] ", 1)[1] for p in parts
+                ).encode("utf-8")
+                assert reencoded == text.encode("utf-8"), (
+                    f"char={char!r} n={n}: reassembly corrupt"
+                )
 
     def test_hint_with_spaces_in_label(self):
         result = parse_inline_hints("[button:Click Here:action]")

@@ -7,6 +7,12 @@ const prefetchApp = vi.fn();
 vi.mock("@/registry/app-registry", () => ({
   prefetchApp: (id: string) => prefetchApp(id),
   getApp: (id: string) => ({ id, name: "Browser", icon: "globe" }),
+  // No redirects in this fixture: a pin id is its own app id and carries no
+  // section. Mirrors the real contract rather than stubbing it away (#2677).
+  APP_REDIRECTS: {},
+  resolvePinnedId: (id: string) => ({ id }),
+  pinnedAppId: (id: string) => id,
+  pinnedLaunchProps: () => undefined,
 }));
 
 import { DockIcon } from "./DockIcon";

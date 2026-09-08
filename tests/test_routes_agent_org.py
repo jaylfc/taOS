@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import csrf_event_hooks
 
 
 @pytest_asyncio.fixture
@@ -27,6 +28,7 @@ async def org_client(app):
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport, base_url="http://test", cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c, uid
 
@@ -53,6 +55,7 @@ async def org_member_client(app):
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport, base_url="http://test", cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c, member_uid
 
@@ -251,6 +254,7 @@ class TestUpdateOrgFields:
 
         member_client = AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test", cookies={"taos_session": token},
+            event_hooks=csrf_event_hooks(),
         )
         try:
             resp = await member_client.put(

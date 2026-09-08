@@ -3,6 +3,7 @@ import os
 import pytest
 from pathlib import Path
 from httpx import AsyncClient, ASGITransport
+from taos_test_csrf import csrf_event_hooks
 from tinyagentos.chat.message_store import ChatMessageStore
 
 
@@ -76,6 +77,7 @@ async def _authed_client(tmp_path):
         transport=ASGITransport(app=app),
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     )
     return app, client
 
@@ -132,6 +134,7 @@ async def _authed_msg_client(tmp_path):
         transport=ASGITransport(app=app),
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     )
     return app, client
 

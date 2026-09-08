@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,16 @@ def _delete_file(repo: Path, rel_path: str) -> None:
         full.unlink()
     _git(repo, "add", rel_path)
     _git(repo, "commit", "-m", f"refactor: delete {rel_path}")
+
+
+def _symlink_file(repo: Path, rel_path: str, target: str) -> None:
+    """Replace rel_path with a symlink to target (a .py -> symlink typechange)."""
+    full = repo / rel_path
+    if full.exists() or full.is_symlink():
+        full.unlink()
+    os.symlink(target, full)
+    _git(repo, "add", rel_path)
+    _git(repo, "commit", "-m", f"typechange: {rel_path} -> symlink to {target}")
 
 
 def _branch(repo: Path, name: str) -> None:
@@ -144,6 +155,290 @@ class TestFindSignalSymbols:
         head = {"f.py:a": "def", "f.py:b": "def"}
         signal = cds.find_signal_symbols(base, head)
         assert signal == {}
+
+
+# ---------------------------------------------------------------------------
+# _resolve_symbol isolation (in-process, no git required)
+#
+# _resolve_symbol mutates the interpreter's global sys.modules table. Two
+# defects flow from it never restoring that table:
+#   1. A synthetic parent package (with __path__ into the extracted merge
+#      tree) and the reloaded module are left installed for the rest of the
+#      run, so the verdict for a later symbol depends on which symbol was
+#      resolved first.
+#   2. A real module pre-existing at a touched key is popped and replaced
+#      with a merge-tree module and never put back.
+# The red assertions below fail on the buggy shape and pass once
+# _resolve_symbol restores sys.modules in a finally.
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSymbolIsolation:
+    @pytest.fixture(autouse=True)
+    def _restore_sys_modules(self):
+        """Restore sys.modules EXACTLY after every test in this class.
+
+        These tests deliberately purge and repopulate `tinyagentos.*` to isolate
+        _resolve_symbol. Without this, the purge escapes the test: sibling test
+        modules imported `tinyagentos.deployer` at collection time and hold that
+        object, while a later mock.patch("tinyagentos.deployer...") re-imports
+        and patches a DIFFERENT object -- so the patch silently misses and the
+        real binary runs. That is what turned 43 deployer tests red on dev with
+        FileNotFoundError: 'incus'.
+        """
+        saved = dict(sys.modules)
+        try:
+            yield
+        finally:
+            sys.modules.clear()
+            sys.modules.update(saved)
+
+    @staticmethod
+    def _write_tree(tmp_path: Path, files: dict[str, str]) -> Path:
+        root = tmp_path / "merge"
+        for rel, content in files.items():
+            full = root / rel
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(content, encoding="utf-8")
+        return root
+
+    @staticmethod
+    def _purge_package(name: str) -> None:
+        for key in list(sys.modules):
+            if key == name or key.startswith(name + "."):
+                del sys.modules[key]
+
+    def test_resolve_symbol_leaves_sys_modules_unchanged(self, tmp_path: Path):
+        """_resolve_symbol must not leak into sys.modules: the key set must be
+        unchanged and any entry it replaces (its module path) must keep its
+        original object identity."""
+        merge = self._write_tree(
+            tmp_path,
+            {
+                "tinyagentos/__init__.py": "",
+                "tinyagentos/foo.py": "def func_a():\n    pass\n",
+            },
+        )
+        # Pre-seed a real module object at the path the function writes so the
+        # identity of a pre-existing entry is asserted, not just the key set.
+        sentinel = types.ModuleType("tinyagentos.foo")
+        self._purge_package("tinyagentos")
+        sys.modules["tinyagentos.foo"] = sentinel
+        before = set(sys.modules)
+        assert "tinyagentos" not in sys.modules
+
+        try:
+            cds._resolve_symbol(merge, "tinyagentos/foo.py", "func_a")
+            after = set(sys.modules)
+            gained = after - before
+            lost = before - after
+            assert not gained, f"sys.modules gained {gained}"
+            assert not lost, f"sys.modules lost {lost}"
+            assert (
+                sys.modules.get("tinyagentos.foo") is sentinel
+            ), "sys.modules entry identity changed"
+        finally:
+            self._purge_package("tinyagentos")
+
+    def test_resolve_symbol_does_not_leak_transitive_imports(self, tmp_path: Path):
+        """The module under inspection is EXECUTED, so whatever it imports is
+        imported too -- out of the merge tree, under real names.
+
+        The sibling test above uses a module with no imports, so it cannot fail
+        on this: it is one level coarser than the defect. Leaked transitive
+        modules shadow the installed ones for the rest of the process, which is
+        how this turned 43 unrelated deployer tests red on dev -- their
+        mock.patch targets resolved to a different module object than the code
+        under test was using.
+        """
+        merge = self._write_tree(
+            tmp_path,
+            {
+                "tinyagentos/__init__.py": "",
+                "tinyagentos/leaky_helper.py": "VALUE = 'from-merge-tree'\n",
+                "tinyagentos/leaky_main.py": (
+                    "from tinyagentos import leaky_helper\n"
+                    "def func_a():\n"
+                    "    return leaky_helper.VALUE\n"
+                ),
+            },
+        )
+        self._purge_package("tinyagentos")
+        before = set(sys.modules)
+
+        try:
+            assert cds._resolve_symbol(merge, "tinyagentos/leaky_main.py", "func_a")
+            gained = set(sys.modules) - before
+            assert not gained, f"sys.modules gained {gained}"
+            assert "tinyagentos.leaky_helper" not in sys.modules
+        finally:
+            self._purge_package("tinyagentos")
+
+    def test_second_symbol_verdict_is_order_independent(self, tmp_path: Path):
+        """Resolving symbol A before symbol B must yield the same verdict for B
+        as resolving B alone in a fresh state. The merge tree keeps both a
+        module file (tinyagentos/foo.py, func_a) and a same-named package
+        (tinyagentos/foo/__init__.py, func_b); bar.py re-exports func_b via
+        `from .foo import func_b`. Resolving the module caches tinyagentos.foo
+        as the func_a-only module, which then shadows the package for a later
+        bar.py resolution."""
+        merge = self._write_tree(
+            tmp_path,
+            {
+                "tinyagentos/__init__.py": "",
+                "tinyagentos/foo.py": "def func_a():\n    pass\n",
+                "tinyagentos/foo/__init__.py": "def func_b():\n    pass\n",
+                "tinyagentos/bar.py": "from .foo import func_b\n",
+            },
+        )
+        bar_file, bar_name = "tinyagentos/bar.py", "func_b"
+        foo_file, foo_name = "tinyagentos/foo.py", "func_a"
+
+        self._purge_package("tinyagentos")
+        verdict_alone = cds._resolve_symbol(merge, bar_file, bar_name)
+        assert verdict_alone is True
+
+        self._purge_package("tinyagentos")
+        try:
+            cds._resolve_symbol(merge, foo_file, foo_name)
+            verdict_after_a = cds._resolve_symbol(merge, bar_file, bar_name)
+
+            assert verdict_after_a == verdict_alone
+        finally:
+            self._purge_package("tinyagentos")
+
+
+class TestResolveSymbolSymlinkTypechange:
+    """_resolve_symbol must handle a .py -> symlink typechange in the merge
+    result: follow an in-tree symlink to its real target, but never follow a
+    symlink that escapes the extracted merge tree (the re-entry that loaded the
+    installed/working-tree copy and crashed or mis-reported)."""
+
+    @staticmethod
+    def _write_tree(tmp_path: Path, files: dict[str, str]) -> Path:
+        root = tmp_path / "merge"
+        for rel, content in files.items():
+            full = root / rel
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(content, encoding="utf-8")
+        return root
+
+    @staticmethod
+    def _purge_package(name: str) -> dict[str, tuple[bool, types.ModuleType | None]]:
+        """Remove every `name.*` module for the duration of a test, returning a
+        snapshot so the caller can restore them in a finally.
+
+        Snapshot each touched key's (was_present, old_obj) BEFORE deleting,
+        mirroring the `touched`/`preexisting_keys` discipline in _resolve_symbol.
+        Without the restore, the real tinyagentos.* modules stay evicted for the
+        rest of the pytest process: a later mock.patch("tinyagentos....") target
+        re-imports a DIFFERENT module object than the collection-time one and
+        silently no-ops -- the exact isolation defect that turned 56 unrelated
+        tests red.
+        """
+        touched: dict[str, tuple[bool, types.ModuleType | None]] = {}
+        for key in list(sys.modules):
+            if key == name or key.startswith(name + "."):
+                touched[key] = (key in sys.modules, sys.modules.get(key))
+                del sys.modules[key]
+        return touched
+
+    @staticmethod
+    def _restore_package(touched: dict[str, tuple[bool, types.ModuleType | None]]) -> None:
+        for key, (was_present, old_obj) in touched.items():
+            if was_present:
+                sys.modules[key] = old_obj
+            else:
+                sys.modules.pop(key, None)
+
+    def test_in_tree_symlink_resolves_to_target(self, tmp_path: Path):
+        """foo.py is a symlink to bar.py inside the merge tree: the symbol is
+        still importable through foo.py, so it is not a deletion."""
+        merge = self._write_tree(
+            tmp_path,
+            {
+                "tinyagentos/__init__.py": "",
+                "tinyagentos/bar.py": "def func_a():\n    pass\n",
+            },
+        )
+        os.symlink("bar.py", merge / "tinyagentos/foo.py")
+        touched = self._purge_package("tinyagentos")
+        try:
+            assert cds._resolve_symbol(merge, "tinyagentos/foo.py", "func_a") is True
+        finally:
+            self._restore_package(touched)
+
+    def test_symlink_losing_symbol_is_deletion(self, tmp_path: Path):
+        """foo.py symlinks to bar.py which no longer defines func_a: the symbol
+        is gone, so _resolve_symbol reports it as not importable."""
+        merge = self._write_tree(
+            tmp_path,
+            {
+                "tinyagentos/__init__.py": "",
+                "tinyagentos/bar.py": "def other():\n    pass\n",
+            },
+        )
+        os.symlink("bar.py", merge / "tinyagentos/foo.py")
+        touched = self._purge_package("tinyagentos")
+        try:
+            assert cds._resolve_symbol(merge, "tinyagentos/foo.py", "func_a") is False
+        finally:
+            self._restore_package(touched)
+
+    def test_symlink_escaping_tree_is_not_followed(self, tmp_path: Path):
+        """A symlink whose target leaves the merge tree (absolute or ..) must
+        not be followed: the outside file is not part of the merge result."""
+        merge = self._write_tree(tmp_path, {"tinyagentos/__init__.py": ""})
+        outside = tmp_path / "outside.py"
+        outside.write_text("def func_a():\n    pass\n", encoding="utf-8")
+        os.symlink(str(outside), merge / "tinyagentos/foo.py")  # absolute escape
+        touched = self._purge_package("tinyagentos")
+        try:
+            assert cds._resolve_symbol(merge, "tinyagentos/foo.py", "func_a") is False
+        finally:
+            self._restore_package(touched)
+
+    def test_dangling_symlink_is_not_importable(self, tmp_path: Path):
+        """A dangling symlink resolves to no file: the symbol is gone."""
+        merge = self._write_tree(tmp_path, {"tinyagentos/__init__.py": ""})
+        os.symlink("does_not_exist.py", merge / "tinyagentos/foo.py")
+        touched = self._purge_package("tinyagentos")
+        try:
+            assert cds._resolve_symbol(merge, "tinyagentos/foo.py", "func_a") is False
+        finally:
+            self._restore_package(touched)
+
+    def test_self_loop_symlink_is_not_importable(self, tmp_path: Path):
+        """A self-referential symlink must not hang or crash; it is simply not
+        importable."""
+        merge = self._write_tree(tmp_path, {"tinyagentos/__init__.py": ""})
+        os.symlink("foo.py", merge / "tinyagentos/foo.py")
+        touched = self._purge_package("tinyagentos")
+        try:
+            assert cds._resolve_symbol(merge, "tinyagentos/foo.py", "func_a") is False
+        finally:
+            self._restore_package(touched)
+
+    def test_symlinked_package_init_keeps_relative_reexport(self, tmp_path: Path):
+        """A symlinked pkg/__init__.py that re-exports via a relative import
+        must keep package semantics. Resolving the symlink target (_impl.py)
+        before spec_from_file_location() strips the __init__.py name and turns
+        `from .child import func_a` into an ImportError, so _resolve_symbol
+        would report a false deletion. Preserving the logical __init__.py path
+        keeps package semantics and the symbol stays importable."""
+        merge = self._write_tree(
+            tmp_path,
+            {
+                "tinyagentos/_impl.py": "from .child import func_a\n",
+                "tinyagentos/child.py": "def func_a():\n    pass\n",
+            },
+        )
+        os.symlink("_impl.py", merge / "tinyagentos/__init__.py")
+        touched = self._purge_package("tinyagentos")
+        try:
+            assert cds._resolve_symbol(merge, "tinyagentos/__init__.py", "func_a") is True
+        finally:
+            self._restore_package(touched)
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +736,124 @@ class TestCheckDeletedSymbols:
         assert len(violations) == 1
         assert "function_c" in violations[0].symbol
         assert "tinyagentos/foo.py:function_b" in waived
+
+    def test_module_shadowed_by_package_is_silent(self, tmp_path: Path):
+        """A module file deleted but shadowed by a same-named package is
+        SILENT: the public import path still resolves through the package."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(
+            repo, "tinyagentos/containers/__init__.py",
+            "class ContainerInfo:\n    pass\n",
+            "init: add containers package",
+        )
+        _commit_file(
+            repo, "tinyagentos/containers.py",
+            "class ContainerInfo:\n    pass\n",
+            "init: add containers module (shadowed by package)",
+        )
+        base_tip = _get_head(repo)
+        _branch(repo, "pr-branch")
+        _checkout(repo, "pr-branch")
+        _delete_file(repo, "tinyagentos/containers.py")
+        _checkout(repo, "main")
+        _git(repo, "merge", "pr-branch", "--no-edit")
+
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo)
+
+        assert violations == []
+        assert waived == set()
+
+    def test_reexport_dropped_from_init_fires(self, tmp_path: Path):
+        """A re-export dropped from __init__.py while the def survives FIREs:
+        the public name in the package namespace is gone."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(
+            repo, "tinyagentos/foo.py",
+            "def function_a():\n    pass\n\ndef function_b():\n    pass\n",
+            "init: add function_a and function_b",
+        )
+        _commit_file(
+            repo, "tinyagentos/__init__.py",
+            "from .foo import function_b\n",
+            "init: re-export function_b",
+        )
+        base_tip = _get_head(repo)
+        _branch(repo, "pr-branch")
+        _checkout(repo, "pr-branch")
+        _commit_file(
+            repo, "tinyagentos/__init__.py",
+            "",
+            "refactor: drop re-export",
+        )
+        _checkout(repo, "main")
+        _git(repo, "merge", "pr-branch", "--no-edit")
+
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo)
+
+        assert len(violations) == 1
+        assert "function_b" in violations[0].symbol
+        assert "tinyagentos/__init__.py" in violations[0].symbol
+        assert violations[0].added_by != "unknown"
+
+
+class TestTypechangeSymlink:
+    """A PR that turns a .py file into a symlink (typechange) must resolve
+    symbols through the merge result without re-entering the symlinked path and
+    without crashing (the historical rc=139 / empty-output fail-closed shape)."""
+
+    def _build(self, repo: Path, target: str, bar_has_func: bool) -> str:
+        _init_repo(repo)
+        _commit_file(repo, "tinyagentos/__init__.py", "", "init package")
+        bar_body = "def func_a():\n    pass\n" if bar_has_func else "def other():\n    pass\n"
+        _commit_file(repo, "tinyagentos/bar.py", bar_body, "init bar")
+        _commit_file(repo, "tinyagentos/foo.py", "def func_a():\n    pass\n", "init foo")
+        base_tip = _get_head(repo)
+        _branch(repo, "pr-branch")
+        _checkout(repo, "pr-branch")
+        _symlink_file(repo, "tinyagentos/foo.py", target)
+        _checkout(repo, "main")
+        _git(repo, "merge", "pr-branch", "--no-edit")
+        return base_tip
+
+    def test_py_to_symlink_keeping_symbol_is_silent(self, tmp_path: Path):
+        """foo.py -> symlink to bar.py (which still defines func_a): func_a is
+        still importable through foo.py, so nothing is deleted."""
+        repo = tmp_path / "repo"
+        base_tip = self._build(repo, "bar.py", bar_has_func=True)
+
+        violations, waived, _ = cds.check_deleted_symbols(base_tip, repo)
+
+        assert violations == []
+        assert waived == set()
+
+    def test_py_to_symlink_losing_symbol_fires(self, tmp_path: Path):
+        """foo.py -> symlink to bar.py (which no longer defines func_a): func_a
+        is genuinely deleted and the gate names it."""
+        repo = tmp_path / "repo"
+        base_tip = self._build(repo, "bar.py", bar_has_func=False)
+
+        violations, _, _ = cds.check_deleted_symbols(base_tip, repo)
+
+        assert len(violations) == 1
+        assert "func_a" in violations[0].symbol
+        assert "foo.py" in violations[0].symbol
+        assert violations[0].added_by != "unknown"
+
+    def test_py_to_dangling_symlink_fires_without_crash(self, tmp_path: Path):
+        """foo.py -> dangling symlink: the symbol is gone and, crucially, the
+        gate emits a finding instead of crashing on tarfile.extractfile's
+        KeyError (the rc!=0 / empty-output failure mode)."""
+        repo = tmp_path / "repo"
+        base_tip = self._build(repo, "does_not_exist.py", bar_has_func=True)
+
+        violations, _, _ = cds.check_deleted_symbols(base_tip, repo)
+
+        assert len(violations) == 1
+        assert "func_a" in violations[0].symbol
+        assert "foo.py" in violations[0].symbol
+        assert violations[0].added_by != "unknown"
 
 
 # ---------------------------------------------------------------------------

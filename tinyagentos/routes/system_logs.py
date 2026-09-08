@@ -125,9 +125,10 @@ async def _probe_unit_available(unit: str) -> bool:
 def _llmproxy_log_path(request: Request) -> "Path | None":
     """The LLMProxy's stderr log, or None if the proxy isn't wired up yet.
 
-    Deliberately reads `.config_dir` (not `.data_dir`): LLMProxy defaults
-    config_dir to /tmp/taos-litellm when not overridden, and that's where it
-    actually writes litellm.stderr.log (see llm_proxy.py's start()).
+    Reads ``proxy.config_dir`` which defaults to ``<data_dir>/litellm`` (S2-10:
+    0700 dir under the install data dir, not a world-shared ``/tmp`` path) when
+    the proxy is constructed with a ``data_dir``. That is where ``start()``
+    writes ``litellm.stderr.log``.
     """
     proxy = getattr(request.app.state, "llm_proxy", None)
     config_dir = getattr(proxy, "config_dir", None)

@@ -62,14 +62,15 @@ SAMPLE_TWEET = {
 @pytest.mark.asyncio
 async def test_fetch_tweet_ytdlp_success():
     """fetch_tweet_ytdlp returns a correctly shaped dict on success."""
-    mock_proc = MagicMock()
+    mock_proc = AsyncMock()
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(
-        return_value=(json.dumps(SAMPLE_YTDLP_OUTPUT).encode(), b"")
+        return_value=(json.dumps([SAMPLE_YTDLP_OUTPUT]).encode(), b"")
     )
 
-    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-        result = await fetch_tweet_ytdlp("https://twitter.com/testhandle/status/1234567890")
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await fetch_tweet_ytdlp("https://twitter.com/testhandle/status/1234567890")
 
     assert result is not None
     assert result["id"] == "1234567890"
@@ -86,28 +87,28 @@ async def test_fetch_tweet_ytdlp_success():
 
 @pytest.mark.asyncio
 async def test_fetch_tweet_ytdlp_nonzero_returncode():
-    """fetch_tweet_ytdlp returns None when yt-dlp exits non-zero."""
-    mock_proc = MagicMock()
+    """fetch_tweet_ytdlp raises RuntimeError when yt-dlp exits non-zero."""
+    mock_proc = AsyncMock()
     mock_proc.returncode = 1
     mock_proc.communicate = AsyncMock(return_value=(b"", b"ERROR: Not found"))
 
-    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-        result = await fetch_tweet_ytdlp("https://twitter.com/bad/status/999")
-
-    assert result is None
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            with pytest.raises(RuntimeError, match="yt-dlp failed"):
+                await fetch_tweet_ytdlp("https://twitter.com/bad/status/999")
 
 
 @pytest.mark.asyncio
 async def test_fetch_tweet_ytdlp_invalid_json():
-    """fetch_tweet_ytdlp returns None when yt-dlp outputs invalid JSON."""
-    mock_proc = MagicMock()
+    """fetch_tweet_ytdlp raises RuntimeError when yt-dlp outputs invalid JSON."""
+    mock_proc = AsyncMock()
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(return_value=(b"NOT_JSON", b""))
 
-    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-        result = await fetch_tweet_ytdlp("https://twitter.com/test/status/123")
-
-    assert result is None
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            with pytest.raises(RuntimeError, match="fetch_tweet_ytdlp error"):
+                await fetch_tweet_ytdlp("https://twitter.com/test/status/123")
 
 
 @pytest.mark.asyncio
@@ -119,14 +120,15 @@ async def test_fetch_tweet_ytdlp_missing_counts():
         "uploader": "Alice",
         "uploader_id": "alice",
     }
-    mock_proc = MagicMock()
+    mock_proc = AsyncMock()
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(
-        return_value=(json.dumps(minimal_output).encode(), b"")
+        return_value=(json.dumps([minimal_output]).encode(), b"")
     )
 
-    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-        result = await fetch_tweet_ytdlp("https://twitter.com/alice/status/987")
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await fetch_tweet_ytdlp("https://twitter.com/alice/status/987")
 
     assert result is not None
     assert result["likes"] == 0
@@ -145,14 +147,15 @@ async def test_fetch_tweet_ytdlp_handle_from_uploader_url():
         "uploader_id": "",
         "uploader_url": "https://twitter.com/bobhandle",
     }
-    mock_proc = MagicMock()
+    mock_proc = AsyncMock()
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(
-        return_value=(json.dumps(output).encode(), b"")
+        return_value=(json.dumps([output]).encode(), b"")
     )
 
-    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-        result = await fetch_tweet_ytdlp("https://twitter.com/bobhandle/status/111")
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await fetch_tweet_ytdlp("https://twitter.com/bobhandle/status/111")
 
     assert result is not None
     assert result["handle"] == "bobhandle"

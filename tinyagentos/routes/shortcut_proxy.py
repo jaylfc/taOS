@@ -18,6 +18,7 @@ from typing import Any, Optional
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket
 from fastapi.responses import RedirectResponse, StreamingResponse
+from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
 
 from tinyagentos.shortcuts.tickets import validate_ticket, _GLOBAL_JTI_TRACKER
 from tinyagentos.cluster.worker_registry import get_local_worker
@@ -87,8 +88,10 @@ _HOP_BY_HOP_PROXY = frozenset({
     "host",
 })
 
-# Controller cookies that must not leak to upstream containers.
-_STRIPPED_PROXY_COOKIES = frozenset({"taos_session", "taos_shortcut"})
+# Controller cookies that must not leak to upstream containers. Imported from
+# the one shared set rather than restated here: this list named two of the five
+# cookies taOS issues, and the other three leaked.
+_STRIPPED_PROXY_COOKIES = TAOS_ISSUED_COOKIES
 
 
 def _filter_proxy_headers(headers: dict[str, str]) -> dict[str, str]:

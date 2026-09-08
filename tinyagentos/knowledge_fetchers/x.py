@@ -10,6 +10,7 @@ persisting author-watch configurations.
 import asyncio
 import json
 import logging
+import shutil
 import sqlite3
 import time
 from pathlib import Path
@@ -22,42 +23,50 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_YTDLP_NOT_FOUND_MSG = "yt-dlp not installed -- install the optional media extra"
+
 # ---------------------------------------------------------------------------
 # yt-dlp fetcher
 # ---------------------------------------------------------------------------
 
-async def fetch_tweet_ytdlp(url: str) -> dict | None:
+async def fetch_tweet_ytdlp(url: str) -> dict:
     """Fetch a tweet via yt-dlp and return a normalised dict.
 
-    Runs ``yt-dlp --dump-json --no-download <url>`` in a subprocess and parses
-    the JSON output.  Returns None if yt-dlp exits with a non-zero code or if
-    the JSON cannot be parsed.
+    Runs ``yt-dlp --dump-single-json --no-download <url>`` in a subprocess and
+    parses the JSON output.  Raises RuntimeError if yt-dlp is not installed,
+    exits with a non-zero code, or if the JSON cannot be parsed.
 
     Args:
         url: Full tweet URL, e.g. https://twitter.com/user/status/12345
 
     Returns:
         Dict with keys: id, author, handle, text, likes, reposts, views,
-        created_at, media  -- or None on failure.
+        created_at, media
+
+    Raises:
+        RuntimeError: If yt-dlp is not installed or the fetch fails.
     """
+    ytdlp = shutil.which("yt-dlp")
+    if ytdlp is None:
+        raise RuntimeError(_YTDLP_NOT_FOUND_MSG)
+
     try:
         proc = await asyncio.create_subprocess_exec(
-            "yt-dlp",
-            "--dump-json",
+            ytdlp,
+            "--dump-single-json",
             "--no-download",
             url,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
         if proc.returncode != 0:
-            logger.debug("yt-dlp failed for %s (rc=%d): %s", url, proc.returncode, stderr.decode())
-            return None
+            err = stderr.decode(errors="replace").strip()
+            raise RuntimeError(f"yt-dlp failed for {url!r}: {err}")
 
-        data = json.loads(stdout.decode())
+        data = json.loads(stdout.decode(errors="replace"))[0]
     except (json.JSONDecodeError, FileNotFoundError, OSError) as exc:
-        logger.debug("fetch_tweet_ytdlp error for %s: %s", url, exc)
-        return None
+        raise RuntimeError(f"fetch_tweet_ytdlp error for {url}: {exc}") from exc
 
     # yt-dlp fields for tweets
     tweet_id: str = str(data.get("id", ""))

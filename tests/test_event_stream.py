@@ -185,3 +185,55 @@ async def test_notification_add_reaches_event_bus_broadcast(notif_store):
     received = bcast_q.get_nowait()
     assert received.kind == "notification.added"
     assert received.payload["title"] == "Push Test"
+
+
+@pytest.mark.asyncio
+async def test_notification_add_with_user_id_routes_to_user_channel(notif_store):
+    """A notification with user_id set must reach the per-user channel, not broadcast."""
+    bus = EventBus()
+    user_q = await bus.subscribe("user:alice")
+    bcast_q = await bus.subscribe("broadcast")
+
+    async def emitter(row: dict) -> None:
+        ev = SystemEvent(
+            kind="notification.added",
+            source="system",
+            targets=["broadcast"],
+            payload=row,
+        )
+        uid = row.get("user_id")
+        if uid:
+            await bus.publish_to(f"user:{uid}", ev)
+        else:
+            await bus.broadcast(ev)
+
+    notif_store.set_event_emitter(emitter)
+    await notif_store.add("Alice only", "secret msg", user_id="alice")
+
+    assert user_q.get_nowait() is not None
+    assert bcast_q.empty(), "user-scoped notification must not leak to broadcast"
+
+
+@pytest.mark.asyncio
+async def test_notification_add_without_user_id_still_broadcasts(notif_store):
+    """A notification without user_id (system-wide) must still reach broadcast."""
+    bus = EventBus()
+    bcast_q = await bus.subscribe("broadcast")
+
+    async def emitter(row: dict) -> None:
+        ev = SystemEvent(
+            kind="notification.added",
+            source="system",
+            targets=["broadcast"],
+            payload=row,
+        )
+        uid = row.get("user_id")
+        if uid:
+            await bus.publish_to(f"user:{uid}", ev)
+        else:
+            await bus.broadcast(ev)
+
+    notif_store.set_event_emitter(emitter)
+    await notif_store.add("System alert", "everyone sees this")
+
+    assert bcast_q.get_nowait() is not None

@@ -16,14 +16,14 @@
 
 ## Note field
 
-- When present it is appended to the text routed to the agent as `<answer> (note: <note>)`
+- When present, appended to the text routed to the agent as `<answer> (note: <note>)`
 
 ## Without `other_value`
 
-- The original strict validation is unchanged: the answer must be one of, or a subset of, the declared options
+- Strict validation is unchanged: the answer must be one of, or a subset of, the declared options
 - A non-hashable or non-iterable value fails closed as `400` rather than `500`
 
 ## Two consequences
 
-- **There is no per-decision opt-out.** No `allow_other` flag exists, so the free-text path is available on EVERY select decision
-- **The agent path gained it too.** An agent holding `decisions_write` can record arbitrary free text where it was previously constrained to the declared options
+- **No per-decision opt-out.** No `allow_other` flag exists; the free-text path is available on EVERY select decision
+- **The agent path gained it too.** An agent holding `decisions_write` can now record arbitrary free text, not only the declared options

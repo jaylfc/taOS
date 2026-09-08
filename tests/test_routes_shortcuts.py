@@ -27,8 +27,15 @@ def _setup_worker_registry(monkeypatch) -> None:
     monkeypatch.setattr(wr_mod, "_active_manager", mgr)
 
 
-def _seed_agent(client, framework="openclaw", shortcuts=None):
-    """Append a test agent to app.state.config.agents and patch FRAMEWORKS."""
+def _seed_agent(client, monkeypatch, framework="openclaw", shortcuts=None):
+    """Append a test agent to app.state.config.agents and patch FRAMEWORKS.
+
+    The FRAMEWORKS entry is written through ``monkeypatch.setitem`` so the
+    process-global dict is restored on teardown -- including DELETING the key
+    when ``framework`` was absent (the old ``.get(default)`` silently invented
+    one that then leaked for the rest of the process and poisoned order-coupled
+    tests such as ``test_openclaw_shortcuts_exact``; see tsk-yjdeom).
+    """
     import uuid
 
     import tinyagentos.frameworks as fw_mod
@@ -54,7 +61,7 @@ def _seed_agent(client, framework="openclaw", shortcuts=None):
 
     original = fw_mod.FRAMEWORKS.get(framework, {"id": framework, "name": framework})
     patched_entry = {**original, "shortcuts": shortcuts}
-    fw_mod.FRAMEWORKS[framework] = patched_entry
+    monkeypatch.setitem(fw_mod.FRAMEWORKS, framework, patched_entry)
 
     agent_id = uuid.uuid4().hex[:12]
     agent = {
@@ -75,23 +82,23 @@ def _seed_agent(client, framework="openclaw", shortcuts=None):
 
 
 @pytest.mark.asyncio
-async def test_list_shortcuts_returns_200(client):
-    agent = _seed_agent(client)
+async def test_list_shortcuts_returns_200(client, monkeypatch):
+    agent = _seed_agent(client, monkeypatch)
     resp = await client.get(f"/api/agents/{agent['id']}/shortcuts")
     assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_list_shortcuts_returns_list(client):
-    agent = _seed_agent(client)
+async def test_list_shortcuts_returns_list(client, monkeypatch):
+    agent = _seed_agent(client, monkeypatch)
     resp = await client.get(f"/api/agents/{agent['id']}/shortcuts")
     data = resp.json()
     assert isinstance(data, list)
 
 
 @pytest.mark.asyncio
-async def test_list_shortcuts_admin_sees_all(client):
-    agent = _seed_agent(client)
+async def test_list_shortcuts_admin_sees_all(client, monkeypatch):
+    agent = _seed_agent(client, monkeypatch)
     resp = await client.get(f"/api/agents/{agent['id']}/shortcuts")
     data = resp.json()
     assert len(data) == 2
@@ -110,18 +117,19 @@ async def test_list_shortcuts_unknown_agent_returns_404(client):
 
 
 @pytest.mark.asyncio
-async def test_list_shortcuts_by_name(client):
-    agent = _seed_agent(client)
+async def test_list_shortcuts_by_name(client, monkeypatch):
+    agent = _seed_agent(client, monkeypatch)
     resp = await client.get(f"/api/agents/{agent['name']}/shortcuts")
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
 
 
 @pytest.mark.asyncio
-async def test_list_shortcuts_capability_filtered(client):
+async def test_list_shortcuts_capability_filtered(client, monkeypatch):
     """Shortcuts requiring agent.admin are not visible to a normal admin."""
     agent = _seed_agent(
         client,
+        monkeypatch,
         shortcuts=[
             {
                 "kind": "tui",
@@ -138,18 +146,18 @@ async def test_list_shortcuts_capability_filtered(client):
 
 
 @pytest.mark.asyncio
-async def test_list_shortcuts_no_shortcuts_returns_empty(client):
+async def test_list_shortcuts_no_shortcuts_returns_empty(client, monkeypatch):
     """Agent with a framework that has no shortcuts returns empty list."""
-    agent = _seed_agent(client, shortcuts=[])
+    agent = _seed_agent(client, monkeypatch, shortcuts=[])
     resp = await client.get(f"/api/agents/{agent['id']}/shortcuts")
     assert resp.status_code == 200
     assert resp.json() == []
 
 
 @pytest.mark.asyncio
-async def test_list_shortcuts_does_not_expose_requires_capability(client):
+async def test_list_shortcuts_does_not_expose_requires_capability(client, monkeypatch):
     """The requires_capability field must not leak to the frontend."""
-    agent = _seed_agent(client)
+    agent = _seed_agent(client, monkeypatch)
     resp = await client.get(f"/api/agents/{agent['id']}/shortcuts")
     for entry in resp.json():
         assert "requires_capability" not in entry
@@ -163,7 +171,7 @@ async def test_list_shortcuts_does_not_expose_requires_capability(client):
 @pytest.mark.asyncio
 async def test_launch_shortcut_returns_redirect_url(client, monkeypatch):
     _setup_worker_registry(monkeypatch)
-    agent = _seed_agent(client)
+    agent = _seed_agent(client, monkeypatch)
     resp = await client.post(f"/api/agents/{agent['id']}/shortcuts/0/launch")
     assert resp.status_code == 200
     data = resp.json()
@@ -175,7 +183,7 @@ async def test_launch_shortcut_returns_redirect_url(client, monkeypatch):
 @pytest.mark.asyncio
 async def test_launch_shortcut_includes_ticket_token(client, monkeypatch):
     _setup_worker_registry(monkeypatch)
-    agent = _seed_agent(client)
+    agent = _seed_agent(client, monkeypatch)
     resp = await client.post(f"/api/agents/{agent['id']}/shortcuts/0/launch")
     redirect_url = resp.json()["redirect_url"]
     assert "t=" in redirect_url
@@ -184,7 +192,7 @@ async def test_launch_shortcut_includes_ticket_token(client, monkeypatch):
 @pytest.mark.asyncio
 async def test_launch_shortcut_idx_out_of_range(client, monkeypatch):
     _setup_worker_registry(monkeypatch)
-    agent = _seed_agent(client)
+    agent = _seed_agent(client, monkeypatch)
     resp = await client.post(f"/api/agents/{agent['id']}/shortcuts/99/launch")
     assert resp.status_code == 404
 
@@ -199,7 +207,7 @@ async def test_launch_shortcut_unknown_agent(client, monkeypatch):
 @pytest.mark.asyncio
 async def test_launch_shortcut_negative_idx(client, monkeypatch):
     _setup_worker_registry(monkeypatch)
-    agent = _seed_agent(client)
+    agent = _seed_agent(client, monkeypatch)
     resp = await client.post(f"/api/agents/{agent['id']}/shortcuts/-1/launch")
     assert resp.status_code == 404
 
@@ -215,6 +223,6 @@ async def test_launch_shortcut_no_worker_raises_error(client, monkeypatch):
     from tinyagentos.cluster import worker_registry
 
     monkeypatch.setattr(worker_registry, "_active_manager", None)
-    agent = _seed_agent(client)
+    agent = _seed_agent(client, monkeypatch)
     with pytest.raises(RuntimeError, match="No active ClusterManager"):
         await client.post(f"/api/agents/{agent['id']}/shortcuts/0/launch")

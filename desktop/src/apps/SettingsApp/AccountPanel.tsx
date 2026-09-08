@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, type FormEvent } from "react";
-import { LogOut, AlertCircle, ShieldCheck, Plane, UserCircle, AtSign, Check, X, Globe, Loader2 } from "lucide-react";
+import { LogOut, AlertCircle, ShieldCheck, Plane, UserCircle, AtSign, Check, X, Globe, Loader2, KeyRound } from "lucide-react";
 import { Button, Card, Input, Label } from "@/components/ui";
+import { withCsrf } from "@/lib/csrf";
 import {
   fetchAccount,
   login,
@@ -81,6 +82,206 @@ function LocalAccountCard() {
         {meta && <p className="text-xs text-shell-text-tertiary mt-0.5 truncate">{meta}</p>}
         <p className="text-xs text-shell-text-tertiary mt-0.5">Signed in on this device</p>
       </div>
+    </Card>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Sign-in method (PIN)                                              */
+/* ------------------------------------------------------------------ */
+
+const PIN_MIN = 4;
+const PIN_MAX = 12;
+
+/** Set, change or turn off the PIN used to sign in on this device's own
+ *  screen.
+ *
+ *  A PIN exists for the touchscreen case: a wall panel or pi-top has no
+ *  keyboard, so a typed password locks the owner out of their own machine.
+ *  It is deliberately NOT a general credential — the server refuses PIN
+ *  sign-in from anywhere but the console — so this card says where it works
+ *  rather than leaving the user to discover it does nothing over the network.
+ *
+ *  Setting one costs the account password even though the caller already holds
+ *  a session: a PIN is a lasting way back into the device, so minting one must
+ *  cost the real credential. Turning it off costs nothing, because removing a
+ *  credential only ever reduces what an attacker can reach — and demanding a
+ *  typed password to disable it would be unperformable on the very device this
+ *  feature serves. */
+function SignInMethodCard() {
+  const [hasPin, setHasPin] = useState<boolean | null>(null);
+  const [open, setOpen] = useState(false);
+  const [pin, setPin] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string>("");
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/auth/status", { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (mounted.current && data?.authenticated && data?.user) {
+          setHasPin(Boolean(data.user.has_pin));
+        }
+      } catch {
+        // Host unreachable; the cloud card surfaces connectivity.
+      }
+    })();
+  }, []);
+
+  const reset = () => { setPin(""); setConfirm(""); setPassword(""); setError(null); };
+
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    // Checked here as well as on the server so the user is told which field is
+    // wrong instead of being handed one generic refusal.
+    if (!/^\d+$/.test(pin) || pin.length < PIN_MIN || pin.length > PIN_MAX) {
+      setError(`A PIN must be ${PIN_MIN}-${PIN_MAX} digits.`);
+      return;
+    }
+    if (pin !== confirm) { setError("The two PINs do not match."); return; }
+    if (!password) { setError("Enter your account password to confirm."); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/auth/pin", withCsrf({
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin, password }),
+      }));
+      const body = await res.json().catch(() => null);
+      if (!mounted.current) return;
+      if (!res.ok || !body?.ok) {
+        setError(body?.error || "Could not save the PIN.");
+        return;
+      }
+      setHasPin(true);
+      setOpen(false);
+      reset();
+      setStatus("PIN saved. You can now sign in with it on this screen.");
+    } catch {
+      if (mounted.current) setError("Could not reach taOS. Check the connection and try again.");
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  };
+
+  const disable = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/auth/pin", withCsrf({ method: "DELETE", credentials: "include" }));
+      const body = await res.json().catch(() => null);
+      if (!mounted.current) return;
+      if (!res.ok || !body?.ok) {
+        setError(body?.error || "Could not turn off the PIN.");
+        return;
+      }
+      setHasPin(false);
+      setOpen(false);
+      reset();
+      setStatus("PIN turned off. Sign in with your password.");
+    } catch {
+      if (mounted.current) setError("Could not reach taOS. Check the connection and try again.");
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  };
+
+  if (hasPin === null) return null;
+
+  return (
+    <Card className="p-4 mb-3">
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="flex items-center gap-2">
+          <KeyRound size={16} className="text-shell-text-secondary" />
+          <h3 className="text-sm font-medium">PIN sign-in</h3>
+        </div>
+        <span className={`text-xs font-medium ${hasPin ? "text-emerald-400" : "text-shell-text-tertiary"}`}>
+          {hasPin ? "On" : "Off"}
+        </span>
+      </div>
+      <p className="text-xs text-shell-text-tertiary mb-3">
+        Sign in with {PIN_MIN}-{PIN_MAX} digits on this device's own screen — the
+        quickest way in on a touchscreen with no keyboard. It works only on that
+        screen; over the network your password is still required.
+      </p>
+
+      {/* Announced to screen readers without stealing focus. */}
+      <p aria-live="polite" className="sr-only">{status}</p>
+      {status && !open && (
+        <p className="text-xs text-emerald-400 mb-3">{status}</p>
+      )}
+      {/* "Turn off" only exists in the COLLAPSED state, and disable() is the
+          one action that can fail from here. The form below renders `error`
+          too, but that branch is unreachable while the button is on screen --
+          without this the tap fails, the spinner returns to the label, and
+          nothing tells the user the PIN is still on. */}
+      {error && !open && (
+        <p className="text-xs text-amber-400 flex items-center gap-1.5 mb-3" role="alert">
+          <AlertCircle size={12} /> {error}
+        </p>
+      )}
+
+      {!open ? (
+        <div className="flex gap-2">
+          <Button size="sm" variant={hasPin ? "outline" : "default"}
+                  onClick={() => { setStatus(""); reset(); setOpen(true); }}>
+            {hasPin ? "Change PIN" : "Set up a PIN"}
+          </Button>
+          {hasPin && (
+            <Button size="sm" variant="outline" onClick={disable} disabled={busy}>
+              {busy ? <Loader2 size={14} className="animate-spin" /> : "Turn off"}
+            </Button>
+          )}
+        </div>
+      ) : (
+        <form onSubmit={save} className="space-y-3">
+          <div>
+            <Label htmlFor="pin-new">New PIN</Label>
+            <Input id="pin-new" type="password" inputMode="numeric" autoComplete="off"
+                   maxLength={PIN_MAX} value={pin}
+                   onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} />
+          </div>
+          <div>
+            <Label htmlFor="pin-confirm">Confirm PIN</Label>
+            <Input id="pin-confirm" type="password" inputMode="numeric" autoComplete="off"
+                   maxLength={PIN_MAX} value={confirm}
+                   onChange={(e) => setConfirm(e.target.value.replace(/\D/g, ""))} />
+          </div>
+          <div>
+            <Label htmlFor="pin-password">Account password</Label>
+            <Input id="pin-password" type="password" autoComplete="current-password"
+                   value={password} onChange={(e) => setPassword(e.target.value)} />
+            <p className="text-xs text-shell-text-tertiary mt-1">
+              Confirms it is you setting a new way into this device.
+            </p>
+          </div>
+          {error && (
+            <p className="text-xs text-amber-400 flex items-center gap-1.5" role="alert">
+              <AlertCircle size={12} /> {error}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <Button type="submit" size="sm" disabled={busy}>
+              {busy ? <Loader2 size={14} className="animate-spin" /> : "Save PIN"}
+            </Button>
+            <Button type="button" size="sm" variant="outline"
+                    onClick={() => { setOpen(false); reset(); }} disabled={busy}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      )}
     </Card>
   );
 }
@@ -474,6 +675,7 @@ export function AccountSection() {
       <h2 className="text-lg font-semibold mb-2">Account</h2>
 
       <LocalAccountCard />
+      <SignInMethodCard />
 
       <p className="text-sm text-shell-text-tertiary mb-5">
         Your taOS account is your free identity across taOS. taOSgo adds secure remote access and

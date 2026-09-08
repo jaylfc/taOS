@@ -11,6 +11,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from tinyagentos.library_pipeline import (
     FileProcessor,
+    HeavyDownloadProcessor,
     ImageProcessor,
     PdfProcessor,
     TextProcessor,
@@ -18,6 +19,7 @@ from tinyagentos.library_pipeline import (
     YouTubeProcessor,
     detect_kind,
     run_pipeline,
+    _extract_readable_text,
 )
 from tinyagentos.library_store import LibraryStore
 from tinyagentos.library_collections import handoff_to_collections
@@ -709,6 +711,60 @@ class TestWebProcessor:
         assert mock_validate.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_web_redirect_reuses_single_guarded_client(self, lib_store, storage_dir):
+        """One `guarded_async_client()` call must serve every hop of a
+        multi-hop redirect chain — not a fresh client (pool, SSL context,
+        pinned backend) built and torn down on each hop."""
+        from unittest.mock import patch, MagicMock, AsyncMock
+        import tinyagentos.routes.desktop_browser.ssrf as ssrf_mod
+
+        html = "<html><p>Final hop content, long enough to pass the readability minimum threshold for extraction.</p></html>"
+        item_id = await lib_store.create_item(
+            kind="url:web",
+            source_url="https://safe.example.com/start",
+        )
+        item = await lib_store.get_item(item_id)
+        proc = WebProcessor(lib_store, storage_dir)
+
+        # Two redirects then a final 200: 3 hops total.
+        mock_resp1 = MagicMock()
+        mock_resp1.status_code = 302
+        mock_resp1.headers = {"location": "https://safe.example.com/hop1"}
+        mock_resp1.is_redirect = True
+
+        mock_resp2 = MagicMock()
+        mock_resp2.status_code = 302
+        mock_resp2.headers = {"location": "https://safe.example.com/final"}
+        mock_resp2.is_redirect = True
+
+        mock_resp3 = _mock_httpx_response(html, 200)
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.stream = MagicMock(
+            side_effect=[
+                _mock_stream_ctx(mock_resp1),
+                _mock_stream_ctx(mock_resp2),
+                _mock_stream_ctx(mock_resp3),
+            ]
+        )
+
+        counting = MagicMock(side_effect=lambda *a, **kw: mock_client)
+
+        with (
+            patch.object(ssrf_mod, "guarded_async_client", counting),
+            patch.object(ssrf_mod, "validate_url_or_raise"),
+        ):
+            await proc.process(item)
+
+        assert counting.call_count == 1, (
+            f"guarded_async_client entered {counting.call_count} times "
+            "for a 3-hop fetch — it must be entered exactly once and reused "
+            "across every redirect hop"
+        )
+
+    @pytest.mark.asyncio
     async def test_web_size_cap(self, lib_store, storage_dir):
         """Responses exceeding the size cap raise ValueError."""
         from unittest.mock import patch, MagicMock
@@ -775,6 +831,33 @@ class TestWebProcessor:
             )
             with _pytest.raises(ValueError, match="Non-text content-type"):
                 await proc.process(item)
+
+
+# ---------------------------------------------------------------------------
+# Readability extraction (R2-13)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractReadableText:
+    """Verify _extract_readable_text handles entities, `>` in attributes,
+    and short articles (no length threshold)."""
+
+    def test_gt_in_attribute_is_handled(self):
+        """`>` inside an HTML attribute must not break tag stripping."""
+        html = '<a title="x > y">text</a>'
+        assert _extract_readable_text(html) == "text"
+
+    def test_html_entities_are_unescaped(self):
+        """HTML entities like &amp; must be unescaped to their character form."""
+        assert _extract_readable_text("&amp;") == "&"
+
+    def test_short_article_not_dropped_by_length_threshold(self):
+        """A 50-char article must be kept, not dropped by a length threshold."""
+        article = "Tom &amp; Jerry have exactly fifty chars in text end!!"
+        assert len(article.replace("&amp;", "&")) == 50
+        html = f"<html><body><article>{article}</article></body></html>"
+        result = _extract_readable_text(html)
+        assert result == "Tom & Jerry have exactly fifty chars in text end!!"
 
 
 # ---------------------------------------------------------------------------
@@ -1084,6 +1167,472 @@ class TestLibraryRoutes:
         # Reprocess should be rejected
         resp = await client.post(f"/api/library/items/{item_id}/reprocess")
         assert resp.status_code == 409
+
+    # -- Jobs endpoints --
+
+    @pytest.mark.asyncio
+    async def test_list_jobs_empty(self, client):
+        resp = await client.get("/api/library/jobs")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "jobs" in data
+        assert data["jobs"] == []
+
+    @pytest.mark.asyncio
+    async def test_list_jobs_filter_by_state(self, client, app):
+        """?state=error returns only error jobs, not jobs in other states."""
+        resp = await client.get("/api/library/jobs")
+        assert resp.status_code == 200
+        store = app.state.library_store
+        item_id = await store.create_item(kind="text", title="test")
+        error_job_id = await store.create_job(item_id, "ingest")
+        done_job_id = await store.create_job(item_id, "transcript")
+        await store.update_job(error_job_id, state="error", error="boom")
+        await store.update_job(done_job_id, state="done")
+
+        resp = await client.get("/api/library/jobs", params={"state": "error"})
+        assert resp.status_code == 200
+        data = resp.json()
+        returned_ids = {j["id"] for j in data["jobs"]}
+        assert error_job_id in returned_ids
+        assert done_job_id not in returned_ids
+
+    @pytest.mark.asyncio
+    async def test_retry_error_job(self, client, app):
+        """POST /api/library/jobs/{id}/retry re-queues an error job."""
+        resp = await client.get("/api/library/jobs")
+        assert resp.status_code == 200
+        store = app.state.library_store
+        item_id = await store.create_item(kind="text", title="test")
+        job_id = await store.create_job(item_id, "ingest")
+        await store.update_job(job_id, state="error", error="boom")
+
+        resp = await client.post(f"/api/library/jobs/{job_id}/retry")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["job_id"] == job_id
+        assert data["status"] == "queued"
+
+        job = await store.get_job(job_id)
+        assert job["state"] == "queued"
+        assert job["error"] == ""
+
+    @pytest.mark.asyncio
+    async def test_retry_unknown_job_returns_404(self, client):
+        resp = await client.post("/api/library/jobs/nonexistent/retry")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_retry_non_error_job_returns_409(self, client, app):
+        """Retrying a job that is not in error state is rejected."""
+        resp = await client.get("/api/library/jobs")
+        assert resp.status_code == 200
+        store = app.state.library_store
+        item_id = await store.create_item(kind="text", title="test")
+        job_id = await store.create_job(item_id, "ingest")
+        await store.update_job(job_id, state="done")
+
+        resp = await client.post(f"/api/library/jobs/{job_id}/retry")
+        assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# P3: LibraryStore — rules + storage accounting
+# ---------------------------------------------------------------------------
+
+
+class TestLibraryStoreRules:
+    @pytest.mark.asyncio
+    async def test_create_and_list_rules(self, lib_store):
+        rid = await lib_store.create_rule(
+            source_pattern="*.youtube.com/*",
+            quality="1080",
+            auto_download=True,
+        )
+        assert rid
+
+        rules = await lib_store.list_rules()
+        assert len(rules) == 1
+        assert rules[0]["source_pattern"] == "*.youtube.com/*"
+        assert rules[0]["quality"] == "1080"
+        assert rules[0]["auto_download"] == 1
+
+    @pytest.mark.asyncio
+    async def test_get_rule(self, lib_store):
+        rid = await lib_store.create_rule(source_pattern="*.example.com/*")
+        rule = await lib_store.get_rule(rid)
+        assert rule is not None
+        assert rule["source_pattern"] == "*.example.com/*"
+
+        assert await lib_store.get_rule("nonexistent") is None
+
+    @pytest.mark.asyncio
+    async def test_delete_rule(self, lib_store):
+        rid = await lib_store.create_rule(source_pattern="*.youtube.com/*")
+        await lib_store.delete_rule(rid)
+        assert len(await lib_store.list_rules()) == 0
+
+    @pytest.mark.asyncio
+    async def test_match_rules(self, lib_store):
+        await lib_store.create_rule(
+            source_pattern="*youtube.com/*", quality="720", auto_download=True,
+        )
+        await lib_store.create_rule(
+            source_pattern="*vimeo.com/*", quality="1080", auto_download=False,
+        )
+
+        matched = await lib_store.match_rules("https://www.youtube.com/watch?v=abc")
+        assert len(matched) == 1
+        assert matched[0]["quality"] == "720"
+
+        matched_vimeo = await lib_store.match_rules("https://vimeo.com/12345")
+        assert len(matched_vimeo) == 1
+
+        matched_none = await lib_store.match_rules("https://example.com")
+        assert len(matched_none) == 0
+
+    @pytest.mark.asyncio
+    async def test_match_rules_disabled_ignored(self, lib_store):
+        rid = await lib_store.create_rule(
+            source_pattern="*example.com/*",
+            enabled=False,
+        )
+        matched = await lib_store.match_rules("https://example.com/page")
+        assert len(matched) == 0
+
+    @pytest.mark.asyncio
+    async def test_storage_summary(self, lib_store):
+        await lib_store.create_item(kind="text", title="a.txt", size_bytes=100)
+        await lib_store.create_item(kind="pdf", title="b.pdf", size_bytes=500)
+        await lib_store.create_item(kind="url:youtube", title="c", size_bytes=0)
+
+        summary = await lib_store.get_storage_summary()
+        assert summary["total_count"] == 3
+        assert summary["total_bytes"] == 600
+        assert "text" in summary["by_kind"]
+        assert "pdf" in summary["by_kind"]
+
+    @pytest.mark.asyncio
+    async def test_storage_summary_empty(self, lib_store):
+        summary = await lib_store.get_storage_summary()
+        assert summary["total_count"] == 0
+        assert summary["total_bytes"] == 0
+
+
+# ---------------------------------------------------------------------------
+# P3: HeavyDownloadProcessor
+# ---------------------------------------------------------------------------
+
+
+class TestHeavyDownloadProcessor:
+    @pytest.mark.asyncio
+    async def test_process_heavy_download(self, lib_store, storage_dir):
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=heavy-test",
+        )
+        await lib_store.update_item(item_id, quality="480")
+        item = await lib_store.get_item(item_id)
+
+        proc = HeavyDownloadProcessor(lib_store, storage_dir)
+
+        from unittest.mock import patch
+
+        mock_path = str(storage_dir / "downloads" / "test123.mp4")
+        storage_dir.joinpath("downloads").mkdir(parents=True, exist_ok=True)
+        storage_dir.joinpath("downloads", "test123.mp4").write_text("fake video data")
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.download_video",
+            _async_return(mock_path),
+        ):
+            artifacts = await proc.process(item)
+
+        assert len(artifacts) == 1
+        assert artifacts[0]["kind"] == "download"
+        assert artifacts[0]["meta"]["quality"] == "480"
+
+        updated = await lib_store.get_item(item_id)
+        assert updated["download_path"] == mock_path
+        assert updated["download_bytes"] > 0
+
+    @pytest.mark.asyncio
+    async def test_process_heavy_download_non_youtube(self, lib_store, storage_dir):
+        item_id = await lib_store.create_item(
+            kind="url:web",
+            source_url="https://example.com",
+        )
+        item = await lib_store.get_item(item_id)
+
+        proc = HeavyDownloadProcessor(lib_store, storage_dir)
+        artifacts = await proc.process(item)
+        assert artifacts == []
+
+    @pytest.mark.asyncio
+    async def test_process_heavy_download_no_source(self, lib_store, storage_dir):
+        item_id = await lib_store.create_item(
+            kind="url:youtube", source_url="",
+        )
+        item = await lib_store.get_item(item_id)
+
+        proc = HeavyDownloadProcessor(lib_store, storage_dir)
+        artifacts = await proc.process(item)
+        assert artifacts == []
+
+    @pytest.mark.asyncio
+    async def test_process_heavy_download_invalid_quality(self, lib_store, storage_dir):
+        """Invalid quality should fall back to 720."""
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=qtest",
+        )
+        await lib_store.update_item(item_id, quality="9999")
+        item = await lib_store.get_item(item_id)
+
+        proc = HeavyDownloadProcessor(lib_store, storage_dir)
+
+        from unittest.mock import patch
+
+        mock_path = str(storage_dir / "downloads" / "test.mp4")
+        storage_dir.joinpath("downloads").mkdir(parents=True, exist_ok=True)
+        storage_dir.joinpath("downloads", "test.mp4").write_text("data")
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.download_video",
+            _async_return(mock_path),
+        ):
+            artifacts = await proc.process(item)
+
+        # Quality should have been normalized to 720
+        assert artifacts[0]["meta"]["quality"] == "720"
+
+
+# ---------------------------------------------------------------------------
+# P3: run_heavy_pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestRunHeavyPipeline:
+    @pytest.mark.asyncio
+    async def test_run_heavy_pipeline_rule_quality(self, lib_store, storage_dir):
+        """When a matching rule exists, its quality is used."""
+        await lib_store.create_rule(
+            source_pattern="*youtube.com/*",
+            quality="480",
+            auto_download=False,
+        )
+
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=rule-test",
+        )
+        storage_dir.joinpath("downloads").mkdir(parents=True, exist_ok=True)
+
+        mock_path = str(storage_dir / "downloads" / "test.mp4")
+        storage_dir.joinpath("downloads", "test.mp4").write_text("fake data")
+
+        from unittest.mock import patch
+        from tinyagentos.library_pipeline import run_heavy_pipeline
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.download_video",
+            _async_return(mock_path),
+        ):
+            result = await run_heavy_pipeline(
+                lib_store, item_id, storage_dir, quality="",
+            )
+
+        assert result is not None
+        assert result["quality"] == "480"  # From rule
+
+    @pytest.mark.asyncio
+    async def test_run_heavy_pipeline_explicit_quality(self, lib_store, storage_dir):
+        """Explicit quality parameter overrides rule quality."""
+        await lib_store.create_rule(
+            source_pattern="*youtube.com/*",
+            quality="480",
+        )
+
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=explicit-test",
+        )
+        storage_dir.joinpath("downloads").mkdir(parents=True, exist_ok=True)
+
+        mock_path = str(storage_dir / "downloads" / "test.mp4")
+        storage_dir.joinpath("downloads", "test.mp4").write_text("fake data")
+
+        from unittest.mock import patch
+        from tinyagentos.library_pipeline import run_heavy_pipeline
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.download_video",
+            _async_return(mock_path),
+        ):
+            result = await run_heavy_pipeline(
+                lib_store, item_id, storage_dir, quality="1080",
+            )
+
+        assert result["quality"] == "1080"  # Explicit wins
+
+    @pytest.mark.asyncio
+    async def test_run_heavy_pipeline_non_youtube(self, lib_store, storage_dir):
+        """run_heavy_pipeline returns None for non-YouTube items."""
+        item_id = await lib_store.create_item(
+            kind="url:web",
+            source_url="https://example.com/page",
+        )
+
+        from tinyagentos.library_pipeline import run_heavy_pipeline
+        result = await run_heavy_pipeline(
+            lib_store, item_id, storage_dir,
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_run_heavy_pipeline_creates_job(self, lib_store, storage_dir):
+        """Heavy pipeline creates a job entry."""
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=job-test",
+        )
+        storage_dir.joinpath("downloads").mkdir(parents=True, exist_ok=True)
+
+        mock_path = str(storage_dir / "downloads" / "test.mp4")
+        storage_dir.joinpath("downloads", "test.mp4").write_text("fake data")
+
+        from unittest.mock import patch
+        from tinyagentos.library_pipeline import run_heavy_pipeline
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.download_video",
+            _async_return(mock_path),
+        ):
+            await run_heavy_pipeline(lib_store, item_id, storage_dir, quality="720")
+
+        jobs = await lib_store.get_item_jobs(item_id)
+        heavy_jobs = [j for j in jobs if j["stage"] == "heavy_download"]
+        assert len(heavy_jobs) >= 1
+
+
+# ---------------------------------------------------------------------------
+# P3: Library routes — download, rules, usage
+# ---------------------------------------------------------------------------
+
+
+class TestLibraryRoutesP3:
+    @pytest.mark.asyncio
+    async def test_trigger_download(self, client):
+        """POST /api/library/items/{id}/download triggers heavy download."""
+        # Ingest a YouTube URL first
+        resp = await client.post(
+            "/api/library/ingest", data={"url": "https://youtube.com/watch?v=dl-test"}
+        )
+        assert resp.status_code == 202
+        item_id = resp.json()["item_id"]
+
+        # Allow pipeline to finish
+        import asyncio as _asyncio
+        await _asyncio.sleep(0.5)
+
+        resp = await client.post(
+            f"/api/library/items/{item_id}/download",
+            data={"quality": "480"},
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["status"] == "downloading"
+        assert data["quality"] == "480"
+
+    @pytest.mark.asyncio
+    async def test_trigger_download_nonexistent(self, client):
+        resp = await client.post("/api/library/items/nonexistent/download")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_trigger_download_non_youtube(self, client):
+        """Download endpoint rejects non-YouTube items."""
+        resp = await client.post(
+            "/api/library/ingest", data={"url": "https://example.com/page"}
+        )
+        assert resp.status_code == 202
+        item_id = resp.json()["item_id"]
+
+        import asyncio as _asyncio
+        await _asyncio.sleep(0.5)
+
+        resp = await client.post(f"/api/library/items/{item_id}/download")
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_download_status(self, client):
+        resp = await client.post(
+            "/api/library/ingest", data={"url": "https://youtube.com/watch?v=status"}
+        )
+        item_id = resp.json()["item_id"]
+
+        import asyncio as _asyncio
+        await _asyncio.sleep(0.5)
+
+        resp = await client.get(f"/api/library/items/{item_id}/download/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["item_id"] == item_id
+        assert "downloaded" in data
+
+    @pytest.mark.asyncio
+    async def test_create_rule(self, client):
+        resp = await client.post(
+            "/api/library/rules",
+            data={"source_pattern": "*.youtube.com/*", "quality": "1080", "auto_download": "true"},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["rule_id"]
+        assert data["source_pattern"] == "*.youtube.com/*"
+
+    @pytest.mark.asyncio
+    async def test_list_rules(self, client):
+        # Create a rule first
+        await client.post(
+            "/api/library/rules", data={"source_pattern": "*.example.com/*"}
+        )
+        resp = await client.get("/api/library/rules")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "rules" in data
+        assert data["count"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_delete_rule(self, client):
+        resp = await client.post(
+            "/api/library/rules", data={"source_pattern": "*.test.com/*"}
+        )
+        rule_id = resp.json()["rule_id"]
+
+        resp = await client.delete(f"/api/library/rules/{rule_id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+
+        # Verify it's gone
+        resp = await client.get("/api/library/rules")
+        data = resp.json()
+        rule_ids = [r["id"] for r in data["rules"]]
+        assert rule_id not in rule_ids
+
+    @pytest.mark.asyncio
+    async def test_delete_nonexistent_rule(self, client):
+        resp = await client.delete("/api/library/rules/nonexistent")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_storage_usage(self, client):
+        resp = await client.get("/api/library/usage")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "total_count" in data
+        assert "total_bytes" in data
+        assert "by_kind" in data
 
 
 # ---------------------------------------------------------------------------

@@ -184,20 +184,22 @@ class TorrentDownloader:
     def get_task(self, task_id: str) -> Optional[TorrentTask]:
         return self._tasks.get(task_id)
 
-    def _params_from_torrent_url(self, url: str):
+    async def _params_from_torrent_url(self, url: str):
         """Fetch a .torrent over HTTP (the public taOSnet metadata path) and
         build add_torrent_params from it. Used when a manifest supplies a
         ``torrent_url`` instead of a magnet."""
         import httpx
 
-        resp = httpx.get(url, timeout=30.0, follow_redirects=True)
+        resp = await asyncio.to_thread(
+            httpx.get, url, timeout=30.0, follow_redirects=True
+        )
         resp.raise_for_status()
         ti = lt.torrent_info(lt.bdecode(resp.content))
         params = lt.add_torrent_params()
         params.ti = ti
         return params
 
-    def _build_params(
+    async def _build_params(
         self,
         magnet_or_torrent: str,
         save_dir: Path,
@@ -214,7 +216,7 @@ class TorrentDownloader:
         if magnet_or_torrent.startswith("magnet:"):
             params = lt.parse_magnet_uri(magnet_or_torrent)
         elif magnet_or_torrent.startswith(("http://", "https://")):
-            params = self._params_from_torrent_url(magnet_or_torrent)
+            params = await self._params_from_torrent_url(magnet_or_torrent)
         else:
             raise TorrentError(
                 f"unsupported torrent source: {magnet_or_torrent[:40]!r}"
@@ -263,7 +265,7 @@ class TorrentDownloader:
         )
         self._tasks[task_id] = task
 
-        params = self._build_params(magnet_or_torrent, dest.parent, passkey, web_seeds)
+        params = await self._build_params(magnet_or_torrent, dest.parent, passkey, web_seeds)
         handle = self._session.add_torrent(params)
         self._handles[task_id] = handle
 
@@ -301,7 +303,8 @@ class TorrentDownloader:
             task.status = "error"
             task.error = "download produced no data"
             raise TorrentError("torrent download produced no data")
-        actual = hashlib.sha256(dest.read_bytes()).hexdigest()
+        with open(dest, "rb") as f:
+            actual = hashlib.file_digest(f, "sha256").hexdigest()
         if actual.lower() != expected_sha256.lower():
             task.status = "error"
             task.error = "sha256 mismatch"

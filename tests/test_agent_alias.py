@@ -9,6 +9,7 @@ Covers:
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import csrf_event_hooks
 
 
 @pytest_asyncio.fixture
@@ -34,6 +35,7 @@ async def client(app, tmp_data_dir):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
 

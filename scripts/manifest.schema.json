@@ -1,0 +1,117 @@
+{
+  "description": "A loaded catalog manifest.\n\nApp manifests are externally-authored input, pulled from a remote git repo\nby ``tinyagentos/catalog_sync.py``. Validating at this boundary keeps a\nsingle malformed entry from breaking install-time code paths deep in\nthe stack (the prior ``data.get(key, default)`` loader happily let a\nstring ``requires`` through to install code, which then raised\n``AttributeError: 'str' object has no attribute 'get'`` with no\nindication which manifest was malformed).\n\n``extra=\"ignore\"`` keeps the model forward-compatible with newer\ncatalog fields the runtime has not learned about yet.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "type": {
+      "title": "Type",
+      "type": "string"
+    },
+    "version": {
+      "title": "Version",
+      "type": "string"
+    },
+    "description": {
+      "default": "",
+      "title": "Description",
+      "type": "string"
+    },
+    "category": {
+      "default": "",
+      "title": "Category",
+      "type": "string"
+    },
+    "icon": {
+      "default": "",
+      "title": "Icon",
+      "type": "string"
+    },
+    "homepage": {
+      "default": "",
+      "title": "Homepage",
+      "type": "string"
+    },
+    "license": {
+      "default": "",
+      "title": "License",
+      "type": "string"
+    },
+    "weights_license": {
+      "default": "",
+      "title": "Weights License",
+      "type": "string"
+    },
+    "license_class": {
+      "default": "",
+      "title": "License Class",
+      "type": "string"
+    },
+    "requires": {
+      "additionalProperties": true,
+      "title": "Requires",
+      "type": "object"
+    },
+    "install": {
+      "additionalProperties": true,
+      "title": "Install",
+      "type": "object"
+    },
+    "hardware_tiers": {
+      "additionalProperties": true,
+      "title": "Hardware Tiers",
+      "type": "object"
+    },
+    "config_schema": {
+      "items": {},
+      "title": "Config Schema",
+      "type": "array"
+    },
+    "variants": {
+      "items": {},
+      "title": "Variants",
+      "type": "array"
+    },
+    "context_window": {
+      "default": 0,
+      "title": "Context Window",
+      "type": "integer"
+    },
+    "capabilities": {
+      "items": {},
+      "title": "Capabilities",
+      "type": "array"
+    },
+    "lifecycle": {
+      "additionalProperties": true,
+      "title": "Lifecycle",
+      "type": "object"
+    },
+    "manifest_dir": {
+      "anyOf": [
+        {
+          "format": "path",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Manifest Dir"
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "type",
+    "version"
+  ],
+  "title": "AppManifest",
+  "type": "object"
+}

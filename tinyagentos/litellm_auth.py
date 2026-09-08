@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +88,7 @@ async def user_api_key_auth(request, api_key: str):
     from litellm.proxy._types import UserAPIKeyAuth
 
     master = os.environ.get("LITELLM_MASTER_KEY")
-    if master and api_key == master:
-        # Admin / proxy operations: full access.
+    if master and secrets.compare_digest(api_key, master):
         return UserAPIKeyAuth(api_key=api_key)
 
     store = _keystore()

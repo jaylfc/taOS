@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.projects.project_store import ProjectStore
 from tinyagentos.auth_context import CurrentUser, require_owner_or_admin
+from taos_test_csrf import csrf_event_hooks
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +188,7 @@ async def member_client(app, tmp_data_dir):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         c._test_uid = member_uid
         c._test_app = app
@@ -211,10 +213,12 @@ async def two_member_clients(app, tmp_data_dir):
     async with AsyncClient(
         transport=transport, base_url="http://test",
         cookies={"taos_session": alice_token},
+        event_hooks=csrf_event_hooks(),
     ) as alice_c:
         async with AsyncClient(
             transport=transport, base_url="http://test",
             cookies={"taos_session": bob_token},
+            event_hooks=csrf_event_hooks(),
         ) as bob_c:
             alice_c._test_uid = alice_uid
             alice_c._test_app = app
@@ -335,6 +339,7 @@ async def test_admin_sees_all_projects(two_member_clients):
     async with AsyncClient(
         transport=transport, base_url="http://test",
         cookies={"taos_session": admin_token},
+        event_hooks=csrf_event_hooks(),
     ) as admin_c:
         # default status=active; alice and bob's projects are active
         resp = await admin_c.get("/api/projects")
@@ -359,6 +364,7 @@ async def test_admin_can_get_any_project(two_member_clients):
     async with AsyncClient(
         transport=transport, base_url="http://test",
         cookies={"taos_session": admin_token},
+        event_hooks=csrf_event_hooks(),
     ) as admin_c:
         resp = await admin_c.get(f"/api/projects/{pid}")
         assert resp.status_code == 200
@@ -380,6 +386,7 @@ async def test_admin_can_update_any_project(two_member_clients):
     async with AsyncClient(
         transport=transport, base_url="http://test",
         cookies={"taos_session": admin_token},
+        event_hooks=csrf_event_hooks(),
     ) as admin_c:
         resp = await admin_c.patch(f"/api/projects/{pid}", json={"name": "Admin Updated"})
         assert resp.status_code == 200
@@ -482,6 +489,7 @@ async def test_legacy_row_hidden_from_members(app, tmp_data_dir):
     async with AsyncClient(
         transport=transport, base_url="http://test",
         cookies={"taos_session": member_token},
+        event_hooks=csrf_event_hooks(),
     ) as member_c:
         # Member cannot see legacy row in list (legacy rows have status='active')
         resp = await member_c.get("/api/projects")
@@ -495,6 +503,7 @@ async def test_legacy_row_hidden_from_members(app, tmp_data_dir):
     async with AsyncClient(
         transport=transport, base_url="http://test",
         cookies={"taos_session": admin_token},
+        event_hooks=csrf_event_hooks(),
     ) as admin_c:
         # Admin CAN see legacy row in list (legacy rows have status='active')
         resp = await admin_c.get("/api/projects")

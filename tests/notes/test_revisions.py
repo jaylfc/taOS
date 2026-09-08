@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.app import create_app
 from tinyagentos.notes.shared_docs_store import CHECKPOINT_EVERY, SharedDocsStore
+from taos_test_csrf import csrf_event_hooks
 
 
 # ------------------------------------------------------------------ fixtures
@@ -49,6 +50,7 @@ async def client(tmp_path):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
     await shared_docs_store.close()
@@ -76,9 +78,11 @@ async def two_user_clients(tmp_path):
     async with AsyncClient(
         transport=transport, base_url="http://test",
         cookies={"taos_session": alice_token},
+        event_hooks=csrf_event_hooks(),
     ) as alice, AsyncClient(
         transport=transport, base_url="http://test",
         cookies={"taos_session": bob_token},
+        event_hooks=csrf_event_hooks(),
     ) as bob:
         yield alice, bob, app
     await shared_docs_store.close()

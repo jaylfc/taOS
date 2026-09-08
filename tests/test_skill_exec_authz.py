@@ -12,9 +12,11 @@ This suite locks in the fix end-to-end through the real ``AuthMiddleware``:
   (a) a non-admin user session is rejected 403 and ``subprocess.run`` is
       never invoked;
   (b) an admin session is allowed;
-  (c) a request presenting the valid local token is allowed;
+  (c) a request presenting a valid per-agent local token is allowed;
   (d) an invalid/absent token from a non-admin caller is rejected and never
       elevates privilege, and ``subprocess.run`` is never invoked.
+  (e) two deployed agents with distinct per-agent tokens each resolve to their
+      own identity; a token cannot impersonate another agent.
 """
 from __future__ import annotations
 
@@ -101,15 +103,16 @@ class TestSkillExecAuthz:
         mock_run.assert_called_once()
 
     async def test_valid_local_token_allowed(self, client, app):
-        """(c) A request presenting the valid local token is allowed, with no
-        session cookie at all."""
+        """(c) A request presenting a valid per-agent local token is allowed,
+        with no session cookie at all."""
         await _ensure_skills_seeded(app)
         # A local-token caller (a deployed agent) IS governed, unlike an admin
         # session -- so neutralize the conservative code-exec gate here to keep
         # this test focused on the auth gate. Governance itself is covered in
         # test_skill_exec_governance.py.
         await app.state.execution_policies.set_policy("code-exec", "allow")
-        local_token = app.state.auth.get_local_token()
+        # Use the deployer's real token-minting flow, not the shared host token.
+        alice_token = app.state.auth.mint_agent_local_token("alice")
         bare_client = AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         )
@@ -118,7 +121,7 @@ class TestSkillExecAuthz:
                 resp = await bare_client.post(
                     "/api/skill-exec/code_exec/call",
                     json={"args": {"code": "print('hello')"}},
-                    headers={"Authorization": f"Bearer {local_token}"},
+                    headers={"Authorization": f"Bearer {alice_token}"},
                 )
         finally:
             await bare_client.aclose()
@@ -226,3 +229,174 @@ class TestIsAdminOrLocalToken:
 
         assert "error" in result
         mock_run.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestSkillExecCredentialAgentName:
+    """Agent identity must come from the credential, not the request body."""
+
+    async def test_per_agent_token_mismatched_agent_name_rejected(self, client, app):
+        """A deployed agent presenting its own per-agent token but claiming a
+        different agent_name in the body must be rejected."""
+        await _ensure_skills_seeded(app)
+        alice_token = app.state.auth.mint_agent_local_token("alice")
+
+        bare_client = AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+        try:
+            resp = await bare_client.post(
+                "/api/skill-exec/code_exec/call",
+                json={"args": {"code": "print('should not run')"},
+                      "agent_name": "victim"},
+                headers={"Authorization": f"Bearer {alice_token}"},
+            )
+        finally:
+            await bare_client.aclose()
+
+        assert resp.status_code == 403
+
+    async def test_per_agent_token_matching_agent_name_accepted(self, client, app):
+        """A deployed agent presenting its own per-agent token and claiming the
+        bound agent_name must be accepted."""
+        await _ensure_skills_seeded(app)
+        await app.state.execution_policies.set_policy("code-exec", "allow")
+        alice_token = app.state.auth.mint_agent_local_token("alice")
+
+        bare_client = AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+        try:
+            with patch("subprocess.run", return_value=_fake_subprocess_result()) as mock_run:
+                resp = await bare_client.post(
+                    "/api/skill-exec/code_exec/call",
+                    json={"args": {"code": "print('hello')"},
+                          "agent_name": "alice"},
+                    headers={"Authorization": f"Bearer {alice_token}"},
+                )
+        finally:
+            await bare_client.aclose()
+
+        assert resp.status_code == 200
+        assert resp.json()["returncode"] == 0
+        mock_run.assert_called_once()
+
+    async def test_per_agent_token_no_body_agent_name_uses_credential(self, client, app):
+        """When no agent_name is in the body, the credential-bound name is used."""
+        await _ensure_skills_seeded(app)
+        await app.state.execution_policies.set_policy("code-exec", "allow")
+        alice_token = app.state.auth.mint_agent_local_token("alice")
+
+        bare_client = AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+        try:
+            with patch("subprocess.run", return_value=_fake_subprocess_result()) as mock_run:
+                resp = await bare_client.post(
+                    "/api/skill-exec/code_exec/call",
+                    json={"args": {"code": "print('hello')"}},
+                    headers={"Authorization": f"Bearer {alice_token}"},
+                )
+        finally:
+            await bare_client.aclose()
+
+        assert resp.status_code == 200
+        assert resp.json()["returncode"] == 0
+        mock_run.assert_called_once()
+
+    async def test_admin_session_body_agent_name_still_honoured(self, client, app):
+        """Admin sessions are trusted: body-supplied agent_name is still honoured
+        so the human-driven OS agent keeps working."""
+        await _ensure_skills_seeded(app)
+        resp = await client.post(
+            "/api/skill-exec/code_exec/call",
+            json={"args": {"code": "print('hello')"},
+                  "agent_name": "whatever"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["returncode"] == 0
+
+    async def test_list_tools_mismatched_agent_name_rejected(self, client, app):
+        """GET /api/skill-exec/tools with a mismatched agent_name for a
+        local-token caller is rejected."""
+        alice_token = app.state.auth.mint_agent_local_token("alice")
+
+        bare_client = AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+        try:
+            resp = await bare_client.get(
+                "/api/skill-exec/tools",
+                params={"agent_name": "victim"},
+                headers={"Authorization": f"Bearer {alice_token}"},
+            )
+        finally:
+            await bare_client.aclose()
+
+        assert resp.status_code == 403
+
+    async def test_two_deploys_distinct_tokens_resolve_correctly(self, client, app):
+        """Two deployed agents with distinct per-agent tokens each resolve to
+        their own identity. This is the collision regression: on the old shared-
+        token design, the second deploy overwrites the binding and the first
+        agent's honest call 403s."""
+        await _ensure_skills_seeded(app)
+        await app.state.execution_policies.set_policy("code-exec", "allow")
+
+        alice_token = app.state.auth.mint_agent_local_token("alice")
+        bob_token = app.state.auth.mint_agent_local_token("bob")
+
+        # alice's honest call (her own token + agent_name alice) -> 200
+        alice_client = AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+        try:
+            with patch("subprocess.run", return_value=_fake_subprocess_result()) as mock_run:
+                resp = await alice_client.post(
+                    "/api/skill-exec/code_exec/call",
+                    json={"args": {"code": "print('hello from alice')"},
+                          "agent_name": "alice"},
+                    headers={"Authorization": f"Bearer {alice_token}"},
+                )
+        finally:
+            await alice_client.aclose()
+
+        assert resp.status_code == 200
+        assert resp.json()["returncode"] == 0
+        mock_run.assert_called_once()
+
+        # bob's honest call (his own token + agent_name bob) -> 200
+        bob_client = AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+        try:
+            with patch("subprocess.run", return_value=_fake_subprocess_result()) as mock_run:
+                resp = await bob_client.post(
+                    "/api/skill-exec/code_exec/call",
+                    json={"args": {"code": "print('hello from bob')"},
+                          "agent_name": "bob"},
+                    headers={"Authorization": f"Bearer {bob_token}"},
+                )
+        finally:
+            await bob_client.aclose()
+
+        assert resp.status_code == 200
+        assert resp.json()["returncode"] == 0
+        mock_run.assert_called_once()
+
+        # alice presenting agent_name bob with HER token -> 403
+        alice_impersonator = AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+        try:
+            resp = await alice_impersonator.post(
+                "/api/skill-exec/code_exec/call",
+                json={"args": {"code": "print('should not run')"},
+                      "agent_name": "bob"},
+                headers={"Authorization": f"Bearer {alice_token}"},
+            )
+        finally:
+            await alice_impersonator.aclose()
+
+        assert resp.status_code == 403

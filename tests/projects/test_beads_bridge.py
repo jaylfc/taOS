@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -263,6 +264,88 @@ async def test_export_now_returns_none_for_missing_project(tmp_path):
     bridge._project_store.get_project = AsyncMock(return_value=None)
     path = await bridge.export_now("prj_missing")
     assert path is None
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_render_does_not_let_its_stale_write_land_after_a_newer_one(
+    tmp_path,
+):
+    """``_render_jsonl``'s write is a blocking fsync offloaded via
+    ``asyncio.to_thread``; cancelling the await cannot stop that thread.
+    If the per-project lock is released before the orphaned write actually
+    lands, a newer render for the same project can finish first and then
+    be silently clobbered by the older, cancelled render's write landing
+    after it.
+    """
+    import tinyagentos.projects.beads_bridge as bb_mod
+
+    bridge = _make_bridge(tmp_path)
+    bridge._project_store.get_project = AsyncMock(
+        return_value={"id": "prj_1", "slug": "demo"}
+    )
+    bridge._task_store.list_relationships = AsyncMock(return_value=[])
+    bridge._task_store.list_tasks = AsyncMock(
+        side_effect=[
+            [_task_row(id="tsk_a", title="first")],
+            [_task_row(id="tsk_b", title="second")],
+        ]
+    )
+
+    real_atomic_write_text = bb_mod.atomic_write_text
+    started = threading.Event()
+    proceed = threading.Event()
+    landed: list[str] = []
+
+    def fake_write(path, content):
+        if "first" in content:
+            started.set()
+            assert proceed.wait(timeout=5), "test never released the stale write"
+        landed.append(content)
+        real_atomic_write_text(path, content)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(bb_mod, "atomic_write_text", fake_write)
+
+        first = asyncio.ensure_future(bridge.export_now("prj_1"))
+        for _ in range(200):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set(), "first render never reached its write"
+
+        first.cancel()
+        second = asyncio.ensure_future(bridge.export_now("prj_1"))
+
+        # Give a correct implementation a chance to finish first's orphaned
+        # write (and release its lock) before second can even acquire it;
+        # a broken one lets second finish immediately since the lock was
+        # released the moment first was cancelled. Either way, never hang:
+        # release the stale write ourselves once it's clear second isn't
+        # going to land on its own.
+        for _ in range(30):
+            if second.done():
+                break
+            await asyncio.sleep(0.01)
+        proceed.set()
+
+        await second
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+        # The orphaned write from `first` runs in a real OS thread that
+        # asyncio cannot wait on for us; give it a moment to actually land.
+        for _ in range(200):
+            if len(landed) == 2:
+                break
+            await asyncio.sleep(0.01)
+
+    target = tmp_path / "demo" / ".beads" / "tasks.jsonl"
+    content = target.read_text()
+    assert len(landed) == 2, landed
+    assert '"second"' in content, (
+        "a cancelled render's stale write landed after a newer render for "
+        "the same project -- the newer content was silently clobbered"
+    )
 
 
 @pytest.mark.asyncio
@@ -1224,3 +1307,35 @@ async def test_announce_newly_ready_appends_why_line(tmp_path):
         c.kwargs["content"] for c in bridge._msg_store.send_message.await_args_list
     ]
     assert any("tsk_b ready" in b and "Why: Launch → Epic" in b for b in bodies)
+
+
+@pytest.mark.asyncio
+async def test_jsonl_render_writes_off_the_event_loop(tmp_path, monkeypatch):
+    """The .beads render is a background tick — it must not stall the loop.
+
+    ``atomic_write_text`` fsyncs the file and the parent directory; on a slow
+    disk that is tens of milliseconds of dead event loop per project per tick,
+    which is felt as latency on every unrelated request.
+    """
+    import tinyagentos.projects.beads_bridge as bb
+
+    on_loop: list[bool] = []
+
+    def recording_write(path, text, **kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_loop.append(False)
+        else:
+            on_loop.append(True)
+        Path(path).write_text(text)
+
+    monkeypatch.setattr(bb, "atomic_write_text", recording_write)
+
+    bridge = _make_bridge(tmp_path)
+    await bridge._render_jsonl("prj_1")
+
+    assert on_loop == [False], (
+        "atomic_write_text ran on the event loop thread — its fsyncs block "
+        "every other coroutine for the duration of the write"
+    )

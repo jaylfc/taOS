@@ -480,6 +480,7 @@ class WebProcessor(Processor):
 
         from tinyagentos.routes.desktop_browser.ssrf import (
             SsrfBlockedError,
+            guarded_async_client,
             validate_url_or_raise,
         )
 
@@ -488,49 +489,37 @@ class WebProcessor(Processor):
         # — a hostile server streaming a multi-GB text/html body is OOM-safe.
         async def _fetch() -> tuple[str, str, bytes]:
             current_url = source_url
-            for _hop in range(self._MAX_WEB_REDIRECTS + 1):
-                validate_url_or_raise(current_url)
+            # One client (one pool, one SSL context, one pinned backend) serves
+            # every hop of the redirect chain — the inner backend re-resolves
+            # and re-validates per connection anyway (see ssrf.py), so reuse
+            # across hops is exactly what it was designed for.
+            async with guarded_async_client(
+                timeout=httpx.Timeout(30),
+                follow_redirects=False,
+            ) as client:
+                for _hop in range(self._MAX_WEB_REDIRECTS + 1):
+                    validate_url_or_raise(current_url)
 
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(30),
-                    follow_redirects=False,
-                ) as client:
                     async with client.stream("GET", current_url) as resp:
                         status_code = resp.status_code
-                        content_type = resp.headers.get("content-type", "")
 
-                        # Content-type gate: non-text responses end in error.
-                        ct_base = content_type.split(";")[0].strip().lower()
                         if status_code >= 400:
                             resp.raise_for_status()
-                        if ct_base and not ct_base.startswith("text/"):
-                            raise ValueError(
-                                f"Non-text content-type {content_type!r} "
-                                f"for {source_url!r} — only text/* is supported"
-                            )
 
                         # Redirect: grab Location, update URL, continue loop.
                         if status_code in (301, 302, 303, 307, 308) and resp.headers.get("location"):
                             current_url = urljoin(current_url, resp.headers["location"])
                             # fall through → exit with → _hop advances
                         else:
-                            # Read body with size cap — streaming, so the cap stops OOM.
-                            body_chunks: list[bytes] = []
-                            total = 0
-                            async for chunk in resp.aiter_bytes(8192):
-                                total += len(chunk)
-                                if total > self._MAX_WEB_BYTES:
-                                    raise ValueError(
-                                        f"Response body exceeds {self._MAX_WEB_BYTES} bytes "
-                                        f"for {source_url!r}"
-                                    )
-                                body_chunks.append(chunk)
-                            encoding = resp.encoding or "utf-8"
-                            return content_type, encoding, b"".join(body_chunks)
-            else:
-                raise SsrfBlockedError(
-                    f"too many redirects fetching {source_url!r}"
-                )
+                            from tinyagentos.web_fetch import stream_text_response
+                            content_type, encoding, body = await stream_text_response(
+                                resp, max_bytes=self._MAX_WEB_BYTES,
+                            )
+                            return content_type, encoding, body
+                else:
+                    raise SsrfBlockedError(
+                        f"too many redirects fetching {source_url!r}"
+                    )
 
         try:
             content_type, encoding, body = await asyncio.wait_for(
@@ -704,8 +693,9 @@ def _extract_readable_text(html: str, source_url: str = "") -> str:
         import re
         text = re.sub(r"<[^>]+>", " ", content)
         text = re.sub(r"\s+", " ", text).strip()
-        if len(text) >= 100:
-            return text
+        # Always return the text, don't filter by length
+        import html as _html_mod
+        return _html_mod.unescape(text)
     except ImportError:
         logger.debug("readability-lxml not installed — using simple extractor")
     except Exception:
@@ -743,6 +733,184 @@ def get_processor(kind: str, store: LibraryStore,
     """Return a processor for the given kind, falling back to FileProcessor."""
     cls = _PROCESSORS.get(kind, FileProcessor)
     return cls(store, storage_dir)
+
+
+# ---------------------------------------------------------------------------
+# Heavy tier — opt-in media download
+# ---------------------------------------------------------------------------
+
+
+class HeavyDownloadProcessor(Processor):
+    """Downloads media for items that have opted into the heavy tier.
+
+    Currently supports url:youtube items via yt-dlp download_video.
+    Respects per-item quality preference and per-source rules.
+    """
+
+    _VALID_QUALITIES = frozenset({"360", "480", "720", "1080", "best"})
+
+    async def process(self, item: dict) -> list[dict]:
+        item_id = item["id"]
+        source_url = item.get("source_url", "")
+        artifacts: list[dict] = []
+
+        if not source_url:
+            return artifacts
+
+        kind = item.get("kind", "")
+        if kind != "url:youtube":
+            return artifacts
+
+        quality = item.get("quality", "") or "720"
+        if quality not in self._VALID_QUALITIES:
+            quality = "720"
+
+        try:
+            from tinyagentos.knowledge_fetchers.youtube import download_video
+        except ImportError:
+            logger.warning("yt-dlp not available for heavy download")
+            return artifacts
+
+        download_dir = self.storage_dir / "downloads"
+        download_dir.mkdir(parents=True, exist_ok=True)
+
+        path = await download_video(source_url, quality=quality, output_dir=download_dir)
+
+        if not path:
+            msg = f"Heavy download failed for {source_url!r}: yt-dlp returned no output path"
+            logger.warning(msg)
+            await self.store.update_item(
+                item_id,
+                meta_json={
+                    **json.loads(item.get("meta_json", "{}")),
+                    "download_error": msg,
+                },
+            )
+            return artifacts
+
+        p = Path(path)
+        if not p.exists():
+            # yt-dlp skips printing a Destination line when the file already
+            # exists, so fall back to locating it on disk.  Scope the search to
+            # THIS item's video id so concurrent downloads of different videos
+            # cannot cross-attribute each other's files.
+            stored_meta = json.loads(item.get("meta_json", "{}"))
+            video_id = stored_meta.get("video_id", "")
+            candidates: list[Path] = []
+            if video_id:
+                candidates = sorted(
+                    (c for c in download_dir.glob(f"{video_id}*") if c.is_file()),
+                    key=lambda x: x.stat().st_mtime,
+                    reverse=True,
+                )
+            if candidates:
+                p = candidates[0]
+            else:
+                await self.store.update_item(
+                    item_id,
+                    meta_json={
+                        **json.loads(item.get("meta_json", "{}")),
+                        "download_error": "Downloaded file not found on disk",
+                    },
+                )
+                return artifacts
+
+        size_bytes = p.stat().st_size
+        await self.store.update_item(
+            item_id,
+            download_path=str(p),
+            download_bytes=size_bytes,
+            bytes=size_bytes,
+            downloaded_at=time.time(),
+        )
+
+        download_meta: dict = {
+            "path": str(p),
+            "bytes": size_bytes,
+            "quality": quality,
+            "format": p.suffix.lstrip("."),
+        }
+        await self.store.add_artifact(
+            item_id, kind="download", path=str(p), meta=download_meta,
+        )
+        artifacts.append({
+            "kind": "download", "path": str(p), "meta": download_meta,
+        })
+
+        return artifacts
+
+
+async def run_heavy_pipeline(
+    store: LibraryStore,
+    item_id: str,
+    storage_dir: Path,
+    quality: str = "",
+) -> dict | None:
+    """Run the heavy-tier download pipeline for one item.
+
+    Checks per-source rules for auto_download settings, respects per-item
+    quality override, and downloads the media via yt-dlp.
+
+    Returns download metadata dict on success, None if skipped or failed.
+    """
+    item = await store.get_item(item_id)
+    if not item:
+        return None
+
+    kind = item.get("kind", "")
+    source_url = item.get("source_url", "")
+
+    # Only YouTube items are supported for heavy download currently
+    if kind != "url:youtube" or not source_url:
+        return None
+
+    # Check for matching rules (apply first matching rule's quality if
+    # no explicit quality was provided)
+    if not quality:
+        rules = await store.match_rules(source_url)
+        if rules:
+            quality = rules[0].get("quality", "") or "720"
+
+    # Fallback to item's quality field, then default 720
+    if not quality:
+        quality = item.get("quality", "") or "720"
+
+    # Create a job entry
+    await store.create_job(item_id, "heavy_download")
+
+    try:
+        proc = HeavyDownloadProcessor(store, storage_dir)
+        # Override the item's quality for this run
+        item_with_quality = dict(item, quality=quality)
+        artifacts = await proc.process(item_with_quality)
+
+        if artifacts:
+            await store.update_job(
+                (await store.get_item_jobs(item_id))[-1]["id"],
+                state="done",
+            )
+            return artifacts[0].get("meta", {})
+        else:
+            await store.update_job(
+                (await store.get_item_jobs(item_id))[-1]["id"],
+                state="error",
+                error="Download produced no artifacts",
+            )
+            return None
+    except Exception:
+        logger.exception("Heavy pipeline failed for item %s", item_id)
+        # Heavy download is OPTIONAL — the item is already 'ready' from the
+        # cheap-tier ingest.  Do not flip it to 'error'; surface the failure on
+        # the heavy_download job instead (queryable via /download/status).
+        try:
+            jobs = await store.get_item_jobs(item_id)
+            if jobs:
+                await store.update_job(
+                    jobs[-1]["id"], state="error", error="Heavy download failed"
+                )
+        except Exception:
+            logger.exception("Failed to record heavy download error for %s", item_id)
+        return None
 
 
 # ---------------------------------------------------------------------------

@@ -399,6 +399,7 @@ async def test_backend_catalog_capability_routing():
 
     catalog = BackendCatalog(backends=backends, probe_fn=probe, interval_seconds=3600)
     await catalog.start()
+    await catalog.wait_initial_probe()
     try:
         entries = catalog.backends_with_capability("image-generation")
         assert [e.name for e in entries] == ["a", "b"]  # priority order
@@ -437,6 +438,7 @@ async def test_backend_catalog_marks_unhealthy_stale():
         stale_after_seconds=3600,  # long grace period
     )
     await catalog.start()
+    await catalog.wait_initial_probe()
     try:
         assert catalog.backends_with_capability("image-generation")
         state["healthy"] = False

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
+import time
+import uuid
 from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, Request
@@ -18,13 +20,18 @@ from tinyagentos.cluster.optimiser import ClusterOptimiser
 from tinyagentos.cluster.worker_auth import _HMACError, require_worker_hmac
 from tinyagentos.cluster.worker_protocol import WorkerInfo
 from tinyagentos.auth_context import require_admin
+from tinyagentos.rate_limit import MovingWindowLimiter, rate_limited_response
 from tinyagentos.routes.auth import _require_admin
+from tinyagentos.task_utils import _create_supervised_task
 
 router = APIRouter()
 
-# Admin-only fleet mutations / worker execution (tsk-exyzu4). Same gate as
-# revoke/block/unblock but as a dependency so the host local token (taosctl,
-# the taOS agent) is honoured as well as an admin session. Worker-facing
+_update_jobs: dict[str, dict] = {}
+
+# Admin-only fleet mutations / worker execution (tsk-exyzu4). Uses
+# `require_admin`, which accepts an admin session or the host local token
+# (taosctl, the taOS agent). This is broader than the `_require_admin` gate
+# used by revoke/block/unblock, which accepts only an admin session cookie. Worker-facing
 # paths (heartbeat, pairing, leases, capabilities) keep their HMAC /
 # possession gates and are deliberately not covered by this.
 _ADMIN = [Depends(require_admin)]
@@ -42,25 +49,14 @@ _ADMIN = [Depends(require_admin)]
 # under the limit); an attacker trying to brute-force the code is held to a few
 # attempts per window, which on top of the high-entropy PIN makes guessing the
 # code within its 15-minute TTL infeasible.
-import time as _time
-
 _MANUAL_CLAIM_WINDOW_SECS = 10.0
 _MANUAL_CLAIM_MAX_PER_WINDOW = 20
-# ip -> (window_start_ts, count). In-memory is sufficient: the controller is a
-# single process and the cap only needs to bound a brute-force burst.
-_manual_claim_hits: dict[str, tuple[float, int]] = {}
-
-
-def _manual_claim_rate_ok(ip: str) -> bool:
-    """Fixed-window per-IP limiter. Returns False when the IP has exceeded
-    _MANUAL_CLAIM_MAX_PER_WINDOW requests in the current window."""
-    now = _time.time()
-    window_start, count = _manual_claim_hits.get(ip, (now, 0))
-    if now - window_start >= _MANUAL_CLAIM_WINDOW_SECS:
-        window_start, count = now, 0
-    count += 1
-    _manual_claim_hits[ip] = (window_start, count)
-    return count <= _MANUAL_CLAIM_MAX_PER_WINDOW
+_manual_claim_limiter = MovingWindowLimiter(
+    _MANUAL_CLAIM_MAX_PER_WINDOW, _MANUAL_CLAIM_WINDOW_SECS
+)
+# ip -> the claim timestamps still inside its window. Aliased here so tests and
+# an operator can reset a window; the limiter mutates it in place.
+_manual_claim_hits = _manual_claim_limiter.hits
 
 
 # ---------------------------------------------------------------------------
@@ -207,10 +203,10 @@ async def pairing_manual_claim(request: Request, body: ManualPairClaim):
     it displayed. Returns the signing key + the admin-supplied url once the admin
     has authorised the matching code; 202 awaiting otherwise."""
     client_ip = request.client.host if request.client else "unknown"
-    if not _manual_claim_rate_ok(client_ip):
-        return JSONResponse(
-            {"error": "too many pairing attempts; slow down and retry"},
-            status_code=429,
+    if not _manual_claim_limiter.check(client_ip):
+        return rate_limited_response(
+            "too many pairing attempts; slow down and retry",
+            _manual_claim_limiter.retry_after(client_ip),
         )
     store = request.app.state.cluster_pairing
     result = await store.manual_claim(body.name, body.code)
@@ -228,6 +224,7 @@ class WorkerRegister(BaseModel):
     models: list[str] = []
     capabilities: list[str] = []
     platform: str = ""
+    resources: list[str] = []
     # KV quant support, asymmetric K/V plus boundary-layer flag. Defaults
     # to fp16-only so legacy workers that don't send these still validate.
     kv_cache_quant_support: list[str] = ["fp16"]
@@ -255,6 +252,7 @@ class HeartbeatBody(BaseModel):
     name: str
     load: float = 0.0
     models: list[str] | None = None
+    resources: list[str] | None = None
     # Backend-driven fields (worker agent v2+). Both optional so legacy
     # worker agents that only report load + models still validate.
     backends: list[dict] | None = None
@@ -357,6 +355,11 @@ async def list_workers(request: Request):
 
 @router.post("/api/cluster/workers")
 async def register_worker(request: Request, body: WorkerRegister):
+    """HMAC-signed -- a paired worker registers (or re-registers) itself.
+
+    The signing identity must match ``body.name``. The reported hardware is
+    normalised before it reaches :class:`WorkerInfo` and the capability map.
+    """
     # HMAC gate — workers must be paired before registering.
     # The 'local' worker registers in-process (manager.register_worker),
     # never over HTTP, so it is unaffected by this check.
@@ -387,14 +390,24 @@ async def register_worker(request: Request, body: WorkerRegister):
         key = await pairing_store.get_signing_key(body.name)
         if key is not None:
             signing_key = key
+    hw = body.hardware or {}
+    # Treat null ram_mb as missing so downstream arithmetic never sees None.
+    # Preserve explicit 0 (e.g. ram_mb=0 is valid).
+    if hw.get("ram_mb") is None:
+        hw = dict(hw)
+        hw.pop("ram_mb", None)
+    bad = _bad_hardware(hw)
+    if bad:
+        return JSONResponse({"error": bad}, status_code=400)
     info = WorkerInfo(
         name=body.name,
         url=body.url,
-        hardware=body.hardware,
+        hardware=hw,
         backends=body.backends,
         models=body.models,
         capabilities=body.capabilities,
         platform=body.platform,
+        resources=body.resources,
         kv_cache_quant_support=body.kv_cache_quant_support,
         kv_cache_quant_k_support=body.kv_cache_quant_k_support,
         kv_cache_quant_v_support=body.kv_cache_quant_v_support,
@@ -412,7 +425,8 @@ async def register_worker(request: Request, body: WorkerRegister):
     await _record_worker_capability(request.app, body.name, body.host_lan_ip, body.hardware)
     if body.pending_storage_backup:
         await _surface_storage_backup(request.app, body.name, body.pending_storage_backup)
-    return {"status": "registered", "name": body.name}
+    cluster = request.app.state.cluster_manager
+    return {"status": "registered", "name": body.name, "generation": cluster.generation}
 
 
 async def _record_worker_capability(app, name: str, host_lan_ip: str, hardware: dict) -> None:
@@ -436,8 +450,9 @@ async def _record_worker_capability(app, name: str, host_lan_ip: str, hardware: 
         prev = current or {}
 
         def _keep(key, default):
-            val = hw.get(key)
-            return val if val else prev.get(key, default)
+            if key in hw and hw[key] is not None:
+                return hw[key]
+            return prev.get(key, default)
 
         await store.upsert(
             {
@@ -473,7 +488,7 @@ async def _surface_storage_backup(app, worker_name: str, marker: dict) -> None:
         f"renamed it to '{backed_up}' before creating a fresh pool. "
         f"No data was deleted — see your workspace inbox for the full note."
     )
-    notif = getattr(app.state, "notif_store", None)
+    notif = getattr(app.state, "notifications", None)
     if notif is not None:
         try:
             await notif.add(title, short_msg, level="warning", source=f"worker:{worker_name}")
@@ -529,6 +544,21 @@ async def _surface_storage_backup(app, worker_name: str, marker: dict) -> None:
         logger.warning("storage-backup notify: failed to write workspace inbox file")
 
 
+def _bad_hardware(hw: dict | None) -> str | None:
+    """Return an error string if hardware carries non-int ram_mb/vram_mb, else None."""
+    if not hw:
+        return None
+    ram = hw.get("ram_mb")
+    if ram is not None and not isinstance(ram, int):
+        return "hardware.ram_mb must be an integer"
+    gpu = hw.get("gpu")
+    if isinstance(gpu, dict):
+        vram = gpu.get("vram_mb")
+        if vram is not None and not isinstance(vram, int):
+            return "hardware.gpu.vram_mb must be an integer"
+    return None
+
+
 @router.post("/api/cluster/heartbeat")
 async def worker_heartbeat(request: Request, body: HeartbeatBody):
     # HMAC gate — only paired, registered workers may heartbeat.
@@ -542,11 +572,15 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
             {"error": "Worker name in header does not match body"},
             status_code=403,
         )
+    bad_hw = _bad_hardware(body.hardware)
+    if bad_hw:
+        return JSONResponse({"error": bad_hw}, status_code=400)
     cluster = request.app.state.cluster_manager
     ok = cluster.heartbeat(
         body.name,
         load=body.load,
         models=body.models,
+        resources=body.resources,
         backends=body.backends,
         capabilities=body.capabilities,
         kv_cache_quant_support=body.kv_cache_quant_support,
@@ -569,7 +603,8 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
     )
     if not ok:
         return JSONResponse({"error": "Worker not registered"}, status_code=404)
-    return {"status": "ok"}
+    cluster = request.app.state.cluster_manager
+    return {"status": "ok", "generation": cluster.generation}
 
 
 @router.delete("/api/cluster/workers/{name}", dependencies=_ADMIN)
@@ -1489,8 +1524,9 @@ async def update_all_workers(request: Request):
     After a successful update, the route waits (with a timeout) for the worker
     to re-register as ``online`` before proceeding to the next target.
 
-    Returns an aggregate ``{updated: [...], failed: [{name, error}], skipped: [...]}``
-    so the admin can see exactly which workers were touched and which failed.
+    Returns 202 with a ``job_id`` immediately; the actual roll runs as a
+    tracked background task. Poll ``GET /api/cluster/workers/update-all/<job_id>``
+    for progress and final results.
     """
     ok, err = _require_admin(request)
     if not ok:
@@ -1504,19 +1540,50 @@ async def update_all_workers(request: Request):
         if w.name == "local" or w.status not in ("online", "draining")
     ]
     if not targets:
-        return {
+        return JSONResponse({
             "updated": [],
             "failed": [],
             "skipped": skipped,
             "total_targets": 0,
             "message": "No online remote workers to update",
-        }
+        }, status_code=202)
 
+    job_id = uuid.uuid4().hex
+    _update_jobs[job_id] = {
+        "job_id": job_id,
+        "status": "running",
+        "updated": [],
+        "failed": [],
+        "skipped": skipped,
+        "total_targets": len(targets),
+        "created_at": time.time(),
+        "completed_at": None,
+    }
+
+    async def _run() -> None:
+        try:
+            await _run_update_all_job(cluster, targets, job_id)
+        except Exception:
+            logger.exception("update-all job %s crashed", job_id)
+            job = _update_jobs.get(job_id)
+            if job is not None:
+                job["status"] = "failed"
+                job["completed_at"] = time.time()
+
+    bg = getattr(request.app.state, "_background_tasks", None)
+    _create_supervised_task(_run(), bg)
+
+    return JSONResponse({"job_id": job_id, "status": "running"}, status_code=202)
+
+
+async def _run_update_all_job(cluster, targets, job_id: str) -> None:
+    """Execute the rolling update and record results in ``_update_jobs``."""
+    job = _update_jobs[job_id]
     updated: list[str] = []
     failed: list[dict] = []
 
-    RE_REGISTER_TIMEOUT = 300  # seconds to wait for worker to come back online
-    RE_REGISTER_POLL = 5       # seconds between status checks
+    RE_REGISTER_TIMEOUT = 300
+    RE_REGISTER_POLL = 5
 
     for worker in targets:
         try:
@@ -1531,9 +1598,6 @@ async def update_all_workers(request: Request):
 
         if result["success"]:
             updated.append(worker.name)
-            # Wait for the worker to re-register as "online" before proceeding
-            # to the next target. This guarantees at most one worker is actively
-            # updating at any moment (never more than one draining concurrently).
             waited = 0
             while waited < RE_REGISTER_TIMEOUT:
                 await asyncio.sleep(RE_REGISTER_POLL)
@@ -1546,8 +1610,6 @@ async def update_all_workers(request: Request):
                     )
                     break
             else:
-                # Timeout: worker didn't come back online in time. Log it but
-                # continue the roll -- the worker's status will resolve on its own.
                 logger.warning(
                     "update-all: worker '%s' did not re-register within %ds timeout; "
                     "continuing roll",
@@ -1560,9 +1622,16 @@ async def update_all_workers(request: Request):
                 worker.name, result.get("error", "unknown"),
             )
 
-    return {
-        "updated": updated,
-        "failed": failed,
-        "skipped": skipped,
-        "total_targets": len(targets),
-    }
+    job["updated"] = updated
+    job["failed"] = failed
+    job["status"] = "completed"
+    job["completed_at"] = time.time()
+
+
+@router.get("/api/cluster/workers/update-all/{job_id}")
+async def get_update_all_job_status(request: Request, job_id: str):
+    """Poll the status of a fleet update started by POST /api/cluster/workers/update-all."""
+    job = _update_jobs.get(job_id)
+    if job is None:
+        return JSONResponse({"error": f"Job '{job_id}' not found"}, status_code=404)
+    return job

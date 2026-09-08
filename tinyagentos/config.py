@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os as _os
 import re
@@ -9,7 +10,9 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
+from slugify import slugify
 
+from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.providers import ALL_TYPES as VALID_BACKEND_TYPES
 
 log = logging.getLogger(__name__)
@@ -35,6 +38,14 @@ DEFAULT_CONFIG = {
     "metrics": {"poll_interval": 30, "retention_days": 30},
     "memory_url": "http://localhost:7900",
     "webhooks": [],
+    "wake_budget": {"global_default": 2, "per_agent": {}, "per_project": {}},
+    "container_provisioning": {
+        "quota": 2,
+        "threshold": 5,
+        "per_agent_quota": {},
+        "per_agent_threshold": {},
+        "default_image": "images:debian/bookworm",
+    },
 }
 
 _config_lock = asyncio.Lock()
@@ -60,6 +71,8 @@ class AppConfig:
     archived_agents: list[dict] = field(default_factory=list)
     archive: dict = field(default_factory=lambda: DEFAULT_ARCHIVE_CONFIG.copy())
     memory_url: str = "http://localhost:7900"
+    wake_budget: dict = field(default_factory=lambda: copy.deepcopy(DEFAULT_CONFIG["wake_budget"]))
+    container_provisioning: dict = field(default_factory=lambda: copy.deepcopy(DEFAULT_CONFIG["container_provisioning"]))
     # Locally-hosted taOSmd deployment hooks for /api/settings/update: the git
     # checkout the running service imports from, and the command that restarts
     # it (e.g. "sudo systemctl restart taosmd"). Both empty on installs where
@@ -81,6 +94,7 @@ class AppConfig:
             "qmd": self.qmd,
             "agents": self.agents,
             "metrics": self.metrics,
+            "wake_budget": self.wake_budget,
         }
         if self.webhooks:
             d["webhooks"] = self.webhooks
@@ -203,6 +217,11 @@ def load_config(path: Path) -> AppConfig:
         qmd=data.get("qmd", DEFAULT_CONFIG["qmd"].copy()),
         agents=agents,
         metrics=data.get("metrics", DEFAULT_CONFIG["metrics"].copy()),
+        wake_budget=copy.deepcopy(
+            data["wake_budget"]
+            if isinstance(data.get("wake_budget"), dict)
+            else DEFAULT_CONFIG["wake_budget"]
+        ),
         webhooks=data.get("webhooks", []),
         archived_agents=data.get("archived_agents", []),
         archive=archive_cfg,
@@ -230,6 +249,10 @@ def load_config(path: Path) -> AppConfig:
 
 AGENT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
+# Container names are ``taos-agent-<slug>``; 63 chars is the slug budget that
+# keeps the whole name inside the hostname limit.
+MAX_AGENT_SLUG_LEN = 63
+
 def validate_agent_name(name: str) -> str | None:
     """Validate agent display name. Accepts any non-empty string up to 64
     characters. The display name is what the user sees; for container and
@@ -250,18 +273,34 @@ def validate_agent_name(name: str) -> str | None:
 def slugify_agent_name(name: str) -> str:
     """Derive a container-safe slug from a free-form agent display name.
 
-    Lowercases, replaces any run of non-alphanumeric characters with a
-    single hyphen, trims leading/trailing hyphens, and truncates to 63
-    chars. Returns an empty string if nothing survives — callers should
-    handle that case.
+    This is the single slug implementation on the Python side; everything
+    that needs an agent slug (including
+    ``agent_registry_store._slugify``) routes through it.
+
+    Transliterates to ASCII first, then lowercases, replaces any run of
+    non-alphanumeric characters with a single hyphen, trims hyphens, and
+    truncates to :data:`MAX_AGENT_SLUG_LEN`. Returns an empty string if
+    nothing survives — callers should handle that case.
+
+    Transliteration is what lets a name written in a non-Latin script be
+    used at all: the previous ASCII-only character class deleted every
+    such code point *before* the emptiness check, so "我的代理" slugged to
+    "" and ``validate_agent_name`` rejected it as containing no letter or
+    number. It also stops accents being dropped rather than folded
+    ("résumé" was "r-sum", now "resume").
+
+    Only ever call this at creation time. Re-deriving the slug of an
+    existing row would change that agent's identity, since rows created
+    before this transliterates were slugged by the ASCII-only rule.
 
     Examples:
         "Mary's Coding Buddy" -> "mary-s-coding-buddy"
         "🚀 Alpha v2" -> "alpha-v2"
         "Agent_42!" -> "agent-42"
+        "我的代理" -> "wo-de-dai-li"
+        "Агент Иванов" -> "agent-ivanov"
     """
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-    return slug[:63]
+    return slugify(name, max_length=MAX_AGENT_SLUG_LEN)
 
 
 def unique_agent_slug(config: "AppConfig", display_name: str) -> str:
@@ -270,13 +309,18 @@ def unique_agent_slug(config: "AppConfig", display_name: str) -> str:
     Checks for collisions against config.agents by matching the ``name``
     field, mirroring the semantics of agent_db.find_agent.
 
+    The base is re-trimmed for every suffix so ``<base>-<n>`` still fits
+    :data:`MAX_AGENT_SLUG_LEN`; appending to an already-63-char slug would
+    overrun the very container-name limit the truncation exists to respect.
+
     Raises ValueError if no unique slug can be found within 100 attempts.
     """
     slug = slugify_agent_name(display_name)
     unique_slug = slug
     suffix = 2
     while any(a.get("name") == unique_slug for a in config.agents):
-        unique_slug = f"{slug}-{suffix}"
+        tail = f"-{suffix}"
+        unique_slug = slug[: MAX_AGENT_SLUG_LEN - len(tail)].rstrip("-") + tail
         suffix += 1
         if suffix > 100:
             raise ValueError("Could not generate a unique agent slug")
@@ -359,10 +403,16 @@ def normalize_agent(agent: dict) -> dict:
     return agent
 
 def save_config(config: AppConfig, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".yaml.tmp")
-    tmp_path.write_text(yaml.dump(config.to_dict(), default_flow_style=False, sort_keys=False))
-    tmp_path.replace(path)
+    # config.yaml holds the entire install, and this runs on the _pin_applied
+    # path at boot -- the window a first-boot power cut is most likely to hit.
+    # atomic_io fsyncs the temp file and the parent directory, so a crash
+    # leaves the complete old config or the complete new one, never a
+    # NUL-filled one; its randomised temp name also keeps a second writer
+    # (save_config is reachable outside save_config_locked's per-process
+    # asyncio.Lock) from sharing one temp inode.
+    atomic_write_text(
+        path, yaml.dump(config.to_dict(), default_flow_style=False, sort_keys=False)
+    )
 
 async def save_config_locked(config: AppConfig, path: Path) -> None:
     async with _config_lock:
@@ -507,4 +557,31 @@ def validate_config(config: AppConfig) -> list[str]:
         fb = a.get("fallback_models")
         if fb is not None and not isinstance(fb, list):
             errors.append(f"agents[{i}]: fallback_models must be a list")
+    wb = config.wake_budget
+    if wb is None:
+        return errors
+    if not isinstance(wb, dict):
+        errors.append("wake_budget must be a mapping")
+        return errors
+    raw_gd = wb.get("global_default", 2)
+    if isinstance(raw_gd, bool) or not isinstance(raw_gd, int):
+        errors.append("wake_budget.global_default must be an integer")
+    elif raw_gd < 0:
+        errors.append("wake_budget.global_default must be >= 0")
+    for section in ("per_agent", "per_project"):
+        bucket = wb.get(section)
+        if bucket is None:
+            continue
+        if not isinstance(bucket, dict):
+            errors.append(f"wake_budget.{section} must be a mapping")
+            continue
+        for key, val in bucket.items():
+            if isinstance(val, bool):
+                errors.append(f"wake_budget.{section}[{key!r}] must be an integer")
+                continue
+            if not isinstance(val, int):
+                errors.append(f"wake_budget.{section}[{key!r}] must be an integer")
+                continue
+            if val < 0:
+                errors.append(f"wake_budget.{section}[{key!r}] must be >= 0")
     return errors

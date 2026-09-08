@@ -1,5 +1,5 @@
 id: qwen2-1.5b
-name: Qwen2 1.5B Instruct (HEF)
+name: Qwen2 1.5B Instruct
 type: model
 version: 2.0.0
 description: "Hailo-10H NPU-accelerated Qwen2 1.5B Instruct — runs on Raspberry Pi 5 + AI HAT+2 via hailo-ollama"
@@ -13,8 +13,8 @@ variants:
   format: hef
   size_mb: 1600
   min_ram_mb: 0
-  sha256: ab056548c60945cdf4fb30ca43fc7aeed2b9ffc751ad8d4c201dc4c4ab31e86a
-  download_url: https://dev-public.hailo.ai/v5.1.1/blob/Qwen2-1.5B-Instruct.hef
+  hef_h10h: 5ab3537d638090185ae502a60947aebcb9b584b21d973026b75e1a3742cc2d93
+  ollama_name: qwen2:1.5b
   requires:
     backends:
     - id: hailo-ollama
@@ -27,4 +27,3 @@ hardware_tiers:
   arm-npu-16gb:
     recommended: a8w4
 context_window: 2048
-

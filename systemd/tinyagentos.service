@@ -11,6 +11,12 @@ ExecStop=/usr/local/bin/taos-graceful-stop
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=45
+# Private scratch dir for taos-graceful-stop's dedupe stamp (see the same block
+# in scripts/systemd/tinyagentos.service): without it the stamp lands in
+# world-writable /tmp, where any local user can suppress the agent drain.
+RuntimeDirectory=taos
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 Environment=PYTHONUNBUFFERED=1
 
 [Install]

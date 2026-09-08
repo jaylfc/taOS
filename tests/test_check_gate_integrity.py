@@ -23,6 +23,7 @@ closed).
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -52,15 +53,19 @@ def _pr_payload(label_names: list[str], changed_files: int) -> list[dict]:
     }]
 
 
-def _api_get_routing(files: list[str], labels: list[str]):
-    """Build a side_effect that routes files vs PR-object requests by URL."""
+def _api_get_routing(files: list[str], labels: list[str], changed_files: int | None = None):
+    """Build a side_effect that routes files vs PR-object requests by URL.
+
+    `changed_files` defaults to len(files) because a flat list of N paths
+    corresponds to N /files records. Tests with renames override it explicitly
+    since one rename record expands to two paths.
+    """
+    _changed = changed_files if changed_files is not None else len(files)
 
     def _fake(url: str, token: str | None = None, **_: object) -> list:
-        if url.endswith("/files"):
+        if "/files" in url:
             return _files_payload(files)
-        # single-object /pulls/{n} endpoint; changed_files agrees with the
-        # /files listing unless a test overrides the payload deliberately.
-        return _pr_payload(labels, changed_files=len(files))
+        return _pr_payload(labels, changed_files=_changed)
 
     return _fake
 
@@ -81,6 +86,9 @@ class TestIsProtected:
             ".github/workflows/deleted-symbols-gate.yml",
             ".github/workflows/gate-integrity.yml",
             ".github/scripts/check_all_skip.py",
+            ".github/dependabot.yml",
+            ".github/FUNDING.yml",
+            ".github/actions/build.yml",
             "docs/doc-gate.toml",
             "pyproject.toml",
             "tests/conftest.py",
@@ -103,6 +111,7 @@ class TestIsProtected:
             "scripts/check_retrofit_migrations.py",
             "scripts/check_evil_merge.py",
             "scripts/check_gate_integrity.py",
+            "scripts/platform/check_foo.py",
         ],
     )
     def test_gate_checker_scripts_are_protected(self, path: str) -> None:
@@ -118,15 +127,9 @@ class TestIsProtected:
             "data/hub/identity.json",
             "scripts/audit-forks.py",
             "scripts/audit-manifests.py",
-            # .github config that is not a workflow or gate script is not blocked
-            ".github/dependabot.yml",
-            ".github/FUNDING.yml",
             ".coderabbit.yaml",
             "docs/something.md",
             "changelog.d/foo.md",
-            # a check_*.py nested in a subdir is NOT matched by the single
-            # scripts/check_*.py convention the guard enforces
-            "scripts/platform/check_foo.py",
         ],
     )
     def test_non_gate_paths_are_not_protected(self, path: str) -> None:
@@ -135,6 +138,14 @@ class TestIsProtected:
     def test_backslash_paths_normalised(self) -> None:
         assert cgi.is_protected(".github\\workflows\\gate.yml")
         assert not cgi.is_protected("tinyagentos\\app.py")
+
+    def test_directory_named_check_is_not_protected(self) -> None:
+        """A directory component named check_* must not match; only files
+        whose basename starts with check_ are gate checkers. Regression:
+        scripts/check_helpers/util.py returned True because '/check_' appeared
+        in the full path (the directory name)."""
+        assert not cgi.is_protected("scripts/check_helpers/util.py")
+        assert cgi.is_protected("scripts/check_gate_integrity.py")
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +263,7 @@ class TestCheckGateIntegrity:
         # stops. A listing shorter than the PR's own changed_files count means
         # the gate cannot see the whole diff -> EXIT_ERROR, never a pass.
         def _fake(url: str, token: str | None = None, **_: object) -> list:
-            if url.endswith("/files"):
+            if "/files" in url:
                 return _files_payload(["README.md", "docs/a.md"])
             return _pr_payload([], changed_files=5)
 
@@ -261,13 +272,57 @@ class TestCheckGateIntegrity:
         assert code == cgi.EXIT_ERROR
         assert "truncated" in message
 
+    def test_150_file_paginates_fully(self) -> None:
+        # With per_page=100 the /files endpoint returns up to 100 records per
+        # page; a 150-file PR needs two pages. The Link header on page 1 points
+        # to page 2; the guard must follow it and collect all 150 before
+        # comparing to changed_files.
+        page1_files = [{"filename": f"src/file_{i:03d}.py"} for i in range(100)]
+        page2_files = [{"filename": f"src/file_{i:03d}.py"} for i in range(100, 150)]
+        next_url = (
+            "https://api.github.com/repos/jaylfc/taOS/pulls/42/files"
+            "?per_page=100&page=2"
+        )
+        link_hdr = f'<{next_url}>; rel="next"'
+        pr_url = "https://api.github.com/repos/jaylfc/taOS/pulls/42"
+
+        import io
+        import urllib.response as _ur
+
+        def _make_response(body: list[dict], link: str = "") -> _ur.addinfourl:
+            return _ur.addinfourl(
+                io.BytesIO(json.dumps(body).encode()),
+                {"Link": link} if link else {},
+                "https://api.github.com",
+                200,
+            )
+
+        call_count = 0
+
+        def _fake_urlopen(req, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            url = req.full_url if hasattr(req, "full_url") else req
+            if url == pr_url:
+                return _make_response([{
+                    "labels": [],
+                    "changed_files": 150,
+                }])
+            if "page=2" in str(url):
+                return _make_response(page2_files)
+            return _make_response(page1_files, link_hdr)
+
+        with patch("check_gate_integrity.urllib.request.urlopen", side_effect=_fake_urlopen):
+            code, message = cgi.check_gate_integrity("jaylfc", "taOS", 42)
+        assert code == cgi.EXIT_OK, f"expected PASS, got: {message}"
+
     def test_rename_out_of_protected_path_fails_without_label(self) -> None:
         # A rename edits BOTH paths: renaming a workflow out of
         # .github/workflows/ disables it, yet /files reports only the new
         # filename at top level and carries the old one in
         # previous_filename. The protected old side must still be classified.
         def _fake(url: str, token: str | None = None, **_: object) -> list:
-            if url.endswith("/files"):
+            if "/files" in url:
                 return [{
                     "filename": "docs/archived-gate.yml",
                     "previous_filename": ".github/workflows/doc-gate.yml",
@@ -286,7 +341,7 @@ class TestCheckGateIntegrity:
         # renamed record with changed_files=1 is a complete listing, not a
         # truncated one.
         def _fake(url: str, token: str | None = None, **_: object) -> list:
-            if url.endswith("/files"):
+            if "/files" in url:
                 return [{
                     "filename": "docs/b.md",
                     "previous_filename": "docs/a.md",
@@ -302,7 +357,7 @@ class TestCheckGateIntegrity:
         # Without the changed_files field truncation is undetectable; treat
         # the payload as cannot-see rather than assuming the listing is whole.
         def _fake(url: str, token: str | None = None, **_: object) -> list:
-            if url.endswith("/files"):
+            if "/files" in url:
                 return _files_payload(["README.md"])
             return [{"labels": []}]
 
@@ -330,8 +385,8 @@ class TestCheckGateIntegrity:
         with patch("check_gate_integrity._api_get", side_effect=_spy):
             code, _ = cgi.check_gate_integrity("jaylfc", "taOS", 42)
         assert code == cgi.EXIT_OK
-        assert any(u.endswith("/files") for u in captured)
-        assert any(u.endswith("/pulls/42") for u in captured)
+        assert any("/files" in u for u in captured)
+        assert any("/pulls/42" in u for u in captured)
 
 
 class TestMainTokenEnvPropagation:
@@ -343,7 +398,7 @@ class TestMainTokenEnvPropagation:
 
         def fake_api_get(url, token=None, **_):
             captured["token"] = token
-            if url.endswith("/files"):
+            if "/files" in url:
                 return []
             return _pr_payload([], changed_files=0)
 
@@ -484,8 +539,117 @@ class TestCoversRealGates:
             " that can change without a re-run is a bypass"
         )
 
+    def test_workflow_dispatch_absent_from_gate(self) -> None:
+        """workflow_dispatch on the gate workflow is a spoofable required check:
+        any write-access actor can dispatch with ref=<own branch> and publish a
+        green check run named 'Gate integrity' against a chosen head SHA (and
+        pr_number is interpolated raw into the run: block, an injection sink since
+        type: number is not enforced on API dispatch). It must not be present."""
+        workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        trigger = spec.get("on", spec.get(True))
+        trigger_keys = set(trigger.keys()) if isinstance(trigger, dict) else set()
+        assert "workflow_dispatch" not in trigger_keys, (
+            "gate-integrity.yml must not use workflow_dispatch (spoofable"
+            " required check); re-runs use `gh run rerun` on the original"
+            " event or the `labeled` re-fire"
+        )
+
     def test_real_repo_passes_integrity(self) -> None:
         # The committed tree must be itself green: no gate script should be
         # mid-tamper. The PR files for the real repo's HEAD (none) trivially
         # pass; this guards the classify/is_protected invariants together.
         assert cgi.classify([], [], cgi.DEFAULT_ALLOW_LABEL).exit_code == cgi.EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# Workflow_dispatch base-ref step regression (tsk-yg3df5)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkflowDispatchBaseRefStep:
+    """The 'Resolve PR base ref' step must not silently
+    fall back to the default branch when gh fails (e.g. missing GH_TOKEN).
+
+    The defect: without GH_TOKEN, gh exits non-zero; without set -euo pipefail
+    the script continues, base is empty, and checkout falls back to
+    github.base_ref which is EMPTY on workflow_dispatch -> default branch.
+    """
+
+    def test_step_sets_gh_token_env(self) -> None:
+        workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        step = _find_step(spec, "Resolve PR base ref")
+        assert step is not None, "step not found in gate-integrity.yml"
+        assert step.get("env", {}).get("GH_TOKEN") == "${{ secrets.GITHUB_TOKEN }}"
+
+    def test_step_uses_set_euo_pipefail(self) -> None:
+        workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        step = _find_step(spec, "Resolve PR base ref")
+        run = step.get("run", "")
+        assert "set -euo pipefail" in run, "step must fail closed on gh errors"
+
+    def test_step_asserts_base_non_empty(self) -> None:
+        workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        step = _find_step(spec, "Resolve PR base ref")
+        run = step.get("run", "")
+        assert 'if [ -z "$base" ]' in run or '[[ -z "$base" ]]' in run, (
+            "step must assert base is non-empty before exporting BASE_REF"
+        )
+
+    def test_gh_failure_does_not_silently_pass(self, tmp_path: Path) -> None:
+        """Simulate the failure path: gh exits non-zero (no token). The step's
+        actual run: block -- extracted from the YAML, not hand-copied -- must
+        exit non-zero rather than emitting an empty BASE_REF."""
+        workflow = REPO_ROOT / ".github" / "workflows" / "gate-integrity.yml"
+        spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        step = _find_step(spec, "Resolve PR base ref")
+        assert step is not None, "step not found in gate-integrity.yml"
+        run = step.get("run", "")
+        assert run, "step must have a run block"
+
+        # Substitute GitHub Actions expressions with test values so the
+        # extracted run: block is executable standalone.
+        script_text = run
+        script_text = script_text.replace("${{ github.repository }}", "jaylfc/taOS")
+        script_text = script_text.replace(
+            "${{ github.event.pull_request.number }}", "1"
+        )
+
+        fake_gh = tmp_path / "gh"
+        fake_gh.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        fake_gh.chmod(0o755)
+
+        script = tmp_path / "resolve_base_ref.sh"
+        script.write_text(script_text, encoding="utf-8")
+        script.chmod(0o755)
+
+        env = {
+            "PATH": str(tmp_path) + ":/usr/bin:/bin",
+            "GITHUB_ENV": str(tmp_path / "github_env"),
+            "HOME": str(tmp_path),
+        }
+
+        result = subprocess.run(
+            ["bash", str(script)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode != 0, (
+            f"step run block must fail when gh fails; stdout={result.stdout!r} "
+            f"stderr={result.stderr!r}"
+        )
+
+
+def _find_step(spec: dict, name: str) -> dict | None:
+    jobs = spec.get("jobs", spec.get(True, {}).get("jobs", {}))
+    for job in jobs.values():
+        for step in job.get("steps", []):
+            if step.get("name") == name:
+                return step
+    return None

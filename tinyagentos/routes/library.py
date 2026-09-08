@@ -5,6 +5,8 @@ GET  /api/library/items   — list library items
 GET  /api/library/items/{item_id} — item detail with artifacts
 DELETE /api/library/items/{item_id} — remove item and its files
 POST /api/library/items/{item_id}/reprocess — re-run the pipeline
+GET  /api/library/jobs    — list processing jobs
+POST /api/library/jobs/{job_id}/retry — retry a failed job
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ def _track_background_task(coro) -> asyncio.Task:
 
 
 # ---------------------------------------------------------------------------
+
 
 def _library_dir_from_app(app) -> Path:
     """Return the library storage directory, creating it if needed."""
@@ -187,6 +190,27 @@ async def _ingest_task(app, item_id: str, store, storage_dir: Path) -> None:
         await store.update_item_status(item_id, "error")
         return
 
+    # Auto-download: check matching rules with auto_download=True
+    try:
+        item = await store.get_item(item_id)
+        if item and item.get("source_url"):
+            rules = await store.match_rules(item["source_url"])
+            for rule in rules:
+                if rule.get("auto_download"):
+                    from tinyagentos.library_pipeline import run_heavy_pipeline
+
+                    quality = rule.get("quality", "") or "720"
+                    logger.info(
+                        "Auto-download triggered for item %s by rule %s (quality=%s)",
+                        item_id, rule["id"], quality,
+                    )
+                    await run_heavy_pipeline(
+                        store, item_id, storage_dir, quality=quality,
+                    )
+                    break  # First matching auto-download rule wins
+    except Exception:
+        logger.exception("Auto-download check failed for item %s", item_id)
+
     # Collections handoff after successful pipeline
     try:
         collections_dir = storage_dir.parent / "collections"
@@ -313,6 +337,37 @@ async def delete_item(request: Request, item_id: str):
     return {"status": "deleted", "item_id": item_id}
 
 
+@router.get("/api/library/jobs")
+async def list_jobs(
+    request: Request,
+    state: str | None = None,
+    limit: int = 100,
+):
+    """List processing jobs, optionally filtered by state."""
+    store = await _get_library_store(request)
+    jobs = await store.list_jobs(state=state, limit=limit)
+    return {"jobs": jobs, "count": len(jobs)}
+
+
+@router.post("/api/library/jobs/{job_id}/retry")
+async def retry_job(request: Request, job_id: str):
+    """Retry a failed job. Returns 404 for unknown jobs and 409 for jobs
+    that are not in the error state."""
+    store = await _get_library_store(request)
+    job = await store.get_job(job_id)
+    if not job:
+        return JSONResponse({"error": f"Job {job_id!r} not found"}, status_code=404)
+
+    if job.get("state") != "error":
+        return JSONResponse(
+            {"error": f"Job {job_id!r} is not in error state (current: {job.get('state')})"},
+            status_code=409,
+        )
+
+    await store.update_job(job_id, state="queued", error="")
+    return {"job_id": job_id, "status": "queued"}
+
+
 @router.post("/api/library/items/{item_id}/reprocess")
 async def reprocess_item(request: Request, item_id: str):
     """Re-run the ingest pipeline for an existing item.
@@ -371,3 +426,143 @@ async def reprocess_item(request: Request, item_id: str):
         )
 
     return JSONResponse({"item_id": item_id, "status": "reprocessing"}, status_code=202)
+
+
+# ---------------------------------------------------------------------------
+# Heavy tier: download
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/library/items/{item_id}/download")
+async def trigger_download(
+    request: Request,
+    item_id: str,
+    quality: str | None = Form(None),
+):
+    """Trigger heavy-tier media download for an item.
+
+    Accepts optional ``quality`` form field (360, 480, 720, 1080, best).
+    Runs the download asynchronously in a background task.
+    """
+    store = await _get_library_store(request)
+    item = await store.get_item(item_id)
+    if not item:
+        return JSONResponse({"error": f"Item {item_id!r} not found"}, status_code=404)
+
+    if item["kind"] != "url:youtube":
+        return JSONResponse(
+            {"error": "Heavy download only supports url:youtube items"},
+            status_code=400,
+        )
+
+    storage_dir = _library_dir(request)
+    quality_val = quality or item.get("quality", "") or "720"
+
+    task_set = getattr(request.app.state, "_background_tasks", None)
+    coro = _heavy_download_task(request.app, item_id, store, storage_dir, quality_val)
+    if task_set is None:
+        _track_background_task(coro)
+    else:
+        _create_supervised_task(coro, task_set)
+
+    return JSONResponse(
+        {"item_id": item_id, "status": "downloading", "quality": quality_val},
+        status_code=202,
+    )
+
+
+async def _heavy_download_task(
+    app, item_id: str, store, storage_dir: Path, quality: str
+) -> None:
+    """Background task: run heavy download for an item."""
+    from tinyagentos.library_pipeline import run_heavy_pipeline
+
+    try:
+        result = await run_heavy_pipeline(store, item_id, storage_dir, quality=quality)
+        if result:
+            logger.info("Heavy download complete for item %s: %s", item_id, result)
+    except Exception:
+        logger.exception("Heavy download crashed for item %s", item_id)
+        # Heavy download is OPTIONAL — leave the item 'ready'.  The failure is
+        # surfaced through the heavy_download job state (run_heavy_pipeline
+        # records it) or via this log line.
+
+
+@router.get("/api/library/items/{item_id}/download/status")
+async def download_status(request: Request, item_id: str):
+    """Check heavy download status for an item."""
+    store = await _get_library_store(request)
+    item = await store.get_item(item_id)
+    if not item:
+        return JSONResponse({"error": f"Item {item_id!r} not found"}, status_code=404)
+
+    jobs = await store.get_item_jobs(item_id)
+    heavy_jobs = [j for j in jobs if j.get("stage") == "heavy_download"]
+    download_path = item.get("download_path", "")
+    download_bytes = item.get("download_bytes", 0)
+
+    return {
+        "item_id": item_id,
+        "downloaded": bool(download_path),
+        "download_path": download_path,
+        "download_bytes": download_bytes,
+        "jobs": heavy_jobs,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Source rules
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/library/rules")
+async def create_rule(
+    request: Request,
+    source_pattern: str = Form(...),
+    quality: str | None = Form("720"),
+    auto_download: bool = Form(False),
+):
+    """Create a source rule for automatic heavy download triggers."""
+    store = await _get_library_store(request)
+    rule_id = await store.create_rule(
+        source_pattern=source_pattern,
+        quality=quality or "720",
+        auto_download=auto_download,
+    )
+    return JSONResponse(
+        {"rule_id": rule_id, "source_pattern": source_pattern, "status": "created"},
+        status_code=201,
+    )
+
+
+@router.get("/api/library/rules")
+async def list_rules(request: Request):
+    """List all source rules."""
+    store = await _get_library_store(request)
+    rules = await store.list_rules()
+    return {"rules": rules, "count": len(rules)}
+
+
+@router.delete("/api/library/rules/{rule_id}")
+async def delete_rule(request: Request, rule_id: str):
+    """Delete a source rule."""
+    store = await _get_library_store(request)
+    rule = await store.get_rule(rule_id)
+    if not rule:
+        return JSONResponse({"error": f"Rule {rule_id!r} not found"}, status_code=404)
+
+    await store.delete_rule(rule_id)
+    return {"status": "deleted", "rule_id": rule_id}
+
+
+# ---------------------------------------------------------------------------
+# Storage accounting
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/library/usage")
+async def storage_usage(request: Request):
+    """Return storage accounting summary for the library."""
+    store = await _get_library_store(request)
+    summary = await store.get_storage_summary()
+    return summary

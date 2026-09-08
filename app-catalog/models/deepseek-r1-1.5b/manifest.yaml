@@ -1,8 +1,8 @@
 id: deepseek-r1-1.5b
-name: DeepSeek R1 1.5B (HEF)
+name: DeepSeek R1 1.5B Distill
 type: model
 version: 1.5.0
-description: "Hailo-10H NPU-accelerated DeepSeek R1 1.5B — reasoning model for Raspberry Pi 5 + AI HAT+2 via hailo-ollama"
+description: "Hailo-10H NPU-accelerated DeepSeek R1 1.5B Distill — reasoning model for Raspberry Pi 5 + AI HAT+2 via hailo-ollama"
 homepage: https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
 license: MIT
 capabilities:
@@ -10,12 +10,12 @@ capabilities:
 - reasoning
 variants:
 - id: a8w4
-  name: A8W4 HEF (2.2GB, NPU)
+  name: A8W4 HEF (2.4GB, NPU)
   format: hef
-  size_mb: 2261
+  size_mb: 2370
   min_ram_mb: 0
-  sha256: 9c4506dda44d0a1730d939d4049a3cbf72d5179a88762ca551363db087adb38f
-  download_url: https://dev-public.hailo.ai/v5.1.1/blob/DeepSeek-R1-Distill-Qwen-1.5B.hef
+  hef_h10h: 76c3a8ff3a65f7775981c81e9f74d735ebdb6bd4ca880730f65162093b32978e
+  ollama_name: deepseek_r1:1.5b
   requires:
     backends:
     - id: hailo-ollama
@@ -28,4 +28,3 @@ hardware_tiers:
   arm-npu-16gb:
     recommended: a8w4
 context_window: 2048
-

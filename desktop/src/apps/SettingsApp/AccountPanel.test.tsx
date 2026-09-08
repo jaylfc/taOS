@@ -259,3 +259,150 @@ describe("AccountSection", () => {
     expect(screen.getByText(/account service is not reachable/i)).toBeInTheDocument();
   });
 });
+
+/** The PIN card is the Settings half of Jay's "choose your sign-in method"
+ *  ask; the install wizard is the other half. These prove the card reflects
+ *  the server's state and cannot mint a PIN without the account password. */
+describe("PIN sign-in card", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  /** /auth/status answers `authenticated` with the given has_pin; every other
+   *  URL answers 401 so the cloud card stays out of the way. */
+  const withPin = (hasPin: boolean, onPinCall?: (init?: RequestInit) => Response) =>
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.includes("/auth/pin") && onPinCall) {
+        return Promise.resolve(onPinCall(init));
+      }
+      if (url.includes("/auth/status")) {
+        return Promise.resolve(new Response(
+          JSON.stringify({ authenticated: true, user: { username: "tester", has_pin: hasPin } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ));
+      }
+      return Promise.resolve(new Response(null, { status: 401 }));
+    });
+
+  it("offers to set a PIN when none is configured", async () => {
+    withPin(false);
+    render(<AccountSection />);
+    expect(await screen.findByText("Set up a PIN")).toBeInTheDocument();
+    expect(screen.getByText("Off")).toBeInTheDocument();
+    expect(screen.queryByText("Turn off")).not.toBeInTheDocument();
+  });
+
+  /** A failed "Turn off" must SAY so. The error paragraph used to live only
+   *  inside the expanded form, but "Turn off" only exists while the card is
+   *  COLLAPSED -- so the request failed, the spinner returned to the label,
+   *  and the screen said nothing at all. */
+  it("shows why a failed 'Turn off' did not work", async () => {
+    withPin(true, () => new Response(
+      JSON.stringify({ error: "incorrect password" }),
+      { status: 403, headers: { "Content-Type": "application/json" } },
+    ));
+    render(<AccountSection />);
+    fireEvent.click(await screen.findByText("Turn off"));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+  });
+
+  it("offers to change or turn off a PIN that is configured", async () => {
+    withPin(true);
+    render(<AccountSection />);
+    expect(await screen.findByText("Change PIN")).toBeInTheDocument();
+    expect(screen.getByText("Turn off")).toBeInTheDocument();
+    expect(screen.getByText("On")).toBeInTheDocument();
+  });
+
+  it("says where a PIN works, so nobody expects it to work over the network", async () => {
+    withPin(false);
+    render(<AccountSection />);
+    expect(await screen.findByText(/only on that\s+screen/i)).toBeInTheDocument();
+  });
+
+  it("refuses a PIN shorter than four digits without calling the server", async () => {
+    const pinCall = vi.fn(() => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    withPin(false, pinCall);
+    render(<AccountSection />);
+    fireEvent.click(await screen.findByText("Set up a PIN"));
+    fireEvent.change(screen.getByLabelText("New PIN"), { target: { value: "12" } });
+    fireEvent.change(screen.getByLabelText("Confirm PIN"), { target: { value: "12" } });
+    fireEvent.change(screen.getByLabelText("Account password"), { target: { value: "pw" } });
+    fireEvent.click(screen.getByText("Save PIN"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/4-12 digits/);
+    expect(pinCall).not.toHaveBeenCalled();
+  });
+
+  it("refuses a mismatched confirmation", async () => {
+    const pinCall = vi.fn(() => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    withPin(false, pinCall);
+    render(<AccountSection />);
+    fireEvent.click(await screen.findByText("Set up a PIN"));
+    fireEvent.change(screen.getByLabelText("New PIN"), { target: { value: "4913" } });
+    fireEvent.change(screen.getByLabelText("Confirm PIN"), { target: { value: "4914" } });
+    fireEvent.change(screen.getByLabelText("Account password"), { target: { value: "pw" } });
+    fireEvent.click(screen.getByText("Save PIN"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/do not match/i);
+    expect(pinCall).not.toHaveBeenCalled();
+  });
+
+  it("will not mint a PIN without the account password", async () => {
+    const pinCall = vi.fn(() => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    withPin(false, pinCall);
+    render(<AccountSection />);
+    fireEvent.click(await screen.findByText("Set up a PIN"));
+    fireEvent.change(screen.getByLabelText("New PIN"), { target: { value: "4913" } });
+    fireEvent.change(screen.getByLabelText("Confirm PIN"), { target: { value: "4913" } });
+    fireEvent.click(screen.getByText("Save PIN"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/account password/i);
+    expect(pinCall).not.toHaveBeenCalled();
+  });
+
+  it("saves a valid PIN and reports it as on", async () => {
+    const seen: RequestInit[] = [];
+    withPin(false, (init) => {
+      if (init) seen.push(init);
+      return new Response(JSON.stringify({ ok: true, has_pin: true }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    });
+    render(<AccountSection />);
+    fireEvent.click(await screen.findByText("Set up a PIN"));
+    fireEvent.change(screen.getByLabelText("New PIN"), { target: { value: "4913" } });
+    fireEvent.change(screen.getByLabelText("Confirm PIN"), { target: { value: "4913" } });
+    fireEvent.change(screen.getByLabelText("Account password"), { target: { value: "hunter22" } });
+    fireEvent.click(screen.getByText("Save PIN"));
+    await waitFor(() => expect(screen.getByText("Change PIN")).toBeInTheDocument());
+    expect(screen.getByText("On")).toBeInTheDocument();
+    expect(seen[0]?.method).toBe("POST");
+    expect(JSON.parse(String(seen[0]?.body))).toEqual({ pin: "4913", password: "hunter22" });
+  });
+
+  it("surfaces the server's refusal rather than claiming success", async () => {
+    withPin(false, () => new Response(JSON.stringify({ error: "incorrect password" }), {
+      status: 403, headers: { "Content-Type": "application/json" },
+    }));
+    render(<AccountSection />);
+    fireEvent.click(await screen.findByText("Set up a PIN"));
+    fireEvent.change(screen.getByLabelText("New PIN"), { target: { value: "4913" } });
+    fireEvent.change(screen.getByLabelText("Confirm PIN"), { target: { value: "4913" } });
+    fireEvent.change(screen.getByLabelText("Account password"), { target: { value: "wrong" } });
+    fireEvent.click(screen.getByText("Save PIN"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/incorrect password/);
+    expect(screen.getByText("Off")).toBeInTheDocument();
+  });
+
+  it("turns a PIN off without asking for a password", async () => {
+    const seen: RequestInit[] = [];
+    withPin(true, (init) => {
+      if (init) seen.push(init);
+      return new Response(JSON.stringify({ ok: true, removed: true, has_pin: false }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    });
+    render(<AccountSection />);
+    fireEvent.click(await screen.findByText("Turn off"));
+    await waitFor(() => expect(screen.getByText("Set up a PIN")).toBeInTheDocument());
+    expect(seen[0]?.method).toBe("DELETE");
+    expect(screen.getByText("Off")).toBeInTheDocument();
+  });
+});

@@ -4,17 +4,23 @@ import asyncio
 import json
 import logging
 import math
+import secrets
 import time
 from collections import OrderedDict
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 import taosmd.agents as tm_agents
 
 from tinyagentos.agent_db import find_agent, get_agent_summaries
-from tinyagentos.config import save_config_locked, validate_agent_name, unique_agent_slug
+from tinyagentos.config import (
+    save_config_locked,
+    slugify_agent_name,
+    unique_agent_slug,
+    validate_agent_name,
+)
 from tinyagentos.routes import agent_archive
 from tinyagentos.routes import agent_deploy
 from tinyagentos.routes import agent_import
@@ -203,7 +209,14 @@ def _resolve_agent_by_bearer(request: Request) -> dict | None:
     if not token:
         return None
     config = request.app.state.config
-    return next((a for a in config.agents if a.get("llm_key") == token), None)
+    return next(
+        (
+            a for a in config.agents
+            if a.get("llm_key") is not None
+            and secrets.compare_digest(a["llm_key"], token)
+        ),
+        None,
+    )
 
 
 @router.get("/api/agents/me/models")
@@ -758,6 +771,8 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                 if result.get("success"):
                     if agent is not None:
                         agent["host"] = result.get("ip", "")
+                        if deploy_remote:
+                            agent["remote"] = deploy_remote
                         agent["status"] = "running"
                         agent["llm_key"] = result.get("llm_key")
                         # Save config now so the bootstrap endpoint can return
@@ -849,7 +864,11 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
             finally:
                 await save_config_locked(config, config.config_path)
 
-        asyncio.create_task(_background_deploy())
+        cm = getattr(request.app.state, "cluster_manager", None)
+        if cm is not None:
+            cm._spawn_background_task(_background_deploy())
+        else:
+            asyncio.create_task(_background_deploy())
 
         # Archive smoke-check: verify trace path end-to-end after provisioning.
         # A failure here does NOT abort the deploy — it surfaces a warning flag.
@@ -1143,9 +1162,27 @@ async def export_agent(request: Request, name: str):
     }
 
 
+class AgentImportData(BaseModel):
+    """Explicit field allowlist for the per-agent dict in a JSON import bundle.
+
+    Only user-facing configuration fields survive import. Operational keys
+    such as ``llm_key``, ``permitted_models``, ``registry_canonical_id`` and
+    ``can_read_user_memory`` are stripped (``extra="ignore"``) so an exported
+    or third-party bundle cannot silently inject secrets or grant privileges.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+    name: str
+    host: str | None = None
+    qmd_index: str | None = None
+    color: str | None = None
+    emoji: str | None = None
+    display_name: str | None = None
+
+
 class AgentImport(BaseModel):
     version: int = 1
-    agent: dict
+    agent: AgentImportData
     channels: list[dict] = []
     groups: list[str] = []
 
@@ -1193,27 +1230,40 @@ async def import_agent(request: Request):
 
 
 async def _import_agent_json(request: Request, body: AgentImport):
-    """Import an agent from an exported JSON config."""
+    """Import an agent from an exported JSON config.
+
+    Reuses the create path's name validation and slugification so the
+    imported agent lands under the same container-safe slug a fresh
+    ``POST /api/agents`` would produce. The ``AgentImportData`` allowlist
+    ensures privileged keys never reach ``config.yaml``.
+    """
     config = request.app.state.config
 
-    agent_data = body.agent
-    name = agent_data.get("name", "")
+    agent_in = body.agent
+    name = agent_in.name.strip()
     if not name:
         return JSONResponse({"error": "Agent name is required in export data"}, status_code=400)
     name_error = validate_agent_name(name)
     if name_error:
         return JSONResponse({"error": name_error}, status_code=400)
-    if find_agent(config, name):
-        return JSONResponse({"error": f"Agent '{name}' already exists"}, status_code=409)
+    # Slugify with the same rule the create route uses (unique_agent_slug
+    # delegates to slugify_agent_name). Collisions keep the 409 behaviour.
+    slug = slugify_agent_name(name)
+    if find_agent(config, slug):
+        return JSONResponse({"error": f"Agent '{slug}' already exists"}, status_code=409)
 
-    # Create the agent
-    config.agents.append(agent_data)
+    # Build the persisted agent from the allowlisted model only, then
+    # rewrite name/display_name exactly as the create route does.
+    agent = agent_in.model_dump(exclude_unset=True)
+    agent["name"] = slug
+    agent["display_name"] = name
+    config.agents.append(agent)
     await save_config_locked(config, config.config_path)
 
     # Restore channel assignments
     channel_store = request.app.state.channels
     for ch in body.channels:
-        await channel_store.add(name, ch.get("type", ""), ch.get("config", {}))
+        await channel_store.add(slug, ch.get("type", ""), ch.get("config", {}))
 
     # Restore group memberships
     relationship_mgr = request.app.state.relationships
@@ -1221,9 +1271,9 @@ async def _import_agent_json(request: Request, body: AgentImport):
     group_map = {g["name"]: g["id"] for g in existing_groups}
     for group_name in body.groups:
         if group_name in group_map:
-            await relationship_mgr.add_member(group_map[group_name], name)
+            await relationship_mgr.add_member(group_map[group_name], slug)
 
-    return {"status": "imported", "name": name}
+    return {"status": "imported", "name": slug}
 
 
 @router.delete("/api/agents/{name}/destroy")
@@ -1631,3 +1681,33 @@ async def reset_agent_budget(request: Request, name: str):
     store = _budget_store_for_request(request)
     store.reset_spend(name)
     return _budget_response(name, store.get(name))
+
+
+@router.get("/api/agents/{name}/wake-budget")
+async def get_agent_wake_budget(request: Request, name: str):
+    """Return an agent's resolved wake budget, today's consumption, and next
+    scheduled wake epoch.
+
+    Consumption is summed across all of the agent's project keys (per-agent
+    semantics) so the reported figures are accurate even when the agent holds
+    no current task.
+    """
+    from pathlib import Path
+    from tinyagentos.wake_budget import get_agent_consumption, get_next_scheduled_wake, resolve_budget
+    config = request.app.state.config
+    agent = find_agent(config, name)
+    if not agent:
+        return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
+    agent_id = agent.get("id") or name
+    data_dir = Path(request.app.state.data_dir)
+    budget = resolve_budget(agent_id, None, config)
+    consumption = get_agent_consumption(data_dir, agent_id)
+    next_wake = get_next_scheduled_wake(data_dir, agent_id, None, config)
+    return {
+        "agent": name,
+        "budget": budget,
+        "consumed": consumption["scheduled"],
+        "remaining": max(0, budget - consumption["scheduled"]),
+        "next_wake_epoch": next_wake,
+        "date": consumption["date"],
+    }

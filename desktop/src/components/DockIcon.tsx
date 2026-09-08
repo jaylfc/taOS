@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import * as icons from "lucide-react";
-import { getApp, prefetchApp } from "@/registry/app-registry";
+import { getApp, pinnedAppId, pinnedLaunchProps, prefetchApp } from "@/registry/app-registry";
 import { useProcessStore } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -8,6 +8,7 @@ import { ContextMenu, type MenuItem } from "./ContextMenu";
 type DockIconSize = "small" | "medium" | "large";
 
 interface Props {
+  /** A dock pin id, which for a legacy pin is not an app id (see APP_REDIRECTS). */
   appId: string;
   isRunning: boolean;
   onClick: () => void;
@@ -27,7 +28,11 @@ const ICON_PX: Record<DockIconSize, number> = {
 };
 
 export function DockIcon({ appId, isRunning, onClick, size = "medium" }: Props) {
-  const app = getApp(appId);
+  // Everything that touches the app behind the pin resolves the id first;
+  // pinning and unpinning still act on the id the dock actually stores, so a
+  // legacy pin keeps the section that only its own id can express (#2677).
+  const targetId = pinnedAppId(appId);
+  const app = getApp(targetId);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
   const windows = useProcessStore((s) => s.windows);
@@ -42,7 +47,7 @@ export function DockIcon({ appId, isRunning, onClick, size = "medium" }: Props) 
   const pin = useDockStore((s) => s.pin);
   const unpin = useDockStore((s) => s.unpin);
 
-  const win = windows.find((w) => w.appId === appId);
+  const win = windows.find((w) => w.appId === targetId);
   const isPinned = pinned.includes(appId);
 
   const onContextMenu = useCallback((e: React.MouseEvent) => {
@@ -64,7 +69,7 @@ export function DockIcon({ appId, isRunning, onClick, size = "medium" }: Props) 
   const newWindowItem: MenuItem = {
     label: "New Window",
     icon: <icons.SquarePlus size={14} />,
-    action: () => openWindow(appId, app.defaultSize, undefined, { forceNew: true }),
+    action: () => openWindow(targetId, app.defaultSize, pinnedLaunchProps(appId), { forceNew: true }),
   };
 
   const items: MenuItem[] = win
@@ -108,7 +113,7 @@ export function DockIcon({ appId, isRunning, onClick, size = "medium" }: Props) 
       <button
         onClick={onClick}
         onContextMenu={onContextMenu}
-        onMouseEnter={() => prefetchApp(appId)}
+        onMouseEnter={() => prefetchApp(targetId)}
         className={`group relative flex items-center justify-center ${SIZE_CLASSES[size]} rounded-lg bg-shell-surface hover:bg-shell-surface-active transition-all hover:scale-110`}
         aria-label={`Open ${app.name}`}
         title={app.name}

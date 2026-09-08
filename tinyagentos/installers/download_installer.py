@@ -64,7 +64,7 @@ async def download_file(
     *,
     on_progress: ProgressCallback | None = None,
     proxy: str | None = None,
-    trust_env: bool = True,
+    trust_env: bool | None = None,
 ) -> Path:
     """Download a file with optional SHA256 verification.
 
@@ -80,12 +80,22 @@ async def download_file(
     ``proxy`` routes this download through an explicit HTTP/SOCKS proxy
     (LoRA Studio's Civitai ingest uses this for its geo-blocked fetches).
     Every other caller leaves it ``None`` and egress is unaffected.
-    ``trust_env`` defaults to True (httpx's own default, preserving existing
-    behaviour); callers that pass an explicit ``proxy`` should pass
-    ``trust_env=False`` so an unrelated HTTPS_PROXY env var cannot silently
-    override the caller's explicit choice.
+
+    ``trust_env`` is derived from the proxy/trust_env pairing: when neither is
+    given it resolves to ``True`` (httpx's own default, preserving existing
+    behaviour so ambient env vars such as HTTPS_PROXY still apply for callers
+    that pass no proxy). When an explicit ``proxy`` is given without an explicit
+    ``trust_env``, ``trust_env`` resolves to ``False`` so an unrelated HTTPS_PROXY
+    env var cannot silently override the caller's explicit choice. An explicit
+    ``trust_env`` always wins, letting a caller that genuinely wants ambient env
+    with a proxy opt in by passing ``trust_env=True`` together with ``proxy``.
     """
     from urllib.parse import urljoin, urlparse
+
+    # Pair proxy/trust_env structurally rather than by convention: an explicit
+    # proxy implies trust_env=False unless the caller overrides trust_env.
+    if trust_env is None:
+        trust_env = proxy is None
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     import time as _time

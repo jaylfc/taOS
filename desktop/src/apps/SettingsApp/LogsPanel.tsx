@@ -222,7 +222,7 @@ function SystemLogsTab({ source }: { source: SystemLogSource }) {
 
       {!loading && error && displayLines.length === 0 && (
         <Card className="p-4">
-          <p className="text-sm flex items-center gap-2 text-amber-400">
+          <p role="alert" className="text-sm flex items-center gap-2 text-amber-400">
             <ScrollText size={14} /> {error}
           </p>
         </Card>

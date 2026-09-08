@@ -2,9 +2,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Coroutine
 
 from tinyagentos.cluster.worker_protocol import GpuLease, WorkerInfo
 
@@ -17,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 HEARTBEAT_TIMEOUT = 30  # seconds before marking worker offline
 
+# Legacy resource-name grammar for backward compatibility with workers that
+# do not send a `resources` inventory on registration.
+_LEGACY_RESOURCE_RE = re.compile(r'^gpu-cuda-\d+$|^npu-[a-z0-9-]+$|^cpu-inference$')
+
 # Valid worker-initiated status values that gate drain/update protection.
 # Keep in sync with the notification block below and the heartbeat guard.
 _VALID_STATUSES: frozenset[str] = frozenset({"draining", "update-available", "updating"})
@@ -27,15 +32,22 @@ def _format_hw(hw) -> str:
     if not isinstance(hw, dict):
         return "Unknown hardware"
     parts = []
-    ram = hw.get("ram_mb", 0)
+
+    def _safe_int(val) -> int:
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return 0
+
+    ram = _safe_int(hw.get("ram_mb", 0))
     if ram:
         parts.append(f"{ram // 1024}GB RAM")
     gpu = hw.get("gpu", {})
-    if gpu.get("type") not in (None, "none", ""):
-        vram = gpu.get("vram_mb", 0)
+    if isinstance(gpu, dict) and gpu.get("type") not in (None, "none", ""):
+        vram = _safe_int(gpu.get("vram_mb", 0))
         parts.append(f"{gpu.get('model', gpu['type'])}" + (f" {vram // 1024}GB" if vram else ""))
     npu = hw.get("npu", {})
-    if npu.get("type", "none") != "none":
+    if isinstance(npu, dict) and npu.get("type", "none") != "none":
         parts.append(f"{npu['type']} {npu.get('tops', 0)} TOPS")
     return ", ".join(parts) if parts else "CPU only"
 
@@ -47,6 +59,7 @@ class ClusterManager:
         capabilities=None,
         worker_registry_store=None,
         failure_tracker=None,
+        max_leases_per_worker: int = 10,
     ):
         self._workers: dict[str, WorkerInfo] = {}
         self._leases: dict[str, GpuLease] = {}
@@ -68,6 +81,30 @@ class ClusterManager:
         self._failure_tracker: FailureTracker | None = failure_tracker
         self._generation: int = 1  # incremented in start() when store is wired
         self._fenced: bool = False  # True when another controller has advanced generation
+        # Maximum number of leases a single worker can hold (prevents DoS)
+        self._max_leases_per_worker = max_leases_per_worker
+
+    def _spawn_background_task(self, coro: Coroutine) -> asyncio.Task:
+        """Create a fire-and-forget task that survives garbage collection.
+
+        Uses the asyncio-recommended pattern: the task is held in
+        ``_background_tasks`` so the garbage collector cannot collect it
+        mid-flight, and removed via ``add_done_callback(discard)`` on
+        completion.  Exceptions are logged so silently-failing tasks do not
+        disappear into the void.
+        """
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+
+        def _on_done(t: asyncio.Task) -> None:
+            self._background_tasks.discard(t)
+            if not t.cancelled():
+                exc = t.exception()
+                if exc is not None:
+                    logger.exception("Background task failed: %s", exc, exc_info=exc)
+
+        task.add_done_callback(_on_done)
+        return task
 
     async def start(self):
         # taOS #640: increment generation on each controller start (split-brain
@@ -88,6 +125,19 @@ class ClusterManager:
                 await self._monitor_task
             except asyncio.CancelledError:
                 pass
+        if self._background_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        *self._background_tasks, return_exceptions=True
+                    ),
+                    timeout=10,
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                logger.warning(
+                    "Timed out waiting for %d background tasks to complete",
+                    len(self._background_tasks),
+                )
 
     async def register_worker(
         self, info: WorkerInfo, generation: int | None = None
@@ -106,13 +156,12 @@ class ClusterManager:
             caps_before = {k for k, v in self._capabilities.get_all_capabilities().items() if v["available"]}
 
         is_first_time = info.name not in self._ever_seen
-        self._ever_seen.add(info.name)
 
-        # taOS #640: controller fence — if this instance has been superseded
+        # taOS #640: controller fence -- if this instance has been superseded
         # by another controller, reject all registrations (CodeRabbit PR #1928).
         if self._fenced:
             return (False, "fenced")
-        # taOS #640: split-brain protection — reject registration from a
+        # taOS #640: split-brain protection -- reject registration from a
         # worker that echoes a different generation (another active controller).
         # Legacy workers that don't send generation get a pass (None).
         if generation is not None and generation != self._generation:
@@ -121,6 +170,7 @@ class ClusterManager:
                 info.name, generation, self._generation,
             )
             return (False, "stale_generation")
+        self._ever_seen.add(info.name)
 
         prev_status = self._workers[info.name].status if info.name in self._workers else None
 
@@ -194,9 +244,7 @@ class ClusterManager:
                     info.name,
                 )
 
-        task = asyncio.create_task(_promote_bg())
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        self._spawn_background_task(_promote_bg())
         return (True, "")
 
     def kv_quant_union(self) -> list[str]:
@@ -269,6 +317,7 @@ class ClusterManager:
         status: str | None = None,
         drain_reason: str | None = None,
         generation: int | None = None,
+        resources: list[str] | None = None,
     ) -> bool:
         """Accept a worker heartbeat.
 
@@ -394,13 +443,16 @@ class ClusterManager:
             worker.storage_used_bytes = int(storage_used_bytes)
         if bytes_deduped_total is not None:
             worker.bytes_deduped_total = int(bytes_deduped_total)
+        if resources is not None:
+            worker.resources = list(resources)
         # Worker-initiated drain notification (taOS #890 C2).
         # Emit when the worker transitions into draining/update-available on
         # its own initiative, so the operator sees it in the activity feed.
-        # Validate: only trusted status values; sanitize drain_reason to
-        # prevent injection into notification UI.
+        # Validate: only trusted status values; HTML escaping is applied at the
+        # notification sink (routes/notifications.py), so drain_reason is passed
+        # through verbatim here.
         if self._notifications and status in _VALID_STATUSES and prev_status not in (status,):
-            reason = (drain_reason or "unspecified").replace("'", "\\'").replace("\\", "\\\\")[:200]
+            reason = drain_reason or "unspecified"
             event_type = f"worker.{status}" if status != "draining" else "worker.drain"
             title_map = {
                 "draining": f"Worker '{worker.name}' self-initiated drain",
@@ -413,7 +465,7 @@ class ClusterManager:
                 "updating": f"Worker '{worker.name}' is applying an update (reason: {reason}). It will restart when done.",
             }
             try:
-                asyncio.get_running_loop().create_task(
+                self._spawn_background_task(
                     self._notifications.emit_event(
                         event_type,
                         title_map.get(status, f"Worker '{worker.name}' {status}"),
@@ -438,9 +490,7 @@ class ClusterManager:
                     logger.exception("Failed to persist worker '%s'", worker.name)
 
             try:
-                task = asyncio.get_running_loop().create_task(_safe_persist())
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
+                self._spawn_background_task(_safe_persist())
             except RuntimeError:
                 pass  # no running loop (e.g. sync tests) — skip gracefully
         # Fire worker.online notification when a previously-offline worker recovers.
@@ -450,7 +500,7 @@ class ClusterManager:
         # trigger a false "back online" event (taOS #890 C2).
         if self._notifications and prev_status in ("offline", "stale") and worker.status == "online":
             try:
-                asyncio.get_running_loop().create_task(
+                self._spawn_background_task(
                     self._notifications.emit_event(
                         "worker.online",
                         f"Worker '{worker.name}' came back online",
@@ -528,14 +578,33 @@ class ClusterManager:
     def _worker_for_resource(self, resource_id: str) -> WorkerInfo | None:
         """Return the WorkerInfo for a resource_id, or None.
 
-        Excludes draining and offline workers (taOS #890)."""
+        Excludes draining and offline workers (taOS #890). Validates that the
+        resource part of the resource_id matches one of the worker's reported
+        scheduler resources to prevent a compromised worker from fabricating arbitrary
+        resources (S2-24)."""
         parsed = self._parse_resource_id(resource_id)
         if parsed is None:
             return None
-        worker_name, _ = parsed
+        worker_name, resource_part = parsed
         worker = self._workers.get(worker_name)
         if worker is None or worker.status not in ("online", "update-available"):
             return None
+        
+        # Validate that the resource part matches one of the worker's reported resources
+        if worker.resources:
+            # Worker has a non-empty resource inventory (scheduler-based discovery)
+            if resource_part not in worker.resources:
+                return None
+        else:
+            # Worker has no resource inventory (older worker, or registration without resources)
+            # Fall back to the legacy grammar check for backward compatibility
+            logger.warning(
+                "Worker '%s' has no resource inventory; falling back to legacy grammar check for resource '%s'",
+                worker_name, resource_part,
+            )
+            if not _LEGACY_RESOURCE_RE.match(resource_part):
+                return None
+            
         return worker
 
     def find_existing_lease(self, resource_id: str) -> GpuLease | None:
@@ -595,6 +664,22 @@ class ClusterManager:
                 logger.debug(
                     "claim_lease: %s needs %d MiB VRAM but %s has %d MiB free",
                     caller, required_vram_mb, worker.name, worker.free_vram_mb,
+                )
+                return None
+
+            # Enforce lease cap per worker to prevent DoS (S2-24)
+            # Count only active (non-expired) leases for this worker
+            now = time.time()
+            worker_lease_count = 0
+            for lid, lease in self._leases.items():
+                if (parsed := self._parse_resource_id(lease.resource_id)) and parsed[0] == worker.name:
+                    if lease.expires_at > now:
+                        worker_lease_count += 1
+            
+            if worker_lease_count >= self._max_leases_per_worker:
+                logger.debug(
+                    "claim_lease: worker %s has reached max leases (%d), rejecting new claim",
+                    worker.name, self._max_leases_per_worker,
                 )
                 return None
 
@@ -714,7 +799,7 @@ class ClusterManager:
                 f"{'Tasks will complete before detach.' if graceful else 'All leases released immediately.'}"
             )
             try:
-                task = asyncio.get_running_loop().create_task(
+                self._spawn_background_task(
                     self._notifications.emit_event(
                         "worker.drain",
                         f"Worker '{name}' draining",
@@ -722,8 +807,6 @@ class ClusterManager:
                         level="info",
                     )
                 )
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
             except RuntimeError:
                 pass
 
@@ -750,7 +833,7 @@ class ClusterManager:
 
         if self._notifications:
             try:
-                task = asyncio.get_running_loop().create_task(
+                self._spawn_background_task(
                     self._notifications.emit_event(
                         "worker.online",
                         f"Worker '{name}' drain cancelled",
@@ -758,8 +841,6 @@ class ClusterManager:
                         level="info",
                     )
                 )
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
             except RuntimeError:
                 pass
 
@@ -913,6 +994,7 @@ class ClusterManager:
             "degraded_reason": worker.degraded_reason,
             "free_vram_mb": worker.free_vram_mb,
             "used_vram_mb": worker.used_vram_mb,
+            "resources": json.dumps(worker.resources or []),
         }
         await self._registry_store.upsert_worker(info)
 
@@ -973,6 +1055,7 @@ class ClusterManager:
                     degraded_reason=row.get("degraded_reason"),
                     free_vram_mb=row.get("free_vram_mb"),
                     used_vram_mb=row.get("used_vram_mb"),
+                    resources=json.loads(row.get("resources", "[]")),
                 )
                 self._workers[name] = worker
                 self._ever_seen.add(name)

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import time
 
-from tinyagentos.base_store import BaseStore
 from tinyagentos.projects.ids import new_id
+from tinyagentos.projects.tx import ProjectsDBStore
 
 NOTES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS project_notes (
@@ -21,7 +21,7 @@ CREATE INDEX IF NOT EXISTS idx_notes_project_created ON project_notes(project_id
 """
 
 
-class ProjectNotesStore(BaseStore):
+class ProjectNotesStore(ProjectsDBStore):
     SCHEMA = NOTES_SCHEMA
 
     async def create_note(
@@ -34,17 +34,17 @@ class ProjectNotesStore(BaseStore):
     ) -> dict:
         note_id = new_id("note")
         now = time.time()
-        await self._db.execute(
-            """INSERT INTO project_notes
-               (id, project_id, title, body, author_id, author_kind, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (note_id, project_id, title, body, author_id, author_kind, now, now),
-        )
-        await self._db.commit()
+        async with self._tx():
+            await self._db.execute(
+                """INSERT INTO project_notes
+                   (id, project_id, title, body, author_id, author_kind, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (note_id, project_id, title, body, author_id, author_kind, now, now),
+            )
         return await self.get_note(note_id)
 
     async def get_note(self, note_id: str) -> dict | None:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM project_notes WHERE id = ?", (note_id,)
         ) as cur:
             row = await cur.fetchone()
@@ -54,7 +54,7 @@ class ProjectNotesStore(BaseStore):
             return dict(zip(keys, row))
 
     async def list_notes(self, project_id: str) -> list[dict]:
-        async with self._db.execute(
+        async with self._read(
             "SELECT * FROM project_notes WHERE project_id = ? ORDER BY created_at DESC",
             (project_id,),
         ) as cur:
@@ -81,15 +81,16 @@ class ProjectNotesStore(BaseStore):
         sets.append("updated_at = ?")
         params.append(time.time())
         params.append(note_id)
-        await self._db.execute(
-            f"UPDATE project_notes SET {', '.join(sets)} WHERE id = ?", params
-        )
-        await self._db.commit()
+        async with self._tx():
+            await self._db.execute(
+                f"UPDATE project_notes SET {', '.join(sets)} WHERE id = ?", params
+            )
         return await self.get_note(note_id)
 
     async def delete_note(self, note_id: str) -> bool:
-        cursor = await self._db.execute(
-            "DELETE FROM project_notes WHERE id = ?", (note_id,)
-        )
-        await self._db.commit()
-        return cursor.rowcount > 0
+        async with self._tx():
+            cursor = await self._db.execute(
+                "DELETE FROM project_notes WHERE id = ?", (note_id,)
+            )
+            changed = cursor.rowcount > 0
+        return changed

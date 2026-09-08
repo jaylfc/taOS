@@ -7,6 +7,8 @@ counts can be verified without the HTTP layer.
 """
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from tinyagentos.projects.element_store import ProjectElementStore, slugify_element_name
@@ -158,6 +160,48 @@ async def test_delete_element_strict_and_untag(tmp_path):
     assert await estore.get_element(el["id"]) is None
     # Untagged task remains.
     assert (await tstore.get_task(t["id"]))["id"] == t["id"]
+
+
+@pytest.mark.asyncio
+async def test_untag_delete_only_tolerates_the_missing_canvas_schema(tmp_path):
+    """A real failure on the canvas untag must abort the delete.
+
+    The canvas UPDATE tolerates a canvas table that has not been created yet,
+    which is a schema error and nothing else.  Swallowing every
+    ``OperationalError`` there would commit the element's deletion while canvas
+    rows still point at it -- the untag and the delete are one transaction
+    precisely so that cannot happen.
+    """
+    estore = ProjectElementStore(tmp_path / "projects.db")
+    await estore.init()
+    # The task store owns project_tasks on this same file: without it the task
+    # untag fails first and the canvas statement below is never reached, which
+    # would make this test pass for the wrong reason.
+    tstore = ProjectTaskStore(tmp_path / "projects.db")
+    await tstore.init()
+    el = await estore.create_element(project_id="prj-1", name="Website")
+
+    real_execute = estore._db.execute
+    state = {"hit": False}
+
+    def failing_execute(sql, *args, **kwargs):
+        if "project_canvas_elements" in sql:
+            state["hit"] = True
+
+            async def _boom():
+                raise sqlite3.OperationalError("database is locked")
+
+            return _boom()
+        return real_execute(sql, *args, **kwargs)
+
+    estore._db.execute = failing_execute
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        await estore.delete_element(el["id"], untag=True)
+    estore._db.execute = real_execute
+
+    assert state["hit"] is True
+    assert (await estore.get_element(el["id"]))["id"] == el["id"]
+    assert estore._db.in_transaction is False
 
 
 @pytest.mark.asyncio

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from tinyagentos.knowledge_fetchers.github import (
+    _auth_headers,
     extract_metadata,
     fetch_issue,
     fetch_releases,
@@ -87,6 +90,28 @@ class TestParseGithubUrlReleases:
         )
         assert ctype == "release"
         assert number is None
+
+
+class TestParseGithubUrlHostCheck:
+    """R2-14: parse_github_url must only accept github.com hosts."""
+
+    def test_rejects_non_github_host(self):
+        with pytest.raises(ValueError):
+            parse_github_url("https://gitlab.com/owner/repo")
+
+    def test_rejects_non_github_host_with_path(self):
+        with pytest.raises(ValueError):
+            parse_github_url("https://gitlab.com/owner/repo/issues/123")
+
+    def test_still_accepts_www_github(self):
+        assert parse_github_url("https://www.github.com/owner/repo") == (
+            "owner", "repo", "repo", None,
+        )
+
+    def test_still_accepts_no_scheme(self):
+        assert parse_github_url("github.com/owner/repo") == (
+            "owner", "repo", "repo", None,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -429,3 +454,95 @@ class TestExtractMetadata:
         data = [{"tag": "v1.0"}, {"tag": "v0.9"}]
         result = extract_metadata(data, "releases")
         assert result["release_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# R2-14: _auth_headers must not emit "Authorization: Bearer None"
+# ---------------------------------------------------------------------------
+
+def test_auth_headers_omits_authorization_when_no_token():
+    """A missing or empty token must drop the Authorization header entirely,
+    otherwise every GitHub fetch without a token fails server-side."""
+    headers = _auth_headers(None)
+    assert "Authorization" not in headers
+    headers = _auth_headers("")
+    assert "Authorization" not in headers
+
+
+def test_auth_headers_includes_authorization_with_token():
+    headers = _auth_headers("tok123")
+    assert headers["Authorization"] == "Bearer tok123"
+
+
+# ---------------------------------------------------------------------------
+# R2-14: honour Retry-After / X-RateLimit-Reset once
+# ---------------------------------------------------------------------------
+
+_RELEASE_BODY = [
+    {
+        "tag_name": "v1.0.0",
+        "name": "v1.0.0",
+        "body": "release notes",
+        "author": {"login": "alice"},
+        "published_at": "2026-01-01T00:00:00Z",
+        "assets": [],
+        "prerelease": False,
+    }
+]
+
+
+@pytest.mark.asyncio
+async def test_fetch_releases_honours_retry_after():
+    """A 403 carrying Retry-After is retried once; the delay is honoured and the
+    second response is returned."""
+    attempts = {"n": 0}
+
+    def handler(request):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(403, headers={"Retry-After": "2"}, text="rate limited")
+        return httpx.Response(200, json=_RELEASE_BODY)
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    try:
+        with patch(
+            "tinyagentos.knowledge_fetchers.github.asyncio.sleep",
+            new_callable=AsyncMock,
+        ) as mock_sleep:
+            result = await fetch_releases("owner", "repo", "token", client, limit=10)
+            mock_sleep.assert_awaited_once_with(2)
+        assert attempts["n"] == 2
+        assert len(result) == 1
+        assert result[0]["tag"] == "v1.0.0"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_fetch_releases_honours_rate_limit_reset():
+    """A 403 carrying X-RateLimit-Reset is also retried once."""
+    attempts = {"n": 0}
+    reset_ts = str(int(time.time()) + 3)
+
+    def handler(request):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(
+                403, headers={"X-RateLimit-Reset": reset_ts}, text="rate limited"
+            )
+        return httpx.Response(200, json=_RELEASE_BODY)
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    try:
+        with patch(
+            "tinyagentos.knowledge_fetchers.github.asyncio.sleep",
+            new_callable=AsyncMock,
+        ) as mock_sleep:
+            result = await fetch_releases("owner", "repo", "token", client, limit=10)
+            mock_sleep.assert_awaited_once()
+        assert attempts["n"] == 2
+        assert len(result) == 1
+    finally:
+        await client.aclose()

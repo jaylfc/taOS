@@ -20,6 +20,7 @@ from tinyagentos.agent_registry_store import (
     load_or_create_signing_keypair,
     mint_registry_token,
 )
+from taos_test_csrf import csrf_event_hooks
 
 _BUS_PATCH = "tinyagentos.routes.a2a_bus.httpx.AsyncClient"
 
@@ -96,6 +97,7 @@ async def bus_client(app, tmp_data_dir):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         c._app = app
         c._test_admin_uid = uid

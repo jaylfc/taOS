@@ -191,35 +191,66 @@ async def _run_agent_turn(app_state, agent_id: str, messages: list) -> str:
     The two runtime calls are referenced via module-level names so tests can
     monkeypatch them (no opencode binary required in CI).
     """
-    # The last user message is the prompt; system/earlier messages are context
-    # the agent harness already carries per-turn, so we pass the latest user text.
     # Validate content type before forwarding to drive_turn (Kilo finding: a
     # non-str / non-list content must not reach the adapter as a string).
+    #
+    # Build the prompt text from the full OpenAI conversation in SOURCE order:
+    # one pass, appending each message as encountered. The last user message is
+    # identified separately (last_user_idx) so it remains the final prompt text
+    # while everything else forms the context prefix. This fixes the
+    # out-of-order emission in the prior version, which deferred user turns
+    # and emitted a1 before u1 in [u1, a1, u2].
+    prior_segments: list[str] = []
     user_text: str | None = None
-    for m in reversed(messages):
-        if isinstance(m, dict) and m.get("role") == "user":
-            content = m.get("content", "")
-            if isinstance(content, str):
-                user_text = content
-            elif isinstance(content, list):  # content parts -> flatten to text
-                parts = []
-                for p in content:
-                    if isinstance(p, dict):
-                        if isinstance(p.get("text"), str):
-                            parts.append(p["text"])
-                        elif isinstance(p.get("text"), list):
-                            parts.append(" ".join(str(x) for x in p["text"]))
-                    elif isinstance(p, str):
-                        parts.append(p)
-                user_text = " ".join(parts)
-            else:
-                # content is int/null/object — malformed request.
+    last_user_idx: int | None = None
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        content = m.get("content", "")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):  # content parts -> flatten to text
+            parts = []
+            for p in content:
+                if isinstance(p, dict):
+                    if isinstance(p.get("text"), str):
+                        parts.append(p["text"])
+                    elif isinstance(p.get("text"), list):
+                        parts.append(" ".join(str(x) for x in p["text"]))
+                elif isinstance(p, str):
+                    parts.append(p)
+            text = " ".join(parts)
+        else:
+            if role == "user":
                 raise _BadRequest("message content must be a string or list of parts")
-            break
+            continue  # non-user messages with non-str content are skipped
+        # Append each message in source order; the last user message is removed
+        # from the context prefix below so it stays the final prompt.
+        if role == "user":
+            user_text = text
+            prior_segments.append(text)
+            last_user_idx = len(prior_segments) - 1
+        elif role in ("system", "assistant"):
+            if text:
+                prior_segments.append(text)
+        # tool and other non-standard roles are scoped out for this slice
+        # (lead review item 4): they remain silently skipped.
+
     if not user_text:
         # Absent/empty user role is a client validation failure -> 400,
         # not a transport error (Kilo finding: was mapped to 502).
         raise _BadRequest("no user message found in request")
+
+    # Prepend prior conversation turns so the agent sees the full history in
+    # source order. The last user message is the final prompt; removing it
+    # from the prefix does not reorder the transcript. When no prior messages
+    # exist, the text is just the last user message (fresh-session path
+    # unchanged).
+    if prior_segments and last_user_idx is not None:
+        prior_segments.pop(last_user_idx)
+        if prior_segments:
+            user_text = "\n\n".join(prior_segments) + "\n\n" + user_text
 
     server = await ensure_taos_opencode_server(app_state, agent_id)
     collected: dict = {"final": None}

@@ -12,10 +12,12 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter, Form, Request, UploadFile, File
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, Response, StreamingResponse
+from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from tinyagentos.code_analyzer import analyze_app_source, has_critical
+from tinyagentos.middleware.upload_body_limit import register_upload_cap
 from tinyagentos.userspace.broker import handle_capability, GATED_CAPS
 from tinyagentos.userspace.capabilities import capability_ceiling, default_provenance_for_trust
 from tinyagentos.userspace.container_deploy import deploy_app_container, destroy_app_container
@@ -125,6 +127,10 @@ async def get_app(request: Request, app_id: str):
 
 # Cap the package upload / fetch size to bound memory and pre-filter zip bombs.
 _MAX_PACKAGE_BYTES = 64 * 1024 * 1024
+
+# The read() below runs only after FastAPI has already spooled the multipart
+# body, so the cap also has to be enforced on the arriving request.
+register_upload_cap("/api/userspace-apps/install", lambda: _MAX_PACKAGE_BYTES)
 
 
 @router.post("/api/userspace-apps/install")
@@ -485,15 +491,16 @@ async def serve_bundle(request: Request, app_id: str, path: str):
 
 
 # Hop-by-hop headers must not be forwarded between the proxy and the
-# upstream/client (RFC 2616 §13.5.1). Authorization is stripped too, and the
-# taos_session cookie is scrubbed out of Cookie -- an untrusted container-app
-# backend must never see the controller session credential.
+# upstream/client (RFC 2616 §13.5.1). Authorization is stripped too, and every
+# cookie this origin issues is scrubbed out of Cookie -- an untrusted
+# container-app backend must never see the controller session credential, nor
+# the CSRF token that proves same-origin for this host.
 _PROXY_HOP_BY_HOP = frozenset({
     "connection", "keep-alive", "proxy-authorization", "te",
     "trailer", "transfer-encoding", "upgrade", "host",
 })
 _PROXY_SENSITIVE_HEADERS = frozenset({"authorization"})
-_PROXY_STRIPPED_COOKIES = frozenset({"taos_session"})
+_PROXY_STRIPPED_COOKIES = TAOS_ISSUED_COOKIES
 
 # Module-level HTTP client for the container-app proxy -- avoids per-request
 # connection churn, mirrors service_proxy.py's pattern.

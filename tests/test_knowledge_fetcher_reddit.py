@@ -15,6 +15,7 @@ from tinyagentos.knowledge_fetchers.reddit import (
     flatten_to_text,
     extract_metadata,
     _normalise_url,
+    _parse_comment,
 )
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -365,3 +366,161 @@ async def test_fetch_subreddit_empty_listing():
 
     assert posts == []
     assert next_after is None
+
+
+# ---------------------------------------------------------------------------
+# R2-16: unbounded recursion in _parse_comment / _flatten_comment
+#          and edited=True -> 1.0 (1970 epoch) timestamp coercion
+# ---------------------------------------------------------------------------
+
+def _build_deep_comment_json(depth: int) -> dict:
+    """Build a Reddit comment *data* dict forming a single chain of
+    ``depth`` nesting levels (each parent has exactly one t1 child reply)."""
+    node_data: dict = {
+        "id": "leaf",
+        "author": "deep_user",
+        "body": "deepest reply",
+        "score": 1,
+        "created_utc": 1712000000.0,
+        "depth": depth,
+        "parent_id": "t1_parent",
+        "edited": False,
+        "distinguished": None,
+        "replies": "",
+    }
+    for d in range(depth - 1, -1, -1):
+        node_data = {
+            "id": f"deep_{d}",
+            "author": "deep_user",
+            "body": f"level {d}",
+            "score": 1,
+            "created_utc": 1712000000.0 + d,
+            "depth": d,
+            "parent_id": "t3_root" if d == 0 else f"t1_deep_{d + 1}",
+            "edited": False,
+            "distinguished": None,
+            "replies": {
+                "kind": "Listing",
+                "data": {
+                    "children": [{"kind": "t1", "data": node_data}],
+                    "after": None,
+                    "before": None,
+                },
+            },
+        }
+    return node_data
+
+
+def _build_deep_comment_chain(depth: int) -> RedditComment:
+    """Build a deeply nested RedditComment chain of ``depth`` levels.
+
+    Construction is iterative (no recursion) so it works regardless of the
+    parser/flatten implementation.
+    """
+    node = _make_comment(
+        id="leaf", author="deep_user", body="deepest reply.", depth=depth,
+    )
+    for d in range(depth - 1, -1, -1):
+        node = _make_comment(
+            id=f"deep_{d}", author="deep_user", body=f"level {d}",
+            depth=d, replies=[node],
+        )
+    return node
+
+
+def test_parse_comment_2000_deep_tree_no_recursion_error():
+    """R2-16: a synthetic 2 000-deep comment tree must not raise RecursionError."""
+    deep_data = _build_deep_comment_json(2000)
+    comment = _parse_comment(deep_data)
+    # Walk to the deepest node to confirm the full tree was built.
+    node = comment
+    count = 0
+    while node.replies:
+        node = node.replies[0]
+        count += 1
+    assert count == 2000  # 2 001 nodes total: depth 0 .. 2 000
+
+
+def test_flatten_to_text_2000_deep_tree_no_recursion_error():
+    """R2-16: flattening a 2 000-deep tree must not raise RecursionError."""
+    comment = _build_deep_comment_chain(2000)
+    post = _make_post()
+    text = flatten_to_text(post, [comment])
+    assert "deep_user" in text
+    assert "deepest reply" in text
+
+
+def test_parse_comment_edited_true_not_epoch_timestamp():
+    """R2-16: edited=True (Reddit legacy boolean) must not become 1.0."""
+    data = {
+        "id": "cmt_edited",
+        "author": "editor",
+        "body": "I edited this comment.",
+        "score": 5,
+        "created_utc": 1712000000.0,
+        "depth": 0,
+        "parent_id": "t3_root",
+        "edited": True,
+        "distinguished": None,
+        "replies": "",
+    }
+    comment = _parse_comment(data)
+    assert comment.edited != 1.0
+    assert comment.edited != 1
+    assert comment.edited is None  # edited, but no timestamp
+
+
+def test_parse_comment_edited_float_preserved():
+    """A numeric edited value is preserved as a float timestamp."""
+    data = {
+        "id": "cmt_ts",
+        "author": "editor",
+        "body": "Edited at a known time.",
+        "score": 5,
+        "created_utc": 1712000000.0,
+        "depth": 0,
+        "parent_id": "t3_root",
+        "edited": 1712002500.0,
+        "distinguished": None,
+        "replies": "",
+    }
+    comment = _parse_comment(data)
+    assert comment.edited == 1712002500.0
+    assert isinstance(comment.edited, float)
+
+
+def test_parse_comment_edited_false_preserved():
+    """edited=False means the comment was not edited."""
+    data = {
+        "id": "cmt_notedited",
+        "author": "original",
+        "body": "Never edited.",
+        "score": 5,
+        "created_utc": 1712000000.0,
+        "depth": 0,
+        "parent_id": "t3_root",
+        "edited": False,
+        "distinguished": None,
+        "replies": "",
+    }
+    comment = _parse_comment(data)
+    assert comment.edited is False
+
+
+def test_parse_comment_edited_int_preserved():
+    """An integer edited value (epoch seconds) is preserved as a float."""
+    data = {
+        "id": "cmt_int_edit",
+        "author": "editor",
+        "body": "Edited at an integer epoch.",
+        "score": 5,
+        "created_utc": 1712000000.0,
+        "depth": 0,
+        "parent_id": "t3_root",
+        "edited": 1712002500,
+        "distinguished": None,
+        "replies": "",
+    }
+    comment = _parse_comment(data)
+    assert comment.edited == 1712002500.0
+    assert isinstance(comment.edited, float)

@@ -3,15 +3,21 @@ import os
 import httpx
 from fastapi import FastAPI
 
+from tinyagentos.adapters.retry_policy import (
+    CONTROLLER_TIMEOUT_SECONDS,
+    RETRY_KWARGS,
+)
 from tinyagentos.clients.retry import with_retry
 
 app = FastAPI()
 
-_RETRY_KWARGS = dict(max_attempts=7, base_delay=0.5, multiplier=2.0, max_delay=60.0)
+# Retry settings live in retry_policy so every adapter's worst case stays
+# inside the channel-hub router's own timeout.
+_RETRY_KWARGS = RETRY_KWARGS
 
 
 async def _controller_post(url: str, json: dict, headers: dict):
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=CONTROLLER_TIMEOUT_SECONDS) as client:
         return await client.post(url, json=json, headers=headers)
 
 

@@ -73,6 +73,12 @@ export interface PresenceSourceChannel {
   settings?: { taostalk_agent?: string };
 }
 
+/** Channel groups that may carry a bound agent in the sidebar. */
+export interface BoundChannelGroups<C> {
+  topic: C[];
+  group: C[];
+}
+
 /**
  * Build the sidebar presence map from the bucketed agent DM sections plus
  * the topic/group channels that may carry an agent binding.
@@ -109,6 +115,29 @@ export function buildAgentPresence<C extends PresenceSourceChannel>(
     }
   }
   return presence;
+}
+
+/**
+ * Collect every channel that may carry a bound agent and therefore needs a
+ * presence dot in the sidebar: the standalone-mode topic/group channels plus
+ * the project channels.
+ *
+ * Bound channels from all three buckets: standalone-mode project channels are
+ * excluded from `grouped`, so include them explicitly or a working bound
+ * project channel renders no dot.
+ *
+ * Pure function -- exported so the presence regression test can bind to the
+ * caller instead of hand-building the argument list.
+ */
+export function collectBoundChannels<C extends PresenceSourceChannel>(
+  grouped: BoundChannelGroups<C>,
+  projectGroups: { channels: C[] }[],
+): C[] {
+  return [
+    ...grouped.topic,
+    ...grouped.group,
+    ...projectGroups.flatMap((g) => g.channels),
+  ];
 }
 
 /** The agent identity a DM channel points at: its name or its non-"user" member. */

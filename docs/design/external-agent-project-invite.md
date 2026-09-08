@@ -171,9 +171,10 @@ workspace-isolation section below draws that boundary.
 - Code-based pairing precedent: cluster pairing stores `sha256(code)` only,
   compares with `hmac.compare_digest`, expires pending entries after 15
   minutes, caps failed attempts at 5, enforces single-use by DELETE-on-claim,
-  and rate-limits the unauthenticated claim endpoint per client IP (fixed
-  window, 20 per 10s). (`tinyagentos/cluster/pairing_store.py`,
-  `tinyagentos/routes/cluster.py`)
+  and rate-limits the unauthenticated claim endpoint per client IP (moving
+  window, at most 20 in any 10s span, 429 with `Retry-After`).
+  (`tinyagentos/cluster/pairing_store.py`, `tinyagentos/routes/cluster.py`,
+  `tinyagentos/rate_limit.py`)
 - Address knowledge: `controller_callback_host` resolves, in order, an
   operator override, the Tailscale IP (`tailscale ip -4`), then
   `app.state.controller_lan_ip`. `taosnet/mesh.py::mesh_status()` reports
@@ -514,7 +515,8 @@ gates even that.
    member list.
 
 Failure modes: wrong PIN (403, attempts increment), expired (410), already
-redeemed (409), rate-limited (429), all with actionable bodies. The agent-side
+redeemed (409), rate-limited (429 with `Retry-After`), all with actionable
+bodies. The agent-side
 instruction text shown in the dialog covers "if the URL is unreachable, ask
 the operator for the local network link".
 

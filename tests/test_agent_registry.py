@@ -25,6 +25,7 @@ from tinyagentos.agent_registry_store import (
 )
 from tinyagentos.routes.agent_registry import _ALLOWED_SCOPES
 from datetime import datetime, timezone
+from taos_test_csrf import csrf_event_hooks
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +417,7 @@ async def registry_client(app, tmp_data_dir):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         # Expose the admin uid so tests can assert token claims
         c._test_admin_uid = uid
@@ -625,6 +627,7 @@ async def feeds_client(app, tmp_data_dir):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         c._test_admin_uid = uid
         c._app = app
@@ -858,6 +861,7 @@ class TestRegistryWriteExistenceHiding:
             transport=ASGITransport(app=app),
             base_url="http://test",
             cookies={"taos_session": session},
+            event_hooks=csrf_event_hooks(),
         )
 
     async def _register(self, registry_client):

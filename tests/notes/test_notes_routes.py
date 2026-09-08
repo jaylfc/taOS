@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.app import create_app
 from tinyagentos.notes.shared_docs_store import SharedDocsStore
+from taos_test_csrf import csrf_event_hooks
 
 
 # --------------------------------------------------------------------- helpers
@@ -49,6 +50,7 @@ async def client(tmp_path):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         yield c
 
@@ -84,9 +86,11 @@ async def two_user_clients(tmp_path):
     async with AsyncClient(
         transport=transport, base_url="http://test",
         cookies={"taos_session": alice_token},
+        event_hooks=csrf_event_hooks(),
     ) as alice, AsyncClient(
         transport=transport, base_url="http://test",
         cookies={"taos_session": bob_token},
+        event_hooks=csrf_event_hooks(),
     ) as bob:
         yield alice, bob, app
 
@@ -494,6 +498,7 @@ async def test_add_entry_triggers_agent_dm(tmp_path, monkeypatch):
     async with AsyncClient(
         transport=transport, base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         doc = (await c.post("/api/notes", json={"title": "Ideas"})).json()
         doc_id = doc["id"]
@@ -552,6 +557,7 @@ async def test_add_entry_no_agent_members_no_send(tmp_path):
     async with AsyncClient(
         transport=transport, base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as c:
         doc = (await c.post("/api/notes", json={"title": "Solo"})).json()
         await c.post(f"/api/notes/{doc['id']}/entries", json={"text": "Just me"})
@@ -758,6 +764,7 @@ async def test_list_notes_filters_by_kind(tmp_path):
         transport=transport,
         base_url="http://test",
         cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
     ) as client:
         # Create a note (kind="note") — should be visible
         note = (await client.post("/api/notes", json={"title": "My Note"})).json()

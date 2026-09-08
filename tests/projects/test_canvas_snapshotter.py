@@ -68,3 +68,34 @@ async def test_export_now_synchronous(env):
     path = await snap.export_now(p["id"])
     assert path is not None
     assert path.exists()
+
+
+@pytest.mark.asyncio
+async def test_tldr_render_writes_off_the_event_loop(env, monkeypatch):
+    """The .tldr snapshot write must not stall the loop.
+
+    ``atomic_write_text`` fsyncs the file and the parent directory; a board
+    snapshot is the largest of these writes, so it is the worst offender.
+    """
+    import tinyagentos.projects.canvas.snapshotter as sn
+
+    _ps, _cs, snap, p, _data_root = env
+    on_loop: list[bool] = []
+
+    def recording_write(path, text, **kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_loop.append(False)
+        else:
+            on_loop.append(True)
+        Path(path).write_text(text)
+
+    monkeypatch.setattr(sn, "atomic_write_text", recording_write)
+
+    await snap._render_tldr(p["id"])
+
+    assert on_loop == [False], (
+        "atomic_write_text ran on the event loop thread — its fsyncs block "
+        "every other coroutine for the duration of the write"
+    )

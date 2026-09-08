@@ -12,10 +12,12 @@ CLI is running on). Three subcommands:
   taos worker dedup enable|disable
       Toggle bees deduplication daemon inside the worker LXC.
 
-  taos worker resize-storage --size NGB
+  taos worker resize-storage --size SIZE
       Expand the worker LXC's btrfs loopback file. Stops the LXC,
       truncates the file to the new size, restarts the LXC, and
-      grows the btrfs filesystem.
+      grows the btrfs filesystem. SIZE is read by
+      ``tinyagentos.size_units``: IEC (``1.5TiB``), SI (``2TB``), a bare
+      unit letter (``500G``) or a raw byte count.
 
 Invoked via the ``taos-worker-ctl`` console script or directly:
 
@@ -36,6 +38,7 @@ from tinyagentos.cluster.convert_to_lxc import (
     list_flat_mode_agents,
     redeploy_agents,
 )
+from tinyagentos.size_units import parse_size_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -105,15 +108,16 @@ def _dedup(args) -> int:
 
 
 def _parse_iec_bytes(s: str) -> int:
-    """Parse '500G', '1T', '512M', or raw bytes into integer bytes.
-    Accepts the same forms as truncate(1)."""
-    s = s.strip()
-    units = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
-    if not s:
-        raise ValueError("empty size")
-    if s[-1].upper() in units:
-        return int(float(s[:-1]) * units[s[-1].upper()])
-    return int(s)
+    """Parse a size string into integer bytes.
+
+    Delegates to :mod:`tinyagentos.size_units`, so it accepts more than
+    the truncate(1) set this used to handle: IEC suffixes (``KiB``..``PiB``,
+    1024-based), SI suffixes (``kB``..``PB``, 1000-based), a bare unit
+    letter (``500G``, ``512M`` -- 1024-based) and a raw byte count.
+    Raises ``ValueError`` on anything else, including negative and
+    non-finite values.
+    """
+    return parse_size_bytes(s)
 
 
 def _resize_storage(args) -> int:
@@ -154,8 +158,12 @@ def _resize_storage(args) -> int:
     print("Stopping taos-worker...")
     subprocess.run(["sudo", "incus", "stop", "taos-worker"], check=True)
 
-    print(f"Resizing {pool_img} to {new_size_str}...")
-    subprocess.run(["sudo", "truncate", "-s", new_size_str, pool_img], check=True)
+    print(f"Resizing {pool_img} to {new_size_str} ({new_bytes} bytes)...")
+    # Hand truncate(1) the byte count, not the string the operator typed:
+    # truncate has no IEC suffixes, so `--size 1.5TiB` -- which this CLI
+    # now advertises and the pre-flight above already accepted -- would be
+    # rejected by truncate after the worker had been stopped.
+    subprocess.run(["sudo", "truncate", "-s", str(new_bytes), pool_img], check=True)
 
     print("Starting taos-worker...")
     subprocess.run(["sudo", "incus", "start", "taos-worker"], check=True)
@@ -212,7 +220,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_resize.add_argument(
         "--size", required=True,
-        help="New size, e.g. 500G or 1T (units accepted by truncate(1))",
+        help=(
+            "New size, e.g. 500G, 1.5TiB, 2TB or a raw byte count. "
+            "IEC suffixes (KiB..PiB) and bare unit letters are 1024-based; "
+            "SI suffixes (kB..PB) are 1000-based."
+        ),
     )
     p_resize.set_defaults(func=_resize_storage)
 

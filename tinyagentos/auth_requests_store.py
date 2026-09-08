@@ -10,7 +10,9 @@ and retrieve them.
 The state machine is simple: pending → accepted | refused (terminal).
 ``set_decision`` is atomic — it uses a conditional UPDATE that only
 matches rows still in ``pending`` status, so two concurrent approve calls
-cannot both win a read-check-then-write race.
+cannot both win a read-check-then-write race.  ``create`` is atomic the same
+way when given a ``pending_cap``: the cap is a condition ON the INSERT, so a
+burst of concurrent submissions cannot all pass a stale count and all insert.
 """
 
 import json
@@ -20,7 +22,7 @@ from typing import Optional
 
 import aiosqlite
 
-from tinyagentos.base_store import BaseStore
+from tinyagentos.base_store import BaseStore, PendingCapExceeded
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS auth_requests (
@@ -45,6 +47,21 @@ CREATE INDEX IF NOT EXISTS idx_auth_requests_identity ON auth_requests(identity_
 """
 
 _VALID_DECISION_STATUSES = frozenset({"accepted", "refused"})
+
+# The insert's column list, shared by both ``create`` shapes so the capped and
+# uncapped writes can never drift apart on which columns they set.
+_CREATE_COLUMNS = (
+    "(id, identity_claim, framework, requested_scopes, requested_skills,"
+    " reason, duration_secs, project_id, status, created_ts)"
+)
+
+# Makes the pending cap atomic with the insert: SQLite evaluates the count and
+# performs the insert in ONE statement, so no interleaved caller can slip a row
+# in between them. Served by ``idx_auth_requests_identity``.
+_CAP_GUARD = (
+    "(SELECT COUNT(*) FROM auth_requests "
+    " WHERE identity_claim = ? AND framework = ? AND status = 'pending') < ?"
+)
 
 
 def _row_to_dict(row: aiosqlite.Row) -> dict:
@@ -85,34 +102,63 @@ class AuthRequestsStore(BaseStore):
         reason: str = "",
         duration_secs: Optional[int] = None,
         project_id: Optional[str] = None,
+        pending_cap: Optional[int] = None,
     ) -> dict:
-        """Create a new pending auth request. Returns the full record."""
+        """Create a new pending auth request. Returns the full record.
+
+        ``pending_cap`` caps how many PENDING rows this (identity_claim,
+        framework) pair may hold. The comparison happens inside the INSERT (see
+        ``_CAP_GUARD``), so it is atomic with the write: the caller must NOT
+        count first and decide, as every request in a concurrent burst would
+        read the same pre-insert count, pass, and insert — and this route takes
+        no credentials, so that burst is free. Raises ``PendingCapExceeded``
+        when the cap is already full.
+
+        ``None`` leaves the store uncapped, for callers that mint exactly one
+        row per freshly-deduped identity (invite redemption) rather than
+        accepting whatever identity_claim a stranger sends.
+        """
         if self._db is None:
             raise RuntimeError("AuthRequestsStore not initialised — call init() first")
 
         request_id = uuid.uuid4().hex
         now = datetime.now(timezone.utc).isoformat()
-
-        await self._db.execute(
-            """
-            INSERT INTO auth_requests
-                (id, identity_claim, framework, requested_scopes, requested_skills,
-                 reason, duration_secs, project_id, status, created_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-            """,
-            (
-                request_id,
-                identity_claim,
-                framework,
-                json.dumps(requested_scopes),
-                json.dumps(requested_skills or []),
-                reason,
-                duration_secs,
-                project_id,
-                now,
-            ),
+        values = (
+            request_id,
+            identity_claim,
+            framework,
+            json.dumps(requested_scopes),
+            json.dumps(requested_skills or []),
+            reason,
+            duration_secs,
+            project_id,
+            now,
         )
+
+        if pending_cap is None:
+            cur = await self._db.execute(
+                f"INSERT INTO auth_requests {_CREATE_COLUMNS} "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+                values,
+            )
+        else:
+            cur = await self._db.execute(
+                f"INSERT INTO auth_requests {_CREATE_COLUMNS} "
+                "SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ? WHERE " + _CAP_GUARD,
+                (*values, identity_claim, framework, pending_cap),
+            )
         await self._db.commit()
+
+        if cur.rowcount == 0:
+            # The guard excluded the row: nothing was written. Read the count
+            # back only to describe the refusal — the decision itself was made
+            # atomically above.
+            raise PendingCapExceeded(
+                key=f"{identity_claim}/{framework}",
+                cap=pending_cap,
+                pending=await self.count_pending_for(identity_claim, framework),
+            )
+
         record = await self.get(request_id)
         if record is None:
             raise RuntimeError(f"auth_request {request_id!r} missing immediately after insert")

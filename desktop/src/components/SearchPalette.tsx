@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { Search, X } from "lucide-react";
-import { getLaunchableApps, getApp } from "@/registry/app-registry";
+import { getSearchableApps, getApp } from "@/registry/app-registry";
 import { useProcessStore } from "@/stores/process-store";
 import { useShortcut } from "@/hooks/use-shortcut-registry";
 import { useInstalledOptionalApps } from "@/hooks/use-installed-optional-apps";
@@ -43,7 +43,7 @@ export function SearchPalette({ open, onClose, onOpenApp }: Props) {
   }, [open]);
 
   const appResults = useMemo<SearchResult[]>(() => {
-    const all = getLaunchableApps(installedOptional);
+    const all = getSearchableApps(installedOptional);
     const q = query.toLowerCase().trim();
 
     return all

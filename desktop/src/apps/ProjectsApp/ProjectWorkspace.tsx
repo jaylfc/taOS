@@ -205,6 +205,11 @@ export function ProjectWorkspace({ project, onChanged, initialTab, filePath }: {
     [members, agentName],
   );
 
+  const isLead = useMemo(() => {
+    if (!currentUserId) return false;
+    return members.some(m => m.member_id === currentUserId && (m.is_lead === 1 || m.member_id === project.lead_member_id));
+  }, [members, currentUserId, project.lead_member_id]);
+
   const openTask = (id: string) => { setTaskParam(id); setOpenTaskId(id); };
   const closeTask = () => { setTaskParam(null); setOpenTaskId(null); };
 
@@ -341,6 +346,7 @@ export function ProjectWorkspace({ project, onChanged, initialTab, filePath }: {
               <ProjectBoard
                 projectId={project.id}
                 currentUserId={currentUserId}
+                isLead={isLead}
                 elementId={scopedElementId}
                 onOpenTask={openTask}
               />
