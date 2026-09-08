@@ -1601,15 +1601,6 @@ wheels = [
 ]
 
 [[package]]
-name = "nodeenv"
-version = "1.10.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/24/bf/d1bda4f6168e0b2e9e5958945e01910052158313224ada5ce1fb2e1113b8/nodeenv-1.10.0.tar.gz", hash = "sha256:996c191ad80897d076bdfba80a41994c2b47c68e224c542b48feba42ba00f8bb", size = 55611, upload-time = "2025-12-20T14:08:54.006Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/88/b2/d0896bdcdc8d28a7fc5717c305f1a861c26e18c05047949fb371034d98bd/nodeenv-1.10.0-py2.py3-none-any.whl", hash = "sha256:5bb13e3eed2923615535339b3c620e76779af4cb4c6a90deccc9e36b274d3827", size = 23438, upload-time = "2025-12-20T14:08:52.782Z" },
-]
-
-[[package]]
 name = "numpy"
 version = "2.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1893,25 +1884,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f4/ed/f2d26ae02d92c2689056838ed59e2a626326ad23c2831d58637d25f6c82a/polars_runtime_32-1.41.2-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:e7016a3deb641b64a31447abbbee0f34bd020a6a9ae34ee6b743837def15e2a4", size = 54328561, upload-time = "2026-05-29T17:37:32.587Z" },
     { url = "https://files.pythonhosted.org/packages/9b/c4/9c3831cc885dc7769e59abf8f583821a5fb4403fd0e4eba0ccc6d47a3d4b/polars_runtime_32-1.41.2-cp310-abi3-win_amd64.whl", hash = "sha256:1e5e5377c315e0dcafdfb2a31adc546abbaeb3f9cb1864e6536523d2af473265", size = 51978643, upload-time = "2026-05-29T17:37:37.443Z" },
     { url = "https://files.pythonhosted.org/packages/cd/c6/79e9f3f270270d7ed5575d92b7bfef49f01abd9275447161275b23b553a8/polars_runtime_32-1.41.2-cp310-abi3-win_arm64.whl", hash = "sha256:843d96f69d18eca53429c1198e58891db7f18111f83b9c419bb45ad9d73eaed5", size = 46006901, upload-time = "2026-05-29T17:37:42.522Z" },
-]
-
-[[package]]
-name = "prisma"
-version = "0.15.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "click" },
-    { name = "httpx" },
-    { name = "jinja2" },
-    { name = "nodeenv" },
-    { name = "pydantic" },
-    { name = "python-dotenv" },
-    { name = "tomlkit" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/4d/55/d4e07cbf40d5f1ab6d1c42c23613d442bf0d06abf7f70bec280aefb28249/prisma-0.15.0.tar.gz", hash = "sha256:5cd6402aa8322625db3fc1152040404e7fc471fe7f8fa3a314fa8a99529ca107", size = 154975, upload-time = "2024-08-16T02:54:03.919Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/62/6d/84533aa3fcc395235d58c3412fb86013653b697d91fc53f379c83bbb0b79/prisma-0.15.0-py3-none-any.whl", hash = "sha256:de949cc94d3d91243615f22ff64490aa6e2d7cb81aabffce53d92bd3977c09a4", size = 173809, upload-time = "2024-08-16T02:54:02.326Z" },
 ]
 
 [[package]]
@@ -3082,7 +3054,6 @@ proxy = [
     { name = "mcp" },
     { name = "orjson" },
     { name = "polars" },
-    { name = "prisma" },
     { name = "pydantic-settings" },
     { name = "pyjwt" },
     { name = "pynacl" },
@@ -3152,7 +3123,6 @@ requires-dist = [
     { name = "pillow", specifier = ">=10.0" },
     { name = "pillow", marker = "extra == 'worker'", specifier = ">=10.0" },
     { name = "polars", marker = "extra == 'proxy'", specifier = ">=1.38.1,<2.0" },
-    { name = "prisma", marker = "extra == 'proxy'", specifier = ">=0.11.0" },
     { name = "psutil", specifier = ">=5.9.0" },
     { name = "pydantic-settings", marker = "extra == 'proxy'", specifier = ">=2.14.1,<3.0" },
     { name = "pyjwt", marker = "extra == 'proxy'", specifier = ">=2.13.0,<3.0" },
@@ -3222,15 +3192,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/fd/18/a545c4ea42af3df6effd7d13d250ba77a0a86fb20393143bbb9a92e434d4/tokenizers-0.22.2-cp39-abi3-win32.whl", hash = "sha256:a6bf3f88c554a2b653af81f3204491c818ae2ac6fbc09e76ef4773351292bc92", size = 2502363, upload-time = "2026-01-05T10:45:20.593Z" },
     { url = "https://files.pythonhosted.org/packages/65/71/0670843133a43d43070abeb1949abfdef12a86d490bea9cd9e18e37c5ff7/tokenizers-0.22.2-cp39-abi3-win_amd64.whl", hash = "sha256:c9ea31edff2968b44a88f97d784c2f16dc0729b8b143ed004699ebca91f05c48", size = 2747786, upload-time = "2026-01-05T10:45:18.411Z" },
     { url = "https://files.pythonhosted.org/packages/72/f4/0de46cfa12cdcbcd464cc59fde36912af405696f687e53a091fb432f694c/tokenizers-0.22.2-cp39-abi3-win_arm64.whl", hash = "sha256:9ce725d22864a1e965217204946f830c37876eee3b2ba6fc6255e8e903d5fcbc", size = 2612133, upload-time = "2026-01-05T10:45:17.232Z" },
-]
-
-[[package]]
-name = "tomlkit"
-version = "0.15.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/51/db/03eaf4331631ef6b27d6e3c9b68c54dc6f0d63d87201fed600cc409307fd/tomlkit-0.15.0.tar.gz", hash = "sha256:7d1a9ecba3086638211b13814ea79c90dd54dd11993564376f3aa92271f5c7a3", size = 161875, upload-time = "2026-05-10T07:38:22.245Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6a/43/8bd850ee71a191bf072e31302c73a66be413fecdd98fdcd111ecbcce13ca/tomlkit-0.15.0-py3-none-any.whl", hash = "sha256:4dbc8f0fc024412b57ced8757ac7461305126a648ff8c2c807fcb8e133a78738", size = 41328, upload-time = "2026-05-10T07:38:23.517Z" },
 ]
 
 [[package]]
