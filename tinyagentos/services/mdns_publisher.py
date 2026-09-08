@@ -49,8 +49,10 @@ def _detect_primary_ipv4() -> list[str]:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.connect(("8.8.8.8", 80))
             primary = sock.getsockname()[0]
-    except OSError:
-        pass
+    except OSError as exc:
+        # No default route (offline LAN, gateway-less switch): the ifaddr
+        # enumeration below still finds the interfaces.
+        logger.debug("mDNS: default-route probe failed, using ifaddr: %s", exc)
 
     try:
         import ifaddr
@@ -118,6 +120,11 @@ class MdnsPublisher:
             try:
                 await zc.async_register_service(info, allow_name_change=True)
             except Exception:
+                # async_register_service can raise after the AsyncZeroconf
+                # is constructed (port conflict, multicast disabled mid-init,
+                # etc.). Close the half-built instance so its sockets and
+                # multicast subscriptions don't leak; re-raise into the
+                # outer except for logging.
                 try:
                     await zc.async_close()
                 except Exception:
