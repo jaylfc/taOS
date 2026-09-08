@@ -1,0 +1,2 @@
+### Fixed
+- **notification sink XSS via worker heartbeat drain_reason**: removed the backwards `.replace` chain in `cluster/manager.py` that corrupted `drain_reason` before it reached the HTMX fragment. `html.escape()` already applies at the sink in `routes/notifications.py`, so the pre-sink sanitisation was both wrong and unnecessary. Added RED tests proving drain_reason markup is escaped end-to-end through the heartbeat path.

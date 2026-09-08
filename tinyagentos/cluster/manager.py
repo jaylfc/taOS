@@ -448,10 +448,11 @@ class ClusterManager:
         # Worker-initiated drain notification (taOS #890 C2).
         # Emit when the worker transitions into draining/update-available on
         # its own initiative, so the operator sees it in the activity feed.
-        # Validate: only trusted status values; sanitize drain_reason to
-        # prevent injection into notification UI.
+        # Validate: only trusted status values; HTML escaping is applied at the
+        # notification sink (routes/notifications.py), so drain_reason is passed
+        # through verbatim here.
         if self._notifications and status in _VALID_STATUSES and prev_status not in (status,):
-            reason = (drain_reason or "unspecified").replace("'", "\\'").replace("\\", "\\\\")[:200]
+            reason = drain_reason or "unspecified"
             event_type = f"worker.{status}" if status != "draining" else "worker.drain"
             title_map = {
                 "draining": f"Worker '{worker.name}' self-initiated drain",

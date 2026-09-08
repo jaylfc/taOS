@@ -6,7 +6,11 @@ broker access-request route builds its message out of the free-form
 ``agent_identity`` / ``provider_id`` / ``reason`` an agent posts.  The fragment
 must therefore escape at the sink, while the JSON view keeps the raw text.
 """
+import asyncio
+
 import pytest
+
+from tinyagentos.cluster.worker_protocol import WorkerInfo
 
 # Markup that executes if it reaches the dashboard unescaped.
 SCRIPT_TITLE = "<script>alert(1)</script>"
@@ -68,3 +72,43 @@ class TestNotificationFragmentEscaping:
         )
         body = await _fragment(client)
         assert "&#x274C;" in body
+
+    async def test_heartbeat_drain_reason_escaped_in_fragment(self, client, app):
+        """A worker heartbeat with a draining status and HTML drain_reason must
+        render escaped in the HTMX notification fragment."""
+        worker = WorkerInfo(
+            name="xss-hb-worker",
+            url="http://localhost:9000",
+            capabilities=["chat"],
+            platform="linux",
+        )
+        await app.state.cluster_manager.register_worker(worker)
+        app.state.cluster_manager.heartbeat(
+            "xss-hb-worker",
+            status="draining",
+            drain_reason="<i>update me</i>",
+        )
+        await asyncio.sleep(0.1)
+        body = await _fragment(client)
+        assert "&lt;i&gt;update me&lt;/i&gt;" in body
+        assert "<i>" not in body
+
+    async def test_heartbeat_drain_reason_not_corrupted_by_replace_chain(self, client, app):
+        """The manager drain_reason sanitisation must not corrupt the text
+        before it reaches the HTML sink."""
+        worker = WorkerInfo(
+            name="xss-hb-worker2",
+            url="http://localhost:9000",
+            capabilities=["chat"],
+            platform="linux",
+        )
+        await app.state.cluster_manager.register_worker(worker)
+        app.state.cluster_manager.heartbeat(
+            "xss-hb-worker2",
+            status="draining",
+            drain_reason="it's a test",
+        )
+        await asyncio.sleep(0.1)
+        body = await _fragment(client)
+        assert "it&#x27;s a test" in body
+        assert "it\\'s a test" not in body
