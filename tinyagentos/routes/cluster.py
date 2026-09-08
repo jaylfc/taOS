@@ -309,6 +309,7 @@ class MoveRequest(BaseModel):
 
 @router.get("/api/cluster/workers")
 async def list_workers(request: Request):
+    is_admin = getattr(request.state, "is_admin", False)
     cluster = request.app.state.cluster_manager
     pairing = getattr(request.app.state, "cluster_pairing", None)
     registry = getattr(request.app.state, "registry", None)
@@ -323,6 +324,13 @@ async def list_workers(request: Request):
         # non-utf8 signing key, and (2) even when serialization didn't
         # crash, the secret has no business being on the wire.
         d.pop("signing_key", None)
+        if not is_admin:
+            result.append({
+                "name": d["name"],
+                "status": d["status"],
+                "tier_id": d.get("tier_id", ""),
+            })
+            continue
         # Surface the persistent auth state from the pairing store so the
         # Cluster UI can show whether a node's signing key is live (not
         # revoked/blocked) and offer revoke/block/unblock actions. A worker
