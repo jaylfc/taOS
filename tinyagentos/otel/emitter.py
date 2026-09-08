@@ -26,7 +26,6 @@ import hashlib
 import json
 import logging
 import os
-import secrets
 import time
 from typing import Any
 
@@ -44,11 +43,6 @@ _SPAN_KIND_CLIENT = 3
 _STATUS_OK = "STATUS_CODE_OK"
 _STATUS_ERROR = "STATUS_CODE_ERROR"
 _STATUS_UNSET = "STATUS_CODE_UNSET"
-
-
-def _make_span_id() -> str:
-    """Mint a random 64-bit OTel spanId (16 hex chars)."""
-    return secrets.token_bytes(8).hex()
 
 
 def _ns_from_envelope(env: dict, *, use_end: bool = False) -> int:
@@ -101,7 +95,9 @@ def _build_otlp_span(env: dict) -> dict | None:  # noqa: C901  (complexity is ma
     # Stable conversation/trace ids
     conversation_id = env.get("thread_id") or env.get("trace_id")
     trace_id = _make_trace_id(conversation_id)
-    span_id = _make_span_id()
+    span_id = hashlib.sha256(
+        env["id"].encode()
+    ).digest()[:8].hex()
 
     # Parent span id (from envelope parent_id; we treat it as a spanId hint)
     parent_span_id: str | None = None
