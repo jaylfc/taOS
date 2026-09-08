@@ -131,7 +131,7 @@ def _resolve_browser_cookie_key(data_dir: "Path") -> str:
     """Resolve the SQLCipher key for the browser cookie store.
 
     Precedence:
-      1. TAOS_BROWSER_COOKIE_KEY_HEX env var (must be 64 hex chars) — for
+       1. TAOS_BROWSER_COOKIE_KEY_HEX env var (must be 64 hex chars) -- for
          recovery / pinned-key deployments.
       2. data_dir / "browser_cookie_key.hex" — read existing per-install
          random key, or create a new one with secrets.token_hex(32) if
@@ -167,30 +167,6 @@ def _resolve_browser_cookie_key(data_dir: "Path") -> str:
 
 
 def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) -> FastAPI:
-    import logging
-    import logging.config
-
-    log_level = os.environ.get("TAOS_LOG_LEVEL", "INFO").upper()
-    logging.config.dictConfig({
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {
-            "default": {
-                "format": "%(asctime)s %(levelname)s %(name)s: %(message)s",
-            },
-        },
-        "handlers": {
-            "default": {
-                "class": "logging.StreamHandler",
-                "formatter": "default",
-            },
-        },
-        "root": {
-            "handlers": ["default"],
-            "level": log_level,
-        },
-    })
-
     from tinyagentos.registry import AppRegistry
     from tinyagentos.hardware import get_hardware_profile
 

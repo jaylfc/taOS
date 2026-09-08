@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 from tinyagentos.app import PROJECT_DIR, create_app, load_config
+from tinyagentos.logging_config import configure_logging
 
 # Bound uvicorn's graceful-shutdown wait for open connections on SIGTERM.
 # Long-lived SSE streams + cluster heartbeats would otherwise keep uvicorn
@@ -64,9 +65,11 @@ def main() -> None:
             app.state.browser_proxy_port = 0
         import uvicorn
 
-        # backlog=128 — see issue #323. Keeps the kernel accept queue from
+        configure_logging()
+
+        # backlog=128 -- see issue #323. Keeps the kernel accept queue from
         # silently growing into the thousands if the event loop ever wedges.
-        # timeout_graceful_shutdown — without it uvicorn waits indefinitely for
+        # timeout_graceful_shutdown -- without it uvicorn waits indefinitely for
         # long-lived connections (SSE streams, cluster heartbeats) to close on
         # SIGTERM, so a restart hung the full 45s systemd stop timeout. Bound it
         # so the lifespan shutdown actually runs and the process exits fast.

@@ -1,3 +1,3 @@
 ### Fixed
 
-- Added `logging.config.dictConfig()` in `create_app()` to configure the root logger with a StreamHandler and formatter carrying `%(asctime)s %(levelname)s %(name)s: %(message)s`. Added `TAOS_LOG_LEVEL` environment variable defaulting to INFO, which controls the root logger level.
+- Moved logging configuration out of `create_app()` into an idempotent `configure_logging()` in `tinyagentos/logging_config.py`, called once from the server entrypoint. `create_app()` no longer replaces the root logger's handlers, so pytest's `caplog` and host-installed handlers are preserved across factory calls.

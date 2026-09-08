@@ -1,48 +1,76 @@
 import logging
-import os
 
 import pytest
 
-from tinyagentos.app import create_app
+from tinyagentos.logging_config import configure_logging
 
 
-class TestLoggingConfig:
-    def test_root_logger_has_handler_after_create_app(self, tmp_path):
-        app = create_app(data_dir=tmp_path / "data")
-        handlers = logging.getLogger().handlers
-        assert handlers != [], "root logger should have at least one handler after create_app()"
+@pytest.fixture(autouse=True)
+def _isolate_root_logger():
+    root = logging.getLogger()
+    saved_handlers = list(root.handlers)
+    saved_level = root.level
+    try:
+        yield
+    finally:
+        root.handlers = saved_handlers
+        root.level = saved_level
 
-    def test_logging_config_has_formatter_with_asctime_levelname_name(self, tmp_path):
-        app = create_app(data_dir=tmp_path / "data")
+
+class TestConfigureLogging:
+    def test_installs_single_handler_with_expected_formatter_when_empty(self):
         root = logging.getLogger()
-        assert len(root.handlers) > 0, "root logger should have at least one handler"
+        root.handlers = []
+        root.level = logging.WARNING
+
+        configure_logging()
+
+        assert len(root.handlers) == 1
         handler = root.handlers[0]
-        assert handler.formatter is not None, "handler should have a formatter"
-        formatter = handler.formatter
-        assert "%(asctime)s" in formatter._fmt, "formatter should include %(asctime)s"
-        assert "%(levelname)s" in formatter._fmt, "formatter should include %(levelname)s"
-        assert "%(name)s" in formatter._fmt, "formatter should include %(name)s"
+        assert isinstance(handler, logging.StreamHandler)
+        assert handler.formatter is not None
+        fmt = handler.formatter._fmt
+        assert "%(asctime)s" in fmt
+        assert "%(levelname)s" in fmt
+        assert "%(name)s" in fmt
 
-    def test_taos_log_level_env_var(self, tmp_path):
-        # Test with TAOS_LOG_LEVEL=DEBUG
-        with pytest.MonkeyPatch().context() as mp:
-            mp.setenv("TAOS_LOG_LEVEL", "DEBUG")
-            # Need to re-create app after env change, but create_app reads env at call time
-            # So we just verify the dictConfig reads the env var
-            app = create_app(data_dir=tmp_path / "data")
-            root = logging.getLogger()
-            # Level should be DEBUG (10) when TAOS_LOG_LEVEL=DEBUG
-            assert root.level == logging.DEBUG, (
-                f"root logger level should be DEBUG (10), got {root.level}"
-            )
-
-    def test_taos_log_level_defaults_to_info(self, tmp_path):
-        # Test default TAOS_LOG_LEVEL=INFO
-        # reset env
-        if "TAOS_LOG_LEVEL" in os.environ:
-            del os.environ["TAOS_LOG_LEVEL"]
-        app = create_app(data_dir=tmp_path / "data")
+    def test_idempotent_does_not_add_second_handler(self):
         root = logging.getLogger()
-        assert root.level == logging.INFO, (
-            f"root logger level should be INFO (20) by default, got {root.level}"
-        )
+        root.handlers = []
+        root.level = logging.WARNING
+
+        configure_logging()
+        configure_logging()
+
+        assert len(root.handlers) == 1
+
+    def test_preserves_pre_existing_handler(self):
+        root = logging.getLogger()
+        root.handlers = []
+        root.level = logging.WARNING
+        null_handler = logging.NullHandler()
+        root.addHandler(null_handler)
+
+        configure_logging()
+
+        assert null_handler in root.handlers
+
+    def test_debug_env_sets_root_level_debug(self, monkeypatch):
+        monkeypatch.setenv("TAOS_LOG_LEVEL", "DEBUG")
+        root = logging.getLogger()
+        root.handlers = []
+        root.level = logging.WARNING
+
+        configure_logging()
+
+        assert root.level == logging.DEBUG
+
+    def test_unset_env_defaults_root_level_info(self, monkeypatch):
+        monkeypatch.delenv("TAOS_LOG_LEVEL", raising=False)
+        root = logging.getLogger()
+        root.handlers = []
+        root.level = logging.WARNING
+
+        configure_logging()
+
+        assert root.level == logging.INFO
