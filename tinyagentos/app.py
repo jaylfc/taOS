@@ -705,7 +705,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         try:
             from tinyagentos.services.mdns_publisher import _detect_primary_ipv4
             from tinyagentos.browser_sessions import wire_browser_runtime
-            _host_ip = _detect_primary_ipv4() or "127.0.0.1"
+            _host_ips = _detect_primary_ipv4()
+            _host_ip = _host_ips[0] if _host_ips else "127.0.0.1"
             await wire_browser_runtime(
                 app.state, hardware_profile, agent_browsers, browser_sessions,
                 host_ip=_host_ip,
