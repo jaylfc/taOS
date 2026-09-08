@@ -28,9 +28,10 @@ router = APIRouter()
 
 _update_jobs: dict[str, dict] = {}
 
-# Admin-only fleet mutations / worker execution (tsk-exyzu4). Same gate as
-# revoke/block/unblock but as a dependency so the host local token (taosctl,
-# the taOS agent) is honoured as well as an admin session. Worker-facing
+# Admin-only fleet mutations / worker execution (tsk-exyzu4). Uses
+# `require_admin`, which accepts an admin session or the host local token
+# (taosctl, the taOS agent). This is broader than the `_require_admin` gate
+# used by revoke/block/unblock, which accepts only an admin session cookie. Worker-facing
 # paths (heartbeat, pairing, leases, capabilities) keep their HMAC /
 # possession gates and are deliberately not covered by this.
 _ADMIN = [Depends(require_admin)]

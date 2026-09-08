@@ -1,3 +1,0 @@
-### Fixed
-
-- Q2-1 security hygiene sweep: `litellm_auth` and `routes/agents.py` now compare secrets with `secrets.compare_digest` instead of `==`; `OpenCodeServer.write_config` and its serve.log creation use `atomic_write_text(mode=0o600)` / `os.open(..., 0o600)` instead of `write_text` + `chmod`; `TorrentDownloader._params_from_torrent_url` is async and runs `httpx.get` in `asyncio.to_thread` so it no longer blocks the event loop; `KnowledgeStore.update_item` validates column names against a frozenset allowlist and raises on unknown; the `search_fts` LIKE fallback now escapes `%` and `_` with an `ESCAPE` clause.
