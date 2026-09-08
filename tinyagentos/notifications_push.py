@@ -401,42 +401,42 @@ async def _clear_dead_push_token(device_store, device_id: str, push_token: str) 
 
 async def _send_one_device(
     device: dict,
-    payload: dict,
+    base_payload: dict,
     actions: list[dict] | None,
     apns_sender,
     up_sender,
     device_store=None,
 ) -> str:
+    from tinyagentos.push import send_device_push
     from tinyagentos.push.apns import ApnsUnregistered
 
-    platform = device.get("platform", "")
     push_token = device.get("push_token", "")
     if not push_token:
         return "skipped"
+    platform = device.get("platform", "")
+    if platform in ("ios", "watchos"):
+        from tinyagentos.push.apns import build_apns_payload
+        payload = build_apns_payload(
+            title=base_payload["title"],
+            body=base_payload["body"],
+            data=base_payload.get("data"),
+            category=base_payload.get("category"),
+            actions=actions,
+            image=base_payload.get("image"),
+        )
+    elif platform == "android":
+        from tinyagentos.push.unifiedpush import build_unifiedpush_payload
+        payload = build_unifiedpush_payload(
+            title=base_payload["title"],
+            body=base_payload["body"],
+            data=base_payload.get("data"),
+            actions=actions,
+            image=base_payload.get("image"),
+        )
+    else:
+        return "skipped"
     try:
-        if platform in ("ios", "watchos"):
-            from tinyagentos.push.apns import build_apns_payload
-            apns_payload = build_apns_payload(
-                title=payload["title"],
-                body=payload["body"],
-                data=payload.get("data"),
-                category=payload.get("category"),
-                actions=actions,
-                image=payload.get("image"),
-            )
-            ok = await apns_sender.send(push_token, apns_payload)
-        elif platform == "android":
-            from tinyagentos.push.unifiedpush import build_unifiedpush_payload
-            up_payload = build_unifiedpush_payload(
-                title=payload["title"],
-                body=payload["body"],
-                data=payload.get("data"),
-                actions=actions,
-                image=payload.get("image"),
-            )
-            ok = await up_sender.send(push_token, up_payload)
-        else:
-            return "skipped"
+        ok = await send_device_push(device, payload, apns_sender=apns_sender, up_sender=up_sender)
     except ApnsUnregistered as exc:
         # 410 is permanent, not a retryable failure: keep counting it as such
         # and the dead token is pushed to forever. Prune it instead, exactly as
