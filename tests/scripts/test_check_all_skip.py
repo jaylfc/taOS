@@ -98,6 +98,9 @@ class TestMainZeroCollectedWithDefinedTests:
                 "skipped": 0,
                 "passed": 0,
                 "failed": 0,
+                "errors": 0,
+                "returncode": 5,
+                "tail": "",
                 "import_guards": [],
                 "defined_tests": check_mod._count_defined_tests(str(test_file)),
             }
@@ -123,6 +126,9 @@ class TestMainZeroCollectedWithDefinedTests:
                 "skipped": 0,
                 "passed": 0,
                 "failed": 0,
+                "errors": 0,
+                "returncode": 5,
+                "tail": "",
                 "import_guards": [],
                 "defined_tests": 0,
             }
@@ -157,6 +163,9 @@ class TestMainZeroCollectedWithDefinedTests:
                 "skipped": 0,
                 "passed": 0,
                 "failed": 0,
+                "errors": 0,
+                "returncode": 5,
+                "tail": "",
                 "import_guards": [],
                 "defined_tests": check_mod._count_defined_tests(str(test_file)),
             }
@@ -183,11 +192,13 @@ class TestMainZeroCollectedWithDefinedTests:
         results = {
             str(zc_file): {
                 "total": 0, "skipped": 0, "passed": 0, "failed": 0,
+                "errors": 0, "returncode": 5, "tail": "",
                 "import_guards": [],
                 "defined_tests": check_mod._count_defined_tests(str(zc_file)),
             },
             str(waived_file): {
                 "total": 2, "skipped": 2, "passed": 0, "failed": 0,
+                "errors": 0, "returncode": 0, "tail": "",
                 "import_guards": ["pytest.importorskip"],
                 "defined_tests": 2,
             },
@@ -213,6 +224,9 @@ class TestMainAllSkipStillFails:
                 "skipped": 3,
                 "passed": 0,
                 "failed": 0,
+                "errors": 0,
+                "returncode": 0,
+                "tail": "",
                 "import_guards": [],
                 "defined_tests": 3,
             }
@@ -236,6 +250,9 @@ class TestMainAllSkipStillFails:
                 "skipped": 3,
                 "passed": 0,
                 "failed": 0,
+                "errors": 0,
+                "returncode": 0,
+                "tail": "",
                 "import_guards": [],
                 "defined_tests": 3,
             }
@@ -276,6 +293,9 @@ class TestMainPartialSkipsPass:
                 "skipped": 2,
                 "passed": 3,
                 "failed": 0,
+                "errors": 0,
+                "returncode": 0,
+                "tail": "",
                 "import_guards": [],
                 "defined_tests": 5,
             }
@@ -289,3 +309,94 @@ class TestMainPartialSkipsPass:
         assert rc == 0
         captured = capsys.readouterr()
         assert "2/5 tests skip" in captured.out
+
+
+class TestErrorsCountedAndReported:
+    def test_errors_parsed_from_stdout(
+        self, check_mod, tmp_path: Path
+    ) -> None:
+        test_file = tmp_path / "test_errors.py"
+        test_file.write_text(
+            "def test_a():\n    assert True\n"
+            "def test_b():\n    assert True\n"
+            "def test_c():\n    assert True\n"
+        )
+        fake_proc = type("FakeProc", (), {})()
+        fake_proc.returncode = 1
+        fake_proc.stdout = (
+            "ERROR tests/test_errors.py::test_a - RuntimeError: boom\n"
+            "ERROR tests/test_errors.py::test_b - RuntimeError: boom\n"
+            "ERROR tests/test_errors.py::test_c - RuntimeError: boom\n"
+            "3 errors in 0.10s\n"
+        )
+        fake_proc.stderr = ""
+
+        with patch.object(check_mod.subprocess, "run", return_value=fake_proc):
+            results = check_mod.get_test_outcomes([str(test_file)])
+
+        info = results[str(test_file)]
+        assert info["errors"] == 3
+        assert info["total"] == 3
+
+    def test_error_file_fails_without_collection_yielded_message(
+        self, check_mod, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        test_file = tmp_path / "test_errors.py"
+        test_file.write_text(
+            "def test_a():\n    assert True\n"
+            "def test_b():\n    assert True\n"
+            "def test_c():\n    assert True\n"
+        )
+        results = {
+            str(test_file): {
+                "total": 3,
+                "skipped": 0,
+                "passed": 0,
+                "failed": 0,
+                "errors": 3,
+                "returncode": 1,
+                "tail": "ERROR tests/test_errors.py::test_a - RuntimeError: boom\n",
+                "import_guards": [],
+                "defined_tests": 3,
+            }
+        }
+        with patch.object(check_mod, "resolve_base_ref", return_value="origin/dev"):
+            with patch.object(check_mod, "get_test_outcomes", return_value=results):
+                with patch.object(check_mod, "find_changed_test_files", return_value=[str(test_file)]):
+                    with patch.object(check_mod, "get_pr_body", return_value=""):
+                        with patch.object(check_mod.os, "environ", {"BASE_REF": "origin/dev"}):
+                            rc = check_mod.main()
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "collection yielded" not in captured.out
+        assert "boom" in captured.out
+
+    def test_rc5_no_tests_ran_still_reports_collection_message(
+        self, check_mod, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        test_file = tmp_path / "test_empty.py"
+        test_file.write_text(
+            "def test_a():\n    assert True\n"
+        )
+        results = {
+            str(test_file): {
+                "total": 0,
+                "skipped": 0,
+                "passed": 0,
+                "failed": 0,
+                "errors": 0,
+                "returncode": 5,
+                "tail": "no tests ran\n",
+                "import_guards": [],
+                "defined_tests": 1,
+            }
+        }
+        with patch.object(check_mod, "resolve_base_ref", return_value="origin/dev"):
+            with patch.object(check_mod, "get_test_outcomes", return_value=results):
+                with patch.object(check_mod, "find_changed_test_files", return_value=[str(test_file)]):
+                    with patch.object(check_mod, "get_pr_body", return_value=""):
+                        with patch.object(check_mod.os, "environ", {"BASE_REF": "origin/dev"}):
+                            rc = check_mod.main()
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "collection yielded 0 of 1 defined tests" in captured.out
