@@ -52,10 +52,10 @@ def find_changed_test_files(base_ref: str) -> list[str]:
 
 
 def get_test_outcomes(test_files: list[str]) -> dict[str, dict]:
-    """Run pytest -rs on each test file and return skip/pass/fail counts.
+    """Run pytest -rs on each test file and return skip/pass/fail/error counts.
 
-    Returns: {filename: {"total": int, "skipped": int, "passed": int, "failed": int,
-                       "import_guards": [str]}}
+    Returns: {filename: {"total": int, "skipped": int, "passed": int, "failed": int, "errors": int,
+                       "returncode": int, "tail": str, "import_guards": [str]}}
     """
     results: dict[str, dict] = {}
 
@@ -88,6 +88,7 @@ def get_test_outcomes(test_files: list[str]) -> dict[str, dict]:
         skipped = 0
         passed = 0
         failed = 0
+        errors = 0
         import_guards: list[str] = []
 
         # Count from summary line: "X passed, Y skipped, Z failed"
@@ -100,12 +101,15 @@ def get_test_outcomes(test_files: list[str]) -> dict[str, dict]:
         m = re.search(r"(\d+)\s+failed", output)
         if m:
             failed = int(m.group(1))
-        total = passed + skipped + failed
+        m = re.search(r"(\d+)\s+errors?", output)
+        if m:
+            errors = int(m.group(1))
+        total = passed + skipped + failed + errors
 
         # Also count from individual test outcome lines: "test_name SKIPPED"
-        # Pattern: word characters, dash, underscore, followed by SKIPPED/FAILED/PASSED
+        # Pattern: word characters, dash, underscore, followed by SKIPPED/FAILED/PASSED/ERROR
         outcome_lines = re.findall(
-            r"^([\w\.-]+)\s+(SKIPPED|FAILED|PASSED)\s*$",
+            r"^([\w\.-]+)\s+(SKIPPED|FAILED|PASSED|ERROR)\s*$",
             output,
             re.MULTILINE,
         )
@@ -121,6 +125,8 @@ def get_test_outcomes(test_files: list[str]) -> dict[str, dict]:
                 failed += 1
             elif outcome == "PASSED":
                 passed += 1
+            elif outcome == "ERROR":
+                errors += 1
 
         # If we couldn't parse total from summary, use outcome lines
         if total == 0:
@@ -128,12 +134,19 @@ def get_test_outcomes(test_files: list[str]) -> dict[str, dict]:
             skipped = sum(1 for _o, o in outcome_lines if o == "SKIPPED")
             passed = sum(1 for _o, o in outcome_lines if o == "PASSED")
             failed = sum(1 for _o, o in outcome_lines if o == "FAILED")
+            errors = sum(1 for _o, o in outcome_lines if o == "ERROR")
+
+        tail_lines = output.splitlines()[-40:]
+        tail = "\n".join(tail_lines)
 
         results[filepath] = {
             "total": total,
             "skipped": skipped,
             "passed": passed,
             "failed": failed,
+            "errors": errors,
+            "returncode": proc.returncode,
+            "tail": tail,
             "import_guards": import_guards,
             "defined_tests": _count_defined_tests(filepath),
         }
@@ -272,16 +285,40 @@ def main() -> int:
         total = info["total"]
         defined_tests = info["defined_tests"]
         guards = info["import_guards"]
+        errors = info.get("errors", 0)
+        tail = info.get("tail", "")
 
         if total == 0:
             if defined_tests > 0:
-                print(
-                    f"FAIL: {filepath} — collection yielded 0 of "
-                    f"{defined_tests} defined tests"
-                )
+                if info.get("returncode") == 5:
+                    msg = (
+                        f"FAIL: {filepath} — collection yielded 0 of "
+                        f"{defined_tests} defined tests"
+                    )
+                elif errors > 0:
+                    msg = (
+                        f"FAIL: {filepath} — {errors} setup/teardown errors"
+                    )
+                else:
+                    msg = (
+                        f"FAIL: {filepath} — no parseable outcomes for "
+                        f"{defined_tests} defined tests"
+                    )
+                print(msg)
+                if tail:
+                    print(tail)
                 any_fail = True
             else:
                 print(f"WARNING: {filepath} has 0 test outcomes, skipping check")
+            continue
+
+        if errors > 0:
+            print(
+                f"FAIL: {filepath} — {errors} setup/teardown errors"
+            )
+            if tail:
+                print(tail)
+            any_fail = True
             continue
 
         if skip_count == total:
@@ -313,6 +350,9 @@ def main() -> int:
     zero_collected_files = sum(
         1 for info in results.values() if info["total"] == 0 and info["defined_tests"] > 0
     )
+    setup_error_files = sum(
+        1 for info in results.values() if info.get("errors", 0) > 0
+    )
     # The error line must mirror exactly the conditions that set any_fail:
     # a WAIVED all-skip file did not fail, so it must not be counted here
     # (all_skip_files keeps including waived files for the OK-branch note).
@@ -329,6 +369,8 @@ def main() -> int:
             parts.append(f"{unwaived_all_skip} file(s) have all tests skipping")
         if zero_collected_files > 0:
             parts.append(f"{zero_collected_files} file(s) yielded no collected tests")
+        if setup_error_files > 0:
+            parts.append(f"{setup_error_files} file(s) had setup/teardown errors")
         print(f"\n::error:: {', '.join(parts)} — see above for details")
         return 1
 
