@@ -36,6 +36,7 @@ from typing import Any
 import aiosqlite
 
 from tinyagentos.db_migrations import apply_wal_pragmas_async
+from tinyagentos.otel.span_store import _safe_slug
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +137,12 @@ def _bucket_key(ts: float) -> str:
 
 
 def _agent_trace_dir(data_dir: Path, slug: str) -> Path:
-    return data_dir / "trace" / slug
+    if not slug or slug in {".", ".."} or "/" in slug or "\\" in slug:
+        raise ValueError(f"invalid agent slug {slug!r}: must match [a-z0-9._-]+")
+    safe = _safe_slug(slug)
+    if safe == "_system":
+        raise ValueError(f"invalid agent slug {slug!r}: must match [a-z0-9._-]+")
+    return (data_dir / "trace" / safe).resolve()
 
 
 def _bucket_db_path(data_dir: Path, slug: str, bucket: str) -> Path:

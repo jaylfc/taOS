@@ -606,12 +606,89 @@ async def test_record_gpu_op_kind_accepted(tmp_path):
         duration_ms=1200,
         payload={"op": "load", "outcome": "ok", "wait_ms": 0,
                  "queue_position_at_enqueue": 0, "queue_depth_at_admit": 0,
-                 "required_vram_mb": 2048, "free_vram_mb_at_admit": 8192,
-                 "reserved_vram_mb_at_admit": 0, "resident_models_at_admit": 0,
+                 "required_vram_mb": 2048, "free_vram_mb_at_enqueue": 8192,
+                 "free_vram_mb_at_admit": 8192, "reserved_vram_mb_at_admit": 0,
+                 "resident_models_at_admit": 0,
                  "evictions_triggered": [], "priority": 20,
                  "submitter": "_system_"},
     )
     assert env["kind"] == "gpu_op"
     rows = await store.list(kind="gpu_op")
     assert rows and rows[0]["payload"]["outcome"] == "ok"
+    await store.close()
+
+
+# ---------------------------------------------------------------------------
+# 16. _agent_trace_dir rejects path-traversal slugs (S2-9)
+# ---------------------------------------------------------------------------
+
+class TestAgentTraceDirPathSafety:
+    """_agent_trace_dir must never produce a path outside data_dir."""
+
+    @pytest.mark.parametrize("bad_slug", [
+        "../x",
+        "a/b",
+        "..",
+        "",
+        "../../etc/passwd",
+        "foo\\bar",
+        "foo;rm -rf /",
+    ])
+    def test_agent_trace_dir_rejects_traversal_slugs(self, tmp_path, bad_slug):
+        from tinyagentos.trace_store import _agent_trace_dir
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        with pytest.raises(ValueError, match="invalid agent slug"):
+            _agent_trace_dir(data_dir, bad_slug)
+
+    def test_agent_trace_dir_valid_slug_inside_data_dir(self, tmp_path):
+        from tinyagentos.trace_store import _agent_trace_dir
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        result = _agent_trace_dir(data_dir, "my-agent-123")
+        assert result.is_relative_to(data_dir)
+
+    def test_agent_trace_dir_empty_slug_raises(self, tmp_path):
+        from tinyagentos.trace_store import _agent_trace_dir
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        with pytest.raises(ValueError, match="invalid agent slug"):
+            _agent_trace_dir(data_dir, "")
+
+    def test_no_path_created_outside_data_dir_for_traversal(self, tmp_path):
+        from tinyagentos.trace_store import _agent_trace_dir
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        # Attempt the traversal - it must raise, not silently write elsewhere.
+        with pytest.raises(ValueError):
+            _agent_trace_dir(data_dir, "../../escaped-agent")
+        # Confirm nothing was written outside data_dir.
+        for p in tmp_path.rglob("*"):
+            try:
+                if p.is_relative_to(data_dir):
+                    continue
+            except Exception:
+                pass
+            assert not p.is_file(), f"file outside data_dir: {p}"
+
+
+# ---------------------------------------------------------------------------
+# 17. AgentTraceStore round-trip with valid slug still works (S2-9)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_round_trip_valid_slug_after_safe_slug(tmp_path):
+    """A valid slug round-trips cleanly through the store."""
+    store = AgentTraceStore(tmp_path, "valid-agent-42")
+    ts = _ts(hour=10)
+    env = await store.record(
+        "message_in",
+        created_at=ts,
+        channel_id="ch-1",
+        trace_id="tr-abc",
+        payload={"from": "user", "text": "hello"},
+    )
+    assert env["agent_name"] == "valid-agent-42"
+    events = await store.list()
+    assert len(events) == 1
     await store.close()
