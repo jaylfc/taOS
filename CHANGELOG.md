@@ -92,27 +92,7 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 - `scripts/check_evil_merge.py`: gate that detects evil merges in test files by comparing the merge result blob against the `git merge-tree --write-tree` baseline and failing when the resolution differs from what git would have produced automatically. Runs on pull requests targeting `master` or `dev` via `.github/workflows/evil-merge-gate.yml`.
 - `scripts/check_evil_merge.py`: hardened against an octopus merge (3+ parents), which now refuses to pass instead of silently comparing only the first two parents, and against a merge that deletes a test file both parents kept, which is now flagged as a violation instead of being invisible because it is scoped to paths present at head.
 - New `schema-column-guard` static check (`scripts/check_schema_column_migrations.py`) plus matching doc-gate step; flags any column added to a `CREATE TABLE` inside a store's `SCHEMA` with no matching `ALTER TABLE ... ADD COLUMN` in the same file, including the previously-uncovered case of zero migration at all (proven on PR #2416).
----
-title: "Implement taosgo app-join endpoint with 2FA gate integration"
-summary: |
-  Added new taosgo route for app-join endpoint that authenticates with password only and includes 2FA gate integration
-  Once the 2FA login split lands (tsk-m7ufkp), this endpoint will be included in the 2FA-required set.
-  Key changes:
-  - Added taosgo route with CSRF-protected POST /api/taosgo/app-join endpoint
-  - Supports both session cookie + CSRF token and app-password Bearer token authentication
-  - Placeholder implementation for Headscale preauth key generation
-  - Includes proper 2FA bypass with clear error messages for when 2FA is required
-  - Endpoint is CSRF-protected to prevent cross-site request forgery attacks
-  Technical details:
-  - Endpoint now part of the application route registrations in routes/__init__.py
-  - Uses existing auth system for password-only authentication (PR 130 bypass)
-  - Will be integrated into the 2FA-required set when tsk-m7ufkp lands
-  - Includes proper logging and error handling for production use
-  Security notes:
-  - CSRF protection prevents unauthorized requests from different origins
-  - Local token validation ensures secure app-password authentication
-  - Clear error messages guide users when 2FA is required
-  - Placeholder preauth key format ensures backward compatibility
+- taosgo: `POST /api/taosgo/app-join` route scaffold, CSRF-protected, authenticating via session cookie or app-password Bearer token; the Headscale preauth key it returns is a placeholder until the 2FA login split (tsk-m7ufkp) lands and the route joins the 2FA-required set.
 - `mcp`: the supervisor now drains an MCP server's **stdout** as well as its
   stderr. Both pipes were captured but only stderr was ever read, so any server
   writing more than the 64 KiB pipe buffer to stdout blocked in `write()`
