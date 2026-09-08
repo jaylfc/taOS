@@ -7,6 +7,7 @@ and optionally download video files.
 """
 
 import asyncio
+import html
 import json
 import logging
 import re
@@ -40,13 +41,32 @@ def parse_vtt(vtt_text: str) -> list[dict]:
     Returns a list of dicts: [{"start": float, "end": float, "text": str}].
     Consecutive identical text entries are deduplicated (YouTube auto-captions
     repeat the same line across multiple cues).
+
+    Raises:
+        ValueError: if a non-empty input is not a WebVTT file (no signature),
+            so a caption blob is never silently indexed as "no captions".
     """
     segments: list[dict] = []
     lines = vtt_text.splitlines()
 
-    # Timestamp pattern: HH:MM:SS.mmm --> HH:MM:SS.mmm (with optional position tags)
+    # Per the WebVTT spec the *hours* component of a timestamp is optional, but
+    # the file as a whole must still begin with the "WEBVTT" signature (after an
+    # optional BOM). A non-empty blob that has no signature is not a caption file
+    # at all; surface that instead of silently indexing it as "no captions".
+    if vtt_text.lstrip("\ufeff").strip():
+        first_line = next(
+            (ln.lstrip("\ufeff") for ln in lines if ln.strip()), ""
+        ).strip()
+        # Spec: the signature is "WEBVTT" followed by end-of-line or whitespace
+        # before optional file metadata. Reject anything that is not it.
+        if not re.match(r"WEBVTT(\s|$)", first_line):
+            raise ValueError("not a valid WebVTT file: missing WEBVTT header")
+
+    # Timestamp pattern: HH:MM:SS.mmm or MM:SS.mmm (hours optional), with the
+    # optional cue settings trailing the end timestamp.
     ts_re = re.compile(
-        r"(\d{2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d{3})"
+        r"((?:\d{2}:)?\d{2}:\d{2}[.,]\d{3})\s*-->\s*"
+        r"((?:\d{2}:)?\d{2}:\d{2}[.,]\d{3})"
     )
 
     i = 0
@@ -63,6 +83,9 @@ def parse_vtt(vtt_text: str) -> list[dict]:
                 raw = lines[i].strip()
                 # Strip VTT inline tags like <00:00:01.000><c>word</c>
                 raw = re.sub(r"<[^>]+>", "", raw).strip()
+                # Escaped apostrophes/ampersands survive the tag strip; unescape
+                # before indexing so "it&#39;s" becomes "it's".
+                raw = html.unescape(raw)
                 if raw:
                     text_lines.append(raw)
                 i += 1
@@ -85,12 +108,17 @@ def parse_vtt(vtt_text: str) -> list[dict]:
 
 
 def _vtt_ts_to_seconds(ts: str) -> float:
-    """Convert a VTT timestamp (HH:MM:SS.mmm or HH:MM:SS,mmm) to float seconds."""
+    """Convert a VTT timestamp (HH:MM:SS.mmm or MM:SS.mmm, . or ,) to float seconds."""
     ts = ts.replace(",", ".")
     parts = ts.split(":")
-    h = int(parts[0])
-    m = int(parts[1])
-    s = float(parts[2])
+    if len(parts) == 3:
+        h = int(parts[0])
+        m = int(parts[1])
+        s = float(parts[2])
+    else:  # Hours omitted: MM:SS.mmm (WebVTT makes hours optional)
+        h = 0
+        m = int(parts[0])
+        s = float(parts[1])
     return h * 3600 + m * 60 + s
 
 
@@ -268,6 +296,12 @@ async def download_video(
         proc = await asyncio.create_subprocess_exec(
             ytdlp,
             "-f", fmt,
+            # Machine-readable route: yt-dlp prints the final output path (one
+            # line per download) after the file has been moved into place, rather
+            # than emitting human-readable "[download] Destination:" lines.
+            # `after_move` is a late WHEN, so --print does not imply --simulate
+            # and the download still happens.
+            "--print", "after_move:filepath",
             "-o", output_template,
             url,
             stdout=asyncio.subprocess.PIPE,
@@ -281,12 +315,13 @@ async def download_video(
             logger.warning("yt-dlp download failed for %s: %s", url, err)
             return None
 
-        # Try to find the downloaded file by parsing yt-dlp output
-        output_text = stdout.decode(errors="replace")
-        # yt-dlp prints lines like: [download] Destination: path/to/file.ext
-        m = re.search(r"\[download\] Destination: (.+)", output_text)
-        if m:
-            return m.group(1).strip()
+        # The --print after_move:filepath route writes the final file path, one
+        # per downloaded video. Take the last non-empty line as the path.
+        output_lines = stdout.decode(errors="replace").splitlines()
+        for line in reversed(output_lines):
+            candidate = line.strip()
+            if candidate:
+                return candidate
 
         # Fallback: return None -- caller can scan output_dir for new files
         return None
