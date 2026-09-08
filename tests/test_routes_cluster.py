@@ -7,7 +7,7 @@ import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 
 # ---------------------------------------------------------------------------
@@ -1169,3 +1169,144 @@ async def test_update_all_workers_status_unknown_job_returns_404(client, app):
     """GET /api/cluster/workers/update-all/<unknown> returns 404."""
     resp = await client.get("/api/cluster/workers/update-all/does-not-exist")
     assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_unauthenticated_get_workers_returns_minimal_projection(client, app):
+    """Unauthenticated GET /api/cluster/workers must not expose sensitive fields.
+
+    Red-test for S2-15: an unauthenticated caller must not receive url,
+    worker_url, host_lan_ip, hardware, models, backends, kernel, version,
+    live_token, or any other identifying/hardware detail.
+    """
+    import json as _json
+
+    # Register a worker with full sensitive data via the admin client.
+    key = await pair_worker(client, app, "secret-worker", "http://10.0.0.1:9000")
+    reg_body = _json.dumps({
+        "name": "secret-worker",
+        "url": "http://10.0.0.1:9000",
+        "platform": "linux",
+        "capabilities": ["chat", "embed"],
+        "hardware": {
+            "cpu": {"model": "Ryzen 9", "arch": "x86_64"},
+            "ram_gb": 64,
+            "os": {"kernel": "6.1.0", "distro": "ubuntu", "version": "24.04"},
+        },
+        "models": ["llama3"],
+        "host_lan_ip": "192.168.1.50",
+        "worker_url": "http://secret-worker:9000",
+        "backends": [{"name": "llama-cpp", "models": [{"name": "llama3"}]}],
+        "live_token": True,
+    }).encode()
+    resp = await client.post(
+        "/api/cluster/workers",
+        content=reg_body,
+        headers={**sign_worker_request(key, "secret-worker", "POST", "/api/cluster/workers", reg_body), "content-type": "application/json"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Hit the endpoint with a completely unauthenticated client (no cookies).
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as anon_client:
+        resp = await anon_client.get("/api/cluster/workers")
+        assert resp.status_code == 200, resp.text
+        workers = resp.json()
+        assert len(workers) == 1
+        w = workers[0]
+
+        # Minimal projection must be present.
+        assert w["name"] == "secret-worker"
+        assert w["status"] == "online"
+        assert "tier_id" in w
+
+        # Sensitive fields must NOT be present.
+        sensitive_fields = [
+            "url",
+            "worker_url",
+            "host_lan_ip",
+            "hardware",
+            "models",
+            "backends",
+            "capabilities",
+            "kernel",
+            "version",
+            "live_token",
+            "revoked",
+            "blocked",
+            "last_heartbeat",
+            "load",
+            "platform",
+            "potential_capabilities",
+            "kv_cache_quant_support",
+            "kv_cache_quant_k_support",
+            "kv_cache_quant_v_support",
+            "kv_cache_quant_boundary_layer_protect",
+            "storage_cap_bytes",
+            "storage_used_bytes",
+            "bytes_deduped_total",
+            "worker_lxc_image_version",
+            "degraded",
+            "degraded_reason",
+            "free_vram_mb",
+            "used_vram_mb",
+            "available_models",
+            "resources",
+            "registered_at",
+            "generation",
+            "tls_cert_provider",
+            "signing_key",
+        ]
+        for field in sensitive_fields:
+            assert field not in w, f"sensitive field {field} leaked in unauthenticated response"
+
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_get_workers_returns_full_record(client, app):
+    """Authenticated admin GET /api/cluster/workers returns the full record."""
+    import json as _json
+
+    key = await pair_worker(client, app, "admin-worker", "http://10.0.0.2:9000")
+    reg_body = _json.dumps({
+        "name": "admin-worker",
+        "url": "http://10.0.0.2:9000",
+        "platform": "linux",
+        "capabilities": ["chat"],
+        "hardware": {
+            "cpu": {"model": "Ryzen 9", "arch": "x86_64"},
+            "ram_gb": 64,
+            "os": {"kernel": "6.1.0", "distro": "ubuntu", "version": "24.04"},
+        },
+        "models": ["llama3"],
+        "host_lan_ip": "192.168.1.51",
+        "worker_url": "http://admin-worker:9000",
+        "backends": [{"name": "llama-cpp", "models": [{"name": "llama3"}]}],
+        "live_token": True,
+    }).encode()
+    resp = await client.post(
+        "/api/cluster/workers",
+        content=reg_body,
+        headers={**sign_worker_request(key, "admin-worker", "POST", "/api/cluster/workers", reg_body), "content-type": "application/json"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # The admin client has a session cookie, so it must receive the full record.
+    resp = await client.get("/api/cluster/workers")
+    assert resp.status_code == 200, resp.text
+    workers = resp.json()
+    assert len(workers) == 1
+    w = workers[0]
+    assert w["name"] == "admin-worker"
+    assert w["url"] == "http://10.0.0.2:9000"
+    assert w["host_lan_ip"] == "192.168.1.51"
+    assert w["hardware"] is not None
+    assert w["models"] == ["llama3"]
+    assert w["backends"] is not None
+    assert w["live_token"] is True
+    assert w["status"] == "online"
+
+    await app.state.cluster_pairing.close()

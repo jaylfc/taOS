@@ -586,7 +586,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # endpoints, cluster heartbeat). Without this, a cached old client
         # could bypass onboarding by hitting an /api endpoint that the
         # not-configured branch used to allow through unconditionally.
+        #
+        # Exempt paths do not require auth, but if a valid session cookie is
+        # present we preserve the caller's identity so route handlers can serve
+        # a reduced view to unauthenticated callers and the full view to
+        # authenticated admins (e.g. GET /api/cluster/workers).
         if _is_exempt(request.method, path):
+            token = request.cookies.get("taos_session")
+            if token:
+                user_agent = request.headers.get("user-agent", "")
+                user_id = auth_mgr.validate_session(token, user_agent=user_agent)
+                if user_id is not None:
+                    user_record = auth_mgr.get_user_by_id(user_id)
+                    request.state.user_id = user_id
+                    request.state.is_admin = bool(
+                        user_record.get("is_admin") if user_record else False
+                    )
+                    request.state.via = "session"
+                    return await call_next(request)
             request.state.user_id = None
             request.state.is_admin = False
             request.state.via = "exempt"
