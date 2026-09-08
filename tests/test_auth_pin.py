@@ -7,6 +7,8 @@ PIN being REFUSED off-console does.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from tinyagentos.auth import (
@@ -190,9 +192,27 @@ class TestPinStore:
 
     def test_pin_is_hashed_not_stored_in_clear(self, mgr, tmp_path):
         mgr.set_pin("tester", "4913")
+        data = json.loads((tmp_path / ".auth_user.json").read_text())
+        pin_hash = data["users"][0]["pin_hash"]
+        assert pin_hash.startswith("$argon2")
+        assert pin_hash != "4913"
+
+    def test_bare_digit_assertion_flakes_when_hash_contains_pin(self, mgr, tmp_path, monkeypatch):
+        fake_hash = "$argon2id$v=19$m=65536,t=3,p=4$4913salt$4913hash"
+
+        class FakeHasher:
+            def hash(self, secret):
+                return fake_hash
+
+        monkeypatch.setattr("tinyagentos.auth._ph", FakeHasher())
+        mgr.set_pin("tester", "4913")
         raw = (tmp_path / ".auth_user.json").read_text()
-        assert "4913" not in raw
-        assert "$argon2" in raw
+        with pytest.raises(AssertionError):
+            assert "4913" not in raw
+        data = json.loads(raw)
+        pin_hash = data["users"][0]["pin_hash"]
+        assert pin_hash.startswith("$argon2")
+        assert pin_hash != "4913"
 
     def test_pin_hash_never_reaches_the_public_profile(self, mgr):
         mgr.set_pin("tester", "4913")
