@@ -206,7 +206,7 @@ def has_escape_hatch(pr_body: str, filepath: str) -> bool:
     """Check if the PR body has a Tests-Skipped-Intentionally trailer for this file.
 
     Expected format: Tests-Skipped-Intentionally: <file>, <why>
-    The file path must match (basename match is sufficient).
+    The file path may be a bare basename or a full repo-relative path (basename match is sufficient).
     """
     # Look for the trailer pattern at the end of the PR body or on its own line
     # Pattern: "Tests-Skipped-Intentionally: <file>, <why>"
@@ -220,10 +220,11 @@ def has_escape_hatch(pr_body: str, filepath: str) -> bool:
         m = re.match(r"Tests-Skipped-Intentionally:\s*(.+)", stripped)
         if m:
             trailer_claim = m.group(1).strip()
-            # "<file>, <why>": exact basename match plus a non-empty reason,
-            # so a waiver for test_x.py.bak cannot waive test_x.py
+            # "<file>, <why>": basename of the claim must match the file's basename
+            # plus a non-empty reason, so a waiver for test_x.py.bak cannot waive test_x.py.
+            # A claim may carry a directory prefix or be a bare basename.
             claimed_file, _, reason = trailer_claim.partition(",")
-            if claimed_file.strip() == basename and reason.strip():
+            if os.path.basename(claimed_file.strip()) == basename and reason.strip():
                 return True
     return False
 

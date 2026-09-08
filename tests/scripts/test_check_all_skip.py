@@ -252,6 +252,22 @@ class TestMainAllSkipStillFails:
         assert "WAIVED" in captured.out
 
 
+class TestHasEscapeHatchBasenameMatch:
+    """has_escape_hatch must accept both bare basename and full path in the trailer."""
+
+    def test_full_path_trailer_accepted(self, check_mod) -> None:
+        assert check_mod.has_escape_hatch(
+            "Tests-Skipped-Intentionally: tests/taosnet/test_torrent_downloader_taosnet.py, why",
+            "tests/taosnet/test_torrent_downloader_taosnet.py",
+        ) is True
+
+    def test_bak_suffix_still_rejected(self, check_mod) -> None:
+        assert check_mod.has_escape_hatch(
+            "Tests-Skipped-Intentionally: test_x.py.bak, why",
+            "test_x.py",
+        ) is False
+
+
 class TestMainPartialSkipsPass:
     def test_partial_skips_pass(self, check_mod, capsys: pytest.CaptureFixture) -> None:
         results = {
