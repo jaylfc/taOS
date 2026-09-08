@@ -144,14 +144,20 @@ class TestVersionHeaderCoarsening:
     """Q2-6: X-Taos-Version must be coarsened for unauthenticated callers."""
 
     @pytest.mark.asyncio
-    async def test_version_coarsened_on_exempt_path(self, client):
+    async def test_version_coarsened_on_exempt_path(self, app):
         """/api/health is exempt from auth -- version should be coarsened."""
+        from httpx import ASGITransport, AsyncClient
         import tinyagentos
 
-        resp = await client.get("/api/health")
-        assert resp.headers.get("x-taos-version", "")
-        # The coarsened value must not leak the exact build version.
-        assert resp.headers["x-taos-version"] != tinyagentos.__version__
+        # Use an anonymous client with no cookies - same app but fresh client
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as anon_client:
+            resp = await anon_client.get("/api/health")
+            assert resp.headers.get("x-taos-version", "")
+            # The coarsened value must not leak the exact build version.
+            assert resp.headers["x-taos-version"] != tinyagentos.__version__
 
     @pytest.mark.asyncio
     async def test_version_full_for_authenticated(self, client):
@@ -162,6 +168,15 @@ class TestVersionHeaderCoarsening:
         assert resp.status_code == 200
         if resp.headers.get("x-taos-version"):
             assert resp.headers["x-taos-version"] == tinyagentos.__version__
+
+    @pytest.mark.asyncio
+    async def test_version_full_for_session_on_exempt_path(self, app, client):
+        """A session-authenticated caller on an exempt path presents a credential => full version."""
+        import tinyagentos
+
+        resp = await client.get("/api/health")
+        # Session is a credential, so even on exempt paths we should see the full version.
+        assert resp.headers["x-taos-version"] == tinyagentos.__version__
 
 
 class TestGZipInsideCsrfLayer:
