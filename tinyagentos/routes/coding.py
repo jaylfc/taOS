@@ -559,94 +559,170 @@ _LINK_TAG_RE = re.compile(r"<link\b[^>]*>", re.IGNORECASE)
 _SCRIPT_TAG_RE = re.compile(r"<script\b[^>]*>\s*</script>", re.IGNORECASE)
 _IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
 _STYLE_BLOCK_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style>)", re.IGNORECASE | re.DOTALL)
-_ATTR_RE = re.compile(r'\b(\w+)=(["\'])([^"\']*)\2', re.IGNORECASE)
 _CSS_URL_RE = re.compile(r"url\(\s*(['\"]?)([^'\")]+)\1\s*\)", re.IGNORECASE)
 
 
-def _assemble_preview_html(root: Path, html: str) -> str:
-    remaining = [_MAX_PREVIEW_BYTES - len(html.encode("utf-8"))]
+def _rewrite_preview_resources(
+    tree,
+    root: Path,
+    max_bytes: int,
+) -> None:
+    """Rewrite preview resources using lxml DOM:
+    - href/src attributes → data: URIs where safe
+    - <script src=...> → inline the JS content
+    - <style> blocks → inline CSS content and fix url() references
+    """
+    def _is_external_ref(ref: str) -> bool:
+        if not ref:
+            return True
+        return ref.lower().startswith(
+            ("http://", "https://", "//", "data:", "mailto:", "#")
+        )
 
-    def consume(n: int) -> bool:
-        if n > remaining[0]:
-            return False
-        remaining[0] -= n
-        return True
-
-    def replace_link(m: re.Match) -> str:
-        tag = m.group(0)
-        attrs = {a: v for a, _q, v in _ATTR_RE.findall(tag)}
-        if attrs.get("rel", "").strip().lower() != "stylesheet":
-            return tag
-        href = attrs.get("href")
-        if href is None or _is_external_ref(href):
-            return tag
-        data = _read_local_asset(root, href)
-        if data is None:
-            return tag
+    def _read_local_asset(root: Path, ref: str) -> bytes | None:
+        clean = ref.split("#", 1)[0].split("?", 1)[0]
+        target = _resolve_jailed(root, clean)
+        if target is None or not target.is_file():
+            return None
         try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            return tag
-        replacement = f"<style>{text}</style>"
-        delta = len(replacement.encode("utf-8")) - len(tag.encode("utf-8"))
-        return replacement if consume(delta) else tag
+            if target.stat().st_size > _MAX_ASSET_BYTES:
+                return None
+            return target.read_bytes()
+        except OSError:
+            return None
 
-    def replace_script(m: re.Match) -> str:
-        tag = m.group(0)
-        attrs = {a: v for a, _q, v in _ATTR_RE.findall(tag)}
-        src = attrs.get("src")
-        if src is None or _is_external_ref(src):
-            return tag
-        data = _read_local_asset(root, src)
+    def _data_uri(root: Path, ref: str) -> str | None:
+        ext = Path(_strip_query_and_fragment(ref)).suffix.lower()
+        mime = _MIME_BY_EXT.get(ext)
+        if mime is None:
+            return None
+        data = _read_local_asset(root, ref)
         if data is None:
-            return tag
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            return tag
-        open_tag_m = re.match(r"<script\b([^>]*)>", tag, re.IGNORECASE)
-        remaining_attrs = open_tag_m.group(1) if open_tag_m else ""
-        remaining_attrs = re.sub(r'\s*\bsrc=["\'][^"\']*["\']', "", remaining_attrs, flags=re.IGNORECASE)
-        replacement = f"<script{remaining_attrs}>{text}</script>"
-        delta = len(replacement.encode("utf-8")) - len(tag.encode("utf-8"))
-        return replacement if consume(delta) else tag
+            return None
+        return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
-    def replace_img(m: re.Match) -> str:
-        tag = m.group(0)
-        src_m = re.search(r'\bsrc=(["\'])([^"\']*)\1', tag, re.IGNORECASE)
-        if src_m is None:
-            return tag
-        src = src_m.group(2)
-        if _is_external_ref(src):
-            return tag
-        uri = _data_uri(root, src)
-        if uri is None:
-            return tag
-        replacement = tag[: src_m.start(2)] + uri + tag[src_m.end(2) :]
-        return replacement if consume(len(replacement.encode("utf-8")) - len(tag.encode("utf-8"))) else tag
-
-    def replace_style_block(m: re.Match) -> str:
-        open_tag, body, close_tag = m.group(1), m.group(2), m.group(3)
-
-        def replace_url(um: re.Match) -> str:
-            ref = um.group(2)
+    def _rewrite_css_text(
+        text: str, root: Path, max_bytes: int
+    ) -> str:
+        def replace(match: re.Match) -> str:
+            ref = match.group(2)
             if _is_external_ref(ref):
-                return um.group(0)
+                return match.group(0)
+
             uri = _data_uri(root, ref)
             if uri is None:
-                return um.group(0)
-            replacement = f"url({uri})"
-            delta = len(replacement.encode("utf-8")) - len(um.group(0).encode("utf-8"))
-            return replacement if consume(delta) else um.group(0)
+                return match.group(0)
 
-        new_body = _CSS_URL_RE.sub(replace_url, body)
-        return f"{open_tag}{new_body}{close_tag}"
+            # Check budget for this substitution
+            old_size = len(match.group(0).encode("utf-8"))
+            new_size = len(uri.encode("utf-8"))
+            if new_size > max_bytes:
+                return match.group(0)
+            max_bytes -= new_size
 
-    html = _LINK_TAG_RE.sub(replace_link, html)
-    html = _SCRIPT_TAG_RE.sub(replace_script, html)
-    html = _IMG_TAG_RE.sub(replace_img, html)
-    html = _STYLE_BLOCK_RE.sub(replace_style_block, html)
-    return html
+            return f"url({uri})"
+
+        # Use a closure to capture max_bytes
+        def sub_func(text: str) -> str:
+            nonlocal max_bytes
+            return _CSS_URL_RE.sub(replace, text)
+
+        return sub_func(text)
+
+    # Rewrite all href/src attributes to data URIs where safe
+    for el in tree.iter():
+        for attr in ("href", "src"):
+            val = el.get(attr)
+            if val is None:
+                continue
+            if _is_external_ref(val):
+                continue
+
+            uri = _data_uri(root, val)
+            if uri is None:
+                continue
+
+            # Check budget before replacement
+            old_size = len(val.encode("utf-8"))
+            new_size = len(uri.encode("utf-8"))
+            if new_size > max_bytes:
+                continue
+            max_bytes -= new_size
+
+            el.set(attr, uri)
+
+    # Inline external script tags
+    for script in tree.iter("script"):
+        if script.get("src") is None:
+            continue
+        src = script.get("src")
+        if _is_external_ref(src):
+            continue
+
+        data = _read_local_asset(root, src)
+        if data is None:
+            continue
+
+        del script.attrib["src"]
+        script.text = data.decode("utf-8", errors="replace")
+
+    # Inline CSS from link[rel=stylesheet]
+    for link in tree.iter("link"):
+        if link.get("rel", "").strip().lower() != "stylesheet":
+            continue
+        href = link.get("href")
+        if href is None or _is_external_ref(href):
+            continue
+
+        data = _read_local_asset(root, href)
+        if data is None:
+            continue
+
+        style_text = data.decode("utf-8", errors="replace")
+        # Replace link with <style> element containing CSS
+        style_el = lxml_html.Element("style")
+        style_el.text = style_text
+        for key, value in link.attrib.items():
+            if key not in ("rel", "href"):
+                style_el.set(key, value)
+        link.getparent().replace(link, style_el)
+
+    # Rewrite url() references in <style> elements
+    for style_el in tree.iter("style"):
+        if style_el.text is None:
+            continue
+        style_el.text = _rewrite_css_text(style_el.text, root, max_bytes)
+
+
+def _assemble_preview_html(root: Path, html: str) -> str:
+    """Assemble workspace preview HTML by inlining local assets.
+
+    Parse with lxml, walk the DOM, and rewrite URL-bearing attributes
+    to data URIs where safe, and inline external CSS/JS resources.
+    """
+    from lxml import html as lxml_html
+
+    # Parse the HTML; any parse error returns it unchanged (conservative).
+    try:
+        tree = lxml_html.fromstring(html)
+    except Exception:
+        return html
+
+    if tree is None:
+        return html
+
+    # Compute byte budget at the end after serializing.
+    max_bytes = _MAX_PREVIEW_BYTES - len(html.encode("utf-8"))
+
+    # Inlines external CSS/JS resources and rewrites local URLs to data URIs
+    _rewrite_preview_resources(tree, root, max_bytes)
+
+    # Serialize back to a UTF-8 string; ensure byte budget is still honored.
+    result = lxml_html.tostring(tree, encoding="unicode")
+    if len(result.encode("utf-8")) > _MAX_PREVIEW_BYTES:
+        # Cap at the budget for safety
+        return result[:_MAX_PREVIEW_BYTES]
+    return result
 
 
 @router.get("/api/coding/workspaces/{workspace_id}/preview")
