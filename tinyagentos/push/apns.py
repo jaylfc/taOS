@@ -87,6 +87,8 @@ def build_apns_payload(
     category: str | None = None,
     actions: list[dict] | None = None,
     image: str | None = None,
+    thread_id: str | None = None,
+    interruption_level: str | None = None,
 ) -> dict:
     """Build an APNs payload, letting explicit keyword args win over `data`.
 
@@ -135,6 +137,10 @@ def build_apns_payload(
         aps["mutable-content"] = 1
     # `aps` is Apple's reserved envelope; assigning it last keeps a stray
     # data["aps"] from overwriting the alert and flags computed above.
+    if thread_id is not None:
+        aps["thread-id"] = thread_id
+    if interruption_level is not None:
+        aps["interruption-level"] = interruption_level
     payload["aps"] = aps
     return payload
 

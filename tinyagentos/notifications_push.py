@@ -367,7 +367,9 @@ def _build_device_push_payload(row: dict) -> tuple[dict, list[dict] | None]:
     elif decision_type in ("single_select", "multi_select"):
         category = "DECISION_OPTIONS"
         opts = data.get("options") or []
-        actions = [{"id": o.get("value", o.get("label", "")), "label": o.get("label", "")} for o in opts]
+        # Cap to 4 options, truncate labels to 40 chars (matching the add() sites)
+        capped = opts[:4]
+        actions = [{"id": o.get("value", o.get("label", "")), "label": o.get("label", "")} for o in capped]
     elif decision_type == "free_text":
         category = "DECISION_FREE_TEXT"
         actions = [{"id": "quick_reply", "label": "Reply"}]
@@ -382,6 +384,13 @@ def _build_device_push_payload(row: dict) -> tuple[dict, list[dict] | None]:
         payload["category"] = category
     if isinstance(image, str) and image:
         payload["image"] = image
+    # Set thread-id and interruption-level for decision rows
+    decision_id = data.get("decision_id")
+    if decision_id is not None:
+        payload["thread-id"] = decision_id
+    priority = data.get("priority")
+    if priority == "blocking":
+        payload["interruption-level"] = "time-sensitive"
     return payload, actions
 
 
@@ -423,6 +432,8 @@ async def _send_one_device(
             category=base_payload.get("category"),
             actions=actions,
             image=base_payload.get("image"),
+            thread_id=base_payload.get("thread-id"),
+            interruption_level=base_payload.get("interruption-level"),
         )
     elif platform == "android":
         from tinyagentos.push.unifiedpush import build_unifiedpush_payload
