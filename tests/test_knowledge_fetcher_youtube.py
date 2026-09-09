@@ -226,7 +226,8 @@ async def test_fetch_metadata_error_raises(tmp_path):
 
 @pytest.mark.asyncio
 async def test_download_video_mocked_720(tmp_path):
-    stdout_text = b"[download] Destination: /some/path/test123.mp4\n"
+    # --print after_move:filepath writes the final path, one line per download.
+    stdout_text = b"/some/path/test123.mp4\n"
     dl_proc = _make_mock_proc(stdout=stdout_text)
 
     with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
@@ -242,12 +243,15 @@ async def test_download_video_mocked_720(tmp_path):
     assert "-f" in args
     fmt_idx = list(args).index("-f")
     assert "height<=720" in args[fmt_idx + 1]
+    # Uses the machine-readable --print route, not stdout scraping
+    assert "--print" in args
+    assert "after_move:filepath" in args
     assert result == "/some/path/test123.mp4"
 
 
 @pytest.mark.asyncio
 async def test_download_video_mocked_best(tmp_path):
-    stdout_text = b"[download] Destination: /some/path/test123.webm\n"
+    stdout_text = b"/some/path/test123.webm\n"
     dl_proc = _make_mock_proc(stdout=stdout_text)
 
     with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
@@ -261,6 +265,8 @@ async def test_download_video_mocked_best(tmp_path):
     args = mock_exec.call_args[0]
     fmt_idx = list(args).index("-f")
     assert args[fmt_idx + 1] == "bestvideo+bestaudio/best"
+    assert "--print" in args
+    assert "after_move:filepath" in args
 
 
 @pytest.mark.asyncio
@@ -278,9 +284,9 @@ async def test_download_video_failure_returns_none(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_download_video_no_destination_line_returns_none(tmp_path):
-    """If yt-dlp succeeds but prints no 'Destination:' line, return None."""
-    proc = _make_mock_proc(stdout=b"some other output\n")
+async def test_download_video_no_filepath_printed_returns_none(tmp_path):
+    """If yt-dlp succeeds but --print yields no filepath, return None."""
+    proc = _make_mock_proc(stdout=b"")
 
     with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
         with patch("asyncio.create_subprocess_exec", return_value=proc):
