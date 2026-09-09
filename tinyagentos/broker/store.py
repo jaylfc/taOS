@@ -77,10 +77,6 @@ class BrokerStore(BaseStore):
 
     async def init(self) -> None:
         await super().init()
-        # WAL + busy_timeout for cross-process safety (matches the keystore).
-        await self._db.execute("PRAGMA journal_mode=WAL")
-        await self._db.execute("PRAGMA busy_timeout=5000")
-        await self._db.commit()
 
     # --- grants ---------------------------------------------------------
 

@@ -10,7 +10,9 @@ Covers:
 """
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -279,3 +281,96 @@ class TestApplyWalPragmasAsync:
         row = await cur.fetchone()
         assert row[0] == 5000
         await conn.close()
+
+    async def test_concurrent_writer_waits(self, tmp_path):
+        """a concurrent writer waits rather than failing immediately"""
+        import aiosqlite
+
+        db_path = str(tmp_path / "concurrent.db")
+
+        setup_conn = await aiosqlite.connect(db_path)
+        await setup_conn.execute(
+            "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY)"
+        )
+        await setup_conn.close()
+
+        ready = asyncio.Event()
+        writer1_done = asyncio.Event()
+
+        async def writer1():
+            conn = await aiosqlite.connect(db_path)
+            await conn.execute("PRAGMA busy_timeout = 5000")
+            await conn.execute("BEGIN")
+            await conn.execute("INSERT INTO items (id) VALUES (1)")
+            ready.set()
+            await asyncio.sleep(1.0)
+            await conn.execute("COMMIT")
+            await conn.close()
+            writer1_done.set()
+
+        results = {}
+
+        async def writer2():
+            conn = await aiosqlite.connect(db_path)
+            await conn.execute("PRAGMA busy_timeout = 5000")
+            await ready.wait()
+            await asyncio.sleep(0.1)
+            start = time.time()
+            try:
+                await conn.execute("INSERT INTO items (id) VALUES (2)")
+                results["elapsed"] = time.time() - start
+            except sqlite3.OperationalError as e:
+                results["elapsed"] = time.time() - start
+                results["error"] = str(e)
+            finally:
+                await conn.close()
+
+        await asyncio.gather(writer1(), writer2())
+
+        assert "error" not in results, (
+            f"database is locked (elapsed {results.get('elapsed', 0):.3f}s; "
+            f"expected to block up to 5.0s)"
+        )
+        assert results.get("elapsed", 0) >= 0.05, (
+            f"Second writer didn't wait (elapsed {results.get('elapsed', 0):.3f}s)"
+        )
+
+    async def test_basestore_subclass_has_busy_timeout(self, tmp_path):
+        """every BaseStore subclass has a non-zero busy_timeout after init"""
+        from tinyagentos.base_store import BaseStore
+
+        class TestStore(BaseStore):
+            SCHEMA = "CREATE TABLE IF NOT EXISTS test (id INTEGER PRIMARY KEY);"
+
+        store = TestStore(Path(tmp_path) / "test.db")
+        await store.init()
+
+        cur = await store._db.execute("PRAGMA busy_timeout")
+        row = await cur.fetchone()
+        assert row[0] == 5000
+
+        await store.close()
+
+
+def test_no_redundant_busy_timeout_in_workaround_stores(tmp_path):
+    """The three known workaround stores should not redundantly set busy_timeout."""
+    files_and_patterns = [
+        (
+            "tinyagentos/agent_budget_store.py",
+            'conn.execute("PRAGMA busy_timeout=5000")',
+        ),
+        (
+            "tinyagentos/litellm_keystore.py",
+            'conn.execute("PRAGMA busy_timeout=5000")',
+        ),
+        (
+            "tinyagentos/broker/store.py",
+            'await self._db.execute("PRAGMA busy_timeout=5000")',
+        ),
+    ]
+
+    for filepath, pattern in files_and_patterns:
+        source = Path(filepath).read_text()
+        assert pattern not in source, (
+            f"{filepath} still contains redundant busy_timeout pragma"
+        )
