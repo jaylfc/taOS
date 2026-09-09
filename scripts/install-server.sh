@@ -1314,7 +1314,30 @@ ensure_docker_for_apps() {
             if (( _apt_compose_rc == 2 )); then
                 log "compose plugin not in distro apt — trying Docker's official apt repo"
                 if ! _apt_install_docker_official_repo; then
-                    warn "Docker Engine + Compose plugin are unavailable on this host (Store Docker apps will be unavailable)"
+                    warn "Docker Engine + Compose plugin unavailable via official repo — trying static binary fallback"
+                    if command -v curl >/dev/null 2>&1; then
+                        local _docker_compose_url="https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -m)"
+                        local _docker_compose_tmp="$(mktemp /tmp/docker-compose.XXXXXX)"
+                        if curl -fsSL --connect-timeout 15 --max-time 30 "$_docker_compose_url" -o "$_docker_compose_tmp"; then
+                            chmod +x "$_docker_compose_tmp"
+                            if sudo mv "$_docker_compose_tmp" /usr/local/bin/docker-compose && sudo chmod 0755 /usr/local/bin/docker-compose; then
+                                log "installed docker-compose static binary fallback"
+                            else
+                                warn "could not move docker-compose binary to /usr/local/bin"
+                                sudo rm -f "$_docker_compose_tmp"
+                            fi
+                        else
+                            warn "could not download docker-compose static binary fallback"
+                            sudo rm -f "$_docker_compose_tmp"
+                        fi
+                    else
+                        warn "no curl available for static binary fallback"
+                    fi
+                    if ! docker compose version >/dev/null 2>&1; then
+                        warn "=== DOCKER COMPOSE V2 UNAVAILABLE ==="
+                        warn "Store Docker apps (SearXNG, Perplexica, etc.) will silently fail"
+                        warn "Install docker-compose-v2 / docker-compose-plugin manually, or ensure Docker's official repo is accessible"
+                    fi
                 fi
             elif (( _apt_compose_rc != 0 )); then
                 warn "compose plugin install failed -- Store Docker apps will be unavailable"
@@ -1338,20 +1361,50 @@ ensure_docker_for_apps() {
     # This also covers the case where Docker was ALREADY installed but without
     # the plugin — the fresh-install branch above bundles it, but a pre-existing
     # Docker (the `had_docker` path) may lack it, so install it here too.
-    if ! docker compose version >/dev/null 2>&1; then
-        log "installing the Docker Compose v2 plugin"
-        if command -v apt-get >/dev/null 2>&1; then
-            _apt_install_compose || true
-        elif command -v dnf >/dev/null 2>&1; then
-            sudo dnf install -y -q docker-compose || true
-        elif command -v pacman >/dev/null 2>&1; then
-            sudo pacman -Sy --noconfirm --needed docker-compose || true
-        elif command -v apk >/dev/null 2>&1; then
-            sudo apk add --no-cache docker-cli-compose || true
+if ! docker compose version >/dev/null 2>&1; then
+            log "installing the Docker Compose v2 plugin"
+            if command -v apt-get >/dev/null 2>&1; then
+                _apt_install_compose
+                _apt_compose_rc=$?
+                if (( _apt_compose_rc == 2 )); then
+                    log "compose plugin not in distro apt — trying Docker's official apt repo"
+                    if ! _apt_install_docker_official_repo; then
+                        warn "Docker official repo failed — trying static binary fallback"
+                        if command -v curl >/dev/null 2>&1; then
+                            local _docker_compose_url="https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -m)"
+                            local _docker_compose_tmp="$(mktemp /tmp/docker-compose.XXXXXX)"
+                            if curl -fsSL --connect-timeout 15 --max-time 30 "$_docker_compose_url" -o "$_docker_compose_tmp"; then
+                                chmod +x "$_docker_compose_tmp"
+                                if sudo mv "$_docker_compose_tmp" /usr/local/bin/docker-compose && sudo chmod 0755 /usr/local/bin/docker-compose; then
+                                    log "installed docker-compose static binary fallback"
+                                else
+                                    warn "could not move docker-compose binary to /usr/local/bin"
+                                    sudo rm -f "$_docker_compose_tmp"
+                                fi
+                            else
+                                warn "could not download docker-compose static binary fallback"
+                                sudo rm -f "$_docker_compose_tmp"
+                            fi
+                        else
+                            warn "no curl available for static binary fallback"
+                        fi
+                    fi
+                elif (( _apt_compose_rc != 0 )); then
+                    warn "compose plugin install failed -- Store Docker apps will be unavailable"
+                fi
+            elif command -v dnf >/dev/null 2>&1; then
+                sudo dnf install -y -q docker-compose || true
+            elif command -v pacman >/dev/null 2>&1; then
+                sudo pacman -Sy --noconfirm --needed docker-compose || true
+            elif command -v apk >/dev/null 2>&1; then
+                sudo apk add --no-cache docker-cli-compose || true
+            fi
+            if ! docker compose version >/dev/null 2>&1; then
+                warn "=== DOCKER COMPOSE V2 UNAVAILABLE ==="
+                warn "Store Docker apps (SearXNG, Perplexica, etc.) will silently fail"
+                warn "Install docker-compose-v2 / docker-compose-plugin manually, or ensure Docker's official repo is accessible"
+            fi
         fi
-        docker compose version >/dev/null 2>&1 \
-            || warn "the 'docker compose' plugin isn't available — Store Docker apps need it (install docker-compose-v2 / docker-compose-plugin manually)"
-    fi
 
     command -v docker >/dev/null 2>&1 || { warn "docker not on PATH after install — skipping daemon/group setup"; return 0; }
 
@@ -1394,6 +1447,13 @@ ensure_docker_for_apps() {
         if command -v iptables >/dev/null 2>&1; then
             sudo iptables -P FORWARD ACCEPT 2>/dev/null || true
         fi
+    fi
+    # Surface compose v2 status in installer summary
+    if ! docker compose version >/dev/null 2>&1; then
+        warn "=== DOCKER COMPOSE V2 SUMMARY ==="
+        warn "  docker compose is NOT available — Store Docker apps will silently fail"
+        warn "  Install docker-compose-v2 / docker-compose-plugin, or ensure"
+        warn "  Docker's official apt repo is accessible for this host"
     fi
 }
 

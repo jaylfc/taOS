@@ -1,4 +1,5 @@
 import { withCsrf } from "@/lib/csrf";
+import { createSseConnection } from "@/lib/sse";
 
 export type Project = {
   id: string;
@@ -449,11 +450,12 @@ export const projectsApi = {
   },
 
   subscribeEvents(projectId: string, onEvent: (ev: ProjectEvent) => void): () => void {
-    const es = new EventSource(`/api/projects/${projectId}/events`);
-    es.onmessage = (e) => {
-      try { onEvent(JSON.parse(e.data) as ProjectEvent); } catch { /* heartbeat / malformed — skip */ }
-    };
-    return () => es.close();
+    return createSseConnection({
+      url: `/api/projects/${projectId}/events`,
+      onMessage: (e) => {
+        try { onEvent(JSON.parse(e.data) as ProjectEvent); } catch { /* heartbeat / malformed — skip */ }
+      },
+    });
   },
 
   // Community View (Milestone F)

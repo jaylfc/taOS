@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { ScrollText, RefreshCw, Radio } from "lucide-react";
 import { Button, Card, Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui";
 import { safeFetch } from "@/apps/SettingsApp/_shared";
+import { createSseConnection } from "@/lib/sse";
 
 interface ClientLog {
   id: string;
@@ -139,7 +140,7 @@ function SystemLogsTab({ source }: { source: SystemLogSource }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tailing, setTailing] = useState(false);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const eventSourceRef = useRef<(() => void) | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -161,36 +162,33 @@ function SystemLogsTab({ source }: { source: SystemLogSource }) {
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
-    return () => eventSourceRef.current?.close();
+    return () => eventSourceRef.current?.();
   }, []);
 
   const toggleTail = useCallback(() => {
     if (tailing) {
-      eventSourceRef.current?.close();
+      eventSourceRef.current?.();
       eventSourceRef.current = null;
       setTailing(false);
       return;
     }
-    const es = new EventSource(`/api/system-logs/${source.id}/stream`);
-    es.onmessage = (msg) => {
-      let payload: { line?: string; error?: string } | null;
-      try {
-        payload = JSON.parse(msg.data);
-      } catch {
-        return;
-      }
-      if (!payload) return;
-      if (payload.line) {
-        setLiveLines((prev) => [payload.line as string, ...prev].slice(0, MAX_LIVE_LINES));
-      } else if (payload.error) {
-        setError(payload.error);
-      }
-    };
-    es.onerror = () => {
-      // Transient network errors: leave the connection to the browser's
-      // built-in reconnect. Closing here would fight it.
-    };
-    eventSourceRef.current = es;
+    eventSourceRef.current = createSseConnection({
+      url: `/api/system-logs/${source.id}/stream`,
+      onMessage: (msg) => {
+        let payload: { line?: string; error?: string } | null;
+        try {
+          payload = JSON.parse(msg.data);
+        } catch {
+          return;
+        }
+        if (!payload) return;
+        if (payload.line) {
+          setLiveLines((prev) => [payload.line as string, ...prev].slice(0, MAX_LIVE_LINES));
+        } else if (payload.error) {
+          setError(payload.error);
+        }
+      },
+    });
     setTailing(true);
   }, [tailing, source.id]);
 

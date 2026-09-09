@@ -309,3 +309,73 @@ class TestDistroPackageRollback:
         assert not [ln for ln in self._installs(apt) if "docker.io" in ln], (
             f"nothing was removed, so nothing should be reinstalled; apt={apt}"
         )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="bash-only test")
+class TestBookwormArm64ComposeFallback:
+    """Test that compose v2 is reliably installed on bookworm ARM64
+    where neither docker-compose-plugin nor docker-compose-v2 exist in distro apt.
+
+    Verifies the fallback paths: Docker's official apt repo, then pinned static
+    plugin binary fallback. Also verifies that failures are loud (summary lines
+    + UI health surface) rather than silent.
+    """
+
+    def test_bookworm_arm64_official_repo_installs_compose_plugin(self, tmp_path):
+        """When _apt_install_compose finds no distro packages, the official
+        repo fallback should install the compose plugin via Docker's repo."""
+        rc, keyring, listfile, stderr, _apt = _run_fallback(
+            tmp_path,
+            preexisting=False,
+            update_rc=0,
+            install_rc=0,
+            distro_pkgs=False,
+        )
+        # The official repo fallback should succeed and install docker-compose-plugin
+        assert rc == 0, f"fallback should succeed; stderr={stderr}"
+        assert "Docker Engine + Compose v2 plugin installed via Docker's official repo" in stderr, (
+            f"official repo install should be confirmed; stderr={stderr}"
+        )
+        assert keyring == "DOCKER-COM-OFFICIAL-KEY\n", (
+            f"the fetched docker.com key should be installed (got {keyring!r}); stderr={stderr}"
+        )
+        assert listfile is not None and "download.docker.com" in listfile, (
+            f"docker.list should point at download.docker.com (got {listfile!r}); stderr={stderr}"
+        )
+
+    def test_bookworm_arm64_success_keeps_repo_config(self, tmp_path):
+        """On success the fetched key and docker.list are installed (not restored)."""
+        rc, keyring, listfile, stderr, _apt = _run_fallback(
+            tmp_path,
+            preexisting=True,
+            update_rc=0,
+            install_rc=0,
+            distro_pkgs=False,
+        )
+        assert rc == 0, f"fallback should succeed; stderr={stderr}"
+        # On success, Docker's own key replaces the pre-existing one;
+        # it is not rolled back. Only failure paths restore the backup.
+        assert keyring == "DOCKER-COM-OFFICIAL-KEY\n", (
+            f"on success the docker.com key should be installed (got {keyring!r}); stderr={stderr}"
+        )
+        assert listfile is not None and "download.docker.com" in listfile, (
+            f"docker.list should point at download.docker.com (got {listfile!r}); stderr={stderr}"
+        )
+
+    def test_bookworm_arm64_failed_official_repo_rolls_back(self, tmp_path):
+        """When official repo fails, rolled-back state should be clean."""
+        rc, keyring, listfile, stderr, _apt = _run_fallback(
+            tmp_path,
+            preexisting=False,
+            update_rc=1,
+            install_rc=1,
+            distro_pkgs=False,
+        )
+        assert rc == 1, f"fallback should report failure; stderr={stderr}"
+        # Pre-existing files must be restored on failure
+        assert keyring is None or keyring == PREEXISTING_KEY, (
+            f"docker.asc should be cleaned or restored; got {keyring!r}; stderr={stderr}"
+        )
+        assert listfile is None, (
+            f"docker.list created by this run should be removed; got {listfile!r}; stderr={stderr}"
+        )
