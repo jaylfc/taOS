@@ -70,6 +70,26 @@ class TestDefault:
         assert resp.status_code == 200
         assert resp.json()["tier_name"] == "custom-tier"
 
+    async def test_get_default_returns_models_skipped_when_deferred(self, client, tmp_data_dir):
+        """GET /api/taosmd/default must expose models_skipped so the wizard
+        can show the deferred state."""
+        import json
+        default_data = {
+            "device_id": "local",
+            "tier_id": "standard",
+            "tier_name": "Standard",
+            "models_skipped": True,
+        }
+        default_path = tmp_data_dir / "taosmd_default.json"
+        default_path.write_text(json.dumps(default_data))
+
+        resp = await client.get("/api/taosmd/default")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["device_id"] == "local"
+        assert data["tier_id"] == "standard"
+        assert data["models_skipped"] is True
+
 
 @pytest.mark.asyncio
 class TestSetup:

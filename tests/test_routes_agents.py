@@ -2059,3 +2059,46 @@ class TestAgentWakeBudget:
 def _today_str() -> str:
     import datetime
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+
+
+@pytest.mark.asyncio
+class TestDeployDeferredModelsSelfHeal:
+    """Deploying an agent with taOSmd memory when models were deferred must
+    either start the deferred pull or return 409 if it cannot."""
+
+    async def test_deploy_deferred_models_no_registry_returns_409(
+        self, client, app, tmp_data_dir
+    ):
+        """When taosmd_default.json has models_skipped=true and there is no
+        model registry, deploying with memory_plugin='taosmd' must return 409
+        so the caller knows the deferred downloads cannot start."""
+        import json
+
+        default_data = {
+            "device_id": "local",
+            "tier_id": "standard",
+            "tier_name": "Standard",
+            "models_skipped": True,
+        }
+        (tmp_data_dir / "taosmd_default.json").write_text(json.dumps(default_data))
+
+        # Remove registry so the deferred pull cannot start.
+        app.state.registry = None
+        app.state.cluster_manager._workers.clear()
+
+        class _FakeCatalog:
+            def all_models(self, capability=None):
+                return [{"name": "test-model", "id": "test-model"}]
+
+        app.state.backend_catalog = _FakeCatalog()
+
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "deferred-no-registry",
+            "framework": "none",
+            "model": "test-model",
+            "memory_plugin": "taosmd",
+            "memory_config": None,
+        })
+        assert resp.status_code == 409
+        data = resp.json()
+        assert "deferred" in data["error"].lower() or "download" in data["error"].lower()

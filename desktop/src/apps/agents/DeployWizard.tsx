@@ -55,8 +55,8 @@ export interface MemoryWizardStepProps {
   setMemoryDeviceId: (v: string | null) => void;
   memoryTierId: string | null;
   setMemoryTierId: (v: string | null) => void;
-  memoryDefault: { device_id: string; tier_id: string; tier_name: string } | null | "none";
-  setMemoryDefault: (v: { device_id: string; tier_id: string; tier_name: string } | null | "none") => void;
+  memoryDefault: { device_id: string; tier_id: string; tier_name: string; models_skipped?: boolean } | null | "none";
+  setMemoryDefault: (v: { device_id: string; tier_id: string; tier_name: string; models_skipped?: boolean } | null | "none") => void;
   memoryInstallTargets: Array<{ name: string; friendly_name: string; tier_id: string }>;
   setMemoryInstallTargets: (v: Array<{ name: string; friendly_name: string; tier_id: string }>) => void;
   memoryDevicesLoaded: boolean;
@@ -108,7 +108,7 @@ export function MemoryWizardStep({
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data?.device_id) {
-          setMemoryDefault(data as { device_id: string; tier_id: string; tier_name: string });
+          setMemoryDefault(data as { device_id: string; tier_id: string; tier_name: string; models_skipped?: boolean });
         } else {
           setMemoryDefault("none");
           setMemoryPickerMode("picker");
@@ -181,6 +181,37 @@ export function MemoryWizardStep({
   // "Has default" mode
   if (memoryPlugin !== null && memoryPickerMode === "default" && memoryDefault !== null && memoryDefault !== "none") {
     const def = memoryDefault;
+    if (def.models_skipped) {
+      return (
+        <div className="space-y-3">
+          <span className="block text-xs text-shell-text-secondary mb-2">Memory Layer</span>
+          <div className="px-4 py-3 rounded-lg border border-yellow-500/30 bg-yellow-500/5 flex items-start justify-between gap-2">
+            <div>
+              <div className="text-sm font-medium">Models deferred</div>
+              <div className="text-xs text-shell-text-secondary mt-0.5">
+                {def.tier_name} on {def.device_id} — download now to enable memory search
+              </div>
+            </div>
+            <div className="flex flex-col items-end gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => setMemoryPickerMode("picker")}
+                className="text-xs text-accent hover:underline"
+              >
+                Download now
+              </button>
+              <button
+                type="button"
+                onClick={() => setMemoryPlugin(null)}
+                className="text-xs text-shell-text-tertiary hover:text-shell-text"
+              >
+                Skip memory for this agent
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="space-y-3">
         <span className="block text-xs text-shell-text-secondary mb-2">Memory Layer</span>
@@ -422,7 +453,7 @@ export function DeployWizard({
   const [memoryDeviceId, setMemoryDeviceId] = useState<string | null>(null);
   const [memoryTierId, setMemoryTierId] = useState<string | null>(null);
   // null = loading; "none" = no default; object = has default
-  const [memoryDefault, setMemoryDefault] = useState<{ device_id: string; tier_id: string; tier_name: string } | null | "none">(null);
+  const [memoryDefault, setMemoryDefault] = useState<{ device_id: string; tier_id: string; tier_name: string; models_skipped?: boolean } | null | "none">(null);
   const [memoryInstallTargets, setMemoryInstallTargets] = useState<Array<{ name: string; friendly_name: string; tier_id: string }>>([]);
   const [memoryDevicesLoaded, setMemoryDevicesLoaded] = useState(false);
   const [memorySetupTaskId, setMemorySetupTaskId] = useState<string | null>(null);
