@@ -18,7 +18,7 @@ def fake_zc(monkeypatch):
     zc_instance.async_close = AsyncMock()
     factory = MagicMock(return_value=zc_instance)
     monkeypatch.setattr(mp, "AsyncZeroconf", factory)
-    monkeypatch.setattr(mp, "_detect_primary_ipv4", lambda: "192.168.1.42")
+    monkeypatch.setattr(mp, "_detect_primary_ipv4", lambda: ["192.168.1.42"])
     return zc_instance, factory
 
 
@@ -57,7 +57,7 @@ async def test_failed_register_closes_zeroconf_instance(monkeypatch):
     """If async_register_service raises after AsyncZeroconf() is built,
     the half-initialised instance must be closed — otherwise its sockets
     and multicast subscriptions leak. Caught by kilo-code-bot on #449."""
-    monkeypatch.setattr(mp, "_detect_primary_ipv4", lambda: "192.168.1.42")
+    monkeypatch.setattr(mp, "_detect_primary_ipv4", lambda: ["192.168.1.42"])
     zc_instance = MagicMock()
     zc_instance.async_register_service = AsyncMock(
         side_effect=RuntimeError("port in use")
@@ -74,7 +74,7 @@ async def test_failed_register_closes_zeroconf_instance(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_start_swallows_exceptions_and_stop_is_noop(monkeypatch):
-    monkeypatch.setattr(mp, "_detect_primary_ipv4", lambda: "192.168.1.42")
+    monkeypatch.setattr(mp, "_detect_primary_ipv4", lambda: ["192.168.1.42"])
 
     def _boom(*_a, **_kw):
         raise RuntimeError("multicast disabled")

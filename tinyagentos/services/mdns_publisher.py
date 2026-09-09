@@ -20,6 +20,7 @@ If two taOS instances run on the same LAN both claiming ``taos.local``,
 zeroconf resolves the collision by suffixing the second one
 (``taos-2.local`` etc.). No special-case code needed here — the library
 handles it via ``allow_name_change``.
+
 """
 from __future__ import annotations
 
@@ -34,20 +35,51 @@ logger = logging.getLogger(__name__)
 _SERVICE_TYPE = "_http._tcp.local."
 
 
-def _detect_primary_ipv4() -> str | None:
-    """Pick the LAN IPv4 the kernel would use for default-route traffic.
+def _detect_primary_ipv4() -> list[str]:
+    """Return all non-loopback, non-link-local IPv4 addresses.
 
-    Opens a UDP socket "to" 8.8.8.8 and reads ``getsockname()`` — no
-    packets are actually sent, so this works fine on air-gapped
-    networks (the kernel still resolves the source interface).
+    Tries the kernel's default-route probe first (a UDP connect to 8.8.8.8
+    with no packets sent) and includes the result first when it matches an
+    ifaddr address.  Falls back to ``ifaddr.get_adapters()`` which
+    enumerates every interface without requiring network I/O, so the
+    service still publishes on hosts with no default route.
     """
+    primary: str | None = None
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.connect(("8.8.8.8", 80))
-            return sock.getsockname()[0]
+            primary = sock.getsockname()[0]
     except OSError as exc:
-        logger.warning("mDNS: could not detect primary LAN IPv4: %s", exc)
-        return None
+        # No default route (offline LAN, gateway-less switch): the ifaddr
+        # enumeration below still finds the interfaces.
+        logger.debug("mDNS: default-route probe failed, using ifaddr: %s", exc)
+
+    try:
+        import ifaddr
+    except ImportError:
+        return [primary] if primary else []
+
+    addrs: list[str] = []
+    for adapter in ifaddr.get_adapters():
+        for ip_entry in adapter.ips:
+            ip = ip_entry.ip
+            if not isinstance(ip, str):
+                continue
+            parts = ip.split(".")
+            if len(parts) != 4:
+                continue
+            if parts[0] == "127":
+                continue
+            if parts[0] == "169" and parts[1] == "254":
+                continue
+            addrs.append(ip)
+
+    if primary and primary in addrs:
+        addrs.remove(primary)
+        addrs.insert(0, primary)
+    elif primary:
+        addrs.insert(0, primary)
+    return addrs
 
 
 class MdnsPublisher:
@@ -70,8 +102,8 @@ class MdnsPublisher:
     async def start(self) -> None:
         """Register the service. Never raises into the caller."""
         try:
-            ip = _detect_primary_ipv4()
-            if ip is None:
+            addresses = _detect_primary_ipv4()
+            if not addresses:
                 logger.warning(
                     "mDNS: skipping publish — no LAN IPv4 detected"
                 )
@@ -79,7 +111,7 @@ class MdnsPublisher:
             info = ServiceInfo(
                 _SERVICE_TYPE,
                 f"{self._service_name}.{_SERVICE_TYPE}",
-                addresses=[socket.inet_aton(ip)],
+                addresses=[socket.inet_aton(ip) for ip in addresses],
                 port=self._port,
                 properties={"path": "/"},
                 server=self._hostname,
@@ -104,11 +136,11 @@ class MdnsPublisher:
             self._info = info
             self._active = True
             logger.info(
-                "mDNS: published %s at http://%s:%d/ (ip=%s)",
+                "mDNS: published %s at http://%s:%d/ (ips=%s)",
                 self._service_name,
                 self._hostname.rstrip("."),
                 self._port,
-                ip,
+                ", ".join(addresses),
             )
         except Exception:
             logger.exception("mDNS: publish failed — continuing without")
