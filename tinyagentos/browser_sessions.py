@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 """BrowserSessionManager -- live browser sessions backed by neko/CDP containers.
 
 Each session belongs to an owner (user or agent), tracks a URL, container,
@@ -709,7 +710,13 @@ async def wire_browser_runtime(
     runner = BrowserContainerRunner(node_ip=host_ip, hw_profile=hardware_profile)
     app_state.browser_container_runner = runner
 
-    hw_dict = dataclasses.asdict(hardware_profile) if hardware_profile is not None else {}
+    if hardware_profile is not None:
+        try:
+            hw_dict = dataclasses.asdict(hardware_profile)
+        except TypeError:
+            hw_dict = {k: getattr(hardware_profile, k) for k in ("cpu", "ram_mb", "npu", "gpu", "disk", "os") if hasattr(hardware_profile, k)}
+    else:
+        hw_dict = {}
     app_state.host_hardware = hw_dict
 
     rows = await agent_browsers.list_profiles()

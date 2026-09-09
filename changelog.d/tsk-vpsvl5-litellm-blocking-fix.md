@@ -1,0 +1,4 @@
+### Fixed
+- LiteLLM's prisma generate now runs in a background task instead of blocking the event loop during startup. The `_litellm_bringup()` function fires `llm_proxy.start()` via `asyncio.create_task()` so the startup guard clears immediately and the API keeps answering during the generate step. Previously, `await llm_proxy.start()` blocked the event loop for the full 120s polling cycle, causing the health endpoint to stall.
+- Fixed `dataclasses.asdict()` calls in `browser_sessions.py` and `app.py` to gracefully handle non-dataclass hardware profile objects, preventing `TypeError` during startup when test mocks return simplified profile objects.
+- Fixed `CapabilityChecker._get_total_resources()` in `capabilities.py` to handle `None` GPU/NPU hardware fields and string-valued CPU fields, preventing `AttributeError` during startup diagnostics.

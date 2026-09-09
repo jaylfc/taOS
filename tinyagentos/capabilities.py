@@ -38,24 +38,30 @@ class CapabilityChecker:
 
     def _get_total_resources(self) -> dict:
         """Aggregate resources from local hardware + all cluster workers."""
+        cpu = self.hardware.cpu
+        architectures = [cpu.arch if hasattr(cpu, "arch") else cpu] if cpu else []
+        
+        npu_types: list[str] = []
+        npu = getattr(self.hardware, "npu", None)
+        if npu and npu.type != "none":
+            npu_types.append(npu.type)
+
         resources = {
-            "ram_mb": self.hardware.ram_mb,
+            "ram_mb": getattr(self.hardware, "ram_mb", 0) or 0,
             "vram_mb": 0,
-            "npu_types": [],
-            "architectures": [self.hardware.cpu.arch],
+            "npu_types": npu_types,
+            "architectures": architectures,
             "has_rknn_toolkit": False,
         }
         # Local GPU VRAM
-        if self.hardware.gpu.type == "nvidia" and self.hardware.gpu.cuda:
-            resources["vram_mb"] = max(resources["vram_mb"], self.hardware.gpu.vram_mb)
-        if self.hardware.gpu.type == "amd" and self.hardware.gpu.rocm:
-            resources["vram_mb"] = max(resources["vram_mb"], self.hardware.gpu.vram_mb)
+        gpu = getattr(self.hardware, "gpu", None)
+        if gpu and gpu.type == "nvidia" and getattr(gpu, "cuda", False):
+            resources["vram_mb"] = max(resources["vram_mb"], getattr(gpu, "vram_mb", 0) or 0)
+        if gpu and gpu.type == "amd" and getattr(gpu, "rocm", False):
+            resources["vram_mb"] = max(resources["vram_mb"], getattr(gpu, "vram_mb", 0) or 0)
         # Apple Silicon unified memory counts as VRAM (MLX-accelerated)
-        if self.hardware.gpu.type == "apple":
-            resources["vram_mb"] = max(resources["vram_mb"], self.hardware.gpu.vram_mb)
-        # Local NPU
-        if self.hardware.npu.type != "none":
-            resources["npu_types"].append(self.hardware.npu.type)
+        if gpu and gpu.type == "apple":
+            resources["vram_mb"] = max(resources["vram_mb"], getattr(gpu, "vram_mb", 0) or 0)
         # Cluster workers
         if self.cluster:
             for worker in self.cluster.get_workers():

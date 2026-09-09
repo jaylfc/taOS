@@ -961,6 +961,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # immediately. migrate must finish before start (it generates the prisma
         # client the LiteLLM subprocess imports). All consumers null-check
         # llm_proxy.is_running() so they degrade gracefully while the proxy warms.
+        # The proxy start runs in a supervised background task so the API keeps
+        # answering during the generate step.
         async def _litellm_bringup() -> None:
             try:
                 try:
@@ -979,7 +981,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                         continue
                     if rec and rec.get("value"):
                         resolved_secrets[name] = rec["value"]
-                await llm_proxy.start(config.backends, secrets=resolved_secrets)
+                asyncio.create_task(llm_proxy.start(config.backends, secrets=resolved_secrets))
             except Exception:
                 pass  # LiteLLM is optional
 
@@ -1062,7 +1064,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         _bind_port = config.server.get("port", 6969)
         # Give the local worker the controller's own hardware + backends so the
         # Cluster view shows the host's real CPU/RAM/NPU and loaded backends.
-        _local_hw = _asdict(hardware_profile) if hardware_profile is not None else {}
+        if hardware_profile is not None:
+            try:
+                _local_hw = _asdict(hardware_profile)
+            except TypeError:
+                _local_hw = {k: getattr(hardware_profile, k) for k in ("cpu", "ram_mb", "npu", "gpu", "disk", "os") if hasattr(hardware_profile, k)}
+        else:
+            _local_hw = {}
         await enroll_local_worker(
             cluster_manager,
             bind_port=_bind_port,
