@@ -6,6 +6,7 @@ import logging
 import math
 import secrets
 import time
+import uuid
 from collections import OrderedDict
 
 from fastapi import APIRouter, Request
@@ -691,29 +692,62 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                     from tinyagentos.routes.taosmd import MEMORY_TIERS, _run_setup, _tasks
                     tier_cfg = MEMORY_TIERS.get(tier_id)
                     if tier_cfg is not None:
-                        task_id = str(uuid.uuid4())
                         tasks = _tasks(request)
-                        tasks[task_id] = {
-                            "state": "pending",
-                            "progress_pct": 0,
-                            "message": "Queued…",
-                            "error": None,
-                        }
-                        asyncio.create_task(
-                            _run_setup(
-                                tasks,
-                                task_id,
-                                default_data.get("device_id", "local"),
-                                tier_id,
-                                tier_cfg,
-                                registry=registry,
-                                hardware_profile=getattr(request.app.state, "hardware_profile", None),
-                                backends=list(getattr(config, "backends", []) or []) if config else [],
-                                skip_models=False,
-                                data_dir=data_dir,
+                        existing_task_id = getattr(request.app.state, "taosmd_selfheal_task_id", None)
+                        if existing_task_id is not None:
+                            existing_task = tasks.get(existing_task_id)
+                            if existing_task is not None and existing_task.get("state") not in {"done", "failed"}:
+                                task_id = existing_task_id
+                                self_heal_setup_task_id = task_id
+                            else:
+                                request.app.state.taosmd_selfheal_task_id = None
+                                task_id = str(uuid.uuid4())
+                                tasks[task_id] = {
+                                    "state": "pending",
+                                    "progress_pct": 0,
+                                    "message": "Queued…",
+                                    "error": None,
+                                }
+                                asyncio.create_task(
+                                    _run_setup(
+                                        tasks,
+                                        task_id,
+                                        default_data.get("device_id", "local"),
+                                        tier_id,
+                                        tier_cfg,
+                                        registry=registry,
+                                        hardware_profile=getattr(request.app.state, "hardware_profile", None),
+                                        backends=list(getattr(config, "backends", []) or []) if config else [],
+                                        skip_models=False,
+                                        data_dir=data_dir,
+                                    )
+                                )
+                                request.app.state.taosmd_selfheal_task_id = task_id
+                                self_heal_setup_task_id = task_id
+                        else:
+                            task_id = str(uuid.uuid4())
+                            tasks[task_id] = {
+                                "state": "pending",
+                                "progress_pct": 0,
+                                "message": "Queued…",
+                                "error": None,
+                            }
+                            asyncio.create_task(
+                                _run_setup(
+                                    tasks,
+                                    task_id,
+                                    default_data.get("device_id", "local"),
+                                    tier_id,
+                                    tier_cfg,
+                                    registry=registry,
+                                    hardware_profile=getattr(request.app.state, "hardware_profile", None),
+                                    backends=list(getattr(config, "backends", []) or []) if config else [],
+                                    skip_models=False,
+                                    data_dir=data_dir,
+                                )
                             )
-                        )
-                        self_heal_setup_task_id = task_id
+                            request.app.state.taosmd_selfheal_task_id = task_id
+                            self_heal_setup_task_id = task_id
 
         # Register the agent with taOSmd BEFORE mutating config so a failure
         # here aborts cleanly with no half-state. Skipped for memory_mode='framework'
@@ -823,37 +857,53 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                     if setup_task is not None:
                         terminal = {"done", "failed"}
                         if setup_task.get("state") not in terminal:
-                            for _ in range(300):
+                            last_progress = setup_task.get("progress_pct")
+                            last_message = setup_task.get("message")
+                            stall_seconds = 0
+                            max_stall_seconds = 600
+                            while True:
                                 await asyncio.sleep(1)
                                 setup_task = setup_tasks.get(self_heal_setup_task_id)
                                 if setup_task is None or setup_task.get("state") in terminal:
                                     break
-                            else:
-                                setup_task = {
-                                    "state": "failed",
-                                    "message": "timed out waiting for model download",
-                                }
+                                pct = setup_task.get("progress_pct")
+                                msg = setup_task.get("message")
+                                if pct == last_progress and msg == last_message:
+                                    stall_seconds += 1
+                                    if stall_seconds >= max_stall_seconds:
+                                        setup_task = {
+                                            "state": "failed",
+                                            "message": "model download stalled — no progress for 10 minutes",
+                                        }
+                                        break
+                                else:
+                                    stall_seconds = 0
+                                    last_progress = pct
+                                    last_message = msg
 
-                        if not setup_task or setup_task.get("state") != "done":
-                            agent = find_agent(config, body.name)
-                            if agent is not None:
-                                agent["status"] = "failed"
-                            err_msg = (setup_task or {}).get("error") or (setup_task or {}).get("message") or "Setup failed"
-                            deploy_tasks[body.name] = {
-                                "status": "failed",
-                                "name": body.name,
-                                "error": err_msg,
-                            }
-                            notif = getattr(request.app.state, "notifications", None)
-                            if notif:
-                                await notif.add(
-                                    title=f"Deploy failed: {body.name}",
-                                    message=f"Deploy failed for {body.name}: {err_msg}",
-                                    level="error",
-                                    source="agents.deploy",
-                                )
-                            await save_config_locked(config, config.config_path)
-                            return
+                    if setup_task is not None and setup_task.get("state") in terminal:
+                        request.app.state.taosmd_selfheal_task_id = None
+
+                    if not setup_task or setup_task.get("state") != "done":
+                        agent = find_agent(config, body.name)
+                        if agent is not None:
+                            agent["status"] = "failed"
+                        err_msg = (setup_task or {}).get("error") or (setup_task or {}).get("message") or "Setup failed"
+                        deploy_tasks[body.name] = {
+                            "status": "failed",
+                            "name": body.name,
+                            "error": err_msg,
+                        }
+                        notif = getattr(request.app.state, "notifications", None)
+                        if notif:
+                            await notif.add(
+                                title=f"Deploy failed: {body.name}",
+                                message=f"Deploy failed for {body.name}: {err_msg}",
+                                level="error",
+                                source="agents.deploy",
+                            )
+                        await save_config_locked(config, config.config_path)
+                        return
 
                         # Setup succeeded: clear models_skipped so future deploys
                         # don't re-trigger the pull.
