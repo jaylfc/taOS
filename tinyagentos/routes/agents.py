@@ -644,18 +644,20 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                 idempotency_cache.set(scoped_key, json.loads(remote_err.body))
             return remote_err
 
-        # Register the agent with taosmd BEFORE mutating config so a failure
-        # here aborts cleanly with no half-state.
-        try:
-            tm_agents.register_agent(unique_slug)
-        except tm_agents.AgentExistsError:
-            pass  # idempotent — agent already registered, proceed normally
-        except Exception as e:
-            logger.exception("register_agent(%s) failed", unique_slug)
-            err_body = {"error": f"Could not register agent with taosmd: {e}"}
-            if scoped_key and idempotency_cache is not None:
-                idempotency_cache.set(scoped_key, err_body)
-            return JSONResponse(err_body, status_code=500)
+        # Register the agent with taOSmd BEFORE mutating config so a failure
+        # here aborts cleanly with no half-state. Skipped for memory_mode='framework'
+        # because that mode explicitly opts out of taOSmd.
+        if body.memory_mode != "framework":
+            try:
+                tm_agents.register_agent(unique_slug)
+            except tm_agents.AgentExistsError:
+                pass  # idempotent — agent already registered, proceed normally
+            except Exception as e:
+                logger.exception("register_agent(%s) failed", unique_slug)
+                err_body = {"error": f"Could not register agent with taosmd: {e}"}
+                if scoped_key and idempotency_cache is not None:
+                    idempotency_cache.set(scoped_key, err_body)
+                return JSONResponse(err_body, status_code=500)
 
         # Register the agent in the agent registry, minting a canonical_id.
         # Every deploy creates a NEW agent entry (slugs are made unique above),

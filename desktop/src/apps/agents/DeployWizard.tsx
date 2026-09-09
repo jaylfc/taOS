@@ -426,6 +426,13 @@ export function DeployWizard({
     }
   }, [memoryPlugin]);
 
+  // When memory_mode is "framework", the taOSmd plugin must be disabled.
+  useEffect(() => {
+    if (memoryMode === "framework" && memoryPlugin !== null) {
+      setMemoryPlugin(null);
+    }
+  }, [memoryMode]);
+
   // Step 5 — Permissions
   const [canReadUserMemory, setCanReadUserMemory] = useState(false);
 
@@ -1361,33 +1368,35 @@ export function DeployWizard({
                 {memoryMode === "taosmd" && "All memory goes to taOSmd. Durable and searchable across the fleet. Use this when the framework has no native memory."}
               </div>
 
-              <div className="border-t border-white/5 pt-3">
-                <span className="block text-xs text-shell-text-secondary mb-2">Memory Layer</span>
-                <MemoryWizardStep
-                  memoryPlugin={memoryPlugin}
-                  setMemoryPlugin={setMemoryPlugin}
-                  memoryDeviceId={memoryDeviceId}
-                  setMemoryDeviceId={setMemoryDeviceId}
-                  memoryTierId={memoryTierId}
-                  setMemoryTierId={setMemoryTierId}
-                  memoryDefault={memoryDefault}
-                  setMemoryDefault={setMemoryDefault}
-                  memoryInstallTargets={memoryInstallTargets}
-                  setMemoryInstallTargets={setMemoryInstallTargets}
-                  memoryDevicesLoaded={memoryDevicesLoaded}
-                  setMemoryDevicesLoaded={setMemoryDevicesLoaded}
-                  memorySetupTaskId={memorySetupTaskId}
-                  setMemorySetupTaskId={setMemorySetupTaskId}
-                  memorySetupState={memorySetupState}
-                  setMemorySetupState={setMemorySetupState}
-                  memorySetupMsg={memorySetupMsg}
-                  setMemorySetupMsg={setMemorySetupMsg}
-                  memorySetupError={memorySetupError}
-                  setMemorySetupError={setMemorySetupError}
-                  memoryPickerMode={memoryPickerMode}
-                  setMemoryPickerMode={setMemoryPickerMode}
-                />
-              </div>
+              {memoryMode !== "framework" && (
+                <div className="border-t border-white/5 pt-3">
+                  <span className="block text-xs text-shell-text-secondary mb-2">Memory Layer</span>
+                  <MemoryWizardStep
+                    memoryPlugin={memoryPlugin}
+                    setMemoryPlugin={setMemoryPlugin}
+                    memoryDeviceId={memoryDeviceId}
+                    setMemoryDeviceId={setMemoryDeviceId}
+                    memoryTierId={memoryTierId}
+                    setMemoryTierId={setMemoryTierId}
+                    memoryDefault={memoryDefault}
+                    setMemoryDefault={setMemoryDefault}
+                    memoryInstallTargets={memoryInstallTargets}
+                    setMemoryInstallTargets={setMemoryInstallTargets}
+                    memoryDevicesLoaded={memoryDevicesLoaded}
+                    setMemoryDevicesLoaded={setMemoryDevicesLoaded}
+                    memorySetupTaskId={memorySetupTaskId}
+                    setMemorySetupTaskId={setMemorySetupTaskId}
+                    memorySetupState={memorySetupState}
+                    setMemorySetupState={setMemorySetupState}
+                    memorySetupMsg={memorySetupMsg}
+                    setMemorySetupMsg={setMemorySetupMsg}
+                    memorySetupError={memorySetupError}
+                    setMemorySetupError={setMemorySetupError}
+                    memoryPickerMode={memoryPickerMode}
+                    setMemoryPickerMode={setMemoryPickerMode}
+                  />
+                </div>
+              )}
             </div>
           )}
 
