@@ -24,21 +24,25 @@ def _get_upload_dir(data_dir: Path) -> Path:
 
 
 def _ensure_upload_dir(upload_dir: Path) -> None:
-    if not upload_dir.exists():
+    try:
+        st = os.lstat(upload_dir)
+    except FileNotFoundError:
         upload_dir.mkdir(parents=True, mode=0o700)
         return
-    st = os.lstat(upload_dir)
     if stat.S_ISLNK(st.st_mode):
+        logger.error("import upload dir %s refused: symlink", upload_dir)
         raise HTTPException(
             status_code=500,
             detail="Upload directory is a symlink",
         )
     if not stat.S_ISDIR(st.st_mode):
+        logger.error("import upload dir %s refused: not a directory", upload_dir)
         raise HTTPException(
             status_code=500,
             detail="Upload directory is not a directory",
         )
     if st.st_uid != os.getuid():
+        logger.error("import upload dir %s refused: wrong owner", upload_dir)
         raise HTTPException(
             status_code=500,
             detail="Upload directory is not owned by the service",
@@ -48,6 +52,14 @@ def _ensure_upload_dir(upload_dir: Path) -> None:
 
 
 def _upload_path(filename: str, upload_dir: Path) -> Path | None:
+    """Map a client-supplied filename to a path INSIDE ``upload_dir``.
+
+    ``Path("a") / "/etc/x"`` silently discards the left operand, so an
+    absolute or ``..`` filename would let any authenticated user write
+    (upload) or read (embed) any file the server process can reach
+    (GHSA-rwrp-hfc4-qg2w). Browsers only ever send a bare basename, so
+    anything with a separator, a NUL, or a leading dot is rejected outright.
+    """
     if not filename or "/" in filename or "\\" in filename or "\x00" in filename:
         return None
     if filename in {".", ".."} or filename.startswith("."):
@@ -110,6 +122,8 @@ async def embed_files(request: Request):
     upload_dir = _get_upload_dir(data_dir)
     _ensure_upload_dir(upload_dir)
 
+    # Resolve every name INSIDE the upload dir before touching the filesystem;
+    # a traversal name is a 400, not a read of whatever it points at.
     resolved: dict[str, Path] = {}
     for f in filenames:
         p = _upload_path(f, upload_dir) if isinstance(f, str) else None
