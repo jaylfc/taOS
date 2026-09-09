@@ -1637,12 +1637,18 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 "error": "account_store_unreadable",
                 "detail": (
                     "The account store exists but cannot be read. Accounts are "
-                    "not lost; restore it from a backup — see "
+                    "not lost; restore it from a backup -- see "
                     "docs/runbooks/controller-rescue.md."
                 ),
             },
             status_code=503,
         )
+
+    from tinyagentos.middleware.csrf import CsrfException
+
+    @app.exception_handler(CsrfException)
+    async def _csrf_error(request, exc):  # noqa: ANN001
+        return JSONResponse({"error": exc.detail}, status_code=403)
 
     # Auth middleware -- added first so it is innermost. Starlette builds the
     # middleware stack in reverse add order (last added is outermost), so the

@@ -628,18 +628,18 @@ guards this. Never "fix" a broken auth-page script by adding `unsafe-inline`.
 other mutating auth route is protected invisibly. Introspect the **built** app,
 not the source, when you need to know whether a route is guarded.
 
-The routes that *establish* a credential are exempt by path
-(`_CREDENTIAL_PATHS` in `tinyagentos/middleware/csrf.py`): `/auth/login`,
-`/auth/pin-login`, `/auth/setup`, `/auth/complete`, `/setup/complete`. They must
-work for a browser still holding an **expired** session cookie — that cookie is
-sent, so a "no session cookie" exemption stops applying at precisely the moment
-sign-in is needed, and the server-rendered form has no JavaScript to attach an
-`X-CSRF-Token` header. The result was a 403 that retrying could not clear.
+The routes that *establish* a credential no longer rely on a path-based
+exemption.  ``verify_csrf`` now checks whether the ``taos_session`` cookie
+resolves to a live session: a stale or revoked cookie is treated as absent,
+so sign-in surfaces work for a browser still holding an expired cookie without
+a hardcoded allowlist.  The server-rendered form has no JavaScript to attach an
+`X-CSRF-Token` header, so a "no session cookie" exemption must not stop applying
+at the moment sign-in is needed.  The result was a 403 that retrying could not
+clear.
 
-Every exempt path is also in `EXEMPT_PATHS`; a test asserts that containment, so
-the exemption list cannot grow past the surface that is reachable without a
-credential. Adding a route here is a security decision — anything that acts on
-an already-valid session must stay protected.
+Every route reachable without a credential is in `EXEMPT_PATHS`.  The CSRF
+gate defers to the live-session check rather than a separate list, so there is
+no exemption list that can drift or grow past the unauthenticated surface.
 
 Note for anyone writing tests against these routes: **`verify_csrf` runs for
 real.** It used to be no-op'd by an autouse fixture for every test file whose

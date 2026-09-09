@@ -177,23 +177,36 @@ class TestStaleCookieDoesNotBlockSignIn:
 
 
 class TestExemptionsStayWithinTheUnauthenticatedSurface:
-    """`_CREDENTIAL_PATHS` must be a SUBSET of the session gate's exempt list.
+    """The session-validity gate must not become a hole.
 
-    A path can only need a CSRF exemption if it is reachable with no
-    credential at all. Anything outside `EXEMPT_PATHS` sits behind the session
-    gate, so a stale cookie never reaches it and exempting it would be pure
-    loss. Asserting containment stops the two lists drifting apart, and stops
-    the exemption list quietly growing into a hole.
+    With the old path-based ``_CREDENTIAL_PATHS`` exemption we asserted that
+    every CSRF-exempt path was also auth-exempt.  The replacement is a live
+    session check: a ``taos_session`` cookie that does not resolve to a valid
+    session is treated as absent, so there is no exemption list to drift.
+    What remains is the invariant that a stale cookie must never 403 a route
+    the auth gate would have let through.
     """
 
-    def test_every_exempt_path_is_reachable_without_a_session(self):
-        from tinyagentos.auth_middleware import EXEMPT_PATHS
-        from tinyagentos.middleware.csrf import _CREDENTIAL_PATHS
-
-        assert _CREDENTIAL_PATHS <= set(EXEMPT_PATHS), (
-            "CSRF-exempt paths not on the session gate's exempt list: "
-            f"{sorted(_CREDENTIAL_PATHS - set(EXEMPT_PATHS))}"
-        )
+    @pytest.mark.asyncio
+    async def test_stale_cookie_never_403s_an_exempt_route(self, unconfigured_app):
+        """Every exempt route reachable with no credential must also pass CSRF
+        when the only credential present is a stale session cookie."""
+        exempt_routes = [
+            ("/auth/login", "GET"),
+            ("/auth/setup", "POST"),
+            ("/setup/complete", "POST"),
+        ]
+        for path, method in exempt_routes:
+            async with _console_client(
+                unconfigured_app, {"taos_session": STALE_SESSION}
+            ) as c:
+                if method == "GET":
+                    resp = await c.get(path, follow_redirects=False)
+                else:
+                    resp = await c.post(path, follow_redirects=False)
+            assert resp.status_code != 403, (
+                f"stale cookie blocked {method} {path}: {resp.text}"
+            )
 
 
 class TestPinPanelCanAlwaysRenderTheReason:
@@ -317,3 +330,50 @@ class TestCsrfStillGuardsSessionAuthenticatedRoutes:
                 "/auth/users/tester/password", json={"password": "another pass 123"}
             )
         assert resp.status_code == 403
+
+
+class TestStaleCookieGeneralHandling:
+    """A stale session cookie must not 403 any reachable mutating route.
+
+    The path-based exemption in ``_CREDENTIAL_PATHS`` only covered the five
+    credential-establishing routes.  Routes like ``/auth/lock`` that are
+    exempt from the auth gate but still carry the router-wide CSRF dependency
+    would answer 403 to a browser still holding an old install's cookie.
+    """
+
+    @pytest.mark.asyncio
+    async def test_lock_succeeds_with_a_stale_session_cookie(self, configured_app):
+        """``POST /auth/lock`` revokes whatever session is present and clears
+        the cookie, so a stale token must not be blocked by CSRF."""
+        record = configured_app.state.auth.find_user("tester")
+        token = configured_app.state.auth.create_session(
+            user_id=record["id"], long_lived=False
+        )
+        configured_app.state.auth.revoke_session(token)
+        async with _console_client(
+            configured_app, {"taos_session": token}
+        ) as c:
+            resp = await c.post("/auth/lock", follow_redirects=False)
+        assert resp.status_code == 200, resp.text
+
+    @pytest.mark.asyncio
+    async def test_setup_clears_stale_cookie(self, unconfigured_app):
+        """After first-run setup the stale ``taos_session`` cookie must be
+        cleared from the response so a reinstall does not keep sending it."""
+        stale = "stale-session-token-that-no-longer-resolves"
+        async with _console_client(
+            unconfigured_app, {"taos_session": stale}
+        ) as c:
+            resp = await c.post(
+                "/auth/setup",
+                json={
+                    "username": "tester",
+                    "full_name": "Bring-up Test",
+                    "email": "",
+                    "password": PASSWORD,
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 200, resp.text
+        set_cookie = resp.headers.get("set-cookie", "")
+        assert "taos_session" not in set_cookie or stale not in set_cookie
