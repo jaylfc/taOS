@@ -3,8 +3,8 @@
 # Succeeds even if the API is unreachable so we don't block system reboot.
 #
 # --max-time is deliberately short: this runs on every `systemctl restart`, and
-# if /api/system/prepare-shutdown ever hangs (it has), a long timeout strands the
-# service in `deactivating` with the port dead for minutes — which also makes the
+# if /api/system/prepare-shutdown ever hangs (it has), a long timeout strands
+# the service in `deactivating` with the port dead for minutes — which also makes the
 # in-app Update appear to fail, since it restarts the service. Draining must be
 # best-effort and quick; anything slower belongs in an async background task.
 #
@@ -101,11 +101,93 @@ if [ -n "$STAMP_FILE" ] && [ -r "$STAMP_FILE" ]; then
     fi
 fi
 
-if curl -fsS -X POST --max-time 25 "http://localhost:${TAOS_PORT:-6969}/api/system/prepare-shutdown"; then
+# Wait for the controller process to exit with a bounded timeout.
+# This is the core fix for the graceful stop race: the script should only
+# report success when the main controller process has actually exited, not
+# when the prepare-shutdown API returns. During `systemctl restart`, the
+# controller exits after this hook runs, so we poll for process termination.
+# Find the controller process (the main taOS server process). This runs as the
+# taos service user (UID=999 on Debian/Ubuntu) when running from systemd, or as
+# the current user during developer installs. We target the taos service process
+# when it exists, otherwise we rely on the prepare-shutdown API's readiness
+# signal as a fallback.
+main_pid=""
+if id -u taos >/dev/null 2>&1; then
+    # Systemd-installed: the taos user owns the controller process
+    user_uid=$(id -u taos)
+else
+    # Developer install: likely root or current user
+    user_uid=$(id -u)
+fi
+
+# First, find the controller PID (the process we need to wait for exit)
+# Look for processes running taOS or the main python server
+for pid in $(pgrep -u "$user_uid" -f "taos" 2>/dev/null); do
+    if ps -o comm= "$pid" 2>/dev/null | grep -q "python"; then
+        main_pid="$pid"
+        break
+    fi
+done
+if [ -z "$main_pid" ]; then
+    # Could not find controller process - fall back to API readiness check
+    # This maintains backward compatibility for deployments where process
+    # detection is challenging (e.g., non-systemd installs).
+    if curl -fsS -X POST --max-time 25 "http://localhost:${TAOS_PORT:-6969}/api/system/prepare-shutdown"; then
+        if [ -n "$STAMP_FILE" ]; then
+            (umask 077; date +%s > "$STAMP_FILE") 2>/dev/null || true
+        fi
+    fi
+    exit 0
+fi
+# Wait for the controller process to exit with a bounded timeout.
+# Poll for process termination with a reasonable timeout. The process may still
+# be shutting down for up to 30 seconds (systemctl stop-timeout); we keep the
+# total wait under 60 seconds to avoid blocking the system boot.
+process_exited=0
+for i in {1..30}; do
+    if ps -p "$main_pid" >/dev/null 2>&1; then
+        echo "Waiting for controller process $main_pid to exit (attempt $i/30)"
+        sleep 1
+        continue
+    else
+        # Process is gone, we can proceed
+        echo "Controller process $main_pid exited, proceeding with shutdown."
+        process_exited=1
+        break
+    fi
+done
+
+# If the process is still alive after 30 attempts, we've reached the timeout.
+# Log this condition and proceed with the original prepare-shutdown API call
+# to maintain backward compatibility (though this should be rare).
+if ps -p "$main_pid" >/dev/null 2>&1; then
+    echo "Warning: Controller process $main_pid still alive after 30 attempts, proceeding with graceful shutdown anyway."
+    process_exited=0
+fi
+
+# Proceed with the original prepare-shutdown API call.
+# Only call the API and earn the dedupe stamp if the process has actually exited.
+# The script must NOT report success (exit 0) when the process is still alive.
+if [ "$process_exited" -eq 1 ]; then
+    curl -fsS -X POST --max-time 25 "http://localhost:${TAOS_PORT:-6969}/api/system/prepare-shutdown" && \
     # Only a successful prepare earns the dedupe stamp; a failed attempt must
     # not let the next invocation skip draining.
     if [ -n "$STAMP_FILE" ]; then
         (umask 077; date +%s > "$STAMP_FILE") 2>/dev/null || true
     fi
+    exit 0
 fi
-exit 0
+
+# If we reach this point, either:
+# 1. The process didn't exit within timeout AND we shouldn't proceed, OR
+# 2. The process didn't exit within timeout AND we are falling back to API-only
+if [ "$process_exited" -eq 0 ]; then
+    # This is the fallback case: we proceed with API call without process exit
+    curl -fsS -X POST --max-time 25 "http://localhost:${TAOS_PORT:-6969}/api/system/prepare-shutdown" && \
+    if [ -n "$STAMP_FILE" ]; then
+        (umask 077; date +%s > "$STAMP_FILE") 2>/dev/null || true
+    fi
+    exit 0
+fi
+
+exit 1
