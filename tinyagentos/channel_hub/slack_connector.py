@@ -64,13 +64,20 @@ class SlackConnector:
             return
 
         messages = data.get("messages", [])
-        if messages:
-            self._last_timestamps[channel_id] = messages[0].get("ts", "")
+        if not messages:
+            return
 
+        # Process messages in chronological order
         for msg in reversed(messages):
             if msg.get("user") == self._bot_user_id or msg.get("bot_id"):
                 continue
             await self._handle_message(client, channel_id, msg)
+
+        # Only advance the cursor after all messages are dispatched
+        # If _handle_message raises, the cursor won't advance and messages will be re-fetched
+        last_timestamp = messages[0].get("ts", "")
+        if last_timestamp:
+            self._last_timestamps[channel_id] = last_timestamp
 
     async def _handle_message(self, client: httpx.AsyncClient, channel_id: str, msg: dict):
         incoming = IncomingMessage(
