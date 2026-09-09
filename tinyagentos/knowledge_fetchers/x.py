@@ -299,8 +299,8 @@ class XWatchStore:
                 (handle.lstrip("@"), filters_json, frequency, created_at),
             )
             conn.commit()
-        except sqlite3.IntegrityError:
-            raise ValueError(f"Watch for @{handle} already exists")
+        except sqlite3.IntegrityError as e:
+            raise ValueError(f"Watch for @{handle} already exists") from e
         return self.get_watch(handle.lstrip("@"))  # type: ignore[return-value]
 
     def list_watches(self) -> list[dict]:

@@ -431,7 +431,7 @@ class IngestPipeline:
         if not title:
             m = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
             if m:
-                title = m.group(1).strip()
+                title = _html_mod.unescape(m.group(1)).strip()
         return content, title, "", metadata
 
     # ------------------------------------------------------------------

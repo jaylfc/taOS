@@ -154,21 +154,32 @@ class TextProcessor(Processor):
             return artifacts
 
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
+            char_count = 0
+            line_count = 1
+            preview = ""
+            text_dir = self.storage_dir / "text"
+            text_dir.mkdir(parents=True, exist_ok=True)
+            text_path = text_dir / f"{item_id}.txt"
+            with open(p, "r", encoding="utf-8", errors="replace") as src:
+                with open(text_path, "w", encoding="utf-8") as dst:
+                    while True:
+                        chunk = src.read(8192)
+                        if not chunk:
+                            break
+                        dst.write(chunk)
+                        char_count += len(chunk)
+                        line_count += chunk.count("\n")
+                        if len(preview) < 200:
+                            preview += chunk
+                            preview = preview[:200]
         except Exception:
             logger.warning("Text processor: could not read %s", storage_path,
                            exc_info=True)
             return artifacts
 
-        # Write extracted text as an artifact
-        text_dir = self.storage_dir / "text"
-        text_dir.mkdir(parents=True, exist_ok=True)
-        text_path = text_dir / f"{item_id}.txt"
-        text_path.write_text(text, encoding="utf-8")
-
         text_meta = {
-            "char_count": len(text),
-            "line_count": text.count("\n") + 1,
+            "char_count": char_count,
+            "line_count": line_count,
             "source_url": item.get("source_url", ""),
             "processed_at": time.time(),
             "processor": "TextProcessor/v1",
@@ -179,14 +190,13 @@ class TextProcessor(Processor):
         artifacts.append({"kind": "text", "path": str(text_path), "meta": text_meta})
 
         # Store a preview (first 200 chars)
-        preview = text[:200]
         meta = json.loads(item.get("meta_json", "{}"))
         meta["preview"] = preview
         await self.store.update_item(item_id, meta_json=meta)
 
         # Auto-title from content if no title
         if not item.get("title"):
-            title = text.strip().split("\n", 1)[0][:100]
+            title = preview.strip().split("\n", 1)[0][:100]
             if title:
                 await self.store.update_item(item_id, title=title)
 
@@ -295,8 +305,10 @@ class ImageProcessor(Processor):
                 thumb_path = thumb_dir / f"{item_id}_thumb.jpg"
 
                 img.thumbnail((320, 320))
-                # Convert to RGB if needed (e.g. RGBA/PNG → JPEG)
-                if img.mode in ("RGBA", "P"):
+                # Convert to RGB if needed (e.g. RGBA/PNG → JPEG).
+                # JPEG supports only "L", "RGB", "CMYK"; all other modes
+                # (including LA, PA, I;16) must be converted first.
+                if img.mode not in ("RGB", "L", "CMYK"):
                     img = img.convert("RGB")
                 img.save(thumb_path, "JPEG", quality=75)
 
