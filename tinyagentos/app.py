@@ -291,6 +291,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     agent_scope_requests_store = AgentScopeRequestsStore(data_dir / "agent_scope_requests.db")
     from tinyagentos.agent_grants_store import AgentGrantsStore
     agent_grants_store = AgentGrantsStore(data_dir / "agent_grants.db")
+    from tinyagentos.projects.dispatcher import DispatcherStore
+    dispatcher_store = DispatcherStore(data_dir / "dispatcher.db")
     from tinyagentos.user_shares_store import UserSharesStore
     user_shares_store = UserSharesStore(data_dir / "user_shares.db")
     from tinyagentos.app_grants_store import AppGrantsStore
@@ -546,6 +548,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await agent_scope_requests_store.init()
         await agent_grants_store.init()
         app.state.agent_grants = agent_grants_store
+        await dispatcher_store.init()
+        app.state.dispatcher_store = dispatcher_store
 
         # First-boot identity for the OS-native agent.  Runs on EVERY start, not
         # only on a fresh install: it is how an install that upgraded into this
@@ -1331,6 +1335,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # default off). Same supervised-loop pattern as routine_tick_loop above.
         from tinyagentos.agent_heartbeat import agent_heartbeat_loop
         _create_supervised_task(agent_heartbeat_loop(app.state), app.state._background_tasks)
+
+        # Dispatcher: per-user assignment engine (opt-in per user, default off).
+        # Sweeps enabled users' dispatcher configs and assigns one claimable card
+        # per eligible agent per cycle. Same supervised-loop pattern.
+        from tinyagentos.projects.dispatcher import dispatcher_tick_loop
+        _create_supervised_task(dispatcher_tick_loop(app.state), app.state._background_tasks)
 
         try:
             canvas_snapshotter = CanvasSnapshotter(
