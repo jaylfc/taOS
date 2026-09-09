@@ -1,0 +1,2 @@
+### Fixed
+- **MessagesApp zombie WebSocket after unmount**: replaced the manual reconnect timer with `partysocket` 1.3.0, which provides unmount-safe cleanup, jittered backoff, and a `maxRetries` cap. Closing the Messages window no longer leaves a socket reconnecting against the Pi for the lifetime of the page. Added RED tests verifying unmount cancels the pending reconnect, delays are jittered, and a remount opens a fresh socket.

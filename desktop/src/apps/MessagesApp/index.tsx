@@ -65,6 +65,7 @@ import {
   type StallWatch,
 } from "../MessagesApp.stallWatch";
 import { useProcessStore } from "@/stores/process-store";
+import { WebSocket as PartyWebSocket } from "partysocket";
 import { getApp } from "@/registry/app-registry";
 import { CodeBlock } from "@/components/CodeBlock";
 import { ToolCallBlock } from "@/components/ToolCallBlock";
@@ -976,13 +977,12 @@ export function MessagesApp({
   useEffect(() => { currentUserIdRef.current = currentUserId; }, [currentUserId]);
   useEffect(() => { channelsRef.current = channels; }, [channels]);
 
-  const wsRef = useRef<WebSocket | null>(null);
+  const wsRef = useRef<PartyWebSocket | null>(null);
   const messageListHandleRef = useRef<MessageListHandle>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTypingSentRef = useRef(0);
   const autoScrollRef = useRef(true);
-  const reconnectDelayRef = useRef(1000);
   const prevChannelRef = useRef<string | null>(null);
 
   /* ---- fetch channels + unread ---- */
@@ -1084,17 +1084,22 @@ export function MessagesApp({
       /* ignore */
     }
   }, []);
-
   /* ---- WebSocket ---- */
-  const connectWs = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState <= 1) return;
-    setWsStatus("connecting");
+  useEffect(() => {
+    fetchChannels();
+    fetchArchivedChannels();
+    fetchAgentLists();
+
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${window.location.host}/ws/chat`);
+    const ws = new PartyWebSocket(`${proto}//${window.location.host}/ws/chat`, undefined, {
+      maxRetries: 10,
+      minReconnectionDelay: 1000 + Math.random() * 4000,
+      maxReconnectionDelay: 30000,
+      reconnectionDelayGrowFactor: 2,
+    });
 
     ws.onopen = () => {
       setWsStatus("connected");
-      reconnectDelayRef.current = 1000;
       // rejoin current channel
       if (prevChannelRef.current) {
         ws.send(JSON.stringify({ type: "join", channel_id: prevChannelRef.current }));
@@ -1212,7 +1217,9 @@ export function MessagesApp({
           case "reaction_update":
             setMessages((prev) =>
               prev.map((m) =>
-                m.id === data.message_id ? { ...m, reactions: data.reactions } : m,
+                m.id === data.message_id
+                  ? { ...m, reactions: data.reactions }
+                  : m,
               ),
             );
             break;
@@ -1253,11 +1260,6 @@ export function MessagesApp({
 
     ws.onclose = () => {
       setWsStatus("disconnected");
-      wsRef.current = null;
-      // reconnect with backoff
-      const delay = reconnectDelayRef.current;
-      reconnectDelayRef.current = Math.min(delay * 2, 30000);
-      setTimeout(connectWs, delay);
     };
 
     ws.onerror = () => {
@@ -1265,43 +1267,14 @@ export function MessagesApp({
     };
 
     wsRef.current = ws;
-  }, []);
+
+    return () => {
+      ws.close();
+      wsRef.current = null;
+    };
+  }, [fetchChannels, fetchArchivedChannels, fetchAgentLists]);
 
   /* ---- emoji popover: escape and outside click ---- */
-  useEffect(() => {
-    if (!showEmoji) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setShowEmoji(null);
-    }
-    function onPointer(e: MouseEvent) {
-      const t = e.target as HTMLElement | null;
-      if (!t) return;
-      if (t.closest("[data-emoji-popover='1']")) return;
-      if (t.closest(`[data-message-id="${showEmoji!.messageId}"]`)) return;
-      setShowEmoji(null);
-    }
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onPointer);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onPointer);
-    };
-  }, [showEmoji]);
-
-  /* ---- init ---- */
-  useEffect(() => {
-    fetchChannels();
-    fetchArchivedChannels();
-    fetchAgentLists();
-    connectWs();
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.onclose = null;
-        wsRef.current.close();
-      }
-    };
-  }, [fetchChannels, fetchArchivedChannels, fetchAgentLists, connectWs]);
-
   useRefreshOnFocus(fetchChannels);
 
   /* ---- keep unreadRef in sync with the unread state without re-running
