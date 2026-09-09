@@ -1,6 +1,9 @@
 """Tests for #642 — startup 503 guard and removal of duplicate eager init."""
 from __future__ import annotations
 
+import asyncio
+import json
+import time
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -17,6 +20,13 @@ def _make_app(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.dump(config))
     (tmp_path / ".setup_complete").touch()
+    # Ensure hardware.json exists so create_app() hardware detection succeeds.
+    hw_path = tmp_path / "data" / "hardware.json"
+    hw_path.parent.mkdir(parents=True, exist_ok=True)
+    hw_path.write_text(json.dumps({
+        "cpu": "x86_64", "ram_mb": 4096, "npu": None, "gpu": None,
+        "disk": "ssd", "os": "linux", "wsl": False,
+    }))
     from tinyagentos.app import create_app
     return create_app(data_dir=tmp_path)
 
@@ -153,3 +163,84 @@ async def test_startup_complete_without_litellm(tmp_path, monkeypatch):
         app = create_app(data_dir=tmp_path)
         async with app.router.lifespan_context(app):
             assert app.state._startup_complete is True
+
+
+@pytest.mark.asyncio
+async def test_health_responds_during_litellm_generate(tmp_path, monkeypatch):
+    """Health endpoint must answer within N ms while LiteLLM prisma generate runs.
+
+    The _litellm_bringup() now fires llm_proxy.start() as a background task
+    so the startup guard clears immediately and the API keeps answering during
+    the generate step.  On the previous code the await llm_proxy.start() blocked
+    the event loop for the full 120 s polling cycle, causing the health check
+    to time out.
+    """
+    import yaml
+    from unittest.mock import patch as patch_mod
+
+    # Setup a DATABASE_URL so LiteLLM will attempt prisma generate at startup.
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / ".litellm_db_url").write_text("postgresql://u:p@h/db")
+    (data_dir / ".setup_complete").touch()
+
+    # Provide a hardware profile so create_app() does not fail on detection.
+    hw_path = data_dir / "hardware.json"
+    hw_path.write_text(json.dumps({
+        "cpu": "x86_64",
+        "ram_mb": 4096,
+        "npu": None,
+        "gpu": None,
+        "disk": "ssd",
+        "os": "linux",
+        "wsl": False,
+    }))
+
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = data_dir / "config.yaml"
+    config_path.write_text(yaml.dump(config))
+
+    from tinyagentos.app import create_app
+
+    # Monkeypatch hardware detection to avoid platform-specific failures.
+    with patch_mod("tinyagentos.hardware.detect_hardware") as mock_detect:
+        mock_detect.return_value = type(
+            "HardwareProfile", (object,),
+            {"cpu": "x86_64", "ram_mb": 4096, "npu": None, "gpu": None,
+             "disk": "ssd", "os": "linux", "wsl": False}
+        )()
+
+        with patch_mod("tinyagentos.hardware.get_hardware_profile") as mock_hw:
+            mock_hw.return_value = type(
+                "HardwareProfile", (object,),
+                {"cpu": "x86_64", "ram_mb": 4096, "npu": None, "gpu": None,
+                 "disk": "ssd", "os": "linux", "wsl": False}
+            )()
+
+            app = create_app(data_dir=data_dir)
+
+            # Run the lifespan so the bring-up task fires.
+            async with app.router.lifespan_context(app):
+                # Give the background task a moment to start the proxy.
+                await asyncio.sleep(0.1)
+
+                # The health endpoint must answer quickly even though prisma generate
+                # is running in the background.
+                start = time.monotonic()
+                async with ASGITransport(app=app) as transport:
+                    async with AsyncClient(transport=transport, base_url="http://test") as client:
+                        resp = await client.get("/api/health")
+                elapsed_ms = (time.monotonic() - start) * 1000
+
+                # Must respond well under the threshold even during generate step.
+                assert resp.status_code == 200, f"health returned {resp.status_code}"
+                assert elapsed_ms < 200, (
+                    f"health endpoint took {elapsed_ms:.0f} ms during LiteLLM bring-up; "
+                    "the event loop was blocked — expected <200ms, got >200ms"
+                )
