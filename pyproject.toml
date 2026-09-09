@@ -78,6 +78,10 @@ dependencies = [
     # relicence or CVE reached users without tripping any gate. Declared here so
     # it goes through the lockfile like everything else.
     "yt-dlp>=2025.1.15",
+    # CSS tokenizer for the browser proxy — rewrites url() and @import in
+    # proxied stylesheets (tsk-fgs3yp). BSD-3-Clause, pure py3-none-any,
+    # one dep (webencodings, also BSD).
+    "tinycss2>=1.5.1",
 ]
 
 [project.optional-dependencies]

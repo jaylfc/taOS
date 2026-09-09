@@ -51,7 +51,7 @@ from tinyagentos.routes.desktop_browser.profile import (
     ensure_default_profiles,
     get_profile_or_404,
 )
-from tinyagentos.routes.desktop_browser.rewriter import rewrite_html
+from tinyagentos.routes.desktop_browser.rewriter import rewrite_css, rewrite_html
 from tinyagentos.routes.desktop_browser.ssrf import (
     SsrfBlockedError,
     guarded_async_client,
@@ -480,6 +480,38 @@ async def proxy_get(
             status_code=response.status_code,
             headers=out_headers,
             media_type="text/html; charset=utf-8",
+        )
+
+    if "text/css" in content_type:
+        proxy_prefix = (
+            f"/api/desktop/browser/proxy?profile_id={quote(profile_id, safe='')}"
+            f"&url="
+        )
+
+        def _proxy_url(absolute: str) -> str:
+            return f"{proxy_prefix}{quote(absolute, safe='')}"
+
+        rewritten = rewrite_css(
+            response.content.decode("utf-8", errors="replace"),
+            base_url=str(response.url),
+            proxy=_proxy_url,
+        )
+        rewritten_bytes = rewritten.encode("utf-8")
+
+        if len(rewritten_bytes) > _MAX_RESPONSE_BYTES:
+            _logger.info(
+                "browser proxy rewritten CSS too large: bytes=%d limit=%d",
+                len(rewritten_bytes), _MAX_RESPONSE_BYTES,
+            )
+            return JSONResponse(
+                {"error": "response too large"}, status_code=502,
+            )
+
+        return Response(
+            content=rewritten_bytes,
+            status_code=response.status_code,
+            headers=out_headers,
+            media_type="text/css; charset=utf-8",
         )
 
     # Non-HTML — pass through bytes verbatim
