@@ -320,3 +320,84 @@ class TestMemoryModeConflictRule:
         assert durable != working
         assert durable == "taOSmd"
         assert working == "framework"
+
+
+@pytest.mark.asyncio
+class TestMemoryModeFrameworkIsolation:
+    """memory_mode='framework' must actually exclude taOSmd from the deploy.
+
+    The bug: selecting 'framework' does not stop taOSmd from being involved.
+    register_agent is called unconditionally, and AGENTS.md is spliced with
+    taosmd rules regardless of memory_mode.
+    """
+
+    async def test_framework_mode_skips_register_agent(self, client, app):
+        """tm_agents.register_agent must NOT be called when memory_mode='framework'."""
+        app.state.archive = MagicMock(
+            record=AsyncMock(), query=AsyncMock(return_value=[{}])
+        )
+        with patch("tinyagentos.routes.agents.tm_agents.register_agent") as mock_reg:
+            resp = await client.post("/api/agents/deploy", json={
+                "name": "FW-No-Reg",
+                "framework": "openclaw",
+                "memory_mode": "framework",
+            })
+            assert resp.status_code == 200
+            mock_reg.assert_not_called()
+
+    async def test_framework_mode_skips_agents_md_taosmd_splice(self, tmp_path):
+        """No taosmd block must be spliced into AGENTS.md when memory_mode='framework'."""
+        from pathlib import Path
+        from tinyagentos.deployer import deploy_agent, DeployRequest
+
+        pushed: list[tuple[str, str]] = []
+
+        async def fake_push_file(container, src, dst):
+            try:
+                with open(src) as fh:
+                    pushed.append((dst, fh.read()))
+            except FileNotFoundError:
+                pushed.append((dst, ""))
+            return 0, ""
+
+        async def mock_exec(name, cmd, **kwargs):
+            cmd_str = " ".join(cmd)
+            if "hostname -I" in cmd_str:
+                return (0, "10.0.0.5")
+            return (0, "ok")
+
+        fake_rules = "Follow the taosmd librarian protocol.\nAgent: <your-agent-name>"
+        import types
+        import sys
+        fake_taosmd = types.ModuleType("taosmd")
+        fake_taosmd.agent_rules = lambda: fake_rules
+        sys.modules["taosmd"] = fake_taosmd
+        try:
+            with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+                 patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+                 patch("tinyagentos.deployer.push_file", side_effect=fake_push_file), \
+                 patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
+                mock_create.return_value = {"success": True, "name": "taos-agent-fw-no-md"}
+                req = DeployRequest(
+                    name="fw-no-md",
+                    framework="openclaw",
+                    model=None,
+                    data_dir=tmp_path,
+                    memory_mode="framework",
+                )
+                result = await deploy_agent(req)
+                assert result["success"] is True
+        finally:
+            sys.modules.pop("taosmd", None)
+
+        agents_md_entries = [
+            (dst, content) for dst, content in pushed
+            if dst.endswith("AGENTS.md")
+        ]
+        for dst, content in agents_md_entries:
+            assert "<!-- taosmd:rules-begin -->" not in content, (
+                f"taosmd rules block found in {dst} for framework-mode deploy"
+            )
+            assert "<!-- taosmd:rules-end -->" not in content, (
+                f"taosmd rules block found in {dst} for framework-mode deploy"
+            )

@@ -1245,14 +1245,9 @@ memory systems the framework runtime is told to use:
 | `framework` | the framework's own memory only |
 | `taosmd` | taOSmd only |
 
-- **`framework` is ADVISORY today, not enforced.** The mode tells the agent
-  runtime what to use; it does **not** yet stop the controller from involving
-  taOSmd. A `framework`-mode deploy still registers the agent with taOSmd
-  (`routes/agents.py`) and still splices taOSmd rules into `AGENTS.md`
-  (`deployer.py`, gated on the agent FRAMEWORK, not on this field). So a taOSmd
-  outage can still block a `framework` deploy, and the agent still receives
-  taOSmd rules. **Do not choose `framework` expecting isolation from taOSmd.**
-  Tracked as `tsk-6tfpun`; this note comes out when the mode is enforced.
+- `framework` is enforced at deploy time. When `memory_mode` is `framework`, the
+  controller skips `tm_agents.register_agent` and does not splice taOSmd rules
+  into `AGENTS.md`. The framework's own memory is used exclusively.
 - `POST /api/agents/deploy` takes `memory_mode` on the body, defaulting to
   `both`. It is persisted on the agent record and **injected into the agent's
   environment as `TAOS_MEMORY_MODE`** at deploy time, so the runtime honours it

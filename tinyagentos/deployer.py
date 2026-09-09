@@ -682,7 +682,10 @@ async def deploy_agent(req: DeployRequest) -> dict:
         # sentinels so it never conflicts with a user-supplied template.  If
         # the file already exists (from the Store or hand-crafted), we splice
         # only our block in; everything outside the sentinels is preserved.
-        if req.framework in AGENTS_MD_PATHS:
+        #
+        # Skipped entirely when memory_mode='framework' because that mode
+        # explicitly opts out of taOSmd.
+        if req.framework in AGENTS_MD_PATHS and req.memory_mode != "framework":
             target_path = AGENTS_MD_PATHS[req.framework]
             try:
                 import taosmd as _taosmd
