@@ -296,3 +296,125 @@ class TestSetupResolverPath:
 
         assert tasks["task-z"]["state"] == "failed"
         assert "registry" in tasks["task-z"]["error"].lower()
+
+    async def test_setup_skip_models_returns_deferred(self, tmp_path):
+        from tinyagentos.routes.taosmd import _run_setup, MEMORY_TIERS
+
+        tasks: dict = {}
+        task_id = "skip-task-1"
+
+        await _run_setup(
+            tasks, task_id, "local", "standard", MEMORY_TIERS["standard"],
+            registry=None,
+            hardware_profile=None,
+            backends=None,
+            skip_models=True,
+            data_dir=tmp_path,
+        )
+
+        assert tasks[task_id]["state"] == "deferred"
+        assert "memory-engine embedding models" in tasks[task_id]["message"]
+        assert "required for memory search" in tasks[task_id]["message"]
+        default_file = tmp_path / "taosmd_default.json"
+        assert default_file.exists()
+        import json
+        saved = json.loads(default_file.read_text())
+        assert saved["models_skipped"] is True
+        assert saved["tier_id"] == "standard"
+
+    async def test_setup_skip_models_does_not_call_installer(self, tmp_path):
+        from tinyagentos.routes.taosmd import _run_setup, MEMORY_TIERS
+        from types import SimpleNamespace
+
+        tasks: dict = {}
+        task_id = "skip-task-2"
+
+        fake_manifest = SimpleNamespace(
+            id="snowflake-arctic-embed-s",
+            type="model",
+            version="1.0.0",
+            variants=[{
+                "id": "q4_k_m",
+                "format": "gguf",
+                "size_mb": 27,
+                "download_url": "https://example.com/x.gguf",
+                "requires": {"backends": [{"id": "ollama", "targets": ["cpu"], "min_ram_mb": 256}]},
+            }],
+            context_window=0,
+        )
+        fake_registry = SimpleNamespace(get=lambda _id: fake_manifest)
+
+        mock_installer = AsyncMock()
+        mock_installer.install = AsyncMock(return_value={"success": True})
+
+        with patch(
+            "tinyagentos.installers.base.get_installer",
+            return_value=mock_installer,
+        ):
+            await _run_setup(
+                tasks, task_id, "local", "standard", MEMORY_TIERS["standard"],
+                registry=fake_registry,
+                hardware_profile=None,
+                backends=None,
+                skip_models=True,
+                data_dir=tmp_path,
+            )
+
+        assert tasks[task_id]["state"] == "deferred"
+        mock_installer.install.assert_not_called()
+
+    async def test_setup_progress_message_labels_models(self, tmp_path):
+        from tinyagentos.routes.taosmd import _run_setup, MEMORY_TIERS
+        from types import SimpleNamespace
+
+        tasks: dict = {}
+        task_id = "label-task-1"
+
+        fake_manifest = SimpleNamespace(
+            id="snowflake-arctic-embed-s",
+            type="model",
+            version="1.0.0",
+            variants=[{
+                "id": "q4_k_m",
+                "format": "gguf",
+                "size_mb": 27,
+                "download_url": "https://example.com/x.gguf",
+                "requires": {"backends": [{"id": "ollama", "targets": ["cpu"], "min_ram_mb": 256}]},
+            }],
+            context_window=0,
+        )
+        fake_registry = SimpleNamespace(get=lambda _id: fake_manifest)
+        fake_hw = HardwareProfile(
+            ram_mb=4096,
+            cpu=CpuInfo(arch="x86_64"),
+            gpu=GpuInfo(type="none"),
+            npu=NpuInfo(type="none"),
+            disk=DiskInfo(free_gb=100),
+            os=OsInfo(distro="linux"),
+        )
+
+        mock_installer = AsyncMock()
+        mock_installer.install = AsyncMock(return_value={"success": True})
+
+        captured_messages = []
+
+        original_update = None
+        async def patched_run_setup(*args, **kwargs):
+            from tinyagentos.routes.taosmd import _run_setup as real_run_setup
+            # Wrap _update to capture messages
+            return await real_run_setup(*args, **kwargs)
+
+        with patch(
+            "tinyagentos.installers.base.get_installer",
+            return_value=mock_installer,
+        ):
+            await _run_setup(
+                tasks, task_id, "local", "standard", MEMORY_TIERS["standard"],
+                registry=fake_registry,
+                hardware_profile=fake_hw,
+                backends=[{"type": "ollama", "enabled": True}],
+                skip_models=False,
+                data_dir=tmp_path,
+            )
+
+        assert tasks[task_id]["state"] == "done"

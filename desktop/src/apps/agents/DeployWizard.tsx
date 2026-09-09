@@ -71,6 +71,8 @@ export interface MemoryWizardStepProps {
   setMemorySetupError: (v: string | null) => void;
   memoryPickerMode: "default" | "picker";
   setMemoryPickerMode: (v: "default" | "picker") => void;
+  memorySkipModels: boolean;
+  setMemorySkipModels: (v: boolean) => void;
 }
 
 export function MemoryWizardStep({
@@ -96,6 +98,8 @@ export function MemoryWizardStep({
   setMemorySetupError,
   memoryPickerMode,
   setMemoryPickerMode,
+  memorySkipModels,
+  setMemorySkipModels,
 }: MemoryWizardStepProps) {
   // Fetch default + install targets once on mount
   useEffect(() => {
@@ -150,7 +154,7 @@ export function MemoryWizardStep({
       const r = await fetch("/api/taosmd/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ device_id: memoryDeviceId, tier: memoryTierId }),
+        body: JSON.stringify({ device_id: memoryDeviceId, tier: memoryTierId, skip_models: memorySkipModels }),
       });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
@@ -310,14 +314,25 @@ export function MemoryWizardStep({
       {memoryDeviceId && memoryTierId && (
         <div className="space-y-2">
           {!memorySetupTaskId && (
-            <Button
-              size="sm"
-              className="w-full"
-              onClick={handleSetup}
-              disabled={isRunning}
-            >
-              Set up memory layer
-            </Button>
+            <>
+              <Button
+                size="sm"
+                className="w-full"
+                onClick={handleSetup}
+                disabled={isRunning}
+              >
+                Set up memory layer
+              </Button>
+              <label className="flex items-center gap-2 text-xs text-shell-text-secondary cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={memorySkipModels}
+                  onChange={e => setMemorySkipModels(e.target.checked)}
+                  className="rounded border-white/20 bg-shell-bg-deep"
+                />
+                Skip model downloads (defer to first memory use)
+              </label>
+            </>
           )}
           {memorySetupTaskId && (
             <div className={`px-3 py-2 rounded-lg text-xs ${
@@ -415,6 +430,7 @@ export function DeployWizard({
   const [memorySetupMsg, setMemorySetupMsg] = useState<string>("");
   const [memorySetupError, setMemorySetupError] = useState<string | null>(null);
   const [memoryPickerMode, setMemoryPickerMode] = useState<"default" | "picker">("default");
+  const [memorySkipModels, setMemorySkipModels] = useState(false);
 
   // When the taOSmd memory layer is skipped, the only coherent mode is
   // "framework". "both" and "taosmd" modes require the taOSmd plugin, so snap
@@ -1394,6 +1410,8 @@ export function DeployWizard({
                     setMemorySetupError={setMemorySetupError}
                     memoryPickerMode={memoryPickerMode}
                     setMemoryPickerMode={setMemoryPickerMode}
+                    memorySkipModels={memorySkipModels}
+                    setMemorySkipModels={setMemorySkipModels}
                   />
                 </div>
               )}
