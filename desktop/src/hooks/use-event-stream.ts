@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useNotificationStore } from "@/stores/notification-store";
 import { useDecisionEventsStore } from "@/stores/decision-events-store";
 import { mapRow, ServerNotificationRow } from "@/lib/server-notifications";
+import { createSseConnection, MAX_SEEN_IDS } from "@/lib/sse";
 
 type EventPayload = Record<string, unknown>;
 type EventHandler = (payload: EventPayload) => void;
@@ -33,28 +34,13 @@ const handlers: Record<string, EventHandler> = {
  * incoming event by its ``type`` field through the dispatch table.
  *
  * Mount once in the app shell (App.tsx) so there is exactly one connection
- * per session.  The browser only auto-reconnects EventSource on transient
- * network drops; an HTTP error response (e.g. a 401 after session expiry)
- * closes the connection for good, so that case is reconnected manually.
- * Unmount closes the connection cleanly and cancels any pending reconnect.
+ * per session.  On a hard close (e.g. HTTP error response) the shared
+ * `createSseConnection` reconnects manually with backoff. Unmount closes the
+ * connection cleanly and cancels any pending reconnect.
  */
-const RECONNECT_DELAY_MS = 5000;
-
-// Replay on (re)connect is best-effort (see event_stream.py docstring): the
-// server cannot filter by Last-Event-ID, so the same buffered events can
-// arrive again. De-dupe by the event's stable id (trace_id) instead, bounded
-// so the set can't grow without limit over a long session.
-const MAX_SEEN_IDS = 128;
-
-// Reconnect backoff so a permanently-down backend is not hit every 5s forever.
-const MAX_RECONNECT_DELAY_MS = 30000;
 
 export function useEventStream(): void {
   useEffect(() => {
-    let es: EventSource | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let reconnectAttempts = 0;
-    let stopped = false;
     const seenIds: string[] = [];
     const seen = new Set<string>();
 
@@ -70,15 +56,18 @@ export function useEventStream(): void {
       return false;
     };
 
-    const connect = () => {
-      es = new EventSource("/api/events/stream");
-
-      es.onopen = () => {
-        // A clean open means the backend is healthy again; reset the backoff.
-        reconnectAttempts = 0;
-      };
-
-      es.onmessage = (msg) => {
+    return createSseConnection({
+      url: "/api/events/stream",
+      getMessageId: (msg) => {
+        let event: { id?: string } | null;
+        try {
+          event = JSON.parse(msg.data as string);
+        } catch {
+          return undefined;
+        }
+        return event?.id;
+      },
+      onMessage: (msg) => {
         let event: { type?: string; payload?: EventPayload; id?: string } | null;
         try {
           event = JSON.parse(msg.data as string);
@@ -91,31 +80,7 @@ export function useEventStream(): void {
         if (handler && event.payload !== undefined) {
           handler(event.payload as EventPayload);
         }
-      };
-
-      es.onerror = () => {
-        // Transient network errors: the browser reconnects automatically.
-        // A hard close (e.g. HTTP error response) leaves readyState CLOSED
-        // and the browser gives up, so reconnect manually after a backoff.
-        if (!stopped && es?.readyState === EventSource.CLOSED) {
-          const delay = Math.min(
-            RECONNECT_DELAY_MS * 2 ** reconnectAttempts,
-            MAX_RECONNECT_DELAY_MS,
-          );
-          reconnectAttempts += 1;
-          reconnectTimer = setTimeout(() => {
-            if (!stopped) connect();
-          }, delay);
-        }
-      };
-    };
-
-    connect();
-
-    return () => {
-      stopped = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      es?.close();
-    };
+      },
+    });
   }, []);
 }

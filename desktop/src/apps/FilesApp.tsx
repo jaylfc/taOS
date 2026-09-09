@@ -38,6 +38,7 @@ import { projectsApi, type DocReviewState } from "@/lib/projects";
 import { useDragSource } from "@/shell/dnd/use-drag-source";
 import { DocViewer } from "@/apps/ProjectsApp/files/DocViewer";
 import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
+import { createSseConnection } from "@/lib/sse";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -695,29 +696,19 @@ export function FilesApp({
   useEffect(() => {
     const url = workspaceWatchUrl(location, currentPath);
     if (!url) return;
-    let eventSource: EventSource | null = null;
-    try {
-      eventSource = new EventSource(url);
-    } catch {
-      return;
-    }
-    const es = eventSource;
-    es.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (Array.isArray(data)) {
-          setFiles(data);
+    return createSseConnection({
+      url,
+      onMessage: (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (Array.isArray(data)) {
+            setFiles(data);
+          }
+        } catch {
+          // Ignore malformed events
         }
-      } catch {
-        // Ignore malformed events
-      }
-    };
-    es.onerror = () => {
-      // Silently let the browser retry
-    };
-    return () => {
-      es.close();
-    };
+      },
+    });
   }, [currentPath, location]);
 
   useEffect(() => {
