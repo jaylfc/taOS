@@ -572,35 +572,6 @@ def _rewrite_preview_resources(
     - <script src=...> → inline the JS content
     - <style> blocks → inline CSS content and fix url() references
     """
-    def _is_external_ref(ref: str) -> bool:
-        if not ref:
-            return True
-        return ref.lower().startswith(
-            ("http://", "https://", "//", "data:", "mailto:", "#")
-        )
-
-    def _read_local_asset(root: Path, ref: str) -> bytes | None:
-        clean = ref.split("#", 1)[0].split("?", 1)[0]
-        target = _resolve_jailed(root, clean)
-        if target is None or not target.is_file():
-            return None
-        try:
-            if target.stat().st_size > _MAX_ASSET_BYTES:
-                return None
-            return target.read_bytes()
-        except OSError:
-            return None
-
-    def _data_uri(root: Path, ref: str) -> str | None:
-        ext = Path(_strip_query_and_fragment(ref)).suffix.lower()
-        mime = _MIME_BY_EXT.get(ext)
-        if mime is None:
-            return None
-        data = _read_local_asset(root, ref)
-        if data is None:
-            return None
-        return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
-
     def _rewrite_css_text(
         text: str, root: Path, max_bytes: int
     ) -> str:
