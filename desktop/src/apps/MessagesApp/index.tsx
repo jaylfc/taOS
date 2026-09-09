@@ -983,6 +983,8 @@ export function MessagesApp({
   const lastTypingSentRef = useRef(0);
   const autoScrollRef = useRef(true);
   const reconnectDelayRef = useRef(1000);
+  const reconnectAttemptsRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevChannelRef = useRef<string | null>(null);
 
   /* ---- fetch channels + unread ---- */
@@ -1254,10 +1256,17 @@ export function MessagesApp({
     ws.onclose = () => {
       setWsStatus("disconnected");
       wsRef.current = null;
-      // reconnect with backoff
-      const delay = reconnectDelayRef.current;
-      reconnectDelayRef.current = Math.min(delay * 2, 30000);
-      setTimeout(connectWs, delay);
+      if (reconnectAttemptsRef.current >= 20) return;
+      reconnectAttemptsRef.current += 1;
+      const base = reconnectDelayRef.current;
+      const jitter = Math.floor(Math.random() * base);
+      const delay = base + jitter;
+      reconnectDelayRef.current = Math.min(base * 2, 30000);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        connectWs();
+      }, delay);
     };
 
     ws.onerror = () => {
@@ -1295,10 +1304,14 @@ export function MessagesApp({
     fetchAgentLists();
     connectWs();
     return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = null;
       if (wsRef.current) {
         wsRef.current.onclose = null;
         wsRef.current.close();
       }
+      wsRef.current = null;
+      reconnectAttemptsRef.current = 0;
     };
   }, [fetchChannels, fetchArchivedChannels, fetchAgentLists, connectWs]);
 
