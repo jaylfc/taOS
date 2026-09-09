@@ -26,6 +26,7 @@ import { MobileSplitView } from "@/components/mobile/MobileSplitView";
 import { useProcessStore } from "@/stores/process-store";
 import { useNotificationStore } from "@/stores/notification-store";
 import { getApp } from "@/registry/app-registry";
+import { createSseConnection } from "@/lib/sse";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -1128,21 +1129,21 @@ function LogsTab({ serverId }: { serverId: string }) {
   const [copied, setCopied] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pausedRef = useRef(false);
-  const esRef = useRef<EventSource | null>(null);
 
   pausedRef.current = paused;
 
   useEffect(() => {
-    const es = new EventSource(`/api/mcp/servers/${encodeURIComponent(serverId)}/logs/stream`);
-    esRef.current = es;
-    es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
-    es.onmessage = (e) => {
-      if (!pausedRef.current) {
-        setLines((prev) => [...prev.slice(-500), e.data]);
-      }
-    };
-    return () => { es.close(); esRef.current = null; };
+    const cleanup = createSseConnection({
+      url: `/api/mcp/servers/${encodeURIComponent(serverId)}/logs/stream`,
+      onOpen: () => setConnected(true),
+      onError: () => setConnected(false),
+      onMessage: (e) => {
+        if (!pausedRef.current) {
+          setLines((prev) => [...prev.slice(-500), e.data]);
+        }
+      },
+    });
+    return cleanup;
   }, [serverId]);
 
   useEffect(() => {

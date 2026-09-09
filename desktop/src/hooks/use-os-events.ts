@@ -1,4 +1,5 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
+import { ReconnectManager, MAX_SEEN_IDS } from "@/lib/sse";
 
 export type OsEvent = {
   kind: string;
@@ -10,10 +11,6 @@ export type OsEvent = {
 export const LAGGED_KIND = "events.lagged";
 
 type OsEventHandler = (event: OsEvent) => void;
-
-const RECONNECT_DELAY_MS = 5000;
-const MAX_RECONNECT_DELAY_MS = 30000;
-const MAX_SEEN_IDS = 128;
 
 type Subscriber = {
   kinds: string[];
@@ -55,8 +52,7 @@ let targetKinds: Coverage = [];
 let servedKinds: Coverage = [];
 // What the in-flight widened stream is aiming at.
 let pendingKinds: Coverage = [];
-let reconnectAttempts = 0;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+const reconnectManager = new ReconnectManager(startConnection);
 const listeners = new Set<() => void>();
 let stopScheduled = false;
 
@@ -166,7 +162,7 @@ function openStream(kinds: Coverage): EventSource {
   es.onmessage = handleMessage;
 
   es.onopen = () => {
-    reconnectAttempts = 0;
+    reconnectManager.reset();
     if (es === pendingEs) {
       // The widened stream is live, so the narrow one can go now -- not before.
       // Overlapping the two is what keeps delivery unbroken across a filter
@@ -190,17 +186,14 @@ function openStream(kinds: Coverage): EventSource {
         es.close();
         pendingEs = null;
         pendingKinds = [];
-        if (!sharedEs) scheduleReconnect();
+        if (!sharedEs) reconnectManager.schedule();
       }
       return;
     }
     // A stream we already handed off from has nothing left to say.
     if (es !== sharedEs) return;
 
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
+    reconnectManager.cancel();
     // An `error` means the stream is down RIGHT NOW, whether or not the browser
     // means to retry it. Nothing resumes the gap -- the endpoint sends no SSE
     // `id:` line and ignores `Last-Event-ID` -- so a subscriber told it is
@@ -214,26 +207,11 @@ function openStream(kinds: Coverage): EventSource {
       // A widened stream is already on its way and covers everything this one
       // did, so it IS the reconnect. Scheduling another on top would open a
       // stream the handoff then immediately closes.
-      if (!pendingEs) scheduleReconnect();
+      if (!pendingEs) reconnectManager.schedule();
     }
   };
 
   return es;
-}
-
-function scheduleReconnect() {
-  if (reconnectTimer) return;
-  const delay = Math.min(
-    RECONNECT_DELAY_MS * 2 ** reconnectAttempts,
-    MAX_RECONNECT_DELAY_MS,
-  );
-  reconnectAttempts += 1;
-  reconnectTimer = setTimeout(() => {
-    // Clear the handle FIRST: startConnection reads it, and a fired timer
-    // whose handle is still set would refuse its own reconnect.
-    reconnectTimer = null;
-    startConnection();
-  }, delay);
 }
 
 // Widen the server-side filter to cover everything subscribed, without a gap.
@@ -275,17 +253,14 @@ function startConnection() {
   // let it run: cancelling it and connecting immediately would make a view
   // that mounts callers in a loop retry at mount frequency against a down
   // endpoint instead of at the intended 5s -> 30s spacing.
-  if (reconnectTimer) return;
+  if (reconnectManager.hasTimer) return;
 
   servedKinds = targetKinds;
   sharedEs = openStream(targetKinds);
 }
 
 function stopConnection() {
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
+  reconnectManager.cancel();
   pendingEs?.close();
   pendingEs = null;
   sharedEs?.close();
@@ -293,7 +268,6 @@ function stopConnection() {
   targetKinds = [];
   servedKinds = [];
   pendingKinds = [];
-  reconnectAttempts = 0;
   setStatus(false, true);
 }
 
