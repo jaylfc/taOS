@@ -166,7 +166,16 @@ async def setup_status(request: Request):
     has_agent = bool(config.agents)
 
     # memory_enabled: taosmd setup wizard completed (taosmd_default.json written)
-    memory_enabled = (data_dir / "taosmd_default.json").exists()
+    # and models were not deferred.
+    memory_enabled = False
+    default_path = data_dir / "taosmd_default.json"
+    if default_path.exists():
+        try:
+            import json
+            default_data = json.loads(default_path.read_text())
+            memory_enabled = not default_data.get("models_skipped", False)
+        except Exception:  # noqa: BLE001
+            memory_enabled = True
 
     # dismissed: user explicitly dismissed the setup checklist
     setup_prefs = await store.get_preference("user", _PREF_NAMESPACE)

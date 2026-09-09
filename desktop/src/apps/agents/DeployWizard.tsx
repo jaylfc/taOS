@@ -55,8 +55,8 @@ export interface MemoryWizardStepProps {
   setMemoryDeviceId: (v: string | null) => void;
   memoryTierId: string | null;
   setMemoryTierId: (v: string | null) => void;
-  memoryDefault: { device_id: string; tier_id: string; tier_name: string } | null | "none";
-  setMemoryDefault: (v: { device_id: string; tier_id: string; tier_name: string } | null | "none") => void;
+  memoryDefault: { device_id: string; tier_id: string; tier_name: string; models_skipped?: boolean } | null | "none";
+  setMemoryDefault: (v: { device_id: string; tier_id: string; tier_name: string; models_skipped?: boolean } | null | "none") => void;
   memoryInstallTargets: Array<{ name: string; friendly_name: string; tier_id: string }>;
   setMemoryInstallTargets: (v: Array<{ name: string; friendly_name: string; tier_id: string }>) => void;
   memoryDevicesLoaded: boolean;
@@ -71,6 +71,8 @@ export interface MemoryWizardStepProps {
   setMemorySetupError: (v: string | null) => void;
   memoryPickerMode: "default" | "picker";
   setMemoryPickerMode: (v: "default" | "picker") => void;
+  memorySkipModels: boolean;
+  setMemorySkipModels: (v: boolean) => void;
 }
 
 export function MemoryWizardStep({
@@ -96,6 +98,8 @@ export function MemoryWizardStep({
   setMemorySetupError,
   memoryPickerMode,
   setMemoryPickerMode,
+  memorySkipModels,
+  setMemorySkipModels,
 }: MemoryWizardStepProps) {
   // Fetch default + install targets once on mount
   useEffect(() => {
@@ -104,7 +108,7 @@ export function MemoryWizardStep({
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data?.device_id) {
-          setMemoryDefault(data as { device_id: string; tier_id: string; tier_name: string });
+          setMemoryDefault(data as { device_id: string; tier_id: string; tier_name: string; models_skipped?: boolean });
         } else {
           setMemoryDefault("none");
           setMemoryPickerMode("picker");
@@ -150,7 +154,7 @@ export function MemoryWizardStep({
       const r = await fetch("/api/taosmd/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ device_id: memoryDeviceId, tier: memoryTierId }),
+        body: JSON.stringify({ device_id: memoryDeviceId, tier: memoryTierId, skip_models: memorySkipModels }),
       });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
@@ -177,6 +181,37 @@ export function MemoryWizardStep({
   // "Has default" mode
   if (memoryPlugin !== null && memoryPickerMode === "default" && memoryDefault !== null && memoryDefault !== "none") {
     const def = memoryDefault;
+    if (def.models_skipped) {
+      return (
+        <div className="space-y-3">
+          <span className="block text-xs text-shell-text-secondary mb-2">Memory Layer</span>
+          <div className="px-4 py-3 rounded-lg border border-yellow-500/30 bg-yellow-500/5 flex items-start justify-between gap-2">
+            <div>
+              <div className="text-sm font-medium">Models deferred</div>
+              <div className="text-xs text-shell-text-secondary mt-0.5">
+                {def.tier_name} on {def.device_id} — download now to enable memory search
+              </div>
+            </div>
+            <div className="flex flex-col items-end gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => setMemoryPickerMode("picker")}
+                className="text-xs text-accent hover:underline"
+              >
+                Download now
+              </button>
+              <button
+                type="button"
+                onClick={() => setMemoryPlugin(null)}
+                className="text-xs text-shell-text-tertiary hover:text-shell-text"
+              >
+                Skip memory for this agent
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="space-y-3">
         <span className="block text-xs text-shell-text-secondary mb-2">Memory Layer</span>
@@ -310,14 +345,25 @@ export function MemoryWizardStep({
       {memoryDeviceId && memoryTierId && (
         <div className="space-y-2">
           {!memorySetupTaskId && (
-            <Button
-              size="sm"
-              className="w-full"
-              onClick={handleSetup}
-              disabled={isRunning}
-            >
-              Set up memory layer
-            </Button>
+            <>
+              <Button
+                size="sm"
+                className="w-full"
+                onClick={handleSetup}
+                disabled={isRunning}
+              >
+                Set up memory layer
+              </Button>
+              <label className="flex items-center gap-2 text-xs text-shell-text-secondary cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={memorySkipModels}
+                  onChange={e => setMemorySkipModels(e.target.checked)}
+                  className="rounded border-white/20 bg-shell-bg-deep"
+                />
+                Skip model downloads (defer to first memory use)
+              </label>
+            </>
           )}
           {memorySetupTaskId && (
             <div className={`px-3 py-2 rounded-lg text-xs ${
@@ -407,7 +453,7 @@ export function DeployWizard({
   const [memoryDeviceId, setMemoryDeviceId] = useState<string | null>(null);
   const [memoryTierId, setMemoryTierId] = useState<string | null>(null);
   // null = loading; "none" = no default; object = has default
-  const [memoryDefault, setMemoryDefault] = useState<{ device_id: string; tier_id: string; tier_name: string } | null | "none">(null);
+  const [memoryDefault, setMemoryDefault] = useState<{ device_id: string; tier_id: string; tier_name: string; models_skipped?: boolean } | null | "none">(null);
   const [memoryInstallTargets, setMemoryInstallTargets] = useState<Array<{ name: string; friendly_name: string; tier_id: string }>>([]);
   const [memoryDevicesLoaded, setMemoryDevicesLoaded] = useState(false);
   const [memorySetupTaskId, setMemorySetupTaskId] = useState<string | null>(null);
@@ -415,6 +461,7 @@ export function DeployWizard({
   const [memorySetupMsg, setMemorySetupMsg] = useState<string>("");
   const [memorySetupError, setMemorySetupError] = useState<string | null>(null);
   const [memoryPickerMode, setMemoryPickerMode] = useState<"default" | "picker">("default");
+  const [memorySkipModels, setMemorySkipModels] = useState(false);
 
   // When the taOSmd memory layer is skipped, the only coherent mode is
   // "framework". "both" and "taosmd" modes require the taOSmd plugin, so snap
@@ -1394,6 +1441,8 @@ export function DeployWizard({
                     setMemorySetupError={setMemorySetupError}
                     memoryPickerMode={memoryPickerMode}
                     setMemoryPickerMode={setMemoryPickerMode}
+                    memorySkipModels={memorySkipModels}
+                    setMemorySkipModels={setMemorySkipModels}
                   />
                 </div>
               )}

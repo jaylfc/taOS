@@ -497,6 +497,19 @@ def _memory_selection_error(memory_plugin: str | None, memory_mode: str | None) 
     return None
 
 
+def _read_taosmd_default(data_dir):
+    import json
+    if data_dir is None:
+        return None
+    p = data_dir / "taosmd_default.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return None
+
+
 class DeployAgentRequest(BaseModel):
     name: str
     framework: str = "none"
@@ -644,6 +657,64 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                 idempotency_cache.set(scoped_key, json.loads(remote_err.body))
             return remote_err
 
+        data_dir = request.app.state.data_dir
+
+        # Self-heal deferred taOSmd model downloads.
+        # If the user deferred model pulls during setup and now deploys an
+        # agent with taOSmd memory (memory_config None or matching the
+        # deferred default), start the pull before the agent is marked ready.
+        # If we cannot start the pull (no registry / offline) return 409
+        # so the caller knows the agent cannot have memory search until the
+        # downloads complete.
+        self_heal_setup_task_id = None
+        if body.memory_plugin == "taosmd" and body.memory_mode != "framework":
+            default_data = _read_taosmd_default(data_dir)
+            if default_data and default_data.get("models_skipped"):
+                agent_cfg = body.memory_config or {}
+                if not body.memory_config or (
+                    agent_cfg.get("device_id") == default_data.get("device_id")
+                    and agent_cfg.get("tier_id") == default_data.get("tier_id")
+                ):
+                    registry = getattr(request.app.state, "registry", None)
+                    if registry is None:
+                        err_body = {
+                            "error": (
+                                "Cannot deploy with taOSmd memory: deferred model downloads "
+                                "require the model registry. Complete memory setup first."
+                            )
+                        }
+                        if scoped_key and idempotency_cache is not None:
+                            idempotency_cache.set(scoped_key, err_body)
+                        return JSONResponse(err_body, status_code=409)
+
+                    tier_id = default_data.get("tier_id", "standard")
+                    from tinyagentos.routes.taosmd import MEMORY_TIERS, _run_setup, _tasks
+                    tier_cfg = MEMORY_TIERS.get(tier_id)
+                    if tier_cfg is not None:
+                        task_id = str(uuid.uuid4())
+                        tasks = _tasks(request)
+                        tasks[task_id] = {
+                            "state": "pending",
+                            "progress_pct": 0,
+                            "message": "Queued…",
+                            "error": None,
+                        }
+                        asyncio.create_task(
+                            _run_setup(
+                                tasks,
+                                task_id,
+                                default_data.get("device_id", "local"),
+                                tier_id,
+                                tier_cfg,
+                                registry=registry,
+                                hardware_profile=getattr(request.app.state, "hardware_profile", None),
+                                backends=list(getattr(config, "backends", []) or []) if config else [],
+                                skip_models=False,
+                                data_dir=data_dir,
+                            )
+                        )
+                        self_heal_setup_task_id = task_id
+
         # Register the agent with taOSmd BEFORE mutating config so a failure
         # here aborts cleanly with no half-state. Skipped for memory_mode='framework'
         # because that mode explicitly opts out of taOSmd.
@@ -740,12 +811,59 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         deploy_tasks[body.name] = {"status": "deploying", "name": body.name}
 
         from tinyagentos.deployer import deploy_agent, DeployRequest
-        data_dir = request.app.state.data_dir
         llm_proxy = getattr(request.app.state, "llm_proxy", None)
         secrets_store = getattr(request.app.state, "secrets", None)
 
         async def _background_deploy():
             try:
+                # Wait for deferred model pull if one was started.
+                if self_heal_setup_task_id is not None:
+                    setup_tasks = getattr(request.app.state, "taosmd_setup_tasks", {})
+                    setup_task = setup_tasks.get(self_heal_setup_task_id)
+                    if setup_task is not None:
+                        terminal = {"done", "failed"}
+                        if setup_task.get("state") not in terminal:
+                            for _ in range(300):
+                                await asyncio.sleep(1)
+                                setup_task = setup_tasks.get(self_heal_setup_task_id)
+                                if setup_task is None or setup_task.get("state") in terminal:
+                                    break
+                            else:
+                                setup_task = {
+                                    "state": "failed",
+                                    "message": "timed out waiting for model download",
+                                }
+
+                        if not setup_task or setup_task.get("state") != "done":
+                            agent = find_agent(config, body.name)
+                            if agent is not None:
+                                agent["status"] = "failed"
+                            err_msg = (setup_task or {}).get("error") or (setup_task or {}).get("message") or "Setup failed"
+                            deploy_tasks[body.name] = {
+                                "status": "failed",
+                                "name": body.name,
+                                "error": err_msg,
+                            }
+                            notif = getattr(request.app.state, "notifications", None)
+                            if notif:
+                                await notif.add(
+                                    title=f"Deploy failed: {body.name}",
+                                    message=f"Deploy failed for {body.name}: {err_msg}",
+                                    level="error",
+                                    source="agents.deploy",
+                                )
+                            await save_config_locked(config, config.config_path)
+                            return
+
+                        # Setup succeeded: clear models_skipped so future deploys
+                        # don't re-trigger the pull.
+                        current_default = _read_taosmd_default(data_dir)
+                        if current_default and current_default.get("models_skipped"):
+                            current_default["models_skipped"] = False
+                            import json
+                            p = data_dir / "taosmd_default.json"
+                            p.write_text(json.dumps(current_default))
+
                 # Prefetch the base onto the worker here (not in the request
                 # path) so a cold ~300-500MB import never blocks POST /deploy.
                 if deploy_remote:

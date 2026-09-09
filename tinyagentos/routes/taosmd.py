@@ -10,6 +10,7 @@ Provides:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from pathlib import Path
@@ -58,7 +59,27 @@ MEMORY_TIERS: dict[str, dict] = {
 # In-memory task store (keyed by task_id, lives in app.state.taosmd_setup_tasks)
 # ---------------------------------------------------------------------------
 
-TaskState = Literal["pending", "downloading", "installing", "done", "failed"]
+TaskState = Literal["pending", "downloading", "installing", "done", "failed", "deferred"]
+
+
+def _tier_total_size_mb(tier_cfg: dict, registry) -> int:
+    """Approximate total download size for all models in a tier."""
+    total = 0
+    for model_id in tier_cfg.get("models", []):
+        manifest = registry.get(model_id) if hasattr(registry, "get") else None
+        if manifest is None:
+            continue
+        for variant in getattr(manifest, "variants", []):
+            if isinstance(variant, dict) and variant.get("size_mb"):
+                total += int(variant["size_mb"])
+                break
+    return total
+
+
+def _format_size_mb(size_mb: int) -> str:
+    if size_mb >= 1024:
+        return f"~{size_mb / 1024:.1f} GB"
+    return f"~{size_mb} MB"
 
 
 def _tasks(request: Request) -> dict:
@@ -134,6 +155,7 @@ async def put_default(request: Request, body: DefaultBody):
 class SetupBody(BaseModel):
     device_id: str
     tier: Literal["lite", "standard", "heavy"]
+    skip_models: bool = False
 
 
 @router.post("/api/taosmd/setup")
@@ -165,6 +187,7 @@ async def post_setup(request: Request, body: SetupBody):
     hardware_profile = getattr(request.app.state, "hardware_profile", None)
     config = getattr(request.app.state, "config", None)
     backends_snapshot = list(getattr(config, "backends", []) or []) if config else []
+    data_dir = getattr(request.app.state, "data_dir", None)
 
     asyncio.create_task(
         _run_setup(
@@ -176,6 +199,8 @@ async def post_setup(request: Request, body: SetupBody):
             registry=registry,
             hardware_profile=hardware_profile,
             backends=backends_snapshot,
+            skip_models=body.skip_models,
+            data_dir=data_dir,
         )
     )
 
@@ -206,6 +231,8 @@ async def _run_setup(
     registry=None,
     hardware_profile=None,
     backends: list | None = None,
+    skip_models: bool = False,
+    data_dir: Path | None = None,
 ) -> None:
     """Install each model listed in the tier using the catalog resolver.
 
@@ -218,9 +245,13 @@ async def _run_setup(
     instead.
 
     Progress: pending → downloading (per model) → installing → done / failed.
+    When skip_models=True the default is saved and the task returns
+    "deferred" without downloading anything.
     """
     models: list[str] = tier_cfg.get("models", [])
     total = len(models)
+    total_size_mb = _tier_total_size_mb(tier_cfg, registry)
+    size_label = _format_size_mb(total_size_mb) if total_size_mb else ""
 
     def _update(state: str, pct: int, msg: str, error: str | None = None) -> None:
         tasks[task_id] = {
@@ -229,6 +260,22 @@ async def _run_setup(
             "message": msg,
             "error": error,
         }
+
+    if skip_models:
+        payload = {
+            "device_id": device_id,
+            "tier_id": tier,
+            "tier_name": tier_cfg.get("label", tier),
+            "models_skipped": True,
+        }
+        if data_dir is not None:
+            (data_dir / "taosmd_default.json").write_text(json.dumps(payload))
+        _update(
+            "deferred",
+            0,
+            f"Model downloads deferred — memory-engine embedding models ({size_label}), required for memory search.",
+        )
+        return
 
     _update("pending", 0, "Starting…")
 
@@ -290,10 +337,19 @@ async def _run_setup(
 
         for idx, manifest_id in enumerate(models):
             base_pct = int(idx / total * 90)
+            chosen_variant_for_size = None
+            manifest = registry.get(manifest_id) if hasattr(registry, "get") else None
+            if manifest is not None:
+                for v in getattr(manifest, "variants", []):
+                    if isinstance(v, dict) and v.get("size_mb"):
+                        chosen_variant_for_size = v
+                        break
+            size_str = _format_size_mb(chosen_variant_for_size["size_mb"]) if chosen_variant_for_size else ""
             _update(
                 "downloading",
                 base_pct,
-                f"Installing {manifest_id} ({idx + 1}/{total})…",
+                f"Downloading memory-engine embedding model {idx + 1}/{total}: {manifest_id}"
+                f"{' (' + size_str + ')' if size_str else ''} — required for memory search",
             )
 
             manifest = registry.get(manifest_id) if hasattr(registry, "get") else None
