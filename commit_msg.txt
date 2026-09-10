@@ -1,0 +1,85 @@
+fix-forward #2885 (tsk-sjcdtw): tests + fenced RED for migration-gate false negatives, cover check_retrofit_migrations.py
+
+RED-FIRST: the eight tests below were run on a scratch checkout of origin/dev
+(regex-only checkers, no sqlglot). Four FAIL because the bad fixtures pass clean
+on the unfixed checkers -- the gate goes green on a real boot brick. After the
+fixes in this commit all eight pass.
+
+```text
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-9.1.1, origin-dev-scratch/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: origin-dev-scratch
+configfile: pyproject.toml
+collecting ... collected 8 items
+
+tests/scripts/test_check_schema_migrations_false_negatives.py::test_expression_index_boot_brick FAILED [ 12%]
+tests/scripts/test_check_schema_migrations_false_negatives.py::test_quoted_identifier_alter FAILED [ 25%]
+tests/scripts/test_check_schema_migrations_false_negatives.py::test_unterminated_create_table PASSED [ 37%]
+tests/scripts/test_check_schema_migrations_false_negatives.py::test_main_exits_nonzero_on_fixture FAILED [ 50%]
+tests/scripts/test_check_retrofit_migrations_false_negatives.py::test_expression_index_retrofit PASSED [ 62%]
+tests/scripts/test_check_retrofit_migrations_false_negatives.py::test_quoted_identifier_retrofit_alter FAILED [ 75%]
+tests/scripts/test_check_retrofit_migrations_false_negatives.py::test_unterminated_create_table_drops_schema_table PASSED [ 87%]
+tests/scripts/test_check_retrofit_migrations_false_negatives.py::test_main_exits_nonzero_on_fixture PASSED[100%]
+
+=================================== FAILURES ===================================
+_______________________ test_expression_index_boot_brick _______________________
+E       AssertionError: expression index on ALTER-added column must be flagged
+E       assert 0 >= 1
+_________________________ test_quoted_identifier_alter _________________________
+E       AssertionError: quoted-identifier ALTER on indexed column must be flagged
+E       assert 0 >= 1
+______________________ test_main_exits_nonzero_on_fixture ______________________
+E       AssertionError: main() must exit 1 when violations exist
+E       assert 0 == 1
+____________________ test_quoted_identifier_retrofit_alter ______________________
+E       AssertionError: quoted-identifier ALTER on SCHEMA table must be flagged
+E       assert 0 >= 1
+========================= short test summary info =============================
+FAILED tests/scripts/test_check_schema_migrations_false_negatives.py::test_expression_index_boot_brick
+FAILED tests/scripts/test_check_schema_migrations_false_negatives.py::test_quoted_identifier_alter
+FAILED tests/scripts/test_check_schema_migrations_false_negatives.py::test_main_exits_nonzero_on_fixture
+FAILED tests/scripts/test_check_retrofit_migrations_false_negatives.py::test_quoted_identifier_retrofit_alter
+4 failed, 4 passed in 3.88s
+```
+
+GREEN run on BASE (this commit) after the fixes:
+
+```text
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-9.1.1, .venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /tmp/exec-tsk-sjcdtw
+configfile: pyproject.toml
+collecting ... collected 8 items
+
+tests/scripts/test_check_schema_migrations_false_negatives.py::test_expression_index_boot_brick PASSED [ 12%]
+tests/scripts/test_check_schema_migrations_false_negatives.py::test_quoted_identifier_alter PASSED [ 25%]
+tests/scripts/test_check_schema_migrations_false_negatives.py::test_unterminated_create_table PASSED [ 37%]
+tests/scripts/test_check_schema_migrations_false_negatives.py::test_main_exits_nonzero_on_fixture PASSED [ 50%]
+tests/scripts/test_check_retrofit_migrations_false_negatives.py::test_expression_index_retrofit PASSED [ 62%]
+tests/scripts/test_check_retrofit_migrations_false_negatives.py::test_quoted_identifier_retrofit_alter PASSED [ 75%]
+tests/scripts/test_check_retrofit_migrations_false_negatives.py::test_unterminated_create_table_drops_schema_table PASSED [ 87%]
+tests/scripts/test_check_retrofit_migrations_false_negatives.py::test_main_exits_nonzero_on_fixture PASSED[100%]
+
+============================== 8 passed in 0.76s ===============================
+```
+
+Real-tree exit codes on BASE:
+- scripts/check_schema_migrations.py -> EXIT: 0 (clean)
+- scripts/check_retrofit_migrations.py -> EXIT: 0 (clean)
+
+Note: the "unterminated CREATE TABLE" fixtures (test_unterminated_create_table,
+test_unterminated_create_table_drops_schema_table) PASS on origin/dev, meaning
+the old regex-only checkers already catch that pattern (the gate goes red, not
+green). They are retained as regression tests because the fixed checkers still
+pass them.
+
+Fixes applied:
+- check_retrofit_migrations.py: regexes now accept quoted identifiers (["\w]+)
+  and strip quotes via _strip_quotes() so ALTER TABLE "t" and CREATE TABLE "t"
+  are recognised on both sides of the comparison.
+- check_schema_migrations.py: main() now accepts an optional argv/root argument
+  so the exit-code integration test can drive it with a tmp path.
+
+Docs-Reviewed: added sqlglot to dev dependencies for migration-guard tests; no contributor-skill or packaging doc changes required

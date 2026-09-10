@@ -2929,15 +2929,6 @@ wheels = [
 ]
 
 [[package]]
-name = "sqlglot"
-version = "30.18.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e4/73/5b5ce3e23b3ded3ea1986c2c2991217460d5fd5161b3e00a8425f5dcb8a3/sqlglot-30.18.0.tar.gz", hash = "sha256:e57e1b205e341979d1df5b1212c1435c598a0437e4619e3f428b15d5bc3a5cc6", size = 6018496, upload-time = "2026-09-03T13:12:58.206Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/9f/3dd2ec8dd84a33e0092f1c815267bc055073f9e833b93e389c59c10f62cc/sqlglot-30.18.0-py3-none-any.whl", hash = "sha256:ee0f9a9f3e2193e763c326e52dfb377b96fdb4292f6305c3ff2d9a220e71c601", size = 748788, upload-time = "2026-09-03T13:12:56.467Z" },
-]
-
-[[package]]
 name = "sse-starlette"
 version = "3.4.4"
 source = { registry = "https://pypi.org/simple" }
@@ -3060,7 +3051,6 @@ dependencies = [
     { name = "pyyaml" },
     { name = "readability-lxml" },
     { name = "sqlcipher3" },
-    { name = "sqlglot" },
     { name = "taosmd" },
     { name = "tenacity" },
     { name = "uvicorn", extra = ["standard"] },
@@ -3183,7 +3173,6 @@ requires-dist = [
     { name = "rq", marker = "extra == 'proxy'", specifier = ">=2.7.0,<3.0" },
     { name = "soundfile", marker = "extra == 'proxy'", specifier = ">=0.12.1,<1.0" },
     { name = "sqlcipher3", specifier = ">=0.6.2" },
-    { name = "sqlglot", specifier = ">=30.18.0" },
     { name = "starlette", marker = "extra == 'proxy'", specifier = ">=1.0.1,<2.0" },
     { name = "taosmd", specifier = "==0.4.0" },
     { name = "tenacity", specifier = ">=9.1.4" },
