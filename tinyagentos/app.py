@@ -430,6 +430,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     receipt_store = ReceiptStore(data_dir / "receipts.db")
     from tinyagentos.projects.strike_store import StrikeStore
     strike_store = StrikeStore(data_dir / "task_strikes.db")
+    from tinyagentos.projects.dispatcher import DispatcherStore
+    dispatcher_store = DispatcherStore(data_dir / "dispatcher.db")
     project_task_store = ProjectTaskStore(
         data_dir / "projects.db",
         broker=project_event_broker,
@@ -645,6 +647,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await board_audit_store.init()
         await receipt_store.init()
         await strike_store.init()
+        await dispatcher_store.init()
         await project_task_store.init()
         await project_element_store.init()
         await routine_store.init()
@@ -1332,6 +1335,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.agent_heartbeat import agent_heartbeat_loop
         _create_supervised_task(agent_heartbeat_loop(app.state), app.state._background_tasks)
 
+        from tinyagentos.projects.dispatcher import DispatcherService
+        dispatcher_service = DispatcherService(app.state)
+        app.state.dispatcher_service = dispatcher_service
+        _create_supervised_task(
+            dispatcher_service.dispatcher_loop(), app.state._background_tasks
+        )
+
         try:
             canvas_snapshotter = CanvasSnapshotter(
                 project_store=project_store,
@@ -1761,6 +1771,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.board_audit = board_audit_store
     app.state.receipt_store = receipt_store
     app.state.task_strikes = strike_store
+    app.state.dispatcher_store = dispatcher_store
     app.state.project_task_store = project_task_store
     app.state.project_element_store = project_element_store
     app.state.routine_store = routine_store
