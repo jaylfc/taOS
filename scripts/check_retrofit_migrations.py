@@ -51,19 +51,19 @@ STORES_ROOT = REPO_ROOT / "tinyagentos"
 
 # ALTER TABLE <table> ADD [COLUMN] <col> ...
 _ADD_COLUMN_RE = re.compile(
-    r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+(?:COLUMN\s+)?(\w+)",
+    r'ALTER\s+TABLE\s+(["\w]+)\s+ADD\s+(?:COLUMN\s+)?(["\w]+)',
     re.IGNORECASE,
 )
 
 # CREATE [UNIQUE] INDEX [IF NOT EXISTS] <name> ON <table> (col, col, ...)
 _CREATE_INDEX_RE = re.compile(
-    r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\w+\s+ON\s+(\w+)",
+    r'CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\w+\s+ON\s+(["\w]+)',
     re.IGNORECASE,
 )
 
 # CREATE TABLE [IF NOT EXISTS] <table> ( ... )
 _CREATE_TABLE_RE = re.compile(
-    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s*\(",
+    r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(["\w]+)\s*\(',
     re.IGNORECASE,
 )
 
@@ -121,7 +121,7 @@ def _normalize(sql: str) -> str:
 
 def _extract_schema_tables(schema_sql: str) -> set[str]:
     """Return the set of table names declared in CREATE TABLE statements."""
-    return {m.group(1) for m in _CREATE_TABLE_RE.finditer(schema_sql)}
+    return {m.group(1).strip('"\'') for m in _CREATE_TABLE_RE.finditer(schema_sql)}
 
 
 def _check_migration_sql(
@@ -143,7 +143,7 @@ def _check_migration_sql(
 
     # ALTER TABLE <schema_table> ADD COLUMN <col> -> retrofit
     for m in _ADD_COLUMN_RE.finditer(sql):
-        table = m.group(1)
+        table = m.group(1).strip('"\'')
         if table in schema_tables:
             violations.append(Violation(
                 path=path,
@@ -156,7 +156,7 @@ def _check_migration_sql(
 
     # CREATE INDEX ... ON <schema_table> -> retrofit (baseline skips it)
     for m in _CREATE_INDEX_RE.finditer(sql):
-        table = m.group(1)
+        table = m.group(1).strip('"\'')
         if table in schema_tables:
             violations.append(Violation(
                 path=path,

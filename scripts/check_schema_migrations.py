@@ -107,12 +107,12 @@ def _extract_table_columns(sql: str) -> dict[str, set[str]]:
     
     # Fallback to regex-based extraction for compatibility
     _CREATE_TABLE_RE = re.compile(
-        r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w]+)\s*\((.*?)\)\s*;",
+        r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(["\w]+)\s*\((.*?)\)\s*;',
         re.IGNORECASE | re.DOTALL,
     )
-    
+
     for tm in _CREATE_TABLE_RE.finditer(sql):
-        table = tm.group(1)
+        table = tm.group(1).strip('"\'')
         cols_part = tm.group(2)
         
         # Simple column extraction for fallback
@@ -188,19 +188,30 @@ def _extract_index_column_refs(sql: str) -> list[tuple[str, str]]:
     
     # Fallback to regex-based extraction for compatibility
     _CREATE_INDEX_RE = re.compile(
-        r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\w+\s+ON\s+(\w+)\s*\(([^)]*)\)",
+        r'CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\w+\s+ON\s+(["\w]+)\s*\((.+)\)',
         re.IGNORECASE,
     )
-    
+
     for im in _CREATE_INDEX_RE.finditer(sql):
-        table = im.group(1)
+        table = im.group(1).strip('"\'')
         cols_part = im.group(2)
         indexed = [c.strip() for c in cols_part.split(",") if c.strip()]
         for col in indexed:
-            col_name = col.split()[0] if col.split() else col
-            col_name = col_name.strip("`\"[]")
-            if col_name:
-                index_refs.append((table, col_name))
+            col = col.strip()
+            func_match = re.match(r"(?i)^\s*(\w+)\s*\(([^)]*)\)\s*$", col)
+            if func_match:
+                inner = func_match.group(2)
+                for inner_col in inner.split(","):
+                    inner_col = inner_col.strip()
+                    if inner_col:
+                        name = inner_col.split()[0].strip("`\"[]")
+                        if name:
+                            index_refs.append((table, name))
+            else:
+                col_name = col.split()[0] if col.split() else col
+                col_name = col_name.strip("`\"[]")
+                if col_name:
+                    index_refs.append((table, col_name))
     
     return index_refs
 
@@ -281,7 +292,7 @@ def find_violations(path: Path) -> list[Violation]:
                     # Find the original index statement for reporting
                     # Use regex to reconstruct the index statement
                     _CREATE_INDEX_RE = re.compile(
-                        r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\w+\s+ON\s+\w+\s*\(([^)]*)\)",
+                        r'CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\w+\s+ON\s+(["\w]+)\s*\(([^)]*)\)',
                         re.IGNORECASE,
                     )
                     match = _CREATE_INDEX_RE.search(schema)
@@ -320,7 +331,8 @@ def find_all_violations(root: Path = STORES_ROOT) -> list[Violation]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    violations = find_all_violations()
+    root = Path(argv[0]) if argv else STORES_ROOT
+    violations = find_all_violations(root)
     if not violations:
         print("schema-migration-guard: clean")
         return 0
