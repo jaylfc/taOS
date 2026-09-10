@@ -1615,11 +1615,18 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
     proxy = getattr(request.app.state, "llm_proxy", None)
     llm_key = agent.get("llm_key")
     key_rescoped = False
-    if proxy is not None and llm_key:
-        try:
-            key_rescoped = await proxy.update_agent_key(llm_key, permitted)
-        except Exception:
-            logger.exception("update_agent_model: re-scoping key for %s failed", name)
+    if proxy is not None:
+        if not llm_key:
+            from tinyagentos.agent_keys import re_mint_agent_key
+
+            llm_key = await re_mint_agent_key(
+                name, agent, proxy, config, config.config_path, models=permitted
+            )
+        if llm_key:
+            try:
+                key_rescoped = await proxy.update_agent_key(llm_key, permitted)
+            except Exception:
+                logger.exception("update_agent_model: re-scoping key for %s failed", name)
         if not key_rescoped:
             # Key re-scope failed (e.g. provider type mismatch after model
             # change).  Discard the stale per-agent key so the deployer
@@ -1726,11 +1733,18 @@ async def set_permitted_models(request: Request, name: str, body: PermittedModel
     proxy = getattr(request.app.state, "llm_proxy", None)
     llm_key = agent.get("llm_key")
     key_rescoped = False
-    if proxy is not None and llm_key:
-        try:
-            key_rescoped = await proxy.update_agent_key(llm_key, permitted)
-        except Exception:
-            logger.exception("set_permitted_models: re-scoping key for %s failed", name)
+    if proxy is not None:
+        if not llm_key:
+            from tinyagentos.agent_keys import re_mint_agent_key
+
+            llm_key = await re_mint_agent_key(
+                name, agent, proxy, config, config.config_path, models=permitted
+            )
+        if llm_key:
+            try:
+                key_rescoped = await proxy.update_agent_key(llm_key, permitted)
+            except Exception:
+                logger.exception("set_permitted_models: re-scoping key for %s failed", name)
 
     framework = agent.get("framework")
     if framework in ("openclaw", "hermes"):
