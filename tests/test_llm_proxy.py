@@ -9,6 +9,7 @@ import pytest
 from tinyagentos.llm_proxy import (
     EMBEDDING_ALIAS,
     _is_embedding_model,
+    _pids_listening_on,
     generate_litellm_config,
     LLMProxy,
 )
@@ -382,6 +383,7 @@ class TestTraceUrlPropagation:
         captured = {}
 
         class _FakePopen:
+            pid = 12345
             def __init__(self, *args, **kwargs):
                 captured["env"] = kwargs.get("env") or {}
             # R2-29 readiness loop calls proc.poll(); None = still running.
@@ -419,6 +421,7 @@ class TestTraceUrlPropagation:
         monkeypatch.setattr(shutil, "which", lambda _: "/fake/litellm")
 
         class _FakePopen:
+            pid = 12346
             def __init__(self, *a, **kw):
                 pass
             # R2-29 readiness loop calls proc.poll(); None = still running.
@@ -994,6 +997,7 @@ class TestStderrLogHandling:
         monkeypatch.setattr(mod.LLMProxy, "_resolve_litellm_cmd", lambda self: "/fake/litellm")
 
         class _FakePopen:
+            pid = 12347
             def __init__(self, *a, **kw):
                 pass
             def poll(self):
@@ -1173,6 +1177,66 @@ class TestConfigDirPermissions:
                 await proxy.write_config([])
         assert not (proxy.config_dir / "litellm_config.yaml").exists()
         assert not (proxy.config_dir / "taos_callback.py").exists()
+
+
+class TestPidsListeningOn:
+    """R2-11: _pids_listening_on must return only LISTEN sockets, not clients."""
+
+    def test_only_listener_returned_when_client_connected(self):
+        """A client socket held by a child process must NOT appear in the
+        result — only the actual listener PID should be returned."""
+        import os
+        import socket
+        import subprocess
+        import sys
+        import time
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+
+        client_script = (
+            "import socket, time\n"
+            f"s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+            f"s.connect(('127.0.0.1', {port}))\n"
+            "time.sleep(30)\n"
+        )
+        client_proc = subprocess.Popen(
+            [sys.executable, "-c", client_script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            accepted = False
+            for _ in range(50):
+                try:
+                    listener.settimeout(0.1)
+                    conn, _ = listener.accept()
+                    conn.close()
+                    accepted = True
+                    break
+                except socket.timeout:
+                    pass
+            if not accepted:
+                listener.close()
+                client_proc.kill()
+                client_proc.wait()
+                pytest.fail("client did not connect in time")
+
+            pids = _pids_listening_on(port)
+            listener_pid = os.getpid()
+
+            assert listener_pid in pids, (
+                f"listener PID {listener_pid} should be in {pids}"
+            )
+            assert client_proc.pid not in pids, (
+                f"client PID {client_proc.pid} must NOT be in {pids}"
+            )
+        finally:
+            listener.close()
+            client_proc.kill()
+            client_proc.wait()
 
 
 class TestSystemdUnitPermissions:

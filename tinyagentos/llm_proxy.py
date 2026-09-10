@@ -47,13 +47,13 @@ def _pid_alive(pid: int) -> bool:
 def _pids_listening_on(port: int) -> list[int]:
     """Best-effort lookup of PIDs holding a TCP listen on ``port``.
 
-    Uses ``lsof -ti:<port>`` which is available on macOS, most Linux
+    Uses ``lsof -ti -a -iTCP:{port} -sTCP:LISTEN`` which is available on macOS, most Linux
     distros, and the Fedora LXC we ship on the Pi. Returns ``[]`` when
     ``lsof`` is missing, errors, or reports nothing.
     """
     try:
         out = subprocess.check_output(
-            ["lsof", "-ti", f":{port}"], text=True, stderr=subprocess.DEVNULL
+            ["lsof", "-ti", "-a", f"-iTCP:{port}", "-sTCP:LISTEN"], text=True, stderr=subprocess.DEVNULL
         ).strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []
@@ -139,6 +139,7 @@ class LLMProxy:
         # When None, an in-memory key is used (acceptable in tests / routing-only mode).
         self._data_dir = data_dir
         self._process: subprocess.Popen | None = None
+        self._last_spawn_pid: int | None = None
         self._keystore_cache = None
         self._budget_store_cache = None
         # One-shot guard: if litellm is missing at start() (e.g. a pre-fix
@@ -443,6 +444,8 @@ class LLMProxy:
 
         if port_in_use:
             pids = _pids_listening_on(self.port)
+            if self._last_spawn_pid and self._last_spawn_pid in pids:
+                pids = [p for p in pids if p != self._last_spawn_pid]
             if pids:
                 logger.info(
                     "LiteLLM on port %d owned by foreign PID(s) %r — "
@@ -566,6 +569,7 @@ class LLMProxy:
                 stderr=stderr_handle,
                 env=env,
             )
+            self._last_spawn_pid = self._process.pid
         except FileNotFoundError:
             logger.warning("LiteLLM not installed — proxy disabled. Install with: pip install litellm[proxy]")
             return False
