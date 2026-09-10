@@ -17,6 +17,7 @@ callables), and then runs ``mkdocs build``. It asserts:
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -24,6 +25,17 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
+# mkdocs is not a project dependency: `uv sync` does not install it, so the
+# ordinary test shards cannot build a site and would fail on the environment
+# rather than on the defect. The dedicated `docs-build` CI job installs the
+# docs toolchain and sets TAOS_DOCS_BUILD_TESTS=1; there this test MUST run,
+# and a missing mkdocs is a hard failure instead of a silent skip.
+if os.environ.get("TAOS_DOCS_BUILD_TESTS") != "1":
+    pytest.importorskip(
+        "mkdocs",
+        reason="mkdocs not installed; the docs-build CI job runs this guard",
+    )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SITE_DOCS_DIR = REPO_ROOT / "site" / "docs"
