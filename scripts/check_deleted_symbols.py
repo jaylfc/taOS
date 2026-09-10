@@ -50,6 +50,8 @@ import types
 from dataclasses import dataclass
 from pathlib import Path
 
+from _gitutil import _run_git
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TRAILER = "Removes-Intentionally:"
 
@@ -58,13 +60,6 @@ TRAILER = "Removes-Intentionally:"
 class Violation:
     symbol: str
     added_by: str
-
-
-def _run_git(args: list[str], cwd: str | Path | None = None) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True,
-    )
-    return result.stdout
 
 
 def _extract_symbols(source: str, file_path: str) -> dict[str, str]:
@@ -312,7 +307,7 @@ def _find_adding_commit(
     search = f"{kind} {leaf}("
     out = _run_git(
         ["log", "--oneline", "--reverse", "-S", search, base_ref, "--", file_path],
-        cwd=repo_root,
+        repo_root,
     )
     lines = out.splitlines()
     if lines:
@@ -322,7 +317,7 @@ def _find_adding_commit(
     search = f"{kind} {leaf}"
     out = _run_git(
         ["log", "--oneline", "--reverse", "-S", search, base_ref, "--", file_path],
-        cwd=repo_root,
+        repo_root,
     )
     lines = out.splitlines()
     if lines:

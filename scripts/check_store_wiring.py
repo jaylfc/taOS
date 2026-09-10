@@ -40,6 +40,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import unidiff
+
+from _gitutil import git_changed_base, git_diff_unified
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TRAILER = "Store-Unwired-Intentionally:"
 
@@ -51,28 +55,8 @@ class Violation:
     reason: str = ""
 
 
-def _run_git(args: list[str], repo_root: Path) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=repo_root, capture_output=True, text=True, check=True,
-    )
-    return result.stdout
-
-
-def _parse_name_status(output: str) -> list[tuple[str, str]]:
-    changed: list[tuple[str, str]] = []
-    for line in output.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        status = parts[0]
-        path = parts[-1]
-        changed.append((status[0], path))
-    return changed
-
-
 def _git_changed(base_ref: str, repo_root: Path) -> list[tuple[str, str]]:
-    out = _run_git(["diff", "--name-status", f"{base_ref}...HEAD"], repo_root)
-    return _parse_name_status(out)
+    return git_changed_base(repo_root, base_ref)
 
 
 def _get_file_at_ref(file_path: str, ref: str, repo_root: Path) -> str | None:
@@ -100,9 +84,14 @@ def _class_def_in_added_lines(
         except SyntaxError:
             pass
 
-    diff = _run_git(["diff", f"{base_ref}...HEAD", "--", file_path], repo_root)
-    pattern = re.compile(rf"^\+.*class\s+{re.escape(class_name)}\s*\(", re.MULTILINE)
-    return bool(pattern.search(diff))
+    diff_text = git_diff_unified(repo_root, base_ref, file_path)
+    pattern = re.compile(rf"^class\s+{re.escape(class_name)}\s*\(", re.MULTILINE)
+    for patch in unidiff.PatchSet(diff_text):
+        for hunk in patch:
+            for line in hunk.target_lines():
+                if line.is_added and pattern.search(line.value):
+                    return True
+    return False
 
 
 def _is_wired_ast(app_py_content: str, class_name: str) -> bool:

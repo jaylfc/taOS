@@ -14,6 +14,10 @@ _SCRIPT = (
 
 
 def _load_module():
+    # _gitutil.py lives in scripts/ (two levels above .github/scripts/)
+    gitutil_dir = _SCRIPT.parent.parent.parent / "scripts"
+    if str(gitutil_dir) not in sys.path:
+        sys.path.insert(0, str(gitutil_dir))
     spec = importlib.util.spec_from_file_location("check_all_skip", _SCRIPT)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["check_all_skip"] = mod

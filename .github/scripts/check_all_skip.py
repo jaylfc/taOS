@@ -14,6 +14,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPT_DIR.parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from _gitutil import _parse_name_status, _run_git
+
 
 def resolve_base_ref(base_ref: str) -> str:
     """Resolve base_ref to a revision that exists in this checkout.
@@ -35,10 +42,8 @@ def resolve_base_ref(base_ref: str) -> str:
 
 def find_changed_test_files(base_ref: str) -> list[str]:
     """Return test files (test_*.py) changed between base_ref and HEAD."""
-    # git diff --name-only <base>..HEAD; exclude deleted files — pytest on a
-    # missing path exits 4 and would fail the gate on any test-file deletion
     result = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=d", f"{base_ref}..HEAD"],
+        ["git", "-c", "core.quotePath=false", "diff", "-z", "--name-only", "--diff-filter=d", f"{base_ref}..HEAD"],
         capture_output=True,
         text=True,
     )
@@ -46,8 +51,11 @@ def find_changed_test_files(base_ref: str) -> list[str]:
         print(f"::error::git diff failed: {result.stderr}")
         sys.exit(1)
 
-    all_changed = result.stdout.strip().splitlines()
-    test_files = [f for f in all_changed if os.path.basename(f).startswith("test_") and f.endswith(".py")]
+    all_changed = _parse_name_status(result.stdout)
+    test_files = [
+        path for status, path in all_changed
+        if os.path.basename(path).startswith("test_") and path.endswith(".py")
+    ]
     return test_files
 
 

@@ -164,6 +164,8 @@ dev = [
     "httpx",
     "respx>=0.21.0",
     "websockets>=12.0",
+    "pathspec>=1.1.1",
+    "unidiff>=1.0.0",
 ]
 
 [tool.setuptools.packages.find]

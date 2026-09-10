@@ -35,10 +35,13 @@ from __future__ import annotations
 
 import argparse
 import re
-import subprocess
 import sys
 import tomllib
 from pathlib import Path
+
+from pathspec import PathSpec
+
+from _gitutil import GitCommandError, _run_git, git_changed_base, git_changed_staged, git_diff_unified
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = REPO_ROOT / "docs" / "doc-gate.toml"
@@ -259,41 +262,13 @@ def check_required_sections(repo_root: Path, config: dict) -> list[str]:
 
 
 def _glob_match(path: str, pattern: str) -> bool:
-    """Path-segment-aware glob match, unlike fnmatch (where `*` crosses `/`).
-
-    `**` matches zero or more path segments (so a trailing `/**` also matches
-    the bare parent, e.g. `a/**` matches `a`), a single `*` matches within one
-    path segment only (`[^/]*`), `?` matches one non-separator character
-    (`[^/]`), and every other character is matched literally.
-    """
-    regex_parts = []
-    i = 0
-    length = len(pattern)
-    while i < length:
-        char = pattern[i]
-        if char == "*":
-            if i + 1 < length and pattern[i + 1] == "*":
-                # A trailing `/**` should also match the bare parent path, so
-                # fold the preceding literal `/` into an optional group.
-                if regex_parts and regex_parts[-1] == "/" and i + 2 == length:
-                    regex_parts[-1] = "(?:/.*)?"
-                else:
-                    regex_parts.append(".*")
-                i += 2
-            else:
-                regex_parts.append("[^/]*")
-                i += 1
-        elif char == "?":
-            regex_parts.append("[^/]")
-            i += 1
-        else:
-            regex_parts.append(re.escape(char))
-            i += 1
-    return re.fullmatch("".join(regex_parts), path) is not None
+    spec = PathSpec.from_lines("gitwildmatch", [pattern])
+    return spec.match_file(path)
 
 
 def _match_any(path: str, patterns: list[str]) -> bool:
-    return any(_glob_match(path, pat) for pat in patterns)
+    spec = PathSpec.from_lines("gitwildmatch", patterns)
+    return spec.match_file(path)
 
 
 def _is_test_path(path: str) -> bool:
@@ -443,58 +418,22 @@ def evaluate_rules(
     return failures
 
 
-class GitCommandError(Exception):
-    """Raised when a git command fails, so infrastructure failures are
-    distinguishable from genuine doc-gate violations."""
-
-
-def _run_git(args: list[str], ref: str | None = None) -> str:
-    try:
-        result = subprocess.run(
-            ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, check=True,
-        )
-        return result.stdout
-    except subprocess.CalledProcessError:
-        msg = f"git {' '.join(args)} failed"
-        if ref:
-            msg += f" (ref: {ref})"
-        raise GitCommandError(msg) from None
-
-
-def _parse_name_status(output: str) -> list[tuple[str, str]]:
-    changed: list[tuple[str, str]] = []
-    for line in output.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        status = parts[0]
-        # Renames/copies (R100, C100, ...) carry old + new path; the new path
-        # is what matters for both triggering and satisfying a rule.
-        path = parts[-1]
-        changed.append((status[0], path))
-    return changed
-
-
 def _git_changed_staged() -> list[tuple[str, str]]:
-    return _parse_name_status(_run_git(["diff", "--cached", "--name-status"]))
+    return git_changed_staged(REPO_ROOT)
 
 
 def _git_changed_base(base_ref: str) -> list[tuple[str, str]]:
-    return _parse_name_status(_run_git(["diff", "--name-status", f"{base_ref}...HEAD"], ref=base_ref))
+    return git_changed_base(REPO_ROOT, base_ref)
 
 
 def _git_commit_messages(base_ref: str) -> list[str]:
-    out = _run_git(["log", f"{base_ref}..HEAD", "--format=%B%x00"], ref=base_ref)
+    out = _run_git(["log", f"{base_ref}..HEAD", "--format=%B%x00"])
     return [m for m in out.split("\x00") if m.strip()]
 
 
 def _git_commits_with_messages(base_ref: str) -> list[tuple[str, str, str]]:
     """Return (hash, author_name, message_body) for each commit in the range."""
-    # %x1e terminates each commit record and %x1f separates the three fields
-    # inside it. A record terminator distinct from the field separator is what
-    # makes this parseable: with one separator for both, the flat split cannot
-    # tell a new commit's hash from the previous commit's body.
-    out = _run_git(["log", f"{base_ref}..HEAD", "--format=%H%x1f%an%x1f%B%x1e"], ref=base_ref)
+    out = _run_git(["log", f"{base_ref}..HEAD", "--format=%H%x1f%an%x1f%B%x1e"])
     commits: list[tuple[str, str, str]] = []
     for record in out.split("\x1e"):
         if not record.strip():
@@ -531,7 +470,7 @@ def _collect_pin_only_paths(
         if status != "M" or not path.startswith(".github/workflows/"):
             continue
         try:
-            diff = _run_git(["diff", "--unified=0", range_arg, "--", path], ref=base_ref)
+            diff = git_diff_unified(REPO_ROOT, base_ref, path)
         except GitCommandError:
             continue
         if _path_diff_is_uses_pin_only(diff):
