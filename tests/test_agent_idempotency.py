@@ -34,10 +34,10 @@ class TestIdempotencyCache:
         _, waiter_event = cache.try_reserve("req-1")
         assert not event.is_set()
 
-        cache.set("req-1", {"status": "created"})
+        cache.set("req-1", 200, {"status": "created"})
         assert event.is_set()
         # The waiter can now get() the result
-        assert cache.get("req-1") == {"status": "created"}
+        assert cache.get("req-1") == (200, {"status": "created"})
 
     async def test_retry_after_completion_finds_cached_result(self):
         """After set() stores a result, a new try_reserve on the
@@ -45,7 +45,7 @@ class TestIdempotencyCache:
         get() returns the cached result."""
         cache = IdempotencyCache()
         cache.try_reserve("req-1")
-        cache.set("req-1", {"status": "created", "name": "agent-x"})
+        cache.set("req-1", 200, {"status": "created", "name": "agent-x"})
 
         # "Retry" — another request with the same Idempotency-Key
         mode, event = cache.try_reserve("req-1")
@@ -53,7 +53,7 @@ class TestIdempotencyCache:
         assert event.is_set()  # Already resolved — no need to actually await
 
         result = cache.get("req-1")
-        assert result == {"status": "created", "name": "agent-x"}
+        assert result == (200, {"status": "created", "name": "agent-x"})
 
     async def test_different_keys_do_not_interfere(self):
         """Each idempotency key is independently tracked."""
@@ -64,10 +64,10 @@ class TestIdempotencyCache:
         assert mode_b == "proceed"
         assert event_a is not event_b
 
-        cache.set("key-a", {"result": "a"})
+        cache.set("key-a", 200, {"result": "a"})
         assert event_a.is_set()
         assert not event_b.is_set()
-        assert cache.get("key-a") == {"result": "a"}
+        assert cache.get("key-a") == (200, {"result": "a"})
         assert cache.get("key-b") is None
 
     async def test_get_returns_none_for_unknown_key(self):
@@ -79,8 +79,8 @@ class TestIdempotencyCache:
         """Calling set() without a prior try_reserve() still
         stores the result for get()."""
         cache = IdempotencyCache()
-        cache.set("direct-set", {"status": "ok"})
-        assert cache.get("direct-set") == {"status": "ok"}
+        cache.set("direct-set", 200, {"status": "ok"})
+        assert cache.get("direct-set") == (200, {"status": "ok"})
 
     async def test_multiple_waiters_all_see_same_result(self):
         """When multiple callers reserve the same key, set()
@@ -90,10 +90,53 @@ class TestIdempotencyCache:
         cache.try_reserve("req-1")       # second — wait
         cache.try_reserve("req-1")       # third — wait
 
-        cache.set("req-1", {"status": "deployed"})
+        cache.set("req-1", 200, {"status": "deployed"})
         # All subsequent retrievals return the same result
-        assert cache.get("req-1") == {"status": "deployed"}
-        assert cache.get("req-1") == {"status": "deployed"}
+        assert cache.get("req-1") == (200, {"status": "deployed"})
+        assert cache.get("req-1") == (200, {"status": "deployed"})
+
+    async def test_release_after_handler_raise_deletes_key(self):
+        """When release() is called without a preceding set() (handler raised),
+        the key is removed so a retry actually executes the handler again
+        instead of receiving 503 for the TTL duration."""
+        cache = IdempotencyCache()
+        mode, event = cache.try_reserve("req-1")
+        assert mode == "proceed"
+        cache.release("req-1")
+
+        # After release without set, the key should be gone.
+        assert cache.get("req-1") is None
+
+        # A retry must get 'proceed' so the handler runs again.
+        mode2, event2 = cache.try_reserve("req-1")
+        assert mode2 == "proceed"
+
+    async def test_error_response_replays_with_status_code(self):
+        """A cached error response must replay with its original status code."""
+        cache = IdempotencyCache()
+        cache.try_reserve("req-1")
+        cache.set("req-1", 400, {"error": "bad request"})
+
+        mode, event = cache.try_reserve("req-1")
+        assert mode == "wait"
+        assert event.is_set()
+
+        status, body = cache.get("req-1")
+        assert status == 400
+        assert body == {"error": "bad request"}
+
+    async def test_success_response_replays_with_status_code(self):
+        """A cached success response must replay with status 200."""
+        cache = IdempotencyCache()
+        cache.try_reserve("req-1")
+        cache.set("req-1", 200, {"status": "created", "name": "agent-x"})
+
+        mode, event = cache.try_reserve("req-1")
+        assert mode == "wait"
+
+        status, body = cache.get("req-1")
+        assert status == 200
+        assert body == {"status": "created", "name": "agent-x"}
 
 
 class TestIdempotencyCacheEviction:
@@ -110,18 +153,18 @@ class TestIdempotencyCacheEviction:
         for i in range(5):
             key = f"key-{i}"
             cache.try_reserve(key)
-            cache.set(key, {"n": i})
+            cache.set(key, 200, {"n": i})
 
         # All 5 are present.
         assert len(cache._entries) == 5
 
         # Adding a 6th triggers eviction of the oldest (key-0).
         cache.try_reserve("key-new")
-        cache.set("key-new", {"n": 99})
+        cache.set("key-new", 200, {"n": 99})
 
         assert len(cache._entries) == 5
         assert cache.get("key-0") is None          # evicted
-        assert cache.get("key-new") == {"n": 99}   # newest present
+        assert cache.get("key-new") == (200, {"n": 99})   # newest present
 
     def test_lru_does_not_evict_in_flight_entries(self):
         """In-flight entries (event not yet set) must not be evicted even
@@ -144,7 +187,7 @@ class TestIdempotencyCacheEviction:
         """get() returns None and removes the entry once TTL has elapsed."""
         cache = IdempotencyCache()
         cache.try_reserve("old-key")
-        cache.set("old-key", {"status": "created"})
+        cache.set("old-key", 200, {"status": "created"})
 
         # Back-date the insertion timestamp to simulate TTL expiry.
         ev, res, _ts = cache._entries["old-key"]
@@ -158,7 +201,7 @@ class TestIdempotencyCacheEviction:
         new event, allowing the request to be processed again."""
         cache = IdempotencyCache()
         cache.try_reserve("stale")
-        cache.set("stale", {"status": "created"})
+        cache.set("stale", 200, {"status": "created"})
 
         # Expire the entry.
         ev, res, _ts = cache._entries["stale"]
@@ -172,10 +215,10 @@ class TestIdempotencyCacheEviction:
         """Fresh entries survive TTL checks and remain accessible."""
         cache = IdempotencyCache()
         cache.try_reserve("fresh")
-        cache.set("fresh", {"status": "ok"})
+        cache.set("fresh", 200, {"status": "ok"})
 
         # Should still be present immediately after set().
-        assert cache.get("fresh") == {"status": "ok"}
+        assert cache.get("fresh") == (200, {"status": "ok"})
 
     def test_max_size_constant_is_sensible(self):
         """Sanity-check: default _MAX_SIZE is 1000 and _TTL_SECONDS is 3600."""

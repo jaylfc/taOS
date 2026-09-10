@@ -55,7 +55,7 @@ class IdempotencyCache:
     already handling this key — the caller should ``await event.wait()``
     and then call ``get(key)`` for the cached result.
 
-    ``set(key, result)`` stores the result and fires the event so all
+    ``set(key, status_code, result)`` stores the response and fires the event so all
     waiters can proceed.
 
     This closes the race in the naive get-then-set pattern where
@@ -67,8 +67,8 @@ class IdempotencyCache:
     _MAX_SIZE: int = 1000         # LRU cap; oldest completed entry evicted first
 
     def __init__(self) -> None:
-        # Values: (event, result_or_None, inserted_at)
-        self._entries: OrderedDict[str, tuple[asyncio.Event, dict | None, float]] = OrderedDict()
+        # Values: (event, (status_code, body) | None, inserted_at)
+        self._entries: OrderedDict[str, tuple[asyncio.Event, tuple[int, dict] | None, float]] = OrderedDict()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -123,22 +123,22 @@ class IdempotencyCache:
         self._entries[key] = (event, None, time.monotonic())
         return ("proceed", event)
 
-    def set(self, key: str, result: dict) -> None:
-        """Store *result* and wake all waiters on *key*."""
+    def set(self, key: str, status_code: int, result: dict) -> None:
+        """Store *result* with *status_code* and wake all waiters on *key*."""
         entry = self._entries.get(key)
         if entry is None:
             self._evict_if_needed()
             event = asyncio.Event()
             event.set()
-            self._entries[key] = (event, result, time.monotonic())
+            self._entries[key] = (event, (status_code, result), time.monotonic())
             return
         event, _, inserted_at = entry
-        self._entries[key] = (event, result, inserted_at)
+        self._entries[key] = (event, (status_code, result), inserted_at)
         self._entries.move_to_end(key)
         event.set()
 
-    def get(self, key: str) -> dict | None:
-        """Return the cached result for *key*, or ``None``.
+    def get(self, key: str) -> tuple[int, dict] | None:
+        """Return the cached ``(status_code, body)`` for *key*, or ``None``.
 
         Returns ``None`` for unknown or TTL-expired keys.
         """
@@ -157,14 +157,16 @@ class IdempotencyCache:
 
         Call this in a ``finally`` block so that an unexpected exception
         never leaves the event unset and waiters hanging indefinitely.
-        Waiters that resume will receive ``None`` from ``get()``.
-        No-op when the event is already set (i.e. ``set()`` already called).
+        When ``set()`` was never called, the key is removed so a retry
+        can execute the handler again instead of receiving 503 for the
+        TTL duration.  No-op when the event is already set.
         """
         entry = self._entries.get(key)
         if entry is not None:
             ev, _res, _ts = entry
             if not ev.is_set():
                 ev.set()
+                del self._entries[key]
 
 
 @router.get("/api/agents")
@@ -358,7 +360,8 @@ async def add_agent(request: Request, body: AgentCreate):
             cached = idempotency_cache.get(scoped_key)
             if cached is None:
                 return JSONResponse({"error": "concurrent request failed"}, status_code=503)
-            return cached
+            status, body = cached
+            return JSONResponse(body, status_code=status)
 
     # Wrap so any unexpected exception still unblocks idempotency waiters.
     try:
@@ -368,7 +371,7 @@ async def add_agent(request: Request, body: AgentCreate):
         if name_error:
             err = {"error": name_error}
             if scoped_key and idempotency_cache is not None:
-                idempotency_cache.set(scoped_key, err)
+                idempotency_cache.set(scoped_key, 400, err)
             return JSONResponse(err, status_code=400)
 
         try:
@@ -376,7 +379,7 @@ async def add_agent(request: Request, body: AgentCreate):
         except ValueError as e:
             err = {"error": str(e)}
             if scoped_key and idempotency_cache is not None:
-                idempotency_cache.set(scoped_key, err)
+                idempotency_cache.set(scoped_key, 400, err)
             return JSONResponse(err, status_code=400)
 
         agent = body.model_dump()
@@ -386,7 +389,7 @@ async def add_agent(request: Request, body: AgentCreate):
         await save_config_locked(config, config.config_path)
         result = {"status": "created", "name": unique_slug, "display_name": display_name}
         if scoped_key and idempotency_cache is not None:
-            idempotency_cache.set(scoped_key, result)
+            idempotency_cache.set(scoped_key, 200, result)
         return result
     finally:
         # No-op when set() already fired; unblocks waiters on unexpected exceptions.
@@ -610,7 +613,8 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
             cached = idempotency_cache.get(scoped_key)
             if cached is None:
                 return JSONResponse({"error": "concurrent request failed"}, status_code=503)
-            return cached
+            status, body = cached
+            return JSONResponse(body, status_code=status)
 
     # Wrap so any unexpected exception still unblocks idempotency waiters.
     try:
@@ -619,7 +623,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         name_error = validate_agent_name(display_name)
         if name_error:
             if scoped_key and idempotency_cache is not None:
-                idempotency_cache.set(scoped_key, {"error": name_error})
+                idempotency_cache.set(scoped_key, 400, {"error": name_error})
             return JSONResponse({"error": name_error}, status_code=400)
         # Derive a container-safe slug and ensure uniqueness
         try:
@@ -627,7 +631,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         except ValueError as e:
             err = {"error": str(e)}
             if scoped_key and idempotency_cache is not None:
-                idempotency_cache.set(scoped_key, err)
+                idempotency_cache.set(scoped_key, 400, err)
             return JSONResponse(err, status_code=400)
         # Rewrite body.name to the unique slug; the original user-entered name
         # is preserved as display_name for the UI.
@@ -636,7 +640,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         fw_err = agent_deploy.validate_framework_and_ram(request, body)
         if fw_err is not None:
             if scoped_key and idempotency_cache is not None:
-                idempotency_cache.set(scoped_key, json.loads(fw_err.body))
+                idempotency_cache.set(scoped_key, fw_err.status_code, json.loads(fw_err.body))
             return fw_err
 
         # ------------------------------------------------------------------
@@ -645,7 +649,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         routed = agent_deploy.resolve_deploy_routing(request, body)
         if routed is not None:
             if scoped_key and idempotency_cache is not None:
-                idempotency_cache.set(scoped_key, json.loads(routed.body))
+                idempotency_cache.set(scoped_key, routed.status_code, json.loads(routed.body))
             return routed
 
         # Explicit target_worker pin: create the agent container ON that
@@ -654,7 +658,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         deploy_remote, deploy_taos_host, remote_err = await agent_deploy.configure_remote_deploy(request, body)
         if remote_err is not None:
             if scoped_key and idempotency_cache is not None:
-                idempotency_cache.set(scoped_key, json.loads(remote_err.body))
+                idempotency_cache.set(scoped_key, remote_err.status_code, json.loads(remote_err.body))
             return remote_err
 
         data_dir = request.app.state.data_dir
@@ -684,7 +688,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                             )
                         }
                         if scoped_key and idempotency_cache is not None:
-                            idempotency_cache.set(scoped_key, err_body)
+                            idempotency_cache.set(scoped_key, 409, err_body)
                         return JSONResponse(err_body, status_code=409)
 
                     tier_id = default_data.get("tier_id", "standard")
@@ -727,7 +731,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                 logger.exception("register_agent(%s) failed", unique_slug)
                 err_body = {"error": f"Could not register agent with taosmd: {e}"}
                 if scoped_key and idempotency_cache is not None:
-                    idempotency_cache.set(scoped_key, err_body)
+                    idempotency_cache.set(scoped_key, 500, err_body)
                 return JSONResponse(err_body, status_code=500)
 
         # Register the agent in the agent registry, minting a canonical_id.
@@ -749,13 +753,13 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                 # Reserved-prefix names are a user error, not a server fault.
                 err_body = {"error": str(e)}
                 if scoped_key and idempotency_cache is not None:
-                    idempotency_cache.set(scoped_key, err_body)
+                    idempotency_cache.set(scoped_key, 400, err_body)
                 return JSONResponse(err_body, status_code=400)
             except Exception as e:
                 logger.exception("agent_registry.register(%s) failed", unique_slug)
                 err_body = {"error": f"Could not register agent in registry: {e}"}
                 if scoped_key and idempotency_cache is not None:
-                    idempotency_cache.set(scoped_key, err_body)
+                    idempotency_cache.set(scoped_key, 500, err_body)
                 return JSONResponse(err_body, status_code=500)
 
         # Add agent entry immediately with deploying status. qmd_url has
@@ -997,7 +1001,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         result = {"status": "deploying", "name": body.name, "archive_smoke_ok": smoke_ok}
 
         if scoped_key and idempotency_cache is not None:
-            idempotency_cache.set(scoped_key, result)
+            idempotency_cache.set(scoped_key, 200, result)
 
         return result
     finally:
