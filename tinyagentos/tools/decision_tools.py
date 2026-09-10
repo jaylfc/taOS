@@ -118,11 +118,24 @@ async def execute_request_decision(args: dict, request: Request) -> dict:
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
         try:
+            capped = [
+                {"label": o.get("label", "")[:40], "value": o.get("value", o.get("label", ""))}
+                for o in options[:4]
+            ]
             await notifs.add(
                 title="Decision needed",
                 message=f"{from_agent} needs a decision: {question[:120]}",
                 level="warning" if priority == "blocking" else "info",
                 source="decisions",
+                data={
+                    "decision_type": dtype,
+                    "options": capped,
+                    "decision_id": decision["id"],
+                    "kind": "decision",
+                    "url": f"/decisions/{decision['id']}",
+                    "priority": priority,
+                    "from_agent": from_agent,
+                },
             )
         except Exception:
             pass

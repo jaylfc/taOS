@@ -214,11 +214,28 @@ async def request_app_consent(
     if notifs is not None:
         # Best effort: a notification failure must not fail the queued decision.
         try:
+            raw_options = [
+                {"label": str(o.get("label", o.get("value", ""))), "value": str(o.get("value", o.get("label", "")))}
+                for o in (decision.get("options") or [])
+            ]
+            capped = [
+                {"label": o["label"][:40], "value": o["value"]}
+                for o in raw_options[:4]
+            ]
             await notifs.add(
                 title="Permission needed",
                 message=f"{app_id} is requesting permissions",
                 level="warning",
                 source="decisions",
+                data={
+                    "decision_type": "multi_select",
+                    "options": capped,
+                    "decision_id": decision["id"],
+                    "kind": "decision",
+                    "url": f"/decisions/{decision['id']}",
+                    "priority": "blocking",
+                    "from_agent": decision.get("from_agent", "@taos-app-install"),
+                },
             )
         except Exception:
             pass

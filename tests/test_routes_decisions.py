@@ -1106,3 +1106,27 @@ async def test_dec_sfdooy_wake_budget_decision_created_and_closed(client, app):
     if isinstance(answer_value, str):
         answer_value = json.loads(answer_value)
     assert answer_value["value"] == "approve"
+
+
+@pytest.mark.asyncio
+async def test_create_decision_notification_enriches_data(client, app):
+    notifs = app.state.notifications
+    await notifs.close()
+    await notifs.init()
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@taOS-dev",
+        "question": "Pick engine",
+        "type": "single_select",
+        "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    })
+    assert resp.status_code == 200
+    items = await notifs.list()
+    assert len(items) == 1
+    data = items[0]["data"]
+    assert data["decision_type"] == "single_select"
+    assert data["decision_id"] == resp.json()["id"]
+    assert data["url"] == f"/decisions/{resp.json()['id']}"
+    assert data["priority"] == "normal"
+    assert data["from_agent"] == "@taOS-dev"
+    assert data["kind"] == "decision"
+    assert len(data["options"]) <= 4

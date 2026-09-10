@@ -8,19 +8,28 @@ from tinyagentos.decisions.decision_store import DecisionStore
 from tinyagentos.tools.decision_tools import execute_request_decision, _normalize_options
 
 
+class FakeNotifications:
+    def __init__(self):
+        self.added = []
+
+    async def add(self, **kwargs):
+        self.added.append(kwargs)
+
+
 @pytest_asyncio.fixture
 async def app_request(tmp_path):
     store = DecisionStore(tmp_path / "decisions.db")
     await store.init()
-    app = types.SimpleNamespace(state=types.SimpleNamespace(decision_store=store, notifications=None))
+    notifs = FakeNotifications()
+    app = types.SimpleNamespace(state=types.SimpleNamespace(decision_store=store, notifications=notifs))
     req = types.SimpleNamespace(app=app, state=types.SimpleNamespace(user_id="user-1", is_admin=False))
-    yield req, store
+    yield req, store, notifs
     await store.close()
 
 
 @pytest.mark.asyncio
 async def test_creates_pending_decision(app_request):
-    req, store = app_request
+    req, store, _ = app_request
     res = await execute_request_decision(
         {"question": "Pick a colour", "type": "single_select", "options": ["Red", "Blue"]}, req
     )
@@ -37,7 +46,7 @@ async def test_creates_pending_decision(app_request):
 
 @pytest.mark.asyncio
 async def test_from_agent_is_carried(app_request):
-    req, store = app_request
+    req, store, _ = app_request
     res = await execute_request_decision(
         {"question": "Ship it?", "type": "approve_deny", "from_agent": "@builder"}, req
     )
@@ -47,28 +56,28 @@ async def test_from_agent_is_carried(app_request):
 
 @pytest.mark.asyncio
 async def test_select_type_requires_options(app_request):
-    req, _ = app_request
+    req, _, _ = app_request
     res = await execute_request_decision({"question": "Which?", "type": "multi_select"}, req)
     assert "error" in res and "options" in res["error"]
 
 
 @pytest.mark.asyncio
 async def test_rejects_unknown_type(app_request):
-    req, _ = app_request
+    req, _, _ = app_request
     res = await execute_request_decision({"question": "Q", "type": "rank"}, req)
     assert "error" in res
 
 
 @pytest.mark.asyncio
 async def test_requires_question(app_request):
-    req, _ = app_request
+    req, _, _ = app_request
     res = await execute_request_decision({"type": "free_text"}, req)
     assert "error" in res
 
 
 @pytest.mark.asyncio
 async def test_free_text_needs_no_options(app_request):
-    req, store = app_request
+    req, store, _ = app_request
     res = await execute_request_decision({"question": "Name it", "type": "free_text"}, req)
     assert res["ok"] is True
 
@@ -82,6 +91,28 @@ async def test_no_user_refuses(tmp_path):
     res = await execute_request_decision({"question": "Q", "type": "free_text"}, req)
     assert res["error"] == "no authenticated user to ask"
     await store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_notification_enriches_data(app_request):
+    req, store, notifs = app_request
+    options = [f"Option {i}" for i in range(10)]
+    res = await execute_request_decision(
+        {"question": "Pick one", "type": "single_select", "options": options, "from_agent": "@builder"},
+        req,
+    )
+    assert res["ok"] is True
+    assert len(notifs.added) == 1
+    data = notifs.added[0]["data"]
+    assert data["decision_id"] == res["decision_id"]
+    assert data["decision_type"] == "single_select"
+    assert data["url"] == f"/decisions/{res['decision_id']}"
+    assert data["priority"] == "normal"
+    assert data["from_agent"] == "@builder"
+    assert data["kind"] == "decision"
+    assert len(data["options"]) == 4
+    for o in data["options"]:
+        assert len(o["label"]) <= 40
 
 
 def test_normalize_options_dedupes_colliding_labels():

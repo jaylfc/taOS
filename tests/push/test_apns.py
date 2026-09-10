@@ -446,3 +446,29 @@ def test_build_payload_data_cannot_replace_aps():
         title="Hi", body="there", data={"aps": {"alert": "hijacked"}},
     )
     assert payload["aps"]["alert"] == {"title": "Hi", "body": "there"}
+
+
+def test_build_payload_sets_thread_id_for_decision():
+    payload = build_apns_payload(
+        title="Decide", body="deploy?", category="DECISION_APPROVE_DENY",
+        data={"decision_id": "dec-123"},
+        thread_id="dec-123",
+    )
+    assert payload["aps"]["thread-id"] == "dec-123"
+
+
+def test_build_payload_omits_thread_id_when_none():
+    payload = build_apns_payload(title="Hi", body="there")
+    assert "thread-id" not in payload["aps"]
+
+
+def test_build_payload_sets_interruption_level_for_blocking():
+    payload = build_apns_payload(
+        title="Block", body="now", interruption_level="time-sensitive",
+    )
+    assert payload["aps"]["interruption-level"] == "time-sensitive"
+
+
+def test_build_payload_omits_interruption_level_when_none():
+    payload = build_apns_payload(title="Hi", body="there")
+    assert "interruption-level" not in payload["aps"]
