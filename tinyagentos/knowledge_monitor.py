@@ -103,21 +103,30 @@ class MonitorService:
         """
         now = time.time()
         
-        page = await self._store.list_items(status="ready", limit=100, offset=0)
-        
         due = []
-        for item in page:
-            m = item.get("monitor") or {}
-            current_interval = m.get("current_interval", 0)
-            last_poll = m.get("last_poll", 0)
-            if current_interval <= 0:
-                continue
-            stop_after_days = m.get("stop_after_days", 0)
-            if stop_after_days and (now - item.get("created_at", 0) > stop_after_days * 86400):
-                await self._store.update_item(item["id"], status="stopped")
-                continue
-            if last_poll + current_interval <= now:
-                due.append(item)
+        limit = 100
+        offset = 0
+        
+        while True:
+            page = await self._store.list_items(status="ready", limit=limit, offset=offset)
+            
+            for item in page:
+                m = item.get("monitor") or {}
+                current_interval = m.get("current_interval", 0)
+                last_poll = m.get("last_poll", 0)
+                if current_interval <= 0:
+                    continue
+                stop_after_days = m.get("stop_after_days", 0)
+                if stop_after_days and (now - item.get("created_at", 0) > stop_after_days * 86400):
+                    await self._store.update_item(item["id"], status="stopped")
+                    continue
+                if last_poll + current_interval <= now:
+                    due.append(item)
+            
+            if len(page) < limit:
+                break
+            offset += limit
+        
         return due
 
     async def poll_item(self, item_id: str) -> None:

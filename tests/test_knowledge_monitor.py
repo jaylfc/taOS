@@ -295,12 +295,12 @@ async def test_fetch_article_rejects_non_text_content_type(store):
 
 @pytest.mark.asyncio
 async def test_monitor_polls_all_ready_items(store):
-    """R2-12 first bug: MonitorService.get_due_items uses limit=50, missing items beyond 50.
+    """R2-12 first bug: MonitorService.get_due_items uses limit=100, missing items beyond 100.
 
-    list_items(status="ready") defaults to limit=50, so items 51+ never polled.
+    list_items(status="ready", limit=100, offset=0) returns only the first page.
     """
-    # Create 60 items with identical monitor configs so all become due at once
-    item_count = 60
+    # Create 250 items with identical monitor configs so all become due at once
+    item_count = 250
     item_ids = []
     now = time.time()
     for i in range(item_count):
@@ -330,9 +330,11 @@ async def test_monitor_polls_all_ready_items(store):
     svc = MonitorService(store=store, http_client=AsyncMock())
     due = await svc.get_due_items()
 
-    # With bug: due contains at most 50 items (list_items default limit)
-    # After fix: due should contain all 60 items
+    # With bug: due contains at most 100 items (single page of list_items)
+    # After fix: due should contain all 250 items, and every created id must be in due
     assert len(due) == item_count, f"Expected {item_count} due items, got {len(due)}"
+    for item_id in item_ids:
+        assert any(d["id"] == item_id for d in due), f"Item {item_id} not in due list"
 
 
 @pytest.mark.asyncio
