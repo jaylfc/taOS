@@ -132,6 +132,7 @@ CODERABBIT_FILES_SELECTED_RE = re.compile(
 EXIT_OK = 0
 EXIT_STUB = 1
 EXIT_ERROR = 2
+EXIT_FORK_UNREVIEWED = 3
 
 # A human-placed label that explicitly waives the bot-review gate for a PR
 # whose only CodeRabbit output is a rate-limit stub or auto-generated
@@ -141,6 +142,12 @@ EXIT_ERROR = 2
 # `gate-integrity-allow` for the gate-integrity guard. Read from the API at
 # run time, never from a stale event payload.
 DEFAULT_ALLOW_LABEL = "bot-review-allow"
+
+# A human-placed label that explicitly marks a fork PR as having received
+# lead review. Applied by a lead after a manual review; never by automation.
+# This is the fork-PR escape hatch: the bot-review-gate stays red on an
+# unreviewed fork PR until a maintainer approves or applies this label.
+LEAD_REVIEWED_LABEL = "lead-reviewed"
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -500,6 +507,107 @@ def collect_pr_labels(
     }
 
 
+def _get_pr_data(
+    owner: str, repo: str, pr_number: int, token: str | None = None,
+) -> dict | None:
+    """Fetch the PR object via GET /repos/{owner}/{repo}/pulls/{n}.
+
+    Returns None on infrastructure failure, else the PR dict.
+    """
+    data = _api_get(f"{API}/repos/{owner}/{repo}/pulls/{pr_number}", token)
+    if data is None:
+        return None
+    pr = data[0] if isinstance(data, list) and data else {}
+    if not isinstance(pr, dict):
+        return None
+    return pr
+
+
+def _is_fork_pr(pr_data: dict) -> bool:
+    """Return True if the PR object describes a fork PR.
+
+    A fork PR has a head repo whose full_name differs from the base repo
+    full_name. A null or missing head.repo means the fork was deleted; that
+    also counts as a fork (the PR head came from outside the base repo).
+    """
+    head = pr_data.get("head") or {}
+    head_repo = head.get("repo") or {}
+    base = pr_data.get("base") or {}
+    base_repo = base.get("repo") or {}
+    head_full = (head_repo.get("full_name") or "").strip()
+    base_full = (base_repo.get("full_name") or "").strip()
+    if not head_full:
+        return True
+    return head_full != base_full
+
+
+def _get_collaborator_permission(
+    owner: str, repo: str, login: str, token: str | None = None,
+) -> str | None:
+    """Fetch a collaborator's permission level via the GitHub REST API.
+
+    Returns the permission string ("admin", "write", "read", "none") on
+    success, or None on infrastructure failure (network error, auth failure,
+    404, etc.). A None return means cannot-see, which is treated as
+    insufficient for lead-review purposes.
+    """
+    data = _api_get(
+        f"{API}/repos/{owner}/{repo}/collaborators/{login}/permission",
+        token,
+    )
+    if data is None:
+        return None
+    perm = data[0] if isinstance(data, list) and data else {}
+    if not isinstance(perm, dict):
+        return None
+    return perm.get("permission")
+
+
+def _check_fork_lead_review(
+    owner: str, repo: str, pr_number: int, token: str | None = None,
+) -> tuple[bool, str]:
+    """Check whether a fork PR has received lead review.
+
+    Returns (True, reason) if either:
+      - the PR carries an APPROVED review by a collaborator with admin or
+        write permission on the repo, OR
+      - the PR carries the `lead-reviewed` label.
+    Returns (False, "") if neither condition holds.
+    Returns (False, "") on infrastructure failure so the caller can decide
+    how to handle it.
+    """
+    # Path 1: lead-reviewed label
+    labels = collect_pr_labels(owner, repo, pr_number, token)
+    if labels is None:
+        return False, ""
+    if LEAD_REVIEWED_LABEL in labels:
+        return True, f"label {LEAD_REVIEWED_LABEL}"
+
+    # Path 2: APPROVED review by admin/write collaborator
+    reviews = _api_get(
+        f"{API}/repos/{owner}/{repo}/pulls/{pr_number}/reviews", token
+    )
+    if reviews is None:
+        return False, ""
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        state = (review.get("state") or "").upper()
+        if state != "APPROVED":
+            continue
+        user = review.get("user") or {}
+        login = user.get("login")
+        if not login:
+            continue
+        perm = _get_collaborator_permission(owner, repo, login, token)
+        if perm is None:
+            continue
+        if perm in ("admin", "write"):
+            return True, f"admin approval by {login}"
+
+    return False, ""
+
+
 def classify(items: list[CRItem]) -> tuple[int, str]:
     """Classify CR items and determine the exit code + message.
 
@@ -563,6 +671,12 @@ def check_bot_review(
     GitHub API cannot be reached or returns an error, so a cannot-see
     state is never mistaken for a clean pass.
 
+    Fork PRs receive no automated CodeRabbit review. The verdict for a fork
+    PR is determined by lead review: an APPROVED review by a maintainer
+    (admin or write permission on the repo) or the `lead-reviewed` label
+    clears the gate; otherwise it stays red with EXIT_FORK_UNREVIEWED.
+    The `bot-review-allow` label does NOT waive the fork verdict.
+
     When the PR carries `allow_label` (read fresh from the GitHub API at
     run time) AND the only CodeRabbit output is a stub -- a rate-limit stub
     or CodeRabbit scaffolding (acknowledgement reply / failure notice) -- the
@@ -577,6 +691,25 @@ def check_bot_review(
     the PR). It does NOT cover EXIT_ERROR (cannot fetch CR items), which
     must stay fail-closed on a genuine cannot-see.
     """
+    # Fork PRs: lead review IS the gate. Check before CodeRabbit output.
+    pr_data = _get_pr_data(owner, repo, pr_number, token)
+    if pr_data is None:
+        return EXIT_ERROR, (
+            f"error: could not fetch PR #{pr_number} metadata for fork check "
+            f"(exit {EXIT_ERROR})"
+        )
+    if _is_fork_pr(pr_data):
+        lead_ok, lead_reason = _check_fork_lead_review(owner, repo, pr_number, token)
+        if lead_ok:
+            return EXIT_OK, (
+                f"bot-review-gate: fork PR -- lead review present ({lead_reason}) "
+                f"(exit {EXIT_OK})"
+            )
+        return EXIT_FORK_UNREVIEWED, (
+            f"FAIL: fork PR requires lead review (no maintainer approval, "
+            f"no lead-reviewed label) (exit {EXIT_FORK_UNREVIEWED})"
+        )
+
     items = collect_coderabbit_items(owner, repo, pr_number, token)
     if items is None:
         return EXIT_ERROR, (

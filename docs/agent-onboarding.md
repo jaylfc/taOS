@@ -158,3 +158,11 @@ CodeRabbit is an external review bot that posts on some PRs. Its behaviour is in
 - `2 ERROR` on infrastructure failure.
 
 Do not block on CodeRabbit, do not retrigger it, and its red is not clearable by retriggering.
+
+## Fork PR policy
+
+Fork PRs receive no automated review. Gitar is on the free plan (no code review), Qodo is billing-dead, CodeRabbit is intermittent, and none of them run on fork heads anyway. Lead review IS the gate for fork PRs.
+
+`scripts/check_bot_review.py` detects fork PRs and requires a maintainer approval (an `APPROVED` review by a collaborator with `admin` or `write` permission on the repo) or the `lead-reviewed` label. Until then the `bot-review-gate` check stays red with exit code `EXIT_FORK_UNREVIEWED` (3).
+
+The `bot-review-allow` label does NOT waive the fork verdict: it waives stub-shaped bot output, and a fork PR has no bot output to be stubbed. The two label meanings are disjoint.

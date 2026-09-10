@@ -78,6 +78,15 @@ Keep pull requests focused. One feature or fix per PR is easier to review.
 > If you open a PR against `master` by mistake, no problem - we'll retarget it
 > to `dev` (the commits and review carry over).
 
+### Fork PRs
+
+Fork PRs receive no automated review here (Gitar is on the free plan, Qodo is
+billing-dead, CodeRabbit is intermittent, and none of them run on fork heads
+anyway). Lead review IS the gate: the `bot-review-gate` check stays red until a
+maintainer approves the PR or applies the `lead-reviewed` label. A fork PR
+cannot merge on a vacuous green. Expected turnaround for lead review on fork
+PRs is the same as for in-repo PRs.
+
 ### Documentation
 
 Documentation improvements are always welcome - typo fixes, clarifications, better examples. Open a PR directly.
