@@ -187,6 +187,17 @@ jobs:
           uv run --no-sync python -m pytest tests/test_mkdocs_exclude.py \
             -q --no-header -rs
 
+  mac-sparkle-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install bats
+        run: sudo apt-get update && sudo apt-get install -y bats
+
+      - name: Run sparkle bats suite
+        run: bats tests/sparkle_tests.bats
+
   lint:
     runs-on: ubuntu-latest
     steps:
