@@ -118,6 +118,16 @@ def test_unterminated_create_table(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Multi-column CREATE TABLE body: every column must be seen
+# ---------------------------------------------------------------------------
+
+def test_multi_column_body_all_columns_seen() -> None:
+    body = 'id INTEGER, "name" TEXT, ts REAL'
+    columns = csm._split_columns(body)
+    assert columns == {"id", "name", "ts"}, "every column in a multi-column body must be extracted"
+
+
+# ---------------------------------------------------------------------------
 # main() exit-code integration
 # ---------------------------------------------------------------------------
 

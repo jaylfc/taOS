@@ -115,40 +115,69 @@ def _extract_table_columns(sql: str) -> dict[str, set[str]]:
         table = tm.group(1).strip('"\'')
         cols_part = tm.group(2)
         
-        # Simple column extraction for fallback
-        columns = set()
-        # Split by commas not inside parentheses
-        depth = 0
-        current = []
-        for ch in cols_part:
-            if ch == '(':
-                depth += 1
-            elif ch == ')':
-                depth -= 1
-            elif ch == ',' and depth == 0:
-                segment = ''.join(current).strip()
-                # Extract first word (column name)
-                match = re.match(r'^(\w+)', segment, re.IGNORECASE)
-                if match:
-                    col_name = match.group(1).lower()
-                    # Skip constraint keywords
-                    if col_name not in {'primary', 'key', 'unique', 'check', 'foreign', 'references', 'constraint'}:
-                        columns.add(col_name)
-                current = []
-            else:
-                current.append(ch)
-        
-        if current:
-            segment = ''.join(current).strip()
-            match = re.match(r'^(\w+)', segment, re.IGNORECASE)
-            if match:
-                col_name = match.group(1).lower()
-                if col_name not in {'primary', 'key', 'unique', 'check', 'foreign', 'references', 'constraint'}:
-                    columns.add(col_name)
+        columns = _split_columns(cols_part)
         
         tables[table] = columns
     
     return tables
+
+
+# A single column definition line/segment inside a CREATE TABLE body.
+# We match leading column names that are NOT constraint keywords.
+_COLUMN_NAME_RE = re.compile(r'^\s*[`"\[]?(\w+)[`"\]]?\s+', re.IGNORECASE)
+
+# Inline UNIQUE/PKEY/CHECK/FK/... constraints inside a CREATE TABLE body that
+# reference columns but do NOT add a new column (so the column is "safe").
+_INLINE_CONSTRAINT_RE = re.compile(
+    r"^\s*(?:CONSTRAINT\s+\w+\s+)?(?:PRIMARY\s+KEY|UNIQUE|CHECK|FOREIGN\s+KEY|REFERENCES)\b",
+    re.IGNORECASE,
+)
+
+# Keyword names that may appear where a column name would in a column def;
+# these are not candidate column names.
+_NON_COLUMN_KEYWORDS = {
+    "create", "table", "primary", "key", "unique", "check", "foreign",
+    "references", "constraint", "default", "not", "null", "integer", "text",
+    "real", "blob", "numeric", "autoincrement", "if", "exists", "select",
+    "on", "and", "or", "as", "collate", "generated", "always",
+}
+
+
+def _split_columns(body: str) -> set[str]:
+    """Extract declared column names from a CREATE TABLE body.
+
+    Splits on commas that are not inside parentheses (so function/default
+    expressions and inline CHECK(...) are handled), then keeps the first
+    whitespace-delimited token of each segment as the column name (unless that
+    segment is an inline table-level constraint, which does not add a column).
+    """
+    columns: set[str] = set()
+    depth = 0
+    segments: list[str] = []
+    current: list[str] = []
+    for ch in body:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            segments.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    segments.append("".join(current))
+
+    for seg in segments:
+        if _INLINE_CONSTRAINT_RE.match(seg):
+            continue
+        m = _COLUMN_NAME_RE.match(seg)
+        if not m:
+            continue
+        name = m.group(1).strip("`\"[]")
+        if name.lower() in _NON_COLUMN_KEYWORDS:
+            continue
+        columns.add(name.lower())
+    return columns
 
 
 def _extract_index_column_refs(sql: str) -> list[tuple[str, str]]:
