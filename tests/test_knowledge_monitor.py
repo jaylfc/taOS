@@ -286,3 +286,298 @@ async def test_fetch_article_rejects_non_text_content_type(store):
     assert new_content == ""
     assert changed is False
     assert resp.bytes_read == 0, "Non-text response should not be buffered at all"
+
+
+# ------------------------------------------------------------------
+# R2-12: FIRST POLL BUGS: polling limit, raw HTML overwrite, baseline on fail, stop_after_days
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_monitor_polls_all_ready_items(store):
+    """R2-12 first bug: MonitorService.get_due_items uses limit=100, missing items beyond 100.
+
+    list_items(status="ready", limit=100, offset=0) returns only the first page.
+    """
+    # Create 250 items with identical monitor configs so all become due at once
+    item_count = 250
+    item_ids = []
+    now = time.time()
+    for i in range(item_count):
+        item_id = await store.add_item(
+            source_type="article",
+            source_url=f"https://example.com/article{i}",
+            title=f"Article {i}",
+            author="",
+            content=f"Original content {i}",
+            summary="summary",
+            categories=[],
+            tags=[],
+            metadata={},
+            status="ready",
+            monitor={
+                "frequency": 3600,
+                "decay_rate": 1.5,
+                "stop_after_days": 14,
+                "pinned": False,
+                "last_poll": 0,
+                "current_interval": 3600,
+                "last_hash": "",
+            },
+        )
+        item_ids.append(item_id)
+
+    svc = MonitorService(store=store, http_client=AsyncMock())
+    due = await svc.get_due_items()
+
+    # With bug: due contains at most 100 items (single page of list_items)
+    # After fix: due should contain all 250 items, and every created id must be in due
+    assert len(due) == item_count, f"Expected {item_count} due items, got {len(due)}"
+    for item_id in item_ids:
+        assert any(d["id"] == item_id for d in due), f"Item {item_id} not in due list"
+
+
+@pytest.mark.asyncio
+async def test_monitor_does_not_overwrite_text_with_raw_html(store):
+    """R2-12 second bug: First poll stores raw HTML over extracted text.
+
+    _fetch_article returns (new_content, changed), but line 139-140 writes new_content
+    (raw HTML) into item content, not the extracted text from the ingest extractor.
+    """
+    item_id = await store.add_item(
+        source_type="article",
+        source_url="https://example.com/article",
+        title="Test Article",
+        author="",
+        content="original content",
+        summary="summary",
+        categories=[],
+        tags=[],
+        metadata={},
+        status="ready",
+        monitor={
+            "frequency": 86400,
+            "decay_rate": 2.0,
+            "stop_after_days": 14,
+            "pinned": False,
+            "last_poll": 0,
+            "current_interval": 86400,
+            "last_hash": "",
+        },
+    )
+    # Mock the HTTP client to return raw HTML that differs from original
+    raw_html = "<html><body>Raw HTML content</body></html>"
+    
+    response = AsyncMock()
+    response.status_code = 200
+    response.headers = {"content-type": "text/html"}
+    response.encoding = "utf-8"
+    
+    async def mock_aiter_bytes(chunk_size=8192):
+        yield raw_html.encode("utf-8")
+    
+    response.aiter_bytes = mock_aiter_bytes
+    response.raise_for_status = lambda: None
+    
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(return_value=response)
+
+    svc = MonitorService(store=store, http_client=mock_http)
+
+    # First poll: _fetch_article returns raw HTML
+    await svc.poll_item(item_id)
+
+    item = await store.get_item(item_id)
+    # After fix: content is updated with extracted text, never raw HTML
+    assert item["content"] != raw_html, "Content must not be raw HTML"
+    assert "Raw HTML content" in item["content"], (
+        f"Content should contain extracted text, got: {item['content']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_monitor_does_not_update_baseline_on_failed_fetch(store):
+    """R2-12 third bug: Failed fetch sets baseline hash to sha256("").
+
+    _fetch_article returns ("", False) on failure. This results in
+    content_hash = sha256("") being stored at line 128 and line 153.
+    """
+    item_id = await store.add_item(
+        source_type="article",
+        source_url="https://example.com/article",
+        title="Test Article",
+        author="",
+        content="original content",
+        summary="summary",
+        categories=[],
+        tags=[],
+        metadata={},
+        status="ready",
+        monitor={
+            "frequency": 86400,
+            "decay_rate": 2.0,
+            "stop_after_days": 14,
+            "pinned": False,
+            "last_poll": 0,
+            "current_interval": 86400,
+            "last_hash": "a" * 64,  # sha256 of "a" * 64
+        },
+    )
+    # Mock a failed fetch
+    response = AsyncMock()
+    response.raise_for_status = AsyncMock(side_effect=Exception("Network error"))
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(return_value=response)
+
+    svc = MonitorService(store=store, http_client=mock_http)
+    await svc.poll_item(item_id)
+
+    item = await store.get_item(item_id)
+    # Bug: last_hash becomes sha256("")
+    # After fix: last_hash should remain unchanged (skip baseline update)
+    assert item["monitor"]["last_hash"] == "a" * 64, "Baseline hash should not change on failure"
+
+
+# ------------------------------------------------------------------
+# RED-FIRST: R2-12 follow-up tests for the three remaining bugs
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_items_uses_limit_offset_in_sql(store):
+    """R2-12 fix-forward: list_items must push LIMIT/OFFSET into SQL.
+
+    The branch removed LIMIT/OFFSET from the SQL and slices in Python,
+    so every caller loads the whole knowledge table.
+    """
+    # Populate with enough rows that Python-slicing would be expensive
+    for i in range(60):
+        await store.add_item(
+            source_type="article",
+            source_url=f"https://example.com/article{i}",
+            title=f"Article {i}",
+            author="",
+            content=f"content {i}",
+            summary="summary",
+            categories=[],
+            tags=[],
+            metadata={},
+            status="ready",
+            monitor={"frequency": 86400, "decay_rate": 2.0, "stop_after_days": 14,
+                     "pinned": False, "last_poll": 0, "current_interval": 86400},
+        )
+
+    executed_sqls = []
+    original_execute = store._db.execute
+
+    async def spy_execute(sql, params=None):
+        executed_sqls.append(sql)
+        return await original_execute(sql, params)
+
+    store._db.execute = spy_execute
+
+    try:
+        result = await store.list_items(status="ready", limit=100, offset=0)
+    finally:
+        store._db.execute = original_execute
+
+    list_sql_calls = [s for s in executed_sqls if "FROM knowledge_items" in s]
+    assert list_sql_calls, "No SELECT from knowledge_items was executed"
+    sql = list_sql_calls[-1]
+    assert "LIMIT ?" in sql, f"SQL must contain LIMIT ?, got: {sql}"
+    assert "OFFSET ?" in sql, f"SQL must contain OFFSET ?, got: {sql}"
+
+
+@pytest.mark.asyncio
+async def test_monitor_refreshes_content_with_extracted_text(store):
+    """R2-12 fix-forward: poll must store extracted text, not raw HTML.
+
+    _fetch_article returns raw HTML text bytes. The fix must run the same
+    extractor the Library ingest path uses and store only the extracted text.
+    """
+    raw_html = "<html><head><title>X</title></head><body><p>Extracted text content here</p></body></html>"
+
+    response = AsyncMock()
+    response.status_code = 200
+    response.headers = {"content-type": "text/html"}
+    response.encoding = "utf-8"
+
+    async def mock_aiter_bytes(chunk_size=8192):
+        yield raw_html.encode("utf-8")
+
+    response.aiter_bytes = mock_aiter_bytes
+    response.raise_for_status = lambda: None
+
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(return_value=response)
+
+    item_id = await store.add_item(
+        source_type="article",
+        source_url="https://example.com/article",
+        title="Test Article",
+        author="",
+        content="old",
+        summary="summary",
+        categories=[],
+        tags=[],
+        metadata={},
+        status="ready",
+        monitor={
+            "frequency": 86400,
+            "decay_rate": 2.0,
+            "stop_after_days": 14,
+            "pinned": False,
+            "last_poll": 0,
+            "current_interval": 86400,
+            "last_hash": "",
+        },
+    )
+    svc = MonitorService(store=store, http_client=mock_http)
+    await svc.poll_item(item_id)
+
+    item = await store.get_item(item_id)
+    assert item["content"] != raw_html, "Content must not be raw HTML"
+    assert item["content"] != "old", "Content must be refreshed from the fetched HTML"
+    assert "Extracted text content here" in item["content"], (
+        f"Content should contain extracted text, got: {item['content']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_stop_after_days_prevents_polling_old_items(store):
+    """R2-12 fix-forward: items older than stop_after_days must not be polled and must be marked stopped."""
+    old_ts = time.time() - (31 * 86400)  # 31 days ago
+    item_id = await store.add_item(
+        source_type="article",
+        source_url="https://example.com/article",
+        title="Old Article",
+        author="",
+        content="old content",
+        summary="summary",
+        categories=[],
+        tags=[],
+        metadata={},
+        status="ready",
+        monitor={
+            "frequency": 86400,
+            "decay_rate": 2.0,
+            "stop_after_days": 30,
+            "pinned": False,
+            "last_poll": 0,
+            "current_interval": 86400,
+            "last_hash": "",
+        },
+    )
+    # Override created_at to make the item old
+    await store._db.execute(
+        "UPDATE knowledge_items SET created_at = ? WHERE id = ?",
+        (old_ts, item_id),
+    )
+    await store._db.commit()
+
+    svc = MonitorService(store=store, http_client=AsyncMock())
+    due = await svc.get_due_items()
+    assert not any(d["id"] == item_id for d in due), "Old item should not be due for polling"
+
+    item = await store.get_item(item_id)
+    assert item["status"] == "stopped", f"Old item should be marked stopped, got {item['status']}"

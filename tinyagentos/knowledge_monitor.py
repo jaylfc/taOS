@@ -99,18 +99,34 @@ class MonitorService:
         An item is due when ``last_poll + current_interval <= now``.
         Items with ``current_interval == 0`` (files, manual) are excluded.
         Items whose monitor config is missing or empty are excluded.
+        Items older than ``stop_after_days`` are excluded and marked stopped.
         """
         now = time.time()
-        items = await self._store.list_items(status="ready")
+        
         due = []
-        for item in items:
-            m = item.get("monitor") or {}
-            current_interval = m.get("current_interval", 0)
-            last_poll = m.get("last_poll", 0)
-            if current_interval <= 0:
-                continue
-            if last_poll + current_interval <= now:
-                due.append(item)
+        limit = 100
+        offset = 0
+        
+        while True:
+            page = await self._store.list_items(status="ready", limit=limit, offset=offset)
+            
+            for item in page:
+                m = item.get("monitor") or {}
+                current_interval = m.get("current_interval", 0)
+                last_poll = m.get("last_poll", 0)
+                if current_interval <= 0:
+                    continue
+                stop_after_days = m.get("stop_after_days", 0)
+                if stop_after_days and (now - item.get("created_at", 0) > stop_after_days * 86400):
+                    await self._store.update_item(item["id"], status="stopped")
+                    continue
+                if last_poll + current_interval <= now:
+                    due.append(item)
+            
+            if len(page) < limit:
+                break
+            offset += limit
+        
         return due
 
     async def poll_item(self, item_id: str) -> None:
@@ -135,9 +151,12 @@ class MonitorService:
             metadata_json={},
         )
 
-        # Update content if changed
+        # Bug fix: Never overwrite stored text with raw HTML.
+        # _fetch_article now returns extracted text (not raw HTML), so when the
+        # extracted content differs from the baseline we update the item.
         if changed and new_content:
-            await self._store.update_item(item_id, content=new_content)
+            if content_hash != old_hash:
+                await self._store.update_item(item_id, content=new_content)
 
         # Compute next interval
         next_interval = compute_next_interval(
@@ -150,7 +169,9 @@ class MonitorService:
         )
 
         monitor["last_poll"] = time.time()
-        monitor["last_hash"] = content_hash
+        # Bug fix: Skip baseline update on failed fetch
+        if new_content:
+            monitor["last_hash"] = content_hash
         monitor["current_interval"] = next_interval
 
         await self._store.update_item(item_id, monitor=monitor)
@@ -178,7 +199,9 @@ class MonitorService:
             resp.raise_for_status()
             from tinyagentos.web_fetch import stream_text_response
             _, _, text_bytes = await stream_text_response(resp)
-            new_content = text_bytes.decode("utf-8", errors="replace")
+            html = text_bytes.decode("utf-8", errors="replace")
+            from tinyagentos.knowledge_ingest import _extract_text_readability
+            new_content = _extract_text_readability(html)
             old_content = item.get("content", "")
             changed = new_content.strip() != old_content.strip()
             return new_content, changed
