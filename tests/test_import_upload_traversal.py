@@ -6,6 +6,7 @@ name must resolve INSIDE UPLOAD_DIR or be refused with a 400 before the
 filesystem is touched."""
 
 import io
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -133,3 +134,46 @@ class TestUploadDirSecurity:
             files={"file": ("x.json", io.BytesIO(b'{}'), "application/json")},
         )
         assert resp.status_code == 500, resp.text
+
+    @pytest.mark.asyncio
+    async def test_dangling_symlink_upload_dir_is_refused(self, client, tmp_path, app):
+        upload_dir = Path(app.state.data_dir) / "imports" / "uploads"
+        upload_dir.parent.mkdir(parents=True, exist_ok=True)
+        if upload_dir.exists():
+            if upload_dir.is_dir() and not upload_dir.is_symlink():
+                import shutil
+                shutil.rmtree(upload_dir)
+            else:
+                upload_dir.unlink()
+        target = tmp_path / "nonexistent"
+        upload_dir.symlink_to(target)
+
+        resp = await client.post(
+            "/api/import/upload",
+            files={"file": ("x.json", io.BytesIO(b'{}'), "application/json")},
+        )
+        assert resp.status_code == 500, resp.text
+        assert resp.json()["detail"] == "Upload directory is a symlink"
+
+    @pytest.mark.asyncio
+    async def test_refusal_is_logged(self, client, app, caplog):
+        upload_dir = Path(app.state.data_dir) / "imports" / "uploads"
+        upload_dir.parent.mkdir(parents=True, exist_ok=True)
+        if upload_dir.exists():
+            if upload_dir.is_dir() and not upload_dir.is_symlink():
+                import shutil
+                shutil.rmtree(upload_dir)
+            else:
+                upload_dir.unlink()
+        upload_dir.write_text("not a directory")
+
+        with caplog.at_level(logging.ERROR):
+            resp = await client.post(
+                "/api/import/upload",
+                files={"file": ("x.json", io.BytesIO(b'{}'), "application/json")},
+            )
+        assert resp.status_code == 500, resp.text
+        assert any(
+            str(upload_dir) in record.getMessage()
+            for record in caplog.records
+        )
