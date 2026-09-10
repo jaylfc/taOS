@@ -91,16 +91,14 @@ markdown_extensions:
 plugins:
   - search:
       lang: en
-  - exclude:
-      # Exclude private/internal paths that must not appear in public docs.
-      # These patterns match relative to docs_dir.
-      glob:
-        - "strategy/**"
-        - "business/**"
-        - "internal/**"
-        - "private/**"
-        - "*.private.md"
-        - "deploy/platform-lxc-internal*"
+
+exclude_docs: |
+  strategy/**
+  business/**
+  internal/**
+  private/**
+  *.private.md
+  deploy/platform-lxc-internal*
 
 nav:
   - Home: getting-started.md

@@ -1622,19 +1622,20 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
             logger.exception("update_agent_model: re-scoping key for %s failed", name)
         if not key_rescoped:
             # Key re-scope failed (e.g. provider type mismatch after model
-            # change).  Discard the stale per-agent key so the deployer
-            # falls back to the master key on the next deploy — a stale
-            # scope would cause LiteLLM to 403 the new model.
-            logger.warning(
-                "update_agent_model: re-scope failed for %s — "
-                "discarding stale per-agent key (will fall back to master key)",
-                name,
+            # change).  Use the unified helper to ensure we have a valid key
+            # (could mint a new scoped key or fall back to master key).
+            from tinyagentos.agent_keys import ensure_agent_llm_key
+            new_key, reason = await ensure_agent_llm_key(
+                config=config,
+                agent_dict=agent,
+                proxy=proxy,
+                data_dir=request.app.state.data_dir,
+                existing_llm_key=llm_key,
             )
-            agent["llm_key"] = None
-            # Persist the discard: the earlier save_config_locked ran before the
-            # re-scope, so without this the stale key survives on disk and the
-            # next deploy would still use it.
-            await save_config_locked(config, config.config_path)
+            if reason and "refused" in reason.lower():
+                return JSONResponse({"error": reason}, status_code=409)
+            # If we got a new key, it's already persisted by ensure_agent_llm_key
+            # The agent dict is mutated by the helper
 
     framework = agent.get("framework")
     if framework in ("openclaw", "hermes"):

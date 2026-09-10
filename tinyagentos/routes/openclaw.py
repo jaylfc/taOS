@@ -87,6 +87,20 @@ async def bootstrap(request: Request, agent: str | None = None):
     if agent_dict is None:
         return JSONResponse({"error": f"agent not found: {agent}"}, status_code=404)
 
+    # Ensure the agent has an LLM key; if not, return 409 with appropriate error
+    from tinyagentos.agent_keys import ensure_agent_llm_key
+    existing_llm_key = agent_dict.get("llm_key")
+    new_llm_key, reason = await ensure_agent_llm_key(
+        config=config,
+        agent_dict=agent_dict,
+        proxy=getattr(request.app.state, "llm_proxy", None),
+        data_dir=request.app.state.data_dir,
+        existing_llm_key=existing_llm_key,
+    )
+    if reason:
+        return JSONResponse({"error": reason}, status_code=409)
+    # Success: agent_dict has been mutated with a new llm_key (if any)
+
     llm_key = agent_dict.get("llm_key")
     if not llm_key:
         return JSONResponse(

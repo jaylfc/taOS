@@ -232,7 +232,12 @@ time, so patching the module attribute AFTER `create_app` does nothing.
 - Uses `uv sync --frozen` and `pytest -n auto`
 - Also required: `spa-build` (npm build + tsc + **vitest** - a desktop type error or failing
   component test fails CI), a "Verify app starts" `create_app` import smoke, `lint`
-  (`compileall`), and `cla`. The doc-gate, store-wiring gate, bot-review gate,
+  (`compileall`), `docs-build`, and `cla`. `docs-build` is the only job with the mkdocs
+  toolchain installed (mkdocs is NOT a project dependency, so `uv sync` does not provide
+  it): it runs `tests/test_mkdocs_exclude.py` with `TAOS_DOCS_BUILD_TESTS=1`, which turns
+  off the `importorskip` the ordinary shards rely on — put any test that has to build the
+  docs site there, or the shards will silently skip it. The doc-gate, store-wiring gate,
+  bot-review gate,
   distrust-green gate, and evil-merge gate (`.github/workflows/evil-merge-gate.yml`,
   implementation in `scripts/check_evil_merge.py` — fails a PR whose merge resolution
   invents test-file content differing from the `git merge-tree` baseline; the workflow

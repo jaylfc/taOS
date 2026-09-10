@@ -152,6 +152,41 @@ jobs:
             exit 1
           fi
 
+  docs-build:
+    # mkdocs is not in the project dependencies, so the ordinary shards skip
+    # tests/test_mkdocs_exclude.py. This job is where that guard actually runs:
+    # it installs the docs toolchain and sets TAOS_DOCS_BUILD_TESTS=1, which
+    # turns the skip off - a missing mkdocs fails here instead of passing by
+    # default. A guard no job executes is a no-op.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+
+      - name: Install the docs toolchain
+        run: |
+          uv pip install "mkdocs==1.6.1" "mkdocs-material==9.7.7" \
+            "pymdown-extensions==11.0.2"
+
+      - name: Docs exclusion guard (must run, not skip)
+        env:
+          TAOS_DOCS_BUILD_TESTS: "1"
+        run: |
+          uv run --no-sync python -m pytest tests/test_mkdocs_exclude.py \
+            -q --no-header -rs
+
   lint:
     runs-on: ubuntu-latest
     steps:
