@@ -40,6 +40,10 @@ dependencies = [
     "taosmd==0.4.0",
     # WebSocket client for dashboard proxy (shortcut_proxy.py)
     "websockets>=12.0",
+    # sqlglot is a CI/dev-only dependency — it never lands on a Pi (ARM64)
+    # because its Rust/C accelerators are opt-in extras. The pure-Python
+    # version (30.18.0) has zero required runtime deps.
+    "sqlglot>=30.18.0",
     # Web Push VAPID signing — pulls in cryptography, http-ece, py-vapid
     "pywebpush>=1.14",
     # mDNS/Bonjour publisher so the controller is reachable at
