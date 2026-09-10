@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock
+import logging
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -580,3 +581,92 @@ class TestWorkerDrain:
         result = mgr.get_workers_for_capability("chat")
         assert len(result) == 1
         assert result[0].name == "online-gpu"
+
+    async def test_monitor_loop_handles_emit_event_exception(self):
+        """When emit_event raises, the monitor loop should log and continue."""
+        mgr = ClusterManager()
+        await mgr.register_worker(_make_worker("gpu-box"))
+        mgr.get_worker("gpu-box").last_heartbeat = time.time() - HEARTBEAT_TIMEOUT - 5
+
+        call_count = {"n": 0}
+        notif = AsyncMock()
+
+        async def raising_emit(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("simulated emit_event failure")
+            return await notif.emit_event(*args, **kwargs)
+
+        notif.emit_event = raising_emit
+        mgr._notifications = notif
+
+        await mgr.start()
+        try:
+            await asyncio.sleep(0.5)
+            assert not mgr._monitor_task.done()
+        finally:
+            mgr._monitor_task.cancel()
+            try:
+                await mgr._monitor_task
+            except asyncio.CancelledError:
+                pass
+
+        assert mgr.get_worker("gpu-box").status == "offline"
+
+    async def test_monitor_loop_handles_emit_event_exception_and_logs_it(self, caplog):
+        """When emit_event raises, the monitor loop should log the error."""
+        mgr = ClusterManager()
+        await mgr.register_worker(_make_worker("gpu-box"))
+        mgr.get_worker("gpu-box").last_heartbeat = time.time() - HEARTBEAT_TIMEOUT - 5
+
+        call_count = {"n": 0}
+        notif = AsyncMock()
+
+        async def raising_emit(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("simulated emit_event failure")
+            return await notif.emit_event(*args, **kwargs)
+
+        notif.emit_event = raising_emit
+        mgr._notifications = notif
+
+        await mgr.start()
+        try:
+            await asyncio.sleep(0.5)
+            assert not mgr._monitor_task.done()
+        finally:
+            mgr._monitor_task.cancel()
+            try:
+                await mgr._monitor_task
+            except asyncio.CancelledError:
+                pass
+
+        assert mgr.get_worker("gpu-box").status == "offline"
+        assert any(
+            "Failed to emit worker.leave event" in record.getMessage()
+            for record in caplog.records
+        )
+
+    async def test_monitor_loop_done_callback_restarts_after_crash(self):
+        """When _monitor_task crashes, it should be restarted via done-callback."""
+        from tinyagentos.cluster.manager import ClusterManager
+
+        crashed = {"n": 0}
+        original_loop = ClusterManager._monitor_loop
+
+        async def maybe_crash(self):
+            crashed["n"] += 1
+            if crashed["n"] == 1:
+                raise RuntimeError("simulated monitor loop crash")
+            return await original_loop(self)
+
+        with patch.object(ClusterManager, "_monitor_loop", maybe_crash):
+            mgr = ClusterManager()
+            await mgr.register_worker(_make_worker("gpu-box"))
+            await mgr.start()
+
+            await asyncio.sleep(0.2)
+
+            assert mgr._monitor_task is not None
+            assert not mgr._monitor_task.done()

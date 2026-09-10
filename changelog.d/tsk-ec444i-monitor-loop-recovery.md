@@ -1,0 +1,3 @@
+### Fixed
+
+- `_monitor_loop` now wraps each iteration in `try/except Exception` with `logger.exception`, ensuring the loop continues running even when errors occur (e.g., locked SQLite during notification write). Three `emit_event` calls are individually guarded against exceptions. A `done-callback` on `_monitor_task` logs crashes and restarts the task, preserving liveness detection, lease sweep and the split-brain fence for the process lifetime.
