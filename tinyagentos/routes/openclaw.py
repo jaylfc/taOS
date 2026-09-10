@@ -89,15 +89,22 @@ async def bootstrap(request: Request, agent: str | None = None):
 
     llm_key = agent_dict.get("llm_key")
     if not llm_key:
-        return JSONResponse(
-            {
-                "error": (
-                    "agent llm_key not yet minted; deployer must call "
-                    f"/api/agents/{agent}/start after key generation"
-                )
-            },
-            status_code=409,
+        from tinyagentos.agent_keys import re_mint_agent_key
+
+        proxy = getattr(request.app.state, "llm_proxy", None)
+        llm_key = await re_mint_agent_key(
+            agent, agent_dict, proxy, config, config.config_path
         )
+        if not llm_key:
+            return JSONResponse(
+                {
+                    "error": (
+                        "agent llm_key not yet minted; deployer must call "
+                        f"/api/agents/{agent}/start after key generation"
+                    )
+                },
+                status_code=409,
+            )
 
     agent_dict["bootstrap_last_seen_at"] = int(time.time())
     await save_config_locked(config, config.config_path)
