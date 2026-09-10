@@ -80,53 +80,44 @@ teardown() {
 }
 
 @test "assemble_bundle.sh fails a release build with no Sparkle.framework" {
+    # Run the REAL script, unmodified, from a mirrored repo root so its own
+    # dirname-based REPO_ROOT resolves inside the sandbox. Copying instead of
+    # patching is what makes this test evidence about the shipped script.
+    local fake_root="$BATS_TEST_TMPDIR/repo"
+    mkdir -p "$fake_root/mac/build" "$fake_root/mac/appcast" \
+             "$fake_root/mac/launcher/Sources/taOSLauncher/Resources"
+    cp "$REPO_ROOT/mac/build/assemble_bundle.sh" "$fake_root/mac/build/assemble_bundle.sh"
+    cp "$REPO_ROOT/mac/launcher/Sources/taOSLauncher/Resources/Info.plist.in" \
+       "$fake_root/mac/launcher/Sources/taOSLauncher/Resources/Info.plist.in"
+    # The heavy payload dirs the script copies into the bundle are linked, not
+    # duplicated: the script still reads the real tree, the test stays cheap.
+    for path in tinyagentos static data app-catalog pyproject.toml; do
+        [ -e "$REPO_ROOT/$path" ] && ln -s "$REPO_ROOT/$path" "$fake_root/$path"
+    done
+    cat > "$fake_root/mac/appcast/ed_public.pem" <<'PEM'
+-----BEGIN PUBLIC KEY-----
+testkey
+-----END PUBLIC KEY-----
+PEM
+
     local staging_dir="$BATS_TEST_TMPDIR/staging"
-    mkdir -p "$staging_dir"
-    mkdir -p "$staging_dir/frontend/desktop"
+    mkdir -p "$staging_dir/frontend/desktop" "$staging_dir/python" "$staging_dir/bin"
     touch "$staging_dir/frontend/desktop/index.html"
-    mkdir -p "$staging_dir/python"
-    mkdir -p "$staging_dir/bin"
     touch "$staging_dir/bin/container"
 
-    local out_dir="$BATS_TEST_TMPDIR/output"
     local binary="$BATS_TEST_TMPDIR/launcher"
     touch "$binary"
     chmod +x "$binary"
 
-    local ed_key_file="$REPO_ROOT/mac/appcast/ed_public.pem"
-    local backup=""
-    if [[ -f "$ed_key_file" ]]; then
-        backup="$BATS_TEST_TMPDIR/ed_public.pem.backup"
-        cp "$ed_key_file" "$backup"
-    fi
-    cat > "$ed_key_file" <<'PEM'
------
-testkey
------
-PEM
-
-    local script="$REPO_ROOT/mac/build/assemble_bundle.sh"
-    [ -f "$script" ]
-
-    local patched="$BATS_TEST_TMPDIR/assemble_bundle.sh"
-    cp "$script" "$patched"
-    chmod +x "$patched"
-    sed -i 's/--release) RELEASE=1 ;;$/--release) RELEASE=1; shift ;;/' "$patched"
-    sed -i "s|^REPO_ROOT=.*|REPO_ROOT=\"$REPO_ROOT\"|" "$patched"
-
-    run "$patched" \
+    run timeout 30 "$fake_root/mac/build/assemble_bundle.sh" \
         --release \
         --version "1.2.3" \
         --staging "$staging_dir" \
         --launcher-binary "$binary" \
-        --output "$out_dir"
+        --output "$BATS_TEST_TMPDIR/output"
 
-    if [[ -n "$backup" ]]; then
-        cp "$backup" "$ed_key_file"
-    else
-        rm -f "$ed_key_file"
-    fi
-
+    # 124 = the arg loop never shifted past --release and spun forever.
+    [ "$status" -ne 124 ]
     [ "$status" -ne 0 ]
     [[ "$output" == *"Sparkle.framework missing in release build"* ]]
 }

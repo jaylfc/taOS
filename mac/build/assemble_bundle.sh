@@ -17,7 +17,7 @@ while [[ $# -gt 0 ]]; do
     --staging) STAGING="$2"; shift 2 ;;
     --launcher-binary) LAUNCHER_BINARY="$2"; shift 2 ;;
     --output) OUTPUT="$2"; shift 2 ;;
-    --release) RELEASE=1 ;;
+    --release) RELEASE=1; shift ;;
     *) echo "assemble_bundle.sh: unknown arg $1" >&2; exit 2 ;;
   esac
 done
