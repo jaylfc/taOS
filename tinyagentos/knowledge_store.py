@@ -280,11 +280,11 @@ class KnowledgeStore(BaseStore):
                 ")"
             )
             params.append(category)
-        sql += " ORDER BY created_at DESC"
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         cursor = await self._db.execute(sql, params)
         rows = await cursor.fetchall()
-        all_items = [_row_to_item(r) for r in rows]
-        return all_items[offset:offset + limit] if limit > 0 else []
+        return [_row_to_item(r) for r in rows]
 
     async def list_for_user(self, user_id: str, **kwargs) -> list[dict]:
         """List items belonging to a specific user. Convenience wrapper around list_items."""
