@@ -2,7 +2,7 @@
 // (plain HTTP on a LAN / Tailscale IP) where navigator.clipboard is
 // unavailable. Returns true if the copy succeeded, false otherwise.
 export async function copyText(text: string): Promise<boolean> {
-  if (navigator.clipboard && window.isSecureContext) {
+  if (navigator.clipboard) {
     try {
       await navigator.clipboard.writeText(text);
       return true;
@@ -24,10 +24,16 @@ function fallbackCopy(text: string): boolean {
   textarea.focus();
   textarea.select();
   let ok = false;
+  const previouslyFocused = document.activeElement;
   try {
     ok = document.execCommand("copy");
+  } catch {
+    ok = false;
   } finally {
     document.body.removeChild(textarea);
+    if (previouslyFocused instanceof HTMLElement) {
+      previouslyFocused.focus();
+    }
   }
   return ok;
 }
