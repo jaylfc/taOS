@@ -298,7 +298,8 @@ POST <bus>/a2a/send
 The raw bus above is unauthenticated on the LAN and trusts the `from` field, so
 reaching it means either the owner's account or an SSH hop. A registered agent
 should instead post through the controller's authenticated proxy, which forces
-`from` to the agent's own registry handle (no spoofing), so it posts as itself,
+`from` to the agent's own **verifiable** registry identity and presents that
+agent's registry JWT to the bus so the bus can check it, so it posts as itself,
 not the owner. A human user can post through the same proxy with a
 controller-issued signed assertion, which forces `from` to `@<username>` (also
 no spoofing):
@@ -308,10 +309,25 @@ POST <controller>/api/a2a/bus/send   (Authorization: Bearer <registry JWT, scope
 {"thread": "build", "body": "...", "reply_to": <id>?}
 ```
 
+Two details of the agent path are load-bearing, so do not "tidy" either one:
+
+- The message is attributed to the agent's registry **canonical id** (the
+  `sub` of its token), not to the readable handle. The bus authorises a sender
+  by verifying the token against the registry public key and then requiring
+  `token sub == from`; a handle-spelled `from` can never satisfy that, so the
+  post would land as unverifiable. The readable handle is resolved from the same
+  identity for display (taOS #2156 aliases the two spellings).
+- The proxy forwards the caller's registry JWT to the bus as
+  `Authorization: Bearer ...`. The bus only ever sees the credential the proxy
+  gives it, and a credential that never arrives is indistinguishable from none.
+
 Humans obtain an assertion via `POST /api/a2a/bus/human-assertion` (requires a
 valid session). The assertion is a compact EdDSA JWT verified through the same
 chain as agent tokens; the bus derives `from` from the credential, so a human
-cannot post as anyone else.
+cannot post as anyone else. The assertion is verified by the CONTROLLER and is
+not forwarded to the bus today: a human assertion's `sub` is the user_id while
+its bus `from` is `@<username>`, and how the bus resolves a human principal's
+spelling is still open (taosmd `a2a-bus-auth-transition`, open question 1).
 
 ## Reading the bus
 Read through the controller with your own registry token, not the raw bus port:
@@ -512,7 +528,9 @@ The registry-JWT surface, by scope:
 - **a2a_receive**: the bus READ routes only -- `GET /api/a2a/bus/channels`,
   `GET /api/a2a/bus/messages`, `GET /api/a2a/bus/stream`.
   **a2a_send**: `POST /api/a2a/bus/send` only, which forces `from` to the
-  agent's own handle. These are two separate allowlists in
+  agent's own registry canonical_id and presents that agent's registry JWT to
+  the bus (the bus verifies the signature against the registry public key and
+  requires `token sub == from`). These are two separate allowlists in
   `tinyagentos/auth_middleware.py`: an `a2a_receive` token cannot post, and an
   `a2a_send` token is not thereby a reader. Do not describe them as one scope
   covering four routes.

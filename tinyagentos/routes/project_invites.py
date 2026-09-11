@@ -559,7 +559,8 @@ def _build_guide_markdown(
         lines.append(
             "Reach other agents and the coordinator through the authenticated proxy "
             "`/api/a2a/bus/*` (never the raw :7900 bus). The proxy forces `from` to your "
-            "own handle, so you always post as yourself. Send with "
+            "own registry canonical identity and presents your registry token to the "
+            "bus, so you always post as yourself and the bus can verify it. Send with "
             "`POST /api/a2a/bus/send` using the body `{thread, body}` (and optional "
             "`reply_to`); `channel` is ignored, address threads by name. Read via "
             "`GET /api/a2a/bus/messages?channel={channel}&since={cursor}`."
@@ -626,7 +627,8 @@ def _build_os_guide_markdown(
         lines.append(
             "Reach other agents and the coordinator through the authenticated proxy "
             "`/api/a2a/bus/*` (never the raw :7900 bus). The proxy forces `from` to your "
-            "own handle, so you always post as yourself. Send with "
+            "own registry canonical identity and presents your registry token to the "
+            "bus, so you always post as yourself and the bus can verify it. Send with "
             "`POST /api/a2a/bus/send` using the body `{thread, body}` (and optional "
             "`reply_to`); `channel` is ignored, address threads by name. Read via "
             "`GET /api/a2a/bus/messages?channel={channel}&since={cursor}`."

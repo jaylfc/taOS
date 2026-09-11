@@ -301,10 +301,21 @@ def _mock_bus_post(json_payload: dict, *, raise_on_status: bool = False):
 class TestBusAgentSend:
     """Authenticated write path: agents post as themselves, never spoofing."""
 
-    async def test_agent_send_derives_from_from_registry_handle(self, bus_client):
-        # _make_agent_token registers handle "@bus-reader".
-        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
-        ctx, client = _mock_bus_post({"id": 1, "from": "@bus-reader", "thread": "build"})
+    async def test_agent_send_is_verifiable_identity_plus_credential(self, bus_client):
+        """An agent's post carries BOTH the identity its token proves and the
+        token itself.
+
+        The bus authorises a sender by verifying the signature and then
+        requiring ``token sub == from``, where ``sub`` is the registry
+        ``canonical_id``. So the two halves are one unit: a message attributed
+        to a display handle cannot be verified, and a credential the bus never
+        receives is indistinguishable from no credential at all.
+        """
+        # _make_agent_token registers handle "@bus-reader" and returns the
+        # canonical_id the token's `sub` carries.
+        cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        assert cid != "@bus-reader"
+        ctx, client = _mock_bus_post({"id": 1, "from": cid, "thread": "build"})
         with patch(_BUS_PATCH, return_value=ctx):
             async with _bare(bus_client._app) as bare:
                 resp = await bare.post(
@@ -313,12 +324,16 @@ class TestBusAgentSend:
                     headers={"Authorization": f"Bearer {token}"},
                 )
         assert resp.status_code == 200
-        assert resp.json()["from"] == "@bus-reader"
+        assert resp.json()["from"] == cid
         # Anti-spoof: the body's "from" is ignored; the bus is called with the
-        # agent's own registry handle.
+        # agent's own registry identity.
         sent = client.post.call_args.kwargs["json"]
-        assert sent["from"] == "@bus-reader"
+        assert sent["from"] == cid
         assert sent["thread"] == "build" and sent["body"] == "hi"
+        # ...and the credential that makes that identity checkable travels with
+        # it, byte-for-byte (the bus verifies the signature over these bytes).
+        headers = client.post.call_args.kwargs["headers"]
+        assert headers == {"Authorization": f"Bearer {token}"}
 
     async def test_agent_without_send_scope_forbidden(self, bus_client):
         # Only a2a_receive -> cannot send.
@@ -352,6 +367,10 @@ class TestBusAgentSend:
         assert resp.status_code == 200
         # Admin's explicit from is honored.
         assert client.post.call_args.kwargs["json"]["from"] == "@release-bot"
+        # No credential is forwarded: an admin's credential is a session cookie
+        # or the host local token. The local token is admin-equivalent on this
+        # controller, so it must never be handed to another service.
+        assert client.post.call_args.kwargs["headers"] is None
 
     async def test_missing_thread_or_body_400(self, bus_client):
         _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
@@ -408,6 +427,119 @@ class TestBusAgentSend:
                     headers={"Authorization": f"Bearer {token}"},
                 )
         assert resp.status_code == 502
+
+
+@pytest.mark.asyncio
+class TestBusSendAuthGate:
+    """The write path is a GATE, not just a re-attribution.
+
+    Every caller whose registry identity cannot be verified is refused at the
+    proxy, and the refusal happens BEFORE any bus call: a caller that is
+    unregistered, suspended, revoked, or holding no ``a2a_send`` grant must not
+    be able to place an unverified message on the bus either. Asserting only the
+    status code would pass on an implementation that refuses the AUTHOR while
+    still forwarding the POST, so each case also asserts the bus was never
+    called.
+    """
+
+    async def _post(self, app, *, headers, body=None):
+        ctx, client = _mock_bus_post({"id": 1, "from": "unused", "thread": "build"})
+        with patch(_BUS_PATCH, return_value=ctx):
+            async with _bare(app) as bare:
+                resp = await bare.post(
+                    "/api/a2a/bus/send",
+                    json=body or {"thread": "build", "body": "hi"},
+                    headers=headers,
+                )
+        return resp, client
+
+    async def test_unregistered_agent_token_is_refused_and_bus_never_called(
+        self, bus_client
+    ):
+        """A token correctly signed by the registry key whose ``sub`` has no
+        registry row proves nothing: the identity is unregistered."""
+        priv, _pub = bus_client._app.state.agent_registry_keypair
+        token = mint_registry_token(
+            "ghost-20260101-000000", priv, user_id="u", framework="taosmd"
+        )
+        resp, client = await self._post(
+            bus_client._app, headers={"Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 403
+        assert not client.post.called
+
+    async def test_suspended_agent_is_refused_and_bus_never_called(self, bus_client):
+        cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        await bus_client._app.state.agent_registry.set_status(cid, "suspended")
+        resp, client = await self._post(
+            bus_client._app, headers={"Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 403
+        assert not client.post.called
+
+    async def test_revoked_agent_is_refused_and_bus_never_called(self, bus_client):
+        cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        await bus_client._app.state.agent_registry.revoke(cid)
+        resp, client = await self._post(
+            bus_client._app, headers={"Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 403
+        assert not client.post.called
+
+    async def test_agent_without_send_scope_is_refused_and_bus_never_called(
+        self, bus_client
+    ):
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_receive",))
+        resp, client = await self._post(
+            bus_client._app, headers={"Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 403
+        assert not client.post.called
+
+    async def test_foreign_key_signed_token_is_refused_and_bus_never_called(
+        self, bus_client
+    ):
+        """A registered ``sub`` with a signature from another key is a forgery."""
+        registry = bus_client._app.state.agent_registry
+        grants = bus_client._app.state.agent_grants
+        rec = await registry.register(
+            framework="taosmd", display_name="Foreign", handle="@foreign"
+        )
+        cid = rec["canonical_id"]
+        await grants.add_grant(cid, "a2a_send")
+        with tempfile.TemporaryDirectory() as d:
+            foreign_priv, _foreign_pub = load_or_create_signing_keypair(Path(d))
+        token = mint_registry_token(cid, foreign_priv, user_id="u", framework="taosmd")
+        resp, client = await self._post(
+            bus_client._app, headers={"Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 401
+        assert not client.post.called
+
+    async def test_no_credential_is_refused_and_bus_never_called(self, bus_client):
+        """No registry credential at all: the bare API request is refused."""
+        resp, client = await self._post(bus_client._app, headers={})
+        assert resp.status_code == 401
+        assert not client.post.called
+
+    async def test_agent_without_bus_handle_is_refused_and_bus_never_called(
+        self, bus_client
+    ):
+        """A registry record with no handle is not a complete bus identity."""
+        registry = bus_client._app.state.agent_registry
+        grants = bus_client._app.state.agent_grants
+        priv, _pub = bus_client._app.state.agent_registry_keypair
+        rec = await registry.register(
+            framework="taosmd", display_name="No Handle", handle=""
+        )
+        cid = rec["canonical_id"]
+        await grants.add_grant(cid, "a2a_send")
+        token = mint_registry_token(cid, priv, user_id="u", framework="taosmd")
+        resp, client = await self._post(
+            bus_client._app, headers={"Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 403
+        assert not client.post.called
 
 
 @pytest.mark.asyncio
@@ -475,6 +607,12 @@ class TestBusHumanAuth:
         assert resp.json()["from"] == "@admin"
         sent = client.post.call_args.kwargs["json"]
         assert sent["from"] == "@admin"
+        # The human assertion is NOT forwarded: its `sub` is the user_id while
+        # its bus `from` is `@<username>`, and the bus's principal-spelling
+        # policy for humans is not settled (taosmd a2a-bus-auth-transition).
+        # Forwarding it would present a credential that cannot match its own
+        # accompanying `from`.
+        assert client.post.call_args.kwargs["headers"] is None
 
     async def test_human_send_rejects_malformed_token(self, bus_client):
         """A malformed Bearer token on /send returns 401."""

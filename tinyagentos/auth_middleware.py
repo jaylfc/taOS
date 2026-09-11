@@ -41,7 +41,8 @@ _A2A_BUS_READ_PATHS = frozenset({
 })
 # Authenticated A2A bus WRITE path: an agent may POST here with its own registry
 # JWT (scope a2a_send, verified by the route, which forces the bus `from` to the
-# agent's own handle so it posts as itself instead of the owner's account).
+# agent's own registry canonical_id -- the identity its token proves -- and
+# forwards that token to the bus so the bus can verify the sender).
 _A2A_BUS_WRITE_PATHS = frozenset({
     "/api/a2a/bus/send",
 })
