@@ -211,16 +211,14 @@ async def update_project(
         return project_or_err
     p = project_or_err
     try:
-        await store.update_project(
+        await pstore.update_project(
             project_id,
             name=payload.name,
             description=payload.description,
             settings=payload.settings,
         )
     except ProjectConflict as e:
-        # Same conflict, same answer as the create path: a rename onto a name
-        # another project already holds is a 409, not a silent duplicate.
-        suggestions = await _free_suggestions(store, e.field, e.taken)
+        suggestions = await _free_suggestions(pstore, e.field, e.taken)
         return JSONResponse(
             {
                 "error": str(e),
@@ -230,8 +228,8 @@ async def update_project(
             },
             status_code=409,
         )
-    p = await store.get_project(project_id)
-    await store.log_activity(project_id, user.user_id, "project.updated", payload.model_dump(exclude_none=True))
+    p = await pstore.get_project(project_id)
+    await pstore.log_activity(project_id, user.user_id, "project.updated", payload.model_dump(exclude_none=True))
     _mirror(request, p)
     return p
 
@@ -247,9 +245,9 @@ async def archive_project(
     if isinstance(project_or_err, JSONResponse):
         return project_or_err
     p = project_or_err
-    await store.set_status(project_id, "archived")
-    p = await store.get_project(project_id)
-    await store.log_activity(project_id, user.user_id, "project.archived", {})
+    await pstore.set_status(project_id, "archived")
+    p = await pstore.get_project(project_id)
+    await pstore.log_activity(project_id, user.user_id, "project.archived", {})
     return p
 
 
@@ -265,8 +263,8 @@ async def delete_project(
         return project_or_err
     project = project_or_err
 
-    await store.set_status(project_id, "deleted")
-    await store.log_activity(project_id, user.user_id, "project.deleted", {})
+    await pstore.set_status(project_id, "deleted")
+    await pstore.log_activity(project_id, user.user_id, "project.deleted", {})
 
     # Archive scoped chat channels
     channels = request.app.state.chat_channels
@@ -287,7 +285,7 @@ async def delete_project(
             "project folder tombstone failed for slug=%s: %s", project.get("slug"), exc
         )
 
-    return await store.get_project(project_id)
+    return await pstore.get_project(project_id)
 
 
 class AddMemberIn(BaseModel):
@@ -336,7 +334,7 @@ async def add_member(
     else:
         return JSONResponse({"error": "mode must be native|clone|human"}, status_code=400)
 
-    await store.add_member(
+    await pstore.add_member(
         project_id=project_id,
         member_id=member_id,
         member_kind=member_kind,
@@ -344,11 +342,11 @@ async def add_member(
         source_agent_id=source_agent_id,
         memory_seed=memory_seed,
     )
-    await store.log_activity(
+    await pstore.log_activity(
         project_id, user.user_id, "member.added",
         {"member_id": member_id, "kind": member_kind, "memory_seed": memory_seed},
     )
-    members = await store.list_members(project_id)
+    members = await pstore.list_members(project_id)
     _mirror(request, {**project, "members": members})
     try:
         from tinyagentos.projects.a2a import ensure_a2a_channel
@@ -402,19 +400,19 @@ async def set_project_lead(
         return project_or_err
     p = project_or_err
     try:
-        await store.set_lead(project_id, body.member_id)
+        await pstore.set_lead(project_id, body.member_id)
     except KeyError as e:
         return JSONResponse({"error": str(e)}, status_code=404)
-    await store.log_activity(
+    await pstore.log_activity(
         project_id, user.user_id, "project.lead_changed", {"member_id": body.member_id}
     )
-    members = await store.list_members(project_id)
+    members = await pstore.list_members(project_id)
     _mirror(request, {**p, "members": members})
     try:
         from tinyagentos.projects.a2a import ensure_a2a_channel
         await ensure_a2a_channel(
             request.app.state.chat_channels,
-            store,
+            pstore,
             project_id,
             config=getattr(request.app.state, "config", None),
         )
@@ -435,9 +433,9 @@ async def remove_member(
     if isinstance(project_or_err, JSONResponse):
         return project_or_err
     project = project_or_err
-    await store.remove_member(project_id, member_id)
-    await store.log_activity(project_id, user.user_id, "member.removed", {"member_id": member_id})
-    members = await store.list_members(project_id)
+    await pstore.remove_member(project_id, member_id)
+    await pstore.log_activity(project_id, user.user_id, "member.removed", {"member_id": member_id})
+    members = await pstore.list_members(project_id)
     _mirror(request, {**project, "members": members})
     try:
         from tinyagentos.projects.a2a import ensure_a2a_channel
