@@ -365,7 +365,7 @@ def _build_device_push_payload(row: dict) -> tuple[dict, list[dict] | None]:
         category = "DECISION_OPTIONS"
         opts = data.get("options") or []
         capped = [
-            {"label": o.get("label", "")[:40], "value": o.get("value", o.get("label", ""))}
+            {"label": str(o.get("label") or "")[:40], "value": str(o.get("value") or o.get("label") or "")}
             for o in opts[:4]
         ]
         actions = [{"id": o.get("value", o.get("label", "")), "label": o.get("label", "")} for o in capped]
@@ -376,7 +376,7 @@ def _build_device_push_payload(row: dict) -> tuple[dict, list[dict] | None]:
     if decision_type in ("single_select", "multi_select"):
         opts = data.get("options") or []
         payload_data["options"] = [
-            {"label": o.get("label", "")[:40], "value": o.get("value", o.get("label", ""))}
+            {"label": str(o.get("label") or "")[:40], "value": str(o.get("value") or o.get("label") or "")}
             for o in opts[:4]
         ]
     image = data.get("image")

@@ -1034,3 +1034,54 @@ def test_build_device_push_payload_non_decision_has_no_category_or_thread():
     payload, _ = _build_device_push_payload(row)
     assert "category" not in payload
     assert "thread_id" not in payload
+
+
+def test_build_device_push_payload_handles_null_label_and_value():
+    """RED-FIRST test: null label must coerce to empty string, not raise TypeError"""
+    row = {
+        "title": "Pick",
+        "message": "pick one",
+        "source": "decisions",
+        "data": {
+            "decision_type": "single_select",
+            "options": [{"label": None, "value": "x"}],
+        },
+    }
+    payload, actions = _build_device_push_payload(row)
+    assert len(actions) == 1
+    assert payload["data"]["options"][0]["label"] == ""
+    assert payload["data"]["options"][0]["value"] == "x"
+
+
+def test_build_device_push_payload_handles_null_value_uses_label():
+    """null value falls back to label, coerced to string"""
+    row = {
+        "title": "Pick",
+        "message": "pick one",
+        "source": "decisions",
+        "data": {
+            "decision_type": "single_select",
+            "options": [{"label": "Yes", "value": None}],
+        },
+    }
+    payload, actions = _build_device_push_payload(row)
+    assert len(actions) == 1
+    assert payload["data"]["options"][0]["label"] == "Yes"
+    assert payload["data"]["options"][0]["value"] == "Yes"
+
+
+def test_build_device_push_payload_handles_both_null():
+    """both label and value null"""
+    row = {
+        "title": "Pick",
+        "message": "pick one",
+        "source": "decisions",
+        "data": {
+            "decision_type": "single_select",
+            "options": [{"label": None, "value": None}],
+        },
+    }
+    payload, actions = _build_device_push_payload(row)
+    assert len(actions) == 1
+    assert payload["data"]["options"][0]["label"] == ""
+    assert payload["data"]["options"][0]["value"] == ""
