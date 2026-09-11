@@ -1431,6 +1431,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             )
 
         # All startup init complete — allow requests through.
+        from tinyagentos.agent_budget_store import AgentBudgetStore, default_budget_path
+        app.state.agent_budget_store = AgentBudgetStore(default_budget_path(data_dir))
         app.state._startup_complete = True
         logger.info("startup complete — accepting requests")
 

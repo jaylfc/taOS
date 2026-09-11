@@ -1762,11 +1762,15 @@ async def set_permitted_models(request: Request, name: str, body: PermittedModel
         "key_rescoped": key_rescoped,
     }
 
-
 def _budget_store_for_request(request: Request):
     from tinyagentos.agent_budget_store import AgentBudgetStore, default_budget_path
-    data_dir = request.app.state.data_dir
-    return AgentBudgetStore(default_budget_path(data_dir))
+
+    store = getattr(request.app.state, "agent_budget_store", None)
+    if store is None:
+        data_dir = request.app.state.data_dir
+        store = AgentBudgetStore(default_budget_path(data_dir))
+        request.app.state.agent_budget_store = store
+    return store
 
 
 def _budget_response(agent_name: str, rec: dict | None) -> dict:
@@ -1783,7 +1787,7 @@ async def get_agent_budget(request: Request, name: str):
     if not agent:
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
     store = _budget_store_for_request(request)
-    return _budget_response(name, store.get(name))
+    return _budget_response(name, await asyncio.to_thread(store.get, name))
 
 
 class AgentBudgetUpdate(BaseModel):
@@ -1805,8 +1809,8 @@ async def set_agent_budget(request: Request, name: str, body: AgentBudgetUpdate)
             status_code=400,
         )
     store = _budget_store_for_request(request)
-    store.set_budget(name, body.max_budget_usd)
-    return _budget_response(name, store.get(name))
+    await asyncio.to_thread(store.set_budget, name, body.max_budget_usd)
+    return _budget_response(name, await asyncio.to_thread(store.get, name))
 
 
 @router.post("/api/agents/{name}/budget/reset")
@@ -1817,8 +1821,8 @@ async def reset_agent_budget(request: Request, name: str):
     if not agent:
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
     store = _budget_store_for_request(request)
-    store.reset_spend(name)
-    return _budget_response(name, store.get(name))
+    await asyncio.to_thread(store.reset_spend, name)
+    return _budget_response(name, await asyncio.to_thread(store.get, name))
 
 
 @router.get("/api/agents/{name}/wake-budget")

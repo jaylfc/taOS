@@ -1818,6 +1818,57 @@ class TestAgentBudgetRoutes:
         resp = await client.post("/api/agents/no-such-agent/budget/reset")
         assert resp.status_code == 404
 
+    async def test_budget_store_constructed_once_per_app(self, client):
+        """Two requests must not trigger the DDL constructor twice."""
+        from unittest.mock import patch
+
+        from tinyagentos.agent_budget_store import AgentBudgetStore
+
+        init_calls = []
+        orig_init = AgentBudgetStore._init
+
+        def spy_init(self):
+            init_calls.append(self.path)
+            return orig_init(self)
+
+        with patch.object(AgentBudgetStore, "_init", spy_init):
+            resp1 = await client.get("/api/agents/test-agent/budget")
+            assert resp1.status_code == 200
+            resp2 = await client.get("/api/agents/test-agent/budget")
+            assert resp2.status_code == 200
+
+        assert len(init_calls) == 1, (
+            f"AgentBudgetStore._init called {len(init_calls)} times, expected 1"
+        )
+
+    async def test_budget_route_does_not_block_event_loop(self, client):
+        """Two concurrent budget reads should not serialize if the store is offloaded."""
+        import asyncio
+        import time
+        from unittest.mock import patch
+
+        from tinyagentos.agent_budget_store import AgentBudgetStore
+
+        call_times = []
+
+        def slow_get(self, agent):
+            call_times.append(time.monotonic())
+            time.sleep(0.07)
+            return None
+
+        with patch.object(AgentBudgetStore, "get", slow_get):
+            task1 = asyncio.create_task(client.get("/api/agents/test-agent/budget"))
+            task2 = asyncio.create_task(client.get("/api/agents/test-agent/budget"))
+            r1 = await task1
+            r2 = await task2
+
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert len(call_times) == 2, f"expected 2 get() calls, got {len(call_times)}"
+        assert call_times[1] - call_times[0] < 0.03, (
+            f"sync get() calls serialized: gap={call_times[1] - call_times[0]:.3f}s"
+        )
+
 
 @pytest.mark.asyncio
 class TestAgentWakeBudget:
