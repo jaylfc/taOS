@@ -26,6 +26,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.agent_registry_store import mint_registry_token
+from tinyagentos.auth import hash_password
 
 
 @pytest_asyncio.fixture
@@ -841,3 +842,45 @@ class TestTaskCreationScope:
                 headers=_hdr(token),
             )
         assert resp.status_code in (401, 403, 404)
+
+
+@pytest.mark.asyncio
+class TestHumanTokenProjectTasks:
+    """A valid human-principal token on the project-tasks path must not be
+    silently treated as 'no Authorization header' (empty 200)."""
+
+    async def test_human_token_gets_403_not_empty_200(self, ctx):
+        pid = await _new_project(ctx, "human-test")
+        await _new_task(ctx, pid)
+
+        user_id = "test-human-user"
+        data = ctx.app.state.auth._read_users()
+        data.setdefault("users", []).append({
+            "id": user_id,
+            "username": "humanuser",
+            "password_hash": hash_password("testpass1234"),
+            "is_admin": False,
+            "created_at": int(__import__("time").time()),
+        })
+        ctx.app.state.auth._write_users(data)
+
+        registry = ctx.app.state.agent_registry
+        grants = ctx.app.state.agent_grants
+        priv, _pub = ctx.app.state.agent_registry_keypair
+        rec = await registry.register(
+            framework="grok",
+            display_name="Test Human Principal",
+            origin="external-selfjoin",
+            handle="@humanagent",
+        )
+        cid = rec["canonical_id"]
+        await registry.set_status(cid, "active")
+
+        token = mint_registry_token(cid, priv, principal_type="human")
+
+        async with _bare(ctx.app) as bare:
+            resp = await bare.get(
+                "/api/projects/tasks/aggregate",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 403, resp.text

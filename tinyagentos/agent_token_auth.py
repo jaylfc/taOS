@@ -349,12 +349,12 @@ async def check_agent_project_grants(
 
     Returns ``(canonical_id, {project_id: grant})``, or ``(None, {})`` when no
     Authorization header is present (the caller falls through to its own
-    session/admin handling), or when a valid human-principal token is presented
-    (``principal_type == "human"`` short-circuits here, matching
-    ``check_agent_scope``).
+    session/admin handling).  A valid human-principal token raises 403 so the
+    caller can distinguish it from the genuinely-headerless case.
 
     Raises:
-      401/403 -- exactly as ``check_agent_scope`` (bad/inactive/superseded token).
+      401/403 -- exactly as ``check_agent_scope`` (bad/inactive/superseded token),
+                 or 403 when a human-principal token is presented.
     """
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.lower().startswith("bearer "):
@@ -380,7 +380,10 @@ async def check_agent_project_grants(
 
     principal_type = payload.get("principal_type", "")
     if principal_type == "human":
-        return None, {}
+        raise HTTPException(
+            status_code=403,
+            detail="human-principal token cannot enumerate agent project grants",
+        )
 
     grants_store = _get_grants_store(request)
     grants = await grants_store.list_grants(canonical_id)
