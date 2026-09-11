@@ -323,11 +323,12 @@ Two details of the agent path are load-bearing, so do not "tidy" either one:
 
 Humans obtain an assertion via `POST /api/a2a/bus/human-assertion` (requires a
 valid session). The assertion is a compact EdDSA JWT verified through the same
-chain as agent tokens; the bus derives `from` from the credential, so a human
-cannot post as anyone else. The assertion is verified by the CONTROLLER and is
-not forwarded to the bus today: a human assertion's `sub` is the user_id while
-its bus `from` is `@<username>`, and how the bus resolves a human principal's
-spelling is still open (taosmd `a2a-bus-auth-transition`, open question 1).
+chain as agent tokens; the CONTROLLER derives `from` from the credential
+(`@<username>`), so a human cannot post as anyone else. The assertion is
+verified by the controller and is not forwarded to the bus today: a human
+assertion's `sub` is the user_id while its bus `from` is `@<username>`, and how
+the bus resolves a human principal's spelling is still open (taosmd
+`a2a-bus-auth-transition`, open question 1).
 
 ## Reading the bus
 Read through the controller with your own registry token, not the raw bus port:

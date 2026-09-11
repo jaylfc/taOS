@@ -334,6 +334,7 @@ class TestBusAgentSend:
         # it, byte-for-byte (the bus verifies the signature over these bytes).
         headers = client.post.call_args.kwargs["headers"]
         assert headers == {"Authorization": f"Bearer {token}"}
+        assert resp.json()["credential_forwarded"] is True
 
     async def test_agent_without_send_scope_forbidden(self, bus_client):
         # Only a2a_receive -> cannot send.
@@ -540,6 +541,83 @@ class TestBusSendAuthGate:
         )
         assert resp.status_code == 403
         assert not client.post.called
+
+
+class TestCredentialTransportRule:
+    """A registry JWT is an unexpiring bearer credential: it is only ever sent
+    over a transport that keeps it off the wire in the clear."""
+
+    def test_loopback_http_is_allowed(self):
+        from tinyagentos.routes.a2a_bus import _credential_transport_is_private
+
+        assert _credential_transport_is_private("http://127.0.0.1:7900") is True
+        assert _credential_transport_is_private("http://localhost:7900") is True
+        assert _credential_transport_is_private("http://[::1]:7900") is True
+
+    def test_https_anywhere_is_allowed(self):
+        from tinyagentos.routes.a2a_bus import _credential_transport_is_private
+
+        assert _credential_transport_is_private("https://bus.example:7900") is True
+
+    def test_remote_cleartext_is_refused(self):
+        from tinyagentos.routes.a2a_bus import _credential_transport_is_private
+
+        # A LAN address is remote, however close it looks: only loopback is
+        # private, and "it is on my network" is not a transport guarantee.
+        assert _credential_transport_is_private("http://192.168.1.50:7900") is False
+        assert _credential_transport_is_private("http://bus.example:7900") is False
+        assert _credential_transport_is_private("http://localhost.evil:7900") is False
+
+    def test_unknown_scheme_is_refused(self):
+        from tinyagentos.routes.a2a_bus import _credential_transport_is_private
+
+        assert _credential_transport_is_private("ftp://bus.example") is False
+        assert _credential_transport_is_private("") is False
+
+
+@pytest.mark.asyncio
+class TestBusCredentialTransport:
+    """End-to-end: the message always goes, the credential only where it is safe."""
+
+    async def test_credential_withheld_from_a_remote_cleartext_bus(
+        self, bus_client, monkeypatch
+    ):
+        monkeypatch.setenv("TAOS_A2A_BUS_URL", "http://bus.example:7900")
+        cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        ctx, client = _mock_bus_post({"id": 3, "from": cid, "thread": "build"})
+        with patch(_BUS_PATCH, return_value=ctx):
+            async with _bare(bus_client._app) as bare:
+                resp = await bare.post(
+                    "/api/a2a/bus/send",
+                    json={"thread": "build", "body": "hi"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        # The message is not dropped -- a degraded attribution must not become a
+        # dead bus -- but the secret stays here...
+        assert resp.status_code == 200
+        assert client.post.call_args.kwargs["headers"] is None
+        assert client.post.call_args.kwargs["json"]["from"] == cid
+        # ...and the caller is told, because the 200 looks identical either way.
+        assert resp.json()["credential_forwarded"] is False
+
+    async def test_credential_forwarded_over_https_to_a_remote_bus(
+        self, bus_client, monkeypatch
+    ):
+        monkeypatch.setenv("TAOS_A2A_BUS_URL", "https://bus.example:7900")
+        cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        ctx, client = _mock_bus_post({"id": 4, "from": cid, "thread": "build"})
+        with patch(_BUS_PATCH, return_value=ctx):
+            async with _bare(bus_client._app) as bare:
+                resp = await bare.post(
+                    "/api/a2a/bus/send",
+                    json={"thread": "build", "body": "hi"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        assert resp.status_code == 200
+        assert client.post.call_args.kwargs["headers"] == {
+            "Authorization": f"Bearer {token}"
+        }
+        assert resp.json()["credential_forwarded"] is True
 
 
 @pytest.mark.asyncio

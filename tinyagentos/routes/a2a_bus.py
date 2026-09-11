@@ -37,6 +37,7 @@ import logging
 import math
 import os
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import httpx
 import asyncio
@@ -437,6 +438,28 @@ def _bearer_token(request: Request) -> str | None:
     return auth_header[7:].strip() or None
 
 
+def _credential_transport_is_private(bus_url: str) -> bool:
+    """True when *bus_url* can carry a registry JWT without exposing it.
+
+    A registry JWT is a bearer credential with no expiry that authorises its
+    holder as the agent until it is revoked, so it is only ever sent over a
+    transport that keeps it off the wire in the clear: HTTPS, or plain HTTP to a
+    loopback address (a local co-located bus, which is the default deployment).
+    A remote ``http://`` bus is refused as a credential destination -- the
+    message still goes (unverified, as it does today), but the secret does not.
+
+    Note the asymmetry, and that it is deliberate: an unverifiable post is a
+    degraded state, a leaked registry JWT is a compromised identity.
+    """
+    parts = urlsplit(bus_url)
+    if parts.scheme == "https":
+        return True
+    if parts.scheme != "http":
+        return False
+    host = (parts.hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "::1"} or host.startswith("127.")
+
+
 async def _resolve_send_identity(
     request: Request, body_from: str | None
 ) -> _BusIdentity:
@@ -515,6 +538,12 @@ async def bus_send(request: Request, body: BusSendBody):
     credential under a different spelling would be presenting a proof that
     cannot match its own claim.
 
+    The credential is only forwarded over a transport that keeps it private --
+    HTTPS, or loopback HTTP (the default co-located bus). A remote cleartext
+    ``http://`` bus still receives the message, but without the credential; the
+    response reports that in ``credential_forwarded`` rather than letting a 200
+    read as "the bus could verify this".
+
     Unlike the read endpoints, a bus failure surfaces as 502: a caller must know
     when its message did not land.
     """
@@ -540,14 +569,28 @@ async def bus_send(request: Request, body: BusSendBody):
     if body.reply_to is not None:
         payload["reply_to"] = body.reply_to
 
-    headers: dict[str, str] = {}
-    if identity.credential:
-        # Only ever sent to the OPERATOR-configured bus URL (`TAOS_A2A_BUS_URL`,
-        # default loopback): the credential is the caller's own, and the bus is
-        # the one service that must see it to verify the sender.
-        headers["Authorization"] = f"Bearer {identity.credential}"
-
     bus = _bus_url()
+
+    headers: dict[str, str] = {}
+    credential_forwarded = False
+    if identity.credential:
+        # The credential is the caller's own, and the bus is the one service
+        # that must see it to verify the sender -- but only over a transport
+        # that keeps it private (HTTPS, or loopback HTTP). See
+        # _credential_transport_is_private: a leaked registry JWT is a
+        # compromised identity, while an unverifiable post is merely the state
+        # every proxy send is in today.
+        if _credential_transport_is_private(bus):
+            headers["Authorization"] = f"Bearer {identity.credential}"
+            credential_forwarded = True
+        else:
+            logger.warning(
+                "A2A bus send: NOT forwarding the registry credential to %s "
+                "(cleartext http to a non-loopback host would expose it in "
+                "transit); the message will reach the bus unverified",
+                bus,
+            )
+
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
@@ -559,7 +602,15 @@ async def bus_send(request: Request, body: BusSendBody):
         logger.warning("A2A bus send failed (%s): %s", bus, exc)
         raise HTTPException(status_code=502, detail="a2a bus unavailable")
 
-    return {"ok": True, "from": identity.from_handle, "message": data}
+    # Report the attribution state rather than leaving the caller to assume it:
+    # a send whose credential was withheld lands exactly like an authenticated
+    # one, and "it returned 200" is not evidence that the bus could verify it.
+    return {
+        "ok": True,
+        "from": identity.from_handle,
+        "credential_forwarded": credential_forwarded,
+        "message": data,
+    }
 
 
 @router.post("/api/a2a/bus/human-assertion")
