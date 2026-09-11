@@ -1,0 +1,3 @@
+### Fixed
+
+- `_get_owned_project` in `tinyagentos/routes/projects.py:586`: restored status split — returns 403 when the project exists and the caller is neither owner nor admin, and 404 only when no such project exists. This fixes three ownership tests (`test_non_owner_update_returns_403`, `test_non_owner_delete_returns_403`, `test_non_owner_archive_returns_403`) that were incorrectly asserting 403 but receiving 404.

@@ -591,7 +591,7 @@ async def _get_owned_project(
     if p is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     if not user.is_admin and user.user_id != p["user_id"]:
-        return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse({"error": "not found"}, status_code=403)
     return p
 
 
