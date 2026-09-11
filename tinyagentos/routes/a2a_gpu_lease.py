@@ -419,9 +419,31 @@ def _lease_for_actor(cluster, resource_id: str, actor: _Actor):
     existing = cluster.find_existing_lease(resource_id)
     if existing is None:
         return None
-    caller = f"a2a:{actor.identity}"
-    if existing.caller == caller or existing.caller == f"a2a:{actor.holder}":
+    if _lease_owned_by(existing, actor):
         return existing
+    return None
+
+
+def _lease_owned_by(lease, actor: _Actor) -> bool:
+    """True when *lease* was taken by *actor*.
+
+    Strict caller match: the node-scoped release/renew paths must not let an
+    admin's session free a lease it did not take (that is what the explicit-id
+    paths and the cluster lease API are for).
+    """
+    return lease.caller in (f"a2a:{actor.identity}", f"a2a:{actor.holder}")
+
+
+def _may_act_on(lease, actor: _Actor) -> bool:
+    """Ownership for an EXPLICIT lease id: the holder, or an operator."""
+    return _lease_owned_by(lease, actor) or actor.is_admin
+
+
+def _find_lease(cluster, lease_id: str):
+    """Look up an active lease by id, or None."""
+    for lease in cluster.get_leases():
+        if lease.lease_id == lease_id:
+            return lease
     return None
 
 
@@ -440,10 +462,22 @@ async def gpu_check(request: Request):
     node = (request.query_params.get("node") or "").strip()
     if not node:
         return JSONResponse({"error": "node required"}, status_code=400)
-    required_mb = _resolve_vram_mb(
-        None,
-        request.query_params.get("vram_mb") or request.query_params.get("vram"),
-    )
+    # A figure that cannot be parsed must be a 400, not a silent 0: a CHECK that
+    # quietly downgrades to "how many claims are open" is indistinguishable from
+    # one that checked the VRAM, which is the failure mode this surface exists
+    # to remove.
+    raw_vram = request.query_params.get("vram_mb") or request.query_params.get("vram")
+    required_mb = _resolve_vram_mb(None, raw_vram)
+    if raw_vram is not None and required_mb is None:
+        return JSONResponse(
+            {
+                "error": (
+                    "vram_mb must be an integer number of MiB "
+                    "(or use vram='~6gb')"
+                )
+            },
+            status_code=400,
+        )
     channel = (request.query_params.get("channel") or "").strip() or _channel()
     resource = (request.query_params.get("resource") or _DEFAULT_RESOURCE).strip()
     body, _claims = await _check_node(
@@ -573,7 +607,19 @@ async def gpu_release(request: Request, body: ReleaseBody):
     cluster = getattr(request.app.state, "cluster_manager", None)
     released_id = body.lease_id
     if cluster is not None:
-        if released_id is None:
+        if released_id is not None:
+            # A caller-supplied id must belong to the caller: releasing another
+            # holder's lease (and posting the RELEASE that clears its bus claim)
+            # would hand any agent with a2a_send the power to free someone
+            # else's GPU. An id that names no ACTIVE lease is a no-op (it has
+            # already expired), so it falls through to the idempotent post.
+            lease = _find_lease(cluster, released_id)
+            if lease is not None and not _may_act_on(lease, actor):
+                return JSONResponse(
+                    {"error": "not the lease holder", "lease_id": released_id},
+                    status_code=403,
+                )
+        else:
             lease = _lease_for_actor(cluster, _resource_id(node, body.resource), actor)
             released_id = lease.lease_id if lease is not None else None
         if released_id is not None:
@@ -631,14 +677,22 @@ async def gpu_renew(request: Request, body: RenewBody):
     cluster = getattr(request.app.state, "cluster_manager", None)
     if cluster is None:
         return JSONResponse({"error": "cluster manager unavailable"}, status_code=503)
+    # Ownership is checked BEFORE the renewal: renewing first and rejecting
+    # afterwards would already have extended another holder's lease.
+    existing = _find_lease(cluster, body.lease_id)
+    if existing is None:
+        return JSONResponse(
+            {"error": "lease not found or expired", "lease_id": body.lease_id},
+            status_code=409,
+        )
+    if not _may_act_on(existing, actor):
+        return JSONResponse({"error": "not the lease holder"}, status_code=403)
     lease = await cluster.renew_lease(body.lease_id, ttl_seconds=float(body.ttl_seconds))
     if lease is None:
         return JSONResponse(
             {"error": "lease not found or expired", "lease_id": body.lease_id},
             status_code=409,
         )
-    if lease.caller not in (f"a2a:{actor.identity}", f"a2a:{actor.holder}") and not actor.is_admin:
-        return JSONResponse({"error": "not the lease holder"}, status_code=403)
     return {
         "status": "renewed",
         "lease_id": lease.lease_id,

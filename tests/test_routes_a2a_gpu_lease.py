@@ -209,6 +209,12 @@ class TestCheck:
         assert resp.status_code == 400
         assert bus.sends == []
 
+    async def test_unparseable_vram_is_400_not_a_silent_zero(self, lease_client, bus):
+        resp = await lease_client.get(
+            "/api/a2a/gpu/check", params={"node": "local", "vram": "six gigabytes"}
+        )
+        assert resp.status_code == 400
+
     async def test_free_node_is_admitted(self, lease_client, bus, local_vram):
         local_vram(9000)
         resp = await lease_client.get(
@@ -400,7 +406,8 @@ class TestClusterLeaseIntegration:
     async def test_release_does_not_free_another_holders_lease(
         self, lease_client, bus, cluster
     ):
-        # A lease taken by the scheduler (not by this A2A caller) must survive.
+        # The node-scoped release frees only the caller's OWN claim; a lease
+        # taken by the scheduler (not by this A2A caller) must survive.
         foreign = await cluster.claim_lease(
             "linstation:gpu-cuda-0", caller="skald-dispatcher", ttl_seconds=300
         )
@@ -411,6 +418,21 @@ class TestClusterLeaseIntegration:
         assert resp.status_code == 200
         assert resp.json()["lease_id"] is None
         assert [l.lease_id for l in cluster.get_leases()] == [foreign.lease_id]
+
+    async def test_admin_may_release_an_explicit_lease_id(
+        self, lease_client, bus, cluster
+    ):
+        # Operator override, mirroring POST /api/cluster/leases/release.
+        foreign = await cluster.claim_lease(
+            "linstation:gpu-cuda-0", caller="skald-dispatcher", ttl_seconds=300
+        )
+        assert foreign is not None
+        resp = await lease_client.post(
+            "/api/a2a/gpu/release",
+            json={"node": "linstation", "lease_id": foreign.lease_id},
+        )
+        assert resp.status_code == 200
+        assert cluster.get_leases() == []
 
     async def test_reclaiming_extends_rather_than_conflicts(self, lease_client, bus, cluster):
         first = await lease_client.post(
@@ -602,3 +624,60 @@ class TestAgentToken:
                 "/api/cluster/leases", headers={"Authorization": f"Bearer {token}"}
             )
         assert resp.status_code in (401, 403)
+
+    async def test_agent_releases_its_own_lease(self, lease_client, bus, cluster):
+        cid, token = await _agent_token(lease_client._app, scopes=("a2a_send",))
+        async with _bare(lease_client._app) as bare:
+            claimed = await bare.post(
+                "/api/a2a/gpu/claim",
+                json={"node": "linstation", "vram_mb": 4096},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert claimed.status_code == 200
+        lease_id = claimed.json()["lease_id"]
+        assert lease_id is not None
+        async with _bare(lease_client._app) as bare:
+            released = await bare.post(
+                "/api/a2a/gpu/release",
+                json={"node": "linstation", "lease_id": lease_id},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert released.status_code == 200
+        assert cluster.get_leases() == []
+
+    async def test_agent_cannot_release_another_holders_lease(
+        self, lease_client, bus, cluster
+    ):
+        foreign = await cluster.claim_lease(
+            "linstation:gpu-cuda-0", caller="skald-dispatcher", ttl_seconds=300
+        )
+        assert foreign is not None
+        _cid, token = await _agent_token(lease_client._app, scopes=("a2a_send",))
+        async with _bare(lease_client._app) as bare:
+            resp = await bare.post(
+                "/api/a2a/gpu/release",
+                json={"node": "linstation", "lease_id": foreign.lease_id},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 403
+        assert [l.lease_id for l in cluster.get_leases()] == [foreign.lease_id]
+        assert bus.sends == []  # and no [GPU RELEASE] line clears the peer claim
+
+    async def test_agent_cannot_renew_another_holders_lease(
+        self, lease_client, bus, cluster
+    ):
+        foreign = await cluster.claim_lease(
+            "linstation:gpu-cuda-0", caller="skald-dispatcher", ttl_seconds=300
+        )
+        assert foreign is not None
+        before = cluster.get_leases()[0].expires_at
+        _cid, token = await _agent_token(lease_client._app, scopes=("a2a_send",))
+        async with _bare(lease_client._app) as bare:
+            resp = await bare.post(
+                "/api/a2a/gpu/renew",
+                json={"lease_id": foreign.lease_id, "ttl_seconds": 6000},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 403
+        # The rejection must not have extended the lease first.
+        assert cluster.get_leases()[0].expires_at == before
