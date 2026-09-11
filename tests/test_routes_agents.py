@@ -2153,3 +2153,284 @@ class TestDeployDeferredModelsSelfHeal:
         assert resp.status_code == 409
         data = resp.json()
         assert "deferred" in data["error"].lower() or "download" in data["error"].lower()
+
+    async def test_concurrent_deploys_share_single_run_setup(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """Two concurrent deploys against a deferred default must attach to
+        the same in-flight _run_setup task and never start a duplicate pull."""
+        import asyncio
+        import json
+        from unittest.mock import patch
+
+        default_data = {
+            "device_id": "local",
+            "tier_id": "standard",
+            "tier_name": "Standard",
+            "models_skipped": True,
+        }
+        (tmp_data_dir / "taosmd_default.json").write_text(json.dumps(default_data))
+
+        class _FakeCatalog:
+            def all_models(self, capability=None):
+                return [{"name": "test-model", "id": "test-model"}]
+
+        app.state.backend_catalog = _FakeCatalog()
+        app.state.cluster_manager._workers.clear()
+
+        setup_call_count = 0
+        setup_event = asyncio.Event()
+
+        async def fake_run_setup(tasks, task_id, *args, **kwargs):
+            nonlocal setup_call_count
+            setup_call_count += 1
+            tasks[task_id] = {
+                "state": "downloading",
+                "progress_pct": 0,
+                "message": "Downloading…",
+                "error": None,
+            }
+            await setup_event.wait()
+            tasks[task_id] = {
+                "state": "done",
+                "progress_pct": 100,
+                "message": "Memory layer ready.",
+                "error": None,
+            }
+
+        async def fake_deploy(req):
+            return {"success": True, "name": req.name, "ip": "10.0.0.42",
+                    "llm_key": "sk-test", "steps": ["deployment_complete"],
+                    "container": f"taos-agent-{req.name}"}
+
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+
+        with patch("tinyagentos.routes.taosmd._run_setup", fake_run_setup):
+            resp_a = await client.post("/api/agents/deploy", json={
+                "name": "concurrent-a",
+                "framework": "none",
+                "model": "test-model",
+                "memory_plugin": "taosmd",
+                "memory_config": None,
+            })
+            resp_b = await client.post("/api/agents/deploy", json={
+                "name": "concurrent-b",
+                "framework": "none",
+                "model": "test-model",
+                "memory_plugin": "taosmd",
+                "memory_config": None,
+            })
+            assert resp_a.status_code == 200
+            assert resp_b.status_code == 200
+            assert setup_call_count == 1
+
+            setup_event.set()
+            await asyncio.sleep(1.0)
+
+            for name in ("concurrent-a", "concurrent-b"):
+                detail = await client.get(f"/api/agents/{name}")
+                assert detail.status_code == 200
+                assert detail.json().get("status") == "running"
+
+    async def test_advancing_progress_avoids_timeout(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """A pull that keeps advancing progress_pct past 300 simulated seconds
+        must not mark the deploy failed."""
+        import asyncio
+        import json
+        from unittest.mock import patch
+
+        default_data = {
+            "device_id": "local",
+            "tier_id": "standard",
+            "tier_name": "Standard",
+            "models_skipped": True,
+        }
+        (tmp_data_dir / "taosmd_default.json").write_text(json.dumps(default_data))
+
+        class _FakeCatalog:
+            def all_models(self, capability=None):
+                return [{"name": "test-model", "id": "test-model"}]
+
+        app.state.backend_catalog = _FakeCatalog()
+        app.state.cluster_manager._workers.clear()
+
+        async def fake_deploy(req):
+            return {"success": True, "name": req.name, "ip": "10.0.0.42",
+                    "llm_key": "sk-test", "steps": ["deployment_complete"],
+                    "container": f"taos-agent-{req.name}"}
+
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+
+        _original_sleep = asyncio.sleep
+        sleep_calls = []
+
+        async def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+            await _original_sleep(0)
+
+        async def fake_run_setup(tasks, task_id, *args, **kwargs):
+            for i in range(600):
+                if i % 50 == 0:
+                    tasks[task_id] = {
+                        "state": "downloading",
+                        "progress_pct": min(99, i // 6),
+                        "message": f"Downloading model {min(99, i // 6)}%",
+                        "error": None,
+                    }
+                await _original_sleep(0)
+            tasks[task_id] = {
+                "state": "done",
+                "progress_pct": 100,
+                "message": "Memory layer ready.",
+                "error": None,
+            }
+
+        with patch("tinyagentos.routes.taosmd._run_setup", fake_run_setup):
+            with patch("asyncio.sleep", fake_sleep):
+                resp = await client.post("/api/agents/deploy", json={
+                    "name": "advancing-progress",
+                    "framework": "none",
+                    "model": "test-model",
+                    "memory_plugin": "taosmd",
+                    "memory_config": None,
+                })
+                assert resp.status_code == 200
+
+                for _ in range(300):
+                    await asyncio.sleep(1.0)
+
+                detail = await client.get("/api/agents/advancing-progress")
+                assert detail.status_code == 200
+                assert detail.json().get("status") != "failed"
+                deploy_status = app.state.deploy_tasks.get("advancing-progress", {}).get("status")
+                assert deploy_status != "failed"
+                setup_task = app.state.taosmd_setup_tasks.get(
+                    next(iter(app.state.taosmd_setup_tasks))
+                )
+                assert setup_task is not None
+                assert setup_task.get("progress_pct", 0) > 0
+                assert len(sleep_calls) > 300
+                assert len(sleep_calls) > 300
+
+    async def test_deploy_clears_models_skipped_on_success(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """When _run_setup marks the deferred task done, the deploy must clear
+        models_skipped in taosmd_default.json so future deploys don't start
+        another pull."""
+        import asyncio
+        import json
+        from unittest.mock import patch
+
+        default_data = {
+            "device_id": "local",
+            "tier_id": "standard",
+            "tier_name": "Standard",
+            "models_skipped": True,
+        }
+        (tmp_data_dir / "taosmd_default.json").write_text(json.dumps(default_data))
+
+        class _FakeCatalog:
+            def all_models(self, capability=None):
+                return [{"name": "test-model", "id": "test-model"}]
+
+        app.state.backend_catalog = _FakeCatalog()
+        app.state.cluster_manager._workers.clear()
+
+        async def fake_run_setup(tasks, task_id, *args, **kwargs):
+            tasks[task_id] = {
+                "state": "done",
+                "progress_pct": 100,
+                "message": "Memory layer ready.",
+                "error": None,
+            }
+
+        async def fake_deploy(req):
+            return {"success": True, "name": req.name, "ip": "10.0.0.42",
+                    "llm_key": "sk-test", "steps": ["deployment_complete"],
+                    "container": f"taos-agent-{req.name}"}
+
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+
+        with patch("tinyagentos.routes.taosmd._run_setup", fake_run_setup):
+            resp = await client.post("/api/agents/deploy", json={
+                "name": "models-skipped-cleared",
+                "framework": "none",
+                "model": "test-model",
+                "memory_plugin": "taosmd",
+                "memory_config": None,
+            })
+            assert resp.status_code == 200
+            await asyncio.sleep(0.2)
+
+        default_after = json.loads((tmp_data_dir / "taosmd_default.json").read_text())
+        assert default_after.get("models_skipped") is False
+
+    async def test_stall_guard_preserves_selfheal_task_id(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """When progress stalls for 600 simulated seconds and the deploy fails,
+        taosmd_selfheal_task_id must remain the original task id so a retry
+        re-attaches instead of starting a duplicate pull."""
+        import asyncio
+        import json
+        from unittest.mock import patch
+
+        default_data = {
+            "device_id": "local",
+            "tier_id": "standard",
+            "tier_name": "Standard",
+            "models_skipped": True,
+        }
+        (tmp_data_dir / "taosmd_default.json").write_text(json.dumps(default_data))
+
+        class _FakeCatalog:
+            def all_models(self, capability=None):
+                return [{"name": "test-model", "id": "test-model"}]
+
+        app.state.backend_catalog = _FakeCatalog()
+        app.state.cluster_manager._workers.clear()
+
+        captured_task_id = None
+
+        async def fake_run_setup(tasks, task_id, *args, **kwargs):
+            nonlocal captured_task_id
+            captured_task_id = task_id
+            tasks[task_id] = {
+                "state": "running",
+                "progress_pct": 0,
+                "message": "Starting…",
+                "error": None,
+            }
+
+        async def fake_deploy(req):
+            return {"success": True, "name": req.name, "ip": "10.0.0.42",
+                    "llm_key": "sk-test", "steps": ["deployment_complete"],
+                    "container": f"taos-agent-{req.name}"}
+
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+
+        _original_sleep = asyncio.sleep
+        sleep_calls = []
+
+        async def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+            await _original_sleep(0)
+
+        with patch("tinyagentos.routes.taosmd._run_setup", fake_run_setup):
+            with patch("asyncio.sleep", fake_sleep):
+                resp = await client.post("/api/agents/deploy", json={
+                    "name": "stall-guard",
+                    "framework": "none",
+                    "model": "test-model",
+                    "memory_plugin": "taosmd",
+                    "memory_config": None,
+                })
+                assert resp.status_code == 200
+                for _ in range(600):
+                    await asyncio.sleep(1.0)
+
+        assert captured_task_id is not None
+        assert app.state.taosmd_selfheal_task_id == captured_task_id
