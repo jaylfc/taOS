@@ -737,6 +737,7 @@ async def list_invites(
             "status": i["status"],
             "expires_ts": i["expires_ts"],
             "redeemed_by": i.get("redeemed_by"),
+            "kind": i.get("kind", "agent"),
         }
         for i in items
     ]
