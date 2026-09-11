@@ -46,6 +46,19 @@ CREATE INDEX IF NOT EXISTS idx_decisions_user ON decisions(user_id, status);
 
 _JSON_FIELDS = ("options", "answer", "metadata")
 
+# Gate decision kinds whose approval carries a privileged grant side effect.
+# Must stay in sync with the four ``_apply_*_grant`` handlers in
+# routes/decisions.py (execution_gate, delegation_gate, device_pairing,
+# app_grant).  NOTE this is intentionally NOT routes.decisions.GATE_DECISION_KINDS
+# — that tuple omits ``device_pairing`` (it names only the kinds a device bearer
+# or the asking agent may not answer); the backfill below has to cover all four
+# guarded handlers, so ``device_pairing`` is listed here explicitly.
+GATE_GRANT_KINDS = ("execution_gate", "delegation_gate", "device_pairing", "app_grant")
+# Marker literal (must stay == routes.decisions.SERVER_RAISED_KEY).  Defined
+# here too because decision_store cannot import from routes (circular); the
+# backfill stamps legacy rows and needs the exact key string.
+SERVER_RAISED_KEY = "_server_raised"
+
 # Sentinel for "argument not supplied" -- distinguished from an explicit None,
 # which means "match NULL project_id" (IS NULL) rather than "no filter".
 # A bare ``project_id = ?`` with a NULL parameter matches nothing in SQL, so
@@ -77,6 +90,40 @@ class DecisionStore(BaseStore):
         if "metadata" not in cols:
             await self._db.execute(
                 "ALTER TABLE decisions ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
+            )
+            await self._db.commit()
+
+        # tsk-mul5pa upgrade backfill: gate decisions persisted before the
+        # server-stamped provenance marker landed have no `_server_raised` key,
+        # so approving them after upgrade would hit the new early-return in every
+        # _apply_*_grant and silently no-op.  Stamp the marker onto pre-existing
+        # PENDING rows whose kind is a guarded gate (all four, incl. device_pairing
+        # which GATE_DECISION_KINDS omits); answered/superseded rows are inert and
+        # left alone.  Bounded to pending so the window closes at upgrade: nothing
+        # created through the public route after deploy can ever be stamped.  Runs
+        # once, idempotent (an already-stamped row is skipped), and cheap.
+        rows = await (
+            await self._db.execute(
+                "SELECT id, metadata FROM decisions WHERE status = 'pending'"
+            )
+        ).fetchall()
+        to_stamp = []
+        for decision_id, metadata_json in rows:
+            try:
+                meta = json.loads(metadata_json) if metadata_json else {}
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(meta, dict):
+                continue
+            if meta.get(SERVER_RAISED_KEY) is True:
+                continue
+            if meta.get("kind") not in GATE_GRANT_KINDS:
+                continue
+            meta[SERVER_RAISED_KEY] = True
+            to_stamp.append((json.dumps(meta), decision_id))
+        if to_stamp:
+            await self._db.executemany(
+                "UPDATE decisions SET metadata = ? WHERE id = ?", to_stamp
             )
             await self._db.commit()
 

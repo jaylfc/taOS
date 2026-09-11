@@ -72,6 +72,15 @@ def _decision_body(**over):
     return body
 
 
+def _admin_id(app) -> str:
+    """Primary admin user id (mirrors device_pair_requests._admin_user_id)."""
+    users = app.state.auth.list_users()
+    for u in users:
+        if u.get("is_admin"):
+            return u.get("id") or ""
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # execution_gate — primary proven pair (jaylfc: "execution_gate is the cheapest")
 # ---------------------------------------------------------------------------
@@ -201,3 +210,199 @@ async def test_server_raised_app_grant_still_mints_on_approval(client):
     grants = app.state.app_grants
     granted = await grants.granted_capabilities(owner_uid, "testapp")
     assert "net" in granted
+
+
+# ---------------------------------------------------------------------------
+# delegation_gate — third guarded handler (jayvfc finding 2: no test at all)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_api_created_delegation_gate_metadata_mints_nothing(client):
+    """An agent-posted card carrying delegation_gate metadata must mint no
+    delegate grant (and complete no delegation) when a human approves it."""
+    app = client._transport.app
+    pid = await _new_project(client)
+    cid, token = await _mint_agent(app, pid, ("decisions_write",))
+
+    body = _decision_body(
+        project_id=pid,
+        type="approve_deny",
+        metadata={"kind": "delegation_gate", "from_agent": cid,
+                  "to_agent": "to-agent", "task_title": "handoff", "note": ""},
+    )
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/decisions", json=body)
+    assert resp.status_code == 200, resp.text
+    did = resp.json()["id"]
+
+    resp = await client.post(f"/api/decisions/{did}/answer", json={"value": "approve"})
+    assert resp.status_code == 200, resp.text
+
+    policies = app.state.execution_policies
+    assert await policies.has_live_grant(cid, "delegate") is False
+
+
+@pytest.mark.asyncio
+async def test_server_raised_delegation_gate_still_delegates_on_approval(client):
+    """The legitimate internal path (delegation-gate raiser) stamps provenance
+    and MUST still complete the delegation + mint the delegate grant."""
+    app = client._transport.app
+    pid = await _new_project(client)
+
+    decision = await app.state.decision_store.create(
+        from_agent="from-agent",
+        question="Agent from-agent wants to delegate to to-agent",
+        type="approve_deny",
+        priority="blocking",
+        project_id=pid,
+        metadata={
+            SERVER_RAISED_KEY: True,
+            "kind": "delegation_gate",
+            "from_agent": "from-agent",
+            "to_agent": "to-agent",
+            "task_title": "handoff",
+            "note": "",
+        },
+    )
+
+    resp = await client.post(
+        f"/api/decisions/{decision['id']}/answer", json={"value": "approve"}
+    )
+    assert resp.status_code == 200, resp.text
+
+    policies = app.state.execution_policies
+    assert await policies.has_live_grant("from-agent", "delegate") is True
+
+
+# ---------------------------------------------------------------------------
+# device_pairing — fourth guarded handler (jayvfc #2)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_api_created_device_pairing_metadata_mints_nothing(client, app):
+    """An agent-posted card carrying device_pairing metadata must mint no
+    device and leave the pair request pending when a human approves it."""
+    # A real pending pair request so the control can prove the mint in the
+    # counterpart test; this row must stay pending because the guard refuses.
+    req = await app.state.device_pair_requests.create(
+        platform="ios", display_name="My Phone"
+    )
+    pair_request_id = req["id"]
+
+    pid = await _new_project(client)
+    cid, token = await _mint_agent(app, pid, ("decisions_write",))
+
+    body = _decision_body(
+        project_id=pid,
+        type="approve_deny",
+        metadata={"kind": "device_pairing", "pair_request_id": pair_request_id},
+    )
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/decisions", json=body)
+    assert resp.status_code == 200, resp.text
+    did = resp.json()["id"]
+
+    resp = await client.post(f"/api/decisions/{did}/answer", json={"value": "approve"})
+    assert resp.status_code == 200, resp.text
+
+    still = await app.state.device_pair_requests.get(pair_request_id)
+    assert still["status"] == "pending"
+    # No device was minted for the deciding user.
+    rec = await app.state.decision_store.get(did)
+    assert await app.state.device_store.list_for_user(rec["user_id"]) == []
+
+
+@pytest.mark.asyncio
+async def test_server_raised_device_pairing_still_mints_on_approval(client, app):
+    """The legitimate device-pairing raiser stamps provenance and MUST still
+    mint the device + mark the pair request accepted on approval."""
+    req = await app.state.device_pair_requests.create(
+        platform="ios", display_name="My Phone"
+    )
+    pair_request_id = req["id"]
+
+    admin = _admin_id(app)
+    decision = await app.state.decision_store.create(
+        from_agent="@taOSc",
+        question="taOSc on 'My Phone' wants to connect. Allow?",
+        type="approve_deny",
+        priority="blocking",
+        user_id=admin,
+        metadata={
+            SERVER_RAISED_KEY: True,
+            "kind": "device_pairing",
+            "pair_request_id": pair_request_id,
+        },
+    )
+
+    resp = await client.post(
+        f"/api/decisions/{decision['id']}/answer", json={"value": "approve"}
+    )
+    assert resp.status_code == 200, resp.text
+
+    decided = await app.state.device_pair_requests.get(pair_request_id)
+    assert decided["status"] == "accepted"
+    devices = await app.state.device_store.list_for_user(decision["user_id"])
+    assert len(devices) == 1
+
+
+# ---------------------------------------------------------------------------
+# Upgrade backfill — a legacy pending gate row (no marker) must still mint
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_backfill_stamps_legacy_pending_device_pairing_row(client, app):
+    """tsk-mul5pa finding (1): a device_pairing decision persisted BEFORE the
+    marker landed (metadata has no `_server_raised`) is stamped by _post_init,
+    so an approval after upgrade still completes the pairing."""
+    req = await app.state.device_pair_requests.create(
+        platform="ios", display_name="My Phone"
+    )
+    pair_request_id = req["id"]
+    admin = _admin_id(app)
+
+    # Seed the legacy shape directly: pending, gate kind, marker absent.
+    decision = await app.state.decision_store.create(
+        from_agent="@taOSc",
+        question="taOSc on 'My Phone' wants to connect. Allow?",
+        type="approve_deny",
+        priority="blocking",
+        user_id=admin,
+        metadata={"kind": "device_pairing", "pair_request_id": pair_request_id},
+    )
+
+    # Re-run _post_init to exercise the backfill (the fixture already ran init
+    # before this row existed).
+    await app.state.decision_store._post_init()
+
+    stamped = await app.state.decision_store.get(decision["id"])
+    assert stamped["metadata"].get(SERVER_RAISED_KEY) is True
+
+    resp = await client.post(
+        f"/api/decisions/{decision['id']}/answer", json={"value": "approve"}
+    )
+    assert resp.status_code == 200, resp.text
+
+    decided = await app.state.device_pair_requests.get(pair_request_id)
+    assert decided["status"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_backfill_leaves_non_gate_pending_row_unstamped(client):
+    """Control for the backfill: a pending row whose kind is NOT a guarded gate
+    must NOT be stamped."""
+    app = client._transport.app
+    pid = await _new_project(client)
+    decision = await app.state.decision_store.create(
+        from_agent="someone",
+        question="plain note",
+        type="approve_deny",
+        priority="blocking",
+        project_id=pid,
+        metadata={"kind": "customer_feedback"},
+    )
+
+    await app.state.decision_store._post_init()
+
+    row = await app.state.decision_store.get(decision["id"])
+    assert row["metadata"].get(SERVER_RAISED_KEY) is None
