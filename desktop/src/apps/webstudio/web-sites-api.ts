@@ -47,3 +47,38 @@ export async function fetchSitePackage(id: string): Promise<File> {
   const blob = await res.blob();
   return new File([blob], `${id}.taosapp`, { type: "application/zip" });
 }
+
+export function sitePublishUrl(id: string): string {
+  return `/api/web/sites/${encodeURIComponent(id)}/publish`;
+}
+
+/** Publish a site to a claimed taOSgo subdomain. The controller fills in the
+ *  host_id + port from its own mesh credentials; the desktop only supplies the
+ *  chosen subdomain and an optional label. */
+export async function publishSite(
+  id: string,
+  subdomain: string,
+  label?: string,
+): Promise<{ fqdn: string }> {
+  const res = await fetch(sitePublishUrl(id), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ subdomain, label }),
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(await readError(res));
+  return res.json();
+}
+
+export function siteUnpublishUrl(id: string): string {
+  return `/api/web/sites/${encodeURIComponent(id)}/publish`;
+}
+
+/** Unpublish a previously published site (drops the binding; the claim survives). */
+export async function unpublishSite(id: string): Promise<void> {
+  const res = await fetch(siteUnpublishUrl(id), {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(await readError(res));
+}
