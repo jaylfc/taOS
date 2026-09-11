@@ -170,13 +170,15 @@ async def check_agent_scope(request: Request, required_scope: str) -> Optional[s
     active *required_scope* grant, or raise an HTTPException.
 
     Returns None when no Authorization header is present (the caller falls
-    through to its own admin/session handling).
+    through to its own admin/session handling), or when a valid human-principal
+    token is presented (``principal_type == "human"`` short-circuits here so a
+    human token never reaches the agent-registry check).
 
     Raises:
       401 -- Authorization header present but the token is malformed, has a bad
-             signature, or is missing the sub claim.
+            signature, or is missing the sub claim.
       403 -- Token is valid but the agent is not active in the registry, the
-             sub is unknown, or the grant is missing/expired.
+            sub is unknown, or the grant is missing/expired.
     """
     result = await _verify_agent_scope(request, required_scope)
     if result is None:
@@ -301,7 +303,9 @@ async def check_agent_scope_for_project(
     been granted, and is rejected for any project it lacks a grant for.  See
     the grant-gated model in docs/agent-coordination.md.
 
-    Returns None when no Authorization header is present.
+    Returns None when no Authorization header is present, or when a valid
+    human-principal token is presented (``principal_type == "human"``
+    short-circuits via ``_verify_agent_scope``).
 
     Raises:
       401/403 -- exactly as ``check_agent_scope`` (bad token / inactive agent /
@@ -345,7 +349,9 @@ async def check_agent_project_grants(
 
     Returns ``(canonical_id, {project_id: grant})``, or ``(None, {})`` when no
     Authorization header is present (the caller falls through to its own
-    session/admin handling).
+    session/admin handling), or when a valid human-principal token is presented
+    (``principal_type == "human"`` short-circuits here, matching
+    ``check_agent_scope``).
 
     Raises:
       401/403 -- exactly as ``check_agent_scope`` (bad/inactive/superseded token).
@@ -371,6 +377,10 @@ async def check_agent_project_grants(
         raise HTTPException(status_code=403, detail="agent is not active in the registry")
 
     _enforce_rotation_cutoff(record, payload)
+
+    principal_type = payload.get("principal_type", "")
+    if principal_type == "human":
+        return None, {}
 
     grants_store = _get_grants_store(request)
     grants = await grants_store.list_grants(canonical_id)

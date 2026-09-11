@@ -55,6 +55,16 @@ def _bus_url() -> str:
     return os.environ.get("TAOS_A2A_BUS_URL", _DEFAULT_BUS_URL).rstrip("/")
 
 
+def _sanitise_handle(handle: str) -> str:
+    """Strip non-printable characters and cap at 64 characters.
+
+    Shared by the admin and human branches of ``_resolve_send_identity`` so
+    the two paths cannot drift apart: a handle carrying a newline or control
+    character cannot inject into bus records or log lines.
+    """
+    return "".join(c for c in handle if c.isprintable())[:64].strip()
+
+
 async def _authorize_bus_read(request: Request) -> None:
     """Gate a bus-read request.
 
@@ -410,8 +420,7 @@ async def _resolve_send_identity(request: Request, body_from: str | None) -> str
       rejected here as 403 (fail closed).
     """
     if getattr(request.state, "is_admin", False):
-        handle = (body_from or "").strip()
-        handle = "".join(c for c in handle if c.isprintable())[:64].strip()
+        handle = _sanitise_handle(body_from or "")
         return handle or "@operator"
 
     caller = await check_agent_scope(request, "a2a_send")
@@ -430,7 +439,8 @@ async def _resolve_send_identity(request: Request, body_from: str | None) -> str
         username = ((user or {}).get("username") or "").strip()
         if not username:
             raise HTTPException(status_code=403, detail="human has no username")
-        return f"@{username}"
+        handle = _sanitise_handle(f"@{username}")
+        return handle
 
     raise HTTPException(status_code=403, detail="forbidden")
 

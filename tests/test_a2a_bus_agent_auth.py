@@ -8,6 +8,7 @@ skeleton-key guard (the agent token must not authenticate any other route).
 from __future__ import annotations
 
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,6 +23,7 @@ from tinyagentos.agent_registry_store import (
     load_or_create_signing_keypair,
     mint_registry_token,
 )
+from tinyagentos.auth import hash_password
 from taos_test_csrf import csrf_event_hooks
 
 _BUS_PATCH = "tinyagentos.routes.a2a_bus.httpx.AsyncClient"
@@ -475,6 +477,51 @@ class TestBusHumanAuth:
         assert resp.json()["from"] == "@admin"
         sent = client.post.call_args.kwargs["json"]
         assert sent["from"] == "@admin"
+
+    async def test_human_handle_is_sanitised(self, bus_client):
+        """The human branch strips non-printable characters and caps the derived
+        @<username> at 64 chars, matching the admin branch's sanitisation."""
+        malicious_username = "evil\n\x00injected"
+        user_id = "test-malicious-user"
+
+        data = bus_client._app.state.auth._read_users()
+        data.setdefault("users", []).append({
+            "id": user_id,
+            "username": malicious_username,
+            "password_hash": hash_password("testpass1234"),
+            "is_admin": False,
+            "created_at": int(time.time()),
+        })
+        bus_client._app.state.auth._write_users(data)
+
+        session = bus_client._app.state.auth.create_session(
+            user_id=user_id, long_lived=True
+        )
+
+        bare_client = AsyncClient(
+            transport=ASGITransport(app=bus_client._app),
+            base_url="http://test",
+            cookies={"taos_session": session},
+            event_hooks=csrf_event_hooks(),
+        )
+        async with bare_client as bare:
+            resp = await bare.post("/api/a2a/bus/human-assertion")
+        assert resp.status_code == 200
+        token = resp.json()["assertion"]
+
+        ctx, client = _mock_bus_post({"id": 1, "from": "@x", "thread": "general"})
+        with patch(_BUS_PATCH, return_value=ctx):
+            async with _bare(bus_client._app) as bare:
+                resp = await bare.post(
+                    "/api/a2a/bus/send",
+                    json={"thread": "general", "body": "hello"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        assert resp.status_code == 200
+        sent_from = client.post.call_args.kwargs["json"]["from"]
+        assert "\n" not in sent_from
+        assert "\x00" not in sent_from
+        assert len(sent_from) <= 64
 
     async def test_human_send_rejects_malformed_token(self, bus_client):
         """A malformed Bearer token on /send returns 401."""
