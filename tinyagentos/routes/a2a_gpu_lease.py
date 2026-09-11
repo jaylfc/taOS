@@ -50,7 +50,7 @@ from dataclasses import dataclass
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tinyagentos.agent_token_auth import check_agent_scope
 from tinyagentos.gpu_lease import (
@@ -84,6 +84,12 @@ _CHANNEL_LIMIT = 500
 # Default lease TTL. Long enough for a model load to start and renew; short
 # enough that a crashed holder stops blocking the node (issue: advisory keep-alive).
 _DEFAULT_TTL_SECONDS = 300.0
+
+# Upper bound on a caller-supplied TTL. Without it an authenticated agent could
+# take the shared GPU with `ttl_seconds: 1e9` and remove the auto-expiry the
+# whole mechanism rests on. A longer load is kept alive by renewing, not by one
+# enormous lease.
+MAX_LEASE_TTL_SECONDS = 3600.0
 
 
 def _channel() -> str:
@@ -138,12 +144,30 @@ async def _resolve_actor(
     return _Actor(identity=caller, holder=handle, credential=_bearer_token(request))
 
 
-async def _read_channel(channel: str) -> list[dict]:
-    """Fetch the channel's messages oldest-first. Raises on an unreadable bus."""
+async def _read_channel(channel: str, actor: _Actor) -> list[dict]:
+    """Fetch the channel's messages oldest-first. Raises on an unreadable bus.
+
+    The caller's registry credential is presented here too: a bus that gates
+    reads fails a credential-less GET with 401, which this route would surface
+    as an unreadable channel (503). Forwarding it is subject to the same
+    loopback/HTTPS guard as the post path.
+    """
+    headers: dict[str, str] = {}
+    if actor.credential:
+        bus = _bus_url()
+        if _credential_may_cross(bus):
+            headers["Authorization"] = f"Bearer {actor.credential}"
+        else:
+            logger.warning(
+                "A2A GPU lease read credential withheld for non-loopback http destination %s",
+                bus,
+            )
     bus = _bus_url()
     async with httpx.AsyncClient(timeout=5.0) as client:
         resp = await client.get(
-            f"{bus}/a2a/messages", params={"thread": channel, "limit": _CHANNEL_LIMIT}
+            f"{bus}/a2a/messages",
+            params={"thread": channel, "limit": _CHANNEL_LIMIT},
+            headers=headers or None,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -180,10 +204,12 @@ async def _post_line(channel: str, actor: _Actor, text: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-async def _folded_claims(request: Request, channel: str) -> dict[str, list[GpuLeaseMessage]]:
+async def _folded_claims(
+    request: Request, channel: str, actor: _Actor
+) -> dict[str, list[GpuLeaseMessage]]:
     """Read the channel and fold it, mapping an unreadable bus to 503."""
     try:
-        messages = await _read_channel(channel)
+        messages = await _read_channel(channel, actor)
     except Exception as exc:  # noqa: BLE001
         logger.warning("A2A GPU lease channel read failed (channel=%s): %s", channel, exc)
         raise HTTPException(
@@ -199,9 +225,11 @@ async def _folded_claims(request: Request, channel: str) -> dict[str, list[GpuLe
 def _match_worker(cluster, node: str):
     """Return the cluster worker *node* names, or None.
 
-    Accepts the worker name, a URL host, or the local controller's own aliases
-    ("local", "localhost", this hostname) so a bus node label resolves to the
-    worker whose VRAM the label refers to.
+    Accepts the worker name (case-insensitively, since a bus label is free
+    text), a URL host, or the local controller's own aliases ("local",
+    "localhost", this hostname) so a bus node label resolves to the worker whose
+    VRAM the label refers to. Failing to resolve is a real outcome: an unknown
+    node is coordinated over the bus alone, with no local lease.
     """
     if cluster is None:
         return None
@@ -213,6 +241,10 @@ def _match_worker(cluster, node: str):
         return None
     if wanted in ("local", "localhost", socket.gethostname().casefold()):
         return cluster.get_worker("local")
+    for w in cluster.get_workers():
+        name = getattr(w, "name", "") or ""
+        if name and name.casefold() == wanted:
+            return w
     for w in cluster.get_workers():
         url = getattr(w, "url", "") or ""
         host = url.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0]
@@ -311,7 +343,7 @@ def _cluster_lease_claims(cluster, node: str, resource: str) -> list[GpuLeaseMes
     """
     if cluster is None:
         return []
-    resource_id = _resource_id(node, resource)
+    resource_id = _resource_id(_canonical_node(cluster, node), resource)
     out: list[GpuLeaseMessage] = []
     seen: set[str] = set()
     for lease in cluster.get_leases():
@@ -340,12 +372,12 @@ async def _check_node(
     *,
     node: str,
     required_mb: int,
-    identity: str,
+    actor: _Actor,
     channel: str,
     resource: str = _DEFAULT_RESOURCE,
 ) -> tuple[dict, list[GpuLeaseMessage]]:
     """Run the full CHECK for a node; returns (admission dict, node claims)."""
-    folded = await _folded_claims(request, channel)
+    folded = await _folded_claims(request, channel, actor)
     cluster = getattr(request.app.state, "cluster_manager", None)
     bus_claims = claims_for_node(folded, node)
     # An A2A claim and the cluster lease it created are the same reservation;
@@ -363,7 +395,7 @@ async def _check_node(
     admission = evaluate_admission(
         node=node,
         required_mb=required_mb,
-        identity=identity,
+        identity=actor.identity,
         claims=node_claims,
         free_mb=free_mb,
         capacity_mb=capacity_mb,
@@ -388,7 +420,9 @@ class ClaimBody(_LeaseBody):
     vram: str | None = None
     reason: str = ""
     eta: str = ""
-    ttl_seconds: float = _DEFAULT_TTL_SECONDS
+    ttl_seconds: float = Field(
+        default=_DEFAULT_TTL_SECONDS, gt=0, le=MAX_LEASE_TTL_SECONDS
+    )
     holder: str | None = None  # honored for admin callers only
 
 
@@ -406,12 +440,25 @@ class RequestBody(_LeaseBody):
 
 class RenewBody(BaseModel):
     lease_id: str
-    ttl_seconds: float = _DEFAULT_TTL_SECONDS
+    ttl_seconds: float = Field(
+        default=_DEFAULT_TTL_SECONDS, gt=0, le=MAX_LEASE_TTL_SECONDS
+    )
 
 
 def _resource_id(node: str, resource: str) -> str:
     res = (resource or _DEFAULT_RESOURCE).strip() or _DEFAULT_RESOURCE
     return f"{node}:{res}"
+
+
+def _canonical_node(cluster, node: str) -> str:
+    """Return the cluster worker's own name for *node*, else *node*.
+
+    The bus label is free text ("Linstation", "linstation", a URL host) while
+    leases are keyed on the worker's registered name, so resolving through the
+    manager keeps two spellings of one host from taking two leases on one GPU.
+    """
+    worker = _match_worker(cluster, node)
+    return getattr(worker, "name", None) or node
 
 
 def _lease_for_actor(cluster, resource_id: str, actor: _Actor):
@@ -484,7 +531,7 @@ async def gpu_check(request: Request):
         request,
         node=node,
         required_mb=required_mb or 0,
-        identity=actor.identity,
+        actor=actor,
         channel=channel,
         resource=resource or _DEFAULT_RESOURCE,
     )
@@ -517,7 +564,7 @@ async def gpu_claim(request: Request, body: ClaimBody):
         request,
         node=node,
         required_mb=vram_mb,
-        identity=actor.identity,
+        actor=actor,
         channel=channel,
         resource=body.resource,
     )
@@ -529,8 +576,9 @@ async def gpu_claim(request: Request, body: ClaimBody):
     cluster = getattr(request.app.state, "cluster_manager", None)
     lease_id: str | None = None
     lease = None
+    created_lease = False
     if cluster is not None and _match_worker(cluster, node) is not None:
-        resource_id = _resource_id(node, body.resource)
+        resource_id = _resource_id(_canonical_node(cluster, node), body.resource)
         caller = f"a2a:{actor.identity}"
         existing = cluster.find_existing_lease(resource_id)
         if existing is not None and existing.caller != caller:
@@ -568,12 +616,16 @@ async def gpu_claim(request: Request, body: ClaimBody):
                     status_code=409,
                 )
             lease_id = lease.lease_id
+            created_lease = True
 
     line = render_claim(node, actor.holder, vram_mb, body.reason, body.eta)
     try:
         posted = await _post_line(channel, actor, line)
     except HTTPException:
-        if lease_id is not None and cluster is not None:
+        # Roll back only a lease THIS call created. A re-claim renews the
+        # caller's own pre-existing lease, and freeing that on a transient bus
+        # failure would drop a reservation the holder still believes it owns.
+        if created_lease and lease_id is not None and cluster is not None:
             await cluster.release_lease(lease_id)
         raise
 
@@ -620,7 +672,11 @@ async def gpu_release(request: Request, body: ReleaseBody):
                     status_code=403,
                 )
         else:
-            lease = _lease_for_actor(cluster, _resource_id(node, body.resource), actor)
+            lease = _lease_for_actor(
+                cluster,
+                _resource_id(_canonical_node(cluster, node), body.resource),
+                actor,
+            )
             released_id = lease.lease_id if lease is not None else None
 
     # Post BEFORE releasing the local lease, so a bus failure changes nothing

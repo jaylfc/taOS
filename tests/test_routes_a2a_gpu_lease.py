@@ -8,6 +8,8 @@ rather than tautological.
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -26,6 +28,7 @@ class FakeBus:
     def __init__(self) -> None:
         self.messages: list[dict] = []
         self.sends: list[dict] = []
+        self.gets: list[dict] = []
         self.fail_get = False
         self.fail_post = False
         self._id = 0
@@ -79,9 +82,10 @@ def _install_fake_bus(monkeypatch, bus: FakeBus) -> None:
         async def __aexit__(self, *exc) -> bool:
             return False
 
-        async def get(self, url, params=None):
+        async def get(self, url, params=None, headers=None):
             if bus.fail_get:
                 raise RuntimeError("bus unreachable")
+            bus.gets.append({"params": params, "headers": headers})
             return _Resp({"messages": list(bus.messages)})
 
         async def post(self, url, json=None, headers=None):
@@ -417,7 +421,7 @@ class TestClusterLeaseIntegration:
         )
         assert resp.status_code == 200
         assert resp.json()["lease_id"] is None
-        assert [l.lease_id for l in cluster.get_leases()] == [foreign.lease_id]
+        assert [lease.lease_id for lease in cluster.get_leases()] == [foreign.lease_id]
 
     async def test_release_keeps_the_lease_when_the_bus_post_fails(
         self, lease_client, bus, cluster
@@ -434,7 +438,7 @@ class TestClusterLeaseIntegration:
         assert resp.status_code == 502
         # Nothing has changed: the node is still reserved locally, so a retry
         # cannot hand the same GPU to two holders.
-        assert [l.lease_id for l in cluster.get_leases()] == [lease_id]
+        assert [lease.lease_id for lease in cluster.get_leases()] == [lease_id]
 
     async def test_admin_may_release_an_explicit_lease_id(
         self, lease_client, bus, cluster
@@ -503,14 +507,68 @@ class TestClusterLeaseIntegration:
     async def test_expired_lease_auto_frees_the_node(self, lease_client, bus, cluster):
         resp = await lease_client.post(
             "/api/a2a/gpu/claim",
-            json={"node": "linstation", "vram_mb": 4096, "ttl_seconds": -1},
+            json={"node": "linstation", "vram_mb": 4096, "ttl_seconds": 60},
         )
         assert resp.status_code == 200
-        # TTL already elapsed: the node is free again with no explicit release.
+        # Age the lease past its TTL (deterministic): the node must be free
+        # again with no explicit release, which is the keep-alive guarantee.
+        cluster.get_leases()[0].expires_at = time.time() - 1
         nxt = await lease_client.post(
             "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
         )
         assert nxt.status_code == 200
+
+    async def test_ttl_is_bounded_on_claim_and_renew(self, lease_client, bus, cluster):
+        # An unbounded TTL would let one agent hold the shared GPU forever and
+        # remove the auto-expiry the mechanism rests on.
+        too_long = await lease_client.post(
+            "/api/a2a/gpu/claim",
+            json={"node": "linstation", "vram_mb": 4096, "ttl_seconds": 1e9},
+        )
+        assert too_long.status_code == 422
+        assert cluster.get_leases() == []
+
+        claim = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        lease_id = claim.json()["lease_id"]
+        long_renew = await lease_client.post(
+            "/api/a2a/gpu/renew", json={"lease_id": lease_id, "ttl_seconds": 99999}
+        )
+        assert long_renew.status_code == 422
+        zero = await lease_client.post(
+            "/api/a2a/gpu/renew", json={"lease_id": lease_id, "ttl_seconds": 0}
+        )
+        assert zero.status_code == 422
+
+    async def test_node_spelling_resolves_to_one_lease(self, lease_client, bus, cluster):
+        # `Linstation` and `linstation` name the same worker; they must not take
+        # two leases on the one GPU.
+        first = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        second = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "Linstation", "vram_mb": 4096}
+        )
+        assert second.status_code == 200
+        assert second.json()["lease_id"] == first.json()["lease_id"]
+        assert len(cluster.get_leases()) == 1
+
+    async def test_reclaim_rollback_does_not_drop_the_existing_lease(
+        self, lease_client, bus, cluster
+    ):
+        first = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        lease_id = first.json()["lease_id"]
+        # A re-claim renews the caller's own lease; a failed repost must not
+        # free a reservation the holder still believes it owns.
+        bus.fail_post = True
+        retry = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        assert retry.status_code == 502
+        assert [lease.lease_id for lease in cluster.get_leases()] == [lease_id]
 
     async def test_check_blocks_when_the_scheduler_holds_a_lease(
         self, lease_client, bus, cluster
@@ -634,6 +692,28 @@ class TestAgentToken:
         assert resp.status_code == 200
         assert resp.json()["holder"] == "@taosmd"
 
+    async def test_agent_check_presents_its_credential_to_the_bus(
+        self, lease_client, bus
+    ):
+        # A bus that gates reads fails a credential-less GET with 401, which
+        # this route would report as an unreadable channel (503).
+        _cid, token = await _agent_token(lease_client._app, scopes=("a2a_receive",))
+        async with _bare(lease_client._app) as bare:
+            resp = await bare.get(
+                "/api/a2a/gpu/check",
+                params={"node": "n1", "vram_mb": 1024},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200
+        assert bus.gets[-1]["headers"].get("Authorization") == f"Bearer {token}"
+
+    async def test_admin_check_sends_no_credential_to_the_bus(self, lease_client, bus):
+        resp = await lease_client.get(
+            "/api/a2a/gpu/check", params={"node": "n1", "vram_mb": 1024}
+        )
+        assert resp.status_code == 200
+        assert bus.gets[-1]["headers"] is None
+
     async def test_agent_token_is_not_a_skeleton_key(self, lease_client, bus):
         _cid, token = await _agent_token(lease_client._app, scopes=("a2a_send",))
         async with _bare(lease_client._app) as bare:
@@ -677,7 +757,7 @@ class TestAgentToken:
                 headers={"Authorization": f"Bearer {token}"},
             )
         assert resp.status_code == 403
-        assert [l.lease_id for l in cluster.get_leases()] == [foreign.lease_id]
+        assert [lease.lease_id for lease in cluster.get_leases()] == [foreign.lease_id]
         assert bus.sends == []  # and no [GPU RELEASE] line clears the peer claim
 
     async def test_agent_cannot_renew_another_holders_lease(
@@ -692,7 +772,7 @@ class TestAgentToken:
         async with _bare(lease_client._app) as bare:
             resp = await bare.post(
                 "/api/a2a/gpu/renew",
-                json={"lease_id": foreign.lease_id, "ttl_seconds": 6000},
+                json={"lease_id": foreign.lease_id, "ttl_seconds": 600},
                 headers={"Authorization": f"Bearer {token}"},
             )
         assert resp.status_code == 403

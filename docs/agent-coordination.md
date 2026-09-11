@@ -358,7 +358,7 @@ its VRAM (taOS #893). Coordinate over the bus with a one-line text protocol, and
 use the controller's endpoints so the protocol is admission-checked and backed by
 a real lease:
 
-```
+```text
 [GPU CLAIM] node=<host> holder=@you vram=~9.4gb reason=... eta=...
 [GPU RELEASE] node=<host> holder=@you
 [GPU REQUEST] node=<host> need=~6gb
@@ -377,6 +377,14 @@ checks admission (another holder's claim, the node's free VRAM, and the cluster'
 own lease table) before the line is posted. A line posted by hand is recorded but
 enforces nothing.
 
+The **local** half of a claim — the cluster lease with its TTL, renewal and
+rollback — applies to nodes this controller knows as cluster workers. A node that
+resolves to no worker is coordinated over the bus alone: CLAIM still admission-
+checks the channel and posts the line, but there is no local reservation to
+expire, so the bus-side `[GPU RELEASE]` is the only thing that frees it. The
+endpoint reports a node it cannot measure as `vram_verified: false` rather than
+as free.
+
 Rules that matter when you use it:
 
 - **CHECK before load, always.** It folds the channel's `[GPU CLAIM]`/`[GPU
@@ -393,15 +401,18 @@ Rules that matter when you use it:
   field in the request body is ignored for agent callers.
 - **Fail closed.** If the channel cannot be read, `check` and `claim` return
   `503` rather than reporting the node free: an unreadable channel looks exactly
-  like "nobody has claimed anything".
+  like "nobody has claimed anything". An agent's registry JWT is presented on
+  that read too, so a bus that gates reads does not look like a dead channel.
 - **Claim is both halves or neither.** The cluster lease is rolled back if the
   bus post fails, so a peer that only watches the bus never disagrees with the
   local scheduler about who holds the node. Release is ordered the same way: the
   line is posted BEFORE the local lease is freed, so a failed post leaves the
   lease intact rather than freeing a node peers still see as claimed.
-- **Keep-alive is the TTL, not a promise.** A lease expires after
-  `ttl_seconds` (default 300) unless renewed via `/renew`; a crashed or idle
-  holder therefore frees the node without anyone releasing it.
+- **Keep-alive is the TTL, not a promise.** A cluster-worker lease expires after
+  `ttl_seconds` (default 300, capped at 3600) unless renewed via `/renew`; a
+  crashed or idle holder therefore frees the node without anyone releasing it.
+  An unbounded TTL would let one agent take the shared GPU permanently, so the
+  cap is enforced by the request model.
 - **A claim is only visible inside the channel fold window** (the newest 500
   messages). For a load that outlives the chatter around it, re-POST `/claim`
   periodically: it is idempotent (it extends the lease and reposts the line,

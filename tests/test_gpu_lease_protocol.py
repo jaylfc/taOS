@@ -127,6 +127,23 @@ class TestParseMessage:
         assert msg is not None and msg.kind == CLAIM
         assert "[GPU RELEASE]" in msg.reason
 
+    def test_a_value_cannot_inject_a_field(self):
+        # `=` is neutralised in rendered values, so a reason cannot smuggle a
+        # `node=` that a reader re-parses as the real node.
+        line = render_claim("n1", "@a", 1024, reason="x node=ghost")
+        msg = parse_message(line)
+        assert msg is not None
+        assert msg.node == "n1"
+        assert "ghost" in msg.reason
+
+    def test_a_hand_written_duplicate_key_keeps_the_first_value(self):
+        # First-wins: a trailing `node=` inside a value cannot override the
+        # structural field a renderer emits first.
+        msg = parse_message(
+            "[GPU CLAIM] node=n1 holder=@a vram=1gb reason=y node=ghost"
+        )
+        assert msg.node == "n1"
+
 
 class TestOpenClaims:
     def _bus(self, *bodies, sender="@a"):
@@ -191,6 +208,26 @@ class TestOpenClaims:
         assert claims_for_node(folded, "N2")[0].node == "n2"
         assert claims_for_node(folded, "n3") == []
 
+    def test_node_spelling_is_case_insensitive_in_the_fold(self):
+        # Two spellings of one hostname must land in ONE group: otherwise
+        # claims_for_node returns only one of them and the other holder's claim
+        # is invisible to admission.
+        msgs = [
+            {"id": 1, "from": "@a", "body": "[GPU CLAIM] node=Linstation holder=@a vram=6gb"},
+            {"id": 2, "from": "@b", "body": "[GPU CLAIM] node=linstation holder=@b vram=2gb"},
+        ]
+        folded = open_claims(msgs)
+        assert list(folded) == ["linstation"]
+        assert len(folded["linstation"]) == 2
+        assert len(claims_for_node(folded, "LINSTATION")) == 2
+
+    def test_release_closes_a_claim_spelled_with_a_different_case(self):
+        msgs = [
+            {"id": 1, "from": "@a", "body": "[GPU CLAIM] node=Linstation holder=@a vram=6gb"},
+            {"id": 2, "from": "@a", "body": "[GPU RELEASE] node=linstation holder=@a"},
+        ]
+        assert open_claims(msgs) == {}
+
 
 class TestSameHolder:
     def test_alias_and_canonical_id_match(self):
@@ -232,6 +269,33 @@ class TestEvaluateAdmission:
         assert d.admitted is False
         assert d.blockers == ("@taosmd",)
         assert "already claimed" in d.reason
+
+    def test_a_spoofed_holder_does_not_make_a_claim_mine(self):
+        # `from` is the authenticated author; `holder=` is caller-controlled.
+        # Accepting the holder for ownership would let an attacker post
+        # from=@attacker holder=@victim and have the victim's own admission
+        # treat the attacker's claim as its own (i.e. not a blocker, CWE-290).
+        claim = parse_message(
+            {
+                "id": 1,
+                "from": "@attacker",
+                "body": "[GPU CLAIM] node=n1 holder=@victim vram=6gb",
+            }
+        )
+        d = evaluate_admission(
+            node="n1", required_mb=1024, identity="@victim", claims=[claim],
+            free_mb=12288,
+        )
+        assert d.admitted is False
+        assert d.blockers == ("@victim",)  # the readable label is still shown
+
+    def test_interim_claim_without_an_authenticated_author_matches_on_holder(self):
+        # Posts that predate bus auth carry no `from`; the holder is all we have.
+        claim = parse_message("[GPU CLAIM] node=n1 holder=@a vram=1gb")
+        d = evaluate_admission(
+            node="n1", required_mb=0, identity="@a", claims=[claim], free_mb=4096
+        )
+        assert d.admitted is True
 
     def test_own_claim_does_not_block_and_is_subtracted_from_the_budget(self):
         d = evaluate_admission(

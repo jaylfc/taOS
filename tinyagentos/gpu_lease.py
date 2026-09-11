@@ -63,28 +63,39 @@ _FIELD_ALIASES = {"needed": "need", "vram_mb": "vram"}
 
 
 def _clean(text: object) -> str:
-    """Collapse *text* to a single printable line.
+    """Collapse *text* to a single printable, structural-free line.
 
     Every field value is caller-supplied text that ends up inside a one-line bus
     message. A raw newline would let a caller inject a SECOND protocol line
-    (e.g. a RELEASE that closes another holder's claim), so all whitespace runs
-    collapse to a single space and non-printable control characters are dropped.
+    (e.g. a RELEASE that closes another holder's claim), and an unescaped ``=``
+    would let it inject a `key=` INSIDE a value that a reader re-parses as a new
+    field (`reason=a node=ghost` moved the node). So: whitespace runs collapse
+    to one space, non-printable characters are dropped, and ``=`` is neutralised
+    by turning it into a space (a value is never structural).
     """
     keep = "".join(
-        ch if (ch.isprintable() or ch.isspace()) else "" for ch in str(text)
+        " " if ch == "=" or ch.isspace() else (ch if ch.isprintable() else "")
+        for ch in str(text)
     )
     return " ".join(keep.split())
 
 
 def _split_fields(rest: str) -> dict[str, str]:
-    """Return ``key=value`` pairs from a line body, values allowed spaces."""
+    """Return ``key=value`` pairs from a line body, values allowed spaces.
+
+    A key seen twice keeps its FIRST value. Values may legitimately contain the
+    text of a later field, so last-wins would let a trailing ``node=`` inside a
+    ``reason`` overwrite the real node (CWE-290 by value injection); the fields
+    this module renders are always emitted node/holder/vram first, so first-wins
+    keeps the structural fields stable even for a hand-written line.
+    """
     matches = list(_FIELD_START_RE.finditer(rest))
     fields: dict[str, str] = {}
     for i, m in enumerate(matches):
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(rest)
-        key = m.group("key").lower()
-        fields[_FIELD_ALIASES.get(key, key)] = rest[start:end].strip()
+        key = _FIELD_ALIASES.get(m.group("key").lower(), m.group("key").lower())
+        fields.setdefault(key, rest[start:end].strip())
     return fields
 
 
@@ -261,6 +272,13 @@ def open_claims(messages: Iterable[object]) -> dict[str, list[GpuLeaseMessage]]:
     CLAIM opens a slot keyed by ``(node, identity)``; a RELEASE from the same
     identity on the same node closes it. A re-CLAIM by the same identity
     replaces the previous one (so a reposted claim is never double-counted).
+
+    Both the node and the identity are matched case-insensitively: peers do not
+    agree on the spelling of a hostname, and a `node=Linstation` claim whose
+    release says `node=linstation` would otherwise stay open forever while a
+    differently-spelled claim hid in a second group. The returned mapping is
+    therefore keyed by the CASE-FOLDED node name; each message keeps the
+    spelling it arrived with.
     """
     open_by_key: dict[tuple[str, str], GpuLeaseMessage] = {}
     order: list[tuple[str, str]] = []
@@ -268,7 +286,7 @@ def open_claims(messages: Iterable[object]) -> dict[str, list[GpuLeaseMessage]]:
         msg = parse_message(raw)
         if msg is None or msg.kind not in (CLAIM, RELEASE):
             continue
-        key = (msg.node, msg.identity_key.casefold())
+        key = (msg.node.strip().casefold(), msg.identity_key.casefold())
         if msg.kind == CLAIM:
             if key not in open_by_key:
                 order.append(key)
@@ -280,7 +298,7 @@ def open_claims(messages: Iterable[object]) -> dict[str, list[GpuLeaseMessage]]:
     for key in order:
         msg = open_by_key.get(key)
         if msg is not None:
-            out.setdefault(msg.node, []).append(msg)
+            out.setdefault(key[0], []).append(msg)
     return out
 
 
@@ -289,6 +307,10 @@ def claims_for_node(
 ) -> list[GpuLeaseMessage]:
     """Claims for a node, matching the node case-insensitively."""
     wanted = (node or "").strip().casefold()
+    entries = claims.get(wanted)
+    if entries:
+        return list(entries)
+    # Tolerate a caller-built mapping whose keys were not case-folded.
     for name, entries in claims.items():
         if name.strip().casefold() == wanted:
             return list(entries)
@@ -296,9 +318,18 @@ def claims_for_node(
 
 
 def _is_mine(claim: GpuLeaseMessage, identity: str) -> bool:
-    return same_holder(claim.identity_key, identity) or same_holder(
-        claim.holder, identity
-    )
+    """True when *claim* was made by *identity*.
+
+    When the bus authenticated the author (``bus_from``), ONLY that value is
+    compared. The body's ``holder=`` is caller-controlled, so accepting it would
+    let an attacker post ``from=@attacker holder=@victim`` and make the victim's
+    own admission treat the attacker's claim as the victim's, i.e. not a blocker
+    (CWE-290). The readable holder is only a fallback for the interim posts that
+    predate bus auth and therefore have no authenticated author.
+    """
+    if claim.bus_from:
+        return same_holder(claim.bus_from, identity)
+    return same_holder(claim.holder, identity)
 
 
 @dataclass(frozen=True)
