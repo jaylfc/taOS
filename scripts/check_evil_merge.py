@@ -254,7 +254,17 @@ def check_evil_merge(
         elif head_blob != expected:
             p1_blob = p1_blobs.get(path)
             p2_blob = p2_blobs.get(path)
-            if head_blob != p1_blob and head_blob != p2_blob:
+            # Exemption: if the path conflicted (present in conflict_blobs),
+            # allowing resolution by taking one parent wholesale is safe.
+            # If the path was a clean merge, taking one side wholesale IS the
+            # violation even if it matches a parent.
+            if path in conflict_blobs:
+                if head_blob != p1_blob and head_blob != p2_blob:
+                    violations.append(
+                        Violation(path, merge_sha, parent1, parent2, merge_tree_sha)
+                    )
+            else:
+                # No conflict on this path: any wholesale take of a parent is an evil merge
                 violations.append(
                     Violation(path, merge_sha, parent1, parent2, merge_tree_sha)
                 )
