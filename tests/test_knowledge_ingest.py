@@ -213,19 +213,12 @@ async def test_summarise_called_when_llm_url_set(store):
 
     llm_response = AsyncMock()
     llm_response.status_code = 200
-    llm_response.json = MagicMock(return_value={"text": "This is a generated summary."})
+    llm_response.json = MagicMock(return_value={
+        "choices": [{"message": {"content": "This is a generated summary."}}]
+    })
     llm_response.raise_for_status = MagicMock()
 
-    article_response = AsyncMock()
-    article_response.status_code = 200
-    article_response.is_redirect = False
-    article_response.headers = {}
-    article_response.text = "<html><body><p>Long enough article body text content here for testing purposes.</p></body></html>"
-    article_response.raise_for_status = MagicMock()
-
     mock_http = AsyncMock()
-    # First call is article fetch, second call is LLM summarise
-    mock_http.get = AsyncMock(return_value=article_response)
     mock_http.post = AsyncMock(return_value=llm_response)
 
     notif = AsyncMock()
@@ -246,7 +239,7 @@ async def test_summarise_called_when_llm_url_set(store):
     item_id = await pipeline.submit(
         url="https://example.com/summarise-test",
         title="",
-        text="",
+        text="Long enough content to trigger summarisation pipeline call here.",
         categories=[],
         source="test",
     )
@@ -254,6 +247,146 @@ async def test_summarise_called_when_llm_url_set(store):
 
     item = await store.get_item(item_id)
     assert item["summary"] == "This is a generated summary."
+
+
+# ------------------------------------------------------------------
+# R2-8: LLM summary/category calls must route through /v1/chat/completions
+# ------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_summarise_uses_chat_completions_endpoint(store):
+    """R2-8: when llm_base_url is set, _summarise must POST to /v1/chat/completions
+    and the summary text must land on the item."""
+    from tinyagentos.knowledge_ingest import IngestPipeline
+
+    llm_response = MagicMock()
+    llm_response.status_code = 200
+    llm_response.json = MagicMock(return_value={
+        "choices": [{"message": {"content": "Generated summary from chat completions."}}]
+    })
+    llm_response.raise_for_status = MagicMock()
+
+    mock_http = AsyncMock()
+    mock_http.post = AsyncMock(return_value=llm_response)
+
+    notif = AsyncMock()
+    notif.emit_event = AsyncMock()
+    cat_engine = AsyncMock()
+    cat_engine.categorise = AsyncMock(return_value=[])
+
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+        qmd_base_url="",
+        llm_base_url="http://localhost:8080",
+    )
+
+    item_id = await pipeline.submit(
+        url="https://example.com/summarise-test",
+        title="",
+        text="Long enough content to trigger summarisation pipeline call here.",
+        categories=[],
+        source="test",
+    )
+    await pipeline.run(item_id)
+
+    post_calls = [str(call) for call in mock_http.post.call_args_list]
+    assert any("/v1/chat/completions" in c for c in post_calls), (
+        f"Expected POST to /v1/chat/completions, got: {post_calls}"
+    )
+
+    item = await store.get_item(item_id)
+    assert item["summary"] == "Generated summary from chat completions."
+
+
+@pytest.mark.asyncio
+async def test_summarise_failure_sets_partial_status(store):
+    """R2-8: when the LLM proxy returns 500, the item must not be marked ready."""
+    from tinyagentos.knowledge_ingest import IngestPipeline
+
+    llm_response = MagicMock()
+    llm_response.status_code = 500
+    llm_response.raise_for_status = MagicMock(side_effect=Exception("LLM 500"))
+
+    mock_http = AsyncMock()
+    mock_http.post = AsyncMock(return_value=llm_response)
+
+    notif = AsyncMock()
+    notif.emit_event = AsyncMock()
+    cat_engine = AsyncMock()
+    cat_engine.categorise = AsyncMock(return_value=[])
+
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+        qmd_base_url="",
+        llm_base_url="http://localhost:8080",
+    )
+
+    item_id = await pipeline.submit(
+        url="https://example.com/summarise-fail",
+        title="",
+        text="Long enough content to trigger summarisation pipeline call here.",
+        categories=[],
+        source="test",
+    )
+    await pipeline.run(item_id)
+
+    item = await store.get_item(item_id)
+    assert item["status"] != "ready"
+    assert item["status"] == "partial"
+
+
+@pytest.mark.asyncio
+async def test_category_llm_failure_sets_partial_status(store):
+    """R2-8: when the LLM proxy returns 500 during categorisation, the item
+    must not be marked ready."""
+    from tinyagentos.knowledge_ingest import IngestPipeline
+    from tinyagentos.knowledge_categories import CategoryEngine
+
+    llm_response = MagicMock()
+    llm_response.status_code = 500
+    llm_response.raise_for_status = MagicMock(side_effect=Exception("LLM 500"))
+
+    mock_http = AsyncMock()
+    mock_http.post = AsyncMock(return_value=llm_response)
+
+    notif = AsyncMock()
+    notif.emit_event = AsyncMock()
+    cat_engine = CategoryEngine(
+        store=store,
+        http_client=mock_http,
+        llm_url="http://localhost:8080",
+    )
+
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+        qmd_base_url="",
+        llm_base_url="http://localhost:8080",
+    )
+
+    item_id = await pipeline.submit(
+        url="https://example.com/category-fail",
+        title="",
+        text="Long enough content to trigger summarisation pipeline call here.",
+        categories=[],
+        source="test",
+    )
+    await pipeline.run(item_id)
+
+    item = await store.get_item(item_id)
+    assert item["status"] != "ready"
+    assert item["status"] == "partial"
 
 
 @pytest.mark.asyncio

@@ -100,3 +100,38 @@ async def test_llm_fallback_skipped_when_rules_match(engine):
         metadata={"subreddit": "LocalLLaMA"},
     )
     engine._llm_categorise.assert_not_awaited()
+
+
+# ------------------------------------------------------------------
+# R2-8: LLM category calls must route through /v1/chat/completions
+# ------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_llm_categorise_uses_chat_completions_endpoint(store):
+    """R2-8: _llm_categorise must POST to /v1/chat/completions."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    llm_response = MagicMock()
+    llm_response.status_code = 200
+    llm_response.json = MagicMock(return_value={
+        "choices": [{"message": {"content": '["Hardware"]'}}]
+    })
+    llm_response.raise_for_status = MagicMock()
+
+    mock_http = AsyncMock()
+    mock_http.post = AsyncMock(return_value=llm_response)
+
+    engine = CategoryEngine(store, http_client=mock_http, llm_url="http://localhost:8080")
+
+    categories = await engine.categorise(
+        source_type="article",
+        source_url="https://unknownsite.com/post",
+        title="Some obscure post",
+        summary="About hardware.",
+        metadata={},
+    )
+
+    mock_http.post.assert_called_once()
+    call_url = mock_http.post.call_args[0][0]
+    assert "/v1/chat/completions" in call_url, f"Expected /v1/chat/completions, got {call_url}"
+    assert "Hardware" in categories
