@@ -322,6 +322,58 @@ class TestDecisionStoreUpgrade:
         finally:
             await store2.close()
 
+    async def test_backfill_stamps_non_pending_gate_row_and_is_idempotent(
+        self, tmp_path
+    ):
+        """Pre-cutoff gate decisions of ANY status must be stamped once as
+        server-raised, and a second init must change zero rows.
+
+        The current implementation filters on status='pending', which leaves
+        answered/superseded pre-cutoff gate decisions without provenance —
+        a hole in the guard for decisions that were legitimately resolved
+        before the marker landed but still need correct classification.
+        Idempotency is verified by re-opening the store: the marker makes
+        the second init a no-op, so metadata must be byte-identical."""
+        db_path = tmp_path / "decisions.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(DECISIONS_SCHEMA)
+        answered_meta = json.dumps(
+            {"kind": "delegation_gate", "delegate_agent": "a", "capability": "x"}
+        )
+        conn.execute(
+            "INSERT INTO decisions (id, from_agent, project_id, user_id, question, type,"
+            " options, context, priority, status, created_at, answered_at, metadata) "
+            "VALUES ('dec-answered', 'agent', NULL, 'u1', 'allow?', 'approve_deny', '[]',"
+            " '', 'blocking', 'answered', ?, ?, ?)",
+            (time.time() - 3600, time.time() - 1800, answered_meta),
+        )
+        conn.commit()
+        conn.close()
+
+        # First init: backfill runs, stamps dec-answered.
+        store = DecisionStore(db_path)
+        await store.init()
+        try:
+            row = await store.get("dec-answered")
+            meta_first = dict(row["metadata"])
+            assert meta_first.get("_server_raised") is True, (
+                "pre-cutoff answered gate decision must be stamped as server-raised"
+            )
+        finally:
+            await store.close()
+
+        # Second init: marker is set, backfill is a no-op. Metadata must not change.
+        store2 = DecisionStore(db_path)
+        await store2.init()
+        try:
+            row2 = await store2.get("dec-answered")
+            meta_second = dict(row2["metadata"])
+            assert meta_second == meta_first, (
+                "second init must not alter already-stamped metadata"
+            )
+        finally:
+            await store2.close()
+
 
 # ---------------------------------------------------------------------------
 # ProjectStore — multiple migration columns on project_members + projects

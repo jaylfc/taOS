@@ -93,21 +93,21 @@ class DecisionStore(BaseStore):
             )
             await self._db.commit()
 
-        # tsk-mul5pa upgrade backfill: gate decisions persisted before the
-        # server-stamped provenance marker landed have no `_server_raised` key,
-        # so approving them after upgrade would hit the new early-return in every
-        # _apply_*_grant and silently no-op.  Those pre-upgrade rows must be
-        # stamped once so a legitimate pending approval still mints.
+        # tsk-gjh34q: provenance backfill for ALL pre-cutoff gate decisions.
         #
-        # The bound is TIME, not status: without a real one-time gate, a caller
-        # could POST a gate-kind decision through the public route (the create
-        # path strips the marker but does not restrict `kind`), leave it pending,
-        # and have it stamped by the next restart — re-opening the exact caller-
-        # minted-privileges hole this PR closes.  So we record the upgrade
-        # instant on first run in a persisted marker row, and only ever stamp
-        # rows whose `created_at` strictly predates it.  A row created through
-        # the public route after deploy has `created_at` >= that instant and is
+        # Gate decisions persisted before the server-stamped provenance marker
+        # landed carry no `_server_raised` key, so answering them after deploy
+        # would hit the new early-return in every _apply_*_grant and silently
+        # no-op.  Those pre-upgrade rows must be stamped once so a legitimate
+        # approval still mints, regardless of their current status.
+        #
+        # The bound is TIME, not status: recording the upgrade instant on first
+        # run in a persisted marker row means only rows whose `created_at`
+        # strictly predates it are ever stamped.  A row created through the
+        # public route after deploy has `created_at >= that instant and is
         # never stamped; the marker makes the whole thing run exactly once.
+        # Removing the status filter so answered/superseded pre-cutoff gate
+        # decisions are also classified correctly.
         # The marker table may not exist yet (first run after this deploy).
         # Check with a guarded PRAGMA, mirroring the metadata-column check above,
         # rather than SELECT-ing a table that is not there yet.
@@ -132,7 +132,7 @@ class DecisionStore(BaseStore):
             rows = await (
                 await self._db.execute(
                     "SELECT id, metadata, created_at FROM decisions "
-                    "WHERE status = 'pending' AND created_at < ?",
+                    "WHERE created_at < ?",
                     (upgrade_at,),
                 )
             ).fetchall()
