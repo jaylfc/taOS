@@ -130,6 +130,10 @@ async def _verify_agent_scope(
     if not canonical_id:
         raise HTTPException(status_code=401, detail="token missing sub claim")
 
+    principal_type = payload.get("principal_type", "")
+    if principal_type == "human":
+        return None
+
     # Agent must be active in the registry.
     registry = _get_store(request)
     record = await registry.get(canonical_id)
@@ -179,6 +183,53 @@ async def check_agent_scope(request: Request, required_scope: str) -> Optional[s
         return None
     canonical_id, _payload = result
     return canonical_id
+
+
+async def check_human_identity(request: Request) -> Optional[str]:
+    """Return the user_id from a valid Bearer registry JWT for a HUMAN principal.
+
+    Uses the SAME Ed25519 verification chain as agent tokens (``verify_registry_token``)
+    but accepts only tokens with ``principal_type == "human"``.  The ``sub`` claim
+    is the user_id; a human cannot post as anyone else because ``from`` is derived
+    from the credential, never self-asserted.
+
+    Returns None when no Authorization header is present (the caller falls
+    through to its own admin/session handling).
+
+    Raises:
+      401 -- Authorization header present but the token is malformed, has a bad
+             signature, is missing the sub claim, or carries the wrong principal_type.
+      403 -- Token is well-formed but the user_id does not resolve to an existing
+             human account.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None
+
+    raw_token = auth_header[7:].strip()
+
+    _private_pem, public_pem = _get_keypair(request)
+    try:
+        payload = verify_registry_token(raw_token, public_pem)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="invalid or malformed registry token")
+
+    principal_type = payload.get("principal_type", "")
+    if principal_type != "human":
+        raise HTTPException(status_code=401, detail="not a human-principal token")
+
+    user_id: str = payload.get("sub", "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="token missing sub claim")
+
+    auth = getattr(request.app.state, "auth", None)
+    if auth is None:
+        raise RuntimeError("auth store not on app.state")
+    user = auth.get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=403, detail="human principal not found")
+
+    return user_id
 
 
 async def check_agent_identity(request: Request) -> Optional[str]:

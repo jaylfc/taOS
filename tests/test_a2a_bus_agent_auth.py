@@ -12,11 +12,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import json
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.agent_registry_store import (
+    _b64url_encode,
     load_or_create_signing_keypair,
     mint_registry_token,
 )
@@ -406,3 +408,96 @@ class TestBusAgentSend:
                     headers={"Authorization": f"Bearer {token}"},
                 )
         assert resp.status_code == 502
+
+
+@pytest.mark.asyncio
+class TestBusHumanAuth:
+    """Human-principal bus auth: controller-issued assertions verified through
+    the same Ed25519 chain as agent JWTs, with ``from`` derived from the
+    credential so a human cannot post as anyone else."""
+
+    async def test_issue_human_assertion(self, bus_client):
+        """POST /api/a2a/bus/human-assertion returns a signed JWT for the
+        currently authenticated human user."""
+        resp = await bus_client.post("/api/a2a/bus/human-assertion")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "assertion" in data
+        token = data["assertion"]
+        assert isinstance(token, str)
+        assert len(token.split(".")) == 3
+
+    async def test_human_assertion_verifies_via_existing_chain(self, bus_client):
+        """The issued human assertion passes verify_registry_token (same chain)."""
+        from tinyagentos.agent_registry_store import verify_registry_token
+
+        resp = await bus_client.post("/api/a2a/bus/human-assertion")
+        assert resp.status_code == 200
+        token = resp.json()["assertion"]
+        _priv, pub = bus_client._app.state.agent_registry_keypair
+        payload = verify_registry_token(token, pub)
+        assert payload["principal_type"] == "human"
+        assert payload["sub"] == bus_client._test_admin_uid
+
+    async def test_tampered_human_assertion_rejected(self, bus_client):
+        """A tampered human assertion fails verification."""
+        from tinyagentos.agent_registry_store import verify_registry_token
+
+        resp = await bus_client.post("/api/a2a/bus/human-assertion")
+        assert resp.status_code == 200
+        token = resp.json()["assertion"]
+        _priv, pub = bus_client._app.state.agent_registry_keypair
+        parts = token.split(".")
+        tampered_payload = _b64url_encode(
+            json.dumps({"sub": "other-user", "principal_type": "human"}).encode()
+        )
+        tampered = f"{parts[0]}.{tampered_payload}.{parts[2]}"
+        with pytest.raises(ValueError):
+            verify_registry_token(tampered, pub)
+
+    async def test_human_send_derives_from_from_credential(self, bus_client):
+        """A human Bearer token posts as @<username>, ignoring any client-supplied from."""
+        resp = await bus_client.post("/api/a2a/bus/human-assertion")
+        assert resp.status_code == 200
+        token = resp.json()["assertion"]
+
+        ctx, client = _mock_bus_post(
+            {"id": 1, "from": "@admin", "thread": "general"}
+        )
+        with patch(_BUS_PATCH, return_value=ctx):
+            async with _bare(bus_client._app) as bare:
+                resp = await bare.post(
+                    "/api/a2a/bus/send",
+                    json={"thread": "general", "body": "hello", "from": "@impostor"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        assert resp.status_code == 200
+        assert resp.json()["from"] == "@admin"
+        sent = client.post.call_args.kwargs["json"]
+        assert sent["from"] == "@admin"
+
+    async def test_human_send_rejects_malformed_token(self, bus_client):
+        """A malformed Bearer token on /send returns 401."""
+        async with _bare(bus_client._app) as bare:
+            resp = await bare.post(
+                "/api/a2a/bus/send",
+                json={"thread": "general", "body": "hi"},
+                headers={"Authorization": "Bearer not-a-valid-token"},
+            )
+        assert resp.status_code == 401
+
+    async def test_agent_token_not_accepted_as_human(self, bus_client):
+        """An agent-principal token cannot obtain a human assertion."""
+        _cid, agent_token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        async with _bare(bus_client._app) as bare:
+            resp = await bare.post(
+                "/api/a2a/bus/human-assertion",
+                headers={"Authorization": f"Bearer {agent_token}"},
+            )
+        assert resp.status_code == 401
+
+    async def test_human_assertion_requires_auth(self, bus_client):
+        """Unauthenticated callers cannot issue a human assertion."""
+        async with _bare(bus_client._app) as bare:
+            resp = await bare.post("/api/a2a/bus/human-assertion")
+        assert resp.status_code == 401

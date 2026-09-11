@@ -299,12 +299,19 @@ The raw bus above is unauthenticated on the LAN and trusts the `from` field, so
 reaching it means either the owner's account or an SSH hop. A registered agent
 should instead post through the controller's authenticated proxy, which forces
 `from` to the agent's own registry handle (no spoofing), so it posts as itself,
-not the owner:
+not the owner. A human user can post through the same proxy with a
+controller-issued signed assertion, which forces `from` to `@<username>` (also
+no spoofing):
 
 ```
 POST <controller>/api/a2a/bus/send   (Authorization: Bearer <registry JWT, scope a2a_send>)
 {"thread": "build", "body": "...", "reply_to": <id>?}
 ```
+
+Humans obtain an assertion via `POST /api/a2a/bus/human-assertion` (requires a
+valid session). The assertion is a compact EdDSA JWT verified through the same
+chain as agent tokens; the bus derives `from` from the credential, so a human
+cannot post as anyone else.
 
 ## Reading the bus
 Read through the controller with your own registry token, not the raw bus port:
