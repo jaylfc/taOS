@@ -31,11 +31,13 @@ import os
 import httpx
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from tinyagentos.agent_token_auth import check_agent_scope
+from tinyagentos.agent_registry_store import mint_registry_token
+from tinyagentos.agent_token_auth import check_agent_scope, check_human_identity
+from tinyagentos.auth_context import CurrentUser, current_user
 
 logger = logging.getLogger(__name__)
 
@@ -400,29 +402,37 @@ async def _resolve_send_identity(request: Request, body_from: str | None) -> str
     - Admin (session cookie or local token): may set an explicit ``from``
       (operator posts as any handle); defaults to ``@operator`` when omitted.
     - Otherwise the caller must present a registry JWT holding an active
-      ``a2a_send`` grant. The ``from`` is DERIVED from that agent's registry
-      handle; a client-supplied ``from`` is ignored, so an agent cannot spoof
-      another agent's identity. ``check_agent_scope`` raises 401/403; a missing
-      Bearer header returns None and is rejected here as 403 (fail closed).
+      ``a2a_send`` grant (agent) or a valid human-principal token. The ``from``
+      is DERIVED from the credential for both principal types; a client-supplied
+      ``from`` is ignored, so neither an agent nor a human can spoof another
+      identity. ``check_agent_scope`` raises 401/403; ``check_human_identity``
+      raises 401/403; a missing Bearer header returns None from both and is
+      rejected here as 403 (fail closed).
     """
     if getattr(request.state, "is_admin", False):
-        # Admin may post as an explicit handle, but keep it a single clean token
-        # so it cannot inject newlines/control chars into the bus record or logs.
         handle = (body_from or "").strip()
         handle = "".join(c for c in handle if c.isprintable())[:64].strip()
         return handle or "@operator"
 
     caller = await check_agent_scope(request, "a2a_send")
-    if caller is None:
-        raise HTTPException(status_code=403, detail="forbidden")
+    if caller is not None:
+        registry = getattr(request.app.state, "agent_registry", None)
+        record = await registry.get(caller) if registry is not None else None
+        handle = ((record or {}).get("handle") or "").strip()
+        if not handle:
+            raise HTTPException(status_code=403, detail="agent has no bus handle")
+        return handle
 
-    registry = getattr(request.app.state, "agent_registry", None)
-    record = await registry.get(caller) if registry is not None else None
-    handle = ((record or {}).get("handle") or "").strip()
-    if not handle:
-        # An active a2a_send grant with no bus handle cannot be safely attributed.
-        raise HTTPException(status_code=403, detail="agent has no bus handle")
-    return handle
+    human_id = await check_human_identity(request)
+    if human_id is not None:
+        auth = getattr(request.app.state, "auth", None)
+        user = auth.get_user_by_id(human_id) if auth else None
+        username = ((user or {}).get("username") or "").strip()
+        if not username:
+            raise HTTPException(status_code=403, detail="human has no username")
+        return f"@{username}"
+
+    raise HTTPException(status_code=403, detail="forbidden")
 
 
 @router.post("/api/a2a/bus/send")
@@ -466,3 +476,35 @@ async def bus_send(request: Request, body: BusSendBody):
         raise HTTPException(status_code=502, detail="a2a bus unavailable")
 
     return {"ok": True, "from": from_handle, "message": data}
+
+
+@router.post("/api/a2a/bus/human-assertion")
+async def issue_human_assertion(
+    request: Request,
+    _user: CurrentUser = Depends(current_user),
+):
+    """Issue a signed assertion for the currently authenticated human user.
+
+    The assertion is a compact EdDSA JWT (the same format and signing key as
+    agent registry tokens) with ``principal_type="human"`` and ``sub`` set to
+    the caller's ``user_id``.  It can be presented as ``Authorization: Bearer
+    <assertion>`` to the bus read/write proxies, where it is verified through
+    the SAME chain as agent JWTs.  The bus derives ``from`` from the credential
+    (``@<username>``), so a human cannot post as anyone else.
+
+    Returns the assertion token once; the caller must store it securely.
+    """
+    auth = getattr(request.app.state, "auth", None)
+    if auth is None:
+        raise RuntimeError("auth store not on app.state")
+    user = auth.get_user_by_id(_user.user_id)
+    if user is None:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    priv, _pub = request.app.state.agent_registry_keypair
+    token = mint_registry_token(
+        _user.user_id,
+        priv,
+        principal_type="human",
+    )
+    return {"assertion": token}
