@@ -11,11 +11,11 @@ import asyncio
 import json
 import logging
 import shutil
-import sqlite3
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from tinyagentos.base_store import BaseStore
 from tinyagentos.db_migrations import apply_wal_pragmas
 
 if TYPE_CHECKING:
@@ -224,6 +224,7 @@ def extract_metadata(tweet: dict) -> dict:
 WATCH_SCHEMA = """
 CREATE TABLE IF NOT EXISTS x_author_watches (
     handle TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
     filters_json TEXT NOT NULL DEFAULT '{}',
     frequency INTEGER NOT NULL DEFAULT 1800,
     enabled INTEGER NOT NULL DEFAULT 1,
@@ -234,44 +235,28 @@ CREATE TABLE IF NOT EXISTS x_author_watches (
 
 _DEFAULT_DB_PATH = Path("data/x-watches.db")
 
-
-class XWatchStore:
+class XWatchStore(BaseStore):
     """Persistent store for X author watches backed by SQLite.
 
     Args:
-        db_path: Path to the SQLite database file.  Defaults to
-            ``data/x-watches.db`` relative to the current working directory.
+        db_path: Path to the SQLite database file. Defaults to
+            ``data/x-watches.db`` relative to the ``data_dir``.
+        engine: Optional database engine. Defaults to SQLite.
     """
 
-    def __init__(self, db_path: Path | str = _DEFAULT_DB_PATH) -> None:
-        self._db_path = Path(db_path)
-        self._conn: sqlite3.Connection | None = None
+    SCHEMA = WATCH_SCHEMA
 
-    def init(self) -> None:
-        """Open the database and create the schema if needed."""
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        apply_wal_pragmas(self._conn)
-        self._conn.execute(WATCH_SCHEMA)
-        self._conn.commit()
+    async def _post_init(self) -> None:
+        """Create schema after connection is established."""
+        await self._db.executescript(self.SCHEMA)
+        await self._db.commit()
 
-    def close(self) -> None:
-        """Close the database connection."""
-        if self._conn:
-            self._conn.close()
-            self._conn = None
-
-    def _require_conn(self) -> sqlite3.Connection:
-        if self._conn is None:
-            raise RuntimeError("XWatchStore.init() must be called before use")
-        return self._conn
-
-    def create_watch(
+    async def create_watch(
         self,
         handle: str,
         filters: dict | None = None,
         frequency: int = 1800,
+        user_id: str | None = None,
     ) -> dict:
         """Create a new author watch.
 
@@ -279,46 +264,62 @@ class XWatchStore:
             handle: X handle without the leading @.
             filters: Optional filters dict.
             frequency: Check interval in seconds (default 1800).
+            user_id: Optional user ID for ownership. If not provided, the store will
+                     attempt to use a default from context or raise an error.
 
         Returns:
             The created watch dict.
 
         Raises:
             ValueError: If a watch for this handle already exists.
+            RuntimeError: If user_id is required but not provided.
         """
-        conn = self._require_conn()
+        if user_id is None:
+            raise RuntimeError("XWatchStore requires user_id for ownership")
+        
         filters_json = json.dumps(filters or {})
         created_at = time.time()
         try:
-            conn.execute(
+            await self._db.execute(
                 """
                 INSERT INTO x_author_watches
-                    (handle, filters_json, frequency, enabled, last_check, created_at)
-                VALUES (?, ?, ?, 1, 0, ?)
+                    (handle, user_id, filters_json, frequency, enabled, last_check, created_at)
+                VALUES (?, ?, ?, ?, 1, 0, ?)
                 """,
-                (handle.lstrip("@"), filters_json, frequency, created_at),
+                (handle.lstrip("@"), user_id, filters_json, frequency, created_at),
             )
-            conn.commit()
-        except sqlite3.IntegrityError as e:
+            await self._db.commit()
+        except Exception as e:
             raise ValueError(f"Watch for @{handle} already exists") from e
-        return self.get_watch(handle.lstrip("@"))  # type: ignore[return-value]
+        return await self.get_watch(handle.lstrip("@"))
 
-    def list_watches(self) -> list[dict]:
-        """Return all author watches as a list of dicts."""
-        conn = self._require_conn()
-        rows = conn.execute("SELECT * FROM x_author_watches ORDER BY created_at DESC").fetchall()
+    async def list_watches(self, user_id: str | None = None) -> list[dict]:
+        """Return all author watches as a list of dicts.
+        
+        If user_id is provided, only returns watches for that user.
+        If user_id is None, returns all watches (admin view).
+        """
+        if user_id is None:
+            sql = "SELECT * FROM x_author_watches ORDER BY created_at DESC"
+            params = []
+        else:
+            sql = "SELECT * FROM x_author_watches WHERE user_id = ? ORDER BY created_at DESC"
+            params = [user_id]
+        
+        async with self._db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    def get_watch(self, handle: str) -> dict | None:
+    async def get_watch(self, handle: str) -> dict | None:
         """Return a single watch by handle, or None if not found."""
-        conn = self._require_conn()
-        row = conn.execute(
+        async with self._db.execute(
             "SELECT * FROM x_author_watches WHERE handle = ?",
             (handle.lstrip("@"),),
-        ).fetchone()
+        ) as cursor:
+            row = await cursor.fetchone()
         return self._row_to_dict(row) if row else None
 
-    def update_watch(self, handle: str, updates: dict) -> dict | None:
+    async def update_watch(self, handle: str, updates: dict) -> dict | None:
         """Update an existing watch.
 
         Allowed keys in ``updates``: filters, frequency, enabled, last_check.
@@ -326,9 +327,7 @@ class XWatchStore:
         Returns:
             Updated watch dict, or None if handle not found.
         """
-        conn = self._require_conn()
-        handle = handle.lstrip("@")
-        existing = self.get_watch(handle)
+        existing = await self.get_watch(handle)
         if existing is None:
             return None
 
@@ -349,30 +348,30 @@ class XWatchStore:
         if not set_clauses:
             return existing
 
-        params.append(handle)
-        conn.execute(
+        params.append(handle.lstrip("@"))
+        await self._db.execute(
             f"UPDATE x_author_watches SET {', '.join(set_clauses)} WHERE handle = ?",
             params,
         )
-        conn.commit()
-        return self.get_watch(handle)
+        await self._db.commit()
+        return await self.get_watch(handle)
 
-    def delete_watch(self, handle: str) -> bool:
+    async def delete_watch(self, handle: str) -> bool:
         """Delete a watch by handle.
 
         Returns:
             True if a row was deleted, False if handle was not found.
         """
-        conn = self._require_conn()
-        cursor = conn.execute(
+        cursor = await self._db.execute(
             "DELETE FROM x_author_watches WHERE handle = ?",
             (handle.lstrip("@"),),
         )
-        conn.commit()
+        await self._db.commit()
         return cursor.rowcount > 0
 
     @staticmethod
-    def _row_to_dict(row: sqlite3.Row) -> dict:
+    def _row_to_dict(row: tuple) -> dict:
+        """Convert SQLite row to dict, handling filters_json."""
         d = dict(row)
         try:
             d["filters"] = json.loads(d.pop("filters_json", "{}") or "{}")

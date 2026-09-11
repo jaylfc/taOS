@@ -59,6 +59,7 @@ from tinyagentos.coding_workspaces import CodingWorkspaceStore
 from tinyagentos.install_registry import InstallRegistryStore
 from tinyagentos.store_submissions import StoreSubmissionStore
 from tinyagentos.qmd_client import QmdClient
+from tinyagentos.knowledge_fetchers.x import XWatchStore
 from tinyagentos.backend_adapters import check_backend_health
 from tinyagentos.benchmark import BenchmarkStore
 from tinyagentos.installation_state import InstallationState
