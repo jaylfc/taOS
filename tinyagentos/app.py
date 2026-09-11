@@ -117,6 +117,7 @@ from tinyagentos.mcp import MCPServerStore, MCPSupervisor
 from tinyagentos.frameworks import FRAMEWORKS, FrameworkManifestError, validate_framework_manifest
 
 PROJECT_DIR = Path(__file__).parent.parent
+from tinyagentos.data_dir import resolve_data_dir
 
 # Paths that must remain accessible before startup completes (health checks,
 # static assets, auth endpoints).  Everything else gets 503 until the lifespan
@@ -170,7 +171,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.registry import AppRegistry
     from tinyagentos.hardware import get_hardware_profile
 
-    data_dir = data_dir or PROJECT_DIR / "data"
+    data_dir = resolve_data_dir(data_dir)
     config_path = data_dir / "config.yaml"
     # Copy example config on first run
     if not config_path.exists():
@@ -1911,8 +1912,7 @@ def _recover_password_cli(argv) -> int:
     )
     ns = parser.parse_args(argv)
 
-    override = ns.data_dir or os.environ.get("TAOS_DATA_DIR")
-    data_dir = Path(override) if override else (PROJECT_DIR / "data")
+    data_dir = resolve_data_dir(Path(ns.data_dir) if ns.data_dir else None)
 
     new_password = ns.password
     if not new_password:

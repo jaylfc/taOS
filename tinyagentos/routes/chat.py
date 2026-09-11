@@ -9,9 +9,14 @@ from pathlib import Path
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 
+from tinyagentos.data_dir import resolve_data_dir
 from tinyagentos.chat.reactions import maybe_trigger_semantic
 
 router = APIRouter()
+
+
+def _data_dir() -> Path:
+    return resolve_data_dir()
 
 
 _SLASH_GROUP_GUARD_ERROR = (
@@ -344,8 +349,7 @@ async def post_message(request: Request):
         return JSONResponse({"error": "attachments must be a list"}, status_code=400)
     if len(attachments) > 10:
         return JSONResponse({"error": "max 10 attachments per message"}, status_code=400)
-    data_dir = Path(getattr(request.app.state, "data_dir",
-                            Path(os.environ.get("TAOS_DATA_DIR", "./data"))))
+    data_dir = getattr(request.app.state, "data_dir", _data_dir())
     chat_files = data_dir / "chat-files"
     for att in attachments:
         if not isinstance(att, dict):

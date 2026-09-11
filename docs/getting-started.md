@@ -414,7 +414,7 @@ The `-f` flag follows the log in real time.
 
 ## 8. Backup
 
-taOS stores your configuration, agent data, secrets, and memories in `~/tinyagentos/data/` (or `$TAOS_INSTALL_DIR/data/` if you set a custom install path).
+taOS stores your configuration, agent data, secrets, and memories in `~/tinyagentos/data/` (or `$TAOS_INSTALL_DIR/data/` if you set a custom install path). Override the data directory at runtime with the `TAOS_DATA_DIR` environment variable: precedence is `data_dir` argument (API/programmatic) > `TAOS_DATA_DIR` env var > `<project>/data` default. Setting both `TAOS_DATA_DIR` and an explicit `data_dir` to different paths is a configuration error and the controller will refuse to start.
 
 ### Backup via Settings
 

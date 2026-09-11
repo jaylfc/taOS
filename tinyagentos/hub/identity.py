@@ -53,6 +53,7 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 from tinyagentos.atomic_io import atomic_create_bytes, atomic_write_bytes
+from tinyagentos.data_dir import resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +71,7 @@ _FIELDS = (
 
 
 def _data_dir() -> Path:
-    env = os.environ.get("TAOS_DATA_DIR")
-    if env:
-        return Path(env)
-    # tinyagentos/hub/identity.py -> project root is two parents up.
-    return Path(__file__).resolve().parent.parent.parent / "data"
+    return resolve_data_dir()
 
 
 def _hub_dir() -> Path:

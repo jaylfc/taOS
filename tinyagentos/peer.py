@@ -21,6 +21,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+from tinyagentos.data_dir import resolve_data_dir
 from tinyagentos.hub.identity import (
     public_identity,
     sign as _sign,
@@ -304,6 +305,10 @@ def _canonical_json(obj: dict) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
+def _data_dir() -> Path:
+    return resolve_data_dir()
+
+
 def resolve_local_identity_id(data_dir: str | Path | None = None) -> str | None:
     """Return this node's local hub identity ID (``"hub:<username>"``), or None.
 
@@ -316,16 +321,8 @@ def resolve_local_identity_id(data_dir: str | Path | None = None) -> str | None:
     except Exception:
         return None
 
-    # Resolve hub.db path the same way hub.store resolves it:
-    # TAOS_DATA_DIR override, else project data dir.
-    if data_dir:
-        hub_dir = Path(data_dir) / "hub"
-    else:
-        env = os.environ.get("TAOS_DATA_DIR")
-        if env:
-            hub_dir = Path(env) / "hub"
-        else:
-            hub_dir = Path(__file__).resolve().parent.parent / "data" / "hub"
+    _resolved = resolve_data_dir(Path(data_dir) if data_dir else None)
+    hub_dir = _resolved / "hub"
 
     hub_db = hub_dir / "hub.db"
     if not hub_db.is_file():

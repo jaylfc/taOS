@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from tinyagentos.atomic_io import atomic_write_bytes
+from tinyagentos.data_dir import resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +49,7 @@ _FIELDS = (
 
 
 def _data_dir() -> Path:
-    env = os.environ.get("TAOS_DATA_DIR")
-    if env:
-        return Path(env)
-    # tinyagentos/taosnet/mesh_credentials.py -> project root is two parents up.
-    return Path(__file__).resolve().parent.parent.parent / "data"
+    return resolve_data_dir()
 
 
 def _path() -> Path:
