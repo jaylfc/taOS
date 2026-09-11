@@ -326,6 +326,11 @@ Two details of the agent path are load-bearing, so do not "tidy" either one:
   the LAN. Operators with a remote `http://` bus can restore forwarding by
   setting `TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL`.
 
+  `POST /api/a2a/bus/send` returns `credential_forwarded: bool` alongside
+  `ok` and `from`, telling the caller whether its credential was attached to
+  the bus request. The field is `true` when the header was sent, `false` when
+  it was withheld or when the caller had no credential to forward.
+
 Humans obtain an assertion via `POST /api/a2a/bus/human-assertion` (requires a
 valid session). For a human principal the controller derives the sender from the
 credential: `_resolve_send_identity` resolves the token's `user_id` to

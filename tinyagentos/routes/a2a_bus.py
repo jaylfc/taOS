@@ -86,10 +86,16 @@ def _credential_may_cross(bus_url: str) -> bool:
 
     The host check uses parsed address resolution, not substring matching:
     ``http://127.0.0.1.evil.test:7900`` does NOT count as loopback.
+
+    Any scheme other than ``https`` or ``http`` (including a missing scheme)
+    returns False so a malformed bus URL never accidentally forwards the
+    credential.
     """
     parsed = urlparse(bus_url)
-    if parsed.scheme != "http":
+    if parsed.scheme == "https":
         return True
+    if parsed.scheme != "http":
+        return False
     hostname = (parsed.hostname or "").lower()
     if not hostname:
         return False
@@ -581,10 +587,12 @@ async def bus_send(request: Request, body: BusSendBody):
         payload["reply_to"] = body.reply_to
 
     headers: dict[str, str] = {}
+    credential_forwarded = False
     if identity.credential:
         bus = _bus_url()
         if _credential_may_cross(bus):
             headers["Authorization"] = f"Bearer {identity.credential}"
+            credential_forwarded = True
         else:
             logger.warning(
                 "A2A bus credential withheld for non-loopback http destination %s",
@@ -603,7 +611,7 @@ async def bus_send(request: Request, body: BusSendBody):
         logger.warning("A2A bus send failed (%s): %s", bus, exc)
         raise HTTPException(status_code=502, detail="a2a bus unavailable")
 
-    return {"ok": True, "from": identity.from_handle, "message": data}
+    return {"ok": True, "from": identity.from_handle, "message": data, "credential_forwarded": credential_forwarded}
 
 
 @router.post("/api/a2a/bus/human-assertion")
