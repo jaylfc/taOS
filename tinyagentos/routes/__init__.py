@@ -229,6 +229,9 @@ def register_all_routers(app):
     from tinyagentos.routes.chat_admin import router as chat_admin_router
     app.include_router(chat_admin_router, dependencies=_csrf)
 
+    from tinyagentos.routes.chat_unified_bus_view import router as chat_unified_bus_view_router
+    app.include_router(chat_unified_bus_view_router, dependencies=_csrf)
+
     from tinyagentos.routes.canvas import router as canvas_router
     app.include_router(canvas_router, dependencies=_csrf)
 
