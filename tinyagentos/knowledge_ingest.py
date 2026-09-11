@@ -260,22 +260,39 @@ class IngestPipeline:
 
             # Step 2: categorise
             categories = item["categories"] or []
+            category_error = None
             if not categories:
-                categories = await self._category_engine.categorise(
-                    source_type=item["source_type"],
-                    source_url=item["source_url"],
-                    title=title or item["source_url"],
-                    summary="",
-                    metadata=metadata,
-                )
+                try:
+                    categories = await self._category_engine.categorise(
+                        source_type=item["source_type"],
+                        source_url=item["source_url"],
+                        title=title or item["source_url"],
+                        summary="",
+                        metadata=metadata,
+                    )
+                except Exception as exc:
+                    category_error = str(exc)
+                    logger.warning("Category LLM call failed for %s: %s", item_id, exc)
+                    categories = []
 
             # Step 3: summarise via LLM (best-effort, non-fatal)
-            summary = await self._summarise(title, content)
+            summary = ""
+            llm_error = None
+            try:
+                summary = await self._summarise(title, content)
+            except Exception as exc:
+                llm_error = str(exc)
+                logger.warning("Summarise LLM call failed for %s: %s", item_id, exc)
 
             # Step 4: embed via QMD (best-effort, non-fatal)
             embed_failures = await self._embed(item_id, title, content)
 
             # Step 5: write final data
+            if llm_error:
+                metadata["llm_summarise_error"] = llm_error
+            if category_error:
+                metadata["llm_category_error"] = category_error
+
             await self._store.update_item(
                 item_id,
                 title=title or item["source_url"],
@@ -285,7 +302,7 @@ class IngestPipeline:
                 categories=categories,
                 metadata=metadata,
             )
-            if embed_failures:
+            if embed_failures or llm_error or category_error:
                 await self._store.update_status(item_id, "partial")
             else:
                 await self._store.update_status(item_id, "ready")
@@ -448,18 +465,21 @@ class IngestPipeline:
             f"Be specific about what the content covers and who it is useful for.\n\n"
             f"Title: {title}\n\nContent:\n{truncated}"
         )
-        try:
-            resp = await self._http_client.post(
-                f"{self._llm_base_url}/generate",
-                json={"prompt": prompt, "max_tokens": 150},
-                timeout=60,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("text", data.get("content", "")).strip()
-        except Exception as exc:
-            logger.warning("Summarise LLM call failed: %s", exc)
-            return ""
+        resp = await self._http_client.post(
+            f"{self._llm_base_url}/v1/chat/completions",
+            json={
+                "model": "default",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 150,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        choices = data.get("choices", [])
+        if choices:
+            return choices[0].get("message", {}).get("content", "").strip()
+        return ""
 
     # ------------------------------------------------------------------
     # Embed step

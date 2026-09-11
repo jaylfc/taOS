@@ -65,15 +65,12 @@ class CategoryEngine:
                     matched.append(rule["category"])
 
         if not matched:
-            try:
-                matched = await self._llm_categorise(
-                    source_type=source_type,
-                    source_url=source_url,
-                    title=title,
-                    summary=summary,
-                )
-            except Exception as exc:
-                logger.warning("LLM category fallback failed: %s", exc)
+            matched = await self._llm_categorise(
+                source_type=source_type,
+                source_url=source_url,
+                title=title,
+                summary=summary,
+            )
 
         return matched
 
@@ -111,13 +108,21 @@ class CategoryEngine:
         )
 
         resp = await self._http_client.post(
-            self._llm_url,
-            json={"prompt": prompt, "max_tokens": 60},
+            f"{self._llm_url}/v1/chat/completions",
+            json={
+                "model": "default",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 60,
+            },
             timeout=30,
         )
         resp.raise_for_status()
         data = resp.json()
-        raw = data.get("text", data.get("content", "[]"))
+        choices = data.get("choices", [])
+        if choices:
+            raw = choices[0].get("message", {}).get("content", "[]")
+        else:
+            raw = "[]"
 
         import json
         try:
