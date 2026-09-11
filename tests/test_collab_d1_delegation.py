@@ -841,7 +841,7 @@ class TestManualApprovalWiring:
 
         from tinyagentos.decisions.decision_store import DecisionStore
         from tinyagentos.projects.invite_store import ProjectInviteStore
-        from tinyagentos.routes.decisions import AnswerIn, answer_decision
+        from tinyagentos.routes.decisions import SERVER_RAISED_KEY, AnswerIn, answer_decision
 
         invite_store = ProjectInviteStore(tmp_path / "invites.db")
         await invite_store.init()
@@ -868,6 +868,7 @@ class TestManualApprovalWiring:
             project_id="prj-test",
             user_id="admin-user",
             metadata={
+                SERVER_RAISED_KEY: True,
                 "kind": "collab_delegation_gate",
                 "contact_id": "hub:sponsor",
                 "agent_slug": "grok-taos",
@@ -907,6 +908,68 @@ class TestManualApprovalWiring:
 
         from tinyagentos.decisions.decision_store import DecisionStore
         from tinyagentos.projects.invite_store import ProjectInviteStore
+        from tinyagentos.routes.decisions import SERVER_RAISED_KEY, AnswerIn, answer_decision
+
+        invite_store = ProjectInviteStore(tmp_path / "invites.db")
+        await invite_store.init()
+        decision_store = DecisionStore(tmp_path / "decisions.db")
+        await decision_store.init()
+
+        project_store = AsyncMock()
+        project_store.is_project_member.return_value = True
+
+        request = MagicMock()
+        request.app.state.project_invites = invite_store
+        request.app.state.project_store = project_store
+        request.app.state.decision_store = decision_store
+
+        decision = await decision_store.create(
+            from_agent="hub:sponsor",
+            question="delegation gate",
+            type="approve_deny",
+            priority="blocking",
+            project_id="prj-test",
+            user_id="admin-user",
+            metadata={
+                SERVER_RAISED_KEY: True,
+                "kind": "collab_delegation_gate",
+                "contact_id": "hub:sponsor",
+                "agent_slug": "grok-taos",
+                "display_name": "Grok TAOS",
+                "granted_scopes": ["a2a_send"],
+                "denied_scopes": [],
+                "project_id": "prj-test",
+            },
+        )
+
+        user = MagicMock()
+        user.is_admin = True
+        user.user_id = "admin-user"
+
+        updated = await answer_decision(
+            decision["id"], AnswerIn(value="deny"), request, user
+        )
+
+        assert updated["status"] == "answered"
+        invites = await invite_store.list_for_project("prj-test")
+        assert invites == []
+
+        await invite_store.close()
+        await decision_store.close()
+
+    @pytest.mark.asyncio
+    async def test_gate_card_without_server_provenance_mints_nothing(self, tmp_path):
+        """tsk-mul5pa provenance (post-#2748): a collab_delegation_gate decision
+        whose metadata lacks the server-stamped `_server_raised` marker — the
+        shape a caller could persist through the public create path, which
+        strips the marker but does not restrict `kind` — must NOT mint a
+        sponsored invite on approval.  This mirrors the red direction of the
+        other four `_apply_*_grant` guards; it exists so a future drop of the
+        guard in `_apply_collab_delegation_grant` fails this test."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from tinyagentos.decisions.decision_store import DecisionStore
+        from tinyagentos.projects.invite_store import ProjectInviteStore
         from tinyagentos.routes.decisions import AnswerIn, answer_decision
 
         invite_store = ProjectInviteStore(tmp_path / "invites.db")
@@ -922,6 +985,8 @@ class TestManualApprovalWiring:
         request.app.state.project_store = project_store
         request.app.state.decision_store = decision_store
 
+        # Deliberately NO _server_raised marker — this is what a caller-supplied
+        # card looks like after the create route strips it.
         decision = await decision_store.create(
             from_agent="hub:sponsor",
             question="delegation gate",
@@ -945,7 +1010,7 @@ class TestManualApprovalWiring:
         user.user_id = "admin-user"
 
         updated = await answer_decision(
-            decision["id"], AnswerIn(value="deny"), request, user
+            decision["id"], AnswerIn(value="approve"), request, user
         )
 
         assert updated["status"] == "answered"

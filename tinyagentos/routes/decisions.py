@@ -37,12 +37,13 @@ _ANSWER_THREAD = "decisions"
 # surface, not an approval channel), and the agent mirror path must refuse them
 # so an agent cannot self-approve a gate it created.  Keeping the list in one
 # place prevents drift between the two call sites and the applier functions.
-GATE_DECISION_KINDS = ("execution_gate", "delegation_gate", "app_grant")
+GATE_DECISION_KINDS = ("execution_gate", "delegation_gate", "app_grant", "collab_delegation_gate")
 
 # Server-stamped provenance marker for gate decisions (tsk-mul5pa).  The
 # public create path strips this key so an API caller can never self-stamp a
 # privileged gate; only the internal raisers (peer-inbox delegation dispatch,
-# execution-gate raiser, device-pairing raiser, app-grant flow) set it.  Every
+# execution-gate raiser, device-pairing raiser, app-grant flow, collab
+# delegation-gate raiser) set it.  Every
 # _apply_*_grant handler refuses to act when it is absent, so a caller-supplied
 # metadata.kind can never mint a grant on approval.
 SERVER_RAISED_KEY = "_server_raised"
@@ -872,6 +873,12 @@ async def _apply_collab_delegation_grant(request: Request, decision: dict, value
     Mirrors ``_apply_delegation_grant``: the answer is already persisted, so a
     mint hiccup must not fail the answer."""
     meta = decision.get("metadata") or {}
+    if meta.get(SERVER_RAISED_KEY) is not True:
+        logger.warning(
+            "gate decision %s refused: missing server provenance (kind=%r)",
+            decision.get("id"), meta.get("kind"),
+        )
+        return False
     if meta.get("kind") != "collab_delegation_gate":
         return False
     approved = value == "approve"

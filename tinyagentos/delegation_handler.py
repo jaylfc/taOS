@@ -15,6 +15,7 @@ import time
 from typing import Optional
 
 from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
+from tinyagentos.routes.decisions import SERVER_RAISED_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,9 @@ async def process_delegation_request(
 
     1. Validate envelope body structure.
     2. Verify the contact has ``member_kind="human"`` in the target project.
-    3. Apply scope denylist (strip ``files_write``, ``decisions_write``).
+    3. Apply scope denylist: ``files_write`` and ``decisions_write`` are moved
+       into a hard-denied set and never granted (not silently stripped from the
+       request).
     4. Check ``auto_approve_delegation`` project setting.
        - If ON (dev-swarm future): auto-mint invite, return result.
        - If OFF (v1 default): create a blocking Decisions card.
@@ -237,6 +240,7 @@ async def _create_delegation_decision(
             priority="blocking",
             project_id=project_id,
             metadata={
+                SERVER_RAISED_KEY: True,
                 "kind": "collab_delegation_gate",
                 "contact_id": contact_id,
                 "agent_slug": agent_slug,
