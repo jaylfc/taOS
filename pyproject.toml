@@ -78,6 +78,9 @@ dependencies = [
     # relicence or CVE reached users without tripping any gate. Declared here so
     # it goes through the lockfile like everything else.
     "yt-dlp>=2025.1.15",
+    # CSS URL rewriter using tinycss2 for @import and url() handling
+    "tinycss2>=1.5.1",
+    "webencodings>=0.2.0",
 ]
 
 [project.optional-dependencies]

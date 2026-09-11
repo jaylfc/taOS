@@ -36,16 +36,160 @@ from lxml import html as lxml_html
 
 
 # Schemes we never rewrite — these aren't HTTP fetches the proxy can serve.
-_SKIP_PREFIXES = (
-    "data:", "javascript:", "mailto:", "tel:", "blob:", "about:", "#",
-)
+def rewrite_css_text(
+    text: str, *, base_url: str, proxy: Callable[[str], str],
+) -> str:
+    """Parse CSS with tinycss2, rewrite url() and @import, and reserialize.
+
+    tinycss2 tokenizes CSS completely, preserving all quotes and spacing so
+    that serialized output is valid CSS that matches the original byte-for-byte
+    except for rewritten URLs. This avoids the regex pitfalls with data-URIs
+    containing parentheses and correctly handles @import rules.
+    """
+    from tinycss2 import parse_stylesheet
+    import tinycss2.ast as tinycss2_ast
+
+    # Parse the CSS
+    tokens = parse_stylesheet(text, skip_comments=True, skip_whitespace=True)
+
+    # Use _serialize_to for proper serialization
+    output = []
+    
+    for token in tokens:
+        # Skip ParseError tokens (e.g., data-URIs that tinycss2 can't parse)
+        if token.type == "error":
+            continue
+
+        # Handle @import at-rules
+        if token.type == "at-rule" and token.lower_at_keyword == "import":
+            # Create new prelude with rewritten URLs
+            new_prelude = []
+            for p in token.prelude:
+                if p.type == "string":
+                    # This is a URL in the @import rule
+                    new_url = _rewrite_one(p.value, base_url=base_url, proxy=proxy)
+                    # Create new string token with rewritten URL
+                    new_prelude.append(tinycss2_ast.StringToken(
+                        new_url,
+                        p.source_line,
+                        p.source_column,
+                        p.representation,
+                    ))
+                else:
+                    new_prelude.append(p)
+            
+            # Update the token's prelude
+            token = tinycss2_ast.AtRule(
+                token.at_keyword,
+                token.content,
+                token.lower_at_keyword,
+                new_prelude,
+            )
+            
+        # Handle url() functions (FunctionBlock tokens)
+        elif token.type == "function" and token.lower_name == "url":
+            # Rewrite URL in the function
+            if token.arguments and len(token.arguments) > 0:
+                arg = token.arguments[0]
+                if arg.type == "string":
+                    new_url = _rewrite_one(arg.value, base_url=base_url, proxy=proxy)
+                    new_arg = tinycss2_ast.StringToken(
+                        new_url,
+                        arg.source_line,
+                        arg.source_column,
+                        arg.representation,
+                    )
+                    token = tinycss2_ast.FunctionBlock(
+                        token.name,
+                        [new_arg],
+                        token.lower_name,
+                    )
+        
+        # Serialize the token
+        def write(text):
+            output.append(text)
+        
+        tinycss2_ast._serialize_to([token], write)
+
+    return ''.join(output)
 
 
-# CSS url() rewriter — captures url(), url(""), url('').
-_CSS_URL_RE = re.compile(
-    r"""url\(\s*(['"]?)([^)'"]+)\1\s*\)""",
-    re.IGNORECASE,
-)
+def _rewrite_css_text(
+    text: str, *, base_url: str, proxy: Callable[[str], str],
+) -> str:
+    """Parse CSS with tinycss2, rewrite url() and @import, and reserialize.
+
+    tinycss2 tokenizes CSS completely, preserving all quotes and spacing so
+    that serialized output is valid CSS that matches the original byte-for-byte
+    except for rewritten URLs. This avoids the regex pitfalls with data-URIs
+    containing parentheses and correctly handles @import rules.
+    """
+    from tinycss2 import parse_stylesheet
+    import tinycss2.ast as tinycss2_ast
+
+    # Parse the CSS
+    tokens = parse_stylesheet(text, skip_comments=True, skip_whitespace=True)
+
+    # Use _serialize_to for proper serialization
+    output = []
+    
+    for token in tokens:
+        # Skip ParseError tokens (e.g., data-URIs that tinycss2 can't parse)
+        if token.type == "error":
+            continue
+
+        # Handle @import at-rules
+        if token.type == "at-rule" and token.lower_at_keyword == "import":
+            # Create new prelude with rewritten URLs
+            new_prelude = []
+            for p in token.prelude:
+                if p.type == "string":
+                    # This is a URL in the @import rule
+                    new_url = _rewrite_one(p.value, base_url=base_url, proxy=proxy)
+                    # Create new string token with rewritten URL
+                    new_prelude.append(tinycss2_ast.StringToken(
+                        new_url,
+                        p.source_line,
+                        p.source_column,
+                        p.representation,
+                    ))
+                else:
+                    new_prelude.append(p)
+            
+            # Update the token's prelude
+            token = tinycss2_ast.AtRule(
+                token.at_keyword,
+                token.content,
+                token.lower_at_keyword,
+                new_prelude,
+            )
+            
+        # Handle url() functions (FunctionBlock tokens)
+        elif token.type == "function" and token.lower_name == "url":
+            # Rewrite URL in the function
+            if token.arguments and len(token.arguments) > 0:
+                arg = token.arguments[0]
+                if arg.type == "string":
+                    new_url = _rewrite_one(arg.value, base_url=base_url, proxy=proxy)
+                    new_arg = tinycss2_ast.StringToken(
+                        new_url,
+                        arg.source_line,
+                        arg.source_column,
+                        arg.representation,
+                    )
+                    token = tinycss2_ast.FunctionBlock(
+                        token.name,
+                        [new_arg],
+                        token.lower_name,
+                    )
+        
+        # Serialize the token
+        def write(text):
+            output.append(text)
+        
+        tinycss2_ast._serialize_to([token], write)
+
+    return ''.join(output)
 
 
 # Kept in sync with the proxy route path in proxy.py. GET forms submit to this
