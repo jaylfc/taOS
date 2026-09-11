@@ -1436,7 +1436,7 @@ class AddCommentIn(_TaskRequestModelMixin, BaseModel):
     replies_to_comment_id: str | None = None
 
 
-class CreateChecklistItemIn(BaseModel):
+class CreateChecklistItemIn(_TaskRequestModelMixin, BaseModel):
     text: str
 
 

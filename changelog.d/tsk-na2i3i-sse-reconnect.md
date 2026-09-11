@@ -1,2 +1,0 @@
-### Fixed
-- **desktop-command SSE stream never reconnects after a 401 or controller restart**: promoted the reconnect + backoff + dedupe logic from `use-os-events.ts` into a shared `lib/sse.ts` and pointed all eight SSE consumers (`use-desktop-command-stream`, `use-event-stream`, `use-os-events`, canvas SSE, project events, FilesApp watch, MCP logs, and SettingsApp logs) at it. Added RED tests proving the desktop-command stream reconnects after a hard close and that backoff is no longer duplicated across hooks.
