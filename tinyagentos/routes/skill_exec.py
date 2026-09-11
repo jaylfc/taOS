@@ -16,6 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from tinyagentos.routes.decisions import SERVER_RAISED_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -669,6 +670,7 @@ async def _check_execution_policy(
                 type="approve_deny",
                 priority="blocking",
                 metadata={
+                    SERVER_RAISED_KEY: True,
                     "kind": "execution_gate",
                     "agent_name": agent_name,
                     "action_class": action_class,

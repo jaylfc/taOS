@@ -32,6 +32,7 @@ import secrets
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+from tinyagentos.routes.decisions import SERVER_RAISED_KEY
 
 from tinyagentos.device_pair_requests_store import (
     DevicePairRequestsStore,
@@ -157,6 +158,7 @@ async def create_pair_request(request: Request, body: CreatePairRequest):
                 project_id=None,
                 user_id=admin_id,
                 metadata={
+                    SERVER_RAISED_KEY: True,
                     "kind": "device_pairing",
                     "pair_request_id": pair_request_id,
                 },

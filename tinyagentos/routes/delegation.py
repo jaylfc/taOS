@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from tinyagentos.agent_db import find_agent
+from tinyagentos.routes.decisions import SERVER_RAISED_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +208,7 @@ async def _check_delegation_policy(
             priority="blocking",
             project_id=project_id,
             metadata={
+                SERVER_RAISED_KEY: True,
                 "kind": "delegation_gate",
                 "from_agent": from_agent,
                 "to_agent": to_agent,

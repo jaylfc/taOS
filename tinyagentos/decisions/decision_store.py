@@ -46,6 +46,19 @@ CREATE INDEX IF NOT EXISTS idx_decisions_user ON decisions(user_id, status);
 
 _JSON_FIELDS = ("options", "answer", "metadata")
 
+# Gate decision kinds whose approval carries a privileged grant side effect.
+# Must stay in sync with the four ``_apply_*_grant`` handlers in
+# routes/decisions.py (execution_gate, delegation_gate, device_pairing,
+# app_grant).  NOTE this is intentionally NOT routes.decisions.GATE_DECISION_KINDS
+# — that tuple omits ``device_pairing`` (it names only the kinds a device bearer
+# or the asking agent may not answer); the backfill below has to cover all four
+# guarded handlers, so ``device_pairing`` is listed here explicitly.
+GATE_GRANT_KINDS = ("execution_gate", "delegation_gate", "device_pairing", "app_grant")
+# Marker literal (must stay == routes.decisions.SERVER_RAISED_KEY).  Defined
+# here too because decision_store cannot import from routes (circular); the
+# backfill stamps legacy rows and needs the exact key string.
+SERVER_RAISED_KEY = "_server_raised"
+
 # Sentinel for "argument not supplied" -- distinguished from an explicit None,
 # which means "match NULL project_id" (IS NULL) rather than "no filter".
 # A bare ``project_id = ?`` with a NULL parameter matches nothing in SQL, so
@@ -77,6 +90,77 @@ class DecisionStore(BaseStore):
         if "metadata" not in cols:
             await self._db.execute(
                 "ALTER TABLE decisions ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
+            )
+            await self._db.commit()
+
+        # tsk-mul5pa upgrade backfill: gate decisions persisted before the
+        # server-stamped provenance marker landed have no `_server_raised` key,
+        # so approving them after upgrade would hit the new early-return in every
+        # _apply_*_grant and silently no-op.  Those pre-upgrade rows must be
+        # stamped once so a legitimate pending approval still mints.
+        #
+        # The bound is TIME, not status: without a real one-time gate, a caller
+        # could POST a gate-kind decision through the public route (the create
+        # path strips the marker but does not restrict `kind`), leave it pending,
+        # and have it stamped by the next restart — re-opening the exact caller-
+        # minted-privileges hole this PR closes.  So we record the upgrade
+        # instant on first run in a persisted marker row, and only ever stamp
+        # rows whose `created_at` strictly predates it.  A row created through
+        # the public route after deploy has `created_at` >= that instant and is
+        # never stamped; the marker makes the whole thing run exactly once.
+        # The marker table may not exist yet (first run after this deploy).
+        # Check with a guarded PRAGMA, mirroring the metadata-column check above,
+        # rather than SELECT-ing a table that is not there yet.
+        tables = {
+            row[0]
+            for row in await (
+                await self._db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='gate_provenance_backfill'"
+                )
+            ).fetchall()
+        }
+        marker = None
+        if tables:
+            marker = await (
+                await self._db.execute(
+                    "SELECT upgraded_at FROM gate_provenance_backfill WHERE key = ?",
+                    ("server_raised",),
+                )
+            ).fetchone()
+        if marker is None:
+            upgrade_at = time.time()
+            rows = await (
+                await self._db.execute(
+                    "SELECT id, metadata, created_at FROM decisions "
+                    "WHERE status = 'pending' AND created_at < ?",
+                    (upgrade_at,),
+                )
+            ).fetchall()
+            to_stamp = []
+            for decision_id, metadata_json, _created_at in rows:
+                try:
+                    meta = json.loads(metadata_json) if metadata_json else {}
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(meta, dict):
+                    continue
+                if meta.get(SERVER_RAISED_KEY) is True:
+                    continue
+                if meta.get("kind") not in GATE_GRANT_KINDS:
+                    continue
+                meta[SERVER_RAISED_KEY] = True
+                to_stamp.append((json.dumps(meta), decision_id))
+            if to_stamp:
+                await self._db.executemany(
+                    "UPDATE decisions SET metadata = ? WHERE id = ?", to_stamp
+                )
+            await self._db.execute(
+                "CREATE TABLE IF NOT EXISTS gate_provenance_backfill "
+                "(key TEXT PRIMARY KEY, upgraded_at REAL NOT NULL)"
+            )
+            await self._db.execute(
+                "INSERT INTO gate_provenance_backfill (key, upgraded_at) VALUES (?, ?)",
+                ("server_raised", upgrade_at),
             )
             await self._db.commit()
 
