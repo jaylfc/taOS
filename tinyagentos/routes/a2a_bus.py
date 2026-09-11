@@ -33,10 +33,12 @@ Bus API (verified live):
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import math
 import os
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import httpx
 import asyncio
@@ -63,6 +65,44 @@ _STREAM_HEARTBEAT_SEC = 25
 def _bus_url() -> str:
     """Resolve the bus base URL from the environment, trailing slash stripped."""
     return os.environ.get("TAOS_A2A_BUS_URL", _DEFAULT_BUS_URL).rstrip("/")
+
+
+def _credential_may_cross(bus_url: str) -> bool:
+    """Return True when the caller's registry credential may be forwarded to *bus_url*.
+
+    The credential is forwarded over:
+
+    - any ``https://`` destination (TLS protects it in transit), or
+    - an ``http://`` destination whose host is a loopback address
+      (``127.0.0.1``, ``::1``, or the literal hostname ``localhost``), because
+      the traffic never leaves the host.
+
+    Non-loopback ``http://`` destinations drop the credential: forwarding a
+    long-lived registry JWT in cleartext across the LAN would hand a replayable
+    credential to a passive observer.
+
+    The operator can opt back in for a specific non-loopback deployment by
+    setting ``TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL`` to any truthy value.
+
+    The host check uses parsed address resolution, not substring matching:
+    ``http://127.0.0.1.evil.test:7900`` does NOT count as loopback.
+    """
+    parsed = urlparse(bus_url)
+    if parsed.scheme != "http":
+        return True
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        return False
+    if hostname == "localhost":
+        return True
+    try:
+        addr = ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        if addr.is_loopback:
+            return True
+    return bool(os.environ.get("TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL"))
 
 
 async def _authorize_bus_read(request: Request) -> None:
@@ -542,10 +582,14 @@ async def bus_send(request: Request, body: BusSendBody):
 
     headers: dict[str, str] = {}
     if identity.credential:
-        # Only ever sent to the OPERATOR-configured bus URL (`TAOS_A2A_BUS_URL`,
-        # default loopback): the credential is the caller's own, and the bus is
-        # the one service that must see it to verify the sender.
-        headers["Authorization"] = f"Bearer {identity.credential}"
+        bus = _bus_url()
+        if _credential_may_cross(bus):
+            headers["Authorization"] = f"Bearer {identity.credential}"
+        else:
+            logger.warning(
+                "A2A bus credential withheld for non-loopback http destination %s",
+                bus,
+            )
 
     bus = _bus_url()
     try:

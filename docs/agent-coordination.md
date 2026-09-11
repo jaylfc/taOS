@@ -320,14 +320,20 @@ Two details of the agent path are load-bearing, so do not "tidy" either one:
 - The proxy forwards the caller's registry JWT to the bus as
   `Authorization: Bearer ...`. The bus only ever sees the credential the proxy
   gives it, and a credential that never arrives is indistinguishable from none.
+  The proxy only attaches the header when the bus URL is `https://` or a
+  loopback `http://` host (`127.0.0.1`, `::1`, `localhost`); a non-loopback
+  `http://` bus drops the credential to avoid sending it in cleartext across
+  the LAN. Operators with a remote `http://` bus can restore forwarding by
+  setting `TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL`.
 
 Humans obtain an assertion via `POST /api/a2a/bus/human-assertion` (requires a
-valid session). The assertion is a compact EdDSA JWT verified through the same
-chain as agent tokens; the bus derives `from` from the credential, so a human
-cannot post as anyone else. The assertion is verified by the CONTROLLER and is
-not forwarded to the bus today: a human assertion's `sub` is the user_id while
-its bus `from` is `@<username>`, and how the bus resolves a human principal's
-spelling is still open (taosmd `a2a-bus-auth-transition`, open question 1).
+valid session). For a human principal the controller derives the sender from the
+credential: `_resolve_send_identity` resolves the token's `user_id` to
+`@<username>`, and no credential is forwarded to the bus. The assertion is a
+compact EdDSA JWT verified through the same chain as agent tokens, but the bus's
+principal-spelling policy for humans is still open (taosmd
+`a2a-bus-auth-transition`, open question 1), so forwarding it would present a
+credential whose `sub` cannot match the `@<username>` `from` it accompanies.
 
 ## Reading the bus
 Read through the controller with your own registry token, not the raw bus port:
