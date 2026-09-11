@@ -10,9 +10,18 @@ These endpoints proxy the bus: the Messages app can list bus channels and read
 messages (read paths), and a registry-authenticated agent (or an admin) can post
 a message (POST /api/a2a/bus/send). The raw bus is unauthenticated on the LAN and
 trusts its ``from`` field, so the send proxy is the authenticated write path --
-an agent posts as its OWN registry handle (scope ``a2a_send``), never able to
+an agent posts as its OWN registry identity (scope ``a2a_send``), never able to
 spoof another identity or borrow the owner's account. The URL is resolved from
 ``TAOS_A2A_BUS_URL``.
+
+An authenticated agent's post is attributed to its registry ``canonical_id`` and
+carries its registry JWT, forwarded to the bus as ``Authorization: Bearer ...``.
+Both halves are required: the bus authorises a sender by verifying the token
+signature against the registry and then requiring ``token sub == from``, so a
+message attributed to a display handle cannot be verified at all, and a
+credential the bus never receives is indistinguishable from no credential.
+Attribution is therefore the identity the bus can actually check, and the
+readable handle stays a display/alias concern (taOS #2156).
 
 Bus API (verified live):
   GET  {bus}/a2a/channels
@@ -27,6 +36,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+from dataclasses import dataclass
 
 import httpx
 import asyncio
@@ -384,8 +394,8 @@ class BusSendBody(BaseModel):
 
     ``from_`` (JSON key ``from``) is honored ONLY for admin callers, so an
     operator can post as any handle. For an agent-token caller it is ignored and
-    the ``from`` is derived from the agent's own registry handle -- one agent can
-    never post as another.
+    the ``from`` is derived from the agent's own registry identity -- one agent
+    can never post as another.
     """
 
     thread: str
@@ -396,11 +406,48 @@ class BusSendBody(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-async def _resolve_send_identity(request: Request, body_from: str | None) -> str:
-    """Return the bus ``from`` handle authorized for this send, or raise.
+@dataclass(frozen=True)
+class _BusIdentity:
+    """Who a bus send is attributed to, and the credential that proves it.
+
+    ``from_handle`` is the value the bus records as the message author.
+    ``credential`` is the caller's OWN registry JWT, forwarded to the bus so the
+    bus can verify the author against the registry instead of trusting the
+    request body. ``None`` means this caller presents no bus-verifiable
+    credential (an admin session, or a human assertion whose spelling the bus
+    does not resolve yet) -- the proxy still authorizes the caller, but the bus
+    has nothing to check, which is the pre-existing state for those callers.
+    """
+
+    from_handle: str
+    credential: str | None = None
+
+
+def _bearer_token(request: Request) -> str | None:
+    """Return the caller's raw Bearer credential, or None when absent.
+
+    Returned VERBATIM: it is forwarded to the bus, which verifies the signature
+    over the exact bytes it was signed with. Normalising it here (trimming
+    interior characters, re-encoding) would invalidate the signature and turn a
+    verifiable send into a rejected one.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None
+    return auth_header[7:].strip() or None
+
+
+async def _resolve_send_identity(
+    request: Request, body_from: str | None
+) -> _BusIdentity:
+    """Return the identity (and credential) authorized for this send, or raise.
 
     - Admin (session cookie or local token): may set an explicit ``from``
       (operator posts as any handle); defaults to ``@operator`` when omitted.
+      No credential is forwarded: an admin credential is a session cookie or the
+      host local token, neither of which the bus can verify, and the local token
+      is admin-equivalent ON THIS CONTROLLER -- handing it to another service
+      would widen its blast radius for no authentication gain.
     - Otherwise the caller must present a registry JWT holding an active
       ``a2a_send`` grant (agent) or a valid human-principal token. The ``from``
       is DERIVED from the credential for both principal types; a client-supplied
@@ -412,7 +459,7 @@ async def _resolve_send_identity(request: Request, body_from: str | None) -> str
     if getattr(request.state, "is_admin", False):
         handle = (body_from or "").strip()
         handle = "".join(c for c in handle if c.isprintable())[:64].strip()
-        return handle or "@operator"
+        return _BusIdentity(handle or "@operator")
 
     caller = await check_agent_scope(request, "a2a_send")
     if caller is not None:
@@ -420,8 +467,19 @@ async def _resolve_send_identity(request: Request, body_from: str | None) -> str
         record = await registry.get(caller) if registry is not None else None
         handle = ((record or {}).get("handle") or "").strip()
         if not handle:
+            # Kept deliberately: a registry record with no handle is an
+            # incomplete bus identity (the handle is what every reader and the
+            # alias layer resolves, taOS #2156), and relaxing an access
+            # condition is not this change's business.
             raise HTTPException(status_code=403, detail="agent has no bus handle")
-        return handle
+        # Attribute the message to the registry ``canonical_id`` (the token's
+        # ``sub``), not to the display handle. The bus derives identity from the
+        # credential: it verifies the signature and then requires
+        # ``token sub == from``. A handle-spelled ``from`` can never satisfy
+        # that, so an authenticated agent's post would still be recorded as
+        # unverifiable -- the exact gap this closes. The readable handle is
+        # resolved from the same identity for display (taOS #2156).
+        return _BusIdentity(caller, _bearer_token(request))
 
     human_id = await check_human_identity(request)
     if human_id is not None:
@@ -430,7 +488,12 @@ async def _resolve_send_identity(request: Request, body_from: str | None) -> str
         username = ((user or {}).get("username") or "").strip()
         if not username:
             raise HTTPException(status_code=403, detail="human has no username")
-        return f"@{username}"
+        # The assertion is NOT forwarded: a human assertion's ``sub`` is the
+        # user_id while its bus ``from`` is ``@<username>``, and the bus's
+        # principal-spelling policy for humans is not settled yet (taosmd
+        # a2a-bus-auth-transition, open question 1). Forwarding it today would
+        # present a credential whose sub cannot match the from it accompanies.
+        return _BusIdentity(f"@{username}")
 
     raise HTTPException(status_code=403, detail="forbidden")
 
@@ -441,13 +504,21 @@ async def bus_send(request: Request, body: BusSendBody):
 
     Authorized senders: an admin session / host local token (may set ``from``),
     or an active agent registry JWT holding the ``a2a_send`` scope (``from`` is
-    forced to the agent's own handle). This is the authenticated write path so
-    agents post as themselves instead of sharing the owner's account.
+    forced to the agent's own registry identity). This is the authenticated
+    write path so agents post as themselves instead of sharing the owner's
+    account.
+
+    An agent caller's registry JWT is forwarded to the bus, and the ``from`` it
+    accompanies is the SAME identity the token proves (the registry
+    ``canonical_id``). Those two travel together or not at all: the bus checks
+    the signature and then requires ``token sub == from``, so forwarding the
+    credential under a different spelling would be presenting a proof that
+    cannot match its own claim.
 
     Unlike the read endpoints, a bus failure surfaces as 502: a caller must know
     when its message did not land.
     """
-    from_handle = await _resolve_send_identity(request, body.from_)
+    identity = await _resolve_send_identity(request, body.from_)
 
     thread = body.thread.strip()
     text = body.body.strip()
@@ -461,21 +532,34 @@ async def bus_send(request: Request, body: BusSendBody):
             {"error": "reply_to must be a positive message id"}, status_code=400
         )
 
-    payload: dict = {"from": from_handle, "thread": thread, "body": text}
+    payload: dict = {
+        "from": identity.from_handle,
+        "thread": thread,
+        "body": text,
+    }
     if body.reply_to is not None:
         payload["reply_to"] = body.reply_to
+
+    headers: dict[str, str] = {}
+    if identity.credential:
+        # Only ever sent to the OPERATOR-configured bus URL (`TAOS_A2A_BUS_URL`,
+        # default loopback): the credential is the caller's own, and the bus is
+        # the one service that must see it to verify the sender.
+        headers["Authorization"] = f"Bearer {identity.credential}"
 
     bus = _bus_url()
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(f"{bus}/a2a/send", json=payload)
+            resp = await client.post(
+                f"{bus}/a2a/send", json=payload, headers=headers or None
+            )
             resp.raise_for_status()
             data = resp.json()
     except Exception as exc:  # noqa: BLE001
         logger.warning("A2A bus send failed (%s): %s", bus, exc)
         raise HTTPException(status_code=502, detail="a2a bus unavailable")
 
-    return {"ok": True, "from": from_handle, "message": data}
+    return {"ok": True, "from": identity.from_handle, "message": data}
 
 
 @router.post("/api/a2a/bus/human-assertion")
