@@ -658,10 +658,10 @@ async def patch_registry_entry(
             role=body.role,
             capabilities=body.capabilities,
         )
-    except aiosqlite.IntegrityError:
-        # Renaming this entry's handle onto one another active agent owns.
+    except ValueError as exc:
+        # handle collision raised by the store's transition guard.
         return JSONResponse(
-            {"error": "handle is already owned by another active agent"},
+            {"error": str(exc)},
             status_code=409,
         )
     if updated is None:

@@ -976,33 +976,29 @@ class AgentRegistryStore(BaseStore):
         if not cols:
             return record
         vals.append(canonical_id)
-        await self._db.execute(
-            f"UPDATE agent_registry SET {', '.join(cols)} WHERE canonical_id = ?",
-            vals,
-        )
+        try:
+            await self._db.execute(
+                f"UPDATE agent_registry SET {', '.join(cols)} WHERE canonical_id = ?",
+                vals,
+            )
+        except aiosqlite.IntegrityError as exc:
+            if handle is not None:
+                raise ValueError(
+                    f"handle {handle!r} is already owned by another active agent"
+                ) from exc
+            raise
         await self._db.commit()
         return await self.get(canonical_id)
 
     async def revoke(self, canonical_id: str) -> Optional[dict]:
-        """Set revoked_at on *canonical_id*.  Returns updated record or None."""
+        """Transition *canonical_id* to 'revoked' via the state-transition guard.
+
+        Returns the updated record, or None if *canonical_id* does not exist.
+        Raises ``ValueError`` if the transition is not allowed.
+        """
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
-        record = await self.get(canonical_id)
-        if record is None:
-            return None
-        if record.get("revoked_at"):
-            # Already revoked - return the existing record unchanged.
-            return record
-        now = datetime.now(timezone.utc).isoformat()
-        # Atomic: only the first concurrent revoke matches (revoked_at IS NULL);
-        # a second one no-ops and returns the already-revoked record.
-        await self._db.execute(
-            "UPDATE agent_registry SET revoked_at = ?, status = 'revoked' "
-            "WHERE canonical_id = ? AND revoked_at IS NULL",
-            (now, canonical_id),
-        )
-        await self._db.commit()
-        return await self.get(canonical_id)
+        return await self.set_status(canonical_id, "revoked")
 
     async def bump_token_min_iat(self, canonical_id: str, ts: int) -> Optional[dict]:
         """Set *canonical_id*'s ``token_min_iat`` to *ts*, invalidating every

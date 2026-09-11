@@ -11,11 +11,9 @@ class SkillStore(BaseStore):
         name TEXT NOT NULL,
         category TEXT NOT NULL,
         description TEXT DEFAULT '',
-        version TEXT NOT NULL DEFAULT '1.0.0',
         tool_schema TEXT NOT NULL DEFAULT '{}',
         frameworks TEXT NOT NULL DEFAULT '{}',
         requires_services TEXT DEFAULT '[]',
-        requires_hardware TEXT DEFAULT '{}',
         install_method TEXT NOT NULL DEFAULT 'builtin',
         install_target TEXT DEFAULT '',
         installed INTEGER DEFAULT 1,
@@ -861,11 +859,9 @@ class SkillStore(BaseStore):
             "name": row["name"],
             "category": row["category"],
             "description": row["description"],
-            "version": row["version"],
             "tool_schema": json.loads(row["tool_schema"] or "{}"),
             "frameworks": json.loads(row["frameworks"] or "{}"),
             "requires_services": json.loads(row["requires_services"] or "[]"),
-            "requires_hardware": json.loads(row["requires_hardware"] or "{}"),
             "install_method": row["install_method"],
             "install_target": row["install_target"],
             "installed": bool(row["installed"]),
@@ -890,7 +886,9 @@ class SkillStore(BaseStore):
     async def get_agent_skills(self, agent_id: str) -> list[dict]:
         assert self._db is not None
         cursor = await self._db.execute(
-            """SELECT s.*, a.enabled AS a_enabled, a.config AS a_config
+            """SELECT s.id, s.name, s.category, s.description, s.tool_schema, s.frameworks,
+                      s.requires_services, s.install_method, s.install_target, s.installed,
+                      a.enabled AS a_enabled, a.config AS a_config
                FROM agent_skills a
                JOIN skills s ON s.id = a.skill_id
                WHERE a.agent_id = ? AND a.enabled = 1""",
