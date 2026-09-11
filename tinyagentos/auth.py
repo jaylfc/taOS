@@ -949,6 +949,7 @@ class AuthManager:
                 users[i] = u
                 data["users"] = users
                 self._write_users(data)
+                self.revoke_user_sessions(u["id"])
                 return True
         return False
 
@@ -1042,10 +1043,10 @@ class AuthManager:
             except (KeyError, Exception):
                 pass
             return None
-        # Client-binding check: only when the session was created with a
-        # user_agent_hash AND the caller supplies a user_agent for comparison.
         stored_ua = entry.get("user_agent_hash")
-        if stored_ua and user_agent:
+        if stored_ua:
+            if not user_agent:
+                return None
             if not secrets.compare_digest(
                 stored_ua, hashlib.sha256(user_agent.encode()).hexdigest()
             ):
