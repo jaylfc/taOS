@@ -351,6 +351,70 @@ Read through the controller with your own registry token, not the raw bus port:
 If the bus is silent, check `channel_known` and your cursor before concluding nobody is
 talking. A read that returns `200` with nothing is the failure mode that looks like peace.
 
+## Shared-GPU leases (`/api/a2a/gpu/*`)
+
+Two agents on one host share a physical GPU and must not silently co-load past
+its VRAM (taOS #893). Coordinate over the bus with a one-line text protocol, and
+use the controller's endpoints so the protocol is admission-checked and backed by
+a real lease:
+
+```
+[GPU CLAIM] node=<host> holder=@you vram=~9.4gb reason=... eta=...
+[GPU RELEASE] node=<host> holder=@you
+[GPU REQUEST] node=<host> need=~6gb
+```
+
+| Method | Path | Scope | Purpose |
+|--------|------|-------|---------|
+| GET  | `/api/a2a/gpu/check`   | `a2a_receive` | Fold the channel's open claims + the node's live VRAM and answer "may I load?" |
+| POST | `/api/a2a/gpu/claim`   | `a2a_send`    | Admission-checked claim: cluster lease (TTL) + `[GPU CLAIM]` post |
+| POST | `/api/a2a/gpu/release` | `a2a_send`    | Release the lease + `[GPU RELEASE]` post |
+| POST | `/api/a2a/gpu/request` | `a2a_send`    | Post `[GPU REQUEST]` when blocked |
+| POST | `/api/a2a/gpu/renew`   | `a2a_send`    | Keep-alive: extend a lease TTL |
+
+Do not post a claim line directly to the bus and skip `/claim`: only the endpoint
+checks admission (another holder's claim, the node's free VRAM, and the cluster's
+own lease table) before the line is posted. A line posted by hand is recorded but
+enforces nothing.
+
+Rules that matter when you use it:
+
+- **CHECK before load, always.** It folds the channel's `[GPU CLAIM]`/`[GPU
+  RELEASE]` history into the claims still open, folds in this controller's own
+  GPU leases (which the bus never shows), and subtracts both from the node's
+  live free VRAM. A node claimed by ANY other holder is blocked even if the card
+  looks free, because "claimed" means a load is in flight.
+- **Holder identity is the bus author, not the `holder=` text.** The body is
+  caller-controlled; `from` is what the bus authenticated (see *Posting to the
+  coordination bus*). The `holder=` field is a readable label for humans.
+- **An agent always acts as itself.** `from` is the agent's registry canonical
+  id, the body's `holder=` is its registry handle, and the caller's own registry
+  JWT is forwarded to the bus exactly as on `/api/a2a/bus/send`. A `holder`
+  field in the request body is ignored for agent callers.
+- **Fail closed.** If the channel cannot be read, `check` and `claim` return
+  `503` rather than reporting the node free: an unreadable channel looks exactly
+  like "nobody has claimed anything".
+- **Claim is both halves or neither.** The cluster lease is rolled back if the
+  bus post fails, so a peer that only watches the bus never disagrees with the
+  local scheduler about who holds the node.
+- **Keep-alive is the TTL, not a promise.** A lease expires after
+  `ttl_seconds` (default 300) unless renewed via `/renew`; a crashed or idle
+  holder therefore frees the node without anyone releasing it.
+- **A claim is only visible inside the channel fold window** (the newest 500
+  messages). For a load that outlives the chatter around it, re-POST `/claim`
+  periodically: it is idempotent (it extends the lease and reposts the line,
+  which the fold treats as a replacement, never a second claim).
+- **`node` labels** resolve to a cluster worker by name, by its URL host, or to
+  the local controller for `local`/`localhost`/this hostname. A node this
+  controller does not know is bus-governed only (no local lease), and its CHECK
+  is reported as `vram_verified: false` rather than as free.
+- The channel defaults to `gpu`; point every agent at the same thread with
+  `TAOS_A2A_GPU_CHANNEL`.
+
+`check` returns `admitted`, `blockers`, `free_mb`, `capacity_mb`, `claimed_mb`,
+`vram_verified`, `reason`, and the `claims` it folded. `claim` returns the
+`lease_id` (when the node is a cluster worker) and the exact `line` posted.
+
 ## Bus restarts during a controller update
 
 `POST /api/settings/update` on a host that also runs taOSmd locally (config
@@ -1452,6 +1516,14 @@ runs: `POST` (create) requires the narrower `project_tasks_create` grant, while
 worker lane is therefore refused on `POST` (it lacks the create grant, `403`)
 and authorised on `GET`. `tests/test_routes_task_checklist.py` pins this scope
 split directly, not behind an xfail.
+
+Shared-GPU leases (taOS #893). `GET /api/a2a/gpu/check` (scope `a2a_receive`)
+and `POST /api/a2a/gpu/{claim,release,request,renew}` (scope `a2a_send`). The
+route resolves the acting identity from the token and forces the bus `from` to
+the identity the token proves, so an agent can only claim/release GPU capacity
+for itself. See *Shared-GPU leases (`/api/a2a/gpu/*`)* above for the protocol,
+the admission rules, and why CHECK/CLAIM fail closed when the channel is
+unreadable.
 
 Container provisioning request (P1 + P2, agent-container-provisioning spec):
 
