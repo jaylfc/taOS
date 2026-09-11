@@ -13,10 +13,43 @@ import yaml
 logger = logging.getLogger(__name__)
 from fastapi import FastAPI
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from tinyagentos.auth_context import current_user, require_owner_or_admin
+import re
 
 
-class _CacheAwareStaticFiles(StaticFiles):
+class SecureStaticFiles(StaticFiles):
+    """Serve workspace files with per-user ownership checks.
+
+    Paths under ``/data/workspace/users/<uid>/images/generated`` or
+    ``/data/workspace/users/<uid>/music/generated`` require that the
+    authenticated user either owns the resource or is an admin; otherwise a
+    403 is returned.  All other paths (the legacy ``/data/workspace/...`` tree)
+    fall through to the parent ``StaticFiles.dispatch`` so the existing
+    session‑gate (AuthMiddleware) still applies — unauthenticated callers
+    receive 401.
+    """
+
+    async def dispatch(self, request: Request, response: Response) -> None:
+        path = request.url.path
+
+        # Check for per-user generated-media paths
+        match = re.match(r"^/data/workspace/users/([^/]+)/(images|music)/generated/", path)
+        if match:
+            uid = match.group(1)
+            media_type = match.group(2)
+            try:
+                user = current_user(request)
+                require_owner_or_admin(user, uid)
+            except HTTPException:
+                raise
+
+        # For all other paths (legacy non-user paths) let the normal
+        # StaticFiles dispatch handle them — the AuthMiddleware already
+        # enforced 401 for unauthenticated callers.
+        await super().dispatch(request, response)
     """StaticFiles that sets Cache-Control by file type.
 
     index.html / manifests / the legacy sw.js must always revalidate so
@@ -1865,9 +1898,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.mount("/static", _CacheAwareStaticFiles(directory=str(static_dir)), name="static")
 
     # Mount workspace for serving generated images and other workspace files
+    # with per-user ownership checks via SecureStaticFiles.
     workspace_dir = data_dir / "workspace"
     workspace_dir.mkdir(parents=True, exist_ok=True)
-    app.mount("/data/workspace", StaticFiles(directory=str(workspace_dir)), name="workspace")
+    app.mount("/data/workspace", SecureStaticFiles(directory=str(workspace_dir)), name="workspace")
 
     # Desktop SPA assets are served by the desktop route handler (routes/desktop.py)
 
