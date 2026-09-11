@@ -135,3 +135,46 @@ PEM
     run grep -q 'dependencies: \["Sparkle"\]' "$pkg_swift"
     [ "$status" -eq 0 ]
 }
+
+@test "assemble_bundle.sh bundles Sparkle.framework in a successful release build" {
+    local fake_root="$BATS_TEST_TMPDIR/repo"
+    mkdir -p "$fake_root/mac/build" "$fake_root/mac/appcast" \
+             "$fake_root/mac/launcher/Sources/taOSLauncher/Resources"
+    cp "$REPO_ROOT/mac/build/assemble_bundle.sh" "$fake_root/mac/build/assemble_bundle.sh"
+    cp "$REPO_ROOT/mac/launcher/Sources/taOSLauncher/Resources/Info.plist.in" \
+       "$fake_root/mac/launcher/Sources/taOSLauncher/Resources/Info.plist.in"
+    for path in tinyagentos static data app-catalog pyproject.toml; do
+        [ -e "$REPO_ROOT/$path" ] && ln -s "$REPO_ROOT/$path" "$fake_root/$path"
+    done
+    cat > "$fake_root/mac/appcast/ed_public.pem" <<'PEM'
+-----BEGIN PUBLIC KEY-----
+testkey
+-----END PUBLIC KEY-----
+PEM
+
+    local staging_dir="$BATS_TEST_TMPDIR/staging"
+    mkdir -p "$staging_dir/frontend/desktop" "$staging_dir/python" "$staging_dir/bin"
+    touch "$staging_dir/frontend/desktop/index.html"
+    touch "$staging_dir/bin/container"
+    mkdir -p "$staging_dir/Sparkle.framework/Versions/A"
+    touch "$staging_dir/Sparkle.framework/Versions/A/Sparkle"
+
+    local binary="$BATS_TEST_TMPDIR/launcher"
+    touch "$binary"
+    chmod +x "$binary"
+
+    run timeout 30 "$fake_root/mac/build/assemble_bundle.sh" \
+        --release \
+        --version "1.2.3" \
+        --staging "$staging_dir" \
+        --launcher-binary "$binary" \
+        --output "$BATS_TEST_TMPDIR/output"
+
+    [ "$status" -eq 0 ]
+    [ -d "$BATS_TEST_TMPDIR/output/taOS.app/Contents/Frameworks/Sparkle.framework" ]
+}
+
+@test "no taos.app feed or download domain references under mac/" {
+    run grep -rE "(https?://taos\.app|taos\.app/(appcast|releases))" "$REPO_ROOT/mac"
+    [ "$status" -ne 0 ]
+}
