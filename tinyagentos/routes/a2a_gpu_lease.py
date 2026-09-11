@@ -622,12 +622,16 @@ async def gpu_release(request: Request, body: ReleaseBody):
         else:
             lease = _lease_for_actor(cluster, _resource_id(node, body.resource), actor)
             released_id = lease.lease_id if lease is not None else None
-        if released_id is not None:
-            # release_lease is idempotent and returns False for an unknown id.
-            await cluster.release_lease(released_id)
 
+    # Post BEFORE releasing the local lease, so a bus failure changes nothing
+    # and the caller can retry. Releasing first would free the node here while
+    # peers still read an open claim, i.e. block a node that is actually free
+    # (Kilo review of #2988). release_lease itself is an idempotent in-memory
+    # pop, so the two halves cannot be left disagreeing in the other direction.
     line = render_release(node, actor.holder)
     posted = await _post_line(channel, actor, line)
+    if released_id is not None and cluster is not None:
+        await cluster.release_lease(released_id)
     return {
         "status": "released",
         "node": node,

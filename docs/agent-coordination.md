@@ -396,7 +396,9 @@ Rules that matter when you use it:
   like "nobody has claimed anything".
 - **Claim is both halves or neither.** The cluster lease is rolled back if the
   bus post fails, so a peer that only watches the bus never disagrees with the
-  local scheduler about who holds the node.
+  local scheduler about who holds the node. Release is ordered the same way: the
+  line is posted BEFORE the local lease is freed, so a failed post leaves the
+  lease intact rather than freeing a node peers still see as claimed.
 - **Keep-alive is the TTL, not a promise.** A lease expires after
   `ttl_seconds` (default 300) unless renewed via `/renew`; a crashed or idle
   holder therefore frees the node without anyone releasing it.

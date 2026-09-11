@@ -419,6 +419,23 @@ class TestClusterLeaseIntegration:
         assert resp.json()["lease_id"] is None
         assert [l.lease_id for l in cluster.get_leases()] == [foreign.lease_id]
 
+    async def test_release_keeps_the_lease_when_the_bus_post_fails(
+        self, lease_client, bus, cluster
+    ):
+        claim = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        lease_id = claim.json()["lease_id"]
+        assert lease_id is not None
+        bus.fail_post = True
+        resp = await lease_client.post(
+            "/api/a2a/gpu/release", json={"node": "linstation", "lease_id": lease_id}
+        )
+        assert resp.status_code == 502
+        # Nothing has changed: the node is still reserved locally, so a retry
+        # cannot hand the same GPU to two holders.
+        assert [l.lease_id for l in cluster.get_leases()] == [lease_id]
+
     async def test_admin_may_release_an_explicit_lease_id(
         self, lease_client, bus, cluster
     ):
