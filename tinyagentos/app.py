@@ -1788,6 +1788,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     projects_root.mkdir(parents=True, exist_ok=True)
     app.state.projects_root = projects_root
     app.state.chat_hub = chat_hub
+    from tinyagentos.chat.unified_chat_bridge import ChatBusBridge
+    app.state.chat_bus_bridge = ChatBusBridge(app)
     # wants_reply and typing are initialised by the lifespan — do not create
     # duplicate instances here that would shadow the lifespan-created ones.
     app.state.wants_reply = None

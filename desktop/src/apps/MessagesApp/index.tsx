@@ -997,10 +997,7 @@ export function MessagesApp({
       ]);
       if (chRes.ok) {
         const data = await chRes.json();
-        // For unified bus routes, channels are already from the bus
-        // Add unified_bus indicator to maintain consistency
-        const channels = data.channels ?? [];
-        setChannels(channels);
+        setChannels(data.channels ?? []);
       }
       if (unRes.ok) {
         const data = await unRes.json();
@@ -1022,9 +1019,7 @@ export function MessagesApp({
       const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
-        // Archived channels from unified bus routes
-        const channels = data.channels ?? [];
-        setArchivedChannels(channels);
+        setArchivedChannels(data.channels ?? []);
       }
     } catch {
       /* offline */
