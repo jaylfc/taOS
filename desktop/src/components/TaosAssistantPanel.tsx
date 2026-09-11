@@ -28,6 +28,7 @@ import {
 } from "@/lib/screen-capture";
 import { useProcessStore } from "@/stores/process-store";
 import { randomId } from "@/lib/uid";
+import { copyText } from "@/lib/clipboard";
 
 export interface PendingAttachment {
   id: string;
@@ -615,12 +616,10 @@ function MessageBubble({
   const canEdit = editable && !streaming && content && onSave;
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(content);
+    const ok = await copyText(content);
+    if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // ignore
     }
   };
 

@@ -28,6 +28,7 @@ import { resolveAgentEmoji } from "@/lib/agent-emoji";
 import { startDrag, endDrag } from "@/shell/dnd/dnd-bus";
 import { renderContent, dayLabel, relativeTime, toMs, resolveAuthorDisplayState } from "../MessagesApp";
 import type { ContentBlock } from "../MessagesApp";
+import { copyText } from "@/lib/clipboard";
 import type { AttachmentRecord } from "@/lib/chat-attachments-api";
 import { displayAuthor } from "./format-author";
 import type { LiveAgent, ArchivedAgentEntry, Channel } from "./types";
@@ -804,13 +805,13 @@ function CopyButton({
 
   const handleCopy = async () => {
     if (!content) return;
-    try {
-      await navigator.clipboard.writeText(content);
+    const ok = await copyText(content);
+    if (ok) {
       setCopied(true);
       setClipError(false);
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => setCopied(false), 1500);
-    } catch {
+    } else {
       setClipError(true);
       if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
       errorTimerRef.current = setTimeout(() => setClipError(false), 2500);

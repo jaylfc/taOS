@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { copyText } from "@/lib/clipboard";
 
 const SCOPE_PRESETS: { value: string; label: string; defaultOn: boolean; disabled?: boolean; hint?: string }[] = [
   { value: "project_tasks", label: "project_tasks", defaultOn: true, disabled: true, hint: "required for project invites" },
@@ -162,8 +163,8 @@ export function InviteAgentDialog({
     }
   };
 
-  const copy = (text: string) => {
-    navigator.clipboard?.writeText(text).catch(() => {});
+  const copy = async (text: string) => {
+    await copyText(text);
   };
 
   const instruction = useMemo(() => {

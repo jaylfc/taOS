@@ -12,6 +12,10 @@ describe("CodeBlock", () => {
       configurable: true,
       writable: true,
     });
+    Object.defineProperty(window, "isSecureContext", {
+      value: true,
+      configurable: true,
+    });
   });
 
   afterEach(() => {
@@ -68,5 +72,51 @@ describe("CodeBlock", () => {
   it("renders empty code without crashing", () => {
     const { container } = render(<CodeBlock code="" />);
     expect(container.querySelector("pre")).not.toBeNull();
+  });
+
+  it("copies in a non-secure context", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      configurable: true,
+    });
+    Object.defineProperty(window, "isSecureContext", {
+      value: false,
+      configurable: true,
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, "execCommand", {
+      value: execCommand,
+      configurable: true,
+      writable: true,
+    });
+
+    render(<CodeBlock code="secret" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /copy/i }));
+    });
+    expect(execCommand).toHaveBeenCalledWith("copy");
+  });
+
+  it("a failed copy surfaces an error to the user", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      configurable: true,
+    });
+    Object.defineProperty(window, "isSecureContext", {
+      value: false,
+      configurable: true,
+    });
+    const execCommand = vi.fn().mockReturnValue(false);
+    Object.defineProperty(document, "execCommand", {
+      value: execCommand,
+      configurable: true,
+      writable: true,
+    });
+
+    render(<CodeBlock code="secret" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /copy/i }));
+    });
+    expect(screen.getByText(/copy failed/i)).toBeInTheDocument();
   });
 });

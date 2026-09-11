@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Send, Loader2, ArrowRightLeft, Copy, Check } from "lucide-react";
 import { Button, Card, Input, Textarea, Label } from "@/components/ui";
+import { copyText } from "@/lib/clipboard";
 
 interface AgentMessageRaw {
   id: number | string;
@@ -60,12 +61,10 @@ function PreBlock({ content, label }: { content: unknown; label: string }) {
   const text = JSON.stringify(content, null, 2);
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
+    const ok = await copyText(text);
+    if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // ignore
     }
   };
 
