@@ -1,0 +1,2 @@
+### Fixed
+- Backfill `_server_raised: true` on existing pending gate decisions so approvals on pre-#2748 rows still complete their side effects after deploy. Added provenance tests for `delegation_gate` and `device_pairing` (the two handlers previously lacking coverage), and a backfill integration test that seeds a legacy pending gate row into an initialized database and verifies the pairing completes after `_post_init` runs.

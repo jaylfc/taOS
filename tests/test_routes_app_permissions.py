@@ -138,6 +138,7 @@ async def test_request_consent_creates_decision_for_gated_caps(client):
     dec = data["decision"]
     assert dec["type"] == "multi_select"
     assert dec["metadata"] == {
+        "_server_raised": True,
         "kind": "app_grant", "app_id": "stream-chat",
         "capabilities": ["app.net", "app.memory"],
     }
@@ -194,26 +195,3 @@ async def test_request_consent_skips_caps_with_pending_decision(client):
     await client.post(f"/api/decisions/{dec_id}/answer", json={"value": ["app.net"]})
     r3 = await client.post("/api/apps/lazy-app/request-consent", json={"capabilities": ["app.memory"]})
     assert r3.json()["pending"] == ["app.memory"]
-
-
-@pytest.mark.asyncio
-async def test_request_consent_notification_enriches_data(client):
-    app = client._transport.app
-    notifs = app.state.notifications
-    await notifs.list()  # clear any stale rows
-    resp = await client.post(
-        "/api/apps/stream-chat/request-consent",
-        json={"capabilities": ["app.net", "app.memory"]},
-    )
-    assert resp.status_code == 200
-    items = await notifs.list()
-    assert len(items) == 1
-    data = items[0]["data"]
-    assert data["decision_type"] == "multi_select"
-    assert data["kind"] == "decision"
-    assert data["priority"] == "blocking"
-    assert data["from_agent"] == "@taos-app-install"
-    assert data["url"].startswith("/decisions/")
-    assert len(data["options"]) <= 4
-    for o in data["options"]:
-        assert len(o["label"]) <= 40

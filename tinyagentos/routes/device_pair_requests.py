@@ -38,6 +38,7 @@ from tinyagentos.device_pair_requests_store import (
     _PENDING_CAP,
     _live_status,
 )
+from tinyagentos.routes.decisions import SERVER_RAISED_KEY
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -157,6 +158,7 @@ async def create_pair_request(request: Request, body: CreatePairRequest):
                 project_id=None,
                 user_id=admin_id,
                 metadata={
+                    SERVER_RAISED_KEY: True,
                     "kind": "device_pairing",
                     "pair_request_id": pair_request_id,
                 },

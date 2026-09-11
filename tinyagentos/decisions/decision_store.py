@@ -79,6 +79,20 @@ class DecisionStore(BaseStore):
                 "ALTER TABLE decisions ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
             )
             await self._db.commit()
+        # tsk-lgdxoz: backfill the server-provenance marker on any pending gate
+        # decision that was created before the marker existed (pre-#2748 rows).
+        # Idempotent: rows that already carry the marker are unaffected.
+        # json_set stores the integer 1; the handler checks truthiness so both
+        # Python True (from the raisers) and SQLite 1 (from the backfill) pass.
+        kinds = ("execution_gate", "delegation_gate", "device_pairing", "app_grant")
+        placeholders = ",".join("?" for _ in kinds)
+        await self._db.execute(
+            f"UPDATE decisions SET metadata = json_set(metadata, '$._server_raised', 1) "
+            f"WHERE status = 'pending' AND json_extract(metadata, '$.kind') IN ({placeholders}) "
+            f"AND json_extract(metadata, '$._server_raised') IS NULL",
+            kinds,
+        )
+        await self._db.commit()
 
     async def create(
         self,
