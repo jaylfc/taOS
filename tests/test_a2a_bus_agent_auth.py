@@ -7,6 +7,7 @@ skeleton-key guard (the agent token must not authenticate any other route).
 """
 from __future__ import annotations
 
+import os
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -639,3 +640,98 @@ class TestBusHumanAuth:
         async with _bare(bus_client._app) as bare:
             resp = await bare.post("/api/a2a/bus/human-assertion")
         assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+class TestBusSendCredentialTransport:
+    """The credential is only forwarded over secure transports or loopback.
+
+    A non-loopback ``http://`` bus URL drops the credential: forwarding a
+    long-lived registry JWT in cleartext across the LAN hands a replayable
+    credential to a passive observer. The operator may opt in for a specific
+    deployment via ``TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL``.
+    """
+
+    async def _post_with_bus_url(self, app, token, bus_url, *, allow_insecure=None):
+        old_bus_url = os.environ.get("TAOS_A2A_BUS_URL")
+        old_allow = os.environ.get("TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL")
+        os.environ["TAOS_A2A_BUS_URL"] = bus_url
+        if allow_insecure is not None:
+            os.environ["TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL"] = allow_insecure
+        elif "TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL" in os.environ:
+            del os.environ["TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL"]
+        try:
+            ctx, client = _mock_bus_post({"id": 1, "from": "x", "thread": "build"})
+            with patch(_BUS_PATCH, return_value=ctx):
+                async with _bare(app) as bare:
+                    resp = await bare.post(
+                        "/api/a2a/bus/send",
+                        json={"thread": "build", "body": "hi"},
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+        finally:
+            if old_bus_url is None:
+                os.environ.pop("TAOS_A2A_BUS_URL", None)
+            else:
+                os.environ["TAOS_A2A_BUS_URL"] = old_bus_url
+            if old_allow is None:
+                os.environ.pop("TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL", None)
+            else:
+                os.environ["TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL"] = old_allow
+        return resp, client
+
+    async def test_remote_http_withholds_credential(self, bus_client):
+        """Non-loopback http:// bus URL: no Authorization header is forwarded."""
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        resp, client = await self._post_with_bus_url(
+            bus_client._app, token, "http://bus.example.test:7900"
+        )
+        assert resp.status_code == 200
+        headers = client.post.call_args.kwargs["headers"]
+        assert headers is None
+
+    async def test_loopback_http_forwards_credential(self, bus_client):
+        """Loopback http:// (127.0.0.1) forwards the credential byte-identical."""
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        resp, client = await self._post_with_bus_url(
+            bus_client._app, token, "http://127.0.0.1:7900"
+        )
+        assert resp.status_code == 200
+        headers = client.post.call_args.kwargs["headers"]
+        assert headers == {"Authorization": f"Bearer {token}"}
+
+    async def test_https_forwards_credential(self, bus_client):
+        """Any https:// destination forwards the credential."""
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        resp, client = await self._post_with_bus_url(
+            bus_client._app, token, "https://bus.example.test"
+        )
+        assert resp.status_code == 200
+        headers = client.post.call_args.kwargs["headers"]
+        assert headers == {"Authorization": f"Bearer {token}"}
+
+    async def test_remote_http_with_opt_in_forwards_credential(self, bus_client):
+        """TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL restores forwarding over
+        non-loopback http://."""
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        resp, client = await self._post_with_bus_url(
+            bus_client._app,
+            token,
+            "http://bus.example.test:7900",
+            allow_insecure="1",
+        )
+        assert resp.status_code == 200
+        headers = client.post.call_args.kwargs["headers"]
+        assert headers == {"Authorization": f"Bearer {token}"}
+
+    async def test_substring_loopback_near_miss_withholds_credential(
+        self, bus_client
+    ):
+        """http://127.0.0.1.evil.test is NOT loopback: credential is withheld."""
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        resp, client = await self._post_with_bus_url(
+            bus_client._app, token, "http://127.0.0.1.evil.test:7900"
+        )
+        assert resp.status_code == 200
+        headers = client.post.call_args.kwargs["headers"]
+        assert headers is None
