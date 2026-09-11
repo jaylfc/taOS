@@ -137,10 +137,10 @@ async def test_unquarantine_route_lead_success_and_noauth_failure(app):
 @pytest.mark.asyncio
 async def test_release_parks_after_threshold_strikes(app):
     """Releasing a claimed task records a strike; after STRIKE_THRESHOLD
-    cumulative releases the task is permanently parked."""
+    cumulative releases the task is quarantined."""
     async with app.router.lifespan_context(app):
         async with _auth_client(app) as c:
-            _, task_id = await _make_project_and_task(c, "strike-park")
+            _, task_id = await _make_project_and_task(c, "strike-quarantine")
 
             task_store = app.state.project_task_store
             strikes = app.state.task_strikes
@@ -154,19 +154,19 @@ async def test_release_parks_after_threshold_strikes(app):
                     assert count == i + 1
 
             fetched = await task_store.get_task(task_id)
-            assert fetched["status"] == "parked"
+            assert fetched["status"] == "quarantined"
             assert await strikes.count_strikes(task_id) == strikes.STRIKE_THRESHOLD
 
 
 @pytest.mark.asyncio
 async def test_concurrent_claim_during_release(app):
     """During release_task, if another worker claims the task, the strike
-    recording and parking must not leave the task in an invalid state with a
-    stale claimed_by held in parked status.
+    recording and quarantine must not leave the task in an invalid state with a
+    stale claimed_by held in quarantined status.
 
-    The release must record the *threshold* strike for the parking path to run
-    at all, so seed STRIKE_THRESHOLD - 1 strikes first; with fewer the release
-    never reaches park_task and the test proves nothing."""
+    The release must record the *threshold* strike for the quarantine path to
+    run at all, so seed STRIKE_THRESHOLD - 1 strikes first; with fewer the
+    release never reaches quarantine_task and the test proves nothing."""
     async with app.router.lifespan_context(app):
         async with _auth_client(app) as c:
             _, task_id = await _make_project_and_task(c, "strike-concurrent")
@@ -178,13 +178,13 @@ async def test_concurrent_claim_during_release(app):
             await task_store.claim_task(task_id, "worker-1")
 
             # Seed up to one below the threshold so the strike recorded by
-            # release_task below is the one that trips parking.
+            # release_task below is the one that trips quarantine.
             for _ in range(strikes.STRIKE_THRESHOLD - 1):
                 await strikes.record_strike(task_id, "dispatch_failed", actor="worker-1")
             assert await strikes.count_strikes(task_id) == strikes.STRIKE_THRESHOLD - 1
 
             # Now race: release the task (which records the threshold strike and
-            # attempts to park) while another worker tries to claim it.
+            # attempts to quarantine) while another worker tries to claim it.
             released = asyncio.create_task(
                 task_store.release_task(task_id, "worker-1")
             )
@@ -195,18 +195,47 @@ async def test_concurrent_claim_during_release(app):
 
             fetched = await task_store.get_task(task_id)
             status = fetched["status"]
-            assert status in ("open", "claimed", "parked")
-            # Parking may never swallow a live claim, and a parked card may
-            # never carry an owner that can no longer release it.
-            if status == "parked":
-                assert fetched.get("claimed_by") is None, "Task parked with stale claimed_by"
-                assert fetched.get("claimed_at") is None, "Task parked with stale claimed_at"
+            assert status in ("open", "claimed", "quarantined")
+            # Quarantine may never swallow a live claim, and a quarantined card
+            # may never carry an owner that can no longer release it.
+            if status == "quarantined":
+                assert fetched.get("claimed_by") is None, "Task quarantined with stale claimed_by"
+                assert fetched.get("claimed_at") is None, "Task quarantined with stale claimed_at"
             if claim_ok:
                 # worker-2 won the claim, so the release path must have left it
-                # alone rather than parking someone else's active card.
+                # alone rather than quarantining someone else's active card.
                 assert status == "claimed", f"concurrent claim was overridden ({status})"
                 assert fetched.get("claimed_by") == "worker-2"
             # The threshold strike from the release is recorded regardless of
-            # whether parking was skipped.
+            # whether quarantine was skipped.
             count = await strikes.count_strikes(task_id)
             assert count == strikes.STRIKE_THRESHOLD
+
+
+@pytest.mark.asyncio
+async def test_three_releases_quarantine_via_http(app):
+    """Three cumulative dispatch_failed strikes through the release HTTP route
+    must quarantine the card.  This is the end-to-end proof that the trigger
+    wiring is live: if record_strike is dropped or quarantine_task is not
+    called on the threshold, the task remains open instead of quarantined."""
+    from tinyagentos.projects.strike_store import StrikeStore
+
+    async with app.router.lifespan_context(app):
+        async with _auth_client(app) as c:
+            project_id, task_id = await _make_project_and_task(c, "strike-e2e")
+
+            for _ in range(StrikeStore.STRIKE_THRESHOLD):
+                r = await c.post(
+                    f"/api/projects/{project_id}/tasks/{task_id}/claim",
+                    json={"claimer_id": "worker-1"},
+                )
+                assert r.status_code == 200, r.text
+                r = await c.post(
+                    f"/api/projects/{project_id}/tasks/{task_id}/release",
+                    json={"releaser_id": "worker-1"},
+                )
+                assert r.status_code == 200, r.text
+
+            r = await c.get(f"/api/projects/{project_id}/tasks/{task_id}")
+            assert r.status_code == 200, r.text
+            assert r.json()["status"] == "quarantined"

@@ -921,12 +921,13 @@ async def test_update_refused_by_the_parked_guard_publishes_nothing(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_release_parking_does_not_steal_a_concurrent_claim(tmp_path):
-    """Parking on release must not swallow a claim made after the pre-check.
+async def test_release_quarantine_does_not_steal_a_concurrent_claim(tmp_path):
+    """Quarantine on release must not swallow a claim made after the pre-check.
 
-    The release path records the threshold strike and then parks.  If it
+    The release path records the threshold strike and then quarantines.  If it
     decides on a separate read, another worker can claim the task in the gap
-    between that read and the park, and the park lands on a live claim.
+    between that read and the quarantine, and the quarantine would then
+    swallow that worker's live claim.
     """
     from tinyagentos.projects.strike_store import StrikeStore
 
@@ -941,8 +942,8 @@ async def test_release_parking_does_not_steal_a_concurrent_claim(tmp_path):
         await s.claim_task(task["id"], "worker-1")
 
         # Drive the interleaving deterministically: worker-2 claims the task in
-        # the last moment before the parking UPDATE runs -- exactly the window a
-        # separate pre-read leaves open.  Both the pre-read design and the
+        # the last moment before the quarantine UPDATE runs -- exactly the window
+        # a separate pre-read leaves open.  Both the pre-read design and the
         # conditional-update design reach this point, so the hook is fair to
         # either implementation.
         real_execute = s._db.execute
@@ -951,12 +952,12 @@ async def test_release_parking_does_not_steal_a_concurrent_claim(tmp_path):
         def racing_execute(sql, *args, **kwargs):
             # Stay a plain function so non-matching statements hand back
             # aiosqlite's cursor object unchanged (callers use it both with
-            # `await` and with `async with`). Parking statements are only ever
-            # awaited, so returning a coroutine for those is safe.
+            # `await` and with `async with`). Quarantine statements are only
+            # ever awaited, so returning a coroutine for those is safe.
             if (
                 not state["raced"]
                 and sql.lstrip().upper().startswith("UPDATE")
-                and "'parked'" in sql
+                and "'quarantined'" in sql
             ):
                 state["raced"] = True
 
@@ -996,7 +997,7 @@ async def test_release_records_strike_and_parks_after_threshold(tmp_path):
             ok = await s.release_task(task["id"], "worker-1")
             assert ok is True
         fetched = await s.get_task(task["id"])
-        assert fetched["status"] == "parked"
+        assert fetched["status"] == "quarantined"
         assert await strikes.count_strikes(task["id"]) == StrikeStore.STRIKE_THRESHOLD
     finally:
         await s.close()

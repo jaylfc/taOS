@@ -497,13 +497,13 @@ class ProjectTaskStore(ProjectsDBStore):
                         task_id, "dispatch_failed", actor=releaser_id
                     )
                     if count >= StrikeStore.STRIKE_THRESHOLD:
-                        # The conditional UPDATE inside park_task is itself the
-                        # decision: it only fires while the task is still open
-                        # and unclaimed.  A separate pre-read here would leave a
-                        # window in which another worker claims the task between
-                        # the check and the park, and the park would then
-                        # swallow that worker's live claim.
-                        await self.park_task(
+                        # The conditional UPDATE inside quarantine_task is itself
+                        # the decision: it only fires while the task is still
+                        # open and unclaimed.  A separate pre-read here would
+                        # leave a window in which another worker claims the task
+                        # between the check and the quarantine, and the
+                        # quarantine would then swallow that worker's live claim.
+                        await self.quarantine_task(
                             task_id, "system", only_if_unclaimed=True
                         )
                 except Exception:
@@ -656,20 +656,32 @@ class ProjectTaskStore(ProjectsDBStore):
             )
         return changed
 
-    async def quarantine_task(self, task_id: str, actor: str) -> bool:
+    async def quarantine_task(
+        self, task_id: str, actor: str, *, only_if_unclaimed: bool = False
+    ) -> bool:
         """Move a task into the ``quarantined`` status.
 
         A quarantined card is visible on the board (distinct column) but is
         removed from the ready pool -- the fleet will not pick it up until a
         lead explicitly un-quarantines it.  Only acts on a task that is not
         already closed/cancelled; returns False otherwise.
+
+        ``only_if_unclaimed`` narrows the guard to a task that is still ``open``
+        with no claimer, so a caller that must not steal another worker's live
+        claim can use this update's row count as the quarantine decision instead
+        of a separate (racy) pre-read.
         """
         now = time.time()
+        guard = (
+            "status = 'open' AND claimed_by IS NULL"
+            if only_if_unclaimed
+            else "status NOT IN ('closed', 'cancelled', 'quarantined')"
+        )
         async with self._tx():
             cursor = await self._db.execute(
-                """UPDATE project_tasks
-                   SET status = 'quarantined', updated_at = ?
-                   WHERE id = ? AND status NOT IN ('closed', 'cancelled', 'quarantined')""",
+                f"""UPDATE project_tasks
+                    SET status = 'quarantined', updated_at = ?
+                    WHERE id = ? AND {guard}""",
                 (now, task_id),
             )
             changed = cursor.rowcount == 1
