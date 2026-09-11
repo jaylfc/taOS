@@ -20,6 +20,7 @@ import { projectsApi } from "@/lib/projects";
 import { AssignAgentToProjectDialog } from "./AssignAgentToProjectDialog";
 import { InviteAgentDialog } from "@/apps/ProjectsApp/InviteAgentDialog";
 import { ConsentActions } from "@/components/ConsentActions";
+import { copyText } from "@/lib/clipboard";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                               */
@@ -693,8 +694,8 @@ function InviteExternalAgentPicker({
     };
   }, []);
 
-  const copy = (text: string) => {
-    navigator.clipboard?.writeText(text).catch(() => {});
+  const copy = async (text: string) => {
+    await copyText(text);
   };
 
   const mintOsInvite = async () => {

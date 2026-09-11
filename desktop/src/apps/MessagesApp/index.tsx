@@ -28,6 +28,7 @@ import {
 import { MobileSplitView } from "@/components/mobile/MobileSplitView";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useVisualViewport } from "@/hooks/use-visual-viewport";
+import { copyText } from "@/lib/clipboard";
 import { useDropTarget } from "@/shell/dnd/use-drop-target";
 import { ChannelSettingsPanel } from "../chat/ChannelSettingsPanel";
 import { AgentContextMenu } from "../chat/AgentContextMenu";
@@ -1922,18 +1923,14 @@ export function MessagesApp({
     setOverflowMenu(null);
     if (!selectedChannel) return;
     const url = `${window.location.origin}/chat/${selectedChannel}?msg=${msgId}`;
-    try {
-      await navigator.clipboard.writeText(url);
-    } catch { /* ignore */ }
+    await copyText(url);
   };
 
   const handleCopyText = async (msgId: string) => {
     setOverflowMenu(null);
     const msg = messages.find((m) => m.id === msgId);
     if (!msg) return;
-    try {
-      await navigator.clipboard.writeText(msg.content);
-    } catch { /* ignore */ }
+    await copyText(msg.content);
   };
 
   const handlePin = async (msg: Message) => {

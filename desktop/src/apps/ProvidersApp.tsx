@@ -11,6 +11,7 @@ import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
 import { MobileSplitView } from "@/components/mobile/MobileSplitView";
 import { useIsMobile } from "@/hooks/use-is-mobile";
+import { copyText } from "@/lib/clipboard";
 
 /* ------------------------------------------------------------------ */
 /*  Provider types — fetched from /api/providers/types at boot.       */
@@ -749,11 +750,11 @@ function ProviderDetail({
   }
 
   async function copy(value: string) {
-    try {
-      await navigator.clipboard.writeText(value);
+    const ok = await copyText(value);
+    if (ok) {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1200);
-    } catch { /* no-op */ }
+    }
   }
 
   async function handleTest() {

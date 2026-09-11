@@ -18,6 +18,7 @@ import {
   loraPreviewUrl,
   type LoraItem,
 } from "@/lib/loras";
+import { copyText } from "@/lib/clipboard";
 
 /* ------------------------------------------------------------------ */
 /*  LoRA Studio                                                        */
@@ -76,12 +77,10 @@ function StatusBadge({ status }: { status: LoraItem["status"] }) {
 function TriggerWordChip({ word }: { word: string }) {
   const [copied, setCopied] = useState(false);
   const copy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(word);
+    const ok = await copyText(word);
+    if (ok) {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1200);
-    } catch {
-      /* no-op */
     }
   }, [word]);
   return (

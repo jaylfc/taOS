@@ -18,6 +18,7 @@ import {
   STATUS_LABEL,
 } from "@/lib/cluster";
 import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
+import { copyText } from "@/lib/clipboard";
 
 type SortKey = "name" | "status" | "last_seen";
 type Tab = "nodes" | "devices";
@@ -296,12 +297,10 @@ function WorkerDetail({
     : [];
 
   const copy = useCallback(async (kind: "name" | "url", value: string) => {
-    try {
-      await navigator.clipboard.writeText(value);
+    const ok = await copyText(value);
+    if (ok) {
       setCopied(kind);
       window.setTimeout(() => setCopied(null), 1200);
-    } catch {
-      /* no-op: clipboard may be unavailable */
     }
   }, []);
 

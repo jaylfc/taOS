@@ -9,6 +9,7 @@ import {
   ACCEPTED_BUNDLE_EXTENSIONS,
   type SecretRow,
 } from "./importBundle";
+import { copyText } from "@/lib/clipboard";
 
 /* ------------------------------------------------------------------ */
 /*  ImportWizard                                                        */
@@ -92,13 +93,11 @@ export function ImportWizard({
   }
 
   async function handleCopyCmd() {
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(HERMES_EXPORT_CMD);
-        setCmdCopied(true);
-        setTimeout(() => setCmdCopied(false), 2000);
-      }
-    } catch { /* clipboard unavailable: the command stays visible to copy by hand */ }
+    const ok = await copyText(HERMES_EXPORT_CMD);
+    if (ok) {
+      setCmdCopied(true);
+      setTimeout(() => setCmdCopied(false), 2000);
+    }
   }
 
   function updateSecret(i: number, patch: Partial<SecretRow>) {
