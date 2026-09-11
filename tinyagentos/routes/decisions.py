@@ -312,6 +312,11 @@ async def create_decision(
     if notifs is not None:
         # Best effort: a notification failure must not fail the queued decision.
         try:
+            raw_options = [o.model_dump() for o in body.options]
+            capped = [
+                {"label": o.get("label", "")[:40], "value": o.get("value", o.get("label", ""))}
+                for o in raw_options[:4]
+            ]
             await notifs.add(
                 title="Decision needed",
                 message=f"{from_agent} needs a decision: {body.question[:120]}",
@@ -319,8 +324,12 @@ async def create_decision(
                 source="decisions",
                 data={
                     "decision_type": body.type,
-                    "options": [o.model_dump() for o in body.options],
+                    "options": capped,
                     "decision_id": decision["id"],
+                    "kind": "decision",
+                    "url": f"/decisions/{decision['id']}",
+                    "priority": body.priority,
+                    "from_agent": from_agent,
                 },
             )
         except Exception:

@@ -13,7 +13,12 @@ import requests
 from pywebpush import WebPushException
 
 from tinyagentos.notifications import NotificationStore
-from tinyagentos.notifications_push import NotificationPushStore, send_web_push, send_device_push
+from tinyagentos.notifications_push import (
+    NotificationPushStore,
+    _build_device_push_payload,
+    send_web_push,
+    send_device_push,
+)
 from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
 from taos_test_csrf import csrf_event_hooks
 
@@ -973,3 +978,59 @@ class TestSendDevicePush:
         ]
         assert body["data"]["image"] == "https://cdn.example.com/run/42.png"
         assert body["data"]["actions"] == body["actions"]
+
+
+def test_build_device_push_payload_caps_options_at_4_and_truncates_labels():
+    row = {
+        "title": "Pick",
+        "message": "pick one",
+        "source": "decisions",
+        "data": {
+            "decision_type": "single_select",
+            "options": [
+                {"label": "A" * 50, "value": "a"},
+                {"label": "B" * 50, "value": "b"},
+                {"label": "C" * 50, "value": "c"},
+                {"label": "D" * 50, "value": "d"},
+                {"label": "E" * 50, "value": "e"},
+            ],
+            "decision_id": "dec-1",
+            "priority": "normal",
+        },
+    }
+    payload, actions = _build_device_push_payload(row)
+    assert len(actions) == 4
+    assert len(payload["data"]["options"]) == 4
+    for o in payload["data"]["options"]:
+        assert len(o["label"]) <= 40
+    assert payload["thread_id"] == "dec-1"
+    assert "interruption_level" not in payload
+
+
+def test_build_device_push_payload_sets_interruption_level_for_blocking():
+    row = {
+        "title": "Block",
+        "message": "now",
+        "source": "decisions",
+        "data": {
+            "decision_type": "approve_deny",
+            "options": [],
+            "decision_id": "dec-2",
+            "priority": "blocking",
+        },
+    }
+    payload, _ = _build_device_push_payload(row)
+    assert payload["interruption_level"] == "time-sensitive"
+    assert payload["category"] == "DECISION_APPROVE_DENY"
+
+
+def test_build_device_push_payload_non_decision_has_no_category_or_thread():
+    row = {
+        "title": "Hi",
+        "message": "there",
+        "source": "system",
+        "data": {},
+    }
+    payload, _ = _build_device_push_payload(row)
+    assert "category" not in payload
+    assert "thread_id" not in payload

@@ -87,6 +87,8 @@ def build_apns_payload(
     category: str | None = None,
     actions: list[dict] | None = None,
     image: str | None = None,
+    thread_id: str | None = None,
+    interruption_level: str | None = None,
 ) -> dict:
     """Build an APNs payload, letting explicit keyword args win over `data`.
 
@@ -127,6 +129,10 @@ def build_apns_payload(
     # controller's Decisions answer route.
     if category:
         aps["category"] = category
+    if thread_id:
+        aps["thread-id"] = thread_id
+    if interruption_level:
+        aps["interruption-level"] = interruption_level
     # Any rich attachment (image) or action set requires the notification service
     # extension to mutate the payload before display: download the image, attach
     # UNNotificationAttachment, and surface the action buttons. APNs only allows

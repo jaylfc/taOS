@@ -355,9 +355,6 @@ def _build_device_push_payload(row: dict) -> tuple[dict, list[dict] | None]:
     category: str | None = None
     decision_type = data.get("decision_type")
     if decision_type == "approve_deny":
-        # The native shell maps a category id to a registered UNNotificationCategory;
-        # tsk-cf7wzc pins the button set to approve / reject / add-note on both
-        # iPhone and Apple Watch.
         category = "DECISION_APPROVE_DENY"
         actions = [
             {"id": "approve", "label": "Approve"},
@@ -367,11 +364,21 @@ def _build_device_push_payload(row: dict) -> tuple[dict, list[dict] | None]:
     elif decision_type in ("single_select", "multi_select"):
         category = "DECISION_OPTIONS"
         opts = data.get("options") or []
-        actions = [{"id": o.get("value", o.get("label", "")), "label": o.get("label", "")} for o in opts]
+        capped = [
+            {"label": o.get("label", "")[:40], "value": o.get("value", o.get("label", ""))}
+            for o in opts[:4]
+        ]
+        actions = [{"id": o.get("value", o.get("label", "")), "label": o.get("label", "")} for o in capped]
     elif decision_type == "free_text":
         category = "DECISION_FREE_TEXT"
         actions = [{"id": "quick_reply", "label": "Reply"}]
     payload_data = dict(data)
+    if decision_type in ("single_select", "multi_select"):
+        opts = data.get("options") or []
+        payload_data["options"] = [
+            {"label": o.get("label", "")[:40], "value": o.get("value", o.get("label", ""))}
+            for o in opts[:4]
+        ]
     image = data.get("image")
     if isinstance(image, str) and image:
         payload_data["image"] = image
@@ -380,6 +387,12 @@ def _build_device_push_payload(row: dict) -> tuple[dict, list[dict] | None]:
     payload: dict = {"title": title, "body": body, "data": payload_data}
     if category:
         payload["category"] = category
+    decision_id = data.get("decision_id")
+    if decision_id:
+        payload["thread_id"] = decision_id
+    priority = data.get("priority")
+    if priority == "blocking":
+        payload["interruption_level"] = "time-sensitive"
     if isinstance(image, str) and image:
         payload["image"] = image
     return payload, actions
@@ -423,6 +436,8 @@ async def _send_one_device(
             category=base_payload.get("category"),
             actions=actions,
             image=base_payload.get("image"),
+            thread_id=base_payload.get("thread_id"),
+            interruption_level=base_payload.get("interruption_level"),
         )
     elif platform == "android":
         from tinyagentos.push.unifiedpush import build_unifiedpush_payload
