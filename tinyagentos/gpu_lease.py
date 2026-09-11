@@ -10,6 +10,7 @@ The coordination channel is the A2A bus (see ``routes/a2a_bus.py``) and the wire
 format is a single readable line so a human watching the channel can follow it::
 
     [GPU CLAIM] node=linstation holder=@taOSmd vram=~9.4gb reason=ollama eta=~10m
+    [GPU CLAIM] node=linstation holder=@taOSmd vram=~9.4gb expires=1783350000
     [GPU RELEASE] node=linstation holder=@taOSmd
     [GPU REQUEST] node=linstation need=~6gb
     [GPU CHECK] node=linstation need=~6gb
@@ -18,6 +19,16 @@ This module owns the FORMAT and the FOLD: parsing a line, rendering a line, and
 reducing a channel's message history to the claims still open (a CLAIM is closed
 by a later RELEASE from the same holder). It is deliberately pure — no FastAPI,
 no httpx — so the admission rules can be tested without a bus.
+
+Expiry
+------
+A rendered CLAIM may carry the holder's own ``expires=`` (a unix timestamp,
+taken from the backing cluster lease's TTL). The fold drops a claim whose
+expiry has passed, exactly as the cluster lease's TTL frees the reservation it
+backs: a crashed or idle holder must not block the card forever. A claim
+published without ``expires=`` never expires here — it is bounded only by a
+RELEASE or by ageing out of the fold window, which keeps the interim
+hand-posted lines working unchanged.
 
 Identity
 --------
@@ -31,7 +42,9 @@ predate bus auth still close correctly. Bus ids are matched first and wins.
 
 from __future__ import annotations
 
+import math
 import re
+import time
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
@@ -59,7 +72,7 @@ _VRAM_RE = re.compile(
 
 # Field names understood in a line body. Unknown keys are ignored (forward
 # compatibility: a future `priority=` must not break an older reader).
-_FIELD_ALIASES = {"needed": "need", "vram_mb": "vram"}
+_FIELD_ALIASES = {"needed": "need", "vram_mb": "vram", "expires_at": "expires"}
 
 
 def _clean(text: object) -> str:
@@ -154,6 +167,16 @@ class GpuLeaseMessage:
     message_id: int | None = None
     ts: float | None = None
     bus_from: str | None = None
+    expires_at: float | None = None
+
+    def expired(self, now: float) -> bool:
+        """True when the holder's published expiry has passed.
+
+        A claim with no ``expires=`` (an interim hand-posted line) never
+        expires here: it is bounded only by a RELEASE or by ageing out of the
+        fold window.
+        """
+        return self.expires_at is not None and self.expires_at <= now
 
     @property
     def identity_key(self) -> str:
@@ -176,6 +199,23 @@ class GpuLeaseMessage:
             "message_id": self.message_id,
             "ts": self.ts,
         }
+
+
+def parse_epoch(text: object) -> float | None:
+    """Parse a unix-timestamp field (``expires=1783350000``) into seconds.
+
+    Returns None for anything unparseable (or non-finite) so a caller can tell
+    "no expiry published" from "expired at zero", which would read as expired
+    since 1970.
+    """
+    raw = str(text).strip() if text is not None else ""
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
 
 
 def parse_message(
@@ -225,11 +265,17 @@ def parse_message(
         message_id=int(message_id) if isinstance(message_id, int) else None,
         ts=float(ts) if isinstance(ts, (int, float)) else None,
         bus_from=sender.strip() if isinstance(sender, str) and sender.strip() else None,
+        expires_at=parse_epoch(fields.get("expires")),
     )
 
 
 def render_claim(
-    node: str, holder: str, vram_mb: int, reason: str = "", eta: str = ""
+    node: str,
+    holder: str,
+    vram_mb: int,
+    reason: str = "",
+    eta: str = "",
+    expires_at: float | None = None,
 ) -> str:
     """Render a ``[GPU CLAIM]`` line. Every value is flattened to one line."""
     parts = [
@@ -241,6 +287,10 @@ def render_claim(
         parts.append(f"reason={_clean(reason)}")
     if eta:
         parts.append(f"eta={_clean(eta)}")
+    if expires_at is not None:
+        # An integer unix timestamp: the fold compares it against its own clock,
+        # so it must be an absolute instant, never a duration.
+        parts.append(f"expires={int(expires_at)}")
     return f"[GPU CLAIM] {' '.join(parts)}"
 
 
@@ -265,13 +315,21 @@ def render_check(node: str, need_mb: int | None = None) -> str:
     return f"[GPU CHECK] {' '.join(parts)}"
 
 
-def open_claims(messages: Iterable[object]) -> dict[str, list[GpuLeaseMessage]]:
+def open_claims(
+    messages: Iterable[object], *, now: float | None = None
+) -> dict[str, list[GpuLeaseMessage]]:
     """Fold a channel's messages into the claims that are still open.
 
     Messages are expected oldest-first (the bus returns them in that order). A
     CLAIM opens a slot keyed by ``(node, identity)``; a RELEASE from the same
     identity on the same node closes it. A re-CLAIM by the same identity
     replaces the previous one (so a reposted claim is never double-counted).
+
+    A claim that published an ``expires=`` in the past is NOT open: it is
+    dropped here exactly as the cluster lease it backs is dropped by its TTL,
+    so a holder that crashed (or stopped keeping alive) cannot block the card
+    forever. A claim with no published expiry is unaffected - it stays open
+    until a RELEASE closes it or it ages out of the fold window.
 
     Both the node and the identity are matched case-insensitively: peers do not
     agree on the spelling of a hostname, and a `node=Linstation` claim whose
@@ -280,6 +338,7 @@ def open_claims(messages: Iterable[object]) -> dict[str, list[GpuLeaseMessage]]:
     therefore keyed by the CASE-FOLDED node name; each message keeps the
     spelling it arrived with.
     """
+    cutoff = time.time() if now is None else float(now)
     open_by_key: dict[tuple[str, str], GpuLeaseMessage] = {}
     order: list[tuple[str, str]] = []
     for raw in messages:
@@ -297,8 +356,9 @@ def open_claims(messages: Iterable[object]) -> dict[str, list[GpuLeaseMessage]]:
     out: dict[str, list[GpuLeaseMessage]] = {}
     for key in order:
         msg = open_by_key.get(key)
-        if msg is not None:
-            out.setdefault(key[0], []).append(msg)
+        if msg is None or msg.expired(cutoff):
+            continue
+        out.setdefault(key[0], []).append(msg)
     return out
 
 

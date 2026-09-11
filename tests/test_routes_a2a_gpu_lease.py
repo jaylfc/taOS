@@ -8,6 +8,7 @@ rather than tautological.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -18,6 +19,7 @@ from taos_test_csrf import csrf_event_hooks
 from tinyagentos.agent_registry_store import mint_registry_token
 from tinyagentos.cluster.manager import ClusterManager
 from tinyagentos.cluster.worker_protocol import WorkerInfo
+from tinyagentos.gpu_lease import claims_for_node, open_claims
 
 _ROUTE_PATCH = "tinyagentos.routes.a2a_gpu_lease.httpx.AsyncClient"
 
@@ -319,9 +321,16 @@ class TestClaim:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "claimed"
-        assert data["line"] == (
-            "[GPU CLAIM] node=local holder=@operator vram=~6gb reason=flux eta=~5m"
+        # The line carries the holder's own expiry: an integer instant, so a
+        # peer folds it against its own clock. This node has no cluster lease
+        # behind it, so it is the TTL this call asked for (the 300s default).
+        assert data["line"].startswith(
+            "[GPU CLAIM] node=local holder=@operator vram=~6gb "
+            "reason=flux eta=~5m expires="
         )
+        published = int(data["line"].rsplit("expires=", 1)[1])
+        assert abs(published - (time.time() + 300)) <= 5
+        assert int(data["claim_expires_at"]) == published
         assert bus.last_line == data["line"]
 
     async def test_claim_then_check_sees_the_claim(self, lease_client, bus, local_vram):
@@ -501,6 +510,107 @@ class TestClusterLeaseIntegration:
         assert checked.status_code == 200
         assert checked.json()["admitted"] is True
         assert checked.json()["blockers"] == []
+
+    async def test_claim_publishes_a_bus_expiry_from_its_lease(
+        self, lease_client, bus, cluster
+    ):
+        """A peer must be able to tell when a claim lapses (CR on #2988)."""
+        resp = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        assert resp.status_code == 200
+        lease = cluster.get_leases()[0]
+        assert resp.json()["claim_expires_at"] == lease.expires_at
+        assert f"expires={int(lease.expires_at)}" in bus.last_line
+        # The fold reads it, so the claim is bounded even without a RELEASE.
+        # (The wire carries whole seconds; the lease keeps its float.)
+        folded = open_claims(bus.messages)
+        assert claims_for_node(folded, "linstation")[0].expires_at == int(
+            lease.expires_at
+        )
+
+    async def test_a_claim_that_stops_being_kept_alive_frees_the_node(
+        self, lease_client, bus, cluster
+    ):
+        """CR on #2988: a crashed holder must not block the card forever.
+
+        No RELEASE and no keep-alive: once the published expiry passes, another
+        identity can take the node. Otherwise one crashed agent denies the
+        shared GPU to everyone until its claim ages out of the fold window.
+        """
+        _cid, token = await _agent_token(lease_client._app, scopes=("a2a_send",))
+        async with _bare(lease_client._app) as bare:
+            claimed = await bare.post(
+                "/api/a2a/gpu/claim",
+                json={"node": "linstation", "vram_mb": 4096, "ttl_seconds": 0.5},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert claimed.status_code == 200
+
+        _other, other = await _agent_token(
+            lease_client._app, scopes=("a2a_receive", "a2a_send"), handle="@taos"
+        )
+        headers = {"Authorization": f"Bearer {other}"}
+
+        # While the holder's claim is live, the node is blocked for the peer.
+        async with _bare(lease_client._app) as bare:
+            blocked = await bare.get(
+                "/api/a2a/gpu/check",
+                params={"node": "linstation", "vram_mb": 1024},
+                headers=headers,
+            )
+        assert blocked.status_code == 200
+        assert blocked.json()["admitted"] is False
+
+        await asyncio.sleep(0.8)
+
+        async with _bare(lease_client._app) as bare:
+            freed = await bare.get(
+                "/api/a2a/gpu/check",
+                params={"node": "linstation", "vram_mb": 1024},
+                headers=headers,
+            )
+            took = await bare.post(
+                "/api/a2a/gpu/claim",
+                json={"node": "linstation", "vram_mb": 4096},
+                headers=headers,
+            )
+        assert freed.json()["admitted"] is True
+        assert freed.json()["blockers"] == []
+        assert took.status_code == 200
+
+    async def test_renew_republishes_the_claim_keep_alive(
+        self, lease_client, bus, cluster
+    ):
+        """A renewed lease must keep its bus claim alive (CR on #2988).
+
+        The fold drops a claim once its published expiry passes, so a holder
+        that only renewed the lease would let its claim lapse while still
+        holding the card - and a peer would read the node as free.
+        """
+        claimed = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        lease_id = claimed.json()["lease_id"]
+        before = cluster.get_leases()[0].expires_at
+
+        renewed = await lease_client.post(
+            "/api/a2a/gpu/renew",
+            json={"lease_id": lease_id, "ttl_seconds": 600},
+        )
+        assert renewed.status_code == 200
+        assert renewed.json()["bus_claim_refreshed"] is True
+        after = cluster.get_leases()[0].expires_at
+        assert after > before
+        assert bus.last_line == renewed.json()["line"]
+        assert bus.last_line.startswith("[GPU CLAIM] node=linstation holder=@operator")
+        assert "reason=keep-alive" in bus.last_line
+        assert f"expires={int(after)}" in bus.last_line
+        # The repost replaces the original claim rather than double-counting it.
+        folded = open_claims(bus.messages)
+        assert [int(c.expires_at) for c in claims_for_node(folded, "linstation")] == [
+            int(after)
+        ]
 
     async def test_reclaiming_extends_rather_than_conflicts(self, lease_client, bus, cluster):
         first = await lease_client.post(

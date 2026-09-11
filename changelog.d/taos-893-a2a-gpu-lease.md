@@ -17,6 +17,14 @@
   registry identity (scope `a2a_receive` to check, `a2a_send` to act) and the
   node label resolves to a cluster worker's heartbeat VRAM or the controller's
   own shared VRAM ledger.
+- Claims carry their own expiry. `POST /api/a2a/gpu/claim` publishes
+  `expires=<unix ts>` on the `[GPU CLAIM]` line (the backing cluster lease's
+  expiry, or the requested TTL for a bus-only node) and `POST /api/a2a/gpu/renew`
+  reposts that line as it extends the lease, so a holder that keeps its lease
+  alive keeps its claim alive. The fold drops a claim whose published expiry has
+  passed, so a holder that crashed or stopped keeping alive no longer blocks the
+  shared card until its claim ages out of the fold window. A claim posted by hand
+  without an `expires=` is unchanged: bounded by a RELEASE alone.
 
 ### Fixed
 

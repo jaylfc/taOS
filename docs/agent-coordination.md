@@ -359,7 +359,7 @@ use the controller's endpoints so the protocol is admission-checked and backed b
 a real lease:
 
 ```text
-[GPU CLAIM] node=<host> holder=@you vram=~9.4gb reason=... eta=...
+[GPU CLAIM] node=<host> holder=@you vram=~9.4gb reason=... eta=... expires=<unix ts>
 [GPU RELEASE] node=<host> holder=@you
 [GPU REQUEST] node=<host> need=~6gb
 ```
@@ -423,6 +423,16 @@ Rules that matter when you use it:
   crashed or idle holder therefore frees the node without anyone releasing it.
   An unbounded TTL would let one agent take the shared GPU permanently, so the
   cap is enforced by the request model.
+- **A claim carries its own expiry, and the fold honours it.** `/claim` publishes
+  `expires=<unix ts>` on the line — the backing lease's expiry when the node is a
+  cluster worker, else the TTL it was asked for — and `/renew` reposts the claim
+  as it extends the lease. A fold drops a claim whose published expiry has
+  passed, exactly as the cluster lease's TTL frees its reservation, so a holder
+  that crashed or stopped keeping alive no longer blocks the card until its
+  claim ages out of the fold window. Keep-alive therefore means re-POST `/claim`
+  or `/renew` while you hold the card; a claim posted by hand without an
+  `expires=` never expires (it is bounded by a RELEASE alone), which is what the
+  interim protocol in #893 relies on.
 - **A claim is only visible inside the channel fold window** (the newest 500
   messages). For a load that outlives the chatter around it, re-POST `/claim`
   periodically: it is idempotent (it extends the lease and reposts the line,

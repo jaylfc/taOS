@@ -7,6 +7,8 @@ rules that stop a silent co-load past the card's VRAM.
 """
 from __future__ import annotations
 
+import time
+
 from tinyagentos.gpu_lease import (
     CLAIM,
     RELEASE,
@@ -87,6 +89,21 @@ class TestParseMessage:
     def test_kind_is_case_insensitive(self):
         assert parse_message("[gpu claim] node=n1 holder=@a vram=1gb").kind == CLAIM
 
+    def test_expires_is_parsed_as_an_absolute_instant(self):
+        msg = parse_message(
+            "[GPU CLAIM] node=n1 holder=@a vram=6gb expires=1783350000"
+        )
+        assert msg.expires_at == 1783350000.0
+        assert msg.expired(1783350001) is True
+        assert msg.expired(1783349999) is False
+
+    def test_an_unparseable_expiry_means_no_expiry_not_expiry_at_zero(self):
+        # "expires=<garbage>" must not read as expired-since-1970, which would
+        # silently turn a live claim into a free card.
+        msg = parse_message("[GPU CLAIM] node=n1 holder=@a vram=6gb expires=soon")
+        assert msg.expires_at is None
+        assert msg.expired(2**31) is False
+
     def test_unknown_keys_are_ignored(self):
         msg = parse_message("[GPU CLAIM] node=n1 holder=@a vram=1gb priority=high")
         assert msg.node == "n1"
@@ -164,6 +181,44 @@ class TestOpenClaims:
         folded = open_claims(msgs)
         assert list(folded) == ["n1"]
         assert folded["n1"][0].vram_mb == 6144
+
+    def test_a_claim_past_its_published_expiry_is_not_open(self):
+        # taOS #893 / CR on #2988: a holder that crashed (no RELEASE, no
+        # keep-alive) must not block the card forever.
+        msgs = self._bus("[GPU CLAIM] node=n1 holder=@a vram=6gb expires=1000")
+        assert open_claims(msgs, now=1001) == {}
+        assert list(open_claims(msgs, now=999)) == ["n1"]
+        # The boundary counts as expired, matching the cluster lease's TTL.
+        assert open_claims(msgs, now=1000) == {}
+
+    def test_a_claim_without_a_published_expiry_never_expires(self):
+        # Interim hand-posted lines stay bounded by RELEASE / the fold window.
+        msgs = self._bus("[GPU CLAIM] node=n1 holder=@a vram=6gb")
+        assert list(open_claims(msgs, now=time.time() + 10**9)) == ["n1"]
+
+    def test_a_refreshed_claim_carries_its_new_expiry(self):
+        msgs = self._bus(
+            "[GPU CLAIM] node=n1 holder=@a vram=6gb expires=1000",
+            "[GPU CLAIM] node=n1 holder=@a vram=6gb expires=2000",
+        )
+        folded = open_claims(msgs, now=1500)
+        assert folded["n1"][0].expires_at == 2000
+
+    def test_one_holders_expiry_does_not_drop_another_holders_claim(self):
+        msgs = [
+            {
+                "id": 1,
+                "from": "@a",
+                "body": "[GPU CLAIM] node=n1 holder=@a vram=6gb expires=1000",
+            },
+            {
+                "id": 2,
+                "from": "@b",
+                "body": "[GPU CLAIM] node=n1 holder=@b vram=2gb expires=9999",
+            },
+        ]
+        folded = open_claims(msgs, now=2000)
+        assert [c.display_holder() for c in folded["n1"]] == ["@b"]
 
     def test_a_release_from_another_holder_does_not_close_the_claim(self):
         msgs = [
@@ -373,6 +428,17 @@ class TestRender:
 
     def test_render_claim_omits_empty_optionals(self):
         assert render_claim("n1", "@a", 1024) == "[GPU CLAIM] node=n1 holder=@a vram=~1gb"
+
+    def test_render_claim_publishes_an_integer_expiry(self):
+        line = render_claim("n1", "@a", 6144, expires_at=1783350000.9)
+        assert line == (
+            "[GPU CLAIM] node=n1 holder=@a vram=~6gb expires=1783350000"
+        )
+        # It round-trips as an absolute instant, which is what the fold compares.
+        assert parse_message(line).expires_at == 1783350000.0
+
+    def test_render_claim_omits_the_expiry_when_it_is_unknown(self):
+        assert "expires=" not in render_claim("n1", "@a", 6144)
 
     def test_render_release_request_check(self):
         assert render_release("n1", "@a") == "[GPU RELEASE] node=n1 holder=@a"

@@ -45,6 +45,7 @@ import asyncio
 import logging
 import os
 import socket
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -443,6 +444,9 @@ class RenewBody(BaseModel):
     ttl_seconds: float = Field(
         default=_DEFAULT_TTL_SECONDS, gt=0, le=MAX_LEASE_TTL_SECONDS
     )
+    # The channel the claim was posted on, so the keep-alive repost refreshes
+    # the same line instead of leaking one onto the default thread.
+    channel: str | None = None
 
 
 def _resource_id(node: str, resource: str) -> str:
@@ -503,6 +507,30 @@ async def _holder_for(request: Request, identity: str) -> str:
     if not handle:
         return identity
     return handle if handle.startswith("@") else f"@{handle}"
+
+
+async def _claim_holder_actor(request: Request, lease, actor: _Actor) -> _Actor:
+    """The actor a line ABOUT *lease* must be attributed to.
+
+    A claim is keyed on its bus author, so an operator (or any caller acting on
+    a lease it does not hold) must post as the holder whose claim the line
+    closes - otherwise the post clears nothing and peers keep reading the node
+    as claimed while the local lease is already gone (an admin session may post
+    with an explicit ``from``, docs/agent-coordination.md). A lease with no bus
+    claim behind it (a non-``a2a:`` caller, e.g. ``skald-dispatcher``) has no
+    holder to attribute to, so the acting identity stands.
+    """
+    if _lease_owned_by(lease, actor):
+        return actor
+    owner = _lease_bus_identity(lease)
+    if owner is None:
+        return actor
+    return _Actor(
+        identity=owner,
+        holder=await _holder_for(request, owner),
+        credential=actor.credential,
+        is_admin=actor.is_admin,
+    )
 
 
 def _may_act_on(lease, actor: _Actor) -> bool:
@@ -642,7 +670,24 @@ async def gpu_claim(request: Request, body: ClaimBody):
             lease_id = lease.lease_id
             created_lease = True
 
-    line = render_claim(node, actor.holder, vram_mb, body.reason, body.eta)
+    # Publish the holder's own expiry on the line, so a peer's fold can drop a
+    # claim whose holder crashed or stopped keeping alive instead of blocking
+    # the card forever. It is the backing cluster lease's expiry when there is
+    # one, else the TTL this call asked for (a bus-only node is governed by the
+    # bus alone, so the line is the only thing that can free it).
+    claim_expires_at = (
+        getattr(lease, "expires_at", None)
+        if lease is not None
+        else time.time() + float(body.ttl_seconds)
+    )
+    line = render_claim(
+        node,
+        actor.holder,
+        vram_mb,
+        body.reason,
+        body.eta,
+        expires_at=claim_expires_at,
+    )
     try:
         posted = await _post_line(channel, actor, line)
     except HTTPException:
@@ -660,6 +705,7 @@ async def gpu_claim(request: Request, body: ClaimBody):
         "vram_mb": vram_mb,
         "lease_id": lease_id,
         "expires_at": getattr(lease, "expires_at", None),
+        "claim_expires_at": claim_expires_at,
         "line": line,
         "channel": channel,
         "message": posted,
@@ -708,21 +754,12 @@ async def gpu_release(request: Request, body: ReleaseBody):
     # lease by explicit id must attribute the line to THAT holder: a claim is
     # keyed on its bus AUTHOR, so a line posted as @operator clears nothing and
     # every peer's fold keeps reading the node as claimed while the local lease
-    # is already gone (CodeRabbit on #2988). An admin session may post with an
-    # explicit `from` (docs/agent-coordination.md, *Posting to the coordination
-    # bus*); a bus that authenticates senders refuses the substitution, and the
-    # post-before-release ordering below then leaves the local lease intact, so
-    # the override cannot half-apply.
-    line_actor = actor
-    if lease is not None and not _lease_owned_by(lease, actor):
-        owner = _lease_bus_identity(lease)
-        if owner is not None:
-            line_actor = _Actor(
-                identity=owner,
-                holder=await _holder_for(request, owner),
-                credential=actor.credential,
-                is_admin=actor.is_admin,
-            )
+    # is already gone (CodeRabbit on #2988). A bus that authenticates senders
+    # refuses the substitution, and the post-before-release ordering below then
+    # leaves the local lease intact, so the override cannot half-apply.
+    line_actor = (
+        actor if lease is None else await _claim_holder_actor(request, lease, actor)
+    )
 
     # Post BEFORE releasing the local lease, so a bus failure changes nothing
     # and the caller can retry. Releasing first would free the node here while
@@ -799,9 +836,45 @@ async def gpu_renew(request: Request, body: RenewBody):
             {"error": "lease not found or expired", "lease_id": body.lease_id},
             status_code=409,
         )
+    # Keep the BUS claim alive too. A fold drops a claim whose published expiry
+    # has passed, so a holder that only renewed its lease would let the claim
+    # lapse while it still holds the card - and a peer's fold would then read
+    # the node as free, which is the co-load this surface exists to prevent.
+    # The repost is the claim line shape, so the fold replaces the previous
+    # claim (same node + identity) rather than double-counting it.
+    node, _, _resource = (lease.resource_id or "").partition(":")
+    hold = await _claim_holder_actor(request, lease, actor)
+    channel = (body.channel or "").strip() or _channel()
+    line = render_claim(
+        node,
+        hold.holder,
+        lease.required_vram_mb or 0,
+        reason="keep-alive",
+        expires_at=lease.expires_at,
+    )
+    bus_claim_refreshed = False
+    refresh_error: str | None = None
+    if node:
+        try:
+            await _post_line(channel, hold, line)
+            bus_claim_refreshed = True
+        except HTTPException:
+            # The local lease IS renewed, so this is reported rather than fatal:
+            # the caller must know the claim did not reach the bus (peers will
+            # treat the node as free once the old expiry passes) and re-claim.
+            refresh_error = "a2a bus unavailable"
+            logger.warning(
+                "A2A GPU lease %s renewed but the claim repost failed (channel=%s)",
+                lease.lease_id,
+                channel,
+            )
     return {
         "status": "renewed",
         "lease_id": lease.lease_id,
         "resource_id": lease.resource_id,
         "expires_at": lease.expires_at,
+        "line": line,
+        "channel": channel,
+        "bus_claim_refreshed": bus_claim_refreshed,
+        "bus_refresh_error": refresh_error,
     }
