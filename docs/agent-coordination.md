@@ -425,8 +425,12 @@ Rules that matter when you use it:
   cap is enforced by the request model.
 - **A claim carries its own expiry, and the fold honours it.** `/claim` publishes
   `expires=<unix ts>` on the line — the backing lease's expiry when the node is a
-  cluster worker, else the TTL it was asked for — and `/renew` reposts the claim
-  as it extends the lease. A fold drops a claim whose published expiry has
+  cluster worker, else the TTL it was asked for — rounded up, so a published
+  expiry can never precede the reservation it describes. `/renew` reposts the
+  claim as it extends the lease, on the channel the claim was made on (the
+  channel is an input to the *claim*, never to its renewal); if that repost
+  fails, the local extension is rolled back, so peers and this controller still
+  agree and the holder can retry. A fold drops a claim whose published expiry has
   passed, exactly as the cluster lease's TTL frees its reservation, so a holder
   that crashed or stopped keeping alive no longer blocks the card until its
   claim ages out of the fold window. Keep-alive therefore means re-POST `/claim`

@@ -289,8 +289,11 @@ def render_claim(
         parts.append(f"eta={_clean(eta)}")
     if expires_at is not None:
         # An integer unix timestamp: the fold compares it against its own clock,
-        # so it must be an absolute instant, never a duration.
-        parts.append(f"expires={int(expires_at)}")
+        # so it must be an absolute instant, never a duration. Rounded UP, so a
+        # published expiry can never precede the reservation it describes - a
+        # lease ending at 1000.9 must not publish expires=1000, or a peer could
+        # admit itself into the truncation gap (CR on #2988).
+        parts.append(f"expires={math.ceil(expires_at)}")
     return f"[GPU CLAIM] {' '.join(parts)}"
 
 

@@ -431,11 +431,11 @@ class TestRender:
 
     def test_render_claim_publishes_an_integer_expiry(self):
         line = render_claim("n1", "@a", 6144, expires_at=1783350000.9)
-        assert line == (
-            "[GPU CLAIM] node=n1 holder=@a vram=~6gb expires=1783350000"
-        )
-        # It round-trips as an absolute instant, which is what the fold compares.
-        assert parse_message(line).expires_at == 1783350000.0
+        # Rounded UP: a published expiry must never precede the reservation it
+        # describes, or a peer could admit itself into the truncation gap.
+        assert line == "[GPU CLAIM] node=n1 holder=@a vram=~6gb expires=1783350001"
+        assert parse_message(line).expires_at == 1783350001.0
+        assert parse_message(line).expires_at >= 1783350000.9
 
     def test_render_claim_omits_the_expiry_when_it_is_unknown(self):
         assert "expires=" not in render_claim("n1", "@a", 6144)

@@ -19,12 +19,15 @@
   own shared VRAM ledger.
 - Claims carry their own expiry. `POST /api/a2a/gpu/claim` publishes
   `expires=<unix ts>` on the `[GPU CLAIM]` line (the backing cluster lease's
-  expiry, or the requested TTL for a bus-only node) and `POST /api/a2a/gpu/renew`
-  reposts that line as it extends the lease, so a holder that keeps its lease
-  alive keeps its claim alive. The fold drops a claim whose published expiry has
-  passed, so a holder that crashed or stopped keeping alive no longer blocks the
-  shared card until its claim ages out of the fold window. A claim posted by hand
-  without an `expires=` is unchanged: bounded by a RELEASE alone.
+  expiry, or the requested TTL for a bus-only node), rounded up so a published
+  expiry can never precede the lease it describes, and `POST /api/a2a/gpu/renew`
+  reposts that line as it extends the lease — on the channel the claim was made
+  on, since the channel is an input to the claim and never to its renewal. If the
+  repost fails the local extension is rolled back rather than leaving a lease
+  that peers have already seen lapse. The fold drops a claim whose published
+  expiry has passed, so a holder that crashed or stopped keeping alive no longer
+  blocks the shared card until its claim ages out of the fold window. A claim
+  posted by hand without an `expires=` is unchanged: bounded by a RELEASE alone.
 
 ### Fixed
 

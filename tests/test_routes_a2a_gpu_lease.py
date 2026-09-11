@@ -9,6 +9,7 @@ rather than tautological.
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 
 import pytest
@@ -330,7 +331,7 @@ class TestClaim:
         )
         published = int(data["line"].rsplit("expires=", 1)[1])
         assert abs(published - (time.time() + 300)) <= 5
-        assert int(data["claim_expires_at"]) == published
+        assert math.ceil(data["claim_expires_at"]) == published
         assert bus.last_line == data["line"]
 
     async def test_claim_then_check_sees_the_claim(self, lease_client, bus, local_vram):
@@ -521,13 +522,13 @@ class TestClusterLeaseIntegration:
         assert resp.status_code == 200
         lease = cluster.get_leases()[0]
         assert resp.json()["claim_expires_at"] == lease.expires_at
-        assert f"expires={int(lease.expires_at)}" in bus.last_line
+        # The wire carries whole seconds, rounded UP so a published expiry can
+        # never precede the lease it describes.
+        published = int(bus.last_line.rsplit("expires=", 1)[1])
+        assert lease.expires_at <= published < lease.expires_at + 1
         # The fold reads it, so the claim is bounded even without a RELEASE.
-        # (The wire carries whole seconds; the lease keeps its float.)
         folded = open_claims(bus.messages)
-        assert claims_for_node(folded, "linstation")[0].expires_at == int(
-            lease.expires_at
-        )
+        assert claims_for_node(folded, "linstation")[0].expires_at == float(published)
 
     async def test_a_claim_that_stops_being_kept_alive_frees_the_node(
         self, lease_client, bus, cluster
@@ -562,7 +563,10 @@ class TestClusterLeaseIntegration:
         assert blocked.status_code == 200
         assert blocked.json()["admitted"] is False
 
-        await asyncio.sleep(0.8)
+        # The published expiry is the lease's TTL rounded UP to whole seconds,
+        # so wait for the instant the peers will actually fold it as lapsed.
+        published = int(claimed.json()["line"].rsplit("expires=", 1)[1])
+        await asyncio.sleep(max(0.5, published - time.time() + 0.1))
 
         async with _bare(lease_client._app) as bare:
             freed = await bare.get(
@@ -605,12 +609,64 @@ class TestClusterLeaseIntegration:
         assert bus.last_line == renewed.json()["line"]
         assert bus.last_line.startswith("[GPU CLAIM] node=linstation holder=@operator")
         assert "reason=keep-alive" in bus.last_line
-        assert f"expires={int(after)}" in bus.last_line
+        published = int(bus.last_line.rsplit("expires=", 1)[1])
+        assert after <= published < after + 1
         # The repost replaces the original claim rather than double-counting it.
         folded = open_claims(bus.messages)
-        assert [int(c.expires_at) for c in claims_for_node(folded, "linstation")] == [
-            int(after)
+        assert [c.expires_at for c in claims_for_node(folded, "linstation")] == [
+            float(published)
         ]
+
+    async def test_renew_refreshes_the_channel_the_claim_was_made_on(
+        self, lease_client, bus, cluster
+    ):
+        """The channel is an input to the CLAIM, not to its renewal (CR #2988).
+
+        Refreshing onto a different thread would leave the original claim to
+        expire while this lease is still held.
+        """
+        claimed = await lease_client.post(
+            "/api/a2a/gpu/claim",
+            json={"node": "linstation", "vram_mb": 4096, "channel": "gpu-lab"},
+        )
+        assert claimed.status_code == 200
+        assert claimed.json()["channel"] == "gpu-lab"
+        assert bus.sends[-1]["payload"]["thread"] == "gpu-lab"
+
+        renewed = await lease_client.post(
+            "/api/a2a/gpu/renew",
+            json={"lease_id": claimed.json()["lease_id"], "ttl_seconds": 600},
+        )
+        assert renewed.status_code == 200
+        assert renewed.json()["channel"] == "gpu-lab"
+        assert bus.sends[-1]["payload"]["thread"] == "gpu-lab"
+
+    async def test_a_failed_keep_alive_repost_rolls_the_renewal_back(
+        self, lease_client, bus, cluster
+    ):
+        """Half a renewal is no renewal (CR #2988).
+
+        If the claim cannot be refreshed, the local extension must not stand:
+        peers would free the card at the expiry they still hold while this
+        controller believes it is reserved.
+        """
+        claimed = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        lease_id = claimed.json()["lease_id"]
+        before = cluster.get_leases()[0].expires_at
+
+        bus.fail_post = True
+        renewed = await lease_client.post(
+            "/api/a2a/gpu/renew",
+            json={"lease_id": lease_id, "ttl_seconds": 600},
+        )
+        assert renewed.status_code == 200
+        assert renewed.json()["bus_claim_refreshed"] is False
+        assert renewed.json()["bus_refresh_error"] == "a2a bus unavailable"
+        # Rolled back: the lease still ends when the published claim does.
+        assert renewed.json()["expires_at"] == before
+        assert cluster.get_leases()[0].expires_at == before
 
     async def test_reclaiming_extends_rather_than_conflicts(self, lease_client, bus, cluster):
         first = await lease_client.post(

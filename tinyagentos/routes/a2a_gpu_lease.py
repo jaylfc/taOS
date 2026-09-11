@@ -444,9 +444,6 @@ class RenewBody(BaseModel):
     ttl_seconds: float = Field(
         default=_DEFAULT_TTL_SECONDS, gt=0, le=MAX_LEASE_TTL_SECONDS
     )
-    # The channel the claim was posted on, so the keep-alive repost refreshes
-    # the same line instead of leaking one onto the default thread.
-    channel: str | None = None
 
 
 def _resource_id(node: str, resource: str) -> str:
@@ -657,6 +654,7 @@ async def gpu_claim(request: Request, body: ClaimBody):
                 caller=caller,
                 ttl_seconds=float(body.ttl_seconds),
                 required_vram_mb=vram_mb,
+                claim_channel=channel,
             )
             if lease is None:
                 return JSONResponse(
@@ -830,6 +828,11 @@ async def gpu_renew(request: Request, body: RenewBody):
         )
     if not _may_act_on(existing, actor):
         return JSONResponse({"error": "not the lease holder"}, status_code=403)
+    # The renewal's other half is the bus claim. Keep the instant before the
+    # extension: if the claim cannot be refreshed the local expiry is rolled
+    # back to it, so the two views agree rather than this controller holding a
+    # reservation every peer has already seen lapse.
+    previous_expiry = existing.expires_at
     lease = await cluster.renew_lease(body.lease_id, ttl_seconds=float(body.ttl_seconds))
     if lease is None:
         return JSONResponse(
@@ -844,7 +847,10 @@ async def gpu_renew(request: Request, body: RenewBody):
     # claim (same node + identity) rather than double-counting it.
     node, _, _resource = (lease.resource_id or "").partition(":")
     hold = await _claim_holder_actor(request, lease, actor)
-    channel = (body.channel or "").strip() or _channel()
+    # The channel is an input to the CLAIM, never to its renewal: refreshing
+    # onto a different thread would leave the original claim to expire while
+    # this lease is still held (CR on #2988).
+    channel = getattr(lease, "claim_channel", "") or _channel()
     line = render_claim(
         node,
         hold.holder,
@@ -859,12 +865,15 @@ async def gpu_renew(request: Request, body: RenewBody):
             await _post_line(channel, hold, line)
             bus_claim_refreshed = True
         except HTTPException:
-            # The local lease IS renewed, so this is reported rather than fatal:
-            # the caller must know the claim did not reach the bus (peers will
-            # treat the node as free once the old expiry passes) and re-claim.
+            # Half a renewal is no renewal: the claim never reached the bus, so
+            # peers free the card at the expiry they still hold. Undo the local
+            # extension and report it, rather than hold a reservation nobody
+            # else can see.
             refresh_error = "a2a bus unavailable"
+            if not await cluster.restore_lease_expiry(lease.lease_id, previous_expiry):
+                refresh_error = "a2a bus unavailable; lease already expired"
             logger.warning(
-                "A2A GPU lease %s renewed but the claim repost failed (channel=%s)",
+                "A2A GPU lease %s renewal rolled back: claim repost failed (channel=%s)",
                 lease.lease_id,
                 channel,
             )

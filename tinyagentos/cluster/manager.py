@@ -806,6 +806,7 @@ class ClusterManager:
         caller: str = "",
         ttl_seconds: float = 30,
         required_vram_mb: int = 0,
+        claim_channel: str = "",
     ) -> GpuLease | None:
         """Attempt to claim a GPU lease on ``resource_id``.
 
@@ -875,6 +876,7 @@ class ClusterManager:
                 caller=caller,
                 expires_at=time.time() + ttl_seconds,
                 required_vram_mb=required_vram_mb,
+                claim_channel=claim_channel,
             )
             self._leases[lease_id] = lease
             logger.info(
@@ -904,6 +906,25 @@ class ClusterManager:
                 return None
             lease.expires_at = now + ttl_seconds
             return lease
+
+    async def restore_lease_expiry(self, lease_id: str, expires_at: float) -> bool:
+        """Put a lease's expiry back after a keep-alive's other half failed.
+
+        Renewal has two halves: the local reservation and the peer-visible
+        claim published on the bus. When the second cannot be refreshed, the
+        first must not stay extended - peers would then free the card at the
+        expiry they still hold while this controller believes it is reserved.
+        Restoring the previous instant makes the two views agree again, so the
+        caller can retry rather than sit on a renewal nobody else can see.
+
+        Returns False when the lease is already gone (nothing to restore).
+        """
+        async with self._lease_lock:
+            lease = self._leases.get(lease_id)
+            if lease is None:
+                return False
+            lease.expires_at = expires_at
+            return True
 
     def get_leases(self) -> list[GpuLease]:
         """Return a snapshot of active (non-expired) leases."""
