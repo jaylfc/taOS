@@ -481,6 +481,30 @@ def _lease_owned_by(lease, actor: _Actor) -> bool:
     return lease.caller in (f"a2a:{actor.identity}", f"a2a:{actor.holder}")
 
 
+def _lease_bus_identity(lease) -> str | None:
+    """The bus identity *lease* was taken under, or None.
+
+    ``gpu_claim`` records its leases as ``a2a:<bus identity>``. A lease taken
+    through the cluster API directly (``skald-dispatcher``) has no bus claim
+    behind it, so there is no identity to attribute a RELEASE to either.
+    """
+    caller = (getattr(lease, "caller", "") or "").strip()
+    prefix = "a2a:"
+    if caller.startswith(prefix):
+        return caller[len(prefix):].strip() or None
+    return None
+
+
+async def _holder_for(request: Request, identity: str) -> str:
+    """The readable ``@handle`` for a bus *identity*, else the identity itself."""
+    registry = getattr(request.app.state, "agent_registry", None)
+    record = await registry.get(identity) if registry is not None else None
+    handle = _clean_handle((record or {}).get("handle"))
+    if not handle:
+        return identity
+    return handle if handle.startswith("@") else f"@{handle}"
+
+
 def _may_act_on(lease, actor: _Actor) -> bool:
     """Ownership for an EXPLICIT lease id: the holder, or an operator."""
     return _lease_owned_by(lease, actor) or actor.is_admin
@@ -658,6 +682,7 @@ async def gpu_release(request: Request, body: ReleaseBody):
 
     cluster = getattr(request.app.state, "cluster_manager", None)
     released_id = body.lease_id
+    lease = None
     if cluster is not None:
         if released_id is not None:
             # A caller-supplied id must belong to the caller: releasing another
@@ -679,19 +704,40 @@ async def gpu_release(request: Request, body: ReleaseBody):
             )
             released_id = lease.lease_id if lease is not None else None
 
+    # Whose claim the [GPU RELEASE] closes. An operator freeing another holder's
+    # lease by explicit id must attribute the line to THAT holder: a claim is
+    # keyed on its bus AUTHOR, so a line posted as @operator clears nothing and
+    # every peer's fold keeps reading the node as claimed while the local lease
+    # is already gone (CodeRabbit on #2988). An admin session may post with an
+    # explicit `from` (docs/agent-coordination.md, *Posting to the coordination
+    # bus*); a bus that authenticates senders refuses the substitution, and the
+    # post-before-release ordering below then leaves the local lease intact, so
+    # the override cannot half-apply.
+    line_actor = actor
+    if lease is not None and not _lease_owned_by(lease, actor):
+        owner = _lease_bus_identity(lease)
+        if owner is not None:
+            line_actor = _Actor(
+                identity=owner,
+                holder=await _holder_for(request, owner),
+                credential=actor.credential,
+                is_admin=actor.is_admin,
+            )
+
     # Post BEFORE releasing the local lease, so a bus failure changes nothing
     # and the caller can retry. Releasing first would free the node here while
     # peers still read an open claim, i.e. block a node that is actually free
     # (Kilo review of #2988). release_lease itself is an idempotent in-memory
     # pop, so the two halves cannot be left disagreeing in the other direction.
-    line = render_release(node, actor.holder)
-    posted = await _post_line(channel, actor, line)
+    line = render_release(node, line_actor.holder)
+    posted = await _post_line(channel, line_actor, line)
     if released_id is not None and cluster is not None:
         await cluster.release_lease(released_id)
     return {
         "status": "released",
         "node": node,
         "holder": actor.holder,
+        "released_holder": line_actor.holder,
         "lease_id": released_id,
         "line": line,
         "channel": channel,

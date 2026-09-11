@@ -455,6 +455,53 @@ class TestClusterLeaseIntegration:
         assert resp.status_code == 200
         assert cluster.get_leases() == []
 
+    async def test_operator_release_closes_the_holders_bus_claim(
+        self, lease_client, bus, cluster
+    ):
+        """An operator override must close the claim it frees (CR on #2988).
+
+        The bus claim is keyed on its AUTHOR, so a RELEASE posted as @operator
+        would free the local lease while every peer's fold kept reading the node
+        as claimed -- the local/peer disagreement this surface exists to remove.
+        """
+        cid, token = await _agent_token(lease_client._app, scopes=("a2a_send",))
+        async with _bare(lease_client._app) as bare:
+            claimed = await bare.post(
+                "/api/a2a/gpu/claim",
+                json={"node": "linstation", "vram_mb": 4096},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert claimed.status_code == 200
+        lease_id = claimed.json()["lease_id"]
+        assert lease_id is not None
+
+        # An admin session (the operator) frees the agent's lease by explicit id.
+        released = await lease_client.post(
+            "/api/a2a/gpu/release",
+            json={"node": "linstation", "lease_id": lease_id},
+        )
+        assert released.status_code == 200
+        assert released.json()["holder"] == "@operator"
+        assert released.json()["released_holder"] == "@taosmd"
+        # ... attributed to the holder whose claim it closes, not to the operator.
+        assert bus.last_from == cid
+        assert bus.last_line == "[GPU RELEASE] node=linstation holder=@taosmd"
+        assert cluster.get_leases() == []
+
+        # So another agent's CHECK no longer reports the claim.
+        _other, other = await _agent_token(
+            lease_client._app, scopes=("a2a_receive",), handle="@taos"
+        )
+        async with _bare(lease_client._app) as bare:
+            checked = await bare.get(
+                "/api/a2a/gpu/check",
+                params={"node": "linstation", "vram_mb": 1024},
+                headers={"Authorization": f"Bearer {other}"},
+            )
+        assert checked.status_code == 200
+        assert checked.json()["admitted"] is True
+        assert checked.json()["blockers"] == []
+
     async def test_reclaiming_extends_rather_than_conflicts(self, lease_client, bus, cluster):
         first = await lease_client.post(
             "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}

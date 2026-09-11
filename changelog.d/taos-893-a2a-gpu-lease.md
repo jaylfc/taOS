@@ -17,3 +17,13 @@
   registry identity (scope `a2a_receive` to check, `a2a_send` to act) and the
   node label resolves to a cluster worker's heartbeat VRAM or the controller's
   own shared VRAM ledger.
+
+### Fixed
+
+- Freeing another holder's GPU lease by explicit `lease_id` (the operator
+  override, `POST /api/a2a/gpu/release`) posts the `[GPU RELEASE]` line as the
+  **freed holder** rather than as the operator. A claim is keyed on its bus
+  author, so the old line cleared nothing: the local lease was gone while every
+  peer's fold still read the node as claimed, blocking a GPU that was actually
+  free. The response now distinguishes `holder` (who acted) from
+  `released_holder` (whose claim the line closes).

@@ -408,6 +408,16 @@ Rules that matter when you use it:
   local scheduler about who holds the node. Release is ordered the same way: the
   line is posted BEFORE the local lease is freed, so a failed post leaves the
   lease intact rather than freeing a node peers still see as claimed.
+- **An operator's release is attributed to the holder whose claim it closes.**
+  A lease taken through `/claim` can also be freed by an explicit `lease_id` —
+  by its holder, or by an operator (`_may_act_on`). Since a bus claim is keyed
+  on its **author**, the operator's `[GPU RELEASE]` is posted as the freed
+  holder, not as the operator (an admin session may set an explicit `from`, see
+  *Posting to the coordination bus*); the response reports both, `holder` (who
+  acted) and `released_holder` (whose claim the line closes). A bus that
+  authenticates senders refuses the substitution, and because the line is still
+  posted before the local lease is freed, the override then fails loudly
+  (`502`) with the lease intact rather than leaving the two views disagreeing.
 - **Keep-alive is the TTL, not a promise.** A cluster-worker lease expires after
   `ttl_seconds` (default 300, capped at 3600) unless renewed via `/renew`; a
   crashed or idle holder therefore frees the node without anyone releasing it.
