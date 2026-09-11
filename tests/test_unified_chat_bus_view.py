@@ -56,16 +56,24 @@ async def test_v2_channels_served_by_bus_view(client):
     /api/chat/channels never sets that field, so its presence is proof
     that the bus view handler answered.
     """
-    resp = await client.get("/api/chat/v2/channels")
+    bus_channels = [
+        {"id": "ch1", "name": "bus channel"},
+    ]
+    mock_factory = _mock_async_client([
+        ("/a2a/channels", {"channels": bus_channels}),
+    ])
+
+    with patch("httpx.AsyncClient", mock_factory):
+        resp = await client.get("/api/chat/v2/channels")
     assert resp.status_code == 200
     body = resp.json()
     assert "channels" in body
     channels = body["channels"]
     assert isinstance(channels, list)
-    if channels:
-        assert any(ch.get("unified_bus") for ch in channels), (
-            "no channel carried unified_bus: bus view was not the handler"
-        )
+    assert len(channels) >= 1
+    assert any(ch.get("unified_bus") for ch in channels), (
+        "no channel carried unified_bus: bus view was not the handler"
+    )
 
 
 @pytest.mark.asyncio
@@ -78,7 +86,7 @@ async def test_v2_channel_messages_proxies_to_bus(client):
     different handler.
     """
     bus_messages = [
-        {"id": "bus-m1", "from": "alice", "body": "hello bus", "thread": "ch1", "unified_bus": True},
+        {"id": "bus-m1", "from": "alice", "body": "hello bus", "thread": "ch1"},
     ]
     mock_factory = _mock_async_client([
         ("/a2a/messages", {"messages": bus_messages}),
@@ -88,7 +96,8 @@ async def test_v2_channel_messages_proxies_to_bus(client):
         resp = await client.get("/api/chat/v2/channels/ch1/messages")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["messages"] == bus_messages
+    assert len(body["messages"]) == 1
+    assert body["messages"][0]["unified_bus"] is True
 
 
 @pytest.mark.asyncio
@@ -97,10 +106,7 @@ async def test_v2_handler_module_is_bus_view(client):
     resp = await client.get("/api/chat/v2/channels")
     assert resp.status_code == 200
     from tinyagentos.routes import chat_unified_bus_view as bus_view_mod
-    from fastapi import APIRouter
     app = client._transport.app
-    for route in app.routes:
-        if isinstance(route, APIRouter) and getattr(route, "prefix", None) == "/api/chat/v2":
-            for r in route.routes:
-                if getattr(r, "path", "") == "/channels":
-                    assert r.endpoint.__module__ == bus_view_mod.__name__
+    matches = [r for r in app.routes if getattr(r, "path", "") == "/api/chat/v2/channels"]
+    assert len(matches) == 1, f"expected exactly one handler, got {len(matches)}"
+    assert matches[0].endpoint.__module__ == bus_view_mod.__name__

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from tinyagentos.routes.a2a_bus import _bus_url
@@ -26,14 +26,6 @@ from tinyagentos.routes.a2a_bus import _bus_url
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-CHAT_UNIFIED_BUS_ENABLED = True
-
-
-def _require_unified_bus(request: Request) -> None:
-    """Require unified bus to be enabled."""
-    if not CHAT_UNIFIED_BUS_ENABLED:
-        raise HTTPException(status_code=503, detail="Unified bus not enabled")
 
 
 def _get_bus_channel_for_channel_id(channel_id: str, channel_data: dict) -> str:
@@ -107,7 +99,6 @@ async def list_channels_view(request: Request, member: str | None = None, archiv
     supporting the same parameters as the existing controller endpoint.
     DMs, project channels, and agent channels all render from the bus.
     """
-    _require_unified_bus(request)
 
     params = {}
     if member is not None:
@@ -143,7 +134,6 @@ async def list_channels_view(request: Request, member: str | None = None, archiv
 @router.get("/api/chat/v2/channels/{channel_id}")
 async def get_channel_view(channel_id: str, request: Request):
     """View: Get channel from the bus."""
-    _require_unified_bus(request)
 
     bus_thread = _get_bus_channel_for_channel_id(channel_id, {"id": channel_id})
 
@@ -171,7 +161,6 @@ async def get_channel_view(channel_id: str, request: Request):
 @router.get("/api/chat/v2/channels/{channel_id}/messages")
 async def get_channel_messages_view(channel_id: str, request: Request, limit: int = 50, before: float | None = None):
     """View: Get messages from the bus with message ID cursor pagination."""
-    _require_unified_bus(request)
 
     ch_store = request.app.state.chat_channels
     channel_data = None
@@ -218,7 +207,6 @@ async def get_channel_messages_view(channel_id: str, request: Request, limit: in
 @router.get("/api/chat/v2/messages/{message_id}")
 async def get_message_view(message_id: str, request: Request):
     """View: Get message from the bus."""
-    _require_unified_bus(request)
 
     try:
         message = await _proxy_to_bus("GET", f"/a2a/messages/{message_id}")
@@ -247,7 +235,6 @@ async def get_message_view(message_id: str, request: Request):
 @router.get("/api/chat/v2/unread")
 async def get_unread_view(request: Request):
     """View: Get unread counts from the bus."""
-    _require_unified_bus(request)
 
     try:
         unread_counts = await _proxy_to_bus("GET", "/a2a/unread")
@@ -268,7 +255,6 @@ async def get_unread_view(request: Request):
 @router.post("/api/chat/v2/channels/{channel_id}/read-cursor/rewind")
 async def rewind_read_cursor_view(channel_id: str, request: Request):
     """View: Rewind read cursor using message ID (not timestamp)."""
-    _require_unified_bus(request)
 
     body = await request.json()
     before_id = body.get("before_message_id")
@@ -323,7 +309,6 @@ async def rewind_read_cursor_view(channel_id: str, request: Request):
 @router.post("/api/chat/v2/channels/{channel_id}/mark-read")
 async def mark_read_view(channel_id: str, request: Request):
     """View: Mark channel as read using message ID cursor."""
-    _require_unified_bus(request)
 
     try:
         body = await request.json()
