@@ -320,6 +320,11 @@ class AppRegistry:
         self._ensure_loaded()
         return self._signatures.get(app_id)
 
+    def get_manifest(self, app_id: str) -> AppManifest | None:
+        """Return the AppManifest for *app_id*."""
+        self._ensure_loaded()
+        return next((a for a in self._catalog if a.id == app_id), None)
+
     def get_manifest_dict(self, app_id: str) -> dict | None:
         """Return the raw manifest dict (without _signature field) for *app_id*."""
         self._ensure_loaded()
@@ -335,7 +340,7 @@ class AppRegistry:
         the server started will produce a mismatch and the install is blocked.
 
         Returns ``True`` only when the on-disk manifest successfully verifies
-        against the stored Ed25519 signature.
+        against the stored signature.
 
         Returns ``False`` when:
 

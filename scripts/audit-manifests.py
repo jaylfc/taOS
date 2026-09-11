@@ -29,6 +29,7 @@ VALID_TARGETS = {
     "x86-vulkan",
     "arm-vulkan",
     "cpu",
+    "hailo",
 }
 
 
