@@ -3,18 +3,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ClusterApp } from "../ClusterApp";
 
 describe("ClusterApp clipboard in non-secure context", () => {
-  let writeText: ReturnType<typeof vi.fn>;
-
   beforeEach(() => {
     Object.defineProperty(window, "isSecureContext", {
       value: false,
       configurable: true,
     });
-    writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
-      value: { writeText },
+      value: undefined,
       configurable: true,
-      writable: true,
     });
     const execCommand = vi.fn().mockReturnValue(false);
     Object.defineProperty(document, "execCommand", {
