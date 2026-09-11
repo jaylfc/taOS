@@ -22,7 +22,7 @@ import pytest
 
 from tinyagentos.notifications import NotificationStore
 from tinyagentos.board_audit import BoardAuditLog
-from tinyagentos.decisions.decision_store import DecisionStore
+from tinyagentos.decisions.decision_store import DecisionStore, DECISIONS_SCHEMA
 from tinyagentos.projects.project_store import ProjectStore
 from tinyagentos.projects.invite_store import ProjectInviteStore
 from tinyagentos.projects.canvas.store import ProjectCanvasStore
@@ -222,6 +222,105 @@ class TestDecisionStoreUpgrade:
             assert "metadata" in cols, "metadata column missing after upgrade"
         finally:
             await store.close()
+
+    async def test_backfill_stamps_legacy_pending_gate_row(self, tmp_path):
+        """Upgrade backfill (tsk-mul5pa finding 1): a pending gate decision
+        persisted BEFORE the provenance marker landed must be stamped once so a
+        post-upgrade approval still mints."""
+        db_path = tmp_path / "decisions.db"
+        # Seed a real decisions DB (current schema, incl. metadata) with one
+        # legacy pending gate row that has a gate kind but NO _server_raised.
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(DECISIONS_SCHEMA)
+        conn.execute(
+            "INSERT INTO decisions (id, from_agent, project_id, user_id, question, type,"
+            " options, context, priority, status, created_at, metadata) "
+            "VALUES ('dec-legacy', 'agent', NULL, 'u1', 'allow?', 'approve_deny', '[]',"
+            " '', 'blocking', 'pending', ?, ?)",
+            (time.time() - 3600,
+             json.dumps({"kind": "device_pairing", "pair_request_id": "pr-legacy"})),
+        )
+        conn.commit()
+        conn.close()
+
+        store = DecisionStore(db_path)
+        await store.init()
+        try:
+            row = await store.get("dec-legacy")
+            assert row["metadata"].get("_server_raised") is True
+        finally:
+            await store.close()
+
+    async def test_backfill_leaves_non_gate_pending_row_unstamped(self, tmp_path):
+        """Backfill control: a pending row whose kind is NOT a guarded gate must
+        not be stamped."""
+        db_path = tmp_path / "decisions.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(DECISIONS_SCHEMA)
+        conn.execute(
+            "INSERT INTO decisions (id, from_agent, project_id, user_id, question, type,"
+            " options, context, priority, status, created_at, metadata) "
+            "VALUES ('dec-plain', 'agent', NULL, 'u1', 'hi', 'approve_deny', '[]',"
+            " '', 'normal', 'pending', ?, ?)",
+            (time.time() - 3600, json.dumps({"kind": "customer_feedback"})),
+        )
+        conn.commit()
+        conn.close()
+
+        store = DecisionStore(db_path)
+        await store.init()
+        try:
+            row = await store.get("dec-plain")
+            assert row["metadata"].get("_server_raised") is None
+        finally:
+            await store.close()
+
+    async def test_backfill_does_not_stamp_rows_created_after_upgrade(self, tmp_path):
+        """The refusing direction: a gate-kind decision created through the
+        public route AFTER the upgrade (created_at >= upgrade instant) must stay
+        unstamped even across a restart — otherwise a caller could post a
+        gate-kind card, let it sit pending, and have any boot promote it to
+        server-raised."""
+        db_path = tmp_path / "decisions.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(DECISIONS_SCHEMA)
+        conn.commit()
+        conn.close()
+
+        # First boot records the upgrade instant and stamps nothing (empty).
+        store = DecisionStore(db_path)
+        await store.init()
+        marker = await (
+            await store._db.execute(
+                "SELECT upgraded_at FROM gate_provenance_backfill WHERE key = 'server_raised'"
+            )
+        ).fetchone()
+        assert marker is not None
+
+        # A gate-kind card created AFTER the upgrade (the public route strips
+        # the marker but does not restrict kind), then a restart.
+        await store.create(
+            from_agent="agent",
+            question="allow?",
+            type="approve_deny",
+            priority="blocking",
+            metadata={"kind": "execution_gate", "agent_name": "a", "action_class": "x"},
+        )
+        await store.close()
+
+        store2 = DecisionStore(db_path)
+        await store2.init()
+        try:
+            rows = await (
+                await store2._db.execute(
+                    "SELECT id, metadata FROM decisions WHERE status = 'pending'"
+                )
+            ).fetchall()
+            assert len(rows) == 1
+            meta = json.loads(rows[0][1])
+            assert meta.get("_server_raised") is None
+        finally:
+            await store2.close()
 
 
 # ---------------------------------------------------------------------------
