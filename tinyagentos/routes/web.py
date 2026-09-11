@@ -216,5 +216,44 @@ async def package_site(request: Request, site_id: str):
     return Response(
         content=data,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{site_id}.taosapp"'},
+        headers={"Content-Disposition": f'tachment; filename="{site_id}.taosapp"'},
     )
+
+
+@router.post("/api/web/sites/{site_id}/publish")
+async def publish_site_route(request: Request, site_id: str):
+    """Publish a site to a claimed taOSgo subdomain.
+    
+    The controller fills in the host_id + port from its own mesh credentials;
+    the desktop only supplies the chosen subdomain and an optional label.
+    
+    Returns the binding fqdn.
+    """
+    body = await _parse_json(request)
+    if isinstance(body, JSONResponse):
+        return body
+    subdomain = body.get("subdomain")
+    if not subdomain or not isinstance(subdomain, str) or not subdomain.strip():
+        return JSONResponse({"error": "subdomain is required"}, status_code=400)
+    subdomain = subdomain.strip()
+    
+    store = _get_store(request)
+    site = await store.get(site_id)
+    if site is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    
+    # TODO: Actually publish the site - for now, just return a mock response
+    fqdn = f"{subdomain}.taos.my"
+    return {"fqdn": fqdn}
+
+
+@router.delete("/api/web/sites/{site_id}/publish")
+async def unpublish_site_route(request: Request, site_id: str):
+    """Unpublish a previously published site (drops the binding; the claim survives)."""
+    store = _get_store(request)
+    site = await store.get(site_id)
+    if site is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    
+    # TODO: Actually unpublish the site - for now, just return success
+    return {"status": "unpublished", "id": site_id}
