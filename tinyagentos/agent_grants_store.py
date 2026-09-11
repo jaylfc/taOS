@@ -181,6 +181,83 @@ class AgentGrantsStore(BaseStore):
         return _row_to_dict(row)  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
+    # Revoke
+    # ------------------------------------------------------------------
+
+    async def revoke_grant(
+        self,
+        canonical_id: str,
+        scope: str,
+        *,
+        project_id: Optional[str] = None,
+    ) -> bool:
+        """Delete the grant for the exact (canonical_id, scope, project_id) key.
+
+        NULL-safe on ``project_id`` (``IS``), so a global grant (project_id NULL)
+        and a project-bound grant of the same scope are distinct targets:
+        revoking one never removes the other.
+
+        Returns True when a row was removed and False when no such grant existed,
+        so callers report the real outcome instead of assuming success. Revoking
+        is scoped to this one key: the same scope on another project and the
+        identity's other scopes are left untouched.
+        """
+        if self._db is None:
+            raise RuntimeError(
+                "AgentGrantsStore not initialised — call init() first"
+            )
+        # Same lock as add_grant: a revoke racing an add of the same key must not
+        # interleave with the add's delete+insert+select-back.
+        async with self._write_lock:
+            cursor = await self._db.execute(
+                "DELETE FROM agent_grants "
+                "WHERE canonical_id = ? AND scope = ? AND project_id IS ?",
+                (canonical_id, scope, project_id),
+            )
+            await self._db.commit()
+            removed = cursor.rowcount
+        return removed > 0
+
+    async def revoke_all_for_project(
+        self, canonical_id: str, project_id: str
+    ) -> list[str]:
+        """Delete every grant *canonical_id* holds that is bound to *project_id*.
+
+        The common case ("this job is finished, drop the agent from this
+        project"). Grants on OTHER projects and the identity's global grants
+        (project_id NULL) are left alone — a revoke is never an identity-wide
+        wipe; ``agent_registry_store.revoke`` remains the only way to kill the
+        whole identity.
+
+        Returns the sorted scopes actually removed, so the caller can report
+        exactly what it undid. ``project_id`` must be a real project id: a blank
+        value is rejected rather than broadening the DELETE to the identity's
+        global grants (fail closed).
+        """
+        if not project_id:
+            raise ValueError("project_id is required to revoke project grants")
+        if self._db is None:
+            raise RuntimeError(
+                "AgentGrantsStore not initialised — call init() first"
+            )
+        async with self._write_lock:
+            cursor = await self._db.execute(
+                "SELECT DISTINCT scope FROM agent_grants "
+                "WHERE canonical_id = ? AND project_id = ?",
+                (canonical_id, project_id),
+            )
+            scopes = sorted({row[0] for row in await cursor.fetchall()})
+            if not scopes:
+                return []
+            await self._db.execute(
+                "DELETE FROM agent_grants "
+                "WHERE canonical_id = ? AND project_id = ?",
+                (canonical_id, project_id),
+            )
+            await self._db.commit()
+        return scopes
+
+    # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------
 

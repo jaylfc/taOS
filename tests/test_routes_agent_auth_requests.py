@@ -1,4 +1,6 @@
 import asyncio
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -2122,4 +2124,320 @@ class TestConsentApproveHandleCollisionGuard:
         assert brand_rows[0]["canonical_id"] == cid
 
         await self._shutdown(stores)
+
+
+# ---------------------------------------------------------------------------
+# taOS #2148 — scope grants could be granted but never revoked
+#
+# The bug: assign-agent only ever ADDED grants, so calling it with a reduced or
+# empty scope list returned a success response (``granted_scopes: []``) while the
+# registry grant stayed live. These tests pin the honest behaviour: the project's
+# grant set becomes exactly what the caller asked for, the response reports what
+# actually changed, and a reconciliation that does not take effect fails loudly
+# instead of reporting a success it did not perform.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_scope_fixture(client, monkeypatch, tmp_path, prefix):
+    """Wire a registry + grants + project store onto the app under test.
+
+    Mirrors the setup in TestAssignAgentRoute; every caller passes its own
+    ``prefix`` so each test gets independent DB files.
+    """
+    from tinyagentos.agent_registry_store import (
+        AgentRegistryStore,
+        load_or_create_signing_keypair,
+    )
+    from tinyagentos.agent_grants_store import AgentGrantsStore
+    from tinyagentos.projects.project_store import ProjectStore
+
+    registry = AgentRegistryStore(tmp_path / f"reg-{prefix}.db")
+    await registry.init()
+    grants = AgentGrantsStore(tmp_path / f"grants-{prefix}.db")
+    await grants.init()
+    pstore = ProjectStore(tmp_path / f"projects-{prefix}.db")
+    await pstore.init()
+    priv, pub = load_or_create_signing_keypair(tmp_path / f"keys-{prefix}")
+
+    reg = await registry.register(
+        framework="openclaw",
+        display_name="taosmd-dev",
+        user_id="u",
+        origin="external-selfjoin",
+        handle="taosmd-dev",
+    )
+    await registry.set_status(reg["canonical_id"], "active")
+    project = await pstore.create_project(
+        name="P", slug=f"proj-{prefix}", created_by="u"
+    )
+
+    monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+    monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+    monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+    monkeypatch.setattr(
+        client._transport.app.state, "agent_registry_keypair", (priv, pub)
+    )
+    return SimpleNamespace(
+        registry=registry,
+        grants=grants,
+        pstore=pstore,
+        cid=reg["canonical_id"],
+        project=project,
+    )
+
+
+async def _close_scope_fixture(stores):
+    await stores.registry.close()
+    await stores.grants.close()
+    await stores.pstore.close()
+
+
+async def _project_grants(grants, cid, project_id):
+    """The (scope -> grant) map the agent actually holds on ONE project."""
+    return {
+        g["scope"]: g
+        for g in await grants.list_grants(cid)
+        if g.get("project_id") == project_id
+    }
+
+
+async def _assign(client, project_id, cid, scopes, **extra):
+    body = {"canonical_id": cid, "scopes": scopes, **extra}
+    return await client.post(
+        f"/api/projects/{project_id}/members/assign-agent", json=body
+    )
+
+
+class TestAssignAgentReconcilesGrants:
+    """assign-agent must make its report match the grant store."""
+
+    @pytest.mark.asyncio
+    async def test_empty_scopes_revokes_the_projects_grants(
+        self, client, monkeypatch, tmp_path
+    ):
+        """The verified #2148 case: ``scopes: []`` used to answer
+        ``granted_scopes: []`` while the grant stayed live."""
+        stores = await _seed_scope_fixture(client, monkeypatch, tmp_path, "revokeall")
+        cid, pid = stores.cid, stores.project["id"]
+
+        first = await _assign(client, pid, cid, ["project_tasks"])
+        assert first.status_code == 200, first.text
+
+        resp = await _assign(client, pid, cid, [])
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["granted_scopes"] == []
+        assert body["revoked_scopes"] == ["project_tasks"]
+        assert body["active_scopes"] == []
+
+        # Read-back from the store: the grant is really gone, and the member row
+        # that access implied went with it.
+        assert await _project_grants(stores.grants, cid, pid) == {}
+        members = await stores.pstore.list_members(pid)
+        assert all(m["member_id"] != cid for m in members)
+
+        await _close_scope_fixture(stores)
+
+    @pytest.mark.asyncio
+    async def test_reduced_scopes_revoke_only_the_dropped_scope(
+        self, client, monkeypatch, tmp_path
+    ):
+        stores = await _seed_scope_fixture(client, monkeypatch, tmp_path, "revokeone")
+        cid, pid = stores.cid, stores.project["id"]
+
+        first = await _assign(client, pid, cid, ["project_tasks", "canvas_read"])
+        assert first.status_code == 200, first.text
+
+        resp = await _assign(client, pid, cid, ["project_tasks"])
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["revoked_scopes"] == ["canvas_read"]
+        assert body["active_scopes"] == ["project_tasks"]
+
+        assert set(await _project_grants(stores.grants, cid, pid)) == {"project_tasks"}
+        # project_tasks is still held, so the membership must survive.
+        members = await stores.pstore.list_members(pid)
+        assert any(m["member_id"] == cid for m in members)
+
+        await _close_scope_fixture(stores)
+
+    @pytest.mark.asyncio
+    async def test_reconcile_spares_the_agents_other_projects(
+        self, client, monkeypatch, tmp_path
+    ):
+        stores = await _seed_scope_fixture(client, monkeypatch, tmp_path, "revokeother")
+        cid = stores.cid
+        pid_a = stores.project["id"]
+        pid_b = (
+            await stores.pstore.create_project(
+                name="Q", slug="proj-revokeother-b", created_by="u"
+            )
+        )["id"]
+
+        assert (await _assign(client, pid_b, cid, ["project_tasks"])).status_code == 200
+        assert (await _assign(client, pid_a, cid, ["files_read"])).status_code == 200
+
+        resp = await _assign(client, pid_a, cid, [])
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["revoked_scopes"] == ["files_read"]
+        assert await _project_grants(stores.grants, cid, pid_a) == {}
+        assert set(await _project_grants(stores.grants, cid, pid_b)) == {"project_tasks"}
+
+        await _close_scope_fixture(stores)
+
+    @pytest.mark.asyncio
+    async def test_reconcile_that_does_not_take_effect_fails_loudly(
+        self, client, monkeypatch, tmp_path
+    ):
+        """The store refusing the delete must surface as an error, never as a
+        success response claiming the scope is gone."""
+        stores = await _seed_scope_fixture(client, monkeypatch, tmp_path, "revokefail")
+        cid, pid = stores.cid, stores.project["id"]
+        assert (await _assign(client, pid, cid, ["project_tasks"])).status_code == 200
+
+        async def _noop_revoke(canonical_id, scope, *, project_id=None):
+            return False
+
+        monkeypatch.setattr(stores.grants, "revoke_grant", _noop_revoke)
+
+        resp = await _assign(client, pid, cid, [])
+        assert resp.status_code == 500, resp.text
+        # And the grant really is still there -- which is exactly why reporting
+        # success would have been a lie.
+        assert set(await _project_grants(stores.grants, cid, pid)) == {"project_tasks"}
+
+        await _close_scope_fixture(stores)
+
+
+class TestRevokeAgentScopesRoute:
+    """Admin route POST /api/projects/{pid}/members/revoke-agent."""
+
+    @pytest.mark.asyncio
+    async def test_revoke_one_scope_leaves_the_rest_intact(
+        self, client, monkeypatch, tmp_path
+    ):
+        stores = await _seed_scope_fixture(client, monkeypatch, tmp_path, "routeone")
+        cid, pid = stores.cid, stores.project["id"]
+        assert (
+            await _assign(client, pid, cid, ["project_tasks", "canvas_read"])
+        ).status_code == 200
+
+        resp = await client.post(
+            f"/api/projects/{pid}/members/revoke-agent",
+            json={"canonical_id": cid, "scopes": ["canvas_read"]},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["canonical_id"] == cid
+        assert body["project_id"] == pid
+        assert body["revoked_scopes"] == ["canvas_read"]
+        assert body["active_scopes"] == ["project_tasks"]
+        assert set(await _project_grants(stores.grants, cid, pid)) == {"project_tasks"}
+        # The identity itself is untouched -- only the one scope went.
+        assert (await stores.registry.get(cid))["status"] == "active"
+
+        await _close_scope_fixture(stores)
+
+    @pytest.mark.asyncio
+    async def test_revoke_without_scopes_clears_the_project(
+        self, client, monkeypatch, tmp_path
+    ):
+        stores = await _seed_scope_fixture(client, monkeypatch, tmp_path, "routeall")
+        cid, pid = stores.cid, stores.project["id"]
+        assert (
+            await _assign(client, pid, cid, ["project_tasks", "canvas_read"])
+        ).status_code == 200
+
+        resp = await client.post(
+            f"/api/projects/{pid}/members/revoke-agent",
+            json={"canonical_id": cid},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["revoked_scopes"] == ["canvas_read", "project_tasks"]
+        assert body["active_scopes"] == []
+        assert await _project_grants(stores.grants, cid, pid) == {}
+        members = await stores.pstore.list_members(pid)
+        assert all(m["member_id"] != cid for m in members)
+
+        await _close_scope_fixture(stores)
+
+    @pytest.mark.asyncio
+    async def test_revoke_spares_other_projects(self, client, monkeypatch, tmp_path):
+        stores = await _seed_scope_fixture(client, monkeypatch, tmp_path, "routeother")
+        cid = stores.cid
+        pid_a = stores.project["id"]
+        pid_b = (
+            await stores.pstore.create_project(
+                name="Q", slug="proj-routeother-b", created_by="u"
+            )
+        )["id"]
+        assert (await _assign(client, pid_a, cid, ["files_read"])).status_code == 200
+        assert (await _assign(client, pid_b, cid, ["files_read"])).status_code == 200
+
+        resp = await client.post(
+            f"/api/projects/{pid_a}/members/revoke-agent",
+            json={"canonical_id": cid, "scopes": ["files_read"]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["active_scopes"] == []
+        assert await _project_grants(stores.grants, cid, pid_a) == {}
+        assert set(await _project_grants(stores.grants, cid, pid_b)) == {"files_read"}
+
+        await _close_scope_fixture(stores)
+
+    @pytest.mark.asyncio
+    async def test_revoke_is_audit_logged(self, client, monkeypatch, tmp_path):
+        stores = await _seed_scope_fixture(client, monkeypatch, tmp_path, "routeaudit")
+        cid, pid = stores.cid, stores.project["id"]
+        assert (await _assign(client, pid, cid, ["files_read"])).status_code == 200
+
+        resp = await client.post(
+            f"/api/projects/{pid}/members/revoke-agent",
+            json={"canonical_id": cid, "scopes": ["files_read"]},
+        )
+        assert resp.status_code == 200, resp.text
+
+        activity = await stores.pstore.list_activity(pid)
+        revoked = [a for a in activity if a["kind"] == "member.grants_revoked"]
+        assert len(revoked) == 1, activity
+        payload = revoked[0]["payload"]
+        assert payload["canonical_id"] == cid
+        assert payload["scopes"] == ["files_read"]
+
+        await _close_scope_fixture(stores)
+
+    @pytest.mark.asyncio
+    async def test_revoke_unknown_scope_is_400(self, client, monkeypatch, tmp_path):
+        stores = await _seed_scope_fixture(client, monkeypatch, tmp_path, "routebad")
+        cid, pid = stores.cid, stores.project["id"]
+        resp = await client.post(
+            f"/api/projects/{pid}/members/revoke-agent",
+            json={"canonical_id": cid, "scopes": ["not_a_scope"]},
+        )
+        assert resp.status_code == 400, resp.text
+        await _close_scope_fixture(stores)
+
+    @pytest.mark.asyncio
+    async def test_revoke_requires_admin(self, client, monkeypatch, tmp_path):
+        stores = await _seed_scope_fixture(client, monkeypatch, tmp_path, "routegate")
+        cid, pid = stores.cid, stores.project["id"]
+        assert (await _assign(client, pid, cid, ["project_tasks"])).status_code == 200
+
+        # A non-admin, non-owner caller must be rejected by the admin gate.
+        auth = client._transport.app.state.auth
+        auth.add_user_invite("carol", "admin")
+        carol = auth.find_user("carol")
+        carol_token = auth.create_session(user_id=carol["id"], long_lived=True)
+
+        resp = await client.post(
+            f"/api/projects/{pid}/members/revoke-agent",
+            json={"canonical_id": cid, "scopes": ["project_tasks"]},
+            cookies={"taos_session": carol_token},
+        )
+        assert resp.status_code == 403, resp.text
+        # The grant survived the refused call.
+        assert set(await _project_grants(stores.grants, cid, pid)) == {"project_tasks"}
+
+        await _close_scope_fixture(stores)
 
