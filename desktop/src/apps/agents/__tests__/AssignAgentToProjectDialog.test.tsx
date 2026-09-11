@@ -14,6 +14,17 @@ function ok(data: unknown, status = 200) {
   return { ok: true, status, json: async () => data };
 }
 
+/**
+ * The dialog reads the agent's current grants before it can be submitted (the
+ * server treats the posted scope list as the complete set for the project),
+ * so a test must wait for the submit button to come back before clicking it.
+ */
+async function waitForAssignEnabled() {
+  const btn = screen.getByRole("button", { name: /assign to project/i });
+  await waitFor(() => expect(btn).not.toBeDisabled());
+  return btn;
+}
+
 describe("AssignAgentToProjectDialog", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let assignBody: Record<string, unknown> | null = null;
@@ -71,7 +82,7 @@ describe("AssignAgentToProjectDialog", () => {
       );
     });
     fireEvent.change(screen.getByLabelText(/target project/i), { target: { value: "prj_a" } });
-    fireEvent.click(screen.getByRole("button", { name: /assign to project/i }));
+    fireEvent.click(await waitForAssignEnabled());
 
     await waitFor(() => expect(assignBody).not.toBeNull());
     expect(assignUrl).toBe("/api/projects/prj_a/members/assign-agent");
@@ -96,7 +107,7 @@ describe("AssignAgentToProjectDialog", () => {
     });
     fireEvent.change(screen.getByLabelText(/target project/i), { target: { value: "prj_b" } });
     fireEvent.click(screen.getByLabelText(/make this agent the project lead/i));
-    fireEvent.click(screen.getByRole("button", { name: /assign to project/i }));
+    fireEvent.click(await waitForAssignEnabled());
 
     await waitFor(() => expect(assignBody).not.toBeNull());
     expect(assignUrl).toBe("/api/projects/prj_b/members/assign-agent");
@@ -124,8 +135,85 @@ describe("AssignAgentToProjectDialog", () => {
       );
     });
     fireEvent.change(screen.getByLabelText(/target project/i), { target: { value: "prj_a" } });
-    fireEvent.click(screen.getByRole("button", { name: /assign to project/i }));
+    fireEvent.click(await waitForAssignEnabled());
 
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/not authorized/));
+  });
+
+  it("keeps scopes the agent already holds outside the preset list", async () => {
+    // The server reads the posted `scopes` list as the agent's COMPLETE set for
+    // the project, so an unlisted scope is REVOKED. files_read is not a preset;
+    // it must be shown and re-sent, not dropped (taOS #2148).
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes("/api/agents/registry/grants")) {
+        return Promise.resolve(
+          ok({
+            grants: [
+              { scope: "files_read", project_id: "prj_a", expires_at: null },
+              { scope: "project_tasks", project_id: "prj_a", expires_at: null },
+              { scope: "files_write", project_id: "prj_b", expires_at: null },
+            ],
+          }),
+        );
+      }
+      if (/\/api\/projects\/[^/]+\/members\/assign-agent$/.test(String(url)) && init?.method === "POST") {
+        assignUrl = String(url);
+        assignBody = JSON.parse(String(init.body));
+        return Promise.resolve(ok({ canonical_id: ENTRY.canonical_id }));
+      }
+      return Promise.resolve(ok({}));
+    });
+
+    await act(async () => {
+      render(
+        <AssignAgentToProjectDialog
+          entry={ENTRY}
+          onClose={() => {}}
+          onAssigned={() => {}}
+        />,
+      );
+    });
+    fireEvent.change(screen.getByLabelText(/target project/i), { target: { value: "prj_a" } });
+
+    await waitFor(() => expect(screen.getByLabelText("Scope files_read")).toBeInTheDocument());
+    // A grant on ANOTHER project is not shown (nor sent).
+    expect(screen.queryByLabelText("Scope files_write")).toBeNull();
+
+    fireEvent.click(await waitForAssignEnabled());
+    await waitFor(() => expect(assignBody).not.toBeNull());
+    const posted = assignBody!.scopes as string[];
+    expect(posted).toContain("files_read");
+    expect(posted).toContain("project_tasks");
+    expect(posted).not.toContain("files_write");
+  });
+
+  it("blocks assigning when the agent's current scopes cannot be read", async () => {
+    // Unknown is not the same as "none": submitting on top of a failed read
+    // would revoke scopes the operator never saw.
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes("/api/agents/registry/grants")) {
+        return Promise.resolve({ ok: false, status: 403, json: async () => ({}) });
+      }
+      return Promise.resolve(ok({}));
+    });
+
+    await act(async () => {
+      render(
+        <AssignAgentToProjectDialog
+          entry={ENTRY}
+          onClose={() => {}}
+          onAssigned={() => {}}
+        />,
+      );
+    });
+    fireEvent.change(screen.getByLabelText(/target project/i), { target: { value: "prj_a" } });
+
+    await waitFor(() =>
+      expect(screen.getByText(/Could not load this agent's current scopes/)).toBeInTheDocument(),
+    );
+    const btn = screen.getByRole("button", { name: /assign to project/i });
+    expect(btn).toBeDisabled();
+    fireEvent.click(btn);
+    expect(assignBody).toBeNull();
   });
 });
