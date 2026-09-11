@@ -27,11 +27,11 @@ class ProjectEventBroker:
         self._lock = asyncio.Lock()
 
     async def subscribe(self, project_id: str) -> asyncio.Queue[ProjectEvent]:
-        queue: asyncio.Queue[ProjectEvent] = asyncio.Queue()
+        queue: asyncio.Queue[ProjectEvent] = asyncio.Queue(maxsize=self._replay_size)
         async with self._lock:
             self._queues.setdefault(project_id, []).append(queue)
             for ev in self._replay.get(project_id, ()):
-                queue.put_nowait(ev)
+                await queue.put(ev)
         return queue
 
     async def unsubscribe(self, project_id: str, queue: asyncio.Queue[ProjectEvent]) -> None:
@@ -39,10 +39,14 @@ class ProjectEventBroker:
             qs = self._queues.get(project_id, [])
             if queue in qs:
                 qs.remove(queue)
+            if not qs:
+                self._queues.pop(project_id, None)
+                self._replay.pop(project_id, None)
 
     async def publish(self, project_id: str, event: ProjectEvent) -> None:
         async with self._lock:
             buf = self._replay.setdefault(project_id, deque(maxlen=self._replay_size))
             buf.append(event)
+            # Only iterate over a copy in case unsubscribe is called during iteration
             for q in list(self._queues.get(project_id, [])):
-                q.put_nowait(event)
+                await q.put(event)

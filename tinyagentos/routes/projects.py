@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import time as _time
 import uuid
 
@@ -11,13 +10,15 @@ import json as _json
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from typing import Literal
 
 from tinyagentos.agent_token_auth import (
     PROJECT_SCOPE_MISMATCH_DETAIL,
     check_agent_project_grants,
     check_agent_scope_for_project,
 )
-from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
+from tinyagentos.auth_context import CurrentUser, current_user
+from tinyagentos.projects.element_store import _SLUG_RE
 from tinyagentos.projects.folders import (
     ensure_element_folder,
     ensure_project_layout,
@@ -27,8 +28,6 @@ from tinyagentos.projects.project_store import ProjectConflict
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 
 # The documented task status enum surfaced by the kanban read endpoints.  The
 # store itself is more permissive internally (it also tracks ``cancelled`` and
@@ -206,11 +205,11 @@ async def update_project(
     request: Request,
     user: CurrentUser = Depends(current_user),
 ):
-    store = request.app.state.project_store
-    p = await store.get_project(project_id)
-    if p is None:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    require_owner_or_admin(user, p["user_id"])
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
+    p = project_or_err
     try:
         await store.update_project(
             project_id,
@@ -243,11 +242,11 @@ async def archive_project(
     request: Request,
     user: CurrentUser = Depends(current_user),
 ):
-    store = request.app.state.project_store
-    p = await store.get_project(project_id)
-    if p is None:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    require_owner_or_admin(user, p["user_id"])
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
+    p = project_or_err
     await store.set_status(project_id, "archived")
     p = await store.get_project(project_id)
     await store.log_activity(project_id, user.user_id, "project.archived", {})
@@ -260,11 +259,11 @@ async def delete_project(
     request: Request,
     user: CurrentUser = Depends(current_user),
 ):
-    store = request.app.state.project_store
-    project = await store.get_project(project_id)
-    if project is None:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    require_owner_or_admin(user, project["user_id"])
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
+    project = project_or_err
 
     await store.set_status(project_id, "deleted")
     await store.log_activity(project_id, user.user_id, "project.deleted", {})
@@ -307,11 +306,11 @@ async def add_member(
     request: Request,
     user: CurrentUser = Depends(current_user),
 ):
-    store = request.app.state.project_store
-    project = await store.get_project(project_id)
-    if project is None:
-        return JSONResponse({"error": "project not found"}, status_code=404)
-    require_owner_or_admin(user, project["user_id"])
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
+    project = project_or_err
 
     if payload.mode == "native":
         if not payload.agent_id:
@@ -397,11 +396,11 @@ async def set_project_lead(
     Session-only (owner or admin, same gate as the members routes). A member id
     not in the project returns 404.
     """
-    store = request.app.state.project_store
-    p = await store.get_project(project_id)
-    if p is None:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    require_owner_or_admin(user, p["user_id"])
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
+    p = project_or_err
     try:
         await store.set_lead(project_id, body.member_id)
     except KeyError as e:
@@ -431,11 +430,11 @@ async def remove_member(
     request: Request,
     user: CurrentUser = Depends(current_user),
 ):
-    store = request.app.state.project_store
-    project = await store.get_project(project_id)
-    if project is None:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    require_owner_or_admin(user, project["user_id"])
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
+    project = project_or_err
     await store.remove_member(project_id, member_id)
     await store.log_activity(project_id, user.user_id, "member.removed", {"member_id": member_id})
     members = await store.list_members(project_id)
@@ -1436,7 +1435,7 @@ class AddCommentIn(_TaskRequestModelMixin, BaseModel):
     replies_to_comment_id: str | None = None
 
 
-class CreateChecklistItemIn(BaseModel):
+class CreateChecklistItemIn(_TaskRequestModelMixin, BaseModel):
     text: str
 
 
@@ -1850,7 +1849,7 @@ async def delete_element(
     project_id: str,
     element_id: str,
     request: Request,
-    mode: str = "strict",
+    mode: Literal["strict", "untag"] = "strict",
     user: CurrentUser = Depends(current_user),
 ):
     pstore = request.app.state.project_store
