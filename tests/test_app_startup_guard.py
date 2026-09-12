@@ -129,6 +129,7 @@ async def test_health_endpoint_responsive_during_litellm_bringup(tmp_path, monke
     a slow bring-up by patching _litellm_migrate to sleep, then hammers the
     health endpoint and asserts all responses are fast.
     """
+    import asyncio
     import time
     import yaml
     from unittest.mock import AsyncMock, MagicMock, patch
@@ -145,8 +146,9 @@ async def test_health_endpoint_responsive_during_litellm_bringup(tmp_path, monke
     (tmp_path / ".setup_complete").touch()
 
     # Make _litellm_migrate slow (simulates prisma generate taking 38s on ARM).
-    async def slow_migrate(data_dir):
-        await asyncio.sleep(0.5)  # 500ms - much shorter than real 38s but enough to test
+    # Must be a regular function because asyncio.to_thread expects a sync function
+    def slow_migrate(data_dir):
+        time.sleep(0.5)  # 500ms - much shorter than real 38s but enough to test
         return "no-db-configured"
 
     # Stub llm_proxy.start to also be slow but non-blocking.
