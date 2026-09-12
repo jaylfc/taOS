@@ -1074,6 +1074,24 @@ async def test_ready_limit_clamp_500_enforced_with_501_tasks(client):
 
 
 @pytest.mark.asyncio
+async def test_update_project_returns_200(client):
+    resp = await client.post("/api/projects", json={"name": "Updater", "slug": "updater"})
+    pid = resp.json()["id"]
+    resp = await client.patch(f"/api/projects/{pid}", json={"name": "Updater-v2", "description": "renamed"})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Updater-v2"
+
+
+@pytest.mark.asyncio
+async def test_archive_project_returns_200(client):
+    resp = await client.post("/api/projects", json={"name": "ArchiveMe", "slug": "archiveme"})
+    pid = resp.json()["id"]
+    resp = await client.post(f"/api/projects/{pid}/archive")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "archived"
+
+
+@pytest.mark.asyncio
 async def test_ready_blocked_on_label_does_not_match_across_projects(client):
     """tsk-cifqsh finding 2: a blocked-on:<id> label must only match same-project tasks.
 

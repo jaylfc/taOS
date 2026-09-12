@@ -1,27 +1,31 @@
 import { useCallback, useEffect, useState } from "react";
-import { Share2, Download, Loader2, CheckCircle2, AlertCircle, Globe2 } from "lucide-react";
+import { Share2, Download, Loader2, CheckCircle2, AlertCircle, Globe2, Link2, Unplug } from "lucide-react";
 import { analyzeAppSource, type Finding } from "../appstudio/analyze-source";
 import { FindingsPanel } from "../appstudio/FindingsPanel";
 import { installUserspaceApp, USERSPACE_APPS_CHANGED } from "@/lib/userspace-apps";
 import { emitAppEvent } from "@/lib/app-event-bus";
-import { fetchSitePackage, getSiteRow } from "./web-sites-api";
+import { fetchAccount, type AccountState, type SubdomainClaim } from "@/lib/account-client";
+import { fetchSitePackage, getSiteRow, publishSite, unpublishSite } from "./web-sites-api";
 import type { SiteRow } from "./web-sites-api";
 
 /* ------------------------------------------------------------------ */
-/*  ShareView -- install locally or export a .taosapp package           */
+/*  ShareView -- install locally, export a .taosapp package, or publish */
 /*                                                                     */
-/*  Both actions build the SAME package: GET /api/web/sites/{id}/package */
-/*  returns a real .taosapp zip (manifest.yaml + the site's rendered      */
-/*  index.html) built by the backend's build_package() -- the exact same  */
-/*  pipeline Game Studio's ShareView uses. "Install" POSTs that file to    */
-/*  the existing, unmodified /api/userspace-apps/install endpoint tagged   */
-/*  provenance "ai-generated"; the static security analyzer runs on         */
-/*  install same as any other userspace app, and its findings are shown     */
-/*  honestly here too (previewed via the same analyze endpoint App Studio   */
-/*  and Game Studio use). "Export" downloads the identical package.         */
+/*  Both install and export build the SAME package: GET                */
+/*  /api/web/sites/{id}/package returns a real .taosapp zip built by   */
+/*  the backend's build_package() -- the exact same pipeline Game       */
+/*  Studio's ShareView uses. "Install" POSTs that file to the existing, */
+/*  unmodified /api/userspace-apps/install endpoint tagged provenance   */
+/*  "ai-generated"; the static security analyzer runs on install same   */
+/*  as any other userspace app, and its findings are shown honestly     */
+/*  here too (previewed via the same analyze endpoint App Studio and    */
+/*  Game Studio use). "Export" downloads the identical package.         */
 /*                                                                          */
 /*  A site must be saved at least once (it needs a rendered index_html)     */
 /*  before it can be shared -- there is no unsaved-site install path.       */
+/*                                                                          */
+/*  Publish sends the chosen subdomain to the controller, which then      */
+/*  registers the route with taos.my on the account's behalf.              */
 /* ------------------------------------------------------------------ */
 
 export interface ShareViewProps {
@@ -48,6 +52,35 @@ export function ShareView({ siteId, provenance }: ShareViewProps) {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
+  const [accountState, setAccountState] = useState<AccountState>({ kind: "loading" });
+  const [meshStatus, setMeshStatus] = useState<{ joined: boolean; detail?: string }>({ joined: false });
+
+  const [publishing, setPublishing] = useState(false);
+  const [publishResult, setPublishResult] = useState<{ fqdn: string } | null>(null);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [selectedSubdomain, setSelectedSubdomain] = useState<string>("");
+  const [label, setLabel] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const account = await fetchAccount();
+      if (!cancelled) setAccountState(account);
+      try {
+        const res = await fetch("/api/account/mesh/status", { credentials: "include" });
+        if (res.ok) {
+          const data = await res.json();
+          if (!cancelled) setMeshStatus({ joined: Boolean(data?.joined), detail: data?.detail });
+        }
+      } catch {
+        // mesh status unavailable; stays at default joined=false
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (!siteId) {
       setLoading(false);
@@ -59,6 +92,10 @@ export function ShareView({ siteId, provenance }: ShareViewProps) {
     setInstallResult(null);
     setInstallError(null);
     setExportError(null);
+    setPublishResult(null);
+    setPublishError(null);
+    setSelectedSubdomain("");
+    setLabel("");
     getSiteRow(siteId)
       .then((s) => {
         if (cancelled) return;
@@ -94,6 +131,18 @@ export function ShareView({ siteId, provenance }: ShareViewProps) {
   const needsSave = !loading && !loadError && site !== null && !site.index_html;
   const blocked = !scanning && !scanError && findings.some((f) => f.severity === "critical");
   const actionsDisabled = loading || scanning || blocked || !site || needsSave;
+
+  const account = accountState.kind === "signed-in" ? accountState.account : null;
+  const taosgo = account?.taosgo;
+  const activeSubdomains = account?.subdomains?.filter((s: SubdomainClaim) => s.status === "active") ?? [];
+
+  const publishEmptyMessage = (() => {
+    if (accountState.kind !== "signed-in") return "Sign in to your taOS account to publish.";
+    if (!taosgo || taosgo.status === "none") return "taOSgo subscription required to publish.";
+    if (activeSubdomains.length === 0) return "No claimed subdomains. Claim one in Settings to publish.";
+    if (!meshStatus.joined) return "Connect your taOS account to the mesh first.";
+    return null;
+  })();
 
   const handleInstall = useCallback(async () => {
     if (!site) return;
@@ -133,6 +182,44 @@ export function ShareView({ siteId, provenance }: ShareViewProps) {
     }
   }, [site]);
 
+  const handlePublish = useCallback(async () => {
+    if (!siteId || !selectedSubdomain) return;
+    setPublishing(true);
+    setPublishError(null);
+    setPublishResult(null);
+    try {
+      const result = await publishSite(siteId, selectedSubdomain, label || undefined);
+      setPublishResult(result);
+    } catch (e) {
+      setPublishError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPublishing(false);
+    }
+  }, [siteId, selectedSubdomain, label]);
+
+  const handleUnpublish = useCallback(async () => {
+    if (!siteId) return;
+    setPublishing(true);
+    setPublishError(null);
+    try {
+      await unpublishSite(siteId);
+      setPublishResult(null);
+    } catch (e) {
+      setPublishError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPublishing(false);
+    }
+  }, [siteId]);
+
+  const copyFqdn = useCallback(async () => {
+    if (!publishResult) return;
+    try {
+      await navigator.clipboard.writeText(`https://${publishResult.fqdn}`);
+    } catch {
+      // clipboard unavailable; silently ignore
+    }
+  }, [publishResult]);
+
   if (!siteId) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-2 text-shell-text-tertiary">
@@ -169,7 +256,7 @@ export function ShareView({ siteId, provenance }: ShareViewProps) {
         <header>
           <h2 className="text-[17px] font-bold tracking-[-0.02em]">Share "{site.title}"</h2>
           <p className="mt-1 text-[12.5px] text-shell-text-secondary">
-            Install it on this taOS or export a .taosapp package to share elsewhere.
+            Install it on this taOS, export a .taosapp package, or publish it to taos.my.
           </p>
         </header>
 
@@ -210,6 +297,86 @@ export function ShareView({ siteId, provenance }: ShareViewProps) {
                 </div>
               </>
             )}
+
+            <div className="mt-1 flex flex-col gap-2.5">
+              <p className="text-[12.5px] font-medium text-shell-text-secondary">Publish to taos.my</p>
+
+              {publishEmptyMessage && (
+                <div className="rounded-xl border border-shell-border bg-shell-surface/50 px-3.5 py-3 text-[12.5px] text-shell-text-secondary">
+                  {publishEmptyMessage}
+                </div>
+              )}
+
+              {!publishEmptyMessage && !publishResult && (
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <select
+                    value={selectedSubdomain}
+                    onChange={(e) => setSelectedSubdomain(e.target.value)}
+                    className="h-[36px] rounded-lg border border-shell-border bg-shell-bg px-3 text-[13px] text-shell-text focus:outline-none focus:ring-2 focus:ring-accent/40"
+                  >
+                    <option value="">Choose a subdomain...</option>
+                    {activeSubdomains.map((s) => (
+                      <option key={s.id} value={s.name}>
+                        {s.name}.taos.my
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="text"
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value)}
+                    placeholder="Label (optional)"
+                    className="h-[36px] rounded-lg border border-shell-border bg-shell-bg px-3 text-[13px] text-shell-text placeholder:text-shell-text-tertiary focus:outline-none focus:ring-2 focus:ring-accent/40"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handlePublish()}
+                    disabled={publishing || !selectedSubdomain}
+                    className="flex h-[36px] items-center gap-2 rounded-full bg-gradient-to-br from-accent to-accent/70 px-4 text-[13px] font-bold text-white shadow-lg shadow-accent/20 transition-all hover:-translate-y-0.5 hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {publishing ? <Loader2 size={16} className="animate-spin" /> : <Globe2 size={16} />}
+                    {publishing ? "Publishing..." : "Publish"}
+                  </button>
+                </div>
+              )}
+
+              {publishResult && (
+                <div role="status" className="flex items-start gap-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-3">
+                  <CheckCircle2 size={16} className="mt-0.5 flex-none text-emerald-400" />
+                  <div className="flex flex-col gap-2">
+                    <p className="text-[12.5px] leading-relaxed text-emerald-200">
+                      Published to {publishResult.fqdn}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void copyFqdn()}
+                        className="flex h-[30px] items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 text-[12px] font-medium text-emerald-200 transition-colors hover:bg-emerald-500/20"
+                      >
+                        <Link2 size={14} />
+                        Copy link
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleUnpublish()}
+                        disabled={publishing}
+                        className="flex h-[30px] items-center gap-1.5 rounded-full border border-shell-border bg-shell-surface px-3 text-[12px] font-medium text-shell-text transition-colors hover:bg-shell-bg disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Unplug size={14} />
+                        {publishing ? "Unpublishing..." : "Unpublish"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {publishError && (
+                <div role="alert" className="flex items-start gap-2.5 rounded-xl border border-red-500/30 bg-red-500/10 px-3.5 py-3">
+                  <AlertCircle size={16} className="mt-0.5 flex-none text-red-400" />
+                  <p className="text-[12.5px] leading-relaxed text-red-200">{publishError}</p>
+                </div>
+              )}
+            </div>
 
             {installResult === "ok" && (
               <div role="status" className="flex items-start gap-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-3">

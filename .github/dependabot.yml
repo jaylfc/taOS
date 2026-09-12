@@ -17,6 +17,16 @@ updates:
       # proposing the cap-raise until the regression is fixed upstream.
       - dependency-name: "fastapi"
         versions: [">=0.137"]
+      # litellm's specifier must pin the EXACT minor the inlined proxy subset
+      # mirrors (>=1.94.2,<1.95). litellm[proxy] pulls litellm-enterprise, so
+      # the proxy subset is inlined instead, and a wider cap lets a fresh
+      # resolve outrun that subset -- which is why
+      # tests/test_install_licences.py::test_proxy_extra_pins_litellm_to_the_minor_it_mirrors
+      # rejects any ceiling wider than the mirrored minor. Dependabot proposing
+      # a cap-raise (e.g. <1.100 in #2810) can therefore only ever fail CI.
+      # Re-mirroring onto a new minor is a deliberate change, not an auto-bump.
+      - dependency-name: "litellm"
+        versions: [">=1.95"]
 
   # Desktop SPA (Vite/React)
   - package-ecosystem: "npm"

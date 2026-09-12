@@ -894,6 +894,82 @@ async def test_multi_select_invalid_option_still_rejected(client):
     assert resp.status_code == 400
 
 
+# --------------------------------------------------------------------------- #
+# tsk-zmltwu: empty multi_select answer must be rejected with 400
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_empty_multi_select_answer_is_rejected(client):
+    """An empty list as a multi_select answer is rejected: it would otherwise
+    record the decision as answered with no selections, indistinguishable from
+    a real choice downstream."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "multi_select",
+        "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    })
+    d = resp.json()
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": []})
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "answer must be a subset of the options"
+
+
+@pytest.mark.asyncio
+async def test_multi_select_valid_subset_still_accepted(client):
+    """A valid non-empty subset of multi_select options still returns 200."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "multi_select",
+        "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    })
+    d = resp.json()
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": ["a"]})
+    assert resp.status_code == 200
+    assert resp.json()["answer"]["value"] == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_multi_select_invalid_option_still_rejected_tsk_zmltwu(client):
+    """A multi_select answer containing a value not in the options is still 400."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "multi_select",
+        "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    })
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": ["a", "nope"]},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_single_select_list_answer_still_rejected(client):
+    """A list submitted as a single_select answer must still 400 (TypeError
+    from unhashable list in set membership is caught and returned as 400)."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "single_select",
+        "options": [{"label": "A", "value": "a"}],
+    })
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": ["a"]},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_single_select_valid_scalar_still_accepted(client):
+    """A valid scalar single_select answer still returns 200."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "single_select",
+        "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    })
+    d = resp.json()
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": "a"})
+    assert resp.status_code == 200
+    assert resp.json()["answer"]["value"] == "a"
+
+
 @pytest.mark.asyncio
 async def test_other_answer_routes_to_agent_with_note(client, monkeypatch):
     """A free-text Other answer with a note reaches the agent in the same

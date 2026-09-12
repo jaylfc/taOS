@@ -77,14 +77,15 @@ class ContainerRequestStore(BaseStore):
         """Insert a new request in the ``requested`` state and return the row."""
         if canonical_id is None or not canonical_id.strip():
             raise ValueError("canonical_id is required")
-        crq_id = new_id("crq")
         now = time.time()
         config_str = json.dumps(config or {})
-        await self._db.execute(
+        crq_id = await self._insert_with_retry(
             """INSERT INTO container_requests
                (id, canonical_id, image, status, reason, config_json, created_at, updated_at)
                VALUES (?, ?, ?, 'requested', ?, ?, ?, ?)""",
-            (crq_id, canonical_id, image, reason, config_str, now, now),
+            (new_id("crq"), canonical_id, image, reason, config_str, now, now),
+            id_index=0,
+            new_id_fn=lambda: new_id("crq"),
         )
         await self._db.commit()
         return await self.get(crq_id)

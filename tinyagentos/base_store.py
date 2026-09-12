@@ -1,4 +1,5 @@
 from __future__ import annotations
+import sqlite3
 from pathlib import Path
 from enum import Enum
 
@@ -105,3 +106,37 @@ class BaseStore:
         if self._db:
             await self._db.close()
             self._db = None
+
+    async def _insert_with_retry(
+        self,
+        sql: str,
+        params: tuple,
+        id_index: int,
+        new_id_fn,
+        max_attempts: int = 5,
+    ) -> str:
+        params_list = list(params)
+        for attempt in range(max_attempts):
+            try:
+                await self._db.execute(sql, params_list)
+                return params_list[id_index]
+            except sqlite3.IntegrityError as exc:
+                msg = str(exc)
+                # Only retry on UNIQUE constraint failures against the id
+                # column (the column we can regenerate via new_id_fn).  A
+                # collision on any other UNIQUE index (e.g. a compound key
+                # on non-id columns) cannot be resolved by retrying with a
+                # new id, so those IntegrityErrors propagate unchanged.
+                if (
+                    "UNIQUE constraint failed:" in msg
+                    # The sqlite3 error message appends the column name;
+                    # ".id" catches every PRIMARY KEY / UNIQUE index whose
+                    # name ends in ".id".  This is deliberate: loosening
+                    # it would retry collisions we cannot fix, silently
+                    # masking data-integrity bugs.
+                    and msg.rstrip().endswith(".id")
+                ):
+                    params_list[id_index] = new_id_fn()
+                    continue
+                raise
+        raise sqlite3.IntegrityError("unique id collision after max retries")

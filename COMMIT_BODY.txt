@@ -1,0 +1,33 @@
+fix-forward #2994 (tsk-kw5yyz): restore doc-review attribution, remove destructive rollback from id-collision retry, collapse _insert_with_retry to one definition
+
+BASE (exec/tsk-rsek5i) red lines:
+```
+FAILED tests/test_doc_review.py::test_first_write_can_be_approved_or_changes_requested - AssertionError: assert None == 'a1'
+FAILED tests/test_doc_review.py::TestAgentScopeGating::test_agent_write_to_own_project_records_actor - AssertionError: assert None == 'grok-20260912-113947'
+2 failed, 77 passed in 17.86s
+```
+
+After fix green lines:
+```
+81 passed in 17.75s
+```
+
+Full store suite (502 passed in 210.81s):
+```
+uv run pytest tests/projects/ tests/notes/test_shared_docs_store.py tests/test_decision_store.py tests/test_doc_review.py -q
+502 passed in 210.81s (0:03:30)
+```
+
+Three defects fixed:
+
+DEFECT 1 (attribution lost on first write): In tinyagentos/projects/doc_review_store.py set_review_state, the four attribution values (reviewed_by, reviewed_at, changes_requested_by, changes_requested_at) were computed AFTER the INSERT, where they became dead code. A duplicated now = time.time() was also present. Moved the attribution computation before the INSERT and pass the values in the parameter tuple. Removed the dead post-insert assignments and the duplicated now assignment.
+
+DEFECT 2 (destructive rollback): BaseStore._insert_with_retry called self._db.rollback() on a UNIQUE collision. SQLite ABORT rolls back only the failed statement, leaving the enclosing transaction live. Calling rollback() from inside a tx() scope discards every write already made in the enclosing transaction. Removed all rollback calls and the except Exception: pass wrappers from the helper.
+
+DEFECT 3 (helper defined twice with different bodies): _insert_with_retry was defined in both base_store.py:BaseStore (with rollback) and tx.py:ProjectsDBStore (without rollback). Collapsed to one definition in BaseStore (no rollback, matching the safe tx.py copy). ProjectsDBStore-derived stores inherit it via MRO; all other BaseStore subclasses (decisions, notes, container_requests, coding_sessions) also get the same no-rollback body.
+
+New tests added:
+- tests/test_decision_store.py::test_create_retries_on_id_collision: deterministic collision against plain BaseStore (DecisionStore), same shape as the existing ProjectTaskStore test, covers the non-projects code path.
+- tests/test_doc_review.py::test_retry_does_not_rollback_enclosing_transaction: writes a row, then calls _insert_with_retry with a forced collision inside the same transaction; asserts the earlier row still exists after commit. Fails on exec/tsk-rsek5i (rollback destroys the earlier row) and passes on the fixed head.
+
+Changelog: changelog.d/tsk-kw5yyz-id-collision-fixes.md

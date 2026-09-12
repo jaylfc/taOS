@@ -147,7 +147,7 @@ echo "test: trixie fallback installs docker-ce + plugin from Docker's repo"
 grep -q "docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin" "$SCRIPT"
 
 echo "test: trixie fallback is gated on the missing-package rc==2, not on a generic failure"
-grep -A 6 "_apt_install_compose" "$SCRIPT" \
+grep -A 15 "_install_compose_v2" "$SCRIPT" \
     | grep -q "_apt_compose_rc == 2"
 
 echo "test: trixie fallback does NOT trigger on a generic install failure"
@@ -224,6 +224,11 @@ grep -A4 'Docker apt key fingerprint mismatch' "$SCRIPT" \
 echo "test: ensure_docker_for_apps call site tolerates fallback failure (no set -e abort)"
 ensure_docker_call_line=$(grep -n "ensure_docker_for_apps || warn" "$SCRIPT" | head -1 | cut -d: -f1)
 (( ensure_docker_call_line > 0 ))
+
+echo "test: Compose v2 failure is tracked for the installer summary"
+grep -q 'DOCKER_COMPOSE_STATUS="unavailable"' "$SCRIPT"
+grep -q 'Docker Compose v2: UNAVAILABLE' "$SCRIPT"
+
 # ── Controller readiness wait (taOS#2) ─────────────────────────────────
 
 echo "test: controller wait uses a 240 s ready timeout"

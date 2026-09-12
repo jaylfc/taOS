@@ -156,6 +156,26 @@ class ProjectStore(ProjectsDBStore):
                 "UPDATE projects SET lead_member_id = ? WHERE id = ?",
                 (member_id, project_id),
             )
+            if member_id is not None:
+                # Promote the new lead in its member row.
+                await self._db.execute(
+                    "UPDATE project_members SET is_lead = 1, role = 'lead' "
+                    "WHERE project_id = ? AND member_id = ?",
+                    (project_id, member_id),
+                )
+                # Demote any previous lead so the flag stays exclusive.
+                await self._db.execute(
+                    "UPDATE project_members SET is_lead = 0, role = 'member' "
+                    "WHERE project_id = ? AND member_id != ? AND is_lead = 1",
+                    (project_id, member_id),
+                )
+            else:
+                # Clearing lead — unset the flag everywhere on this project.
+                await self._db.execute(
+                    "UPDATE project_members SET is_lead = 0, role = 'member' "
+                    "WHERE project_id = ? AND is_lead = 1",
+                    (project_id,),
+                )
 
     async def create_project(
         self,
@@ -166,7 +186,6 @@ class ProjectStore(ProjectsDBStore):
         settings: dict | None = None,
         user_id: str = "",
     ) -> dict:
-        pid = new_id("prj")
         now = time.time()
         try:
             async with self._tx():
@@ -179,11 +198,13 @@ class ProjectStore(ProjectsDBStore):
                 # creates would both pass and both insert.
                 if await self.get_project_by_name(name) is not None:
                     raise ProjectConflict("name", name)
-                await self._db.execute(
+                pid = await self._insert_with_retry(
                     """INSERT INTO projects
                        (id, name, slug, description, status, created_by, user_id, created_at, updated_at, settings)
                        VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
-                    (pid, name, slug, description, created_by, user_id, now, now, json.dumps(settings or {})),
+                    (new_id("prj"), name, slug, description, created_by, user_id, now, now, json.dumps(settings or {})),
+                    id_index=0,
+                    new_id_fn=lambda: new_id("prj"),
                 )
         except sqlite3.IntegrityError as exc:
             # UNIQUE(slug) is the only schema-level uniqueness a caller can

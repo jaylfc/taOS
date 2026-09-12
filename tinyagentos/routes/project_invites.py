@@ -93,6 +93,11 @@ def _derive_handle(project_slug: str, harness: str, label: str | None) -> str:
 
     Each component is slugified independently so an awkward label cannot bleed
     separators into a neighbour; the parts are then joined with single dashes.
+
+    Dedup: if the slugified label starts with (or equals) a prefix already in
+    the handle, strip that overlap from the label before appending — so
+    ``taosmobile`` + ``claude`` + ``taosmobile-dev`` yields
+    ``taosmobile-claude-dev``, not ``taosmobile-claude-taosmobile-dev``.
     """
     slug = _slugify(project_slug)
     hw = _slugify(harness)
@@ -100,7 +105,16 @@ def _derive_handle(project_slug: str, harness: str, label: str | None) -> str:
     if label:
         lbl = _slugify(label)
         if lbl:
-            parts.append(lbl)
+            # Dedup: strip any prefix of the label that duplicates a part.
+            for dedup in (slug, hw):
+                if not lbl:
+                    break
+                if lbl == dedup:
+                    lbl = ""
+                elif lbl.startswith(dedup + "-"):
+                    lbl = lbl[len(dedup) + 1:]
+            if lbl:
+                parts.append(lbl)
     return "-".join(p for p in parts if p)
 
 

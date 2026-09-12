@@ -75,7 +75,6 @@ class DocReviewStore(ProjectsDBStore):
                         f"invalid transition: (new) -> {new_state}; "
                         f"first state must be awaiting_review or a direct transition target"
                     )
-                review_id = new_id("rev")
                 reviewed_by = None
                 reviewed_at = None
                 changes_requested_by = None
@@ -86,7 +85,8 @@ class DocReviewStore(ProjectsDBStore):
                 elif new_state == "changes_requested":
                     changes_requested_by = actor_id
                     changes_requested_at = now
-                await self._db.execute(
+
+                review_id = await self._insert_with_retry(
                     """INSERT INTO doc_reviews
                        (id, project_id, doc_path, review_state,
                         reviewed_by, reviewed_at,
@@ -94,11 +94,13 @@ class DocReviewStore(ProjectsDBStore):
                         created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        review_id, project_id, doc_path, new_state,
+                        new_id("rev"), project_id, doc_path, new_state,
                         reviewed_by, reviewed_at,
                         changes_requested_by, changes_requested_at,
                         now, now,
                     ),
+                    id_index=0,
+                    new_id_fn=lambda: new_id("rev"),
                 )
             else:
                 current_state = existing["review_state"]

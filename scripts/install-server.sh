@@ -54,6 +54,9 @@ TAOS_BUS_PORT="${TAOS_BUS_PORT:-7900}"
 SERVICE_MODE="${TAOS_SERVICE:-auto}"
 COW_POOL_MODE="${TAOS_COW_POOL:-auto}"
 
+DOCKER_COMPOSE_STATUS="unknown"
+DOCKER_COMPOSE_DETAIL=""
+
 os_name="$(uname -s)"
 arch="$(uname -m)"
 
@@ -1038,6 +1041,53 @@ _apt_install_compose() {
     fi
 }
 
+_install_compose_v2() {
+    if command -v apt-get >/dev/null 2>&1; then
+        _apt_install_compose
+        local _apt_compose_rc=$?
+        if (( _apt_compose_rc == 0 )); then
+            DOCKER_COMPOSE_STATUS="installed"
+            DOCKER_COMPOSE_DETAIL="distro apt package"
+            return 0
+        fi
+        if (( _apt_compose_rc == 2 )); then
+            log "compose plugin not in distro apt -- trying Docker's official apt repo"
+            if _apt_install_docker_official_repo; then
+                DOCKER_COMPOSE_STATUS="installed"
+                DOCKER_COMPOSE_DETAIL="Docker official apt repo"
+                return 0
+            fi
+        else
+            warn "apt install of the Docker Compose v2 plugin failed -- Store Docker apps will be unavailable"
+        fi
+    elif command -v dnf >/dev/null 2>&1; then
+        if sudo dnf install -y -q docker-compose; then
+            DOCKER_COMPOSE_STATUS="installed"
+            DOCKER_COMPOSE_DETAIL="dnf package"
+            return 0
+        fi
+    elif command -v pacman >/dev/null 2>&1; then
+        if sudo pacman -Sy --noconfirm --needed docker-compose; then
+            DOCKER_COMPOSE_STATUS="installed"
+            DOCKER_COMPOSE_DETAIL="pacman package"
+            return 0
+        fi
+    elif command -v apk >/dev/null 2>&1; then
+        if sudo apk add --no-cache docker-cli-compose; then
+            DOCKER_COMPOSE_STATUS="installed"
+            DOCKER_COMPOSE_DETAIL="apk package"
+            return 0
+        fi
+    else
+        warn "unrecognised package manager -- cannot install Docker Compose v2"
+    fi
+
+    DOCKER_COMPOSE_STATUS="unavailable"
+    DOCKER_COMPOSE_DETAIL="compose installation failed"
+    warn "Docker Compose v2 is unavailable -- Store Docker apps will fail"
+    return 1
+}
+
 # Undo one apt file touched by the Docker official-repo fallback below.
 #   $1 = path, $2 = backup path ("" when the file did NOT pre-exist),
 #   $3 = 1 when THIS invocation created the file.
@@ -1262,13 +1312,17 @@ _apt_install_docker_official_repo() {
 
 ensure_docker_for_apps() {
     if [[ "${TAOS_SKIP_DOCKER:-0}" == "1" ]]; then
-        log "TAOS_SKIP_DOCKER=1 — skipping Docker (Store Docker apps will be unavailable)"
+        DOCKER_COMPOSE_STATUS="skipped"
+        DOCKER_COMPOSE_DETAIL="TAOS_SKIP_DOCKER=1"
+        log "TAOS_SKIP_DOCKER=1 -- skipping Docker (Store Docker apps will be unavailable)"
         return 0
     fi
     # macOS: the Docker Engine can't run natively (it needs a Linux VM), so the
     # server doesn't install it here — agents use the Apple Containerization
     # framework, and Docker apps need a user-provided Docker (Desktop/colima).
     if [[ "$(uname -s)" == "Darwin" ]]; then
+        DOCKER_COMPOSE_STATUS="unavailable"
+        DOCKER_COMPOSE_DETAIL="Docker Desktop or colima required"
         command -v docker >/dev/null 2>&1 \
             && log "macOS: using existing Docker ($(docker --version 2>/dev/null | head -1))" \
             || log "macOS: provide Docker (Desktop or colima) for Store Docker apps; agents use Apple Containerization"
@@ -1292,65 +1346,42 @@ ensure_docker_for_apps() {
     if (( had_docker )); then
         log "docker present: $(docker --version 2>/dev/null | head -1)"
     else
-        # Install the engine AND the Compose v2 plugin — taOS deploys Store
-        # Docker apps via `docker compose`, and most distro 'docker' packages
-        # (e.g. Ubuntu's docker.io) don't bundle compose, which otherwise fails
-        # with "unknown command: docker compose".
-        log "installing Docker Engine + Compose plugin (for Store Docker apps)"
+        log "installing Docker Engine (for Store Docker apps)"
         if command -v apt-get >/dev/null 2>&1; then
-            # Install the engine and the compose plugin in SEPARATE apt
-            # transactions: bundling them meant a missing compose package name
-            # (see _apt_install_compose below) failed the whole transaction and
-            # left the box without Docker at all (#1541).
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io \
-                || warn "apt install docker.io failed — Store Docker apps will be unavailable"
-            # _apt_install_compose distinguishes missing-package (rc=2)
-            # from install-failure (rc=1). Only the missing-package case
-            # means the distro archive has no compose plugin to offer --
-            # Debian trixie / Armbian trixie (taOS#2). Anything else is a
-            # real apt error and must NOT silently swap to Docker's repo.
-            _apt_install_compose
-            _apt_compose_rc=$?
-            if (( _apt_compose_rc == 2 )); then
-                log "compose plugin not in distro apt — trying Docker's official apt repo"
-                if ! _apt_install_docker_official_repo; then
-                    warn "Docker Engine + Compose plugin are unavailable on this host (Store Docker apps will be unavailable)"
-                fi
-            elif (( _apt_compose_rc != 0 )); then
-                warn "compose plugin install failed -- Store Docker apps will be unavailable"
-            fi
+                || warn "apt install docker.io failed -- Store Docker apps will be unavailable"
         elif command -v dnf >/dev/null 2>&1; then
-            sudo dnf install -y -q moby-engine docker-compose \
-                || warn "dnf install moby-engine/docker-compose failed — Store Docker apps will be unavailable"
+            sudo dnf install -y -q moby-engine \
+                || warn "dnf install moby-engine failed -- Store Docker apps will be unavailable"
         elif command -v pacman >/dev/null 2>&1; then
-            sudo pacman -Sy --noconfirm --needed docker docker-compose \
-                || warn "pacman install docker/docker-compose failed — Store Docker apps will be unavailable"
+            sudo pacman -Sy --noconfirm --needed docker \
+                || warn "pacman install docker failed -- Store Docker apps will be unavailable"
         elif command -v apk >/dev/null 2>&1; then
-            sudo apk add --no-cache docker docker-cli-compose \
-                || warn "apk add docker/docker-cli-compose failed — Store Docker apps will be unavailable"
+            sudo apk add --no-cache docker \
+                || warn "apk add docker failed -- Store Docker apps will be unavailable"
         else
-            warn "unrecognised package manager — install Docker + the compose plugin manually for Store Docker apps"
+            warn "unrecognised package manager -- install Docker manually for Store Docker apps"
+            DOCKER_COMPOSE_STATUS="unavailable"
+            DOCKER_COMPOSE_DETAIL="Docker engine unavailable"
             return 0
         fi
     fi
 
     # Ensure the Compose v2 plugin (taOS deploys apps via `docker compose`).
-    # This also covers the case where Docker was ALREADY installed but without
-    # the plugin — the fresh-install branch above bundles it, but a pre-existing
-    # Docker (the `had_docker` path) may lack it, so install it here too.
-    if ! docker compose version >/dev/null 2>&1; then
+    if docker compose version >/dev/null 2>&1; then
+        DOCKER_COMPOSE_STATUS="installed"
+        DOCKER_COMPOSE_DETAIL="docker compose version succeeded"
+    else
         log "installing the Docker Compose v2 plugin"
-        if command -v apt-get >/dev/null 2>&1; then
-            _apt_install_compose || true
-        elif command -v dnf >/dev/null 2>&1; then
-            sudo dnf install -y -q docker-compose || true
-        elif command -v pacman >/dev/null 2>&1; then
-            sudo pacman -Sy --noconfirm --needed docker-compose || true
-        elif command -v apk >/dev/null 2>&1; then
-            sudo apk add --no-cache docker-cli-compose || true
+        _install_compose_v2 || true
+        if ! docker compose version >/dev/null 2>&1; then
+            DOCKER_COMPOSE_STATUS="unavailable"
+            DOCKER_COMPOSE_DETAIL="docker compose version failed"
+            warn "the 'docker compose' plugin isn't available -- Store Docker apps need it (install docker-compose-v2 / docker-compose-plugin manually)"
+        else
+            DOCKER_COMPOSE_STATUS="installed"
+            DOCKER_COMPOSE_DETAIL="docker compose version succeeded"
         fi
-        docker compose version >/dev/null 2>&1 \
-            || warn "the 'docker compose' plugin isn't available — Store Docker apps need it (install docker-compose-v2 / docker-compose-plugin manually)"
     fi
 
     command -v docker >/dev/null 2>&1 || { warn "docker not on PATH after install — skipping daemon/group setup"; return 0; }
@@ -2795,6 +2826,16 @@ if [[ "$TAOS_BROWSER_PROXY_PORT" != "0" ]]; then
 fi
 log "  Install dir : $INSTALL_DIR"
 log "  Storage pool: ${COW_EFFECTIVE_MODE:-n/a} (detected fs: ${COW_FS_TYPE:-unknown})"
+if [[ "$DOCKER_COMPOSE_STATUS" == "installed" ]]; then
+    log "  Docker Compose v2: available"
+elif [[ "$DOCKER_COMPOSE_STATUS" == "skipped" ]]; then
+    log "  Docker Compose v2: skipped (TAOS_SKIP_DOCKER=1)"
+else
+    warn "=== DOCKER COMPOSE V2 SUMMARY ==="
+    warn "  Docker Compose v2: UNAVAILABLE -- Store Docker apps will fail"
+    warn "    Reason: ${DOCKER_COMPOSE_DETAIL:-compose status unknown}"
+    warn "    Install docker-compose-plugin or docker-compose-v2 manually, then rerun the installer."
+fi
 # Surface what the controller actually detected so a tester can confirm at
 # a glance (taOS #2 -- installer used to silently skip, so testers had no
 # way to tell whether the NPU was recognised). HW_PROFILE_ID/HW_NPU_TYPE
