@@ -844,13 +844,27 @@ class ClusterManager:
             if (
                 required_vram_mb > 0
                 and worker.free_vram_mb is not None
-                and required_vram_mb > worker.free_vram_mb
             ):
-                logger.debug(
-                    "claim_lease: %s needs %d MiB VRAM but %s has %d MiB free",
-                    caller, required_vram_mb, worker.name, worker.free_vram_mb,
-                )
-                return None
+                # Account for VRAM already held by other active leases on
+                # this worker — two concurrent claims for different resources
+                # must not both pass when their sum exceeds free_vram_mb (H1).
+                already_held = 0
+                now = time.time()
+                for lid, lease in self._leases.items():
+                    if (parsed := self._parse_resource_id(lease.resource_id)) \
+                            and parsed[0] == worker.name:
+                        if lease.expires_at > now:
+                            already_held += lease.required_vram_mb
+
+                effective_free = worker.free_vram_mb - already_held
+                if required_vram_mb > effective_free:
+                    logger.debug(
+                        "claim_lease: %s needs %d MiB VRAM but %s has %d MiB free, "
+                        "%d MiB held by other active leases",
+                        caller, required_vram_mb, worker.name, worker.free_vram_mb,
+                        already_held,
+                    )
+                    return None
 
             # Enforce lease cap per worker to prevent DoS (S2-24)
             # Count only active (non-expired) leases for this worker

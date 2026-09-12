@@ -22,6 +22,23 @@ from tinyagentos.scheduler.score_cache import ScoreCache
 from tinyagentos.scheduler.types import ResourceSignature
 
 
+def normalise_vram_probe(free_mb: int) -> int:
+    """Map a raw VRAM probe to a schedulable free-VRAM value.
+
+    A positive probe is used as-is.  A failed or zero probe (``free_mb <= 0``,
+    e.g. ``nvidia-smi`` unavailable on non-NVIDIA hardware) must NOT be inflated
+    to a huge optimistic figure — that would make the scheduler silently admit
+    GPU loads it cannot measure.  Fail CLOSED: report 0, so callers that gate on
+    measured capacity refuse the load instead of over-committing.  (taOS #1992 M2.)
+
+    This lives as a module-level function so the fail-closed rule is unit-testable;
+    the previous inline ternary ``free if free > 0 else 999_999`` was unreachable
+    from tests and regressed to the optimistic value unnoticed.
+    """
+    return free_mb if free_mb > 0 else 0
+
+
+
 # Every capability a CPU can run given the right backend. CPU is the
 # universal fallback, nothing is exclusive to GPU/NPU at the capability
 # level, just faster on those devices. This set feeds the CPU resource's
@@ -215,7 +232,10 @@ def build_scheduler(
 
         def _gpu_vram_probe() -> int:
             free, _total = _probe_nvidia_vram()
-            return free if free > 0 else 999_999  # optimistic
+            # Fail closed on a failed/zero probe (normalise_vram_probe). Do NOT
+            # return a huge optimistic value — that silently admits GPU work when
+            # VRAM status is unknown (M2 fix, taOS #1992).
+            return normalise_vram_probe(free)
 
         def _gpu_capabilities() -> set[str]:
             caps: set[str] = set()
