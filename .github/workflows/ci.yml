@@ -330,10 +330,64 @@ jobs:
           cd desktop
           npx playwright install --with-deps webkit
 
+      # The suite needs a REAL backend, not a frontend server. Measured on the
+      # first two runs of this job: with vite alone, 10 of 24 tests fail and
+      # eight of those are one missing route -- src/lib/sw-register.ts:45
+      # registers "/sw.js" at the ROOT (deliberately: a worker under /desktop/
+      # could never control /chat-pwa, which is in the SW's PRECACHE_URLS), but
+      # vite's base is "/desktop/" so the built worker is only reachable at
+      # /desktop/sw.js. A diagnostic run confirmed it directly:
+      #   DIAG {"caches":[],"scope":null,"scriptURL":null,
+      #         "rootSwJs":"404 text/plain","basedSwJs":"200 text/javascript"}
+      # No service worker registered at all. tinyagentos/routes/desktop.py:185
+      # serves /sw.js at the root, and /desktop/, /chat-pwa and /api/health are
+      # all in auth_middleware's exempt set, so an unauthenticated backend is
+      # enough for the fast-boot specs.
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install backend
+        run: uv sync --frozen --python 3.12
+
+      # The SPA must be built BEFORE the backend starts: the desktop routes
+      # serve static/desktop from disk, so an unbuilt tree serves nothing.
+      - name: Build SPA
+        run: |
+          cd desktop
+          npm run build
+
+      # Health-gated, not a fixed sleep: a sleep that is too short reads as a
+      # suite-wide failure and a sleep that is long enough is wasted on every
+      # green run. 60 x 2s bounds a backend that never comes up.
+      - name: Start backend
+        run: |
+          uv run --no-sync uvicorn --factory tinyagentos.app:create_app \
+            --host 127.0.0.1 --port 6969 > backend.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:6969/api/health >/dev/null 2>&1; then
+              echo "backend up after ${i} attempt(s)"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::backend never became healthy"; tail -50 backend.log; exit 1
+
       - name: Run Playwright e2e
+        env:
+          E2E_BASE_URL: http://127.0.0.1:6969
         run: |
           cd desktop
           npx playwright test --reporter=list
+
+      - name: Backend log
+        if: failure()
+        run: tail -100 backend.log
 
       # The config's reporter is "html", which writes a directory rather than
       # job-log lines; --reporter=list above puts the per-test results in the

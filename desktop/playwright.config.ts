@@ -1,5 +1,20 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// The suite is pointed at a REAL taOS backend when E2E_BASE_URL is set (that is
+// what the desktop-e2e CI job does). Only the backend serves the three routes
+// the specs actually need: /sw.js at the ROOT (src/lib/sw-register.ts:45
+// registers "/sw.js" so the worker gets root scope and can control /chat-pwa,
+// which is in the SW's PRECACHE_URLS), /chat-pwa, and /api/*. vite serves the
+// built worker only at /desktop/sw.js because base is "/desktop/" -- measured
+// 404 at the root against both `vite dev` and `vite preview`, which is why no
+// service worker registered at all and every fast-boot spec failed on an empty
+// caches.keys(). tinyagentos/routes/desktop.py:185 is the route that fixes it.
+//
+// With E2E_BASE_URL unset, `npm run test:e2e` behaves as before and drives its
+// own vite server, so the local loop does not need a backend for the specs that
+// do not talk to one.
+const BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:5173";
+
 export default defineConfig({
   testDir: "./tests",
   testMatch: "**/*.spec.ts",
@@ -9,7 +24,7 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: "html",
   use: {
-    baseURL: "http://localhost:5173",
+    baseURL: BASE_URL,
     trace: "on-first-retry",
   },
   projects: [
@@ -18,23 +33,13 @@ export default defineConfig({
       use: { ...devices["iPhone 14"] },
     },
   ],
-  // The suite must run against a BUILT SPA, not the dev server. src/sw.ts is a
-  // rollup input (see vite.config.ts build.rollupOptions.input.sw, emitted as
-  // sw.js); `vite dev` never produces it, so /desktop/sw.js 404s, no service
-  // worker registers, no `taos-static-*` cache is ever created and every
-  // fast-boot spec in tests/e2e/sw-and-reconnect.spec.ts fails on
-  // `expect(cacheNames.some(n => n.startsWith("taos-static-"))).toBe(true)`.
-  // Measured: against `npm run dev` the suite is 10 failed / 13 skipped /
-  // 1 passed, and eight of those ten are that one missing file.
-  //
-  // `vite preview` serves build.outDir (../static/desktop) at base /desktop/ on
-  // 4173 by default, so the port is pinned to keep baseURL above correct and
-  // --strictPort makes a port clash fail loudly instead of silently serving the
-  // suite from somewhere else. The timeout covers the production build.
-  webServer: {
-    command: "npm run build && npm run preview -- --port 5173 --strictPort",
-    url: "http://localhost:5173/desktop/",
-    reuseExistingServer: !process.env.CI,
-    timeout: 180_000,
-  },
+  // When E2E_BASE_URL is set the server is already up and is not ours to manage.
+  webServer: process.env.E2E_BASE_URL
+    ? undefined
+    : {
+        command: "npm run build && npm run preview -- --port 5173 --strictPort",
+        url: "http://localhost:5173/desktop/",
+        reuseExistingServer: !process.env.CI,
+        timeout: 180_000,
+      },
 });
