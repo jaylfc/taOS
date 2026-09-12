@@ -888,6 +888,29 @@ class TestClusterLeaseIntegration:
         assert second.json()["lease_id"] == first.json()["lease_id"]
         assert len(cluster.get_leases()) == 1
 
+    async def test_reclaiming_a_loaded_card_is_admitted(self, lease_client, bus, cluster):
+        """A re-claim replaces the caller's reservation; it never stacks on it.
+
+        Once the model is loaded the node's free figure already reflects it, so
+        charging the caller's own claim again would read the card as full and
+        deny the idempotent re-POST the fold window needs (CR on #2988).
+        """
+        first = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 6144}
+        )
+        assert first.status_code == 200
+        lease_id = first.json()["lease_id"]
+        assert lease_id is not None
+
+        # The load is now on the card: 2 of the worker's 12 GiB remain free.
+        cluster.get_worker("linstation").free_vram_mb = 2048
+        again = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 6144}
+        )
+        assert again.status_code == 200, again.json()
+        assert again.json()["lease_id"] == lease_id
+        assert len(cluster.get_leases()) == 1
+
     async def test_reclaim_rollback_does_not_drop_the_existing_lease(
         self, lease_client, bus, cluster
     ):

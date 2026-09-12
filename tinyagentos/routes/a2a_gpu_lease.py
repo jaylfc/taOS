@@ -383,6 +383,7 @@ async def _check_node(
     actor: _Actor,
     channel: str,
     resource: str = _DEFAULT_RESOURCE,
+    replace_own: bool = False,
 ) -> tuple[dict, list[GpuLeaseMessage]]:
     """Run the full CHECK for a node; returns (admission dict, node claims)."""
     folded = await _folded_claims(request, channel, actor)
@@ -407,6 +408,7 @@ async def _check_node(
         claims=node_claims,
         free_mb=free_mb,
         capacity_mb=capacity_mb,
+        replace_own=replace_own,
     )
     body = admission.as_dict()
     body["claims"] = [c.as_dict() for c in node_claims]
@@ -619,6 +621,30 @@ async def gpu_claim(request: Request, body: ClaimBody):
         )
 
     channel = (body.channel or "").strip() or _channel()
+
+    # Productized half: a real lease the scheduler enforces. Only for a node
+    # this controller knows as a worker; an external node is bus-governed. The
+    # lease identity/resource are resolved BEFORE admission so a re-claim of
+    # the caller's OWN lease is admitted as a REPLACEMENT of it (see below).
+    cluster = getattr(request.app.state, "cluster_manager", None)
+    lease_node = cluster is not None and _match_worker(cluster, node) is not None
+    caller = f"a2a:{actor.identity}"
+    resource_id = (
+        _resource_id(_canonical_node(cluster, node), body.resource)
+        if lease_node and cluster is not None
+        else None
+    )
+    existing = (
+        cluster.find_existing_lease(resource_id)
+        if cluster is not None and resource_id is not None
+        else None
+    )
+    # A re-claim of our own lease replaces the reservation rather than adding
+    # a second one. Charging the caller's own claim again would read a card
+    # whose load is already reflected in the live free VRAM as full and deny
+    # the idempotent re-POST the fold window needs (CR on #2988).
+    reclaimer = existing is not None and existing.caller == caller
+
     admission, _claims = await _check_node(
         request,
         node=node,
@@ -626,20 +652,15 @@ async def gpu_claim(request: Request, body: ClaimBody):
         actor=actor,
         channel=channel,
         resource=body.resource,
+        replace_own=reclaimer,
     )
     if not admission["admitted"]:
         return JSONResponse({"status": "denied", **admission}, status_code=409)
 
-    # Productized half: a real lease the scheduler enforces. Only for a node
-    # this controller knows as a worker; an external node is bus-governed.
-    cluster = getattr(request.app.state, "cluster_manager", None)
     lease_id: str | None = None
     lease = None
     created_lease = False
-    if cluster is not None and _match_worker(cluster, node) is not None:
-        resource_id = _resource_id(_canonical_node(cluster, node), body.resource)
-        caller = f"a2a:{actor.identity}"
-        existing = cluster.find_existing_lease(resource_id)
+    if cluster is not None and resource_id is not None:
         if existing is not None and existing.caller != caller:
             return JSONResponse(
                 {

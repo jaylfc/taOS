@@ -378,6 +378,40 @@ class TestEvaluateAdmission:
         assert d.claimed_mb == 6144
         assert d.blockers == ()
 
+    def test_a_repeated_claim_replaces_the_own_reservation_rather_than_stacking(
+        self,
+    ):
+        # A loaded model is already reflected in the live free figure, so
+        # subtracting the caller's own claim a second time would read a 12-GiB
+        # card with 6 GiB free as full and deny the idempotent re-claim
+        # (CR on #2988).
+        d = evaluate_admission(
+            node="n1",
+            required_mb=6144,
+            identity="@a",
+            claims=[self._claim("@a", 6144)],
+            free_mb=6144,
+            capacity_mb=12288,
+            replace_own=True,
+        )
+        assert d.admitted is True
+        assert d.claimed_mb == 6144
+
+    def test_replacing_the_own_reservation_does_not_conjure_vram(self):
+        # The caller may use its own reservation plus what is actually free -
+        # no more.
+        d = evaluate_admission(
+            node="n1",
+            required_mb=16384,
+            identity="@a",
+            claims=[self._claim("@a", 6144)],
+            free_mb=6144,
+            capacity_mb=12288,
+            replace_own=True,
+        )
+        assert d.admitted is False
+        assert "insufficient VRAM" in d.reason
+
     def test_insufficient_vram_is_denied(self):
         d = evaluate_admission(
             node="n1", required_mb=8192, identity="@a", claims=[], free_mb=4096

@@ -431,6 +431,7 @@ def evaluate_admission(
     claims: Iterable[GpuLeaseMessage] = (),
     free_mb: int | None = None,
     capacity_mb: int | None = None,
+    replace_own: bool = False,
 ) -> Admission:
     """Decide whether *identity* may use *node* for *required_mb* of VRAM.
 
@@ -446,6 +447,13 @@ def evaluate_admission(
        ``verified=False`` with a reason: a node that cannot report VRAM is a
        gap in the guarantee, and the caller must probe before loading rather
        than be told a silent "free".
+
+    ``replace_own=True`` says the request REPLACES the caller's own claim
+    rather than adding to it (an idempotent re-claim of the same lease). Its
+    own reservation then comes back into the budget instead of being charged
+    again: a loaded model can already be reflected in the live ``free_mb``, so
+    subtracting the claim a second time would read a reserved card as full and
+    deny the very re-POST the fold window needs (CR on #2988).
     """
     required_mb = max(0, int(required_mb))
     entries = list(claims)
@@ -484,7 +492,9 @@ def evaluate_admission(
             ),
         )
 
-    available = max(0, int(budget) - own_mb)
+    available = (
+        int(budget) + own_mb if replace_own else max(0, int(budget) - own_mb)
+    )
     if required_mb > available:
         return Admission(
             admitted=False,
