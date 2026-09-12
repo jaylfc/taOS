@@ -23,6 +23,7 @@ Security notes
 
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -405,6 +406,17 @@ async def approve_auth_request(
                 locks.pop(request_id, None)
 
 
+def _expires_at_from_duration(duration_secs) -> str | None:
+    """Map a scope request's ``duration_secs`` to a grant expiry timestamp.
+
+    A positive integer yields ``now + duration_secs`` as a timezone-aware ISO
+    string; anything else (None, zero, negative, or a non-int) means the grant
+    is unbounded and returns None."""
+    if isinstance(duration_secs, int) and duration_secs > 0:
+        return (datetime.now(timezone.utc) + timedelta(seconds=duration_secs)).isoformat()
+    return None
+
+
 async def approve_request_record(
     request: Request,
     *,
@@ -485,6 +497,11 @@ async def approve_request_record(
     # regardless of effective_project; project-scoped calls 403 until the agent
     # is bound to a project later via assign-agent.
     binding_project = None if defer_binding else effective_project
+
+    # Compute expires_at from the request's duration_secs so time-boxed grants
+    # actually expire. When duration_secs is None or <= 0, leave it unset so
+    # unbounded grants stay permanent.
+    expires_at = _expires_at_from_duration(record.get("duration_secs"))
 
     registry = _get_registry_store(request)
     private_pem, _public_pem = _get_keypair(request)
@@ -585,6 +602,7 @@ async def approve_request_record(
                 project_id=project_id,
                 granted_scopes=granted_scopes,
                 decided_by=decided_by,
+                expires_at=expires_at,
             )
             result = await auth_store.set_decision(
                 record["id"],
@@ -674,7 +692,9 @@ async def approve_request_record(
     # unbound (project_id=None); assign-agent later writes the project-bound
     # grant that makes project-scoped calls succeed.
     for scope in granted_scopes:
-        await grants_store.add_grant(canonical_id, scope, tier="once", project_id=binding_project)
+        await grants_store.add_grant(
+            canonical_id, scope, tier="once", project_id=binding_project, expires_at=expires_at
+        )
         # Also write a RelationshipManager permission edge so the existing
         # permission-check path (can_communicate etc.) is aware of the agent.
         await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
@@ -756,6 +776,7 @@ async def add_agent_to_project(
     granted_scopes: list[str],
     decided_by: str,
     is_lead: bool = False,
+    expires_at: str | None = None,
 ) -> dict:
     """Add an ALREADY-REGISTERED agent to ANOTHER project (taOS #1862).
 
@@ -775,7 +796,7 @@ async def add_agent_to_project(
     # Write the grants bound to this project and the relationship edge.
     for scope in granted_scopes:
         await grants_store.add_grant(
-            canonical_id, scope, tier="once", project_id=project_id
+            canonical_id, scope, tier="once", project_id=project_id, expires_at=expires_at
         )
         await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
 
