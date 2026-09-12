@@ -451,10 +451,13 @@ def _post_init_added_columns(tree: ast.AST) -> set[tuple[str, str]]:
     source text, so ``#`` inside a SQL literal cannot chop the statement and a
     triple-quoted SQL literal is not mistaken for a docstring.
 
-    One level of same-file call indirection is also followed: if ``_post_init``
+    A single hop of same-file call indirection is followed: if ``_post_init``
     calls a module-level ``FunctionDef``/``AsyncFunctionDef`` by plain name
     (e.g. ``await _migration_v1_add_status(self._db)``), that helper's SQL
-    literals are collected too. A visited set prevents cycles.
+    literals are collected too. Calls inside nested ``def``/``class``/``lambda``
+    bodies are not followed: a never-executed helper defined inside
+    ``_post_init`` must not be able to silence a violation with an ALTER it
+    never executes.
     """
     added: set[tuple[str, str]] = set()
     module_functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
@@ -466,12 +469,19 @@ def _post_init_added_columns(tree: ast.AST) -> set[tuple[str, str]]:
 
     def _called_names(fn: ast.AST) -> set[str]:
         names: set[str] = set()
-        for child in ast.walk(fn):
-            if (
-                isinstance(child, ast.Call)
-                and isinstance(child.func, ast.Name)
-            ):
-                names.add(child.func.id)
+
+        def _descend(node: ast.AST) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(
+                    child,
+                    (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+                ):
+                    continue
+                if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
+                    names.add(child.func.id)
+                _descend(child)
+
+        _descend(fn)
         return names
 
     for node in ast.walk(tree):
@@ -482,23 +492,15 @@ def _post_init_added_columns(tree: ast.AST) -> set[tuple[str, str]]:
                 continue
             if item.name != "_post_init":
                 continue
-            visited: set[str] = set()
-            queue = [item]
-            while queue:
-                fn = queue.pop(0)
-                if fn.name in visited:
-                    continue
-                visited.add(fn.name)
-                for literal in _method_sql_literals(fn):
-                    for m in _ADD_COLUMN_RE.finditer(literal):
-                        added.add((m.group(1), m.group(2)))
-                for name in _called_names(fn):
-                    helper = module_functions.get(name)
-                    if (
-                        helper is not None
-                        and helper.name not in visited
-                    ):
-                        queue.append(helper)
+            for literal in _method_sql_literals(item):
+                for m in _ADD_COLUMN_RE.finditer(literal):
+                    added.add((m.group(1), m.group(2)))
+            for name in _called_names(item):
+                helper = module_functions.get(name)
+                if helper is not None:
+                    for literal in _method_sql_literals(helper):
+                        for m in _ADD_COLUMN_RE.finditer(literal):
+                            added.add((m.group(1), m.group(2)))
     return added
 
 

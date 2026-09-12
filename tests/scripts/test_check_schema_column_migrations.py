@@ -854,6 +854,36 @@ class GadgetStore:
         violations = guard_mod.find_violations(path, "origin/dev")
         assert [(v.table, v.column) for v in violations] == [("gadgets", "kind")]
 
+    def test_nested_def_call_does_not_silence(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        body = '''
+async def _migration_v99_add_kind(conn) -> None:
+    existing_cols = {row[1] for row in await conn.execute("PRAGMA table_info(gadgets)")}
+    if "kind" not in existing_cols:
+        await conn.execute("ALTER TABLE gadgets ADD COLUMN kind TEXT")
+
+
+class GadgetStore:
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS gadgets (
+        id   TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT ''
+    );
+    """
+
+    async def _post_init(self) -> None:
+        async def _never_called():
+            await _migration_v99_add_kind(self._db)
+        return None
+'''
+        path = _write_store(tmp_path, "nested_def_call.py", body)
+        monkeypatch.setattr(
+            guard_mod, "_baseline_columns", lambda p, ref: {"gadgets": {"id"}}
+        )
+        violations = guard_mod.find_violations(path, "origin/dev")
+        assert [(v.table, v.column) for v in violations] == [("gadgets", "kind")]
+
     def test_real_alter_in_the_method_body_still_silences(
         self, guard_mod, tmp_path: Path, monkeypatch
     ) -> None:
@@ -1091,8 +1121,8 @@ class GadgetStore:
     """
 
     async def _post_init(self) -> None:
-        # Deliberately does NOT call _migration_v99_add_kind.
-        pass
+        def _never_called():
+            await _migration_v99_add_kind(self._db)
 '''
         path = _write_store(tmp_path, "uncalled_helper.py", body)
         self._baseline(guard_mod, monkeypatch, {"uncalled_helper.py": {"gadgets": {"id"}}})
