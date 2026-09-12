@@ -422,6 +422,49 @@ class TestWorkerDrain:
         )
         assert lease is None
 
+    async def test_restore_lease_expiry_refuses_to_clobber_a_newer_renewal(self):
+        """A rollback must not undo a renewal that landed in the meantime.
+
+        `gpu_renew` posts to the bus outside `_lease_lock`, so another renewal
+        can extend the lease while the first one's post is in flight. The
+        rollback is therefore a compare-and-set on the expiry THIS caller
+        attempted (Kilo/CR review of #2988).
+        """
+        mgr = ClusterManager()
+        await mgr.register_worker(_make_worker("gpu-box", url="http://gpu-box:9000"))
+        mgr.get_worker("gpu-box").free_vram_mb = 8000
+        lease = await mgr.claim_lease(
+            resource_id="gpu-box:gpu-cuda-0", caller="a2a:@peer", ttl_seconds=300
+        )
+        assert lease is not None
+        previous = lease.expires_at
+
+        ours = await mgr.renew_lease(lease.lease_id, ttl_seconds=600)
+        attempted = ours.expires_at
+        # Another renewal moves the expiry on while our bus post is in flight.
+        later = await mgr.renew_lease(lease.lease_id, ttl_seconds=900)
+        assert later.expires_at > attempted
+
+        restored = await mgr.restore_lease_expiry(
+            lease.lease_id, previous, attempted_expiry=attempted
+        )
+        assert restored is False
+        assert mgr.get_leases()[0].expires_at == later.expires_at
+
+        # With nothing superseding us, the rollback applies.
+        restored = await mgr.restore_lease_expiry(
+            lease.lease_id, previous, attempted_expiry=later.expires_at
+        )
+        assert restored is True
+        assert mgr.get_leases()[0].expires_at == previous
+
+        # A lease that is gone needs no restore.
+        await mgr.release_lease(lease.lease_id)
+        restored = await mgr.restore_lease_expiry(
+            lease.lease_id, previous, attempted_expiry=previous
+        )
+        assert restored is False
+
     # ── Worker-initiated drain (taOS #890 C2) ──────────────────────────
 
     async def test_heartbeat_status_draining_triggers_worker_self_drain(self):

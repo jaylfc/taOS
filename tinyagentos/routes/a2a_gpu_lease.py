@@ -845,6 +845,7 @@ async def gpu_renew(request: Request, body: RenewBody):
     # the node as free, which is the co-load this surface exists to prevent.
     # The repost is the claim line shape, so the fold replaces the previous
     # claim (same node + identity) rather than double-counting it.
+    attempted_expiry = lease.expires_at
     node, _, _resource = (lease.resource_id or "").partition(":")
     hold = await _claim_holder_actor(request, lease, actor)
     # The channel is an input to the CLAIM, never to its renewal: refreshing
@@ -870,11 +871,18 @@ async def gpu_renew(request: Request, body: RenewBody):
             # extension and report it, rather than hold a reservation nobody
             # else can see.
             refresh_error = "a2a bus unavailable"
-            if not await cluster.restore_lease_expiry(lease.lease_id, previous_expiry):
-                refresh_error = "a2a bus unavailable; lease already expired"
+            restored = await cluster.restore_lease_expiry(
+                lease.lease_id, previous_expiry, attempted_expiry=attempted_expiry
+            )
+            if not restored:
+                # The lease went away, or another renewal landed while this
+                # one's bus post was in flight: that newer expiry stands.
+                refresh_error = "a2a bus unavailable; a newer renewal stands"
             logger.warning(
-                "A2A GPU lease %s renewal rolled back: claim repost failed (channel=%s)",
+                "A2A GPU lease %s keep-alive rolled back (restored=%s): "
+                "claim repost failed (channel=%s)",
                 lease.lease_id,
+                restored,
                 channel,
             )
     return {
