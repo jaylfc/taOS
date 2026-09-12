@@ -11,8 +11,11 @@
 
 ## Kernel
 
-Use **vendor** branch. Same rationale as Orange Pi 5 Plus — RKNN NPU requires
-vendor kernel.
+Use **vendor** branch. Same rationale as Orange Pi 5 Plus — rkllama requires
+the vendor RKNPU2 runtime. A mainline RK3588 NPU driver (rocket) exists as of
+2025-07-28 (source: blog.tomeuvizoso.net), but uses a different userspace stack
+(Mesa Teflon). Whether rkllama runs on the mainline driver remains an open
+question.
 
 ## Build Command
 

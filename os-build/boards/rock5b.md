@@ -11,7 +11,10 @@
 
 ## Kernel
 
-Use **vendor** branch for NPU support.
+Use **vendor** branch for rkllama, which requires the vendor RKNPU2 runtime.
+A mainline RK3588 NPU driver (rocket) was merged in 2025-07-28 (source:
+blog.tomeuvizoso.net), but uses a different userspace stack (Mesa Teflon).
+Whether rkllama runs on the mainline driver is currently unverified.
 
 ## Build Command
 

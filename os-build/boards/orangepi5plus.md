@@ -13,8 +13,9 @@
 
 ## Kernel
 
-Use **vendor** branch for full NPU and GPU support via the Rockchip BSP kernel.
-Mainline kernel lacks RKNN NPU drivers.
+Use **vendor** branch for rkllama, which requires the vendor RKNPU2 runtime.
+
+A mainline RK3588 NPU driver (rocket) was merged in 2025-07-28 (source: blog.tomeuvizoso.net), but it uses a different userspace stack (Mesa Teflon) than rkllama's vendor RKNPU2 stack. Whether rkllama runs on the mainline driver is currently unverified.
 
 ## Build Command
 
