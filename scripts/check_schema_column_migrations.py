@@ -129,7 +129,8 @@ class Violation:
     def __str__(self) -> str:
         fix = (
             "add a guarded _post_init coroutine that ALTERs this column "
-            "into place after a PRAGMA table_info check"
+            "into place after a PRAGMA table_info check, either inline "
+            "or via a module-level helper that _post_init calls"
         )
         return (
             f"{self.path}: table '{self.table}', column '{self.column}' "
@@ -449,8 +450,40 @@ def _post_init_added_columns(tree: ast.AST) -> set[tuple[str, str]]:
     SQL is read out of the AST's string constants rather than out of stripped
     source text, so ``#`` inside a SQL literal cannot chop the statement and a
     triple-quoted SQL literal is not mistaken for a docstring.
+
+    A single hop of same-file call indirection is followed: if ``_post_init``
+    calls a module-level ``FunctionDef``/``AsyncFunctionDef`` by plain name
+    (e.g. ``await _migration_v1_add_status(self._db)``), that helper's SQL
+    literals are collected too. Calls inside nested ``def``/``class``/``lambda``
+    bodies are not followed: a never-executed helper defined inside
+    ``_post_init`` must not be able to silence a violation with an ALTER it
+    never executes.
     """
     added: set[tuple[str, str]] = set()
+    module_functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module):
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    module_functions[item.name] = item
+
+    def _called_names(fn: ast.AST) -> set[str]:
+        names: set[str] = set()
+
+        def _descend(node: ast.AST) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(
+                    child,
+                    (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+                ):
+                    continue
+                if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
+                    names.add(child.func.id)
+                _descend(child)
+
+        _descend(fn)
+        return names
+
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
@@ -462,6 +495,12 @@ def _post_init_added_columns(tree: ast.AST) -> set[tuple[str, str]]:
             for literal in _method_sql_literals(item):
                 for m in _ADD_COLUMN_RE.finditer(literal):
                     added.add((m.group(1), m.group(2)))
+            for name in _called_names(item):
+                helper = module_functions.get(name)
+                if helper is not None:
+                    for literal in _method_sql_literals(helper):
+                        for m in _ADD_COLUMN_RE.finditer(literal):
+                            added.add((m.group(1), m.group(2)))
     return added
 
 
