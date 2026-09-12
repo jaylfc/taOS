@@ -842,3 +842,45 @@ class TestDeriveOsHandleHarnessFallback:
         claude_handle = _derive_os_handle("🎉", "claude", "beta")
         gemini_handle = _derive_os_handle("🎉", "gemini", "beta")
         assert claude_handle != gemini_handle
+
+
+class TestDeriveHandleDedup:
+    """#2093: the label already containing the project name caused double-redeem.
+
+    ``_derive_handle`` must not prepend a component that is already present in
+    the slugified label."""
+
+    def test_label_starts_with_project_slug(self):
+        from tinyagentos.routes.project_invites import _derive_handle
+
+        # taosmobile + claude + taosmobile-dev → taosmobile-claude-dev
+        handle = _derive_handle("taosmobile", "claude", "taosmobile-dev")
+        assert handle == "taosmobile-claude-dev"
+
+    def test_label_equals_project_slug(self):
+        from tinyagentos.routes.project_invites import _derive_handle
+
+        # taosmobile + claude + taosmobile → taosmobile-claude (label stripped)
+        handle = _derive_handle("taosmobile", "claude", "taosmobile")
+        assert handle == "taosmobile-claude"
+
+    def test_label_starts_with_harness(self):
+        from tinyagentos.routes.project_invites import _derive_handle
+
+        # claude + label "claude-code-dev" → must not become "proj-claude-claude-code-dev"
+        handle = _derive_handle("myproj", "claude", "claude-code-dev")
+        assert handle == "myproj-claude-code-dev"
+
+    def test_label_equals_harness(self):
+        from tinyagentos.routes.project_invites import _derive_handle
+
+        # proj + claude + claude → proj-claude (label stripped)
+        handle = _derive_handle("myproj", "claude", "claude")
+        assert handle == "myproj-claude"
+
+    def test_label_without_overlap_unchanged(self):
+        from tinyagentos.routes.project_invites import _derive_handle
+
+        # No overlap → label is appended verbatim (slugified).
+        handle = _derive_handle("taosmobile", "claude", "review-task")
+        assert handle == "taosmobile-claude-review-task"
