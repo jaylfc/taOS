@@ -122,19 +122,21 @@ class BaseStore:
                 return params_list[id_index]
             except sqlite3.IntegrityError as exc:
                 msg = str(exc)
+                # Only retry on UNIQUE constraint failures against the id
+                # column (the column we can regenerate via new_id_fn).  A
+                # collision on any other UNIQUE index (e.g. a compound key
+                # on non-id columns) cannot be resolved by retrying with a
+                # new id, so those IntegrityErrors propagate unchanged.
                 if (
                     "UNIQUE constraint failed:" in msg
+                    # The sqlite3 error message appends the column name;
+                    # ".id" catches every PRIMARY KEY / UNIQUE index whose
+                    # name ends in ".id".  This is deliberate: loosening
+                    # it would retry collisions we cannot fix, silently
+                    # masking data-integrity bugs.
                     and msg.rstrip().endswith(".id")
                 ):
-                    try:
-                        await self._db.rollback()
-                    except Exception:
-                        pass
                     params_list[id_index] = new_id_fn()
                     continue
                 raise
-        try:
-            await self._db.rollback()
-        except Exception:
-            pass
         raise sqlite3.IntegrityError("unique id collision after max retries")
