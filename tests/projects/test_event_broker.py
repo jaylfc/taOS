@@ -39,6 +39,30 @@ async def test_subscribe_with_last_event_id_skips_old():
 
 
 @pytest.mark.asyncio
+async def test_subscribe_with_last_event_id_crosses_ten():
+    broker = ProjectEventBroker()
+    for i in range(12):
+        await broker.publish("p1", ProjectEvent(kind="task.created", payload={"id": f"t{i}"}))
+    queue = await broker.subscribe("p1", last_event_id="9")
+    items = []
+    for _ in range(2):
+        items.append(await asyncio.wait_for(queue.get(), timeout=0.5))
+    assert [e.payload["id"] for e in items] == ["t10", "t11"]
+
+
+@pytest.mark.asyncio
+async def test_subscribe_with_malformed_last_event_id_replays_all():
+    broker = ProjectEventBroker()
+    for i in range(3):
+        await broker.publish("p1", ProjectEvent(kind="task.created", payload={"id": f"t{i}"}))
+    queue = await broker.subscribe("p1", last_event_id="not-a-number")
+    items = []
+    for _ in range(3):
+        items.append(await asyncio.wait_for(queue.get(), timeout=0.5))
+    assert [e.payload["id"] for e in items] == ["t0", "t1", "t2"]
+
+
+@pytest.mark.asyncio
 async def test_publish_many_events_queue_stays_bounded():
     broker = ProjectEventBroker()
     queue = await broker.subscribe("p1")

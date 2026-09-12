@@ -27,17 +27,24 @@ class ProjectEventBroker:
         self._queues: dict[str, list[asyncio.Queue[ProjectEvent]]] = {}
         self._replay: dict[str, deque[ProjectEvent]] = {}
         self._lock = asyncio.Lock()
+        self._queue_maxsize = 256
 
     async def subscribe(
         self,
         project_id: str,
         last_event_id: str | None = None,
     ) -> asyncio.Queue[ProjectEvent]:
-        queue: asyncio.Queue[ProjectEvent] = asyncio.Queue(maxsize=256)
+        queue: asyncio.Queue[ProjectEvent] = asyncio.Queue(maxsize=self._queue_maxsize)
         async with self._lock:
             self._queues.setdefault(project_id, []).append(queue)
+            last_id: int | None = None
+            if last_event_id is not None:
+                try:
+                    last_id = int(last_event_id)
+                except ValueError:
+                    last_id = None
             for ev in self._replay.get(project_id, ()):
-                if last_event_id is not None and ev.id is not None and ev.id <= last_event_id:
+                if last_id is not None and ev.id is not None and int(ev.id) <= last_id:
                     continue
                 try:
                     queue.put_nowait(ev)

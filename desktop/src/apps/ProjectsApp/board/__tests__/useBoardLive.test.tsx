@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useBoardLive } from "../useBoardLive";
 import { projectsApi } from "../../../../lib/projects";
@@ -35,5 +35,30 @@ describe("useBoardLive", () => {
       act(() => onOpen());
     }
     expect(result.current.connected).toBe(true);
+  });
+
+  it("sets connected=false when the SSE connection errors", async () => {
+    let capturedOnError: (() => void) | undefined;
+    vi.spyOn(projectsApi, "subscribeEvents").mockImplementation(
+      (_url: string, _onEvent: (e: unknown) => void, opts?: { onError?: () => void }) => {
+        capturedOnError = opts?.onError;
+        return () => {};
+      },
+    );
+
+    const { result } = renderHook(() => useBoardLive("p1", () => {}));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(capturedOnError).toBeDefined();
+
+    if (capturedOnError) {
+      await act(async () => {
+        capturedOnError();
+      });
+      expect(result.current.connected).toBe(false);
+    }
   });
 });
