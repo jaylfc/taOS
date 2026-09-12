@@ -129,7 +129,8 @@ class Violation:
     def __str__(self) -> str:
         fix = (
             "add a guarded _post_init coroutine that ALTERs this column "
-            "into place after a PRAGMA table_info check"
+            "into place after a PRAGMA table_info check, either inline "
+            "or via a module-level helper that _post_init calls"
         )
         return (
             f"{self.path}: table '{self.table}', column '{self.column}' "
@@ -449,8 +450,30 @@ def _post_init_added_columns(tree: ast.AST) -> set[tuple[str, str]]:
     SQL is read out of the AST's string constants rather than out of stripped
     source text, so ``#`` inside a SQL literal cannot chop the statement and a
     triple-quoted SQL literal is not mistaken for a docstring.
+
+    One level of same-file call indirection is also followed: if ``_post_init``
+    calls a module-level ``FunctionDef``/``AsyncFunctionDef`` by plain name
+    (e.g. ``await _migration_v1_add_status(self._db)``), that helper's SQL
+    literals are collected too. A visited set prevents cycles.
     """
     added: set[tuple[str, str]] = set()
+    module_functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module):
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    module_functions[item.name] = item
+
+    def _called_names(fn: ast.AST) -> set[str]:
+        names: set[str] = set()
+        for child in ast.walk(fn):
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+            ):
+                names.add(child.func.id)
+        return names
+
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
@@ -459,9 +482,23 @@ def _post_init_added_columns(tree: ast.AST) -> set[tuple[str, str]]:
                 continue
             if item.name != "_post_init":
                 continue
-            for literal in _method_sql_literals(item):
-                for m in _ADD_COLUMN_RE.finditer(literal):
-                    added.add((m.group(1), m.group(2)))
+            visited: set[str] = set()
+            queue = [item]
+            while queue:
+                fn = queue.pop(0)
+                if fn.name in visited:
+                    continue
+                visited.add(fn.name)
+                for literal in _method_sql_literals(fn):
+                    for m in _ADD_COLUMN_RE.finditer(literal):
+                        added.add((m.group(1), m.group(2)))
+                for name in _called_names(fn):
+                    helper = module_functions.get(name)
+                    if (
+                        helper is not None
+                        and helper.name not in visited
+                    ):
+                        queue.append(helper)
     return added
 
 

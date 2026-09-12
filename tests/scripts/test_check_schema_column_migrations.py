@@ -1036,3 +1036,130 @@ class Store:
         schemas = guard_mod._extract_schemas(ast.parse(src))
         assert len(schemas) == 1
         assert "CREATE TABLE shared" in schemas[0]
+
+
+class TestPostInitFollowsModuleHelpers:
+    """RED-FIRST: _post_init_added_columns must follow one level of same-file
+    module-level function calls.
+
+    Case (a) RED: SCHEMA gains a column, no ALTER anywhere -> violation.
+    Case (b) RED: ALTER in a module-level helper that _post_init does NOT call
+        -> violation (a helper merely existing in the file must not silence).
+    Case (c) GREEN: ALTER in a module-level helper that _post_init DOES call
+        -> clean (this is the agent_registry_store.py shape that was wrongly
+        red before the fix).
+    """
+
+    def _baseline(self, guard_mod, monkeypatch, baselines: dict) -> None:
+        monkeypatch.setattr(
+            guard_mod, "_baseline_columns", lambda p, ref: baselines.get(p.name, {})
+        )
+
+    def test_case_a_no_alter_anywhere_remains_red(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        body = '''
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS gadgets (
+    id   TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT ''
+);
+"""
+'''
+        path = _write_store(tmp_path, "no_alter.py", body)
+        self._baseline(guard_mod, monkeypatch, {"no_alter.py": {"gadgets": {"id"}}})
+        violations = guard_mod.find_violations(path, "origin/dev")
+        assert [(v.table, v.column) for v in violations] == [("gadgets", "kind")]
+
+    def test_case_b_helper_not_called_remains_red(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        body = '''
+async def _migration_v99_add_kind(conn) -> None:
+    """Module-level helper, but _post_init never calls it."""
+    existing_cols = {row[1] for row in await conn.execute("PRAGMA table_info(gadgets)")}
+    if "kind" not in existing_cols:
+        await conn.execute("ALTER TABLE gadgets ADD COLUMN kind TEXT")
+
+
+class GadgetStore:
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS gadgets (
+        id   TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT ''
+    );
+    """
+
+    async def _post_init(self) -> None:
+        # Deliberately does NOT call _migration_v99_add_kind.
+        pass
+'''
+        path = _write_store(tmp_path, "uncalled_helper.py", body)
+        self._baseline(guard_mod, monkeypatch, {"uncalled_helper.py": {"gadgets": {"id"}}})
+        violations = guard_mod.find_violations(path, "origin/dev")
+        assert [(v.table, v.column) for v in violations] == [("gadgets", "kind")]
+
+    def test_case_c_called_helper_goes_green(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Mirrors agent_registry_store.py: ALTER in a module-level helper
+        that _post_init DOES call."""
+        body = '''
+async def _migration_v99_add_kind(conn) -> None:
+    """Module-level helper called by _post_init."""
+    existing_cols = {row[1] for row in await conn.execute("PRAGMA table_info(gadgets)")}
+    if "kind" not in existing_cols:
+        await conn.execute("ALTER TABLE gadgets ADD COLUMN kind TEXT")
+
+
+class GadgetStore:
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS gadgets (
+        id   TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT ''
+    );
+    """
+
+    async def _post_init(self) -> None:
+        await _migration_v99_add_kind(self._db)
+'''
+        path = _write_store(tmp_path, "called_helper.py", body)
+        self._baseline(guard_mod, monkeypatch, {"called_helper.py": {"gadgets": {"id"}}})
+        assert guard_mod.find_violations(path, "origin/dev") == []
+
+    def test_recursive_helper_terminates(
+        self, guard_mod, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A helper that calls itself (or a cycle between two helpers) must not
+        recurse forever."""
+        body = '''
+async def _migration_v99_add_kind(conn) -> None:
+    await _migration_v99_add_kind(conn)
+
+
+class GadgetStore:
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS gadgets (
+        id   TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT ''
+    );
+    """
+
+    async def _post_init(self) -> None:
+        await _migration_v99_add_kind(self._db)
+'''
+        path = _write_store(tmp_path, "recursive_helper.py", body)
+        self._baseline(guard_mod, monkeypatch, {"recursive_helper.py": {"gadgets": {"id"}}})
+        violations = guard_mod.find_violations(path, "origin/dev")
+        assert [(v.table, v.column) for v in violations] == [("gadgets", "kind")]
+
+    def test_fix_message_names_both_shapes(self, guard_mod) -> None:
+        v = guard_mod.Violation(
+            path=Path("x.py"),
+            table="t",
+            column="c",
+            detail="new column 'c' in CREATE TABLE t",
+        )
+        msg = str(v)
+        assert "inline" in msg
+        assert "module-level helper" in msg
