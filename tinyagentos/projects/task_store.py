@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import time
-
-from typing import TYPE_CHECKING
+from enum import StrEnum
+from typing import TYPE_CHECKING, Literal
 
 from tinyagentos.projects.ids import new_id
 from tinyagentos.projects.strike_store import StrikeStore
@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 # Ancestor-walk depth cap for get_task_context — mirrors the cycle guard in
 # routes/projects.py's parent-chain check.
 _MAX_ANCESTRY_DEPTH = 50
+
+
+class TaskStatus(StrEnum):
+    OPEN = "open"
+    CLAIMED = "claimed"
+    CLOSED = "closed"
 
 TASK_SCHEMA = """
 CREATE TABLE IF NOT EXISTS project_tasks (
@@ -321,7 +327,7 @@ class ProjectTaskStore(ProjectsDBStore):
     async def list_tasks(
         self,
         project_id: str,
-        status: str | None = None,
+        status: TaskStatus | None = None,
         parent_task_id: str | None = None,
         element_id: str | None = None,
     ) -> list[dict]:
@@ -357,7 +363,7 @@ class ProjectTaskStore(ProjectsDBStore):
         body: str | None = None,
         priority: int | None = None,
         labels: list[str] | None = None,
-        status: str | None = None,
+        status: TaskStatus | None = None,
         assignee_id: str | None | object = _UNCHANGED,
         parent_task_id: str | None | object = _UNCHANGED,
         element_id: str | None | object = _UNCHANGED,
@@ -797,7 +803,7 @@ class ProjectTaskStore(ProjectsDBStore):
     async def list_relationships(
         self,
         task_id: str,
-        direction: str = "from",
+        direction: Literal["from", "to"] = "from",
     ) -> list[dict]:
         if direction not in ("from", "to"):
             raise ValueError(f"invalid direction: {direction}")
