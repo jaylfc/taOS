@@ -219,49 +219,41 @@ class PdfProcessor(Processor):
             return artifacts
 
         pdf_meta = {"page_count": 0, "has_text": False}
+        from pypdf import PdfReader
+        reader = PdfReader(str(p))
+        pdf_meta["page_count"] = len(reader.pages)
 
-        # Try extracting text with PyPDF2 / pypdf if available
-        try:
-            from pypdf import PdfReader
-            reader = PdfReader(str(p))
-            pdf_meta["page_count"] = len(reader.pages)
+        # Extract text from all pages
+        pages_text: list[str] = []
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                pages_text.append(page_text)
 
-            # Extract text from all pages
-            pages_text: list[str] = []
-            for page in reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    pages_text.append(page_text)
+        if pages_text:
+            text_content = "\n\n".join(pages_text)
+            pdf_meta["has_text"] = True
+            pdf_meta["char_count"] = len(text_content)
 
-            if pages_text:
-                text_content = "\n\n".join(pages_text)
-                pdf_meta["has_text"] = True
-                pdf_meta["char_count"] = len(text_content)
+            text_dir = self.storage_dir / "text"
+            text_dir.mkdir(parents=True, exist_ok=True)
+            text_path = text_dir / f"{item_id}_pdf.txt"
+            text_path.write_text(text_content, encoding="utf-8")
 
-                text_dir = self.storage_dir / "text"
-                text_dir.mkdir(parents=True, exist_ok=True)
-                text_path = text_dir / f"{item_id}_pdf.txt"
-                text_path.write_text(text_content, encoding="utf-8")
+            await self.store.add_artifact(
+                item_id, kind="text", path=str(text_path),
+                meta={"char_count": len(text_content), "pages": len(reader.pages)},
+            )
+            artifacts.append({
+                "kind": "text", "path": str(text_path),
+                "meta": {"char_count": len(text_content), "pages": len(reader.pages)},
+            })
 
-                await self.store.add_artifact(
-                    item_id, kind="text", path=str(text_path),
-                    meta={"char_count": len(text_content), "pages": len(reader.pages)},
-                )
-                artifacts.append({
-                    "kind": "text", "path": str(text_path),
-                    "meta": {"char_count": len(text_content), "pages": len(reader.pages)},
-                })
-
-                # Update item with preview
-                preview = text_content[:200]
-                meta = json.loads(item.get("meta_json", "{}"))
-                meta["preview"] = preview
-                await self.store.update_item(item_id, meta_json=meta)
-        except ImportError:
-            logger.debug("pypdf not installed — PDF text extraction skipped")
-        except Exception:
-            logger.warning("PDF text extraction failed for %s", storage_path,
-                           exc_info=True)
+            # Update item with preview
+            preview = text_content[:200]
+            meta = json.loads(item.get("meta_json", "{}"))
+            meta["preview"] = preview
+            await self.store.update_item(item_id, meta_json=meta)
 
         await self.store.add_artifact(
             item_id, kind="metadata", path="", meta=pdf_meta

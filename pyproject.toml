@@ -26,6 +26,7 @@ dependencies = [
     "tenacity>=9.1.4",
     "jinja2>=3.1.0",
     "pyyaml>=6.0",
+    "pypdf>=6.17",
     "aiosqlite>=0.20.0",
     "argon2-cffi>=23.1.0",
     "sqlcipher3>=0.6.2",
