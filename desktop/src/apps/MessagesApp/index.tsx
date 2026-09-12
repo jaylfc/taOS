@@ -14,6 +14,7 @@ import {
   Loader2,
   Check,
   Clock,
+  Play,
   Sparkles,
 } from "lucide-react";
 import {
@@ -74,6 +75,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { SearchPanel } from "../chat/SearchPanel";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
+import { ConnectWizard } from "../chat/ConnectWizard";
 import { A2aBusMessageView, useBusChannels } from "../chat/A2aBusPanel";
 import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
 import { useDecisionEventsStore } from "@/stores/decision-events-store";
@@ -914,6 +916,7 @@ export function MessagesApp({
   const [newChannel, setNewChannel] = useState({ name: "", type: "topic" as "topic" | "group", description: "" });
   const [prefillBanner, setPrefillBanner] = useState<{ promptName: string; agentName?: string } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showConnectWizard, setShowConnectWizard] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ slug: string; x: number; y: number } | null>(null);
   const [agentInfoPopover, setAgentInfoPopover] = useState<
     { slug: string; framework: string; model: string; status: string; x: number; y: number } | null
@@ -2170,9 +2173,15 @@ export function MessagesApp({
           <div className="text-center px-6">
             <MessageCircle size={48} className="mx-auto mb-3 opacity-30" />
             <p className="text-sm mb-3">Pick a channel or start a DM</p>
-            <Button variant="outline" size="sm" onClick={() => setShowCreate(true)}>
-              New channel
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => setShowCreate(true)}>
+                New channel
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setShowConnectWizard(true)}>
+                <Play size={14} className="mr-1" aria-hidden="true" />
+                Connect session
+              </Button>
+            </div>
           </div>
         </div>
       ) : (
@@ -2801,6 +2810,9 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
           </div>
         )
       )}
+
+      {/* ---- Connect Session Wizard ---- */}
+      <ConnectWizard open={showConnectWizard} onClose={() => setShowConnectWizard(false)} />
     </div>
   );
 }
