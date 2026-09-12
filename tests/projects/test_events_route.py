@@ -103,3 +103,20 @@ async def test_sse_heartbeat(app, client):
 
     heartbeat_lines = [l for l in lines if l.startswith(":")]
     assert heartbeat_lines, f"No heartbeat lines received; got: {lines}"
+
+
+@pytest.mark.asyncio
+async def test_sse_emits_event_id(app, client):
+    pid = (await client.post("/api/projects", json={"name": "P2", "slug": "p2"})).json()["id"]
+
+    await app.state.project_event_broker.publish(
+        pid, ProjectEvent(kind="task.created", payload={"id": "t1"})
+    )
+
+    cookies = {"taos_session": client.cookies.get("taos_session", "")}
+    lines = await _collect_sse_lines(
+        app, f"/api/projects/{pid}/events", cookies, n_lines=5, timeout=5.0
+    )
+
+    id_lines = [l for l in lines if l.startswith("id:")]
+    assert id_lines, f"No id: lines received; got: {lines}"

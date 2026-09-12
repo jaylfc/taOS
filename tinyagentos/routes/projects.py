@@ -1629,7 +1629,8 @@ async def project_events(
     if isinstance(project_or_err, JSONResponse):
         return project_or_err
     broker = request.app.state.project_event_broker
-    queue = await broker.subscribe(project_id)
+    last_event_id = request.headers.get("last-event-id")
+    queue = await broker.subscribe(project_id, last_event_id=last_event_id)
 
     async def event_stream():
         try:
@@ -1639,7 +1640,11 @@ async def project_events(
                 try:
                     ev = await _asyncio.wait_for(queue.get(), timeout=15.0)
                     payload = {"kind": ev.kind, "payload": ev.payload, "ts": ev.ts}
-                    yield f"data: {_json.dumps(payload)}\n\n"
+                    lines = [f"data: {_json.dumps(payload)}"]
+                    if ev.id is not None:
+                        lines.append(f"id: {ev.id}")
+                    lines.append("")
+                    yield "\n".join(lines) + "\n"
                 except _asyncio.TimeoutError:
                     yield ": heartbeat\n\n"
         finally:
