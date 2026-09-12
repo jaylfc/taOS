@@ -35,7 +35,29 @@ for (const pwa of PWA_PATHS) {
       await page.goto(pwa.url);
       await waitForSWReady(page);
       const cacheNames = await page.evaluate(() => caches.keys());
-      expect(cacheNames.some((n) => n.startsWith("taos-static-"))).toBe(true);
+      // TEMPORARY DIAGNOSTIC (tsk-vg54cy) - remove before this PR leaves draft.
+      const diag = await page.evaluate(async () => {
+        const reg = await navigator.serviceWorker.getRegistration();
+        const probe = await fetch("/sw.js").then(
+          (r) => `${r.status} ${r.headers.get("content-type")}`,
+          (e) => `threw ${e}`,
+        );
+        const based = await fetch("/desktop/sw.js").then(
+          (r) => `${r.status} ${r.headers.get("content-type")}`,
+          (e) => `threw ${e}`,
+        );
+        return {
+          caches: await caches.keys(),
+          scope: reg?.scope ?? null,
+          scriptURL: reg?.active?.scriptURL ?? null,
+          rootSwJs: probe,
+          basedSwJs: based,
+        };
+      });
+      expect(
+        cacheNames.some((n) => n.startsWith("taos-static-")),
+        `DIAG ${JSON.stringify(diag)}`,
+      ).toBe(true);
     });
 
     test(`shows BackendBanner when /api/health is unreachable (${pwa.url})`, async ({ page }) => {
