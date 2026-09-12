@@ -1,0 +1,3 @@
+### Fixed
+- Installer post-install hardware self-check now authenticates with the local admin token (`data/.auth_local_token`) instead of silently skipping on 401; a missing token now fails loud with a clear error instead of reading as pass (same cannot-see-reads-as-pass class as the bot-review-gate defect)
+- Hardware detection now distinguishes microSD (`sd`) from eMMC (`emmc`) on mmcblk devices by checking for eMMC boot partitions (`mmcblkXboot0`, `mmcblkXrpmb`) and the sysfs device type attribute

@@ -2566,6 +2566,25 @@ verify_hardware_capabilities() {
     local claimed_vulkan=0 claimed_cuda=0 claimed_rocm=0 claimed_rknpu=0 claimed_mlx=0
     local verified_ok=0 verified_warn=0
 
+    # Read the local auth token for controller API access. The token file is
+    # created at first boot by the controller (see tinyagentos/auth.py:get_local_token)
+    # and is the same-host trust anchor for scripts/CLI. If it doesn't exist yet,
+    # the controller is in a pre-admin state and cannot authenticate us -- we must
+    # fail loud rather than silently skipping (taOS #2 class: cannot-see-reads-as-pass).
+    local local_token_path="$INSTALL_DIR/data/.auth_local_token"
+    local local_token=""
+    if [[ -r "$local_token_path" ]]; then
+        local_token=$(cat "$local_token_path" 2>/dev/null || true)
+    fi
+    if [[ -z "$local_token" ]]; then
+        warn "local auth token not found at $local_token_path"
+        warn "  the controller has not yet minted its local token (pre-admin state)"
+        warn "  hardware capability verification requires authenticated API access"
+        warn "  this is a fresh-install blocker -- the controller must complete first-boot"
+        warn "  init (litellm prisma migration, store creation) before verification runs"
+        die "hardware verification cannot proceed without local auth token"
+    fi
+
     # Fetch the hardware profile from the now-running controller. POST is the
     # only method the route accepts; a GET gets 405 and looks like "empty".
     # Retry for up to 30 s so the controller can finish first-boot init
@@ -2578,6 +2597,7 @@ verify_hardware_capabilities() {
         [[ $_remaining -le 0 ]] && break
         _curl_timeout=$(( _remaining > 1 ? _remaining : 1 ))
         hw_json=$(curl -sf --max-time "$_curl_timeout" -X POST \
+            -H "Authorization: Bearer $local_token" \
             "http://localhost:$TAOS_PORT/api/system/hardware/refresh" 2>/dev/null || true)
         [[ -n "$hw_json" ]] && break
         _remaining=$(( _hw_deadline - SECONDS ))

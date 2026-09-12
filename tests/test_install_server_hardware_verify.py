@@ -52,6 +52,13 @@ def _extract_verify_function() -> str:
 
 
 def _write_wrapper(tmp_path: Path, curl_body: str, function_body: str) -> Path:
+    # Create a mock INSTALL_DIR with a local token file
+    install_dir = tmp_path / "mock_install"
+    install_dir.mkdir()
+    data_dir = install_dir / "data"
+    data_dir.mkdir()
+    (data_dir / ".auth_local_token").write_text("mock-token-12345")
+    
     wrapper = tmp_path / "wrapper.sh"
     wrapper.write_text(
         "#!/usr/bin/env bash\n"
@@ -60,6 +67,7 @@ def _write_wrapper(tmp_path: Path, curl_body: str, function_body: str) -> Path:
         "warn() { printf '[server-install] %s\\n' \"$*\" >&2; }\n"
         "die()  { printf '[server-install] %s\\n' \"$*\" >&2; exit 1; }\n"
         f"curl() {{\n{curl_body}\n}}\n"
+        f"INSTALL_DIR=\"{install_dir}\"\n"
         "TAOS_PORT=\"$TAOS_PORT\"\n"
         "os_name=\"$os_name\"\n"
         "HW_PROFILE_ID=\"${HW_PROFILE_ID:-unknown}\"\n"

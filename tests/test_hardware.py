@@ -283,3 +283,112 @@ class TestWslDetection:
         assert "8GB" in prof.mem_note
         # ram_mb itself is left untouched (8GB really is what the VM has)
         assert prof.ram_mb == 8192
+
+
+class TestDiskTypeDetection:
+    """Test _detect_disk correctly distinguishes eMMC vs microSD on mmcblk."""
+
+    def test_mmcblk_with_boot_partitions_is_emmc(self, monkeypatch, tmp_path):
+        """mmcblk with boot0/rpmb partitions -> eMMC."""
+        # Stub lsblk to return mmcblk0
+        monkeypatch.setattr(
+            "tinyagentos.hardware._run",
+            lambda *a, **k: "mmcblk0 1 mmc\n" if "lsblk" in a[0] else "",
+        )
+        # Stub Path.exists for boot partitions
+        real_exists = Path.exists
+        def fake_exists(self):
+            s = str(self)
+            if s.endswith("/sys/block/mmcblkboot0") or s.endswith("/sys/block/mmcblkrpmb"):
+                return True
+            if s.endswith("/sys/block/mmcblk0"):
+                return True
+            return real_exists(self)
+        monkeypatch.setattr(Path, "exists", fake_exists)
+        # Stub disk_usage
+        import shutil as sh
+        real_disk_usage = sh.disk_usage
+        def fake_disk_usage(path):
+            class DU:
+                total = 32 * (1024**3)
+                free = 16 * (1024**3)
+            return DU()
+        monkeypatch.setattr(sh, "disk_usage", fake_disk_usage)
+
+        from tinyagentos.hardware import _detect_disk
+        disk = _detect_disk()
+        assert disk.type == "emmc"
+
+    def test_mmcblk_without_boot_partitions_is_sd(self, monkeypatch, tmp_path):
+        """mmcblk without boot partitions -> sd (microSD)."""
+        monkeypatch.setattr(
+            "tinyagentos.hardware._run",
+            lambda *a, **k: "mmcblk0 1 mmc\n" if "lsblk" in a[0] else "",
+        )
+        real_exists = Path.exists
+        def fake_exists(self):
+            s = str(self)
+            # No boot0 or rpmb
+            if s.endswith("/sys/block/mmcblkboot0") or s.endswith("/sys/block/mmcblkrpmb"):
+                return False
+            if s.endswith("/sys/block/mmcblk0"):
+                return True
+            return real_exists(self)
+        monkeypatch.setattr(Path, "exists", fake_exists)
+        # Also stub the sysfs type file to return "SD"
+        real_read_text = Path.read_text
+        def fake_read_text(self, *args, **kwargs):
+            if str(self) == "/sys/block/mmcblk0/device/type":
+                return "SD\n"
+            return real_read_text(self, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+        import shutil as sh
+        real_disk_usage = sh.disk_usage
+        def fake_disk_usage(path):
+            class DU:
+                total = 32 * (1024**3)
+                free = 16 * (1024**3)
+            return DU()
+        monkeypatch.setattr(sh, "disk_usage", fake_disk_usage)
+
+        from tinyagentos.hardware import _detect_disk
+        disk = _detect_disk()
+        assert disk.type == "sd"
+
+    def test_mmcblk_sysfs_type_mmc_is_emmc(self, monkeypatch):
+        """mmcblk with sysfs type=MMC -> emmc (fallback when no boot partitions)."""
+        monkeypatch.setattr(
+            "tinyagentos.hardware._run",
+            lambda *a, **k: "mmcblk0 1 mmc\n" if "lsblk" in a[0] else "",
+        )
+        real_exists = Path.exists
+        def fake_exists(self):
+            s = str(self)
+            # No boot partitions
+            if "boot0" in s or "rpmb" in s:
+                return False
+            if s.endswith("/sys/block/mmcblk0"):
+                return True
+            if s.endswith("/sys/block/mmcblk0/device/type"):
+                return True
+            return real_exists(self)
+        monkeypatch.setattr(Path, "exists", fake_exists)
+        real_read_text = Path.read_text
+        def fake_read_text(self, *args, **kwargs):
+            if str(self) == "/sys/block/mmcblk0/device/type":
+                return "MMC\n"
+            return real_read_text(self, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+        import shutil as sh
+        def fake_disk_usage(path):
+            class DU:
+                total = 32 * (1024**3)
+                free = 16 * (1024**3)
+            return DU()
+        monkeypatch.setattr(sh, "disk_usage", fake_disk_usage)
+
+        from tinyagentos.hardware import _detect_disk
+        disk = _detect_disk()
+        assert disk.type == "emmc"
