@@ -712,11 +712,34 @@ npm run test               # vitest (unit/component tests)
 npm run test:e2e           # Playwright browser tests (starts vite itself)
 ```
 
-`test:e2e` needs no backend: every spec `page.route()`-mocks the API it talks to,
-and `playwright.config.ts` starts `npm run dev` on :5173 as its `webServer`. It
-does need the browser binary, and that browser is **webkit**, not chromium: the
-config declares one project, `iphone-14`, built from `devices["iPhone 14"]`,
-whose `defaultBrowserType` is `webkit`. Install it once with
+`test:e2e` with no `E2E_BASE_URL` starts its own vite server
+(`npm run build && npm run preview` on :5173) and runs the specs against it.
+That is enough for the specs that `page.route()`-mock the API, and NOT enough
+for the rest: `canvas-e2e` and `projects-mobile` POST `/api/projects` for real,
+and `sw-and-reconnect` needs `/sw.js` at the ROOT, which only the backend
+serves (`tinyagentos/routes/desktop.py`) because vite's base is `/desktop/`.
+
+To run the whole suite, start a real backend and point the suite at it:
+
+```bash
+uvicorn --factory tinyagentos.app:create_app --host 127.0.0.1 --port 6969
+cd desktop && npm run build          # the desktop routes serve static/desktop from disk
+E2E_BASE_URL=http://127.0.0.1:6969 npx playwright test
+```
+
+With `E2E_BASE_URL` set, `playwright.config.ts` leaves `webServer` undefined --
+the server is already up and is not the suite's to manage.
+
+A backend with **no account** serves the zero-user setup wizard at `/desktop/`,
+so `App.tsx` never mounts and anything inside the desktop shell is untested.
+The `desktop-e2e` CI job onboards a throwaway first user via `/auth/setup` and
+hands Playwright the session cookie as a storage state (`E2E_STORAGE_STATE`).
+Do the same locally, or expect those specs to fail on a 401.
+
+The suite also needs the browser binary, and that browser is **webkit**, not
+chromium: the config declares one project, `iphone-14`, built from
+`devices["iPhone 14"]`, whose `defaultBrowserType` is `webkit`. Install it once
+with
 
 ```bash
 cd desktop && npx playwright install --with-deps webkit

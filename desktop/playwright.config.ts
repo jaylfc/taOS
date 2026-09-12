@@ -15,6 +15,13 @@ import { defineConfig, devices } from "@playwright/test";
 // do not talk to one.
 const BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:5173";
 
+// The CI job onboards the first user against the backend it just started and
+// writes that session cookie out as a Playwright storage state. Without it
+// /desktop/ renders the zero-user setup wizard rather than the desktop shell,
+// and POST /api/projects answers 401. Unset locally, so `npm run test:e2e`
+// still runs signed out.
+const STORAGE_STATE = process.env.E2E_STORAGE_STATE || undefined;
+
 export default defineConfig({
   testDir: "./tests",
   testMatch: "**/*.spec.ts",
@@ -25,6 +32,7 @@ export default defineConfig({
   reporter: "html",
   use: {
     baseURL: BASE_URL,
+    storageState: STORAGE_STATE,
     trace: "on-first-retry",
   },
   projects: [

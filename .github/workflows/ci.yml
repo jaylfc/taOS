@@ -378,9 +378,60 @@ jobs:
           done
           echo "::error::backend never became healthy"; tail -50 backend.log; exit 1
 
+      # The canvas and projects-mobile specs POST /api/projects, which is not in
+      # auth_middleware.EXEMPT_PATHS, so an unauthenticated backend answers 401
+      # and three of the 24 tests cannot pass. It is not only those three: a
+      # diagnostic run on this branch dumped document.body.innerText on
+      # /desktop/ and got "Welcome to taOS -- Set up your account", i.e. the
+      # zero-user setup wizard. App.tsx never mounts, so nothing that lives
+      # inside the desktop shell is under test either.
+      #
+      # /auth/setup onboards the FIRST user, which a fresh CI backend always
+      # needs, and is exempt from the auth middleware and from CSRF
+      # (middleware/csrf.py _CREDENTIAL_PATHS). create_project depends on
+      # current_user only -- no verify_csrf -- so the session cookie alone
+      # authorises it.
+      #
+      # This step FAILS the job rather than degrading: a suite that silently
+      # ran unauthenticated would report the same red with a different cause
+      # and cost another round to find.
+      - name: Seed an authenticated session
+        run: |
+          set -euo pipefail
+          jar="$(mktemp)"
+          out="$(mktemp)"
+          # Generated per run rather than written into the workflow: the
+          # account is thrown away with the runner, and a literal password in
+          # a public repo reads as a credential whether or not it is one.
+          pw="$(openssl rand -hex 16)"
+          code=$(PW="$pw" python3 -c 'import json, os, sys; json.dump({"username": "e2e", "full_name": "E2E Runner", "email": "e2e@example.invalid", "password": os.environ["PW"], "auto_login": True}, sys.stdout)' \
+            | curl -sS -o "$out" -w '%{http_code}' -c "$jar" \
+              -H 'Content-Type: application/json' --data-binary @- \
+              http://127.0.0.1:6969/auth/setup)
+          if [ "$code" != "200" ]; then
+            echo "::error::/auth/setup returned $code"; cat "$out"; exit 1
+          fi
+          token=$(awk '$6 == "taos_session" { print $7 }' "$jar")
+          if [ -z "$token" ]; then
+            echo "::error::/auth/setup set no taos_session cookie"; cat "$jar"; exit 1
+          fi
+          TOKEN="$token" python3 -c 'import json, os, sys; json.dump({"cookies": [{"name": "taos_session", "value": os.environ["TOKEN"], "domain": "127.0.0.1", "path": "/", "expires": -1, "httpOnly": True, "secure": False, "sameSite": "Strict"}], "origins": []}, sys.stdout)' > "$RUNNER_TEMP/e2e-storage-state.json"
+          # Prove the seeded session authorises the exact call the three specs
+          # make, here, where a failure is one line instead of three red tests.
+          probe=$(curl -sS -o "$out" -w '%{http_code}' -b "$jar" \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"e2e auth probe"}' \
+            http://127.0.0.1:6969/api/projects)
+          case "$probe" in
+            2*) echo "seeded session authorised POST /api/projects ($probe)" ;;
+            *) echo "::error::seeded session failed POST /api/projects ($probe)"; cat "$out"; exit 1 ;;
+          esac
+
       - name: Run Playwright e2e
+        timeout-minutes: 20
         env:
           E2E_BASE_URL: http://127.0.0.1:6969
+          E2E_STORAGE_STATE: ${{ runner.temp }}/e2e-storage-state.json
         run: |
           cd desktop
           npx playwright test --reporter=list
