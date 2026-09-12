@@ -729,6 +729,43 @@ async def test_device_bearer_delegation_gate_refused(client, app):
 
 
 @pytest.mark.asyncio
+async def test_device_bearer_collab_delegation_gate_refused(client, app):
+    """A device bearer must not approve a collab_delegation_gate decision.
+
+    This is the D1 cross-user delegation card: approving it mints a sponsored
+    project invite that grants a remote agent the default scope tier.  It is a
+    privileged grant, so the phone (a notification surface, not an approval
+    channel) must get a 409 — the same invariant that guards execution_gate,
+    delegation_gate and app_grant.  If ``collab_delegation_gate`` ever falls out
+    of GATE_DECISION_KINDS again this test returns 200 instead of 409, so it is
+    coverage against a re-drift, not a tautology."""
+    admin_uid = _admin_uid(app)
+    device = await _register_device(app, admin_uid)
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "hub:sponsor",
+        "question": "hub:sponsor wants to delegate agent 'assistant' (assistant) to this project",
+        "type": "approve_deny",
+        "priority": "blocking",
+        "metadata": {"kind": "collab_delegation_gate",
+                     "contact_id": "hub:sponsor",
+                     "agent_slug": "assistant",
+                     "display_name": "assistant",
+                     "granted_scopes": ["a2a_send"],
+                     "elevated_scopes": [],
+                     "denied_scopes": [],
+                     "project_id": None},
+    })
+    assert resp.status_code == 200
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": "approve"},
+        headers=_bearer(device["scoped_token"]),
+    )
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_device_bearer_ordinary_consent_still_answered(client, app):
     """Control: a device bearer can still answer a non-gate consent decision
     (e.g. a plain approve_deny with no gate kind)."""

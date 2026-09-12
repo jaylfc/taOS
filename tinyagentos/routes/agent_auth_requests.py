@@ -415,6 +415,7 @@ async def approve_request_record(
     project_id: str | None = None,
     display_name: str | None = None,
     defer_binding: bool = False,
+    sponsor_contact_id: str | None = None,
 ) -> dict:
     """Register an agent, mint its token, write grants + relationships +
     membership + a2a sync, and record the decision.
@@ -433,6 +434,10 @@ async def approve_request_record(
     until the agent is later bound to a project via
     ``POST /api/projects/{id}/members/assign-agent``. This complements the
     create-new path (which binds to the picked project at mint time).
+
+    ``sponsor_contact_id`` is set for delegated agents (cross-user collab D1)
+    — the contact_id of the human who sponsored this agent.  Omitted (None) for
+    normal consent and invite flows.
 
     Returns ``{"status": "accepted", "canonical_id": ...}``.
 
@@ -579,6 +584,14 @@ async def approve_request_record(
                 framework=record["framework"],
                 project_id=project_id,
             )
+            # For sponsored agents (cross-user collab D1), record the
+            # sponsorship as a per-(identity, project) association, not a
+            # stamp on the reused identity — so each project's contact finds
+            # exactly what they sponsored.
+            if sponsor_contact_id:
+                await registry.set_sponsorship(
+                    existing_cid, project_id, sponsor_contact_id
+                )
             await add_agent_to_project(
                 request,
                 canonical_id=existing_cid,
@@ -637,6 +650,15 @@ async def approve_request_record(
         # them to 'active' so they are NOT in the bus inactive/revocation feed and
         # @taOSmd's identity-AND-grant gate accepts them.
         await registry.set_status(canonical_id, "active", actor=decided_by)
+
+        # Record sponsorship as a per-(identity, project) association (D1
+        # rework): the delegation was for THIS project, so the association is
+        # keyed to it rather than stamped on the identity.  project_id is always
+        # set for a delegated agent (the delegation flow requires it).
+        if sponsor_contact_id and project_id:
+            await registry.set_sponsorship(
+                canonical_id, project_id, sponsor_contact_id
+            )
     except IntegrityError:
         # A concurrent approve already took this active handle (the partial
         # unique index fired). Roll back the failed write and remove the
