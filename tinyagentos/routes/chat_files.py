@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
 import secrets
@@ -10,9 +11,31 @@ from pathlib import Path
 from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
+from tinyagentos.routes.project_files import _authorize_files_actor
+
 router = APIRouter()
 
 _MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024  # 100 MB
+_REGISTRY_NAME = "chat-files-project-registry.json"
+
+
+def _registry_path(data_dir: Path) -> Path:
+    return data_dir / _REGISTRY_NAME
+
+
+def _load_registry(data_dir: Path) -> dict:
+    path = _registry_path(data_dir)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_registry(data_dir: Path, registry: dict) -> None:
+    path = _registry_path(data_dir)
+    path.write_text(json.dumps(registry, indent=2))
 
 
 def _resolve_workspace_path(data_dir: Path, source: str, slug: str | None, vfs_path: str) -> Path:
@@ -68,13 +91,32 @@ async def attachment_from_path(body: dict, request: Request):
     dest = chat_files / stored_name
     shutil.copy2(src, dest)
     mime, _ = mimetypes.guess_type(src.name)
-    return JSONResponse({
+    result = {
         "filename": src.name,
         "mime_type": mime or "application/octet-stream",
         "size": src.stat().st_size,
         "url": f"/api/chat/files/{stored_name}",
         "source": source,
-    }, status_code=200)
+    }
+    if slug:
+        auth = await _authorize_files_actor(request, slug, "write")
+        if isinstance(auth, JSONResponse):
+            return auth
+        registry = _load_registry(data_dir)
+        entry = registry.get(stored_name, {})
+        registered_projects = entry.get("projects", [])
+        if slug not in registered_projects:
+            proj_files_root = request.app.state.projects_root / slug / "files"
+            proj_files_root.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, proj_files_root / src.name)
+            entry["original_name"] = src.name
+            entry["size"] = src.stat().st_size
+            entry["projects"] = list(set(registered_projects + [slug]))
+            registry[stored_name] = entry
+            _save_registry(data_dir, registry)
+        result["in_files_state"] = "registered"
+        result["project_slug"] = slug
+    return JSONResponse(result, status_code=200)
 
 
 @router.post("/api/chat/upload")
@@ -113,3 +155,41 @@ async def serve_file(request: Request, filename: str):
     ):
         return JSONResponse({"error": "File not found"}, status_code=404)
     return FileResponse(file_path)
+
+
+@router.get("/api/chat/attachments/resolve")
+async def resolve_attachment(request: Request, filename: str, slug: str):
+    """Resolve a chat file reference to its in-Files state.
+
+    Returns a tri-state ``in_files_state``:
+    - ``registered``: the file exists in chat-files and is registered in the
+      named project's files.
+    - ``not-registered``: the file exists in chat-files but is NOT registered
+      in the named project.
+    - ``unknown``: the stored filename does not resolve to anything in
+      chat-files.
+
+    Authorization follows the same existence-hiding 404 contract as
+    ``tinyagentos.routes.project_files``: a caller who cannot see the project
+    never learns it exists.
+    """
+    data_dir = request.app.state.data_dir
+    auth = await _authorize_files_actor(request, slug, "read")
+    if isinstance(auth, JSONResponse):
+        return auth
+    chat_file = data_dir / "chat-files" / filename
+    if not chat_file.exists() or not chat_file.is_file():
+        return JSONResponse({
+            "filename": filename,
+            "size": 0,
+            "in_files_state": "unknown",
+        }, status_code=200)
+    registry = _load_registry(data_dir)
+    entry = registry.get(filename, {})
+    registered_projects = entry.get("projects", [])
+    in_files_state = "registered" if slug in registered_projects else "not-registered"
+    return JSONResponse({
+        "filename": entry.get("original_name", filename),
+        "size": entry.get("size", chat_file.stat().st_size),
+        "in_files_state": in_files_state,
+    }, status_code=200)

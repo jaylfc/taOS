@@ -4,6 +4,8 @@ export type AttachmentRecord = {
   size: number;
   url: string;
   source: "disk" | "workspace" | "agent-workspace";
+  in_files_state?: "registered" | "not-registered" | "unknown";
+  project_slug?: string;
 };
 
 async function _ensureOk(r: Response): Promise<void> {

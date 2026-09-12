@@ -27,6 +27,7 @@ describe("AttachmentGallery", () => {
       filename: "r.pdf", mime_type: "application/pdf",
       size: 1000, url: "/r.pdf", source: "disk",
     }]} />);
-    expect(screen.getByText("r.pdf")).toBeInTheDocument();
+    const link = screen.getByText("r.pdf").closest("a");
+    expect(link).toHaveAttribute("href", "/r.pdf");
   });
 });
