@@ -1,0 +1,32 @@
+tsk-hpee75 reachability report
+===============================
+
+Finding: UNREACHABLE. No code change needed.
+
+Evidence
+--------
+The primary openclaw bridge client is the ACP adapter at
+`tinyagentos/adapters/acp_adapter.py`.  Measured emit sites:
+
+- `delta`    → `{"kind": "delta", "trace_id": trace, "content": text}` (line ~360)
+- `tool_result` → `{"kind": "tool_result", "trace_id": trace, ...}` (lines ~391-399)
+- `final`, `error`, `reasoning`, `tool_call` → all include `"trace_id": trace`
+
+The `trace` variable is initialised at the top of `prompt()` as
+`self._active_trace = trace_id or uuid.uuid4().hex` (line ~317), so it is
+never `None` when the adapter emits any event.
+
+The comment in `bridge_session.py:268-271` says forks "still send trace_id ==
+originating message id", confirming that even non-ACP clients are expected to
+thread the originating message id through.
+
+The `or _new_id()` fallback at `bridge_session.py:264` can only fire if a
+caller POSTs to `/reply` (or some other adapter) while deliberately omitting
+`trace_id`.  That path is not exercised by the live ACP bridge, the opencode
+adapter, or any code in this repo.
+
+Conclusion
+----------
+The silent no-op described in the task card cannot be reached through the
+bridge's real client.  Writing a guard or warning would be inert code.  The
+correct outcome is to leave the code as-is and close the card as unreachable.
