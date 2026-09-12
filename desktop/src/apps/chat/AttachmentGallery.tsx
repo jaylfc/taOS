@@ -1,6 +1,7 @@
 // desktop/src/apps/chat/AttachmentGallery.tsx
 import { useState } from "react";
 import type { AttachmentRecord } from "@/lib/chat-attachments-api";
+import { DocChip } from "@/components/ui";
 import { AttachmentLightbox } from "./AttachmentLightbox";
 
 export function AttachmentGallery({ attachments }: { attachments: AttachmentRecord[] }) {
@@ -33,17 +34,16 @@ export function AttachmentGallery({ attachments }: { attachments: AttachmentReco
           ))}
         </div>
       )}
-      {files.length > 0 && (
+{files.length > 0 && (
         <div className="flex flex-col gap-1">
           {files.map((f) => (
-            <a key={f.url} href={f.url} target="_blank" rel="noreferrer"
-               className="flex items-center gap-2 bg-white/5 hover:bg-white/10 rounded px-2 py-1 text-sm max-w-sm">
-              <span aria-hidden>📄</span>
-              <span className="truncate">{f.filename}</span>
-              <span className="ml-auto text-xs opacity-60">
-                {Math.max(1, Math.round(f.size / 1024))} KB
-              </span>
-            </a>
+            <DocChip
+              key={f.url}
+              name={f.filename}
+              fileSize={f.size ?? 0}
+              inFiles={false}
+              onFetch={() => window.open(f.url, "_blank")}
+            />
           ))}
         </div>
       )}
