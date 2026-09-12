@@ -476,6 +476,10 @@ Run `curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/ins
 | OS packages added | python3 + venv + pip, git, curl, ca-certificates, libtorrent-rasterbar (model torrent mesh), Node.js 22 (qmd + SPA build), sqlite3, libsqlcipher (encrypted secrets), vulkan-tools (hardware detection), postgresql (LiteLLM virtual keys) |
 | User accounts created | The distro `postgres` system user is created when PostgreSQL is installed. A `litellm` Postgres role and database are created for virtual-key management. Everything else runs as the user who ran the installer. |
 
+### Hailo-10H install (`scripts/install-hailo.sh`)
+
+Installs `hailo-ollama` (the Hailo-10H LLM runtime) at a pinned ref, listening on port **7836** (port 8000 is the Django slot in taOS port hygiene and is already probed as a llama-cpp/vllm candidate). Before installing, the script checks for a pre-existing upstream hailo-ollama (something answering `GET /api/tags` on `0.0.0.0:8000`, Hailo's own default). If one is found it reports plainly what was detected and exits, leaving the existing instance untouched rather than silently building a second server that would compete for the accelerator and go unseen by taOS.
+
 ### Worker install (`scripts/install-worker.sh`)
 
 Linux uses a two-phase install. Phase 1 runs on the bare host; phase 2 runs inside the `taos-worker` LXC.
