@@ -118,6 +118,89 @@ apt-get() {
 """
 
 
+def _run_preexisting_docker_compose_path(tmp_path):
+    script = "\n".join([
+        "set -euo pipefail",
+        "log()  { printf '[log] %s\\n' \"$*\" >&2; }",
+        "warn() { printf '[warn] %s\\n' \"$*\" >&2; }",
+        "sudo() {",
+        "    while [[ $# -gt 0 ]]; do",
+        "        case \"$1\" in",
+        "            [A-Z_]*=*) shift; continue ;;",
+        "        esac",
+        "        break",
+        "    done",
+        "    \"$@\"",
+        "}",
+        "uname() { echo Linux; }",
+        "apt-cache() { return 1; }",
+        "apt-get() { return 0; }",
+        "systemctl() { return 0; }",
+        "compose_available=0",
+        "OFFICIAL_REPO_CALLED=0",
+        "docker() {",
+        "    case \"${1:-}\" in",
+        "        --version) echo 'Docker version 27.0.0' ;;",
+        "        info) return 0 ;;",
+        "        compose)",
+        "            if [[ \"${2:-}\" == version && \"$compose_available\" == 1 ]]; then",
+        "                echo 'Docker Compose version v2.30.0'",
+        "                return 0",
+        "            fi",
+        "            echo \"docker: 'compose' is not a docker command\" >&2",
+        "            return 1",
+        "            ;;",
+        "    esac",
+        "}",
+        "_docker_running() { sudo docker info; }",
+        _extract_func("_apt_install_compose"),
+        _extract_func("_install_compose_v2"),
+        _extract_func("ensure_docker_for_apps"),
+        "_apt_install_docker_official_repo() {",
+        "    OFFICIAL_REPO_CALLED=1",
+        "    compose_available=1",
+        "}",
+        "ensure_rc=0",
+        "ensure_docker_for_apps || ensure_rc=$?",
+        "compose_rc=0",
+        "docker compose version >/dev/null 2>&1 || compose_rc=$?",
+        "printf 'ensure_rc=%s official_repo_called=%s compose_rc=%s\\n' \\",
+        "    \"$ensure_rc\" \"$OFFICIAL_REPO_CALLED\" \"$compose_rc\"",
+    ])
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "USER": "root", "SUDO_USER": "root", "arch": "aarch64"},
+        timeout=30,
+    )
+    assert "ensure_rc=" in proc.stdout, (
+        f"ensure_docker_for_apps never completed.\nstdout={proc.stdout}\nstderr={proc.stderr}"
+    )
+    values = dict(
+        item.split("=", 1)
+        for item in proc.stdout.strip().split()
+        if "=" in item
+    )
+    return proc, {key: int(value) for key, value in values.items()}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="bash-only test")
+def test_bookworm_arm64_preexisting_docker_gets_compose_from_official_repo(tmp_path):
+    proc, values = _run_preexisting_docker_compose_path(tmp_path)
+
+    assert proc.returncode == 0, f"wrapper failed: {proc.stderr}"
+    assert values["ensure_rc"] == 0, f"installer Docker setup failed: {proc.stderr}"
+    assert values["official_repo_called"] == 1, (
+        "a pre-existing Docker install with no distro Compose package must use "
+        f"Docker's official repo fallback; stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    )
+    assert values["compose_rc"] == 0, (
+        "bookworm ARM64-shaped path left 'docker compose' unavailable; "
+        f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    )
+
+
 def _run_fallback(
     tmp_path,
     *,
