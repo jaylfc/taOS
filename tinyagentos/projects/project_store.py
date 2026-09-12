@@ -156,6 +156,26 @@ class ProjectStore(ProjectsDBStore):
                 "UPDATE projects SET lead_member_id = ? WHERE id = ?",
                 (member_id, project_id),
             )
+            if member_id is not None:
+                # Promote the new lead in its member row.
+                await self._db.execute(
+                    "UPDATE project_members SET is_lead = 1, role = 'lead' "
+                    "WHERE project_id = ? AND member_id = ?",
+                    (project_id, member_id),
+                )
+                # Demote any previous lead so the flag stays exclusive.
+                await self._db.execute(
+                    "UPDATE project_members SET is_lead = 0 "
+                    "WHERE project_id = ? AND member_id != ? AND is_lead = 1",
+                    (project_id, member_id),
+                )
+            else:
+                # Clearing lead — unset the flag everywhere on this project.
+                await self._db.execute(
+                    "UPDATE project_members SET is_lead = 0 "
+                    "WHERE project_id = ? AND is_lead = 1",
+                    (project_id,),
+                )
 
     async def create_project(
         self,

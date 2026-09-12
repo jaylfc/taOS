@@ -187,8 +187,27 @@ async def test_set_lead_and_clear_lead(store):
     await store.add_member(p["id"], member_id="agent-1", member_kind="native")
     await store.set_lead(p["id"], "agent-1")
     assert (await store.get_project(p["id"]))["lead_member_id"] == "agent-1"
+    # Promote: the member row must carry is_lead=1 and role='lead'.
+    m = await store.get_member(p["id"], "agent-1")
+    assert m["is_lead"] == 1
+    assert m["role"] == "lead"
+
+    # Promote a different lead: old lead's is_lead reverts to 0.
+    await store.add_member(p["id"], member_id="agent-2", member_kind="native")
+    await store.set_lead(p["id"], "agent-2")
+    m1 = await store.get_member(p["id"], "agent-1")
+    assert m1["is_lead"] == 0
+    m2 = await store.get_member(p["id"], "agent-2")
+    assert m2["is_lead"] == 1
+
+    # Clear: both is_lead flags reset, lead_member_id None.
     await store.set_lead(p["id"], None)
-    assert (await store.get_project(p["id"]))["lead_member_id"] is None
+    p_after = await store.get_project(p["id"])
+    assert p_after["lead_member_id"] is None
+    m1_final = await store.get_member(p["id"], "agent-1")
+    assert m1_final["is_lead"] == 0
+    m2_final = await store.get_member(p["id"], "agent-2")
+    assert m2_final["is_lead"] == 0
 
 
 @pytest.mark.asyncio
