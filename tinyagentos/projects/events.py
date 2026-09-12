@@ -11,6 +11,7 @@ class ProjectEvent:
     kind: str
     payload: dict[str, Any]
     ts: float = field(default_factory=time.time)
+    id: str | None = None
 
 
 class ProjectEventBroker:
@@ -22,15 +23,22 @@ class ProjectEventBroker:
 
     def __init__(self, replay_size: int = 32) -> None:
         self._replay_size = replay_size
+        self._next_id = 0
         self._queues: dict[str, list[asyncio.Queue[ProjectEvent]]] = {}
         self._replay: dict[str, deque[ProjectEvent]] = {}
         self._lock = asyncio.Lock()
 
-    async def subscribe(self, project_id: str) -> asyncio.Queue[ProjectEvent]:
-        queue: asyncio.Queue[ProjectEvent] = asyncio.Queue(maxsize=self._replay_size)
+    async def subscribe(
+        self,
+        project_id: str,
+        last_event_id: str | None = None,
+    ) -> asyncio.Queue[ProjectEvent]:
+        queue: asyncio.Queue[ProjectEvent] = asyncio.Queue(maxsize=256)
         async with self._lock:
             self._queues.setdefault(project_id, []).append(queue)
             for ev in self._replay.get(project_id, ()):
+                if last_event_id is not None and ev.id is not None and ev.id <= last_event_id:
+                    continue
                 try:
                     queue.put_nowait(ev)
                 except asyncio.QueueFull:
@@ -44,19 +52,14 @@ class ProjectEventBroker:
                 qs.remove(queue)
             if not qs:
                 self._queues.pop(project_id, None)
-                # Keep _replay so a reconnecting subscriber (e.g. a reopened
-                # SSE connection) can catch up on events it missed. The deque
-                # has a fixed maxlen so memory stays bounded.
 
     async def publish(self, project_id: str, event: ProjectEvent) -> None:
         async with self._lock:
+            event.id = str(self._next_id)
+            self._next_id += 1
             buf = self._replay.setdefault(project_id, deque(maxlen=self._replay_size))
             buf.append(event)
             queues = list(self._queues.get(project_id, []))
-        # Backpressure policy: do not block the broker (and every other
-        # subscriber) on a slow consumer. If a subscriber's bounded queue is
-        # full, evict its oldest item and retry so the consumer stays on the
-        # live stream rather than stalling indefinitely.
         for q in queues:
             try:
                 q.put_nowait(event)

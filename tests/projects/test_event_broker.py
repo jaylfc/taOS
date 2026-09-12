@@ -4,6 +4,50 @@ from tinyagentos.projects.events import ProjectEventBroker, ProjectEvent
 
 
 @pytest.mark.asyncio
+async def test_publish_assigns_id():
+    broker = ProjectEventBroker()
+    queue = await broker.subscribe("p1")
+    await broker.publish("p1", ProjectEvent(kind="task.created", payload={"id": "t1"}))
+    ev = await asyncio.wait_for(queue.get(), timeout=0.5)
+    assert ev.id is not None
+    assert isinstance(ev.id, str)
+
+
+@pytest.mark.asyncio
+async def test_publish_assigns_unique_ids():
+    broker = ProjectEventBroker()
+    queue = await broker.subscribe("p1")
+    ids = []
+    for i in range(10):
+        await broker.publish("p1", ProjectEvent(kind="task.created", payload={"id": f"t{i}"}))
+    for _ in range(10):
+        ev = await asyncio.wait_for(queue.get(), timeout=0.5)
+        ids.append(ev.id)
+    assert len(set(ids)) == 10
+
+
+@pytest.mark.asyncio
+async def test_subscribe_with_last_event_id_skips_old():
+    broker = ProjectEventBroker()
+    for i in range(5):
+        await broker.publish("p1", ProjectEvent(kind="task.created", payload={"id": f"t{i}"}))
+    queue = await broker.subscribe("p1", last_event_id="2")
+    items = []
+    for _ in range(2):
+        items.append(await asyncio.wait_for(queue.get(), timeout=0.5))
+    assert [e.payload["id"] for e in items] == ["t3", "t4"]
+
+
+@pytest.mark.asyncio
+async def test_publish_many_events_queue_stays_bounded():
+    broker = ProjectEventBroker()
+    queue = await broker.subscribe("p1")
+    for i in range(10000):
+        await broker.publish("p1", ProjectEvent(kind="task.created", payload={"id": f"t{i}"}))
+    assert queue.qsize() <= 256
+
+
+@pytest.mark.asyncio
 async def test_publish_then_subscribe_replays_recent():
     broker = ProjectEventBroker(replay_size=4)
     await broker.publish("p1", ProjectEvent(kind="task.created", payload={"id": "t1"}))

@@ -10,10 +10,16 @@ export function useBoardLive(projectId: string, onEvent: (e: BoardLiveEvent) => 
 
   useEffect(() => {
     let active = true;
-    const off = projectsApi.subscribeEvents(projectId, (e) => {
-      if (active) onEventRef.current(e);
-    });
-    setConnected(true);
+    const off = projectsApi.subscribeEvents(
+      projectId,
+      (e) => {
+        if (active) onEventRef.current(e);
+      },
+      {
+        onOpen: () => setConnected(true),
+        onError: () => setConnected(false),
+      },
+    );
     return () => {
       active = false;
       setConnected(false);

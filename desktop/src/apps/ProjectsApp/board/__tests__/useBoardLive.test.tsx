@@ -24,8 +24,16 @@ describe("useBoardLive", () => {
   });
 
   it("exposes connected status (true after subscribe)", () => {
-    vi.spyOn(projectsApi, "subscribeEvents").mockReturnValue(() => {});
+    let onOpen: (() => void) | undefined;
+    vi.spyOn(projectsApi, "subscribeEvents").mockImplementation((_pid, _cb, opts) => {
+      onOpen = opts?.onOpen;
+      return () => {};
+    });
     const { result } = renderHook(() => useBoardLive("p1", () => {}));
+    expect(result.current.connected).toBe(false);
+    if (onOpen) {
+      act(() => onOpen());
+    }
     expect(result.current.connected).toBe(true);
   });
 });
