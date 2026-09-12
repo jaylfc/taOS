@@ -806,6 +806,7 @@ class ClusterManager:
         caller: str = "",
         ttl_seconds: float = 30,
         required_vram_mb: int = 0,
+        claim_channel: str = "",
     ) -> GpuLease | None:
         """Attempt to claim a GPU lease on ``resource_id``.
 
@@ -875,6 +876,7 @@ class ClusterManager:
                 caller=caller,
                 expires_at=time.time() + ttl_seconds,
                 required_vram_mb=required_vram_mb,
+                claim_channel=claim_channel,
             )
             self._leases[lease_id] = lease
             logger.info(
@@ -894,16 +896,63 @@ class ClusterManager:
 
     async def renew_lease(self, lease_id: str, ttl_seconds: float = 30) -> GpuLease | None:
         """Extend a lease's TTL.  Returns the lease, or None if expired/unknown."""
+        lease, _previous_expiry = await self.renew_lease_with_previous(
+            lease_id, ttl_seconds=ttl_seconds
+        )
+        return lease
+
+    async def renew_lease_with_previous(
+        self, lease_id: str, ttl_seconds: float = 30
+    ) -> tuple[GpuLease | None, float | None]:
+        """Extend a lease's TTL, returning ``(lease, previous_expiry)``.
+
+        ``previous_expiry`` is the expiry this renewal actually REPLACED, read
+        under ``_lease_lock`` in the same critical section that writes the new
+        one. A caller that wants to undo a failed keep-alive needs exactly that
+        value: capturing the expiry before the lock (or from a lease object read
+        outside it) can be stale - another renewal may complete in between - and
+        restoring a stale expiry would clobber a newer renewal that owns the
+        lease (CR on #2988). ``None`` for both when the lease is unknown or
+        already expired, matching :meth:`renew_lease`'s contract.
+        """
         async with self._lease_lock:
             lease = self._leases.get(lease_id)
             if lease is None:
-                return None
+                return None, None
             now = time.time()
             if lease.expires_at <= now:
                 self._leases.pop(lease_id, None)
-                return None
+                return None, None
+            previous_expiry = lease.expires_at
             lease.expires_at = now + ttl_seconds
-            return lease
+            return lease, previous_expiry
+
+    async def restore_lease_expiry(
+        self, lease_id: str, expires_at: float, *, attempted_expiry: float
+    ) -> bool:
+        """Put a lease's expiry back after a keep-alive's other half failed.
+
+        Renewal has two halves: the local reservation and the peer-visible
+        claim published on the bus. When the second cannot be refreshed, the
+        first must not stay extended - peers would then free the card at the
+        expiry they still hold while this controller believes it is reserved.
+        Restoring the previous instant makes the two views agree again, so the
+        caller can retry rather than sit on a renewal nobody else can see.
+
+        Restores only while the lease still carries *attempted_expiry*, the
+        extension this caller made. The bus post happens outside ``_lease_lock``,
+        so a renewal can land in between; that newer expiry owns the lease and
+        must not be clobbered by this rollback. Returns False when the lease is
+        gone or superseded - i.e. when there is nothing of ours to undo.
+        """
+        async with self._lease_lock:
+            lease = self._leases.get(lease_id)
+            if lease is None:
+                return False
+            if lease.expires_at != attempted_expiry:
+                return False
+            lease.expires_at = expires_at
+            return True
 
     def get_leases(self) -> list[GpuLease]:
         """Return a snapshot of active (non-expired) leases."""
