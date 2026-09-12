@@ -27,7 +27,10 @@
   that peers have already seen lapse. The fold drops a claim whose published
   expiry has passed, so a holder that crashed or stopped keeping alive no longer
   blocks the shared card until its claim ages out of the fold window. A claim
-  posted by hand without an `expires=` is unchanged: bounded by a RELEASE alone.
+  posted by hand without an `expires=` is unchanged: it has no time-based
+  expiry, so only a RELEASE closes it - though it is still limited by the fold
+  window (the newest 500 messages), so a long-lived one is reposted
+  periodically.
 
 ### Fixed
 

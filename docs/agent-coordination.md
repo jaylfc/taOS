@@ -438,8 +438,10 @@ Rules that matter when you use it:
   that crashed or stopped keeping alive no longer blocks the card until its
   claim ages out of the fold window. Keep-alive therefore means re-POST `/claim`
   or `/renew` while you hold the card; a claim posted by hand without an
-  `expires=` never expires (it is bounded by a RELEASE alone), which is what the
-  interim protocol in #893 relies on.
+  `expires=` has no TIME-based expiry — it is closed by a RELEASE — but it is
+  still subject to the fold window below, so a long-lived hand-posted claim has
+  to be reposted periodically like any other. That is what the interim protocol
+  in #893 relies on.
 - **A claim is only visible inside the channel fold window** (the newest 500
   messages). For a load that outlives the chatter around it, re-POST `/claim`
   periodically: it is idempotent (it extends the lease and reposts the line,
