@@ -96,9 +96,15 @@ class GpuLease:
         required_vram_mb: How many MiB of VRAM the caller declared it
             needs.  Used by the pre-claim check to refuse a claim when
             the worker's ``free_vram_mb`` is too low.
+        claim_channel: The coordination thread this lease's peer-visible
+            claim was published on (empty for a lease with no bus claim,
+            e.g. one taken by the dispatcher through the cluster API).
+            Kept so a keep-alive refreshes the SAME thread: the channel is
+            an input to the claim, never to its renewal.
     """
     lease_id: str
     resource_id: str
     caller: str = ""
     expires_at: float = 0.0
     required_vram_mb: int = 0
+    claim_channel: str = ""

@@ -55,15 +55,19 @@ describe("InviteAgentDialog", () => {
     });
   });
 
-  it("adds 'lead' to the posted scopes when the Lead toggle is on", async () => {
+  it("never includes 'lead' in scopes — lead is assigned post-registration", async () => {
     await act(async () => {
       render(<InviteAgentDialog projectId={PID} onClose={() => {}} onMinted={() => {}} />);
     });
-    fireEvent.click(screen.getByLabelText(/make this agent the project lead/i));
+    // The old "Make this agent the project lead" checkbox is gone; in its place
+    // a note tells the operator lead is set post-registration.
+    expect(screen.getByText(/lead is assigned after the agent registers/i)).toBeTruthy();
+    expect(screen.queryByLabelText(/make this agent the project lead/i)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /mint invite/i }));
 
     await waitFor(() => expect(mintBody).not.toBeNull());
-    expect(mintBody!.scopes).toContain("lead");
+    // "lead" is NOT a valid scope — it is set via PATCH /api/projects/{id}/lead after the agent registers.
+    expect(mintBody!.scopes).not.toContain("lead");
     expect(mintBody!.scopes).toContain("project_tasks");
   });
 

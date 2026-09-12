@@ -501,7 +501,15 @@ async def decision_history(decision_id: str, request: Request, user: CurrentUser
 
 
 @router.post("/api/decisions/{decision_id}/answer")
-async def answer_decision(decision_id: str, body: AnswerIn, request: Request, user: CurrentUser = Depends(current_user_or_device)):
+async def answer_decision(
+    decision_id: str, body: AnswerIn, request: Request, user: CurrentUser = Depends(current_user_or_device)
+):
+    """Record an answer for a pending decision.
+
+    For ``multi_select`` decisions, an empty list is rejected with 400: an
+    answer must contain at least one selected option so that a decision cannot
+    silently transition to answered while carrying no choice.
+    """
     store = request.app.state.decision_store
     existing = await store.get(decision_id)
     # Authorization check: humans can answer decisions they own or admins; agents are
@@ -547,7 +555,7 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
                     for o in (existing.get("options") or [])
                     if o.get("value") is not None
                 }
-                if valid and any(v not in valid for v in vals):
+                if valid and (not vals or any(v not in valid for v in vals)):
                     return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
         else:
             # Option-only path: existing strict validation.
@@ -563,7 +571,7 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
                             return JSONResponse({"error": "answer is not one of the options"}, status_code=400)
                     else:
                         vals = body.value if isinstance(body.value, list) else None
-                        if vals is None or any(v not in valid for v in vals):
+                        if not vals or any(v not in valid for v in vals):
                             return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
                 except TypeError:
                     return JSONResponse({"error": "invalid answer value shape"}, status_code=400)
@@ -887,7 +895,7 @@ async def answer_decision_as_agent(
                     for o in (existing.get("options") or [])
                     if o.get("value") is not None
                 }
-                if valid and any(v not in valid for v in vals):
+                if valid and (not vals or any(v not in valid for v in vals)):
                     return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
         else:
             valid = {
@@ -902,7 +910,7 @@ async def answer_decision_as_agent(
                             return JSONResponse({"error": "answer is not one of the options"}, status_code=400)
                     else:
                         vals = body.value if isinstance(body.value, list) else None
-                        if vals is None or any(v not in valid for v in vals):
+                        if not vals or any(v not in valid for v in vals):
                             return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
                 except TypeError:
                     return JSONResponse({"error": "invalid answer value shape"}, status_code=400)

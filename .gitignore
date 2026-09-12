@@ -203,3 +203,11 @@ data/*.sqlite3-wal
 data/apps/
 data/.install_id
 data/store_popularity.json
+
+# Registry signing-key lock sidecar. Added 2026-09-12: `data/*.pem` (above)
+# covers the key itself, but not the 0-byte `*.pem.lock` flock sidecar the
+# registry key writer creates beside it - so it rode into PR #2988 on a stray
+# `git add`, the same accident the note above describes. Enumerated, not a
+# blanket data/ rule, for the reason given there.
+# Verified against every tracked file on origin/dev: 0 become ignored.
+data/*.pem.lock
