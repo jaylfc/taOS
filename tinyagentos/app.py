@@ -964,7 +964,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         async def _litellm_bringup() -> None:
             try:
                 try:
-                    await _litellm_migrate(data_dir)
+                    # Run blocking migrate in a thread to avoid event-loop stalls
+                    # This ensures the health endpoint stays responsive during startup
+                    import asyncio
+                    await asyncio.to_thread(_litellm_migrate, data_dir)
                 except Exception:
                     logger.exception("litellm prisma migration failed — virtual keys will not work")
                 resolved_secrets: dict[str, str] = {}

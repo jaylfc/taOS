@@ -116,6 +116,81 @@ def test_bridge_sessions_is_none_before_lifespan(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Health endpoint responsiveness during LiteLLM bring-up
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_health_endpoint_responsive_during_litellm_bringup(tmp_path, monkeypatch):
+    """Health endpoint must respond within 100ms while LiteLLM bring-up runs.
+
+    The LiteLLM bring-up (including any prisma generate/migrate steps) runs
+    in a supervised background task. The main event loop must not be blocked,
+    so /api/health stays responsive throughout startup. This test simulates
+    a slow bring-up by patching _litellm_migrate to sleep, then hammers the
+    health endpoint and asserts all responses are fast.
+    """
+    import time
+    import yaml
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config))
+    (tmp_path / ".setup_complete").touch()
+
+    # Make _litellm_migrate slow (simulates prisma generate taking 38s on ARM).
+    async def slow_migrate(data_dir):
+        await asyncio.sleep(0.5)  # 500ms - much shorter than real 38s but enough to test
+        return "no-db-configured"
+
+    # Stub llm_proxy.start to also be slow but non-blocking.
+    proxy_stub = MagicMock()
+    proxy_stub.is_running.return_value = False
+    proxy_stub.port = 7834
+
+    async def slow_start(backends, secrets=None):
+        await asyncio.sleep(0.5)
+        return False
+
+    proxy_stub.start = slow_start
+    proxy_stub.stop = MagicMock()
+
+    with patch("tinyagentos.app.LLMProxy", return_value=proxy_stub):
+        with patch("tinyagentos.app._litellm_migrate", slow_migrate):
+            from tinyagentos.app import create_app
+            app = create_app(data_dir=tmp_path)
+
+            # Run lifespan but intercept before _startup_complete is set
+            # We'll hit the health endpoint while the background bring-up runs.
+            transport = ASGITransport(app=app)
+
+            # Start the lifespan in the background
+            lifespan_ctx = app.router.lifespan_context(app)
+            await lifespan_ctx.__aenter__()
+
+            try:
+                # Give the background task a moment to start
+                await asyncio.sleep(0.05)
+
+                # Hammer the health endpoint - all responses should be fast
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    for _ in range(10):
+                        start = time.monotonic()
+                        resp = await client.get("/api/health")
+                        elapsed_ms = (time.monotonic() - start) * 1000
+                        assert resp.status_code == 200, f"Health endpoint returned {resp.status_code}"
+                        assert elapsed_ms < 100, f"Health endpoint took {elapsed_ms:.1f}ms, expected <100ms"
+            finally:
+                await lifespan_ctx.__aexit__(None, None, None)
+
+
+# ---------------------------------------------------------------------------
 # LiteLLM background bring-up: _startup_complete goes True without proxy
 # ---------------------------------------------------------------------------
 

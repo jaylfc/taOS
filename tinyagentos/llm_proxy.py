@@ -195,52 +195,57 @@ class LLMProxy:
         from the installed ``tinyagentos`` package — keeping the real
         callback code in one place.
         """
-        self.config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        # mkdir's mode is masked by umask; chmod ensures 0700 even if the
-        # directory already existed from a prior (insecure) run. Fail closed:
-        # a local user who controls a still-insecure directory could plant or
-        # read the generated config/shims before LiteLLM loads them, so raise
-        # before writing anything rather than continuing into the write.
-        try:
-            os.chmod(self.config_dir, 0o700)
-        except OSError as exc:
-            raise PermissionError(
-                f"LiteLLM config directory must be 0700: {self.config_dir}"
-            ) from exc
-        discovered = await _discover_ollama_backends_concurrent(backends)
-        config = generate_litellm_config(
-            backends,
-            registry=self._registry,
-            master_key=get_litellm_master_key(self._data_dir),
-            discovered=discovered,
-            inhouse_keys=self.inhouse_keys,
-        )
-        config_path = self.config_dir / "litellm_config.yaml"
+        # Run blocking I/O operations in a thread to avoid event-loop stalls
+        # during startup. This ensures the health endpoint remains responsive.
+        def _sync_write_config(discovered):
+            self.config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # mkdir's mode is masked by umask; chmod ensures 0700 even if the
+            # directory already existed from a prior (insecure) run. Fail closed:
+            # a local user who controls a still-insecure directory could plant or
+            # read the generated config/shims before LiteLLM loads them, so raise
+            # before writing anything rather than continuing into the write.
+            try:
+                os.chmod(self.config_dir, 0o700)
+            except OSError as exc:
+                raise PermissionError(
+                    f"LiteLLM config directory must be 0700: {self.config_dir}"
+                ) from exc
+            config = generate_litellm_config(
+                backends,
+                registry=self._registry,
+                master_key=get_litellm_master_key(self._data_dir),
+                discovered=discovered,
+                inhouse_keys=self.inhouse_keys,
+            )
+            config_path = self.config_dir / "litellm_config.yaml"
 
-        import yaml
-        from tinyagentos.atomic_io import atomic_write_text
-        atomic_write_text(
-            config_path,
-            yaml.dump(config, default_flow_style=False),
-            mode=0o600,
-        )
-
-        shim_path = self.config_dir / "taos_callback.py"
-        atomic_write_text(
-            shim_path,
-            "from tinyagentos.litellm_callback import taos_callback "
-            "as proxy_handler_instance\n",
-            mode=0o600,
-        )
-        if self.inhouse_keys:
-            # Sibling shim so LiteLLM's config-dir-relative importer can load
-            # the custom_auth hook (general_settings.custom_auth: taos_auth...).
+            import yaml
+            from tinyagentos.atomic_io import atomic_write_text
             atomic_write_text(
-                self.config_dir / "taos_auth.py",
-                "from tinyagentos.litellm_auth import user_api_key_auth\n",
+                config_path,
+                yaml.dump(config, default_flow_style=False),
                 mode=0o600,
             )
-        return config_path
+
+            shim_path = self.config_dir / "taos_callback.py"
+            atomic_write_text(
+                shim_path,
+                "from tinyagentos.litellm_callback import taos_callback "
+                "as proxy_handler_instance\n",
+                mode=0o600,
+            )
+            if self.inhouse_keys:
+                # Sibling shim so LiteLLM's config-dir-relative importer can load
+                # the custom_auth hook (general_settings.custom_auth: taos_auth...).
+                atomic_write_text(
+                    self.config_dir / "taos_auth.py",
+                    "from tinyagentos.litellm_auth import user_api_key_auth\n",
+                    mode=0o600,
+                )
+            return config_path
+
+        discovered = await _discover_ollama_backends_concurrent(backends)
+        return await asyncio.to_thread(_sync_write_config, discovered)
 
     async def _selfheal_proxy_extra(self) -> bool:
         """One-time attempt to install the missing litellm proxy extra.
