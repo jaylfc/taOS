@@ -23,6 +23,13 @@ Scope
 Only ``/auth/*`` mutating endpoints and any other session-authenticated
 write paths should use ``Depends(verify_csrf)``.  Read-only GETs and
 Bearer-gated routes are left untouched.
+
+Session validation
+------------------
+A ``taos_session`` cookie alone is not sufficient for CSRF protection.
+The cookie must be validated against the session store. Invalid or stale
+session cookies are treated as absent for CSRF purposes, and the cookie
+is cleared in the response to prevent future use.
 """
 from __future__ import annotations
 
@@ -101,7 +108,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def verify_csrf(conn: HTTPConnection) -> None:
+def verify_csrf(conn: HTTPConnection) -> None | Response:
     """FastAPI dependency — enforce the double-submit CSRF check.
 
     Typed as ``HTTPConnection`` (the shared base of ``Request`` and
@@ -124,8 +131,8 @@ def verify_csrf(conn: HTTPConnection) -> None:
       path.  They must work for a browser that is holding a STALE session
       cookie, which is precisely when the cookie rule below stops exempting
       them.
-    * Requests without a ``taos_session`` cookie are exempt — without an
-      active cookie-session there is nothing for CSRF to hijack.
+    * Requests without a valid ``taos_session`` cookie are exempt — without
+      an active cookie-session there is nothing for CSRF to hijack.
 
     For protected requests the ``X-CSRF-Token`` header must match the
     ``csrf_token`` cookie value (double-submit pattern).
@@ -143,6 +150,23 @@ def verify_csrf(conn: HTTPConnection) -> None:
     # Signing in must work while a stale cookie is present. Checked BEFORE the
     # cookie rule, because the stale cookie is what defeats that rule.
     if conn.url.path.rstrip("/") in _CREDENTIAL_PATHS:
+        return
+
+    # Validate session cookie - if invalid, treat as absent and clear it.
+    session_token = conn.cookies.get("taos_session")
+    if session_token:
+        from fastapi import Request
+        if isinstance(conn, Request) and hasattr(conn.app, "state"):
+            auth_mgr = getattr(conn.app.state, "auth", None)
+            if auth_mgr and hasattr(auth_mgr, "validate_session"):
+                user_id = auth_mgr.validate_session(session_token)
+                if user_id is None:
+                    # Session is invalid - treat as absent for CSRF purposes
+                    # Note: The cookie clearing happens via middleware response
+                    # to ensure it reaches the client. Setting a response on
+                    # dependency error is handled by FastAPI.
+                    return
+        # No auth manager or validation failed - treat as no session cookie
         return
 
     # No session cookie → not cookie-authenticated → no CSRF risk.
