@@ -28,9 +28,12 @@ _MIME_KIND_MAP: dict[str, str] = {
     "text/markdown": "text",
     "text/csv": "text",
     "text/html": "text",
+    "text/x-python": "text",
     "application/json": "text",
     "application/xml": "text",
     "text/xml": "text",
+    "application/yaml": "text",
+    "application/toml": "text",
     "application/pdf": "pdf",
     "image/png": "image",
     "image/jpeg": "image",
@@ -72,6 +75,8 @@ def detect_kind(source_url: str = "", content_type: str = "",
         ext_map = {
             ".txt": "text", ".md": "text", ".csv": "text",
             ".json": "text", ".xml": "text", ".html": "text",
+            ".py": "text", ".yaml": "text", ".yml": "text",
+            ".log": "text", ".toml": "text",
             ".pdf": "pdf",
             ".png": "image", ".jpg": "image", ".jpeg": "image",
             ".gif": "image", ".webp": "image", ".svg": "image",
@@ -79,6 +84,13 @@ def detect_kind(source_url: str = "", content_type: str = "",
         }
         if ext in ext_map:
             return ext_map[ext]
+
+        # Fallback: use mimetypes.guess_type and check if it returns text/*
+        mime_type, _ = mimetypes.guess_type(file_path)
+        if mime_type and mime_type.startswith("text/"):
+            return "text"
+        if mime_type in _MIME_KIND_MAP:
+            return _MIME_KIND_MAP[mime_type]
 
     return "file"
 

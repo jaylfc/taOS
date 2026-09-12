@@ -1,0 +1,12 @@
+---
+apiVersion: v1
+kind: Config
+metadata:
+  name: test
+  labels:
+    env: staging
+data:
+  key: value
+  array:
+    - item1
+    - item2
