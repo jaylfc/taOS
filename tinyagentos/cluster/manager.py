@@ -896,16 +896,36 @@ class ClusterManager:
 
     async def renew_lease(self, lease_id: str, ttl_seconds: float = 30) -> GpuLease | None:
         """Extend a lease's TTL.  Returns the lease, or None if expired/unknown."""
+        lease, _previous_expiry = await self.renew_lease_with_previous(
+            lease_id, ttl_seconds=ttl_seconds
+        )
+        return lease
+
+    async def renew_lease_with_previous(
+        self, lease_id: str, ttl_seconds: float = 30
+    ) -> tuple[GpuLease | None, float | None]:
+        """Extend a lease's TTL, returning ``(lease, previous_expiry)``.
+
+        ``previous_expiry`` is the expiry this renewal actually REPLACED, read
+        under ``_lease_lock`` in the same critical section that writes the new
+        one. A caller that wants to undo a failed keep-alive needs exactly that
+        value: capturing the expiry before the lock (or from a lease object read
+        outside it) can be stale - another renewal may complete in between - and
+        restoring a stale expiry would clobber a newer renewal that owns the
+        lease (CR on #2988). ``None`` for both when the lease is unknown or
+        already expired, matching :meth:`renew_lease`'s contract.
+        """
         async with self._lease_lock:
             lease = self._leases.get(lease_id)
             if lease is None:
-                return None
+                return None, None
             now = time.time()
             if lease.expires_at <= now:
                 self._leases.pop(lease_id, None)
-                return None
+                return None, None
+            previous_expiry = lease.expires_at
             lease.expires_at = now + ttl_seconds
-            return lease
+            return lease, previous_expiry
 
     async def restore_lease_expiry(
         self, lease_id: str, expires_at: float, *, attempted_expiry: float

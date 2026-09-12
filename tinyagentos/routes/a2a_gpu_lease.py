@@ -838,12 +838,15 @@ async def gpu_renew(request: Request, body: RenewBody):
         )
     if not _may_act_on(existing, actor):
         return JSONResponse({"error": "not the lease holder"}, status_code=403)
-    # The renewal's other half is the bus claim. Keep the instant before the
-    # extension: if the claim cannot be refreshed the local expiry is rolled
-    # back to it, so the two views agree rather than this controller holding a
-    # reservation every peer has already seen lapse.
-    previous_expiry = existing.expires_at
-    lease = await cluster.renew_lease(body.lease_id, ttl_seconds=float(body.ttl_seconds))
+    # The renewal's other half is the bus claim. The manager returns the expiry
+    # this renewal actually REPLACED (read under its lock): if the claim cannot
+    # be refreshed the local expiry is rolled back to it, so the two views agree
+    # rather than this controller holding a reservation every peer has already
+    # seen lapse. Reading the expiry here instead would be stale as soon as a
+    # concurrent renewal lands (CR on #2988).
+    lease, previous_expiry = await cluster.renew_lease_with_previous(
+        body.lease_id, ttl_seconds=float(body.ttl_seconds)
+    )
     if lease is None:
         return JSONResponse(
             {"error": "lease not found or expired", "lease_id": body.lease_id},

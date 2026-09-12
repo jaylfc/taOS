@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+from collections.abc import Awaitable, Callable
 
 import pytest
 import pytest_asyncio
@@ -34,6 +35,8 @@ class FakeBus:
         self.gets: list[dict] = []
         self.fail_get = False
         self.fail_post = False
+        # Optional async hook run while a post is "in flight" (see _install_fake_bus).
+        self.on_post: Callable[[dict], Awaitable[None]] | None = None
         self._id = 0
 
     def seed(self, body: str, sender: str = "@peer") -> dict:
@@ -92,6 +95,10 @@ def _install_fake_bus(monkeypatch, bus: FakeBus) -> None:
             return _Resp({"messages": list(bus.messages)})
 
         async def post(self, url, json=None, headers=None):
+            if bus.on_post is not None:
+                # A hook for tests that need something to happen while a post is
+                # in flight (e.g. a concurrent renewal landing before a failure).
+                await bus.on_post(dict(json or {}))
             if bus.fail_post:
                 raise RuntimeError("bus unreachable")
             payload = dict(json or {})
@@ -582,6 +589,82 @@ class TestClusterLeaseIntegration:
         assert freed.json()["admitted"] is True
         assert freed.json()["blockers"] == []
         assert took.status_code == 200
+
+    async def test_renewal_reports_the_expiry_it_actually_replaced(self, cluster):
+        """`previous_expiry` must come from inside the locked renewal (CR #2988).
+
+        Captured before the lock it can be stale: a renewal that completed in
+        between would then be rolled back by this one's failure, clobbering an
+        expiry that owns the lease.
+        """
+        lease = await cluster.claim_lease(
+            "linstation:gpu-cuda-0", caller="a2a:@a", ttl_seconds=60
+        )
+        assert lease is not None
+        claimed_expiry = lease.expires_at
+
+        first, previous = await cluster.renew_lease_with_previous(
+            lease.lease_id, ttl_seconds=120
+        )
+        assert previous == claimed_expiry
+        # The lease object is mutated in place, so take the attempted expiry now.
+        first_attempted = first.expires_at
+        second, replaced = await cluster.renew_lease_with_previous(
+            lease.lease_id, ttl_seconds=300
+        )
+        # The second renewal replaced the FIRST renewal's expiry, never the
+        # original: that is what makes the rollback below safe.
+        assert replaced == first_attempted
+
+        # A rollback for the superseded renewal must not clobber the newer one.
+        assert (
+            await cluster.restore_lease_expiry(
+                lease.lease_id, previous, attempted_expiry=first_attempted
+            )
+            is False
+        )
+        assert cluster.get_leases()[0].expires_at == second.expires_at
+        # ...while the renewal that owns the lease can still roll itself back.
+        assert (
+            await cluster.restore_lease_expiry(
+                lease.lease_id, replaced, attempted_expiry=second.expires_at
+            )
+            is True
+        )
+        assert cluster.get_leases()[0].expires_at == replaced
+
+    async def test_a_failed_keep_alive_does_not_clobber_a_newer_renewal(
+        self, lease_client, bus, cluster
+    ):
+        """A rollback restores only the expiry this request replaced (CR #2988).
+
+        The bus post runs outside the manager's lock, so a concurrent renewal
+        can land between the extension and its rollback. That newer expiry owns
+        the lease and must survive.
+        """
+        claimed = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        lease_id = claimed.json()["lease_id"]
+        assert lease_id is not None
+
+        async def _newer_renewal(_payload):
+            # A second /renew lands while this request's bus post is in flight.
+            await cluster.renew_lease(lease_id, ttl_seconds=900)
+            bus.fail_post = True
+
+        bus.on_post = _newer_renewal
+        renewed = await lease_client.post(
+            "/api/a2a/gpu/renew", json={"lease_id": lease_id, "ttl_seconds": 600}
+        )
+        assert renewed.status_code == 200
+        assert renewed.json()["bus_claim_refreshed"] is False
+        assert renewed.json()["bus_refresh_error"] == (
+            "a2a bus unavailable; a newer renewal stands"
+        )
+        # The newer (900s) renewal still stands: the failed one's rollback did
+        # not restore the stale expiry.
+        assert cluster.get_leases()[0].expires_at > time.time() + 700
 
     async def test_renew_republishes_the_claim_keep_alive(
         self, lease_client, bus, cluster
