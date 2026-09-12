@@ -410,7 +410,10 @@ Rules that matter when you use it:
   lease intact rather than freeing a node peers still see as claimed.
 - **An operator's release is attributed to the holder whose claim it closes.**
   A lease taken through `/claim` can also be freed by an explicit `lease_id` —
-  by its holder, or by an operator (`_may_act_on`). Since a bus claim is keyed
+  by its holder, or by an operator (`_may_act_on`). The node-scoped form (no
+  `lease_id`) only ever selects the caller's OWN lease: a body `holder` is
+  display text and never an identity, so it cannot be used to select someone
+  else's lease. Since a bus claim is keyed
   on its **author**, the operator's `[GPU RELEASE]` is posted as the freed
   holder, not as the operator (an admin session may set an explicit `from`, see
   *Posting to the coordination bus*); the response reports both, `holder` (who

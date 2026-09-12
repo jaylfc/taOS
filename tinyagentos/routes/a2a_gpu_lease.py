@@ -127,7 +127,14 @@ async def _resolve_actor(
     """Resolve the acting identity, or raise 401/403 (fail closed)."""
     if getattr(request.state, "is_admin", False):
         holder = _clean_handle(body_holder) or "@operator"
-        return _Actor(identity=holder, holder=holder, is_admin=True)
+        # A session admin acts as a FIXED verified principal; `holder` is the
+        # readable label only. Reading the body's holder as the admin's IDENTITY
+        # would let a `holder=` spelled like another holder's lease satisfy
+        # `_lease_owned_by` - i.e. take ownership of an `a2a:` lease the admin
+        # does not hold, on the node-scoped release/renew paths that take no
+        # lease id (CR on #2988). An operator still frees any lease by EXPLICIT
+        # id, which is the operator path.
+        return _Actor(identity="@operator", holder=holder, is_admin=True)
 
     caller = await check_agent_scope(request, scope)
     if caller is None:
@@ -475,11 +482,14 @@ def _lease_for_actor(cluster, resource_id: str, actor: _Actor):
 def _lease_owned_by(lease, actor: _Actor) -> bool:
     """True when *lease* was taken by *actor*.
 
-    Strict caller match: the node-scoped release/renew paths must not let an
-    admin's session free a lease it did not take (that is what the explicit-id
-    paths and the cluster lease API are for).
+    Identity only - never the body's ``holder=``. That field is caller-supplied
+    display text, so matching on it would let any caller claim another holder's
+    ``a2a:`` lease as its own (CR on #2988). The node-scoped release/renew paths
+    must not let an admin's session free a lease it did not take either (that is
+    what the explicit-id paths and the cluster lease API are for), which the
+    fixed ``@operator`` principal enforces.
     """
-    return lease.caller in (f"a2a:{actor.identity}", f"a2a:{actor.holder}")
+    return lease.caller == f"a2a:{actor.identity}"
 
 
 def _lease_bus_identity(lease) -> str | None:

@@ -668,6 +668,44 @@ class TestClusterLeaseIntegration:
         assert renewed.json()["expires_at"] == before
         assert cluster.get_leases()[0].expires_at == before
 
+    async def test_an_admin_cannot_take_ownership_of_an_agent_lease_by_holder(
+        self, lease_client, bus, cluster
+    ):
+        """`holder` is display data, never an identity (CR on #2988).
+
+        A session admin acts as a fixed principal. If the body's `holder` were
+        read as that identity, a holder spelled like an agent's `a2a:` lease
+        would satisfy the ownership check on the node-scoped release path (which
+        takes no lease id) and free a lease the admin does not hold.
+        """
+        cid, token = await _agent_token(lease_client._app, scopes=("a2a_send",))
+        async with _bare(lease_client._app) as bare:
+            claimed = await bare.post(
+                "/api/a2a/gpu/claim",
+                json={"node": "linstation", "vram_mb": 4096},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert claimed.status_code == 200
+        held = cluster.get_leases()[0].lease_id
+
+        # Node-scoped release (no id) while presenting the agent's identity.
+        spoofed = await lease_client.post(
+            "/api/a2a/gpu/release",
+            json={"node": "linstation", "holder": cid},
+        )
+        assert spoofed.status_code == 200
+        assert spoofed.json()["lease_id"] is None
+        assert [lease.lease_id for lease in cluster.get_leases()] == [held]
+
+        # The operator path is the explicit id, attributed to the holder.
+        released = await lease_client.post(
+            "/api/a2a/gpu/release",
+            json={"node": "linstation", "lease_id": held},
+        )
+        assert released.status_code == 200
+        assert released.json()["released_holder"] == "@taosmd"
+        assert cluster.get_leases() == []
+
     async def test_reclaiming_extends_rather_than_conflicts(self, lease_client, bus, cluster):
         first = await lease_client.post(
             "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
