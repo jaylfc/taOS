@@ -165,14 +165,14 @@ class ProjectStore(ProjectsDBStore):
                 )
                 # Demote any previous lead so the flag stays exclusive.
                 await self._db.execute(
-                    "UPDATE project_members SET is_lead = 0 "
+                    "UPDATE project_members SET is_lead = 0, role = 'member' "
                     "WHERE project_id = ? AND member_id != ? AND is_lead = 1",
                     (project_id, member_id),
                 )
             else:
                 # Clearing lead — unset the flag everywhere on this project.
                 await self._db.execute(
-                    "UPDATE project_members SET is_lead = 0 "
+                    "UPDATE project_members SET is_lead = 0, role = 'member' "
                     "WHERE project_id = ? AND is_lead = 1",
                     (project_id,),
                 )
