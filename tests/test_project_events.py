@@ -101,3 +101,47 @@ async def test_unsubscribe_missing_queue_is_noop():
     await broker.publish("zeta", ProjectEvent(kind="ok", payload={}))
     ev = await asyncio.wait_for(queue.get(), timeout=0.5)
     assert ev.kind == "ok"
+
+
+@pytest.mark.asyncio
+async def test_publish_does_not_deadlock_when_a_subscriber_queue_is_full():
+    broker = ProjectEventBroker(replay_size=32)
+    q_slow = await broker.subscribe("proj-x")
+    q_fast = await broker.subscribe("proj-x")
+    for i in range(32):
+        q_slow.put_nowait(ProjectEvent(kind="fill", payload={"i": i}))
+
+    async def do_publish():
+        await asyncio.wait_for(
+            broker.publish("proj-x", ProjectEvent(kind="live", payload={})),
+            timeout=0.5,
+        )
+
+    async def do_unsubscribe():
+        await asyncio.wait_for(
+            broker.unsubscribe("proj-x", q_slow),
+            timeout=0.5,
+        )
+
+    await asyncio.gather(do_publish(), do_unsubscribe())
+    ev = await asyncio.wait_for(q_fast.get(), timeout=0.5)
+    assert ev.kind == "live"
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_preserves_replay_history():
+    broker = ProjectEventBroker(replay_size=8)
+    await broker.publish("proj-y", ProjectEvent(kind="a", payload={"n": 1}))
+    await broker.publish("proj-y", ProjectEvent(kind="b", payload={"n": 2}))
+
+    q1 = await broker.subscribe("proj-y")
+    await asyncio.wait_for(q1.get(), timeout=0.5)
+    await asyncio.wait_for(q1.get(), timeout=0.5)
+
+    await broker.unsubscribe("proj-y", q1)
+
+    q2 = await broker.subscribe("proj-y")
+    first = await asyncio.wait_for(q2.get(), timeout=0.5)
+    second = await asyncio.wait_for(q2.get(), timeout=0.5)
+    assert first.kind == "a"
+    assert second.kind == "b"
