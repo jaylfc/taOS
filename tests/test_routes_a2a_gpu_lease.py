@@ -351,11 +351,21 @@ class TestClaim:
             "/api/a2a/gpu/check", params={"node": "local", "vram_mb": 2048}
         )
         assert mine.json()["admitted"] is True
-        # A different caller sees a claimed node.
-        peer = await lease_client.get(
-            "/api/a2a/gpu/check", params={"node": "local", "vram_mb": 2048, "channel": "gpu"}
+        # A DIFFERENT caller sees a claimed node. The admin's own identity is
+        # not a second caller: the block is only meaningful from another bus
+        # identity (CR on #2988).
+        _cid, token = await _agent_token(
+            lease_client._app, scopes=("a2a_receive",), handle="@taos"
         )
+        async with _bare(lease_client._app) as bare:
+            peer = await bare.get(
+                "/api/a2a/gpu/check",
+                params={"node": "local", "vram_mb": 2048},
+                headers={"Authorization": f"Bearer {token}"},
+            )
         assert peer.status_code == 200
+        assert peer.json()["admitted"] is False
+        assert peer.json()["blockers"] == ["@operator"]
 
     async def test_peer_owned_claim_is_denied_409(self, lease_client, bus, local_vram):
         local_vram(11000)
