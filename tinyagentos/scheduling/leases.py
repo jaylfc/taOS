@@ -86,6 +86,11 @@ class LeaseManager:
         if existing["renewed_count"] >= MAX_RENEW_COUNT:
             return None  # Force release — prevent lease hogging
 
+        # M1 fix: if the lease has already expired (purged by _cleanup_expired),
+        # do NOT renew it — returning a fresh TTL would resurrect a dead lease.
+        if existing["expires_at"] < now:
+            return None
+
         self._conn.execute(
             "UPDATE leases SET expires_at = ?, renewed_count = renewed_count + 1 WHERE id = ?",
             (now + ttl, existing["id"]),

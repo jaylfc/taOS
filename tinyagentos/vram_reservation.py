@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import threading
 import time
 from dataclasses import dataclass
 
@@ -77,6 +78,12 @@ class VramReservationManager:
         probe: "Callable[[], tuple[int, int] | None] | None" = None,
     ) -> None:
         self._lock = asyncio.Lock()
+        # Separate threading.Lock for synchronous sweep mutations — protects
+        # _pending / _reserved_vram_mb against concurrent available_vram()/stats()
+        # calls dispatched via asyncio.to_thread (M3).  The asyncio lock serializes
+        # the reserve check→probe→commit path; this thread-lock serializes the
+        # sweep itself so dict-changed-during-iteration cannot corrupt state.
+        self._thread_lock = threading.Lock()
         self._reserved_vram_mb: int = 0
         self._pending: dict[str, VramReservation] = {}
         self._ttl_seconds = float(ttl_seconds)
@@ -242,32 +249,37 @@ class VramReservationManager:
     # ── internal ────────────────────────────────────────────────────
 
     def _sweep_stale_unlocked(self, now: float | None = None) -> int:
-        """Drop reservations whose age exceeds the TTL. Not lock-guarded
-        on its own; :meth:`reserve` calls it under ``_lock``.
-        """
+        """Drop reservations whose age exceeds the TTL. Guarded by ``_thread_lock``
+        to prevent dict-changed-during-iteration / lost updates when called from
+        sync accessors (``available_vram``, ``stats``) dispatched via
+        ``asyncio.to_thread`` alongside other concurrent sweeps (M3)."""
         if self._ttl_seconds <= 0:
             return 0
-        now = time.time() if now is None else now
-        stale_ids = [
-            rid
-            for rid, res in self._pending.items()
-            if (now - res.created_at) > self._ttl_seconds
-        ]
-        for rid in stale_ids:
-            res = self._pending.pop(rid, None)
-            if res is None:
-                continue
-            self._reserved_vram_mb -= res.vram_mb
-            logger.info(
-                "vram-reservation: reclaimed stale %d MiB for %r (id=%s, "
-                "age=%.0fs > ttl=%.0fs)",
-                res.vram_mb, res.caller, rid,
-                now - res.created_at, self._ttl_seconds,
-            )
-        if stale_ids and self._reserved_vram_mb < 0:
-            # Defensive: never let accounting go negative after reclaim.
-            self._reserved_vram_mb = 0
-        return len(stale_ids)
+
+        # M3 fix: use threading.Lock for the synchronous sweep so concurrent
+        # available_vram()/stats() calls cannot race with each other's sweep.
+        with self._thread_lock:
+            now = time.time() if now is None else now
+            stale_ids = [
+                rid
+                for rid, res in self._pending.items()
+                if (now - res.created_at) > self._ttl_seconds
+            ]
+            for rid in stale_ids:
+                res = self._pending.pop(rid, None)
+                if res is None:
+                    continue
+                self._reserved_vram_mb -= res.vram_mb
+                logger.info(
+                    "vram-reservation: reclaimed stale %d MiB for %r (id=%s, "
+                    "age=%.0fs > ttl=%.0fs)",
+                    res.vram_mb, res.caller, rid,
+                    now - res.created_at, self._ttl_seconds,
+                )
+            if stale_ids and self._reserved_vram_mb < 0:
+                # Defensive: never let accounting go negative after reclaim.
+                self._reserved_vram_mb = 0
+            return len(stale_ids)
 
     def _probe_vram(self) -> tuple[int, int] | None:
         """Probe real-time free/total VRAM via nvidia-smi (or an injected probe).
