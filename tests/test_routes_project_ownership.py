@@ -291,36 +291,42 @@ async def test_owner_can_get_own_project(member_client):
 
 
 @pytest.mark.asyncio
-async def test_non_owner_update_returns_403(two_member_clients):
-    """A non-owner patching another user's project gets 403."""
+async def test_non_owner_update_returns_404(two_member_clients):
+    """WHY: a non-owner must not be able to distinguish 'exists but forbidden' from 'does not exist'."""
     alice, bob = two_member_clients
     resp = await alice.post("/api/projects", json={"name": "A", "slug": "a-upd"})
     pid = resp.json()["id"]
 
     resp = await bob.patch(f"/api/projects/{pid}", json={"name": "Hijacked"})
-    assert resp.status_code == 403
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_non_owner_delete_returns_403(two_member_clients):
-    """A non-owner deleting another user's project gets 403."""
+async def test_non_owner_delete_returns_404(two_member_clients):
+    """WHY: a non-owner must not be able to distinguish 'exists but forbidden' from 'does not exist'."""
     alice, bob = two_member_clients
     resp = await alice.post("/api/projects", json={"name": "A", "slug": "a-del"})
     pid = resp.json()["id"]
 
     resp = await bob.delete(f"/api/projects/{pid}")
-    assert resp.status_code == 403
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_non_owner_archive_returns_403(two_member_clients):
-    """A non-owner archiving another user's project gets 403."""
+async def test_non_owner_oracle_closed(two_member_clients):
+    """Both missing and forbidden projects return identical 404 bodies."""
     alice, bob = two_member_clients
-    resp = await alice.post("/api/projects", json={"name": "A", "slug": "a-arch"})
-    pid = resp.json()["id"]
+    resp = await alice.post("/api/projects", json={"name": "A", "slug": "alice-real"})
+    alice_pid = resp.json()["id"]
+    non_existent_id = "proj-non-existent"
 
-    resp = await bob.post(f"/api/projects/{pid}/archive")
-    assert resp.status_code == 403
+    # Both return 404 with identical error messages
+    missing_resp = await bob.patch(f"/api/projects/{non_existent_id}", json={"name": "Hijacked"})
+    forbidden_resp = await bob.patch(f"/api/projects/{alice_pid}", json={"name": "Hijacked"})
+
+    assert missing_resp.status_code == 404
+    assert forbidden_resp.status_code == 404
+    assert missing_resp.json() == forbidden_resp.json()
 
 
 @pytest.mark.asyncio
