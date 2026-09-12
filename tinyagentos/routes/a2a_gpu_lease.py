@@ -660,6 +660,7 @@ async def gpu_claim(request: Request, body: ClaimBody):
     lease_id: str | None = None
     lease = None
     created_lease = False
+    previous_expiry: float | None = None
     if cluster is not None and resource_id is not None:
         if existing is not None and existing.caller != caller:
             return JSONResponse(
@@ -696,7 +697,10 @@ async def gpu_claim(request: Request, body: ClaimBody):
                     },
                     status_code=409,
                 )
-            lease = await cluster.renew_lease(
+            # The expiry this renewal replaces, read under the manager's lock:
+            # a failed repost must undo exactly this extension (and a renewal
+            # that landed meanwhile owns the lease - see the rollback below).
+            lease, previous_expiry = await cluster.renew_lease_with_previous(
                 existing.lease_id, ttl_seconds=float(body.ttl_seconds)
             )
             lease_id = existing.lease_id if lease is not None else None
@@ -741,11 +745,31 @@ async def gpu_claim(request: Request, body: ClaimBody):
     try:
         posted = await _post_line(channel, actor, line)
     except HTTPException:
-        # Roll back only a lease THIS call created. A re-claim renews the
-        # caller's own pre-existing lease, and freeing that on a transient bus
-        # failure would drop a reservation the holder still believes it owns.
-        if created_lease and lease_id is not None and cluster is not None:
-            await cluster.release_lease(lease_id)
+        # Undo the LOCAL half of the lease this call touched. A call that
+        # created the lease frees it; one that re-claimed only extended the
+        # caller's own lease, and freeing that would drop a reservation the
+        # holder still believes it owns - but leaving the extension standing
+        # would be just as wrong the other way: the bus claim keeps its OLD
+        # expiry, so after that older instant peers free the card while this
+        # controller still holds it. Roll the extension back to the expiry it
+        # replaced, compare-and-set so a concurrent renewal is never clobbered
+        # (CR on #2988).
+        if cluster is not None and lease is not None:
+            if created_lease and lease_id is not None:
+                await cluster.release_lease(lease_id)
+            elif previous_expiry is not None:
+                restored = await cluster.restore_lease_expiry(
+                    lease.lease_id,
+                    previous_expiry,
+                    attempted_expiry=lease.expires_at,
+                )
+                logger.warning(
+                    "A2A GPU lease %s re-claim rolled back (restored=%s): "
+                    "claim repost failed (channel=%s)",
+                    lease.lease_id,
+                    restored,
+                    channel,
+                )
         raise
 
     return {

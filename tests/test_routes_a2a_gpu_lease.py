@@ -962,6 +962,32 @@ class TestClusterLeaseIntegration:
         assert retry.status_code == 502
         assert [lease.lease_id for lease in cluster.get_leases()] == [lease_id]
 
+    async def test_reclaim_rollback_restores_the_extended_expiry(
+        self, lease_client, bus, cluster
+    ):
+        """A failed re-claim repost must undo its own extension (CR on #2988).
+
+        The lease is renewed before the bus post; if the line never lands, the
+        bus claim keeps its OLD expiry - so leaving the extension standing
+        would let peers free the card at that older instant while this
+        controller still held it.
+        """
+        first = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        lease_id = first.json()["lease_id"]
+        before = cluster.get_leases()[0].expires_at
+
+        bus.fail_post = True
+        retry = await lease_client.post(
+            "/api/a2a/gpu/claim",
+            json={"node": "linstation", "vram_mb": 4096, "ttl_seconds": 900},
+        )
+        assert retry.status_code == 502
+        # Rolled back to the expiry the claim on the bus still carries.
+        assert [lease.lease_id for lease in cluster.get_leases()] == [lease_id]
+        assert cluster.get_leases()[0].expires_at == before
+
     async def test_check_blocks_when_the_scheduler_holds_a_lease(
         self, lease_client, bus, cluster
     ):
