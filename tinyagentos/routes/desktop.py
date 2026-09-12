@@ -205,7 +205,9 @@ async def serve_spa_root():
     index = SPA_DIR / "index.html"
     if index.exists():
         return FileResponse(index, media_type="text/html", headers=_HTML_NO_CACHE)
-    return JSONResponse({"error": "Desktop shell not built. Run: cd desktop && npm run build"}, status_code=404)
+    if SPA_DIR.is_dir():
+        return JSONResponse({"error": "Desktop shell not built — run: cd desktop && npm run build"}, status_code=404)
+    return JSONResponse({"error": "Desktop shell not installed (static/desktop missing; not built or staged on this install)"}, status_code=404)
 
 
 @router.get("/desktop/{rest:path}")
@@ -229,4 +231,6 @@ async def serve_spa(rest: str = ""):
     index = SPA_DIR / "index.html"
     if index.exists():
         return FileResponse(index, media_type="text/html", headers=_HTML_NO_CACHE)
-    return JSONResponse({"error": "Desktop shell not built. Run: cd desktop && npm run build"}, status_code=404)
+    if SPA_DIR.is_dir():
+        return JSONResponse({"error": "Desktop shell not built — run: cd desktop && npm run build"}, status_code=404)
+    return JSONResponse({"error": "Desktop shell not installed (static/desktop missing; not built or staged on this install)"}, status_code=404)
