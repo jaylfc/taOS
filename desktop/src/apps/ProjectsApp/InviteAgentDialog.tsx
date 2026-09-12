@@ -82,7 +82,6 @@ export function InviteAgentDialog({
     for (const s of SCOPE_PRESETS) init[s.value] = s.defaultOn;
     return init;
   });
-  const [isLead, setIsLead] = useState(false);
   const [manualApproval, setManualApproval] = useState(false);
   const [intervalSecs, setIntervalSecs] = useState(1800);
   const [submitting, setSubmitting] = useState(false);
@@ -114,7 +113,6 @@ export function InviteAgentDialog({
       if (s.disabled) continue;
       if (scopes[s.value]) out.add(s.value);
     }
-    if (isLead) out.add("lead");
     return [...out];
   };
 
@@ -261,15 +259,10 @@ export function InviteAgentDialog({
                   )}
                 </label>
               ))}
-              <label className="flex items-center gap-2 text-sm py-0.5 mt-1">
-                <input
-                  type="checkbox"
-                  checked={isLead}
-                  onChange={(e) => setIsLead(e.target.checked)}
-                  aria-label="Make this agent the project lead"
-                />
-                <span>Make this agent the project lead</span>
-              </label>
+              <p className="text-[11px] text-zinc-500 mt-1">
+                Lead is assigned after the agent registers — set it from the
+                project&apos;s members view.
+              </p>
             </fieldset>
 
             <fieldset className="border border-zinc-800 p-2 rounded">
