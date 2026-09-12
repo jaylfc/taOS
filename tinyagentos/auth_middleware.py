@@ -46,6 +46,20 @@ _A2A_BUS_READ_PATHS = frozenset({
 _A2A_BUS_WRITE_PATHS = frozenset({
     "/api/a2a/bus/send",
 })
+# A2A GPU lease coordination (taOS #893). Read (CHECK) needs a2a_receive; the
+# mutating actions (CLAIM/RELEASE/REQUEST/RENEW) need a2a_send. The route
+# resolves the acting identity from the token itself and forces the bus `from`
+# to the identity the token proves, so an agent can only claim/release for
+# itself. Same passthrough contract as the bus paths above.
+_A2A_GPU_READ_PATHS = frozenset({
+    "/api/a2a/gpu/check",
+})
+_A2A_GPU_WRITE_PATHS = frozenset({
+    "/api/a2a/gpu/claim",
+    "/api/a2a/gpu/release",
+    "/api/a2a/gpu/request",
+    "/api/a2a/gpu/renew",
+})
 # Observatory routes an agent may reach with its own registry JWT (scope
 # observatory_control). The route verifies the JWT + grant itself; the
 # middleware only passes the Bearer through. Admin/local-token is handled
@@ -82,6 +96,8 @@ _AGENT_TOKEN_PATHS = (
     _REGISTRY_FEED_PATHS
     | _A2A_BUS_READ_PATHS
     | _A2A_BUS_WRITE_PATHS
+    | _A2A_GPU_READ_PATHS
+    | _A2A_GPU_WRITE_PATHS
     | _OBSERVATORY_PATHS
     | _CONTAINER_REQUEST_PATHS
     | frozenset({"/api/agents/me/models", "/api/agents/me/model"})

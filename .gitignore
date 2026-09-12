@@ -10,9 +10,10 @@ build/
 static/desktop/
 mac/launcher/.build/
 *.db
-*.sqlite3
-*.pem
-.superpowers/
+ *.sqlite3
+ *.pem
+ *.pem.lock
+ .superpowers/
 .worktrees/
 
 # User config — never commit (contains IPs, backend URLs, agent definitions)
