@@ -141,10 +141,10 @@ class TestEvilMergeGuard:
         assert v.merge_hash != v.parent2_hash
 
     def test_merge_taking_one_side_wholesale_stays_green(self, tmp_path: Path):
-        """CONTROL A: both branches touch different, non-overlapping parts of
-        the same test file, producing a clean auto-merge.  Resolving by
-        keeping side-a's content wholesale matches what git would produce,
-        so the guard passes."""
+        """CONTROL A (clean auto-merge variant): both branches touch different,
+        non-overlapping parts of the same test file, producing a clean
+        auto-merge.  Resolving by keeping side-a's content wholesale matches
+        what git would produce, so the guard passes."""
         repo = tmp_path / "repo"
         _init_repo(repo)
 
@@ -174,6 +174,50 @@ class TestEvilMergeGuard:
         _checkout(repo, "main")
         _git_merge(repo, "side-a")
         _git_merge(repo, "side-b")
+
+        violations = cem.check_evil_merge(repo)
+        assert violations == []
+
+    def test_conflict_resolved_by_taking_one_side_wholesale_stays_green(self, tmp_path: Path):
+        """CONTROL A (conflict variant): the same contradictory branches as the
+        RED case, but the merge conflict is resolved by taking one parent's
+        content wholesale.  The guard must stay green because the blob at
+        head matches a parent exactly."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    pass\n",
+            "test: add test_principal",
+        )
+
+        _branch(repo, "side-a")
+        _checkout(repo, "side-a")
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    assert principal_is_accepted()\n",
+            "feat: assert accepted",
+        )
+
+        _checkout(repo, "main")
+        _branch(repo, "side-b")
+        _checkout(repo, "side-b")
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    assert principal_is_rejected()\n",
+            "feat: assert rejected",
+        )
+
+        _checkout(repo, "main")
+        _git_merge(repo, "side-a")
+        _git_merge(repo, "side-b")
+
+        # Resolve the conflict by taking side-a's content wholesale.
+        _resolve_and_commit(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    assert principal_is_accepted()\n",
+        )
 
         violations = cem.check_evil_merge(repo)
         assert violations == []
