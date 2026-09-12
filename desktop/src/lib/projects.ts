@@ -108,6 +108,7 @@ export type ProjectEvent = {
   kind: string;
   payload: Record<string, unknown>;
   ts: number;
+  id?: string;
 };
 
 export type Routine = {
@@ -449,11 +450,28 @@ export const projectsApi = {
       ),
   },
 
-  subscribeEvents(projectId: string, onEvent: (ev: ProjectEvent) => void): () => void {
+  subscribeEvents(
+    projectId: string,
+    onEvent: (ev: ProjectEvent) => void,
+    opts?: { onOpen?: () => void; onError?: () => void },
+  ): () => void {
     return createSseConnection({
       url: `/api/projects/${projectId}/events`,
       onMessage: (e) => {
-        try { onEvent(JSON.parse(e.data) as ProjectEvent); } catch { /* heartbeat / malformed — skip */ }
+        try {
+          onEvent(JSON.parse(e.data) as ProjectEvent);
+        } catch {
+          /* heartbeat / malformed — skip */
+        }
+      },
+      onOpen: opts?.onOpen,
+      onError: opts?.onError,
+      getMessageId: (msg) => {
+        try {
+          return (JSON.parse(msg.data) as ProjectEvent & { id?: string }).id;
+        } catch {
+          return undefined;
+        }
       },
     });
   },
