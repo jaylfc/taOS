@@ -356,3 +356,43 @@ class TestAgentScopeGating:
                 json={"state": "awaiting_review"},
             )
         assert resp.status_code == 401, resp.text
+
+
+@pytest.mark.asyncio
+async def test_retry_does_not_rollback_enclosing_transaction(tmp_path, monkeypatch):
+    """A collision inside an open transaction must not discard earlier writes."""
+    import tinyagentos.projects.ids as ids_mod
+
+    store = DocReviewStore(tmp_path / "projects.db")
+    await store.init()
+
+    call_count = 0
+    collision_id = "rev-collision"
+    fresh_id = "rev-fresh"
+
+    def fake_new_id(prefix):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return collision_id
+        return fresh_id
+
+    monkeypatch.setattr(ids_mod, "new_id", fake_new_id)
+
+    async with store._tx():
+        await store._db.execute(
+            "INSERT INTO doc_reviews (id, project_id, doc_path, review_state, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (collision_id, "p1", "existing.md", "awaiting_review", 1.0, 1.0),
+        )
+        await store._insert_with_retry(
+            "INSERT INTO doc_reviews (id, project_id, doc_path, review_state, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (collision_id, "p1", "new.md", "awaiting_review", 2.0, 2.0),
+            id_index=0,
+            new_id_fn=lambda: ids_mod.new_id("rev"),
+        )
+
+    row = await store.get_review("p1", "existing.md")
+    assert row is not None
+    assert row["id"] == collision_id

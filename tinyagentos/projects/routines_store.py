@@ -77,21 +77,22 @@ class RoutineStore(BaseStore):
                 raise ValueError("cron_expr is required for trigger_kind='cron'")
             _validate_cron(cron_expr)
 
-        rid = new_id("rtn")
         now = self._clock()
         webhook_token = secrets.token_urlsafe(32) if trigger_kind == "webhook" else None
         next_fire = _compute_next_fire(cron_expr, now) if trigger_kind == "cron" and enabled else None
 
-        await self._db.execute(
+        rid = await self._insert_with_retry(
             """INSERT INTO routines
                (id, project_id, title, body_template, assignee_id, trigger_kind,
                 cron_expr, webhook_token, enabled, last_fired, next_fire,
                 created_by, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)""",
             (
-                rid, project_id, title, body_template, assignee_id, trigger_kind,
+                new_id("rtn"), project_id, title, body_template, assignee_id, trigger_kind,
                 cron_expr, webhook_token, int(enabled), next_fire, created_by, now, now,
             ),
+            id_index=0,
+            new_id_fn=lambda: new_id("rtn"),
         )
         await self._db.commit()
         return await self.get_routine(rid)

@@ -131,3 +131,37 @@ async def test_answer_source_persistence(store):
     d3 = await store.create("@a", "q3", "approve_deny", user_id="u1")
     upd3 = await store.answer(d3["id"], "approve", "u1")
     assert upd3["answer"]["source"] == "in_app"
+
+
+@pytest.mark.asyncio
+async def test_create_retries_on_id_collision(store, monkeypatch):
+    """new_id collision in a plain BaseStore (non-projects) must be retried."""
+    import tinyagentos.decisions.decision_store as ds_mod
+
+    call_count = 0
+    duplicate_id = "dec-collision"
+    fresh_id = "dec-fresh"
+
+    def fake_new_id(prefix):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            return duplicate_id
+        return fresh_id
+
+    monkeypatch.setattr(ds_mod, "new_id", fake_new_id)
+
+    d1 = await store.create(
+        "@a", "q1", "single_select",
+        options=[{"label": "A", "value": "a"}],
+        user_id="u1",
+    )
+    assert d1["id"] == duplicate_id
+
+    d2 = await store.create(
+        "@a", "q2", "single_select",
+        options=[{"label": "B", "value": "b"}],
+        user_id="u1",
+    )
+    assert d2["id"] == fresh_id
+    assert call_count == 3

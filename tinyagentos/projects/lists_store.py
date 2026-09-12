@@ -36,14 +36,15 @@ class ProjectListsStore(ProjectsDBStore):
         description: str = "",
         status: str = "active",
     ) -> dict:
-        list_id = new_id("lst")
         now = time.time()
         async with self._tx():
-            await self._db.execute(
+            list_id = await self._insert_with_retry(
                 "INSERT INTO project_lists "
                 "(id, project_id, title, description, status, created_by, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (list_id, project_id, title, description, status, created_by, now, now),
+                (new_id("lst"), project_id, title, description, status, created_by, now, now),
+                id_index=0,
+                new_id_fn=lambda: new_id("lst"),
             )
         return await self.get_list(list_id)
 
@@ -140,24 +141,25 @@ class ProjectListEntriesStore(ProjectsDBStore):
         category: str | None = None,
         position: int | None = None,
     ) -> dict:
-        entry_id = new_id("ent")
         now = time.time()
 
         async with self._tx():
             if position is not None:
-                await self._db.execute(
+                entry_id = await self._insert_with_retry(
                     "INSERT INTO project_list_entries "
                     "(id, list_id, project_id, text, original_text, category, status, "
                     "done, author_kind, author_id, position, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
-                        entry_id, list_id, project_id, text, original_text,
+                        new_id("ent"), list_id, project_id, text, original_text,
                         category, "new", 0, author_kind, author_id,
                         position, now, now,
                     ),
+                    id_index=0,
+                    new_id_fn=lambda: new_id("ent"),
                 )
             else:
-                await self._db.execute(
+                entry_id = await self._insert_with_retry(
                     "INSERT INTO project_list_entries "
                     "(id, list_id, project_id, text, original_text, category, status, "
                     "done, author_kind, author_id, position, created_at, updated_at) "
@@ -165,10 +167,12 @@ class ProjectListEntriesStore(ProjectsDBStore):
                     "COALESCE((SELECT MAX(position) + 1 FROM project_list_entries "
                     "WHERE list_id = ? AND project_id = ?), 0), ?, ?)",
                     (
-                        entry_id, list_id, project_id, text, original_text,
+                        new_id("ent"), list_id, project_id, text, original_text,
                         category, "new", 0, author_kind, author_id,
                         list_id, project_id, now, now,
                     ),
+                    id_index=0,
+                    new_id_fn=lambda: new_id("ent"),
                 )
         return await self.get_entry(entry_id)
 

@@ -99,19 +99,20 @@ class ProjectElementStore(ProjectsDBStore):
         if slug is None or slug == "":
             slug = slugify_element_name(name)
         validate_element_slug(slug)
-        eid = new_id("elm")
         now = time.time()
         try:
             async with self._tx():
-                await self._db.execute(
+                eid = await self._insert_with_retry(
                     """INSERT INTO project_elements
                        (id, project_id, name, slug, type, description, assignee_id,
                         settings, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        eid, project_id, name, slug, type, description, assignee_id,
+                        new_id("elm"), project_id, name, slug, type, description, assignee_id,
                         json.dumps(settings or {}), now, now,
                     ),
+                    id_index=0,
+                    new_id_fn=lambda: new_id("elm"),
                 )
         except sqlite3.IntegrityError as exc:
             # UNIQUE(project_id, slug) is the only uniqueness a caller can

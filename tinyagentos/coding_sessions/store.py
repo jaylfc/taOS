@@ -82,18 +82,19 @@ class CodingSessionStore(BaseStore):
         worker: str | None = None,
         project_id: str | None = None,
     ) -> dict:
-        sid = new_id("cs")
         now = time.time()
         resolved_alias = alias.strip() if alias and alias.strip() else _slugify(workdir.split("/")[-1] or workdir)
-        await self._db.execute(
+        sid = await self._insert_with_retry(
             """INSERT INTO coding_sessions
                (id, alias, cli, launch_target, worker, workdir, repo_source,
                 tmux_session, status, project_id, created_by, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'starting', ?, ?, ?, ?)""",
             (
-                sid, resolved_alias, cli, launch_target, worker, workdir,
+                new_id("cs"), resolved_alias, cli, launch_target, worker, workdir,
                 json.dumps(repo_source), project_id, created_by, now, now,
             ),
+            id_index=0,
+            new_id_fn=lambda: new_id("cs"),
         )
         await self._db.commit()
         return await self.get_session(sid)
