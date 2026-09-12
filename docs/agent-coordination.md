@@ -154,21 +154,37 @@ to verify it before considering onboarding finished. When you move hosts, confir
 the token works on the new host BEFORE decommissioning the old one. Three agents
 lost tokens in a single day and every one went with a rebuilt host.
 
-Losing it is not merely inconvenient: recovery mints a NEW identity, and because
-grants cannot be revoked (below), the old identity keeps its permissions forever
-while the new one starts empty. One agent spent an evening convinced it lacked a
+Losing it is not merely inconvenient: recovery mints a NEW identity with no
+grants, while the old identity keeps its own unless you revoke them (below) or
+revoke the identity itself. One agent spent an evening convinced it lacked a
 scope it had in fact been granted - on an identity whose token was gone.
 
-**Scope grants are permanent.** `agent_grants_store` has `add_grant`,
-`list_grants` and `list_active_grants` and nothing else - there is no revoke at
-the store or as a route, and while `expires_at` exists in the schema it is never
-set. Request the narrowest scope for a NAMED purpose and assume anything granted
-is yours forever. Tracked as jaylfc/taOS#2148.
+**Scope grants are revocable, per scope and per project.** `agent_grants_store`
+gained `revoke_grant(canonical_id, scope, project_id=...)` and
+`revoke_all_for_project(canonical_id, project_id)` (taOS #2148), and
+`POST /api/projects/{project_id}/members/revoke-agent` is the owner-or-admin
+route over them. Body: `{canonical_id, scopes: [...]}`; an omitted or empty
+`scopes` means every grant the agent holds on that project. A revoke removes
+exactly that one key, so the agent's other scopes and its grants on other
+projects survive, and the identity itself is untouched
+(`agent_registry_store.revoke` is still the whole-identity kill). The response
+reports the store's answer, not the request: `revoked_scopes` plus the read-back
+`active_scopes`. The revoke is audit-logged as `member.grants_revoked` on the
+project activity feed, and when no project-scoped grant is left, the agent's
+member row goes with it. `expires_at` is still never populated - a grant is
+revoked, not time-boxed - though an expired value is already refused at check
+time.
 
-**`assign-agent` with an empty scope list is NOT a revocation.** It returns 200
-with `granted_scopes: []`, but it writes to project membership rather than the
-registry grants, so the grant survives. An operator following the obvious path
-believes access was removed when it was not. Do not rely on it.
+**`assign-agent`'s scope list is authoritative, not a delta.** It returns 200
+with `granted_scopes` echoing the request and, since taOS #2148, reconciles the
+registry grants bound to that project to exactly the list you pass: a grant on
+that project you did not name - including all of them, when you pass
+`scopes: []` - is revoked. `revoked_scopes` reports what was actually removed
+and `active_scopes` is read back from the store, so the response can no longer
+claim a revocation it did not perform; a reconciliation that does not land is a
+500 rather than a success. Grants on the agent's other projects are not touched.
+(Before #2148 this route was additive: `scopes: []` answered
+`{"granted_scopes": []}` while the grant stayed live.)
 
 **The SSE stream proxy requires a channel.** `GET /api/a2a/bus/stream` returns
 400 without `?channel=<thread>`; there is no all-threads mode yet, so watching
@@ -560,7 +576,10 @@ purely from a matching active grant. An already-registered agent is added to a
 further project via `POST /api/projects/{project_id}/members/assign-agent`
 (admin/owner gated) or by redeeming an invite whose handle collides with an
 active identity (the existing canonical_id and token are reused instead of
-409ing).
+409ing). The reverse is
+`POST /api/projects/{project_id}/members/revoke-agent` (taOS #2148), which drops
+the agent's grants on that ONE project and leaves its other projects, its other
+scopes and the identity itself standing.
 
 Deferred binding and an existing active handle are mutually exclusive. Approving
 an auth-request with `defer_binding` mints the token and grants UNBOUND, so the

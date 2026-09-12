@@ -9,6 +9,8 @@ const SCOPE_PRESETS: { value: string; label: string; defaultOn: boolean; disable
   { value: "canvas_write", label: "canvas_write", defaultOn: true },
 ];
 
+type GrantRow = { scope?: string; project_id?: string | null; expires_at?: string | null };
+
 export function AssignAgentToProjectDialog({
   entry,
   onClose,
@@ -31,6 +33,13 @@ export function AssignAgentToProjectDialog({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<string | null>(null);
+  // Scopes the agent ALREADY holds on the selected project. The server treats
+  // the posted `scopes` list as the agent's COMPLETE set for the project, so a
+  // scope omitted here is REVOKED; anything outside the preset list is shown
+  // (and kept) rather than dropped behind the operator's back (taOS #2148).
+  const [heldScopes, setHeldScopes] = useState<string[]>([]);
+  const [heldLoading, setHeldLoading] = useState(false);
+  const [heldErr, setHeldErr] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -55,8 +64,62 @@ export function AssignAgentToProjectDialog({
     };
   }, []);
 
+  // Load the agent's current grants so the dialog can show (and keep) the
+  // scopes it already holds on the selected project. A failed read leaves us
+  // unable to tell "no grants" from "unknown", so it blocks submission: posting
+  // an incomplete list on top of a failed read is how access disappears.
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setHeldScopes([]);
+      setHeldErr(null);
+      setHeldLoading(false);
+      return;
+    }
+    let active = true;
+    setHeldLoading(true);
+    setHeldErr(null);
+    fetch(
+      `/api/agents/registry/grants?canonical_id=${encodeURIComponent(entry.canonical_id)}`,
+      { credentials: "include" },
+    )
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data: unknown) => {
+        if (!active) return;
+        const rows = (data as { grants?: GrantRow[] } | null)?.grants;
+        const now = Date.now();
+        const held = (Array.isArray(rows) ? rows : [])
+          .filter((row) => {
+            if (!row?.scope || row.project_id !== selectedProjectId) return false;
+            if (row.expires_at && Date.parse(row.expires_at) <= now) return false;
+            return true;
+          })
+          .map((row) => String(row.scope));
+        setHeldScopes([...new Set(held)].sort());
+      })
+      .catch((e: unknown) => {
+        if (active) {
+          setHeldScopes([]);
+          setHeldErr(e instanceof Error ? e.message : "failed to load current scopes");
+        }
+      })
+      .finally(() => {
+        if (active) setHeldLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedProjectId, entry.canonical_id]);
+
+  const presetValues = new Set(SCOPE_PRESETS.map((s) => s.value));
+  const heldExtras = heldScopes.filter((s) => !presetValues.has(s));
+
   const buildScopes = (): string[] => {
     const out = new Set<string>();
+    // Scopes the agent already holds outside the preset list are preserved.
+    for (const s of heldExtras) out.add(s);
     // project_tasks is always granted regardless of its (disabled) checkbox state.
     out.add("project_tasks");
     for (const s of SCOPE_PRESETS) {
@@ -68,7 +131,7 @@ export function AssignAgentToProjectDialog({
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (submitting || !selectedProjectId) return;
+    if (submitting || !selectedProjectId || heldLoading || heldErr) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -178,6 +241,29 @@ export function AssignAgentToProjectDialog({
                 />
                 <span>Lead</span>
               </label>
+              {heldLoading && (
+                <p className="text-[10px] text-zinc-500 mt-1">Loading current scopes…</p>
+              )}
+              {heldErr && (
+                <p className="text-red-400 text-[10px] mt-1">
+                  Could not load this agent&apos;s current scopes ({heldErr}); assigning is
+                  disabled, because a scope it already holds and does not see here would be
+                  revoked. Reopen the dialog to retry.
+                </p>
+              )}
+              {heldExtras.map((s) => (
+                <label key={s} className="flex items-center gap-2 text-sm py-0.5">
+                  <input
+                    type="checkbox"
+                    checked
+                    readOnly
+                    disabled
+                    aria-label={`Scope ${s}`}
+                  />
+                  <span>{s}</span>
+                  <span className="text-[10px] text-zinc-500">(current grant — kept)</span>
+                </label>
+              ))}
             </fieldset>
 
             {error && <div role="alert" className="text-red-400 text-xs">{error}</div>}
@@ -192,7 +278,9 @@ export function AssignAgentToProjectDialog({
               </button>
               <button
                 type="submit"
-                disabled={submitting || !selectedProjectId || loadingProjects}
+                disabled={
+                  submitting || !selectedProjectId || loadingProjects || heldLoading || !!heldErr
+                }
                 className="px-3 py-1 bg-blue-600 rounded text-sm disabled:opacity-50"
               >
                 {submitting ? "Assigning…" : "Assign to project"}

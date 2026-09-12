@@ -153,6 +153,36 @@ class TestAgentFilesProjectBinding:
 
 
 @pytest.mark.asyncio
+class TestGrantRevocationCutsAccess:
+    """taOS #2148: a revoked grant must refuse the agent's NEXT request."""
+
+    async def test_revoke_route_stops_the_next_files_read(self, ctx):
+        pid = await _new_project(ctx, "revokefiles")
+        cid, token = await _mint_agent(ctx, pid, ("files_read",))
+
+        async with _bare(ctx.app) as bare:
+            before = await bare.get(
+                "/api/projects/revokefiles/files", headers=_hdr(token)
+            )
+        assert before.status_code == 200, before.text
+
+        resp = await ctx.client.post(
+            f"/api/projects/{pid}/members/revoke-agent",
+            json={"canonical_id": cid, "scopes": ["files_read"]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["revoked_scopes"] == ["files_read"]
+        assert resp.json()["active_scopes"] == []
+
+        async with _bare(ctx.app) as bare:
+            after = await bare.get(
+                "/api/projects/revokefiles/files", headers=_hdr(token)
+            )
+        assert after.status_code == 403, after.text
+        assert after.status_code != 200
+
+
+@pytest.mark.asyncio
 class TestSessionFilesUnchanged:
     async def test_owner_session_list_allowed(self, ctx):
         await _new_project(ctx, "ownerfiles")
