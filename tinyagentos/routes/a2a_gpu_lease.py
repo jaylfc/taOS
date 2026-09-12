@@ -824,6 +824,16 @@ async def gpu_release(request: Request, body: ReleaseBody):
             )
             released_id = lease.lease_id if lease is not None else None
 
+    # A lease found by id OWNS the release's node and channel: the request's
+    # `node`/`channel` are free text, so honouring them would post a RELEASE
+    # for a different resource - on a thread the claim was never on - and only
+    # then delete the identified local lease, leaving the real claim open
+    # (CR on #2988). Request values stand for a bus-only release with no
+    # matching lease, which is the idempotent "the node is free" post.
+    if lease is not None:
+        node = (lease.resource_id or "").partition(":")[0] or node
+        channel = getattr(lease, "claim_channel", "") or channel
+
     # Whose claim the [GPU RELEASE] closes. An operator freeing another holder's
     # lease by explicit id must attribute the line to THAT holder: a claim is
     # keyed on its bus AUTHOR, so a line posted as @operator clears nothing and

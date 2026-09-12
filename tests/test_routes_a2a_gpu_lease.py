@@ -519,6 +519,35 @@ class TestClusterLeaseIntegration:
         assert checked.json()["admitted"] is True
         assert checked.json()["blockers"] == []
 
+    async def test_release_uses_the_leases_own_node_and_channel(
+        self, lease_client, bus, cluster
+    ):
+        """The release line belongs to the lease, not to the request (CR #2988).
+
+        A request may name any node and channel; posting the RELEASE from those
+        would announce a different resource - on a thread the claim was never
+        on - and then delete the identified local lease anyway.
+        """
+        claimed = await lease_client.post(
+            "/api/a2a/gpu/claim",
+            json={"node": "linstation", "vram_mb": 4096, "channel": "gpu-lab"},
+        )
+        assert claimed.status_code == 200
+        lease_id = claimed.json()["lease_id"]
+        assert lease_id is not None
+
+        released = await lease_client.post(
+            "/api/a2a/gpu/release",
+            json={"node": "local", "lease_id": lease_id, "channel": "gpu-other"},
+        )
+        assert released.status_code == 200
+        # The lease's node/channel win over the request's.
+        assert released.json()["node"] == "linstation"
+        assert released.json()["channel"] == "gpu-lab"
+        assert bus.sends[-1]["payload"]["thread"] == "gpu-lab"
+        assert bus.last_line == "[GPU RELEASE] node=linstation holder=@operator"
+        assert cluster.get_leases() == []
+
     async def test_claim_publishes_a_bus_expiry_from_its_lease(
         self, lease_client, bus, cluster
     ):
