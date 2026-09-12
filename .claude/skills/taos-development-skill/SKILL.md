@@ -231,7 +231,9 @@ time, so patching the module attribute AFTER `create_app` does nothing.
 - GitHub Actions: `.github/workflows/ci.yml` in upstream repo
 - Uses `uv sync --frozen` and `pytest -n auto`
 - Also required: `spa-build` (npm build + tsc + **vitest** - a desktop type error or failing
-  component test fails CI), a "Verify app starts" `create_app` import smoke, `lint`
+  component test fails CI), `desktop-e2e` (the Playwright suite under `desktop/tests`, run on
+  webkit - see "Desktop SPA build + test" below), a "Verify app starts" `create_app` import
+  smoke, `lint`
   (`compileall`), `docs-build`, and `cla`. `docs-build` is the only job with the mkdocs
   toolchain installed (mkdocs is NOT a project dependency, so `uv sync` does not provide
   it): it runs `tests/test_mkdocs_exclude.py` with `TAOS_DOCS_BUILD_TESTS=1`, which turns
@@ -707,8 +709,23 @@ cd desktop
 npm install                # Node.js 22+
 npm run build              # tsc -b && vite build → outputs to static/desktop/
 npm run test               # vitest (unit/component tests)
-npm run test:e2e           # Playwright browser tests (needs running server)
+npm run test:e2e           # Playwright browser tests (starts vite itself)
 ```
+
+`test:e2e` needs no backend: every spec `page.route()`-mocks the API it talks to,
+and `playwright.config.ts` starts `npm run dev` on :5173 as its `webServer`. It
+does need the browser binary, and that browser is **webkit**, not chromium: the
+config declares one project, `iphone-14`, built from `devices["iPhone 14"]`,
+whose `defaultBrowserType` is `webkit`. Install it once with
+
+```bash
+cd desktop && npx playwright install --with-deps webkit
+```
+
+Installing chromium instead fails every test at launch with
+`browserType.launch: Executable doesn't exist at .../webkit-<rev>/pw_run.sh`.
+The suite runs in CI as the `desktop-e2e` job; it is not schedule-only, so a
+spec broken by a PR fails that PR.
 
 ## Adding an app to the catalog
 

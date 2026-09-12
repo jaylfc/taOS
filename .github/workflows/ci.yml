@@ -288,3 +288,64 @@ jobs:
             gh release upload "${{ github.event.release.tag_name }}" \
               desktop-bundle.tar.gz desktop-tree.txt desktop-bundle.sha256 --clobber
           fi
+
+  # The Playwright suite under desktop/tests has existed since the mobile-shell
+  # work but nothing ever ran it: `npm run test:e2e` appears in
+  # desktop/package.json and in no workflow, so five spec files (24 tests across
+  # agent-shortcuts, canvas-e2e, projects-mobile, taostalk-connect and
+  # tests/e2e/sw-and-reconnect) were dead weight in the tree. This job executes
+  # them on every push and pull_request, the same triggers as the rest of ci.yml
+  # -- deliberately NOT schedule-only, because a suite that only runs nightly is
+  # how the previous silence went unnoticed.
+  #
+  # The browser is WEBKIT, not chromium. playwright.config.ts declares exactly
+  # one project, `iphone-14`, built from devices["iPhone 14"], and that device's
+  # defaultBrowserType is "webkit". Installing chromium here would leave every
+  # test failing with "Executable doesn't exist at .../webkit-<rev>/pw_run.sh",
+  # which is what happens if you copy the usual chromium recipe.
+  #
+  # No backend is needed: every spec page.route()-mocks its API calls, so the
+  # config's webServer (`npm run dev`, vite on :5173) is the whole dependency.
+  # CI=true is set by Actions, so playwright applies retries: 2, workers: 1,
+  # forbidOnly and reuseExistingServer: false from that config.
+  desktop-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install deps
+        run: |
+          cd desktop
+          npm ci --silent
+
+      - name: Install Playwright WebKit
+        run: |
+          cd desktop
+          npx playwright install --with-deps webkit
+
+      - name: Run Playwright e2e
+        run: |
+          cd desktop
+          npx playwright test --reporter=list
+
+      # The config's reporter is "html", which writes a directory rather than
+      # job-log lines; --reporter=list above puts the per-test results in the
+      # log, and this keeps the html report plus traces/screenshots for the
+      # runs where the log is not enough.
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            desktop/playwright-report
+            desktop/test-results
+          retention-days: 7
+          if-no-files-found: ignore
