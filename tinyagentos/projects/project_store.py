@@ -166,7 +166,6 @@ class ProjectStore(ProjectsDBStore):
         settings: dict | None = None,
         user_id: str = "",
     ) -> dict:
-        pid = new_id("prj")
         now = time.time()
         try:
             async with self._tx():
@@ -179,11 +178,13 @@ class ProjectStore(ProjectsDBStore):
                 # creates would both pass and both insert.
                 if await self.get_project_by_name(name) is not None:
                     raise ProjectConflict("name", name)
-                await self._db.execute(
+                pid = await self._insert_with_retry(
                     """INSERT INTO projects
                        (id, name, slug, description, status, created_by, user_id, created_at, updated_at, settings)
                        VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
-                    (pid, name, slug, description, created_by, user_id, now, now, json.dumps(settings or {})),
+                    (new_id("prj"), name, slug, description, created_by, user_id, now, now, json.dumps(settings or {})),
+                    id_index=0,
+                    new_id_fn=lambda: new_id("prj"),
                 )
         except sqlite3.IntegrityError as exc:
             # UNIQUE(slug) is the only schema-level uniqueness a caller can

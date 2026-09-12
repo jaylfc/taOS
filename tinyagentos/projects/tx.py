@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import weakref
 from contextlib import asynccontextmanager
 
@@ -321,3 +322,27 @@ class ProjectsDBStore(BaseStore):
         """
         if not after_commit(self._db, effect):
             await effect()
+
+    async def _insert_with_retry(
+        self,
+        sql: str,
+        params: tuple,
+        id_index: int,
+        new_id_fn,
+        max_attempts: int = 5,
+    ) -> str:
+        params_list = list(params)
+        for attempt in range(max_attempts):
+            try:
+                await self._db.execute(sql, params_list)
+                return params_list[id_index]
+            except sqlite3.IntegrityError as exc:
+                msg = str(exc)
+                if (
+                    "UNIQUE constraint failed:" in msg
+                    and msg.rstrip().endswith(".id")
+                ):
+                    params_list[id_index] = new_id_fn()
+                    continue
+                raise
+        raise sqlite3.IntegrityError("unique id collision after max retries")

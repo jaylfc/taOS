@@ -49,13 +49,14 @@ class StrikeStore(BaseStore):
         Returns the total strike count for the task after this insert (so the
         caller can decide whether the threshold was just crossed).
         """
-        sid = new_id("str")
         now = time.time()
-        await self._db.execute(
+        sid = await self._insert_with_retry(
             """INSERT INTO task_strikes
                (id, task_id, step, log_tail, actor, created_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (sid, task_id, step, log_tail, actor, now),
+            (new_id("str"), task_id, step, log_tail, actor, now),
+            id_index=0,
+            new_id_fn=lambda: new_id("str"),
         )
         await self._db.commit()
         return await self.count_strikes(task_id)

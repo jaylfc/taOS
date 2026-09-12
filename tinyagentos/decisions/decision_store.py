@@ -185,18 +185,19 @@ class DecisionStore(BaseStore):
             raise ValueError(f"invalid decision type: {type!r}")
         if priority not in PRIORITIES:
             raise ValueError(f"invalid priority: {priority!r}")
-        did = new_id("dec")
         now = time.time()
-        await self._db.execute(
+        did = await self._insert_with_retry(
             """INSERT INTO decisions
                (id, from_agent, project_id, user_id, question, type, options, context,
                 priority, status, created_at, deadline, parent_decision_id,
                 checkpoint_ref, timeline_id, metadata)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)""",
-            (did, from_agent, project_id, user_id, question, type,
+            (new_id("dec"), from_agent, project_id, user_id, question, type,
              json.dumps(options or []), context, priority, now, deadline,
              parent_decision_id, checkpoint_ref, timeline_id,
              json.dumps(metadata or {})),
+            id_index=0,
+            new_id_fn=lambda: new_id("dec"),
         )
         await self._db.commit()
         return await self.get(did)

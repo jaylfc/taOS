@@ -712,3 +712,29 @@ async def test_park_closed_task_is_noop(store):
     await store.close_task(t["id"], closed_by="u")
     ok = await store.park_task(t["id"], actor="system")
     assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_create_task_retries_on_id_collision(store, monkeypatch):
+    """new_id collision must be retried, not surfaced as IntegrityError."""
+    import tinyagentos.projects.task_store as task_store_mod
+
+    call_count = 0
+    duplicate_id = "tsk-collision"
+    fresh_id = "tsk-fresh"
+
+    def fake_new_id(prefix):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            return duplicate_id
+        return fresh_id
+
+    monkeypatch.setattr(task_store_mod, "new_id", fake_new_id)
+
+    t1 = await store.create_task(project_id="p", title="T1", created_by="u")
+    assert t1["id"] == duplicate_id
+
+    t2 = await store.create_task(project_id="p", title="T2", created_by="u")
+    assert t2["id"] == fresh_id
+    assert call_count == 3

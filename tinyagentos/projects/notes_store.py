@@ -32,14 +32,15 @@ class ProjectNotesStore(ProjectsDBStore):
         author_id: str,
         author_kind: str = "user",
     ) -> dict:
-        note_id = new_id("note")
         now = time.time()
         async with self._tx():
-            await self._db.execute(
+            note_id = await self._insert_with_retry(
                 """INSERT INTO project_notes
                    (id, project_id, title, body, author_id, author_kind, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (note_id, project_id, title, body, author_id, author_kind, now, now),
+                (new_id("note"), project_id, title, body, author_id, author_kind, now, now),
+                id_index=0,
+                new_id_fn=lambda: new_id("note"),
             )
         return await self.get_note(note_id)
 

@@ -118,14 +118,14 @@ class SharedDocsStore(BaseStore):
     async def create_doc(self, owner_user_id: str, kind: str, title: str = "") -> dict:
         if kind not in DOC_KINDS:
             raise ValueError(f"invalid kind {kind!r}; expected one of {DOC_KINDS}")
-        doc_id = new_id("doc")
         now = time.time()
-        await self._db.execute(
+        doc_id = await self._insert_with_retry(
             "INSERT INTO shared_docs (id, owner_user_id, kind, title, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (doc_id, owner_user_id, kind, title, now, now),
+            (new_id("doc"), owner_user_id, kind, title, now, now),
+            id_index=0,
+            new_id_fn=lambda: new_id("doc"),
         )
-        # The owner is always a member.
         await self._db.execute(
             "INSERT INTO shared_doc_members (doc_id, member_type, member_id, created_at) "
             "VALUES (?, 'user', ?, ?)",
@@ -184,22 +184,24 @@ class SharedDocsStore(BaseStore):
     async def add_entry(
         self, doc_id: str, text: str, author: str = "", editor_type: str = "user"
     ) -> dict:
-        entry_id = new_id("ent")
         now = time.time()
-        await self._db.execute(
+        entry_id = await self._insert_with_retry(
             "INSERT INTO shared_doc_entries (id, doc_id, text, author, created_at) "
             "VALUES (?, ?, ?, ?, ?)",
-            (entry_id, doc_id, text, author, now),
+            (new_id("ent"), doc_id, text, author, now),
+            id_index=0,
+            new_id_fn=lambda: new_id("ent"),
         )
         await self._db.execute(
             "UPDATE shared_docs SET updated_at = ? WHERE id = ?", (now, doc_id)
         )
-        rev_id = new_id("rev")
-        await self._db.execute(
+        rev_id = await self._insert_with_retry(
             "INSERT INTO shared_doc_entry_revisions "
             "(id, entry_id, rev_index, editor_id, editor_type, op, diff, snapshot, created_at) "
             "VALUES (?, ?, 0, ?, ?, 'create', NULL, ?, ?)",
-            (rev_id, entry_id, author, editor_type, text, now),
+            (new_id("rev"), entry_id, author, editor_type, text, now),
+            id_index=0,
+            new_id_fn=lambda: new_id("rev"),
         )
         await self._db.commit()
         cur = await self._db.execute("SELECT * FROM shared_doc_entries WHERE id = ?", (entry_id,))
@@ -233,13 +235,14 @@ class SharedDocsStore(BaseStore):
 
         snapshot = new_text if next_index % CHECKPOINT_EVERY == 0 else None
 
-        rev_id = new_id("rev")
         now = time.time()
-        await self._db.execute(
+        rev_id = await self._insert_with_retry(
             "INSERT INTO shared_doc_entry_revisions "
             "(id, entry_id, rev_index, editor_id, editor_type, op, diff, snapshot, created_at) "
             "VALUES (?, ?, ?, ?, ?, 'edit', ?, ?, ?)",
-            (rev_id, entry_id, next_index, editor_id, editor_type, diff_text, snapshot, now),
+            (new_id("rev"), entry_id, next_index, editor_id, editor_type, diff_text, snapshot, now),
+            id_index=0,
+            new_id_fn=lambda: new_id("rev"),
         )
         await self._db.execute(
             "UPDATE shared_doc_entries SET text = ? WHERE id = ?", (new_text, entry_id)

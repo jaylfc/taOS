@@ -290,18 +290,19 @@ class ProjectTaskStore(ProjectsDBStore):
         parent_task_id: str | None = None,
         element_id: str | None = None,
     ) -> dict:
-        tid = new_id("tsk")
         now = time.time()
         async with self._tx():
-            await self._db.execute(
+            tid = await self._insert_with_retry(
                 """INSERT INTO project_tasks
                    (id, project_id, parent_task_id, title, body, status, priority, labels,
                     assignee_id, element_id, created_by, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    tid, project_id, parent_task_id, title, body, priority,
+                    new_id("tsk"), project_id, parent_task_id, title, body, priority,
                     json.dumps(labels or []), assignee_id, element_id, created_by, now, now,
                 ),
+                id_index=0,
+                new_id_fn=lambda: new_id("tsk"),
             )
         new_task = await self.get_task(tid)
         await self._publish(project_id, "task.created", {"id": new_task["id"], "task": new_task})
@@ -771,14 +772,15 @@ class ProjectTaskStore(ProjectsDBStore):
             t = await self.get_task(tid)
             if t is None or t["project_id"] != project_id:
                 raise ValueError(f"task not in project: {tid}")
-        rid = new_id("rel")
         now = time.time()
         async with self._tx():
-            await self._db.execute(
+            rid = await self._insert_with_retry(
                 """INSERT INTO task_relationships
                    (id, project_id, from_task_id, to_task_id, kind, created_by, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (rid, project_id, from_task_id, to_task_id, kind, created_by, now),
+                (new_id("rel"), project_id, from_task_id, to_task_id, kind, created_by, now),
+                id_index=0,
+                new_id_fn=lambda: new_id("rel"),
             )
         await self._publish(project_id, "relationship.added", {"from": from_task_id, "to": to_task_id, "kind": kind})
         return {
@@ -932,14 +934,15 @@ class ProjectTaskStore(ProjectsDBStore):
                 row = await cur.fetchone()
             if row is None or row[0] != task_id:
                 raise ValueError("replies_to_comment_id not in this task")
-        cid = new_id("cmt")
         now = time.time()
         async with self._tx():
-            await self._db.execute(
+            cid = await self._insert_with_retry(
                 """INSERT INTO task_comments
                    (id, task_id, author_id, body, replies_to_comment_id, created_at)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (cid, task_id, author_id, body, replies_to_comment_id, now),
+                (new_id("cmt"), task_id, author_id, body, replies_to_comment_id, now),
+                id_index=0,
+                new_id_fn=lambda: new_id("cmt"),
             )
         new_comment = {
             "id": cid, "task_id": task_id, "author_id": author_id, "body": body,
@@ -977,14 +980,15 @@ class ProjectTaskStore(ProjectsDBStore):
         task = await self.get_task(task_id)
         if task is None:
             raise ValueError(f"task not found: {task_id}")
-        cid = new_id("cki")
         now = time.time()
         async with self._tx():
-            await self._db.execute(
+            cid = await self._insert_with_retry(
                 """INSERT INTO task_checklist_items
                    (id, task_id, text, done, verified, reported, archived, created_by, created_at, updated_at)
                    VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?, ?)""",
-                (cid, task_id, text, created_by, now, now),
+                (new_id("cki"), task_id, text, created_by, now, now),
+                id_index=0,
+                new_id_fn=lambda: new_id("cki"),
             )
         async with self._read(
             "SELECT * FROM task_checklist_items WHERE id = ?", (cid,)
