@@ -291,6 +291,24 @@ async def _check_docker() -> dict:
         return {"status": "error", "detail": str(e)}
 
 
+async def _check_docker_compose() -> dict:
+    """Check the Docker Compose v2 plugin used by Store apps."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "compose", "version",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if proc.returncode == 0:
+            return {"status": "ok", "detail": f"Docker Compose {stdout.decode().strip()}"}
+        detail = stderr.decode().strip()[:200]
+        return {"status": "error", "detail": detail or "Docker Compose v2 is unavailable"}
+    except FileNotFoundError:
+        return {"status": "unavailable", "detail": "Docker Compose v2 not installed"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 @router.get("/api/health-check")
 async def api_health_check(request: Request):
     """Run all health checks and return results."""
@@ -307,7 +325,10 @@ async def api_health_check(request: Request):
     # 3. Docker
     checks.append(await _timed_check("Docker", _check_docker()))
 
-    # 4. Each backend
+    # 4. Docker Compose v2
+    checks.append(await _timed_check("Docker Compose v2", _check_docker_compose()))
+
+    # 5. Each backend
     for backend in config.backends:
         name = f"Backend: {backend.get('name', backend.get('url', 'unknown'))}"
 
@@ -317,7 +338,7 @@ async def api_health_check(request: Request):
 
         checks.append(await _timed_check(name, _check_backend()))
 
-    # 5. QMD
+    # 6. QMD
     async def _check_qmd():
         qmd = request.app.state.qmd_client
         result = await qmd.health()
@@ -333,7 +354,7 @@ async def api_health_check(request: Request):
     # already covered by the "QMD Server" check above. See
     # docs/design/framework-agnostic-runtime.md.
 
-    # 6. Disk space
+    # 7. Disk space
     disk = shutil.disk_usage("/")
     disk_pct = (disk.used / disk.total) * 100
     disk_status = "ok" if disk_pct < 85 else ("warning" if disk_pct < 95 else "error")

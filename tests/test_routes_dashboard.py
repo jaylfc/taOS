@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import AsyncMock, patch
 
 
 @pytest.mark.asyncio
@@ -8,6 +9,22 @@ class TestHealthEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert "status" in data
+
+    async def test_health_check_surfaces_docker_compose(self, client):
+        compose_check = AsyncMock(
+            return_value={
+                "status": "error",
+                "detail": "docker: 'compose' is not a docker command",
+            }
+        )
+        with patch("tinyagentos.routes.dashboard._check_docker_compose", compose_check):
+            resp = await client.get("/api/health-check")
+
+        assert resp.status_code == 200
+        compose = next(check for check in resp.json()["checks"] if check["name"] == "Docker Compose v2")
+        assert compose["status"] == "error"
+        assert compose["detail"] == "docker: 'compose' is not a docker command"
+        compose_check.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
