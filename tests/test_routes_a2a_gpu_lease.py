@@ -911,6 +911,41 @@ class TestClusterLeaseIntegration:
         assert again.json()["lease_id"] == lease_id
         assert len(cluster.get_leases()) == 1
 
+    async def test_reclaiming_with_different_parameters_is_rejected(
+        self, lease_client, bus, cluster
+    ):
+        """A re-claim keeps the contract the lease was taken with (CR on #2988).
+
+        `renew_lease` only moves `expires_at`, so republishing a different vram
+        figure or onto a different channel would leave the GpuLease and the bus
+        claim disagreeing - and peers on the original channel would never see
+        the renewal.
+        """
+        first = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        assert first.status_code == 200
+        lease_id = first.json()["lease_id"]
+        sends = len(bus.sends)
+
+        bigger = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 6144}
+        )
+        assert bigger.status_code == 409
+        assert "release it before re-claiming" in bigger.json()["reason"]
+
+        elsewhere = await lease_client.post(
+            "/api/a2a/gpu/claim",
+            json={"node": "linstation", "vram_mb": 4096, "channel": "gpu-lab"},
+        )
+        assert elsewhere.status_code == 409
+
+        # Nothing moved: same lease, same contract, no line on the other thread.
+        assert [lease.lease_id for lease in cluster.get_leases()] == [lease_id]
+        assert cluster.get_leases()[0].required_vram_mb == 4096
+        assert cluster.get_leases()[0].claim_channel == "gpu"
+        assert len(bus.sends) == sends
+
     async def test_reclaim_rollback_does_not_drop_the_existing_lease(
         self, lease_client, bus, cluster
     ):

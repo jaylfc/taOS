@@ -674,7 +674,28 @@ async def gpu_claim(request: Request, body: ClaimBody):
         if existing is not None:
             # Idempotent re-claim: extend our own lease rather than failing on
             # the "already leased" guard (which the manager applies to every
-            # caller, including the current holder).
+            # caller, including the current holder). The lease keeps the
+            # contract it was taken with: `renew_lease` only moves `expires_at`,
+            # so publishing a different vram figure - or onto a different
+            # channel - would leave the GpuLease and the bus claim disagreeing,
+            # and the original channel's claim unaware of the renewal. Releasing
+            # first is how a reservation changes shape (CR on #2988).
+            held_channel = getattr(existing, "claim_channel", "") or ""
+            if (existing.required_vram_mb or 0) != vram_mb or held_channel != channel:
+                return JSONResponse(
+                    {
+                        "status": "denied",
+                        **admission,
+                        "reason": (
+                            f"{resource_id} is already leased by {caller} with "
+                            f"vram_mb={existing.required_vram_mb or 0} on channel "
+                            f"{held_channel or _DEFAULT_CHANNEL}; release it "
+                            "before re-claiming with different parameters"
+                        ),
+                        "blockers": [existing.caller],
+                    },
+                    status_code=409,
+                )
             lease = await cluster.renew_lease(
                 existing.lease_id, ttl_seconds=float(body.ttl_seconds)
             )
