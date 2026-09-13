@@ -411,8 +411,20 @@ jobs:
           # account is thrown away with the runner, and a literal password in
           # a public repo reads as a credential whether or not it is one.
           pw="$(openssl rand -hex 16)"
+          # The session is bound to a SHA-256 of the creating user-agent
+          # (auth.py:1011 stores user_agent_hash; :1048 compares it), so a
+          # session minted under curl's UA is REJECTED for the browser that
+          # replays the cookie -- /desktop/ 302s to /auth/login and the API
+          # answers 401. Mint it under the UA Playwright will actually send,
+          # read out of the same devices table playwright.config.ts uses so
+          # the two cannot drift apart.
+          ua=$(cd desktop && node -e 'process.stdout.write(require("@playwright/test").devices["iPhone 14"].userAgent)')
+          if [ -z "$ua" ]; then
+            echo "::error::could not read the iPhone 14 user-agent from @playwright/test"; exit 1
+          fi
+          echo "seeding the session as: $ua"
           code=$(PW="$pw" python3 -c 'import json, os, sys; json.dump({"username": "e2e", "full_name": "E2E Runner", "email": "e2e@example.invalid", "password": os.environ["PW"], "auto_login": True}, sys.stdout)' \
-            | curl -sS -o "$out" -w '%{http_code}' -c "$jar" \
+            | curl -sS -o "$out" -w '%{http_code}' -c "$jar" -A "$ua" \
               -H 'Content-Type: application/json' --data-binary @- \
               http://127.0.0.1:6969/auth/setup)
           if [ "$code" != "200" ]; then
@@ -432,7 +444,7 @@ jobs:
           # CreateProjectIn requires `slug` as well as `name` (routes/
           # projects.py:80) -- a probe missing it answers 422, which proves auth
           # but not the write, so send the shape the model actually accepts.
-          probe=$(curl -sS -o "$out" -w '%{http_code}' -b "$jar" \
+          probe=$(curl -sS -o "$out" -w '%{http_code}' -b "$jar" -A "$ua" \
             -H 'Content-Type: application/json' \
             -H "X-CSRF-Token: $csrf" \
             -d '{"name":"e2e auth probe","slug":"e2e-auth-probe"}' \

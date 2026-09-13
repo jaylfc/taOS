@@ -736,6 +736,14 @@ The `desktop-e2e` CI job onboards a throwaway first user via `/auth/setup` and
 hands Playwright the session cookie as a storage state (`E2E_STORAGE_STATE`).
 Do the same locally, or expect those specs to fail on a 401.
 
+Seed that session under the **browser's** user-agent, not curl's. `auth.py:1011`
+stores a SHA-256 of the creating user-agent on the session and `:1048` compares
+it on every validation, so a session minted by a plain `curl` is rejected the
+moment WebKit replays the cookie: `/desktop/` 302s to `/auth/login?next=/desktop/`
+and the API answers `401 {"error":"Authentication required"}`. The CI job reads
+the UA out of `require("@playwright/test").devices["iPhone 14"].userAgent` and
+passes it as `curl -A`, so it cannot drift from the config's device.
+
 The session cookie alone is not enough for a mutating call: the projects router
 is included with `dependencies=_csrf`, so a cookie-authenticated `POST
 /api/projects` answers `403 {"detail": "CSRF token missing"}` unless the
