@@ -11,12 +11,49 @@
 // (REST seeded → canvas tab renders) and a live SSE path (REST POST
 // from outside the page → element appears without reload).
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 // Playwright retries each spec twice in CI against a backend that keeps the
 // projects created by the previous attempt, so a fixed slug makes the retry
 // fail on a duplicate rather than on whatever it is actually testing.
 const uniq = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+// Reaching the canvas: the projects list is NOT a landing page. The backend
+// registers no root SPA route at all -- tinyagentos/routes/desktop.py serves
+// only /desktop (:202) and /desktop/{rest} (:213) -- and in the shell Projects
+// is an APP opened from the Launchpad, so its list is never bare text on "/".
+// The original `page.goto("/")` + `page.click(text=<project name>)` came from
+// the header above, written before Playwright was scaffolded here, and was
+// never run against the real app: it times out waiting for a locator that
+// cannot exist. This is the same route projects-mobile.spec.ts takes, which
+// passes against the same backend.
+async function openProjectCanvas(page: Page, projectName: string) {
+  await page.goto("/desktop/");
+  await page.getByRole("button", { name: /all apps/i }).click();
+  await page.getByRole("button", { name: /open projects/i }).click();
+  await expect(page.getByRole("heading", { name: /^projects$/i })).toBeVisible({ timeout: 5000 });
+
+  const list = page.getByRole("list", { name: /projects/i });
+  await list.waitFor({ state: "attached", timeout: 5000 });
+
+  // Name the cause rather than letting a bare timeout say nothing: if the
+  // project the test just created is not in the list, print what IS.
+  const projectButton = list.getByRole("button", { name: projectName });
+  try {
+    await expect(projectButton).toBeVisible({ timeout: 5000 });
+  } catch {
+    throw new Error(
+      `project "${projectName}" never appeared in the Projects list. List text: ` +
+        (await list.innerText().catch(() => "<unreadable>")),
+    );
+  }
+  await projectButton.click();
+
+  await page.getByRole("tab", { name: /canvas/i }).click();
+  // tldraw pulls its bundle and assets before .tl-container mounts, which on
+  // emulated mobile WebKit in CI is slower than the 5 s the specs used.
+  await expect(page.locator(".tl-container")).toBeVisible({ timeout: 15_000 });
+}
 
 test.describe("Project canvas board", () => {
   test("user adds note via API, sees it on canvas tab after reload", async ({
@@ -39,11 +76,7 @@ test.describe("Project canvas board", () => {
                 payload: { text: "hello-from-test", color: "yellow", font_size: 14 } } },
     );
 
-    await page.goto("/");
-    await page.click(`text=${project.name}`);
-    await page.click("role=tab[name=/canvas/i]");
-
-    await expect(page.locator(".tl-container")).toBeVisible({ timeout: 5000 });
+    await openProjectCanvas(page, project.name);
     await expect(page.getByText("hello-from-test")).toBeVisible({ timeout: 5000 });
   });
 
@@ -61,10 +94,7 @@ test.describe("Project canvas board", () => {
     ).toBeTruthy();
     const project = await created.json();
 
-    await page.goto("/");
-    await page.click(`text=${project.name}`);
-    await page.click("role=tab[name=/canvas/i]");
-    await expect(page.locator(".tl-container")).toBeVisible({ timeout: 5000 });
+    await openProjectCanvas(page, project.name);
 
     await request.post(
       `/api/projects/${project.id}/canvas/elements`,
