@@ -736,6 +736,13 @@ The `desktop-e2e` CI job onboards a throwaway first user via `/auth/setup` and
 hands Playwright the session cookie as a storage state (`E2E_STORAGE_STATE`).
 Do the same locally, or expect those specs to fail on a 401.
 
+The session cookie alone is not enough for a mutating call: the projects router
+is included with `dependencies=_csrf`, so a cookie-authenticated `POST
+/api/projects` answers `403 {"detail": "CSRF token missing"}` unless the
+`csrf_token` cookie is echoed in an `X-CSRF-Token` header. The job seeds **both**
+cookies into the storage state and proves the pair with a `curl` probe before
+Playwright starts, so a broken seed is one error line instead of three red tests.
+
 The suite also needs the browser binary, and that browser is **webkit**, not
 chromium: the config declares one project, `iphone-14`, built from
 `devices["iPhone 14"]`, whose `defaultBrowserType` is `webkit`. Install it once

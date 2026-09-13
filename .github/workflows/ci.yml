@@ -388,9 +388,16 @@ jobs:
       #
       # /auth/setup onboards the FIRST user, which a fresh CI backend always
       # needs, and is exempt from the auth middleware and from CSRF
-      # (middleware/csrf.py _CREDENTIAL_PATHS). create_project depends on
-      # current_user only -- no verify_csrf -- so the session cookie alone
-      # authorises it.
+      # (middleware/csrf.py _CREDENTIAL_PATHS).
+      #
+      # The session cookie alone is NOT enough afterwards: routes/__init__.py
+      # includes the projects router with `dependencies=_csrf`, so verify_csrf
+      # guards every mutating route on it even though no decorator on
+      # create_project mentions it. A cookie-authenticated POST therefore needs
+      # the double-submit pair -- the `csrf_token` cookie CSRFMiddleware set on
+      # the /auth/setup response, echoed back in an X-CSRF-Token header. Both
+      # cookies go into the storage state so the browser starts from the same
+      # pair this step proves; the SPA reads csrf_token itself (lib/csrf.ts).
       #
       # This step FAILS the job rather than degrading: a suite that silently
       # ran unauthenticated would report the same red with a different cause
@@ -415,11 +422,16 @@ jobs:
           if [ -z "$token" ]; then
             echo "::error::/auth/setup set no taos_session cookie"; cat "$jar"; exit 1
           fi
-          TOKEN="$token" python3 -c 'import json, os, sys; json.dump({"cookies": [{"name": "taos_session", "value": os.environ["TOKEN"], "domain": "127.0.0.1", "path": "/", "expires": -1, "httpOnly": True, "secure": False, "sameSite": "Strict"}], "origins": []}, sys.stdout)' > "$RUNNER_TEMP/e2e-storage-state.json"
+          csrf=$(awk '$6 == "csrf_token" { print $7 }' "$jar")
+          if [ -z "$csrf" ]; then
+            echo "::error::/auth/setup set no csrf_token cookie"; cat "$jar"; exit 1
+          fi
+          TOKEN="$token" CSRF="$csrf" python3 -c 'import json, os, sys; cookie = lambda n, v, http: {"name": n, "value": v, "domain": "127.0.0.1", "path": "/", "expires": -1, "httpOnly": http, "secure": False, "sameSite": "Strict"}; json.dump({"cookies": [cookie("taos_session", os.environ["TOKEN"], True), cookie("csrf_token", os.environ["CSRF"], False)], "origins": []}, sys.stdout)' > "$RUNNER_TEMP/e2e-storage-state.json"
           # Prove the seeded session authorises the exact call the three specs
           # make, here, where a failure is one line instead of three red tests.
           probe=$(curl -sS -o "$out" -w '%{http_code}' -b "$jar" \
             -H 'Content-Type: application/json' \
+            -H "X-CSRF-Token: $csrf" \
             -d '{"name":"e2e auth probe"}' \
             http://127.0.0.1:6969/api/projects)
           case "$probe" in
