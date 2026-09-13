@@ -744,6 +744,12 @@ and the API answers `401 {"error":"Authentication required"}`. The CI job reads
 the UA out of `require("@playwright/test").devices["iPhone 14"].userAgent` and
 passes it as `curl -A`, so it cannot drift from the config's device.
 
+A `curl` probe **cannot** catch this class of bug on its own. The probe that
+mints the session and the probe that replays it are the same client, so the
+user-agent pair it exercises is self-consistent and passes while the browser's
+pair is refused. A probe proves the pair *it* uses, not the pair the real client
+uses -- give it the real client's identity, or assert the real client directly.
+
 The session cookie alone is not enough for a mutating call: the projects router
 is included with `dependencies=_csrf`, so a cookie-authenticated `POST
 /api/projects` answers `403 {"detail": "CSRF token missing"}` unless the
