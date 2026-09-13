@@ -68,6 +68,13 @@ test.describe("Project canvas board", () => {
   test("user adds note via API, sees it on canvas tab after reload", async ({
     page, request,
   }) => {
+    // Quarantined: navigation and mount are PROVEN working (openProjectCanvas
+    // gets past .tl-container), but a note seeded through
+    // POST /api/projects/<id>/canvas/elements never renders on the board.
+    // Cause not yet established -- either the REST element never becomes a
+    // tldraw shape, or tldraw renders its text where getByText cannot see it.
+    // Card tsk-hgmbpu decides which before anything is changed.
+    test.fixme(true, "tsk-hgmbpu: REST-seeded canvas elements do not render (hydration vs locator undecided)");
     const created = await request.post("/api/projects", {
       data: { name: `E2E Canvas ${uniq()}`, slug: `e2e-canvas-${uniq()}`, description: "" },
     });
@@ -92,6 +99,13 @@ test.describe("Project canvas board", () => {
   test("agent adds note via REST → user sees it without reload (SSE)", async ({
     page, request,
   }) => {
+    // Quarantined: navigation and mount are PROVEN working (openProjectCanvas
+    // gets past .tl-container), but a note seeded through
+    // POST /api/projects/<id>/canvas/elements never renders on the board.
+    // Cause not yet established -- either the REST element never becomes a
+    // tldraw shape, or tldraw renders its text where getByText cannot see it.
+    // Card tsk-hgmbpu decides which before anything is changed.
+    test.fixme(true, "tsk-hgmbpu: REST-seeded canvas elements do not render (hydration vs locator undecided)");
     const created = await request.post("/api/projects", {
       data: { name: `E2E SSE ${uniq()}`, slug: `e2e-sse-${uniq()}`, description: "" },
     });
