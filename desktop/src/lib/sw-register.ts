@@ -54,6 +54,7 @@ export async function registerServiceWorker(): Promise<void> {
       });
     }
   } catch (err) {
-    console.warn("[taos] service worker registration failed:", err);
+    console.error("[taos] service worker registration failed:", err);
+    window.dispatchEvent(new CustomEvent("taos-sw-registration-failed", { detail: { error: err } }));
   }
 }

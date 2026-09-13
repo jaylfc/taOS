@@ -18,10 +18,8 @@
  * No app logic, no postMessage, no polling. The reconnect / version
  * UX lives entirely in app code.
  */
-import { sourceToTarget, targetToAction } from "@/lib/server-notifications";
 declare const self: ServiceWorkerGlobalScope;
 declare const __TAOS_VERSION__: string;
-export {};
 
 const VERSION = __TAOS_VERSION__;
 const STATIC_CACHE = `taos-static-${VERSION}`;
@@ -247,3 +245,62 @@ self.addEventListener("notificationclick", (event: NotificationEvent) => {
       })
   );
 });
+
+// Inlined from lib/server-notifications — no top-level imports so this
+// file bundles as a single classic worker script.
+
+const TARGET_ROUTES: Record<
+  string,
+  (t: Record<string, unknown>) => { action: string; meta: Record<string, string> }
+> = {
+  project_file: (t) => ({
+    action: "projects",
+    meta: {
+      projectId: String(t.project_id ?? ""),
+      tab: "files",
+      filePath: String(t.path ?? ""),
+    },
+  }),
+};
+
+function targetToAction(
+  target: unknown,
+): { action?: string; meta?: Record<string, string> } {
+  if (!target || typeof target !== "object") return {};
+  const kind = (target as { kind?: unknown }).kind;
+  if (typeof kind !== "string") return {};
+  const build = TARGET_ROUTES[kind];
+  if (!build) return {};
+  return build(target as Record<string, unknown>);
+}
+
+function sourceToTarget(
+  source: string,
+): { action?: string; meta?: Record<string, string> } {
+  switch (source) {
+    case "system.update":
+    case "system.lifecycle":
+      return { action: "settings", meta: { section: "updates" } };
+    case "disk_quota":
+      return { action: "settings", meta: { section: "storage" } };
+    case "worker.join":
+    case "worker.online":
+    case "worker.leave":
+    case "backend.up":
+    case "backend.down":
+      return { action: "cluster" };
+    case "training.complete":
+    case "training.failed":
+      return { action: "agents" };
+    case "app.installed":
+    case "app.failed":
+      return { action: "store" };
+    case "agent_framework":
+      return { action: "agents" };
+    case "decisions":
+    case "auth_requests":
+      return { action: "decisions" };
+    default:
+      return {};
+  }
+}

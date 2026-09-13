@@ -86,7 +86,6 @@ export default defineConfig({
         main: path.resolve(__dirname, "index.html"),
         chat: path.resolve(__dirname, "chat.html"),
         app: path.resolve(__dirname, "app.html"),
-        sw: path.resolve(__dirname, "src/sw.ts"),
       },
       output: {
         entryFileNames: (chunkInfo) =>

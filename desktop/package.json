@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && vite build --config vite.sw.config.ts",
+    "build:sw": "vite build --config vite.sw.config.ts",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",

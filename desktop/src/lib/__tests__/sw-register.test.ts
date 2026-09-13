@@ -29,14 +29,21 @@ describe("registerServiceWorker", () => {
     expect(register).toHaveBeenCalledWith("/sw.js");
   });
 
-  it("swallows registration errors (logs only)", async () => {
-    const consoleErr = vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("surfaces registration errors via console.error and custom event", async () => {
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     const register = vi.fn().mockRejectedValue(new Error("nope"));
+    const eventListener = vi.fn();
+    window.addEventListener("taos-sw-registration-failed", eventListener);
     Object.defineProperty(navigator, "serviceWorker", {
       value: { register }, writable: true, configurable: true,
     });
     await expect(registerServiceWorker()).resolves.toBeUndefined();
     expect(consoleErr).toHaveBeenCalled();
+    expect(eventListener).toHaveBeenCalledTimes(1);
+    const detail = eventListener.mock.calls[0][0].detail;
+    expect(detail).toBeDefined();
+    expect(detail.error).toBeInstanceOf(Error);
+    window.removeEventListener("taos-sw-registration-failed", eventListener);
   });
 
   it("proactively calls registration.update() to check for a new SW", async () => {
