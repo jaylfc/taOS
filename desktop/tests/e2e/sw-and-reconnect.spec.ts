@@ -45,6 +45,21 @@ for (const pwa of PWA_PATHS) {
       await page.route("**/api/**", (route) => route.abort("connectionrefused"));
       // Trigger a reconnect by waiting longer than the first poll.
       await page.waitForTimeout(3_500);
+      // TEMP DIAGNOSTIC (tsk-vg54cy): this assertion passes on /chat-pwa and
+      // fails on /desktop/, so dump BOTH -- the passing path is the control
+      // that says which half of the page is missing.
+      const diag = await page.evaluate(async () => {
+        const reg = await navigator.serviceWorker.getRegistration();
+        return {
+          url: location.href,
+          swActive: Boolean(reg && reg.active),
+          liveRegions: Array.from(
+            document.querySelectorAll('[role="status"],[role="alert"]'),
+          ).map((e) => (e.textContent ?? "").slice(0, 120)),
+          bodyText: (document.body.innerText ?? "").slice(0, 700),
+        };
+      });
+      console.log(`DIAG banner:${pwa.name} ${JSON.stringify(diag)}`);
       await expect(page.getByText(/taOS is restarting/i)).toBeVisible();
     });
 

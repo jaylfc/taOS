@@ -13,14 +13,24 @@
 
 import { test, expect } from "@playwright/test";
 
+// Playwright retries each spec twice in CI against a backend that keeps the
+// projects created by the previous attempt, so a fixed slug makes the retry
+// fail on a duplicate rather than on whatever it is actually testing.
+const uniq = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
 test.describe("Project canvas board", () => {
   test("user adds note via API, sees it on canvas tab after reload", async ({
     page, request,
   }) => {
     const created = await request.post("/api/projects", {
-      data: { name: "E2E Canvas", slug: "e2e-canvas", description: "" },
+      data: { name: `E2E Canvas ${uniq()}`, slug: `e2e-canvas-${uniq()}`, description: "" },
     });
-    expect(created.ok()).toBeTruthy();
+    // Report the status and body on failure: `toBeTruthy()` on its own says
+    // only "Received: false", which costs a whole CI round to turn into a cause.
+    expect(
+      created.ok(),
+      `POST /api/projects -> ${created.status()} ${await created.text()}`,
+    ).toBeTruthy();
     const project = await created.json();
 
     await request.post(
@@ -41,8 +51,14 @@ test.describe("Project canvas board", () => {
     page, request,
   }) => {
     const created = await request.post("/api/projects", {
-      data: { name: "E2E SSE", slug: "e2e-sse", description: "" },
+      data: { name: `E2E SSE ${uniq()}`, slug: `e2e-sse-${uniq()}`, description: "" },
     });
+    // Same guard as the spec above: without it a 403/422 surfaces as an opaque
+    // JSON parse error from created.json() instead of naming the status.
+    expect(
+      created.ok(),
+      `POST /api/projects -> ${created.status()} ${await created.text()}`,
+    ).toBeTruthy();
     const project = await created.json();
 
     await page.goto("/");

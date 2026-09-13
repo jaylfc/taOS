@@ -441,6 +441,11 @@ jobs:
             2*) echo "seeded session authorised POST /api/projects ($probe)" ;;
             *) echo "::error::seeded session failed POST /api/projects ($probe)"; cat "$out"; exit 1 ;;
           esac
+          # Specs that call the `request` fixture need the same header this
+          # probe just used: the fixture inherits the cookies but runs no page
+          # script, so nothing echoes csrf_token for it. Not a credential --
+          # the double-submit token is public to any holder of the cookie.
+          echo "E2E_CSRF_TOKEN=$csrf" >> "$GITHUB_ENV"
 
       - name: Run Playwright e2e
         timeout-minutes: 20

@@ -18,6 +18,21 @@ test.describe("projects mobile shell @iphone-14", () => {
 
     // Open Projects via the Launchpad ("All Apps" button in the dock).
     // Projects is not on the home screen by default — it lives in the Launchpad.
+    // TEMP DIAGNOSTIC (tsk-vg54cy): the dock button is never found in CI, and
+    // the 30 s timeout says nothing about what IS on the page.
+    console.log(
+      "DIAG projects-mobile " +
+        JSON.stringify(
+          await page.evaluate(() => ({
+            url: location.href,
+            buttons: Array.from(document.querySelectorAll("button"))
+              .map((b) => (b.getAttribute("aria-label") || b.textContent || "").trim().slice(0, 40))
+              .filter(Boolean)
+              .slice(0, 30),
+            bodyText: (document.body.innerText ?? "").slice(0, 700),
+          })),
+        ),
+    );
     await page.getByRole("button", { name: /all apps/i }).click();
 
     // Launchpad is open — Projects icon has aria-label="Open Projects".

@@ -22,6 +22,17 @@ const BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:5173";
 // still runs signed out.
 const STORAGE_STATE = process.env.E2E_STORAGE_STATE || undefined;
 
+// The `request` fixture inherits storageState, so it carries taos_session -- but
+// nothing attaches X-CSRF-Token. The SPA adds that header from JavaScript
+// (src/lib/csrf.ts) and an APIRequestContext runs no page script, so every
+// mutating call a spec makes through `request` reaches verify_csrf with a
+// cookie and no header and is refused 403. Most routers are registered with
+// `dependencies=_csrf` (tinyagentos/routes/__init__.py), so this is not
+// specific to /api/projects. The CI job exports the token whose pair it already
+// proved with a curl probe before starting Playwright. Unset locally, where the
+// suite runs signed out and never reaches the check.
+const CSRF_TOKEN = process.env.E2E_CSRF_TOKEN || undefined;
+
 export default defineConfig({
   testDir: "./tests",
   testMatch: "**/*.spec.ts",
@@ -34,6 +45,7 @@ export default defineConfig({
     baseURL: BASE_URL,
     storageState: STORAGE_STATE,
     trace: "on-first-retry",
+    ...(CSRF_TOKEN ? { extraHTTPHeaders: { "X-CSRF-Token": CSRF_TOKEN } } : {}),
   },
   projects: [
     {
