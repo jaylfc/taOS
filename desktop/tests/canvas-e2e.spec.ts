@@ -49,7 +49,16 @@ async function openProjectCanvas(page: Page, projectName: string) {
   }
   await projectButton.click();
 
-  await page.getByRole("tab", { name: /canvas/i }).click();
+  // Scope to the workspace tab pills: an unrelated tablist, aria-label
+  // "Preview mode" (ProjectWorkspacePane.tsx:28), ALSO has a "Canvas" tab, so
+  // an unscoped getByRole("tab", {name:/canvas/i}) is a strict-mode violation
+  // resolving to 2 elements. The pills are the workspace navigation
+  // (WorkspaceTabPills.tsx:29); the other is a preview-surface toggle inside
+  // the pane the pills open.
+  await page
+    .getByTestId("workspace-tab-pills-scroller")
+    .getByRole("tab", { name: /^canvas$/i })
+    .click();
   // tldraw pulls its bundle and assets before .tl-container mounts, which on
   // emulated mobile WebKit in CI is slower than the 5 s the specs used.
   await expect(page.locator(".tl-container")).toBeVisible({ timeout: 15_000 });
