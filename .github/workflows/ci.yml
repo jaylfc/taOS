@@ -429,10 +429,13 @@ jobs:
           TOKEN="$token" CSRF="$csrf" python3 -c 'import json, os, sys; cookie = lambda n, v, http: {"name": n, "value": v, "domain": "127.0.0.1", "path": "/", "expires": -1, "httpOnly": http, "secure": False, "sameSite": "Strict"}; json.dump({"cookies": [cookie("taos_session", os.environ["TOKEN"], True), cookie("csrf_token", os.environ["CSRF"], False)], "origins": []}, sys.stdout)' > "$RUNNER_TEMP/e2e-storage-state.json"
           # Prove the seeded session authorises the exact call the three specs
           # make, here, where a failure is one line instead of three red tests.
+          # CreateProjectIn requires `slug` as well as `name` (routes/
+          # projects.py:80) -- a probe missing it answers 422, which proves auth
+          # but not the write, so send the shape the model actually accepts.
           probe=$(curl -sS -o "$out" -w '%{http_code}' -b "$jar" \
             -H 'Content-Type: application/json' \
             -H "X-CSRF-Token: $csrf" \
-            -d '{"name":"e2e auth probe"}' \
+            -d '{"name":"e2e auth probe","slug":"e2e-auth-probe"}' \
             http://127.0.0.1:6969/api/projects)
           case "$probe" in
             2*) echo "seeded session authorised POST /api/projects ($probe)" ;;
