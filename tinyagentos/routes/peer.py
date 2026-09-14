@@ -86,6 +86,11 @@ async def _authenticate_peer(request: Request) -> str:
     if store is None:
         raise HTTPException(status_code=503, detail="peer channel not available")
 
+    # Per-instance panic kill-switch (D1 level 3): blocks all peer traffic.
+    from tinyagentos.delegation_handler import is_peer_disabled
+    if is_peer_disabled(request):
+        raise HTTPException(status_code=503, detail="peer routes disabled (per-instance panic)")
+
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="bearer token required")
@@ -209,7 +214,7 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
     # Mark peer as seen
     await store.mark_peer_seen(contact_id)
 
-    # Dispatch the envelope by kind.
+    # Log the envelope kind for debugging; dispatch known kinds to their handlers.
     kind = envelope.get("kind", "unknown")
     body_data = envelope.get("body", {})
 
@@ -219,12 +224,36 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
     if kind in ("collab_invite_accept", "collab_invite_decline"):
         return await _handle_collab_response(request, contact_id, envelope, body_data, kind)
 
+    # Dispatch delegation requests to the cross-user collab handler (D1).
+    # This MUST sit above the unrecognised-kind log so a delegation request
+    # does not log "no dispatch" and then dispatch.
+    if kind == "delegation_request":
+        from tinyagentos.delegation_handler import process_delegation_request
+
+        result = await process_delegation_request(
+            request, contact_id=contact_id, envelope_body=body_data,
+        )
+        # Return a summary to the peer; do NOT leak handler internals (the full
+        # result dict) verbatim.
+        return {
+            "status": result.get("status", "unknown"),
+            "decision_id": result.get("decision_id"),
+            "invite_id": result.get("invite_id"),
+            "agent_slug": result.get("agent_slug"),
+        }
+
+    # Dispatch delegation_status — the remote instance is notifying us that a
+    # delegation request was approved and an invite was minted.  Persist it
+    # durably (invite_id in decision metadata) so the local agent runner can
+    # poll for and redeem the invite, rather than only logging it.
+    if kind == "delegation_status":
+        return await _handle_delegation_status(request, contact_id, envelope, body_data)
+
     # Log unrecognised kinds for debugging; they are accepted but not dispatched.
     logger.info(
         "peer_inbox: contact=%s kind=%s nonce=%s (unrecognised kind — accepted, no dispatch)",
         contact_id, kind, envelope.get("nonce", "?"),
     )
-
     return {"status": "received", "kind": kind, "nonce": envelope.get("nonce")}
 
 
@@ -355,6 +384,136 @@ async def peer_ack(body: PeerAck, request: Request):
     )
 
     return {"status": "acked", "envelope_id": body.envelope_id}
+
+
+# ---------------------------------------------------------------------------
+# Delegation status handler
+# ---------------------------------------------------------------------------
+
+
+async def _handle_delegation_status(
+    request: Request,
+    contact_id: str,
+    envelope: dict,
+    body_data: dict,
+) -> dict:
+    """Handle an incoming delegation_status envelope — the sponsor notifying
+    us that a delegation request was approved and a sponsored invite minted.
+
+    Persists a durable decision record with ``invite_id`` in metadata so the
+    local agent runner can poll for and redeem the invite — the equivalent of
+    how ``collab_invite`` persists into ``decision_store``.  Without a durable
+    landing place the approval result would be dropped on the floor (logged,
+    then gone) and the delegation could never complete cross-instance.
+
+    The envelope body is expected to contain:
+      invite_id, agent_slug, project_id
+    """
+    decision_store = getattr(request.app.state, "decision_store", None)
+    if decision_store is None:
+        logger.warning(
+            "peer_inbox: delegation_status received but decision_store not available"
+        )
+        return {"status": "received", "kind": "delegation_status", "dispatched": False}
+
+    invite_id = body_data.get("invite_id", "")
+    agent_slug = body_data.get("agent_slug", "unknown")
+    project_id = body_data.get("project_id", "")
+
+    if not invite_id:
+        logger.warning(
+            "peer_inbox: delegation_status missing invite_id from contact=%s",
+            contact_id,
+        )
+        return {"status": "received", "kind": "delegation_status", "dispatched": False}
+
+    question = (
+        f"Delegation request approved: agent '{agent_slug}' was granted a "
+        f"sponsored invite for project {project_id}. Invite id: {invite_id}"
+    )
+
+    metadata: dict = {
+        "envelope_kind": "delegation_status",
+        "invite_id": invite_id,
+        "agent_slug": agent_slug,
+        "project_id": project_id,
+        "contact_id": contact_id,
+    }
+
+    # Idempotency on invite_id: nonces stop exact replays but not a sponsor
+    # retrying the same delegation_status after a 5xx (distinct nonce, same
+    # invite_id).  Look up any decision already recording this invite_id and
+    # return it instead of minting a duplicate that would pollute the feed.
+    try:
+        existing = await decision_store.find_by_metadata("invite_id", invite_id)
+    except Exception as exc:
+        logger.warning(
+            "peer_inbox: metadata lookup failed for invite_id=%s: %s",
+            invite_id, exc,
+        )
+        existing = []
+    if existing:
+        decision_id = existing[0]["id"]
+        logger.info(
+            "peer_inbox: delegation_status for invite_id=%s already recorded "
+            "as decision %s (duplicate delivery)",
+            invite_id, decision_id,
+        )
+        return {
+            "status": "received",
+            "kind": "delegation_status",
+            "decision_id": decision_id,
+            "invite_id": invite_id,
+            "dispatched": True,
+            "duplicate": True,
+        }
+
+    # Resolve the owner (the local project owner) so the decision is not
+    # ownerless and project-scoped queries surface it.  Best-effort: an absent
+    # project store or unknown project leaves user_id empty (still scoped via
+    # project_id).
+    user_id = ""
+    project_store = getattr(request.app.state, "project_store", None)
+    if project_store is not None and project_id:
+        try:
+            project = await project_store.get_project(project_id)
+            if project:
+                user_id = project.get("user_id") or ""
+        except Exception:
+            user_id = ""
+
+    try:
+        decision = await decision_store.create(
+            from_agent="system:delegation",
+            question=question,
+            type="free_text",
+            priority="normal",
+            project_id=project_id or None,
+            user_id=user_id,
+            metadata=metadata,
+        )
+        logger.info(
+            "peer_inbox: delegation_status → decision %s created for contact=%s",
+            decision["id"], contact_id,
+        )
+    except Exception as exc:
+        logger.error(
+            "peer_inbox: failed to persist delegation_status decision: %s", exc
+        )
+        return {
+            "status": "received",
+            "kind": "delegation_status",
+            "dispatched": False,
+            "error": str(exc),
+        }
+
+    return {
+        "status": "received",
+        "kind": "delegation_status",
+        "decision_id": decision["id"],
+        "invite_id": invite_id,
+        "dispatched": True,
+    }
 
 
 # ---------------------------------------------------------------------------
