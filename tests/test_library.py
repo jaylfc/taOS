@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 
@@ -322,6 +323,53 @@ class TestPdfProcessor:
         proc = PdfProcessor(lib_store, storage_dir)
         artifacts = await proc.process(item)
         assert len(artifacts) == 0
+
+    @pytest.mark.asyncio
+    async def test_pdf_extracts_text_with_pypdf(self, lib_store, storage_dir):
+        """RED-FIRST: PdfProcessor must extract text from a PDF with pypdf installed."""
+        file_path = storage_dir / "text.pdf"
+        _create_minimal_pdf_with_text(file_path)
+
+        item_id = await lib_store.create_item(
+            kind="pdf", title="text.pdf", storage_path=str(file_path)
+        )
+        item = await lib_store.get_item(item_id)
+
+        proc = PdfProcessor(lib_store, storage_dir)
+        artifacts = await proc.process(item)
+
+        text_artifacts = [a for a in artifacts if a["kind"] == "text"]
+        assert len(text_artifacts) == 1, (
+            f"Expected 1 text artifact, got {len(text_artifacts)}"
+        )
+        assert text_artifacts[0]["meta"]["char_count"] > 0
+        text_path = Path(text_artifacts[0]["path"])
+        assert text_path.exists()
+        content = text_path.read_text()
+        assert "Hello World Test" in content
+
+    @pytest.mark.asyncio
+    async def test_pdf_import_error_marks_item_error(self, lib_store, storage_dir):
+        """RED-FIRST: when pypdf is missing, run_pipeline must mark the item error."""
+
+        class _MissingModule:
+            def __getattr__(self, name):
+                raise ImportError("No module named 'pypdf'")
+
+        file_path = storage_dir / "test.pdf"
+        _create_minimal_pdf(file_path)
+
+        item_id = await lib_store.create_item(
+            kind="pdf", title="test.pdf", storage_path=str(file_path)
+        )
+
+        with _force_pypdf_import_error():
+            await run_pipeline(lib_store, item_id, storage_dir)
+
+        item = await lib_store.get_item(item_id)
+        assert item["status"] == "error", (
+            f"Expected status 'error' when pypdf is missing, got '{item['status']}'"
+        )
 
 
 class TestImageProcessor:
@@ -1700,6 +1748,37 @@ def _create_minimal_pdf(path: Path):
         b"startxref\n190\n%%EOF\n"
     )
     path.write_bytes(pdf_content)
+
+
+def _create_minimal_pdf_with_text(path: Path):
+    """Create a minimal valid PDF file with extractable text for testing."""
+    pdf_content = (
+        b"%PDF-1.3\n"
+        b"%\xe2\xe3\xcf\xd3\n"
+        b"1 0 obj\n<<\n/Producer (pypdf)\n>>\nendobj\n"
+        b"2 0 obj\n<<\n/Type /Pages\n/Count 1\n/Kids [ 4 0 R ]\n>>\nendobj\n"
+        b"3 0 obj\n<<\n/Type /Catalog\n/Pages 2 0 R\n>>\nendobj\n"
+        b"4 0 obj\n<<\n/Type /Page\n/Resources <<\n/Font <<\n/F1 <<\n/Type /Font\n"
+        b"/Subtype /Type1\n/BaseFont /Helvetica\n/Encoding /WinAnsiEncoding\n>>\n>>\n>>\n"
+        b"/MediaBox [ 0.0 0.0 612 792 ]\n/Parent 2 0 R\n/Contents <<\n/Length 49\n>>\n"
+        b"stream\nBT\n/F1 12 Tf\n100 700 Td\n(Hello World Test) Tj\nET\n\n"
+        b"endstream\n>>\nendobj\n"
+        b"xref\n0 5\n0000000000 65535 f \n0000000015 00000 n \n0000000054 00000 n \n"
+        b"0000000113 00000 n \n0000000162 00000 n \n"
+        b"trailer\n<<\n/Size 5\n/Root 3 0 R\n/Info 1 0 R\n>>\n"
+        b"startxref\n448\n%%EOF\n"
+    )
+    path.write_bytes(pdf_content)
+
+
+def _force_pypdf_import_error():
+    """Context manager that makes pypdf unimportable."""
+    class _MissingModule:
+        def __getattr__(self, name):
+            raise ImportError("No module named 'pypdf'")
+
+    from unittest.mock import patch
+    return patch.dict(sys.modules, {"pypdf": _MissingModule()})
 
 
 def _create_test_image(path: Path):

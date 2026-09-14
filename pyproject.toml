@@ -36,6 +36,7 @@ dependencies = [
     "Pillow>=10.0",
     "lxml>=5.0.0",
     "readability-lxml>=0.8.1",
+    "pypdf>=6.17",
     # Memory system — published to PyPI
     "taosmd==0.4.0",
     # WebSocket client for dashboard proxy (shortcut_proxy.py)
