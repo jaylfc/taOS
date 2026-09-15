@@ -1,0 +1,2 @@
+### Fixed
+- `scripts/install-server.sh` now switches branches cleanly on a re-run against a different `TAOS_BRANCH`. Previously a single-branch clone (`git clone --depth 1 --branch master`) would die with `fatal: ambiguous argument 'origin/dev'` because the configured refspec did not cover the new branch. Both the root/sudo arm and the plain arm now run `git remote set-branches origin "$BRANCH"` before the fetch (idempotent, no `--add`) and reset to `FETCH_HEAD` instead of `origin/$BRANCH`.

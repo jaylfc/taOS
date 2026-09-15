@@ -1463,10 +1463,11 @@ else
         # since the reset below will surface any real ownership problem.
         chown -R "$_repo_owner" "$INSTALL_DIR" \
             || warn "chown -R $_repo_owner $INSTALL_DIR partially failed; the update may not apply cleanly"
-        sudo -u "$_repo_owner" git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH" \
-            && sudo -u "$_repo_owner" git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
+        sudo -u "$_repo_owner" git -C "$INSTALL_DIR" remote set-branches origin "$BRANCH" \
+            && sudo -u "$_repo_owner" git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH" \
+            && sudo -u "$_repo_owner" git -C "$INSTALL_DIR" reset --hard FETCH_HEAD
     else
-        (cd "$INSTALL_DIR" && git fetch --depth 1 origin "$BRANCH" && git reset --hard "origin/$BRANCH")
+        (cd "$INSTALL_DIR" && git remote set-branches origin "$BRANCH" && git fetch --depth 1 origin "$BRANCH" && git reset --hard FETCH_HEAD)
     fi
 fi
 
