@@ -685,7 +685,7 @@ describe("ThreadPanel", () => {
   /* ── edge: no parent loaded yet ─────────────────────────────── */
 
   it("does not render the parent section while parent is still loading", () => {
-    // Mock fetch that never resolves → parent stays null.
+    // Mock fetch that never resolves -> parent stays null.
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation(() => new Promise(() => {})),
@@ -702,5 +702,77 @@ describe("ThreadPanel", () => {
     expect(
       document.querySelector(".border-shell-border"),
     ).not.toBeInTheDocument();
+  });
+
+  /* ---- mark-seen on open ---- */
+
+  describe("onMarkSeen", () => {
+    it("calls onMarkSeen for incoming replies when thread opens", async () => {
+      stubFetchOk();
+      const onMarkSeen = vi.fn();
+      render(
+        <ThreadPanel
+          channelId="ch1"
+          parentId="p1"
+          onClose={vi.fn()}
+          onSend={vi.fn()}
+          authorCtx={{ currentUserId: "user", currentUserDisplayName: null }}
+          onMarkSeen={onMarkSeen}
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByText(stubReply1.content)).toBeInTheDocument(),
+      );
+      expect(onMarkSeen).toHaveBeenCalledWith(stubReply1.id);
+      expect(onMarkSeen).toHaveBeenCalledWith(stubReply2.id);
+    });
+
+    it("does NOT call onMarkSeen for own replies", async () => {
+      stubFetchOk({
+        parent: { ...stubParent, author_id: "user" },
+        replies: {
+          messages: [
+            { ...stubReply1, author_id: "user" },
+            { ...stubReply2, author_id: "user" },
+          ],
+        },
+      });
+      const onMarkSeen = vi.fn();
+      render(
+        <ThreadPanel
+          channelId="ch1"
+          parentId="p1"
+          onClose={vi.fn()}
+          onSend={vi.fn()}
+          authorCtx={{ currentUserId: "user", currentUserDisplayName: null }}
+          onMarkSeen={onMarkSeen}
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByText(stubReply1.content)).toBeInTheDocument(),
+      );
+      expect(onMarkSeen).not.toHaveBeenCalled();
+    });
+
+    it("calls onMarkSeen for incoming parent message", async () => {
+      stubFetchOk({
+        parent: { ...stubParent, author_id: "alice" },
+      });
+      const onMarkSeen = vi.fn();
+      render(
+        <ThreadPanel
+          channelId="ch1"
+          parentId="p1"
+          onClose={vi.fn()}
+          onSend={vi.fn()}
+          authorCtx={{ currentUserId: "user", currentUserDisplayName: null }}
+          onMarkSeen={onMarkSeen}
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByText(stubParent.content)).toBeInTheDocument(),
+      );
+      expect(onMarkSeen).toHaveBeenCalledWith(stubParent.id);
+    });
   });
 });
