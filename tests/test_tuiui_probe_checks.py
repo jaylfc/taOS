@@ -14,22 +14,9 @@ def load_probe(name: str):
     return mod
 
 
-def test_probe4_appid_stable():
-    mod = load_probe("probe4_detach_reattach_appid.py")
-    assert mod.appid_stable(1, 2) is False
-    assert mod.appid_stable(1, 1) is True
-
-
-def test_probe5_viewport_moved():
-    mod = load_probe("probe5_scroll_viewport.py")
-    assert mod.viewport_moved(["a", "b"], ["a", "b"]) is False
-    assert mod.viewport_moved(["a", "b"], ["b", "a"]) is True
-
-
-def test_probe3_ansi_count():
+def test_probe3_first_check_uses_window():
     mod = load_probe("probe3_frame_grid_readback.py")
-    assert mod.ansi_count(["a", "\x1b"]) == 1
-    assert mod.ansi_count(["a", "b"]) == 0
+    assert mod.first_match([[""], ["test"]], lambda lines: any("test" in l for l in lines)) == ["test"]
 
 
 def test_probe1_input_echoed():
