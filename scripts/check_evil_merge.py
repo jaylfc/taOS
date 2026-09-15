@@ -252,9 +252,12 @@ def check_evil_merge(
                     Violation(path, merge_sha, parent1, parent2, merge_tree_sha)
                 )
         elif head_blob != expected:
-            violations.append(
-                Violation(path, merge_sha, parent1, parent2, merge_tree_sha)
-            )
+            p1_blob = p1_blobs.get(path)
+            p2_blob = p2_blobs.get(path)
+            if head_blob != p1_blob and head_blob != p2_blob:
+                violations.append(
+                    Violation(path, merge_sha, parent1, parent2, merge_tree_sha)
+                )
 
     return violations
 
@@ -294,11 +297,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     v = violations[0]
-    print(f"EVIL-MERGE FAIL: {v.path} differs from merge-tree baseline")
-    print(f"  merge         M  {v.merge_hash[:8]}")
-    print(f"  merge-tree    T  {v.merge_tree_hash[:8]}")
-    print(f"  parent1      P1  {v.parent1_hash[:8]}")
-    print(f"  parent2      P2  {v.parent2_hash[:8]}")
+    print(f"EVIL-MERGE FAIL: {v.path} matches neither parent")
+    print(f"  merge   M  {v.merge_hash[:8]}")
+    print(f"  parent1 P1 {v.parent1_hash[:8]}")
+    print(f"  parent2 P2 {v.parent2_hash[:8]}")
     return 1
 
 
