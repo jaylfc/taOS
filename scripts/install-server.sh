@@ -88,6 +88,21 @@ fi
 
 set -euo pipefail
 
+_taos_install_result=""
+
+taos_mark_result() {
+    local result="$1"
+    _taos_install_result="$result"
+    echo "[taos-install] INSTALL_RESULT: $result"
+}
+
+_taos_install_exit_trap() {
+    if [[ -z "$_taos_install_result" ]]; then
+        taos_mark_result FAILURE >&2
+    fi
+}
+trap '_taos_install_exit_trap' EXIT
+
 # If taOS is already installed, default to ITS directory so a re-run updates the
 # existing install in place rather than forking a second copy (e.g. a root
 # `curl | sudo bash` landing in /root while the service runs from /opt). An
@@ -1591,6 +1606,19 @@ if [[ ! -d .venv ]]; then
     fi
 fi
 
+# Detect logind cgroup-kill hazard before the long pip step. If the ssh
+# session drops, every process in the session scope is killed with no error
+# and no dmesg trace. Warn and offer the systemd-run escape hatch.
+if _detect_logind_hazard; then
+    warn ""
+    warn "Hazard detected: KillUserProcesses=yes, Linger=no, running in ssh session."
+    warn "  If this ssh session drops, the install will be killed with no error."
+    warn "  Re-run with TAOS_SYSTEMD_RUN=1 to launch the installer into a system slice:"
+    warn "    TAOS_SYSTEMD_RUN=1 $0 $*"
+    warn ""
+fi
+_maybe_reexec_under_systemd_run "$@"
+
 log "installing controller python deps into .venv (pip install -e '.[proxy]')"
 ./.venv/bin/pip install --quiet --upgrade pip
 ./.venv/bin/pip install --quiet -e ".[proxy]"
@@ -1939,6 +1967,46 @@ have_root_or_sudo() {
         return 0
     fi
     return 1
+}
+
+# --- logind cgroup-kill hazard ---------------------------------------------
+# On systemd hosts with KillUserProcesses=yes and Linger=no, a dropped ssh
+# session kills every process in the user's session cgroup -- including a
+# running installer -- with no error and no dmesg trace. nohup and setsid do
+# NOT escape the cgroup; only launching into a system slice via systemd-run
+# does. Detect the hazard and offer the safe path.
+_detect_logind_hazard() {
+    # Already running in a system slice -- no hazard
+    grep -q "system.slice" /proc/self/cgroup 2>/dev/null && return 1
+    [[ "$(cat /proc/1/comm 2>/dev/null)" != "systemd" ]] && return 1
+    local _kup
+    _kup="$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager KillUserProcesses 2>/dev/null || echo "")"
+    [[ "$_kup" != "b true" ]] && return 1
+    local _linger
+    _linger="$(loginctl show-user "$(id -un)" -p Linger 2>/dev/null || echo "")"
+    [[ "$_linger" != "Linger=no" ]] && return 1
+    local _user
+    _user="$(id -un)"
+    local _session_id
+    _session_id="$(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$_user" '$3 == u {print $1; exit}')"
+    [[ -z "$_session_id" ]] && return 1
+    return 0
+}
+
+_maybe_reexec_under_systemd_run() {
+    [[ "${TAOS_SYSTEMD_RUN:-}" != "1" ]] && return 0
+    [[ "${_TAOS_ALREADY_SYSTEMD_RUN:-}" == "1" ]] && return 0
+    have_root_or_sudo || return 0
+    _detect_logind_hazard || return 0
+
+    log "re-invoking installer under systemd-run to escape session cgroup kill"
+    export _TAOS_ALREADY_SYSTEMD_RUN=1
+    local _sd_cmd=(systemd-run --unit=taos-install --collect --setenv=_TAOS_ALREADY_SYSTEMD_RUN=1)
+    if [[ "$(id -u)" != "0" ]]; then
+        _sd_cmd=(sudo "${_sd_cmd[@]}")
+    fi
+    _sd_cmd+=(/bin/bash "$0" "$@")
+    exec "${_sd_cmd[@]}"
 }
 
 if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
@@ -2964,3 +3032,5 @@ log ""
 log "  Now install workers on other machines with:"
 log "    curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-worker.sh | sudo bash -s -- http://$host_ip:$TAOS_PORT"
 log ""
+taos_mark_result SUCCESS
+exit 0

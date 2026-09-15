@@ -1,0 +1,2 @@
+### Fixed
+- Installer on systemd hosts with `KillUserProcesses=yes` and `Linger=no` now detects the ssh-session cgroup-kill hazard before the long `pip install` step, warns with the exact consequence and the `TAOS_SYSTEMD_RUN=1` re-invocation, and writes an explicit `INSTALL_RESULT: SUCCESS` or `INSTALL_RESULT: FAILURE` marker as the last line of the log so a dead run is distinguishable from a slow one.

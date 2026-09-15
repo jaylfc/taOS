@@ -72,6 +72,11 @@ Sovereignty by default, cloud by choice. Run taOS fully offline, or connect a cl
 curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-server.sh | sudo sh
 ```
 
+> **SSH session stability:** On systemd hosts with `KillUserProcesses=yes` and `Linger=no` (e.g. postmarketOS), a dropped SSH session kills the installer silently with no error. If your SSH session is unstable, re-run with `TAOS_SYSTEMD_RUN=1` to launch the installer into a system slice so it survives session termination:
+> ```bash
+> TAOS_SYSTEMD_RUN=1 curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-server.sh | sudo sh
+> ```
+
 <details><summary>Alpine / postmarketOS — install dependencies first</summary>
 
 ```bash

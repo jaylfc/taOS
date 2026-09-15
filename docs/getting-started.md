@@ -58,6 +58,11 @@ On your device, open a terminal and run:
 curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-server.sh | sudo bash
 ```
 
+> **SSH session stability:** On systemd hosts with `KillUserProcesses=yes` and `Linger=no` (e.g. postmarketOS), a dropped SSH session kills the installer silently with no error. If your SSH session is unstable, re-run with `TAOS_SYSTEMD_RUN=1` to launch the installer into a system slice so it survives session termination:
+> ```bash
+> TAOS_SYSTEMD_RUN=1 curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-server.sh | sudo bash
+> ```
+
 This script will:
 1. Install system dependencies (`python3`, `git`, `nodejs`, `avahi-daemon` for mDNS, and others)
 2. Clone taOS to `~/tinyagentos` (override with `TAOS_INSTALL_DIR`)
