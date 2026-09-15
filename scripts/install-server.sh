@@ -6,7 +6,7 @@
 # http://<host>:6969 immediately after the script exits.
 #
 # Usage:
-#     curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-server.sh | sudo bash
+#     curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-server.sh | sudo sh
 #
 # or download + inspect + run:
 #     curl -O https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-server.sh
@@ -32,6 +32,60 @@
 #                               auto = use btrfs/zfs if /var/lib is on CoW fs, fall back to dir
 #                               btrfs/zfs = force a specific CoW driver (requires matching fs)
 #                               dir = force directory-backed pool (no CoW, slower clones)
+# --- POSIX bootstrap ------------------------------------------------------
+# Everything from here down to the re-exec must parse and run under POSIX sh.
+#
+# The interpreter is chosen by the PIPE, not by the shebang above: the README
+# one-liner feeds this file to `sudo sh`, so on an image that ships no bash the
+# old `sudo bash` form died at `sudo: 'bash': command not found` before a single
+# line ran -- which meant ensure_linux_deps() below, including its apk branch,
+# could never install anything. Alpine and postmarketOS ship neither bash nor
+# git. Reported by an end-user tester on postmarketOS, 2026-09-15.
+#
+# Installing bash and re-execing is the whole job here. The rest of the script
+# stays bash on purpose; it is thousands of lines of bash-only constructs and
+# rewriting it in POSIX sh is not the fix.
+if [ -z "${BASH_VERSION:-}" ]; then
+    if ! command -v bash >/dev/null 2>&1; then
+        echo "[taos-install] bash is required and this image does not ship it; installing" >&2
+        if command -v apk >/dev/null 2>&1; then
+            sudo apk add --no-cache bash
+        elif command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq bash
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y -q bash
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -Sy --noconfirm --needed bash
+        else
+            echo "[taos-install] FATAL: no supported package manager found, so bash cannot be" >&2
+            echo "[taos-install] installed automatically. Install bash by hand, then re-run this" >&2
+            echo "[taos-install] command." >&2
+            exit 1
+        fi
+    fi
+    if ! command -v bash >/dev/null 2>&1; then
+        echo "[taos-install] FATAL: bash is still not on PATH after the install attempt." >&2
+        exit 1
+    fi
+    # Re-exec under bash. Under `curl | sh` this script arrives on STDIN, so "$0"
+    # is not a readable path and the remaining input has already been partly
+    # consumed by the parser -- re-reading stdin would hand bash a truncated
+    # script. Fetch a clean copy instead. When the file IS on disk (the
+    # download-inspect-run path) just use it, so an audited local copy is the
+    # thing that actually executes.
+    if [ -r "$0" ] && [ "$0" != "sh" ] && [ "$0" != "-" ]; then
+        exec bash "$0" "$@"
+    fi
+    _taos_boot_url="${TAOS_BOOTSTRAP_URL:-https://raw.githubusercontent.com/jaylfc/taOS/${TAOS_BRANCH:-master}/scripts/install-server.sh}"
+    _taos_self="$(mktemp)" || exit 1
+    if ! curl -fsSL "$_taos_boot_url" -o "$_taos_self"; then
+        echo "[taos-install] FATAL: could not re-fetch the installer from $_taos_boot_url" >&2
+        rm -f "$_taos_self"
+        exit 1
+    fi
+    exec bash "$_taos_self" "$@"
+fi
+
 set -euo pipefail
 
 # If taOS is already installed, default to ITS directory so a re-run updates the
@@ -124,7 +178,7 @@ ensure_linux_deps() {
             libtorrent-rasterbar boost sqlite nodejs npm sqlcipher vulkan-tools
     elif command -v apk >/dev/null 2>&1; then
         log "installing apk deps"
-        sudo apk add --no-cache python3 py3-pip git curl libtorrent-rasterbar sqlite nodejs npm sqlcipher-dev vulkan-tools
+        sudo apk add --no-cache bash python3 py3-pip git curl libtorrent-rasterbar sqlite nodejs npm sqlcipher-dev vulkan-tools
     else
         warn "unrecognised package manager — assuming python3/git/curl/libtorrent/nodejs already present"
     fi
