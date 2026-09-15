@@ -73,7 +73,10 @@
     "tailwind-merge": "^3.6.0",
     "three": "0.186.0",
     "tone": "^15.1.22",
-    "zustand": "^5.0.15"
+    "zustand": "^5.0.15",
+    "@codemirror/commands": "^6.11.0",
+    "@codemirror/language": "^6.12.3",
+    "dompurify": "^3.4.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
