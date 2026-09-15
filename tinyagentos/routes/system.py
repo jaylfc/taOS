@@ -256,3 +256,101 @@ async def restart_status(request: Request):
     if orchestrator is None:
         return JSONResponse({"error": "orchestrator not available"}, status_code=503)
     return orchestrator.get_status()
+
+
+# --- Session mode (phone/kiosk devices only) --------------------------------
+#
+# On a handset running taOS as its shell (postmarketOS + Plasma Mobile), the
+# device can be in one of two graphical sessions:
+#   * "kiosk"  — taos-kiosk.service: a Wayland compositor running taOS
+#                full-screen, so the phone looks like it boots into taOS;
+#   * "plasma" — plasma-mobile.service: the stock KDE phone shell.
+# The two units Conflict with each other, so switching is ONE `systemctl start`
+# and systemd stops the other side for us.
+#
+# Privilege comes from a polkit rule scoped to exactly these two units (see
+# packaging/postmarketos/50-taos-session.rules), NOT from sudo — the controller
+# runs as the unprivileged `taos` user and must not be able to manage arbitrary
+# system services just to offer a UI toggle.
+#
+# AVAILABILITY IS THE DEVICE GATE. `taos-kiosk.service` only exists on a device
+# provisioned as a taOS handset, so `available: false` everywhere else and the
+# frontend hides the app rather than shipping a button that cannot work. This
+# is deliberately a capability probe, not a hardcoded device list.
+
+_SESSION_UNITS = {"kiosk": "taos-kiosk.service", "plasma": "plasma-mobile.service"}
+
+
+async def _systemctl(*args: str) -> tuple[int, str]:
+    """Run systemctl and return (rc, combined output). Never raises."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl", *args,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+        return proc.returncode or 0, (out or b"").decode(errors="replace").strip()
+    except FileNotFoundError:
+        return 127, "systemctl not found"
+    except asyncio.TimeoutError:
+        return 124, "systemctl timed out"
+    except Exception as exc:  # noqa: BLE001
+        return 1, str(exc)
+
+
+async def _session_mode_state() -> dict:
+    kiosk_rc, kiosk_state = await _systemctl("is-active", _SESSION_UNITS["kiosk"])
+    # `is-active` exits non-zero for inactive units, so the OUTPUT is the signal
+    # and rc is not. An unknown unit reports "inactive" too, so availability is
+    # probed separately with `cat`, which fails only when the unit is absent.
+    cat_rc, _ = await _systemctl("cat", _SESSION_UNITS["kiosk"])
+    available = cat_rc == 0
+    _, plasma_state = await _systemctl("is-active", _SESSION_UNITS["plasma"])
+    if kiosk_state == "active":
+        current = "kiosk"
+    elif plasma_state == "active":
+        current = "plasma"
+    else:
+        current = "unknown"
+    return {
+        "available": available,
+        "current": current,
+        "kiosk": kiosk_state,
+        "plasma": plasma_state,
+    }
+
+
+@router.get("/api/system/session-mode")
+async def get_session_mode():
+    """Report which graphical session is running, and whether this device can
+    switch at all. Open to any authenticated caller: it is a read of local
+    service state that the UI needs before deciding to render the control."""
+    return await _session_mode_state()
+
+
+@router.post("/api/system/session-mode", dependencies=[Depends(require_admin)])
+async def set_session_mode(request: Request):
+    """Switch the device between the taOS kiosk and Plasma Mobile.
+
+    Admin only — this replaces what is on the user's screen.
+    """
+    body = await request.json() if await request.body() else {}
+    mode = (body or {}).get("mode", "")
+    if mode not in _SESSION_UNITS:
+        return JSONResponse(
+            {"error": f"mode must be one of {sorted(_SESSION_UNITS)}"}, status_code=400,
+        )
+    state = await _session_mode_state()
+    if not state["available"]:
+        return JSONResponse(
+            {"error": "this device has no taOS kiosk session installed"}, status_code=404,
+        )
+    # Starting the target stops the other: the units Conflict. Doing it as two
+    # jobs (stop-then-start) would leave a window with NO session on screen.
+    rc, out = await _systemctl("start", _SESSION_UNITS[mode])
+    if rc != 0:
+        logger.warning("session-mode switch to %s failed rc=%s: %s", mode, rc, out)
+        return JSONResponse(
+            {"error": "switch failed", "detail": out or f"rc={rc}"}, status_code=500,
+        )
+    return {"ok": True, "mode": mode}

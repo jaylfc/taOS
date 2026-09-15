@@ -1,0 +1,58 @@
+#!/bin/sh
+# Launch the taOS kiosk: a Wayland compositor running one full-screen browser
+# pointed at the local taOS server. Resolves paths at runtime because Alpine
+# ships cage in /usr/sbin and chromium as an unwrapped binary under /usr/lib.
+set -eu
+
+# 127.0.0.1, NOT localhost: on postmarketOS `localhost` resolves to ::1 only,
+# while taOS binds 0.0.0.0 (IPv4). Using the name gives "connection refused"
+# and the kiosk sits on a blank page forever. Measured on the device 2026-09-16.
+# Phone panels report a raw 1080x2400 with no DPI hint, so at scale 1 the UI is
+# physically tiny in the hand, and the SPA picks DESKTOP breakpoints because it
+# sees 1080 CSS px. Two approaches were MEASURED on the device and rejected:
+#   --force-device-scale-factor: chromium renders a smaller surface and cage
+#     does not upscale it, so the page sat in the output's top-left corner with
+#     the rest black.
+#   WLR_OUTPUT_SCALE: cage 0.3.1 ignores it; the screenshot was byte-identical.
+#   seeding default_zoom_level in the profile Preferences: chromium rewrites
+#     the profile on start and the screenshot was again byte-identical.
+# LEFT AT SCALE 1 DELIBERATELY. The kiosk is legible and correct; making the UI
+# feel phone-native is an SPA breakpoint job (the app sees 1080 CSS px and picks
+# desktop breakpoints), not something to hack in the launcher. Carded separately.
+TAOS_URL="${TAOS_URL:-http://127.0.0.1:6969}"
+
+CAGE=""
+for c in /usr/bin/cage /usr/sbin/cage; do
+    [ -x "$c" ] && CAGE="$c" && break
+done
+[ -n "$CAGE" ] || { echo "taos-kiosk: cage not found" >&2; exit 1; }
+
+BROWSER=""
+for b in /usr/bin/chromium /usr/bin/chromium-browser /usr/lib/chromium/chrome; do
+    [ -x "$b" ] && BROWSER="$b" && break
+done
+[ -n "$BROWSER" ] || { echo "taos-kiosk: no chromium binary found" >&2; exit 1; }
+
+# Wait for the taOS server to answer before painting anything. Without this the
+# kiosk can come up on a connection-refused error page at boot and stay there.
+i=0
+while [ "$i" -lt 60 ]; do
+    if wget -q -O /dev/null -T 2 "$TAOS_URL/auth/status" 2>/dev/null \
+       || wget -q -O /dev/null -T 2 "$TAOS_URL/" 2>/dev/null; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+
+
+exec "$CAGE" -- "$BROWSER" \
+    --ozone-platform=wayland \
+    --kiosk \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-features=TranslateUI \
+    --disable-pinch \
+    --overscroll-history-navigation=0 \
+    --user-data-dir=/var/lib/taos-kiosk/chrome \
+    --app="$TAOS_URL"

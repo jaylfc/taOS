@@ -1,0 +1,32 @@
+#!/bin/sh
+# Switch the phone between the taOS kiosk and Plasma Mobile.
+#
+# Both directions are ONE systemd job: the units Conflict with each other, so
+# starting one stops the other. Privilege comes from the polkit rule in
+# 50-taos-session.rules (an active local session, or the taos service user) —
+# deliberately NOT sudo, so the grant is narrow and auditable.
+set -eu
+
+usage() { echo "usage: taos-session-mode {kiosk|plasma|status}" >&2; exit 2; }
+[ $# -eq 1 ] || usage
+
+# systemctl talks to polkit when not root; as root it just works.
+run() {
+    if [ "$(id -u)" = "0" ]; then systemctl "$@"; else systemctl "$@"; fi
+}
+
+case "$1" in
+    kiosk)
+        run start taos-kiosk.service
+        echo "taOS kiosk starting (Plasma Mobile stopped)."
+        ;;
+    plasma)
+        run start plasma-mobile.service
+        echo "Plasma Mobile starting (taOS kiosk stopped)."
+        ;;
+    status)
+        printf 'taos-kiosk:    %s\n' "$(systemctl is-active taos-kiosk.service 2>/dev/null || echo unknown)"
+        printf 'plasma-mobile: %s\n' "$(systemctl is-active plasma-mobile.service 2>/dev/null || echo unknown)"
+        ;;
+    *) usage ;;
+esac

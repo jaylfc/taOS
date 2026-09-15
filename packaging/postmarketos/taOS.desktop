@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=taOS
+GenericName=taOS Kiosk
+Comment=Stop Plasma Mobile and run taOS full-screen as the device UI
+Exec=/usr/local/bin/taos-session-mode kiosk
+Icon=computer
+Terminal=false
+Categories=System;
+Keywords=taOS;kiosk;
+X-KDE-StartupNotify=false

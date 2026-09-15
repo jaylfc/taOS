@@ -1,0 +1,25 @@
+// Let the taOS session switch happen without sudo, scoped to exactly the two
+// units involved. Anything broader would hand a UI button the ability to
+// manage arbitrary system services.
+//
+// Who is allowed:
+//   * the taos service user  — so the in-taOS "Back to Plasma Mobile" app works
+//   * an ACTIVE LOCAL session — i.e. the person physically holding the phone
+// An ssh session is neither local nor active, so remote callers still get the
+// normal polkit prompt.
+polkit.addRule(function(action, subject) {
+    if (action.id !== "org.freedesktop.systemd1.manage-units") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var unit = action.lookup("unit");
+    if (unit !== "taos-kiosk.service" && unit !== "plasma-mobile.service") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (subject.user === "taos") {
+        return polkit.Result.YES;
+    }
+    if (subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});
