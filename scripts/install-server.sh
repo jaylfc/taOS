@@ -813,7 +813,9 @@ COW_EFFECTIVE_MODE="n/a"
 # On Linux, if no runtime is found, we install Incus via the system
 # package manager on Debian/Ubuntu/Fedora. On Arch/Alpine we log a
 # manual-install notice and continue — those distros have it in the
-# repos but the AUR/apk setup varies too much to auto-invoke here.
+# repos with incus available; apk probes apk search -x and pacman probes
+# pacman -Si first, and falls back to a manual-install hint only when the
+# package is truly unresolvable — the hint text is preserved for that case.
 # A failed Incus install is non-fatal: taOS still starts; cluster and
 # worker-container features are simply unavailable until one is added.
 
@@ -967,14 +969,34 @@ ensure_container_runtime() {
             && installed=1 \
             || warn "dnf install incus failed — continuing without container support"
     elif command -v pacman >/dev/null 2>&1; then
-        warn "container runtime: Arch detected — install Incus manually with:"
-        warn "  sudo pacman -S incus"
-        warn "  (or install Docker/Podman if you prefer)"
-        warn "  worker containers will be unavailable until a runtime is installed"
+        # Probe resolvability first — incus is in official extra repo
+        if pacman -Si incus >/dev/null 2>&1; then
+            log "incus available in Arch extra repo — installing"
+            sudo pacman -Sy --noconfirm --needed incus \
+                && installed=1 \
+                || warn "pacman install incus failed — continuing without container support"
+        else
+            warn "container runtime: Arch detected — install Incus manually with:"
+            warn "  sudo pacman -S incus"
+            warn "  (or install Docker/Podman if you prefer)"
+            warn "  worker containers will be unavailable until a runtime is installed"
+        fi
     elif command -v apk >/dev/null 2>&1; then
-        warn "container runtime: Alpine detected — install Incus manually with:"
-        warn "  sudo apk add incus"
-        warn "  worker containers will be unavailable until a runtime is installed"
+        # Probe resolvability first — incus is in Alpine repos (edge/community)
+        if apk search -x incus >/dev/null 2>&1; then
+            log "incus available in Alpine repositories — installing"
+            sudo apk add -y -q incus incus-client
+            installed=1
+            # Also install incus-openrc when host uses OpenRC
+            if command -v rc-update >/dev/null 2>&1; then
+                sudo apk add -y -q incus-openrc >/dev/null 2>&1 || true
+                sudo rc-update add incus default >/dev/null 2>&1 || true
+            fi
+        else
+            warn "container runtime: Alpine detected — install Incus manually with:"
+            warn "  sudo apk add incus"
+            warn "  worker containers will be unavailable until a runtime is installed"
+        fi
     else
         warn "container runtime: unrecognised package manager — install Incus or Docker manually"
         warn "  worker containers will be unavailable until a runtime is installed"
@@ -986,21 +1008,48 @@ ensure_container_runtime() {
         else
             warn "incus install reported success but binary not found on PATH — check your PATH"
         fi
-    fi
 
-    if (( installed )) && command -v incus >/dev/null 2>&1; then
-        log "initialising Incus with default storage + network"
-        # Try explicit CoW pool first - if the user set TAOS_COW_POOL or the
-        # filesystem is btrfs/zfs, this creates the pool before incus init.
-        # Falls back gracefully to incus admin init --auto when:
-        #  - the fs isn't CoW and the user didn't force a driver
-        #  - the explicit pool creation fails
-        _incus_storage_init "$COW_FS_TYPE"
-        if sudo incus admin init --auto >/dev/null 2>&1; then
-            log "container runtime: incus initialised"
-        else
-            warn "incus admin init --auto failed — you may need to configure storage manually"
-            warn "  see: https://linuxcontainers.org/incus/docs/main/howto/initialize/"
+        # Start incusd based on the init system present, not distro name
+        local _init="none"
+
+        # Check for systemd: look for incus unit file
+        if command -v systemctl >/dev/null 2>&1; then
+            if { ls /usr/lib/systemd/system/incus* 2>/dev/null || ls /etc/systemd/system/incus* 2>/dev/null; }; then
+                log "systemd detected with incus unit — enabling and starting incusd"
+                sudo systemctl enable --now incusd >/dev/null 2>&1 || true
+                if sudo systemctl is-active incusd >/dev/null 2>&1; then
+                    _init="systemd"
+                else
+                    warn "incusd could not be started — incus admin init --auto will be skipped"
+                fi
+            fi
+        fi
+
+        # Check for OpenRC (if systemd didn't work)
+        if [[ "$_init" == "none" ]] && command -v rc-update >/dev/null 2>&1; then
+            log "OpenRC detected — adding incus to default runlevel"
+            sudo rc-update add incus default >/dev/null 2>&1 || true
+            sudo service incus start >/dev/null 2>&1 || true
+            # Check if incus is running under OpenRC
+            if rc-status 2>/dev/null | grep -q "incus"; then
+                _init="openrc"
+            else
+                warn "incusd could not be started — incus admin init --auto will be skipped"
+            fi
+        fi
+
+        # Only initialize if incusd is running
+        if [[ "$_init" != "none" ]] && command -v incus >/dev/null 2>&1; then
+            log "initialising Incus with default storage + network"
+            _incus_storage_init "$COW_FS_TYPE"
+            if sudo incus admin init --auto >/dev/null 2>&1; then
+                log "container runtime: incus initialised"
+            else
+                warn "incus admin init --auto failed — you may need to configure storage manually"
+                warn "  see: https://linuxcontainers.org/incus/docs/main/howto/initialize/"
+            fi
+        elif [[ "$_init" == "none" ]] && command -v incus >/dev/null 2>&1; then
+            warn "incusd not running — incus admin init --auto skipped; containers unavailable until manually initialized"
         fi
     fi
 }
