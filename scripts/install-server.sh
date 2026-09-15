@@ -757,10 +757,12 @@ COW_EFFECTIVE_MODE="n/a"
 # worker containers. On macOS, the Apple Containerization framework
 # (bundled with macOS 26) is used instead — no install needed here.
 # On Linux, if no runtime is found, we install Incus via the system
-# package manager on Debian/Ubuntu/Fedora. On Arch/Alpine we log a
-# manual-install notice and continue — those distros have it in the
-# repos but the AUR/apk setup varies too much to auto-invoke here.
+# package manager on Debian/Ubuntu/Fedora/Arch/Alpine. We probe availability
+# for each package manager before attempting install; if the package
+# genuinely is not available, we fall back to the manual-install hint.
 # A failed Incus install is non-fatal: taOS still starts; cluster and
+# worker-container features are simply unavailable until one is added.
+
 # worker-container features are simply unavailable until one is added.
 
 ensure_container_runtime() {
@@ -913,14 +915,43 @@ ensure_container_runtime() {
             && installed=1 \
             || warn "dnf install incus failed — continuing without container support"
     elif command -v pacman >/dev/null 2>&1; then
-        warn "container runtime: Arch detected — install Incus manually with:"
-        warn "  sudo pacman -S incus"
-        warn "  (or install Docker/Podman if you prefer)"
-        warn "  worker containers will be unavailable until a runtime is installed"
+        # Arch: incus is in the official extra repo, not the AUR. Probe availability first.
+        if pacman -Si incus 2>/dev/null | grep -q "Package : incus"; then
+            log "incus available in pacman extra — installing"
+            if sudo pacman -Sy --noconfirm --needed incus; then
+                installed=1
+                log "container runtime: incus installed via pacman"
+            else
+                warn "pacman install incus failed — continuing without container support"
+            fi
+        else
+            warn "container runtime: Arch detected — install Incus manually with:"
+            warn "  sudo pacman -S incus"
+            warn "  (or install Docker/Podman if you prefer)"
+            warn "  worker containers will be unavailable until a runtime is installed"
+        fi
     elif command -v apk >/dev/null 2>&1; then
-        warn "container runtime: Alpine detected — install Incus manually with:"
-        warn "  sudo apk add incus"
-        warn "  worker containers will be unavailable until a runtime is installed"
+        # Alpine: incus, incus-client, and incus-openrc are available in edge/community.
+        # Probe availability first. Install incus and incus-client always.
+        # Install incus-openrc only when OpenRC is the host init system.
+        local _incus_pkg="incus incus-client"
+        if command -v rc-update >/dev/null 2>&1; then
+            _incus_pkg="$_incus_pkg incus-openrc"
+        fi
+        # Check if incus is actually available before attempting install
+        if apk search -x incus 2>/dev/null | grep -q "^incus"; then
+            log "incus available in Alpine repos — installing"
+            if sudo apk add --no-cache $_incus_pkg; then
+                installed=1
+                log "container runtime: incus installed via apk"
+            else
+                warn "apk install incus failed — continuing without container support"
+            fi
+        else
+            warn "container runtime: Alpine detected — install Incus manually with:"
+            warn "  sudo apk add incus"
+            warn "  worker containers will be unavailable until a runtime is installed"
+        fi
     else
         warn "container runtime: unrecognised package manager — install Incus or Docker manually"
         warn "  worker containers will be unavailable until a runtime is installed"
@@ -942,11 +973,43 @@ ensure_container_runtime() {
         #  - the fs isn't CoW and the user didn't force a driver
         #  - the explicit pool creation fails
         _incus_storage_init "$COW_FS_TYPE"
-        if sudo incus admin init --auto >/dev/null 2>&1; then
-            log "container runtime: incus initialised"
+
+        # Start incusd based on the running init system
+        local _incusd_started=0
+        if command -v systemctl >/dev/null 2>&1; then
+            # Check if incus unit exists for systemd
+            if systemctl list-unit-files | grep -q "^incus.service"; then
+                log "starting incusd via systemctl"
+                sudo systemctl enable --now incus.service >/dev/null 2>&1
+                _incusd_started=1
+            else
+                warn "incus package installed but no incus.service unit for systemd — cannot start"
+                warn "  install incus-systemd package or use OpenRC"
+            fi
+        elif command -v rc-update >/dev/null 2>&1; then
+            # OpenRC present, check if incus service is available
+            if rc-update show | grep -q "incus"; then
+                log "starting incusd via OpenRC"
+                sudo rc-update add incus default >/dev/null 2>&1
+                sudo service incus start >/dev/null 2>&1
+                _incusd_started=1
+            else
+                warn "incus package installed but no incus service in OpenRC — cannot start"
+                warn "  install incus-openrc package"
+            fi
         else
-            warn "incus admin init --auto failed — you may need to configure storage manually"
-            warn "  see: https://linuxcontainers.org/incus/docs/main/howto/initialize/"
+            warn "incus package installed but no systemd or OpenRC detected — cannot start"
+            warn "  manual start required"
+        fi
+
+        # Only run incus admin init if incusd was successfully started
+        if (( _incusd_started )); then
+            if sudo incus admin init --auto >/dev/null 2>&1; then
+                log "container runtime: incus initialised"
+            else
+                warn "incus admin init --auto failed — you may need to configure storage manually"
+                warn "  see: https://linuxcontainers.org/incus/docs/main/howto/initialize/"
+            fi
         fi
     fi
 }
