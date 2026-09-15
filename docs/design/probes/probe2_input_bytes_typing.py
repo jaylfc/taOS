@@ -4,7 +4,6 @@
 Verifies that tuiui apphost correctly handles raw byte input (not base64).
 """
 
-import json
 import os
 import sys
 from pathlib import Path
@@ -78,7 +77,7 @@ def probe_input_bytes_typing(socket_path: str) -> str:
     transcript_lines.append("")
 
     transcript_lines.append("=== Test: Input Byte Encoding ===")
-    transcript_lines.append("Command: Send Input payload containing bytes [104, 101, 108, 108, 111] (hello)")
+    transcript_lines.append("Command: Send Input payload containing bytes [104, 101, 108, 108, 111, 10] (hello)")
 
     with TuiuiConduit(socket_path, timeout=2.0) as conduit:
         conduit.send_input(spawned.app, b"hello\n")
@@ -91,7 +90,7 @@ def probe_input_bytes_typing(socket_path: str) -> str:
         else:
             transcript_lines.append("Result: Input echoed in frame")
 
-    transcript_lines.append("Verification: The wire protocol should have carried [104, 101, 108, 108, 111] as integer array, NOT as base64-encoded bytes")
+    transcript_lines.append("Verification: The wire protocol should have carried [104, 101, 108, 108, 111, 10] as integer array, NOT as base64-encoded bytes")
     transcript_lines.append("from source: tinyagentos/tuiui_conduit.py:TuiuiConduit.send_input")
 
     transcript = "\n".join(transcript_lines)
