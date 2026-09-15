@@ -127,7 +127,7 @@ ensure_linux_deps() {
             libtorrent-rasterbar boost sqlite nodejs npm sqlcipher vulkan-tools
     elif command -v apk >/dev/null 2>&1; then
         log "installing apk deps"
-        sudo apk add --no-cache python3 py3-pip git curl libtorrent-rasterbar sqlite nodejs npm sqlcipher-dev vulkan-tools
+        sudo apk add --no-cache python3 py3-pip git curl libtorrent-rasterbar sqlite nodejs npm sqlcipher-dev vulkan-tools py3-onnxruntime
     else
         warn "unrecognised package manager — assuming python3/git/curl/libtorrent/nodejs already present"
     fi
@@ -1485,18 +1485,19 @@ install_rk3588_perf_if_needed
 # --- python venv + controller deps ---------------------------------------
 
 # Resolve a Python the controller deps support: litellm (the proxy extra) needs
-# >=3.10,<3.14. Prefer a system interpreter in range; otherwise provision a
+# >=3.10,<3.15. Prefer a system interpreter in range; otherwise provision a
 # standalone 3.13 with uv. The reported failure was a fresh WSL/Ubuntu 26.04 that
 # ships only Python 3.14 and does not package python3.13, so apt cannot help and
 # uv (which downloads a standalone CPython on any distro) is the reliable path.
-# libtorrent is optional, so the venv is clean -- no system-site-packages binding
-# juggling (a 3.13 venv could not import a 3.14-built system binding anyway).
+# On Alpine, the system python3 is the expected path: py3-onnxruntime is built
+# against the distro's Python, so the venv must use --system-site-packages to
+# import it (a uv-provisioned 3.13 cannot import a 3.14-built binding).
 pick_system_python() {
     local c v
     for c in python3.13 python3.12 python3.11 python3; do
         command -v "$c" >/dev/null 2>&1 || continue
         v=$("$c" -c 'import sys;print(sys.version_info[0]*100+sys.version_info[1])' 2>/dev/null) || continue
-        if [ "$v" -ge 311 ] && [ "$v" -lt 314 ]; then echo "$c"; return 0; fi
+        if [ "$v" -ge 311 ] && [ "$v" -lt 315 ]; then echo "$c"; return 0; fi
     done
     return 1
 }
@@ -1511,13 +1512,13 @@ ensure_uv() {
 }
 
 # Self-heal a stale venv: a re-install over a .venv built with an unsupported
-# Python (e.g. a 3.14 venv from an attempt before this fix) would otherwise be
-# reused, and `pip install -e .` fails the requires-python <3.14 check. Recreate
-# it if its interpreter is out of the supported [3.11,3.14) range.
+# Python (e.g. a 3.15 venv from an attempt before this fix) would otherwise be
+# reused, and `pip install -e .` fails the requires-python <3.15 check. Recreate
+# it if its interpreter is out of the supported [3.11,3.15) range.
 if [[ -d .venv ]]; then
     _vv=$(.venv/bin/python -c 'import sys;print(sys.version_info[0]*100+sys.version_info[1])' 2>/dev/null || echo 0)
-    if [ "$_vv" -lt 311 ] || [ "$_vv" -ge 314 ]; then
-        warn "existing .venv uses an unsupported Python ($_vv); recreating with a 3.11-3.13 interpreter"
+    if [ "$_vv" -lt 311 ] || [ "$_vv" -ge 315 ]; then
+        warn "existing .venv uses an unsupported Python ($_vv); recreating with a 3.11-3.14 interpreter"
         rm -rf .venv
     fi
 fi
@@ -1526,13 +1527,17 @@ if [[ ! -d .venv ]]; then
     PYBIN="$(pick_system_python || true)"
     if [[ -n "$PYBIN" ]]; then
         log "creating venv with $PYBIN ($("$PYBIN" --version 2>&1))"
-        "$PYBIN" -m venv .venv
+        if command -v apk >/dev/null 2>&1; then
+            "$PYBIN" -m venv --system-site-packages .venv
+        else
+            "$PYBIN" -m venv .venv
+        fi
     elif ensure_uv; then
-        log "no system Python 3.11-3.13; provisioning 3.13 with uv"
+        log "no system Python 3.11-3.14; provisioning 3.13 with uv"
         uv python install 3.13 >/dev/null 2>&1 || true
         uv venv --seed --python 3.13 .venv || die "uv could not create a Python 3.13 venv"
     else
-        die "taOS needs Python 3.11-3.13 (litellm has no 3.14 build yet) and uv could not be installed to provision one. Install python3.13 (e.g. 'sudo apt install python3.13 python3.13-venv') and re-run."
+        die "taOS needs Python 3.11-3.14 and uv could not be installed to provision one. Install python3.13 (e.g. 'sudo apt install python3.13 python3.13-venv') and re-run."
     fi
 fi
 
