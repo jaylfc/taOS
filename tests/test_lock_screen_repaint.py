@@ -33,7 +33,7 @@ import pytest
 
 from tinyagentos.routes.auth import _LOCK_SCREEN_SCRIPT as LOCK_SCRIPT
 
-from tests.test_lock_screen_gestures import _balanced, _function
+from test_lock_screen_gestures import _balanced, _function
 
 
 def _var(name: str) -> str:
