@@ -78,6 +78,7 @@ dependencies = [
     # relicence or CVE reached users without tripping any gate. Declared here so
     # it goes through the lockfile like everything else.
     "yt-dlp>=2025.1.15",
+    "pypdf>=6.17",
 ]
 
 [project.optional-dependencies]

@@ -16,6 +16,7 @@ offers an extra that would pull in something copyleft.
 | --- | --- | --- |
 | `python-slugify` (core) | MIT | Accepted as-is. |
 | `text-unidecode` (via `python-slugify`) | Artistic-1.0 **OR** GPL-2.0-or-later | **We elect the Artistic-1.0 arm.** It is permissive and usable under both the AGPL core and the commercial licence. This election is deliberate and must survive any dependency refresh. |
+| `pypdf` (core) | BSD-3-Clause | Accepted as-is. Pure Python, permissive, no copyleft concerns. |
 
 ## Blocked
 

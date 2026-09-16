@@ -89,6 +89,16 @@ jobs:
       - name: Provision Python via uv
         run: uv python install ${{ matrix.python-version }}
 
+      # tests/test_lock_screen_gestures.py EXECUTES the lock screen gesture
+      # source under node rather than asserting against its text, because a
+      # string assertion there passes whether or not the fix works. Those tests
+      # FAIL rather than skip when node is absent, so provision it here: a
+      # skipped gesture suite would report green having measured nothing.
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
       # Install the exact versions recorded in uv.lock (--frozen errors out
       # if the lock is stale rather than silently re-resolving). This is the
       # reproducibility guarantee: dependency versions come from the lock,

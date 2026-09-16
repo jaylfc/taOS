@@ -351,7 +351,15 @@ class TestNumericLayoutForPin:
         assert 'el.setAttribute("role", "button")' in LOCK_SCRIPT
         assert 'el.setAttribute("tabindex", "0")' in LOCK_SCRIPT
         # A role="list" whose children are buttons is an invalid a11y tree.
-        assert 'id="ls-activity" role="group"' in login_console
+        # The panel is now a tabpanel under the view row, not a bare group: the
+        # role moved with the feature, and it has to KEEP naming its tab, or the
+        # fan-out has no accessible owner.
+        assert 'id="ls-activity" data-view="agents"' in login_console
+        assert re.search(
+            r'id="ls-activity"[^>]*role="tabpanel"[^>]*aria-labelledby="ls-tab-agents"',
+            login_console,
+            re.S,
+        )
 
     def test_lock_chrome_does_not_select_text_like_a_browser(self, login_console):
         """Press-and-hold is bound to the islands. Without this, chromium starts
@@ -590,6 +598,7 @@ class TestLockScreenNotifications:
 
         monkeypatch.setattr(auth_mod, "_request_is_console", lambda _request: True)
         monkeypatch.delenv("TAOS_LOCK_DEMO_AGENTS", raising=False)
+        monkeypatch.setenv("TAOS_LOCK_DEMO_NOTIFICATIONS", "1")
         assert (await auth_mod.lock_notifications(None)).status_code == 404
 
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Demo")
@@ -598,10 +607,31 @@ class TestLockScreenNotifications:
         assert json.loads(resp.body)["demo"] is True
 
     @pytest.mark.asyncio
+    async def test_the_stacks_are_off_while_the_islands_stay_up(self, monkeypatch):
+        """Jay is redesigning the stacks and asked for them hidden meanwhile,
+        with the agent islands left alone.
+
+        So the notifications need their own switch, OFF by default: with the
+        master demo flag on and nothing else set, the islands still have their
+        placeholder agents and this route 404s, which the page renders as no
+        stack at all. Asserting the default rather than the opt-in is the point
+        -- an unset variable is what a device actually boots with."""
+        from tinyagentos.routes import auth as auth_mod
+
+        monkeypatch.setattr(auth_mod, "_request_is_console", lambda _request: True)
+        monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Demo")
+        monkeypatch.delenv("TAOS_LOCK_DEMO_NOTIFICATIONS", raising=False)
+
+        assert (await auth_mod.lock_notifications(None)).status_code == 404
+        # The islands are deliberately untouched by the same switch.
+        assert auth_mod._demo_enabled() is True
+
+    @pytest.mark.asyncio
     async def test_notifications_are_console_only(self, monkeypatch):
         from tinyagentos.routes import auth as auth_mod
 
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Demo")
+        monkeypatch.setenv("TAOS_LOCK_DEMO_NOTIFICATIONS", "1")
         monkeypatch.setattr(auth_mod, "_request_is_console", lambda _request: False)
         assert (await auth_mod.lock_notifications(None)).status_code == 403
 
@@ -636,7 +666,11 @@ class TestLockScreenNotifications:
         operable by Enter -- the same rule the islands already follow."""
         assert 'el.setAttribute("role", "button")' in LOCK_SCRIPT
         assert 'el.setAttribute("aria-expanded"' in LOCK_SCRIPT
-        assert 'id="ls-notifs" role="group"' in login_console
+        assert re.search(
+            r'id="ls-notifs"[^>]*role="tabpanel"[^>]*aria-labelledby="ls-tab-alerts"',
+            login_console,
+            re.S,
+        )
 
     def test_notification_text_is_never_written_as_markup(self):
         """Titles and bodies are content. The only innerHTML on this path is an
@@ -689,8 +723,14 @@ class TestLockScreenFeedScrollsAsOne:
     def test_the_fade_is_measured_not_assumed(self, login_console):
         """An unconditional mask eats the bottom of the last card on a device
         with one agent and no notifications, where nothing scrolls."""
+        # The measurement moved into `feedOverflows()` when the unlock-swipe
+        # veto (tsk-6bjsvg) came to need the same answer; asserted through the
+        # helper so the fade is still proven to ASK rather than assume, and so
+        # gutting it to a constant still fails here.
+        assert re.search(r"var over = feedOverflows\(\);", LOCK_SCRIPT)
         assert re.search(
-            r"var over = feedEl\.scrollHeight - feedEl\.clientHeight", LOCK_SCRIPT
+            r"function feedOverflows\(\)[^}]*feedEl\.scrollHeight - feedEl\.clientHeight",
+            LOCK_SCRIPT,
         )
         # The plain .ls-feed rule must not carry a mask of its own.
         feed = re.search(r"\.ls-feed\s*\{([^}]*)\}", login_console)

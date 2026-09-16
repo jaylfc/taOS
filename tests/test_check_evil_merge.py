@@ -141,10 +141,10 @@ class TestEvilMergeGuard:
         assert v.merge_hash != v.parent2_hash
 
     def test_merge_taking_one_side_wholesale_stays_green(self, tmp_path: Path):
-        """CONTROL A: both branches touch different, non-overlapping parts of
-        the same test file, producing a clean auto-merge.  Resolving by
-        keeping side-a's content wholesale matches what git would produce,
-        so the guard passes."""
+        """CONTROL A (clean auto-merge variant): both branches touch different,
+        non-overlapping parts of the same test file, producing a clean
+        auto-merge.  Resolving by keeping side-a's content wholesale matches
+        what git would produce, so the guard passes."""
         repo = tmp_path / "repo"
         _init_repo(repo)
 
@@ -174,6 +174,50 @@ class TestEvilMergeGuard:
         _checkout(repo, "main")
         _git_merge(repo, "side-a")
         _git_merge(repo, "side-b")
+
+        violations = cem.check_evil_merge(repo)
+        assert violations == []
+
+    def test_conflict_resolved_by_taking_one_side_wholesale_stays_green(self, tmp_path: Path):
+        """CONTROL A (conflict variant): the same contradictory branches as the
+        RED case, but the merge conflict is resolved by taking one parent's
+        content wholesale.  The guard must stay green because the blob at
+        head matches a parent exactly."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    pass\n",
+            "test: add test_principal",
+        )
+
+        _branch(repo, "side-a")
+        _checkout(repo, "side-a")
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    assert principal_is_accepted()\n",
+            "feat: assert accepted",
+        )
+
+        _checkout(repo, "main")
+        _branch(repo, "side-b")
+        _checkout(repo, "side-b")
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    assert principal_is_rejected()\n",
+            "feat: assert rejected",
+        )
+
+        _checkout(repo, "main")
+        _git_merge(repo, "side-a")
+        _git_merge(repo, "side-b")
+
+        # Resolve the conflict by taking side-a's content wholesale.
+        _resolve_and_commit(
+            repo, "tests/test_widget.py",
+            "def test_principal():\n    assert principal_is_accepted()\n",
+        )
 
         violations = cem.check_evil_merge(repo)
         assert violations == []
@@ -280,6 +324,61 @@ class TestEvilMergeGuard:
 
         violations = cem.check_evil_merge(repo)
         assert violations == []
+
+    def test_clean_auto_merge_then_take_one_side_wholesale_is_violation(self, tmp_path: Path):
+        """RED: two branches edit different, non-overlapping parts of the same
+        test file.  Git auto-merges cleanly (no conflict).  The merge commit
+        then resolves by taking one parent's content wholesale, discarding the
+        other parent's change.  Since the path never conflicted, the 'matches
+        a parent' exemption must not apply - this is an evil merge and must be
+        flagged."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+
+        # Base has two independent test functions.
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_a():\n    assert OLD_A\n\ndef test_b():\n    assert OLD_B\n",
+            "test: add two tests",
+        )
+
+        # Side-a changes only test_a.
+        _branch(repo, "side-a")
+        _checkout(repo, "side-a")
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_a():\n    assert NEW_A\n\ndef test_b():\n    assert OLD_B\n",
+            "feat: change test_a on side-a",
+        )
+
+        # Side-b changes only test_b.
+        _checkout(repo, "main")
+        _branch(repo, "side-b")
+        _checkout(repo, "side-b")
+        _commit_file(
+            repo, "tests/test_widget.py",
+            "def test_a():\n    assert OLD_A\n\ndef test_b():\n    assert NEW_B\n",
+            "feat: change test_b on side-b",
+        )
+
+        # Main merges side-a (fast-forward), then merges side-b with --no-commit
+        # to prevent auto-commit of the clean merge.
+        _checkout(repo, "main")
+        _git_merge(repo, "side-a")
+        _git_capture(repo, "merge", "side-b", "--no-commit", "--no-edit")
+
+        # Overwrite with parent1's content (side-a's version), discarding side-b's change.
+        # This simulates a committer resolving a clean merge by taking one side wholesale.
+        (repo / "tests/test_widget.py").write_text(
+            "def test_a():\n    assert NEW_A\n\ndef test_b():\n    assert OLD_B\n"
+        )
+        _git(repo, "add", "tests/test_widget.py")
+        _git(repo, "commit", "--no-edit", "-m", "merge side-b (taking side-a wholesale)")
+
+        violations = cem.check_evil_merge(repo)
+
+        assert len(violations) == 1
+        assert violations[0].path == "tests/test_widget.py"
 
 
 # ---------------------------------------------------------------------------

@@ -44,12 +44,14 @@ class Violation:
         parent1_hash: str,
         parent2_hash: str,
         merge_tree_hash: str,
+        rule: str,
     ) -> None:
         self.path = path
         self.merge_hash = merge_hash
         self.parent1_hash = parent1_hash
         self.parent2_hash = parent2_hash
         self.merge_tree_hash = merge_tree_hash
+        self.rule = rule
 
 
 def _run_git(args: list[str], cwd: Path | None = None) -> str:
@@ -107,16 +109,16 @@ def _get_blob_hashes(repo_root: Path, ref: str, paths: list[str]) -> dict[str, s
 def _is_conflict_blob_line(line: str) -> bool:
     """Return True if ``line`` looks like a merge-tree conflict blob entry.
 
-    Conflict entries have the form ``<mode> blob <hash> <stage_num>\\t<path>``
+    Conflict entries have the form ``<mode> <hash> <stage_num>\\t<path>``
     where <stage_num> is 1, 2, or 3.
     """
     if not line.startswith("100"):
         return False
     parts = line.split(maxsplit=4)
-    if len(parts) < 4 or parts[1] != "blob":
+    if len(parts) < 4:
         return False
     try:
-        int(parts[3])
+        int(parts[2])
     except ValueError:
         return False
     return True
@@ -128,7 +130,7 @@ def _parse_merge_tree_stdout(output: str, paths: list[str]) -> tuple[str, dict[s
     Returns ``(tree_sha, path_to_blob_map)``.
 
     The first line is always the virtual tree SHA.  When parents conflict,
-    subsequent lines are ``<mode> blob <hash> <stage>\\t<path>`` entries;
+    subsequent lines are ``<mode> <hash> <stage>\\t<path>`` entries;
     stage-3 blobs (the result with conflict markers) are used as the
     per-file baseline.  For clean merges the blob map is empty and the
     caller should look up blobs from the tree SHA via ``ls-tree``.
@@ -144,10 +146,10 @@ def _parse_merge_tree_stdout(output: str, paths: list[str]) -> tuple[str, dict[s
     for line in lines[1:]:
         if not _is_conflict_blob_line(line):
             continue
-        parts = line.split(maxsplit=4)
-        if len(parts) < 5:
+        parts = line.split(maxsplit=3)
+        if len(parts) < 4:
             continue
-        blob_hash, stage_str, path = parts[2], parts[3], parts[4]
+        blob_hash, stage_str, path = parts[1], parts[2], parts[3]
         if path not in wanted:
             continue
         if stage_str == "3":
@@ -207,6 +209,7 @@ def check_evil_merge(
     )
     merge_tree_out = merge_tree_result.stdout
     tree_sha, conflict_blobs = _parse_merge_tree_stdout(merge_tree_out, all_paths)
+    conflicted_paths = set(conflict_blobs.keys())
 
     if conflict_blobs:
         merge_tree_blobs = conflict_blobs
@@ -237,7 +240,7 @@ def check_evil_merge(
             p2_blob = p2_blobs.get(path)
             if p1_blob is not None and p2_blob is not None:
                 violations.append(
-                    Violation(path, merge_sha, parent1, parent2, merge_tree_sha)
+                    Violation(path, merge_sha, parent1, parent2, merge_tree_sha, "deleted file both parents kept")
                 )
             continue
 
@@ -249,12 +252,26 @@ def check_evil_merge(
             p2_blob = p2_blobs.get(path)
             if head_blob != p1_blob and head_blob != p2_blob:
                 violations.append(
-                    Violation(path, merge_sha, parent1, parent2, merge_tree_sha)
+                    Violation(path, merge_sha, parent1, parent2, merge_tree_sha, "matches neither parent")
                 )
         elif head_blob != expected:
-            violations.append(
-                Violation(path, merge_sha, parent1, parent2, merge_tree_sha)
-            )
+            # The merge-tree produced a clean result for this path, but the
+            # commit differs from it. Only allow "matches a parent" when the
+            # path actually conflicted; a clean merge resolved by taking one
+            # side wholesale is an evil merge.
+            p1_blob = p1_blobs.get(path)
+            p2_blob = p2_blobs.get(path)
+            matches_parent = head_blob == p1_blob or head_blob == p2_blob
+            if path in conflicted_paths:
+                if not matches_parent:
+                    violations.append(
+                        Violation(path, merge_sha, parent1, parent2, merge_tree_sha, "matches neither parent")
+                    )
+            else:
+                # Clean merge: head must equal the merge-tree result.
+                violations.append(
+                    Violation(path, merge_sha, parent1, parent2, merge_tree_sha, "clean merge not taken")
+                )
 
     return violations
 
@@ -294,11 +311,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     v = violations[0]
-    print(f"EVIL-MERGE FAIL: {v.path} differs from merge-tree baseline")
-    print(f"  merge         M  {v.merge_hash[:8]}")
-    print(f"  merge-tree    T  {v.merge_tree_hash[:8]}")
-    print(f"  parent1      P1  {v.parent1_hash[:8]}")
-    print(f"  parent2      P2  {v.parent2_hash[:8]}")
+    print(f"EVIL-MERGE FAIL: {v.path} {v.rule}")
+    print(f"  merge   M  {v.merge_hash[:8]}")
+    print(f"  parent1 P1 {v.parent1_hash[:8]}")
+    print(f"  parent2 P2 {v.parent2_hash[:8]}")
     return 1
 
 
