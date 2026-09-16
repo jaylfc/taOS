@@ -72,8 +72,10 @@ RATE_LIMIT_RE = re.compile(
 
 # HTML comment markers and phrases that identify CodeRabbit auto-generated
 # scaffolding that must never read as a real review: the acknowledgement
-# reply posted when a @coderabbitai full review trigger is accepted but
-# produces no review, and the failure notice posted when a review run fails.
+# reply posted when a @coderabbitai review trigger is accepted but
+# produces no review, the failure notice posted when a review run fails,
+# and the auto-reply notice posted when a @coderabbitai review trigger is
+# acknowledged but the review has not yet run (rate-limit recovery notice).
 # The auto-summary marker is intentionally NOT listed here: in this repo it
 # is the walkthrough issue comment, the only review artifact on a clean PR,
 # and is handled by the walkthrough detector below.
@@ -88,12 +90,16 @@ CODERABBIT_FAILURE_RE = re.compile(
     r"failure by coderabbit\.ai|Review failed",
     re.IGNORECASE,
 )
+CODERABBIT_AUTO_REPLY_RE = re.compile(
+    r"<!-- This is an auto-generated reply by CodeRabbit -->",
+    re.IGNORECASE,
+)
 CODERABBIT_AUTO_SUMMARY_RE = re.compile(
     r"<!-- This is an auto-generated comment: summarize by coderabbit\.ai -->",
     re.IGNORECASE,
 )
 CODERABBIT_SCAFFOLDING_RE = re.compile(
-    rf"{CODERABBIT_ACKNOWLEDGEMENT_RE.pattern}|{CODERABBIT_FAILURE_RE.pattern}",
+    rf"{CODERABBIT_ACKNOWLEDGEMENT_RE.pattern}|{CODERABBIT_FAILURE_RE.pattern}|{CODERABBIT_AUTO_REPLY_RE.pattern}",
     re.IGNORECASE,
 )
 
@@ -248,7 +254,11 @@ def is_coderabbit_scaffolding(body: str | None) -> bool:
     single stub check see the same coverage; internal callers should prefer the
     per-fragment detectors so a regression in one cannot be hidden by the other.
     """
-    return is_coderabbit_acknowledgement(body) or is_coderabbit_failure_notice(body)
+    return (
+        is_coderabbit_acknowledgement(body)
+        or is_coderabbit_failure_notice(body)
+        or is_coderabbit_auto_reply(body)
+    )
 
 
 def is_coderabbit_acknowledgement(body: str | None) -> bool:
@@ -279,6 +289,16 @@ def is_coderabbit_failure_notice(body: str | None) -> bool:
     if not body:
         return False
     return bool(CODERABBIT_FAILURE_RE.search(body))
+
+
+def is_coderabbit_auto_reply(body: str | None) -> bool:
+    """Return True if a body is CodeRabbit's auto-reply notice -- posted when
+    a @coderabbitai review trigger is acknowledged but the review has not yet
+    run (rate-limit recovery notice). This announces that a review has NOT
+    happened yet and must not read as a real review."""
+    if not body:
+        return False
+    return bool(CODERABBIT_AUTO_REPLY_RE.search(body))
 
 
 def is_coderabbit_walkthrough(body: str | None) -> bool:
@@ -371,11 +391,13 @@ def is_real_item(item: CRItem) -> bool:
     A rate-limit stub is never real. Review objects with state APPROVED or
     CHANGES_REQUESTED are real regardless of body content (the review state
     itself is the substantive signal). CodeRabbit scaffolding (acknowledgement
-    reply / failure notice) is never real. For issue comments carrying the
-    auto-summary marker, the walkthrough detector applies: a Run ID plus at
-    least one signal (quota-decrement line, no-actionable phrase, or
-    Files-processed list) means a real review ran. Other comments are real
-    when they carry non-empty, non-stub body text.
+    reply / failure notice / auto-reply) is never real. For issue comments
+    carrying the auto-summary marker, the walkthrough detector applies: a Run
+    ID plus at least one signal (quota-decrement line, no-actionable phrase,
+    or Files-processed list) means a real review ran. Review comments
+    (line-level discussion threads) with non-empty body are inline findings
+    and count as real. Other comments require positive evidence of review
+    content -- substantive body text that is not marker-only scaffolding.
     """
     if is_rate_limit_stub(item.body):
         return False
@@ -383,11 +405,35 @@ def is_real_item(item: CRItem) -> bool:
         state = (item.review_state or "").upper()
         if state in ("APPROVED", "CHANGES_REQUESTED"):
             return True
+        # COMMENTED reviews fall through to body evidence checks below
     if is_coderabbit_scaffolding(item.body):
         return False
     if not item.is_review and is_coderabbit_auto_summary(item.body):
         return is_coderabbit_walkthrough(item.body)
-    return bool(item.body and item.body.strip())
+    # Review comments (line-level) with non-empty body are inline findings.
+    # Other comments need positive evidence: substantive body that is not
+    # just a marker or short automated notice.
+    if item.body and item.body.strip():
+        body = item.body.strip()
+        # Skip if body is only an HTML comment marker (scaffolding that
+        # wasn't caught by the specific detectors above).
+        if body.startswith("<!--") and body.endswith("-->") and "\n" not in body:
+            return False
+        # Positive evidence: body contains code references, line numbers,
+        # file paths, finding keywords, or structured review sections.
+        # Scaffolding (status notices, action confirmations) lacks these.
+        if re.search(
+            r"(line\s+\d+|`[^`]+`|\[.*\]\(|#\d+|\.py|\.js|\.ts|\.json|"
+            r"suggest|fix|issue|bug|error|warn|TODO|FIXME|"
+            r"##\s*(Review|Findings|Summary|Changes|Walkthrough)|"
+            r"###\s*(Line|File|Change|Issue|Finding))",
+            body,
+            re.IGNORECASE,
+        ):
+            return True
+        # No positive evidence found -- likely scaffolding or status notice.
+        return False
+    return False
 
 
 def _is_coderabbit(user: dict | None) -> bool:
