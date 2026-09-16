@@ -38,17 +38,14 @@ for b in /usr/bin/chromium /usr/bin/chromium-browser /usr/lib/chromium/chrome; d
 done
 [ -n "$BROWSER" ] || { echo "taos-kiosk: no chromium binary found" >&2; exit 1; }
 
-# Wait for the taOS server to answer before painting anything. Without this the
-# kiosk can come up on a connection-refused error page at boot and stay there.
-i=0
-while [ "$i" -lt 60 ]; do
-    if wget -q -O /dev/null -T 2 "$TAOS_URL/auth/status" 2>/dev/null \
-       || wget -q -O /dev/null -T 2 "$TAOS_URL/" 2>/dev/null; then
-        break
-    fi
-    i=$((i + 1))
-    sleep 1
-done
+# NOTE: the wait for the taOS server used to live HERE, before the compositor
+# was exec'd. That meant nothing at all was on screen while it waited -- the
+# splash had already quit and sway had not started -- so the user watched ~10
+# seconds of black on every boot (measured on the glass 2026-09-16).
+#
+# The wait now happens INSIDE the session, in the runtime script below, so the
+# compositor comes up immediately and shows the boot wordmark as its background
+# while the server finishes starting. See sway-kiosk.conf.
 
 BROWSER_ARGS="--ozone-platform=wayland \
 --kiosk \
@@ -66,10 +63,43 @@ if [ "$COMPOSITOR_KIND" = "sway" ]; then
     # never hardcodes a binary path. XDG_RUNTIME_DIR is created by PAMName=login.
     : "${XDG_RUNTIME_DIR:?taos-kiosk: XDG_RUNTIME_DIR unset (no logind session)}"
     APP_CONF="$XDG_RUNTIME_DIR/taos-kiosk-app.conf"
-    printf 'exec "%s" %s\n' "$BROWSER" "$BROWSER_ARGS" > "$APP_CONF"
+    APP_SH="$XDG_RUNTIME_DIR/taos-kiosk-app.sh"
+
+    # The browser is launched by a small runtime script rather than directly,
+    # so the wait for the server happens with the compositor already up and the
+    # wordmark already on screen. Without this the screen is black for the whole
+    # wait. Times out rather than hanging forever: a kiosk that never launches
+    # the browser is worse than one that launches it against a dead server and
+    # shows the error, because OnFailure= can only catch the process exiting.
+    cat > "$APP_SH" <<SH
+#!/bin/sh
+i=0
+while [ "\$i" -lt 60 ]; do
+    if wget -q -O /dev/null -T 2 "$TAOS_URL/auth/status" 2>/dev/null \\
+       || wget -q -O /dev/null -T 2 "$TAOS_URL/" 2>/dev/null; then
+        break
+    fi
+    i=\$((i + 1))
+    sleep 1
+done
+exec "$BROWSER" $BROWSER_ARGS
+SH
+    chmod +x "$APP_SH"
+    printf 'exec "%s"\n' "$APP_SH" > "$APP_CONF"
     exec "$COMPOSITOR" -c "$SWAY_CONF"
 fi
 
 # cage fallback: no idle/DPMS support, so the session helper drives the backlight.
+# It also has no background, so there is nothing to show during a wait -- keep
+# waiting up front here, where black is the best available answer anyway.
+i=0
+while [ "$i" -lt 60 ]; do
+    if wget -q -O /dev/null -T 2 "$TAOS_URL/auth/status" 2>/dev/null \
+       || wget -q -O /dev/null -T 2 "$TAOS_URL/" 2>/dev/null; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 1
+done
 # shellcheck disable=SC2086
 exec "$COMPOSITOR" -- "$BROWSER" $BROWSER_ARGS
