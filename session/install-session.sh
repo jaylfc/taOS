@@ -79,6 +79,7 @@ echo "PASS: launcher installed and parses"
 # to be installed by the same script that installs the config.
 for helper in taos-kiosk-idle taos-kiosk-power taos-kiosk-screen \
               taos-kiosk-dt2w taos-kiosk-dt2w-run taos-kiosk-power-hold \
+              taos-kiosk-volume \
               taos-power-apply; do
     install -m 755 "$HERE/bin/$helper" "/usr/local/bin/$helper"
     echo "installed /usr/local/bin/$helper"
@@ -103,6 +104,36 @@ EXEC_COUNT="$(grep -coE '/usr/local/bin/taos-kiosk-[a-z0-9-]+' "$CONF_SRC" || tr
     echo "FAIL: only ${EXEC_COUNT:-0} taos-kiosk-* paths found in the config - the check above measured nothing"
     exit 1; }
 echo "PASS: config names $EXEC_COUNT taos-kiosk-* paths"
+
+# 3c. Audio for the KIOSK session.
+#
+# MEASURED, because the symptom is misleading: PipeWire answers
+# `wpctl get-volume` with a real number while `wpctl status` lists NO sinks, so
+# a volume control appears to work and drives nothing.
+#
+# Two things were wrong and both are fixed here. The kiosk user had no session
+# manager -- pipewire/wireplumber ran only in the desktop user's session -- and
+# it was not in the `audio` group. It DOES hold logind ACLs on /dev/snd (its
+# session is the active seat0 one), which is why `aplay -l` already listed the
+# card while the desktop user, with no ACL and no group, could not touch it.
+#
+# ⚠ THIS IS NOT ENOUGH ON ITS OWN AND MUST NOT BE READ AS "AUDIO WORKS". With
+# both fixed, WirePlumber runs, creates the pmOS role-loopback filters, and
+# still instantiates NO ALSA device for card NP1 (sm8250) -- even though the
+# UCM profile resolves (`alsaucm -c NP1 list _verbs` -> HiFi), the SPA ALSA
+# plugin is installed, and the card enumerates. That last gap is device audio
+# bring-up and is tracked separately.
+if ! id taos 2>/dev/null | grep -q '(audio)'; then
+    addgroup taos audio 2>/dev/null || usermod -aG audio taos 2>/dev/null || true
+    echo "added taos to the audio group"
+fi
+id taos | grep -q '(audio)' && echo "PASS: taos is in the audio group" || {
+    echo "FAIL: taos is not in the audio group - the kiosk cannot open /dev/snd"; exit 1; }
+
+# Lingering so the session manager is not torn down between logins.
+loginctl enable-linger taos >/dev/null 2>&1 || true
+su taos -s /bin/sh -c     'XDG_RUNTIME_DIR=/run/user/999 systemctl --user enable pipewire.socket pipewire.service wireplumber.service'     >/dev/null 2>&1 || true
+echo "enabled pipewire + wireplumber for the kiosk session"
 
 # 4. The sway config.
 install -d -m 755 /etc/taos
