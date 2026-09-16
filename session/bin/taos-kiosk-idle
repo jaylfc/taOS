@@ -1,0 +1,25 @@
+#!/bin/sh
+# Idle -> display power off, inside the kiosk compositor.
+#
+# WHY A SCRIPT: sway's config grammar uses `;` as its OWN command separator, so
+# an inline `exec_always pkill -x swayidle; swayidle -w ...` parses as TWO sway
+# commands -- the exec runs `pkill` only and the rest is fed to sway as an
+# unknown command, leaving the session with NO idle handling at all. Measured on
+# the device 2026-09-16: swayidle was simply absent and the panel never blanked.
+# Keeping the whole thing in a file means sway only ever sees one bare word.
+set -eu
+
+IDLE_SECS="${TAOS_KIOSK_IDLE_SECS:-30}"
+
+# exec_always re-runs this on `swaymsg reload`, so drop a previous instance
+# first or each reload leaves another swayidle racing the last one. -x matches
+# the exact process name, so this shell (sh) is never a match for itself.
+pkill -x swayidle 2>/dev/null || true
+
+# `output * power off` is wlr-output-power-management: the panel is POWERED
+# DOWN, not dimmed, and sway gates input while it is off so a touch wakes the
+# screen rather than pressing whatever is under the finger.
+exec swayidle -w \
+    timeout "$IDLE_SECS" 'swaymsg "output * power off"' \
+    resume               'swaymsg "output * power on"' \
+    before-sleep         'swaymsg "output * power off"'

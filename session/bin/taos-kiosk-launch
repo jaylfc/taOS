@@ -1,0 +1,75 @@
+#!/bin/sh
+# Launch the taOS kiosk: a Wayland compositor running one full-screen browser
+# pointed at the local taOS server. Resolves paths at runtime because Alpine
+# ships these binaries in places a hardcoded path would miss (cage in /usr/sbin,
+# chromium as an unwrapped binary under /usr/lib).
+set -eu
+
+# 127.0.0.1, NOT localhost: on postmarketOS `localhost` resolves to ::1 only,
+# while taOS binds 0.0.0.0 (IPv4). Using the name gives "connection refused"
+# and the kiosk sits on a blank page forever. Measured on the device 2026-09-16.
+TAOS_URL="${TAOS_KIOSK_URL:-http://127.0.0.1:6969}"
+
+# Seconds of no input before the display is powered down. Exported because the
+# sway config reads it (sway expands $VAR in the config).
+TAOS_KIOSK_IDLE_SECS="${TAOS_KIOSK_IDLE_SECS:-30}"
+export TAOS_KIOSK_IDLE_SECS
+
+SWAY_CONF="${TAOS_KIOSK_SWAY_CONF:-/etc/taos/sway-kiosk.conf}"
+
+# Compositor, in preference order. sway is FIRST because it implements
+# wlr-output-power-management-v1 and cage does not: under cage the panel can
+# only be dimmed, leaving the output powered and touch live. See sway-kiosk.conf.
+COMPOSITOR=""
+COMPOSITOR_KIND=""
+for c in /usr/bin/sway /usr/sbin/sway /usr/local/bin/sway; do
+    [ -x "$c" ] && COMPOSITOR="$c" && COMPOSITOR_KIND="sway" && break
+done
+if [ -z "$COMPOSITOR" ]; then
+    for c in /usr/bin/cage /usr/sbin/cage /usr/local/bin/cage; do
+        [ -x "$c" ] && COMPOSITOR="$c" && COMPOSITOR_KIND="cage" && break
+    done
+fi
+[ -n "$COMPOSITOR" ] || { echo "taos-kiosk: no wayland compositor found (sway, cage)" >&2; exit 1; }
+
+BROWSER=""
+for b in /usr/bin/chromium /usr/bin/chromium-browser /usr/lib/chromium/chrome; do
+    [ -x "$b" ] && BROWSER="$b" && break
+done
+[ -n "$BROWSER" ] || { echo "taos-kiosk: no chromium binary found" >&2; exit 1; }
+
+# Wait for the taOS server to answer before painting anything. Without this the
+# kiosk can come up on a connection-refused error page at boot and stay there.
+i=0
+while [ "$i" -lt 60 ]; do
+    if wget -q -O /dev/null -T 2 "$TAOS_URL/auth/status" 2>/dev/null \
+       || wget -q -O /dev/null -T 2 "$TAOS_URL/" 2>/dev/null; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+
+BROWSER_ARGS="--ozone-platform=wayland \
+--kiosk \
+--no-first-run \
+--no-default-browser-check \
+--disable-features=TranslateUI \
+--disable-pinch \
+--overscroll-history-navigation=0 \
+--user-data-dir=/var/lib/taos-kiosk/chrome \
+--app=$TAOS_URL"
+
+if [ "$COMPOSITOR_KIND" = "sway" ]; then
+    [ -r "$SWAY_CONF" ] || { echo "taos-kiosk: $SWAY_CONF missing" >&2; exit 1; }
+    # The browser command lives in a runtime include so the packaged config
+    # never hardcodes a binary path. XDG_RUNTIME_DIR is created by PAMName=login.
+    : "${XDG_RUNTIME_DIR:?taos-kiosk: XDG_RUNTIME_DIR unset (no logind session)}"
+    APP_CONF="$XDG_RUNTIME_DIR/taos-kiosk-app.conf"
+    printf 'exec "%s" %s\n' "$BROWSER" "$BROWSER_ARGS" > "$APP_CONF"
+    exec "$COMPOSITOR" -c "$SWAY_CONF"
+fi
+
+# cage fallback: no idle/DPMS support, so the session helper drives the backlight.
+# shellcheck disable=SC2086
+exec "$COMPOSITOR" -- "$BROWSER" $BROWSER_ARGS
