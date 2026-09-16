@@ -84,6 +84,24 @@ skips prereleases. A release created as a prerelease leaves both the GitHub
 "Latest" badge and the update check stuck on the previous version.
 The taos.my changelog page pulls from GitHub Releases, so this is the canonical public record.
 
+## Lockfile rule
+
+Adding or changing a dependency in `pyproject.toml` requires regenerating
+`uv.lock` in the same PR. CI runs `uv lock --check` once per workflow
+invocation, and a stale lock fails the run before any test shard starts.
+
+To refresh the lock after editing `pyproject.toml`:
+
+```bash
+uv lock
+git add uv.lock
+```
+
+Do not use `--frozen` or `--locked` to update the lock; those flags only read
+it. `uv sync --frozen` in CI installs from the lockfile, so an out-of-date
+lock means new dependencies are absent during every test shard while
+`scripts/install-server.sh` installs them from `pyproject.toml` in production.
+
 ## Notes
 
 - The install-count ping reports the installed version per device, so each release bump gives per-build telemetry without any extra work.

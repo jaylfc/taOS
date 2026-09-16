@@ -580,6 +580,23 @@ Four files carry the version and must stay identical: `pyproject.toml`, `tinyage
 normalized form (`1.0.0bN`). Only pyproject vs uv.lock is test-gated
 (`tests/test_version_lock_sync.py`); the other two drift silently, so check all four on any bump.
 
+## Lockfile freshness
+
+Adding or changing a dependency in `pyproject.toml` requires regenerating
+`uv.lock` in the same PR. CI runs `uv lock --check` once per workflow
+invocation and fails the run before any test shard starts if the lockfile is
+stale. `uv sync --frozen` silently ignores the mismatch, so a new dependency
+shipped to users while being tested absent.
+
+To refresh the lock after editing `pyproject.toml`:
+
+```bash
+uv lock
+git add uv.lock
+```
+
+`--frozen` and `--locked` only read the lockfile; they do not update it.
+
 ## Documentation gate
 
 A gate blocks PRs that change certain feature code without a matching doc update
