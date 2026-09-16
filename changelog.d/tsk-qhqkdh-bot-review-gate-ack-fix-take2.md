@@ -1,3 +1,0 @@
-### Fixed
-
-- **bot-review-gate false-red on CodeRabbit walkthrough comments**: `scripts/check_bot_review.py` now positively classifies a CodeRabbit walkthrough issue comment as a real review when it carries a Run ID and at least one signal (quota-decrement line, no-actionable phrase, or Files-processed list). The auto-summary marker is no longer in the scaffolding blacklist, fixing the false-red that 2525 introduced on 5 of the last 30 merged PRs with real Run IDs. The scaffolding blacklist now covers only the ack marker and the failure notice; rate-limit stub detection is unchanged. `is_real_item()` runs the scaffolding check after the APPROVED/CHANGES_REQUESTED branch, and the stub-failure message folds both stub kinds into one accurate line.

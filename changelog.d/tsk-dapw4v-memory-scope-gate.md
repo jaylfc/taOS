@@ -1,2 +1,0 @@
-### Fixed
-- Removed unenforceable `memory_read`, `memory_write`, and `tools_execute` scopes from the grantable vocabulary (consent-integrity fix). The memory routes (`/api/memory/*`, `/api/user-memory/*`) are not reachable by agent tokens because they are not in the middleware's `_AGENT_TOKEN_PATHS` allowlist. The scope checks added in the route handlers were dead code — the middleware returns 401 before the handler runs. Removed the dead scope checks from `memory.py` and `memory_management.py`.
