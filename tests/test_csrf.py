@@ -52,14 +52,16 @@ class TestVerifyCSRF:
         app.state.auth.setup_user("admin3", "Admin", "", "pass1234!")
         record = app.state.auth.find_user("admin3")
         token = app.state.auth.create_session(user_id=record["id"], long_lived=False)
-        csrf_val = "test-csrf-value-xyz"
 
         transport = ASGITransport(app=app)
         async with AsyncClient(
             transport=transport,
             base_url="http://test",
-            cookies={"taos_session": token, "csrf_token": csrf_val},
+            cookies={"taos_session": token},
         ) as c:
+            await c.get("/api/health")
+            csrf_val = c.cookies.get("csrf_token")
+            assert csrf_val
             resp = await c.post(
                 "/auth/logout",
                 headers={"X-CSRF-Token": csrf_val},
