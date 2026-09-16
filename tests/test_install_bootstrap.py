@@ -117,3 +117,55 @@ def test_preamble_installs_bash_and_reexecs_when_bash_is_absent() -> None:
             "preamble installed bash but never re-exec'd the script under it; "
             f"rc={proc.returncode} stderr={proc.stderr[:600]}"
         )
+
+
+def test_mktemp_templates_end_in_x() -> None:
+    """BSD/macOS/busybox mktemp requires the template to end in Xs (no suffix).
+
+    The script already documents this rule at the bundle mktemp site; this
+    test guards all five sites at once.
+    """
+    import re
+
+    bad = []
+    for lineno, line in enumerate(_script().splitlines(), start=1):
+        if "mktemp" not in line:
+            continue
+        stripped = line.strip()
+        # Skip comments and traps.
+        if stripped.startswith("#") or stripped.startswith("trap"):
+            continue
+        # Extract the first non-flag argument after mktemp.
+        # Matches mktemp [flags] <template> where template is the last token
+        # on the line or inside a $(...) assignment.
+        m = re.search(r"mktemp\s+(?:-\w+\s+)?([^\s#\"')\]]+)", stripped)
+        if not m:
+            continue
+        template = m.group(1).strip("'\"")
+        if "X" in template and not template.endswith("X"):
+            bad.append((lineno, stripped))
+    assert not bad, (
+        "mktemp templates with a suffix after the Xs (fails on busybox/BSD/macOS):\n"
+        + "\n".join(f"  line {ln}: {txt}" for ln, txt in bad)
+    )
+
+
+def test_qmd_npm_install_has_no_unsafe_perm() -> None:
+    """`--unsafe-perm` was removed in npm >= 11 and now hard-errors."""
+    bad = []
+    in_qmd = False
+    for line in _script().splitlines():
+        if "TAOS_SKIP_QMD" in line and ":" in line:
+            in_qmd = True
+        if in_qmd:
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if "npm install -g" in stripped and "--unsafe-perm" in stripped:
+                bad.append(stripped)
+            if stripped == "fi" and bad:
+                break
+    assert not bad, (
+        "qmd npm install still passes removed flag --unsafe-perm:\n"
+        + "\n".join(f"  {ln}" for ln in bad)
+    )

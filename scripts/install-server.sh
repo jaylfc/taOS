@@ -249,7 +249,9 @@ ensure_node22() {
         # Update if NodeSource rotates their signing key.
         local _ns_expected_fp="6F71F525282841EEDAF851B42F59B5F99B1BE0B4"
         local _ns_key_tmp
-        _ns_key_tmp="$(mktemp /tmp/nodesource-key.XXXXXX.asc)"
+        _ns_key_tmp="$(mktemp /tmp/nodesource-key.XXXXXX)"
+        mv -- "$_ns_key_tmp" "${_ns_key_tmp}.asc"
+        _ns_key_tmp="${_ns_key_tmp}.asc"
         # shellcheck disable=SC2064
         trap "rm -f '$_ns_key_tmp'" RETURN
         curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
@@ -281,7 +283,9 @@ ensure_node22() {
         # Update if NodeSource rotates their RPM signing key.
         local _ns_rpm_expected_fp="242B813831AF09562B6C46F76B88DA4E3AF28A14"
         local _ns_rpm_key_tmp
-        _ns_rpm_key_tmp="$(mktemp /tmp/nodesource-rpm-key.XXXXXX.asc)"
+        _ns_rpm_key_tmp="$(mktemp /tmp/nodesource-rpm-key.XXXXXX)"
+        mv -- "$_ns_rpm_key_tmp" "${_ns_rpm_key_tmp}.asc"
+        _ns_rpm_key_tmp="${_ns_rpm_key_tmp}.asc"
         # shellcheck disable=SC2064
         trap "rm -f '$_ns_rpm_key_tmp'" RETURN
         curl -fsSL https://rpm.nodesource.com/gpgkey/ns-operations-public.key \
@@ -930,7 +934,9 @@ ensure_container_runtime() {
                 # key.asc; we verify via gpg --fingerprint after dearmoring.
                 # Update the expected fingerprint if Zabbly rotates their signing key.
                 local _zabbly_key_tmp
-                _zabbly_key_tmp="$(mktemp /tmp/zabbly-key.XXXXXX.asc)"
+                _zabbly_key_tmp="$(mktemp /tmp/zabbly-key.XXXXXX)"
+                mv -- "$_zabbly_key_tmp" "${_zabbly_key_tmp}.asc"
+                _zabbly_key_tmp="${_zabbly_key_tmp}.asc"
                 # shellcheck disable=SC2064
                 trap "rm -f '$_zabbly_key_tmp'" RETURN
                 if ! curl -fsSL https://pkgs.zabbly.com/key.asc -o "$_zabbly_key_tmp"; then
@@ -1242,7 +1248,9 @@ _apt_install_docker_official_repo() {
     sudo install -d -m 0755 /etc/apt/keyrings
 
     local _docker_key_tmp _docker_bak_dir
-    _docker_key_tmp="$(mktemp /tmp/docker-key.XXXXXX.asc)"
+    _docker_key_tmp="$(mktemp /tmp/docker-key.XXXXXX)"
+    mv -- "$_docker_key_tmp" "${_docker_key_tmp}.asc"
+    _docker_key_tmp="${_docker_key_tmp}.asc"
     # Backups of pre-existing apt files live OUTSIDE /etc/apt so a transient
     # copy is never picked up (or warned about) by apt itself.
     _docker_bak_dir="$(mktemp -d /tmp/taos-docker-apt.XXXXXX)"
@@ -1952,14 +1960,16 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
             # uses root's own cache dir rather than the calling user's
             # ~/.npm directory (which root can't write to).
             #
-            # --unsafe-perm: required on npm >= 10.  When npm runs as root and
-            # the install dir has non-root ownership at any point during tar
-            # extraction, npm drops privileges to `nobody` to run lifecycle
-            # scripts.  `nobody` typically has no usable PATH/shell setup, so
-            # better-sqlite3's postinstall fails with `spawn sh ENOENT`
-            # (errno -2).  --unsafe-perm keeps npm running as root throughout,
-            # which is the historical behaviour and the only thing that works
-            # for native-binding packages on a system-global install.
+            # --unsafe-perm was removed in npm >= 11 (it now hard-errors),
+            # so we drop it.  npm 12 blocks lifecycle scripts by default,
+            # which silently skips native builds (better-sqlite3, node-llama-cpp,
+            # tree-sitter-*).  taOS needs those native modules (node-llama-cpp
+            # is the non-RK3588 embedding backend, better-sqlite3 backs qmd's
+            # dbPath routing), so we pass --allow-scripts explicitly.
+            #
+            # cd /tmp avoids a project-level .npmrc in the invoking user's
+            # checkout from vetoing the global install with
+            # "config prefix cannot be changed from project config".
             # Pre-clean a partial qmd install dir before we try again.
             # If a prior run failed mid-extraction, the leftover directory
             # makes npm's tar extractor stumble on a second attempt with
@@ -1988,9 +1998,11 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
             # mechanism (sha512 in package-lock.json); pinning the version here
             # is the supply-chain control available at install time.
             qmd_npm_version="${TAOS_QMD_NPM_VERSION:-2.6.0}"
-            qmd_install_log=$(mktemp /tmp/taos-qmd-install.XXXXXX.log)
+            qmd_install_log=$(mktemp /tmp/taos-qmd-install.XXXXXX)
+            mv -- "$qmd_install_log" "${qmd_install_log}.log"
+            qmd_install_log="${qmd_install_log}.log"
             log "npm install -g @jaylfc/qmd@${qmd_npm_version} (log: $qmd_install_log)"
-            if ! sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd@${qmd_npm_version}" >"$qmd_install_log" 2>&1; then
+            if ! ( cd /tmp && sudo HOME=/root npm install -g --allow-scripts=better-sqlite3,node-llama-cpp,tree-sitter-* "@jaylfc/qmd@${qmd_npm_version}" ) >"$qmd_install_log" 2>&1; then
                 if grep -q "TAR_ENTRY_ERROR" "$qmd_install_log" \
                    && grep -q "spawn sh" "$qmd_install_log"; then
                     warn "npm install of qmd hit the node-llama-cpp tar-extraction"
@@ -2007,7 +2019,7 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
                 if grep -qiE "ETARGET|No matching version found" "$qmd_install_log" \
                    && [[ "$qmd_npm_version" != "latest" ]]; then
                     warn "qmd ${qmd_npm_version} not found on npm (ETARGET); retrying @latest"
-                    if sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd@latest" >>"$qmd_install_log" 2>&1; then
+                     if ( cd /tmp && sudo HOME=/root npm install -g --allow-scripts=better-sqlite3,node-llama-cpp,tree-sitter-* "@jaylfc/qmd@latest" ) >>"$qmd_install_log" 2>&1; then
                         log "qmd installed via @latest fallback"
                     else
                         tail -20 "$qmd_install_log" >&2
