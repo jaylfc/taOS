@@ -1483,6 +1483,49 @@ _LOCK_SCREEN_SCRIPT = r"""
     var FRAMEWORKS = { hermes: 1, openclaw: 1, deepseek: 1, omp: 1 };
     var RESTING = ["", "stopped", "idle", "exited", "error"];
 
+    // An island's IMMUTABLE half, as a string. Everything here comes from
+    // configuration rather than from runtime state, so a change is a
+    // reconfiguration and not a tick: rare enough to rebuild the element for,
+    // and not worth the code to mutate an avatar or a framework badge in place.
+    // The agent's NAME is not in here because the name is the key itself.
+    //
+    // JSON.stringify rather than a joined string: an avatar is a URL and a
+    // framework name is user-supplied, so any separator character I picked
+    // could appear inside a value and make two different agents compare equal.
+    function islandIdentity(agent) {
+      return JSON.stringify([
+        agent.avatar || "",
+        agent.framework_icon || "",
+        String(agent.framework || "").toLowerCase(),
+        agent.system ? "1" : "",
+      ]);
+    }
+
+    // An island's MUTABLE half: everything a 15s poll can legitimately change.
+    // Written in place, and only where the value actually differs, so that a
+    // tick which changes nothing touches nothing.
+    function applyAgent(el, agent) {
+      var name = agent.name || "agent";
+      var status = agent.status || "idle";
+      var busy = RESTING.indexOf(status.trim().toLowerCase()) === -1;
+      // The handlers read the whole record off the element rather than
+      // re-looking it up by name, so this has to be refreshed even when every
+      // visible field is unchanged.
+      el.__agent = agent;
+      setAttrIfChanged(el, "data-state", busy ? "busy" : "idle");
+      if (agent.attention) setAttrIfChanged(el, "data-attention", "1");
+      else if (el.hasAttribute("data-attention")) el.removeAttribute("data-attention");
+      setAttrIfChanged(el, "aria-label", (agent.attention && agent.decision)
+        ? name + " needs a decision: " + (agent.decision.question || "")
+        : name + ", " + status + ". Open conversation.");
+      var s = el.querySelector(".ls-status");
+      if (s && s.textContent !== status) s.textContent = status;
+    }
+
+    function setAttrIfChanged(el, attr, value) {
+      if (el.getAttribute(attr) !== value) el.setAttribute(attr, value);
+    }
+
     function island(agent) {
       var name = agent.name || "agent";
       var status = agent.status || "idle";
@@ -1490,6 +1533,7 @@ _LOCK_SCREEN_SCRIPT = r"""
 
       var el = document.createElement("div");
       el.className = "ls-island";
+      el.setAttribute("data-identity", islandIdentity(agent));
       // Stable identity across repaints. The 15s poll rebuilds this list, and
       // without a key there is no way to put keyboard focus back on the island
       // the user was actually on -- an index would silently move the focus to a
@@ -1592,6 +1636,65 @@ _LOCK_SCREEN_SCRIPT = r"""
       return el;
     }
 
+    // Bring the island list to match `agents` by CHANGING it, never by
+    // rebuilding it.
+    //
+    // The old code did `agentsEl.textContent = ""` and appended six fresh
+    // elements every 15 seconds. Every one of them was a new node, so every one
+    // of them replayed `ls-island-in` -- a 520ms entrance animation with
+    // staggered per-child delays. On the glass that is the whole list blinking
+    // every fifteen seconds, which is what Jay reported, and it happened
+    // whether or not a single byte of the payload had changed.
+    //
+    // Measured before the fix, over one poll with nothing touched: six of six
+    // islands fired `animationstart`, and the first island was no longer the
+    // same DOM node. Both of those are what the test asserts, because "the
+    // names are still right" would have passed on the broken code too.
+    //
+    // Keyed by agent name: that is already the identity this list uses for
+    // focus restoration, and an index would move an agent's island under the
+    // user's finger the moment the list reordered.
+    function reconcileIslands(agents) {
+      var existing = {};
+      var kids = agentsEl.children;
+      for (var i = 0; i < kids.length; i++) {
+        var key = kids[i].getAttribute("data-agent");
+        if (key !== null) existing[key] = kids[i];
+      }
+      var prev = null;
+      for (var j = 0; j < agents.length; j++) {
+        var agent = agents[j];
+        var name = agent.name || "agent";
+        var el = Object.prototype.hasOwnProperty.call(existing, name)
+          ? existing[name] : null;
+        // A reconfigured agent -- new portrait, different framework -- is the
+        // one case where the element itself is wrong rather than merely stale.
+        if (el && el.getAttribute("data-identity") !== islandIdentity(agent)) {
+          el.remove();
+          el = null;
+        }
+        if (el) {
+          applyAgent(el, agent);
+        } else {
+          el = island(agent);
+        }
+        delete existing[name];
+        // Put it where the payload says, WITHOUT touching an element that is
+        // already in position: re-inserting a node restarts its animation, so a
+        // blind appendChild of every island in order would flicker exactly as
+        // badly as the wipe it replaced.
+        var want = prev ? prev.nextSibling : agentsEl.firstChild;
+        if (el !== want) agentsEl.insertBefore(el, want);
+        prev = el;
+      }
+      // Whatever the payload no longer lists has genuinely gone away.
+      for (var gone in existing) {
+        if (Object.prototype.hasOwnProperty.call(existing, gone)) {
+          existing[gone].remove();
+        }
+      }
+    }
+
     function paintActivity(data) {
       // A repaint while a sheet is open would destroy the very island the sheet
       // was opened from -- dropping its record, restarting every entrance
@@ -1617,15 +1720,12 @@ _LOCK_SCREEN_SCRIPT = r"""
         }
       }
 
-      agentsEl.textContent = "";
       tasksEl.textContent = "";
       var agents = data.agents || [];
       var tasks = data.tasks || [];
       if (!agents.length && !tasks.length) { card.hidden = true; return; }
 
-      for (var i = 0; i < agents.length; i++) {
-        agentsEl.appendChild(island(agents[i]));
-      }
+      reconcileIslands(agents);
       for (var j = 0; j < tasks.length; j++) {
         var row = document.createElement("div");
         row.className = "ls-task";
@@ -2198,15 +2298,41 @@ _LOCK_SCREEN_SCRIPT = r"""
     // because scrollTop, clientHeight and scrollHeight are all fractional under
     // a non-integer device pixel ratio and never sum exactly.
     //
-    // A feed that cannot scroll at all has no room either, so it still unlocks
-    // across the whole screen -- the device with one agent and no
-    // notifications, which is the first screen a new user ever sees.
+    // A feed that CANNOT SCROLL AT ALL is the third case, and it was wrong.
+    // Room alone cannot tell it apart from a feed scrolled to its end: both
+    // report zero. They are opposite situations, though. At the end of a long
+    // feed the drag that got you there is finished and an upward swipe means
+    // unlock. On a feed that never scrolled, an upward drag on a card is not
+    // the end of anything -- it is the user pushing at the cards -- and
+    // throwing them into the keypad is the same complaint as tsk-36i6ed from
+    // the other side.
+    //
+    // MEASURED at the device's real viewport (540x1200, sway scale 2.0) with a
+    // full lock screen of SIX agents: #ls-feed scrollHeight 394 == clientHeight
+    // 394, so it does not overflow and never did. The feed is content-sized;
+    // the islands fit. So this branch is not a corner case on a new user's
+    // phone -- it is the ordinary state of the demo device, and it meant every
+    // drag that started on an island opened the keypad.
+    //
+    // Overflow therefore comes back into the veto, but as a DISJUNCT rather
+    // than the conjunct that was removed with tsk-36i6ed. That conjunct could
+    // not change the answer -- the browser clamps scrollTop to 0 on a feed that
+    // cannot scroll, so it was an unfailable arm. Here each arm decides a case
+    // by itself and all three are reachable:
+    //
+    //   scrollable, at the top  -> room > 4      -> veto   (reading != unlock)
+    //   scrollable, at the end  -> neither       -> unlock (tsk-36i6ed)
+    //   cannot scroll at all    -> !overflows    -> veto   (cards are not a
+    //                                                       hidden unlock pad)
+    //
+    // The gesture is not lost: the feed is 394px of a 1200px screen, so the
+    // other two thirds of the glass still unlock on a single upward swipe.
     swipe(document.body, openPasscode, null, function () {
       return !screenEl || screenEl.getAttribute("data-sheet") === "none";
     }, function (ev) {
       var t = ev.target;
       if (!t || !t.closest || !t.closest(".ls-feed")) return false;
-      return feedScrollRoom() > 4;
+      return feedScrollRoom() > 4 || !feedOverflows();
     });
     // Dismiss: only by dragging the sheet's own header.
     var chatHead = chatSheet ? chatSheet.querySelector(".ls-sheet-head") : null;
