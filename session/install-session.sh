@@ -77,7 +77,9 @@ echo "PASS: launcher installed and parses"
 # came up, the execs failed silently (a bindsym's exec output goes nowhere), and
 # the phone had no idle blanking and no power key. Anything the config names has
 # to be installed by the same script that installs the config.
-for helper in taos-kiosk-idle taos-kiosk-power taos-kiosk-dt2w taos-kiosk-dt2w-run; do
+for helper in taos-kiosk-idle taos-kiosk-power taos-kiosk-screen \
+              taos-kiosk-dt2w taos-kiosk-dt2w-run taos-kiosk-power-hold \
+              taos-power-apply; do
     install -m 755 "$HERE/bin/$helper" "/usr/local/bin/$helper"
     echo "installed /usr/local/bin/$helper"
 done

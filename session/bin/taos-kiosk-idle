@@ -33,6 +33,11 @@ pkill -x swayidle 2>/dev/null || true
 #
 # THE POWER KEY REMAINS THE FALLBACK, bound with --locked in sway.conf: if the
 # daemon is dead the screen is still reachable.
+# taos-kiosk-screen, not a bare `output * power off`: turning the screen off
+# also has to GATE TOUCH, or taps in a pocket press whatever is under the finger
+# on the lock screen. Jay reported exactly that. One script owns both halves so
+# the three callers -- this, the power key and the double-tap watcher -- cannot
+# drift apart again.
 exec swayidle -w \
-    timeout "$IDLE_SECS" 'swaymsg "output * power off"' \
-    before-sleep         'swaymsg "output * power off"'
+    timeout "$IDLE_SECS" '/usr/local/bin/taos-kiosk-screen off' \
+    before-sleep         '/usr/local/bin/taos-kiosk-screen off'
