@@ -440,7 +440,7 @@ async def _resolve_send_identity(request: Request, body_from: str | None) -> str
         if not username:
             raise HTTPException(status_code=403, detail="human has no username")
         handle = _sanitise_handle(f"@{username}")
-        return handle
+        return handle or f"@{human_id}"
 
     raise HTTPException(status_code=403, detail="forbidden")
 

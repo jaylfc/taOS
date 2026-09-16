@@ -349,12 +349,11 @@ async def check_agent_project_grants(
 
     Returns ``(canonical_id, {project_id: grant})``, or ``(None, {})`` when no
     Authorization header is present (the caller falls through to its own
-    session/admin handling), or when a valid human-principal token is presented
-    (``principal_type == "human"`` short-circuits here, matching
-    ``check_agent_scope``).
+    session/admin handling).
 
     Raises:
-      401/403 -- exactly as ``check_agent_scope`` (bad/inactive/superseded token).
+      401/403 -- exactly as ``check_agent_scope`` (bad/inactive/superseded token),
+                 or 403 when a valid human-principal token is presented.
     """
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.lower().startswith("bearer "):
@@ -371,16 +370,19 @@ async def check_agent_project_grants(
     if not canonical_id:
         raise HTTPException(status_code=401, detail="token missing sub claim")
 
+    principal_type = payload.get("principal_type", "")
+    if principal_type == "human":
+        raise HTTPException(
+            status_code=403,
+            detail="human-principal token cannot enumerate agent project grants",
+        )
+
     registry = _get_store(request)
     record = await registry.get(canonical_id)
     if record is None or record.get("status") != "active":
         raise HTTPException(status_code=403, detail="agent is not active in the registry")
 
     _enforce_rotation_cutoff(record, payload)
-
-    principal_type = payload.get("principal_type", "")
-    if principal_type == "human":
-        return None, {}
 
     grants_store = _get_grants_store(request)
     grants = await grants_store.list_grants(canonical_id)
