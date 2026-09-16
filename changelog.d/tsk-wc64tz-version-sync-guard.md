@@ -1,0 +1,4 @@
+### Fixed
+
+- Extended `tests/test_version_lock_sync.py` to compare `pyproject.toml` version against all four sibling version carriers: `tinyagentos/__init__.py` (`__version__`), `desktop/package.json` (root `version`), and both root `version` fields in `desktop/package-lock.json` (top-level and `packages[""].version`). Each file has a dedicated test so failures name the drifted file. The uv.lock comparison continues to use PEP 440 `Version()` equality; the three JS/Python places use exact string comparison against pyproject's literal `1.0.0-beta.N` format.
+- Updated `docs/RELEASING.md` step 1 to list all five version files, including the `desktop/package-lock.json` note that only the two root `version` fields change and the lockfile must not be regenerated.

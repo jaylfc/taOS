@@ -10,6 +10,7 @@ Update the version string to the next `1.0.0-beta.N` in exactly these files (kee
 
 - `pyproject.toml` line `version = "..."`
 - `desktop/package.json` line `"version": "..."`
+- `desktop/package-lock.json` -- BOTH root `version` fields: the top-level `version` AND `packages[""].version`. Do NOT regenerate the lockfile; only edit these two fields.
 - `tinyagentos/__init__.py` line `__version__ = "..."`
 - `uv.lock` -- the `tinyagentos` package entry's `version = "..."` (uv normalises `1.0.0-beta.N` to `1.0.0bN`). `test_version_lock_sync.py` fails the build if this drifts from `pyproject.toml`.
 
