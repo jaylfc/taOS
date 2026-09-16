@@ -87,13 +87,13 @@ export function ThreadPanel({
   /* ---- mark incoming messages as seen when thread opens ---- */
   useEffect(() => {
     if (!onMarkSeen) return;
-    const incoming = [parent, ...msgs].filter((m) => m && m.author_id !== authorCtx.currentUserId);
+    const incoming = [parent, ...msgs, ...liveReplies].filter((m) => m && m.author_id !== authorCtx.currentUserId);
     if (incoming.length > 0) {
       incoming.forEach((m) => {
         if (m) onMarkSeen(m.id);
       });
     }
-  }, [parent, msgs, authorCtx.currentUserId, onMarkSeen]);
+  }, [parent, msgs, liveReplies, authorCtx.currentUserId, onMarkSeen]);
 
   async function submit() {
     const content = input.trim();

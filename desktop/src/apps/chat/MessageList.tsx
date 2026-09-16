@@ -621,6 +621,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                             </span>
                           )}
                         {msg.author_id === currentUserId &&
+                          channel?.type !== "dm-remote" &&
                           msg.state !== "pending" &&
                           msg.state !== "streaming" &&
                           (() => {

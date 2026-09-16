@@ -1347,7 +1347,8 @@ export function MessagesApp({
       }
     };
     es.onerror = () => {
-      es.close();
+      // EventSource auto-reconnects on transient errors; let it.
+      // The only cleanup is the return handler which closes on unmount.
     };
     return () => es.close();
   }, []);
