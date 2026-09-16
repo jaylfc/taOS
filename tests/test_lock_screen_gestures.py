@@ -34,17 +34,38 @@ def _balanced(src: str, start: int, opener: str, closer: str) -> str:
 
     Quote-aware, because a brace inside a string literal would otherwise end the
     span early and hand the caller a slice that happens to parse.
+
+    COMMENT-aware for the same reason, and it is not hypothetical: the comment
+    ``// The App Store's own artwork`` inside ``island()`` opened an apostrophe
+    that never closed, so every brace after it was read as string content and
+    ``_function("island")`` quietly returned 12kB -- the whole of island(),
+    reconcileIslands() AND paintActivity(). It still parsed, and every test
+    still passed, because the extra functions were the real ones. A harness
+    that hands back three times what it was asked for is not measuring what it
+    claims to; the next divergence would not be so harmless.
     """
     i = src.index(opener, start)
     depth, quote = 0, ""
     while i < len(src):
         ch = src[i]
+        nxt = src[i + 1] if i + 1 < len(src) else ""
         if quote:
             if ch == "\\":
                 i += 2
                 continue
             if ch == quote:
                 quote = ""
+        elif ch == "/" and nxt == "/":
+            i = src.find("\n", i)
+            if i == -1:
+                break
+            continue
+        elif ch == "/" and nxt == "*":
+            end = src.find("*/", i + 2)
+            if end == -1:
+                break
+            i = end + 2
+            continue
         elif ch in "\"'":
             quote = ch
         elif ch == opener:
