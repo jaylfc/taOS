@@ -590,6 +590,7 @@ class TestLockScreenNotifications:
 
         monkeypatch.setattr(auth_mod, "_request_is_console", lambda _request: True)
         monkeypatch.delenv("TAOS_LOCK_DEMO_AGENTS", raising=False)
+        monkeypatch.setenv("TAOS_LOCK_DEMO_NOTIFICATIONS", "1")
         assert (await auth_mod.lock_notifications(None)).status_code == 404
 
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Demo")
@@ -598,10 +599,31 @@ class TestLockScreenNotifications:
         assert json.loads(resp.body)["demo"] is True
 
     @pytest.mark.asyncio
+    async def test_the_stacks_are_off_while_the_islands_stay_up(self, monkeypatch):
+        """Jay is redesigning the stacks and asked for them hidden meanwhile,
+        with the agent islands left alone.
+
+        So the notifications need their own switch, OFF by default: with the
+        master demo flag on and nothing else set, the islands still have their
+        placeholder agents and this route 404s, which the page renders as no
+        stack at all. Asserting the default rather than the opt-in is the point
+        -- an unset variable is what a device actually boots with."""
+        from tinyagentos.routes import auth as auth_mod
+
+        monkeypatch.setattr(auth_mod, "_request_is_console", lambda _request: True)
+        monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Demo")
+        monkeypatch.delenv("TAOS_LOCK_DEMO_NOTIFICATIONS", raising=False)
+
+        assert (await auth_mod.lock_notifications(None)).status_code == 404
+        # The islands are deliberately untouched by the same switch.
+        assert auth_mod._demo_enabled() is True
+
+    @pytest.mark.asyncio
     async def test_notifications_are_console_only(self, monkeypatch):
         from tinyagentos.routes import auth as auth_mod
 
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Demo")
+        monkeypatch.setenv("TAOS_LOCK_DEMO_NOTIFICATIONS", "1")
         monkeypatch.setattr(auth_mod, "_request_is_console", lambda _request: False)
         assert (await auth_mod.lock_notifications(None)).status_code == 403
 

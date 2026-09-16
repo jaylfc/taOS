@@ -3553,6 +3553,20 @@ def _demo_enabled() -> bool:
     return bool(os.environ.get("TAOS_LOCK_DEMO_AGENTS", "").strip())
 
 
+def _demo_notifications_enabled() -> bool:
+    """Whether the lock screen's notification stacks are switched on.
+
+    Narrower than _demo_enabled and OFF by default: the stacks are being
+    redesigned, and the screen reads better meanwhile as clock, weather and
+    agent islands alone. Requires BOTH flags rather than replacing the master
+    one, so switching off TAOS_LOCK_DEMO_AGENTS still takes down everything
+    invented on this pre-sign-in screen in a single move.
+    """
+    if not _demo_enabled():
+        return False
+    return bool(os.environ.get("TAOS_LOCK_DEMO_NOTIFICATIONS", "").strip())
+
+
 def _demo_thread(slug: str) -> list[dict]:
     """Build one scripted thread as absolute timestamps relative to now."""
     script = _DEMO_THREADS.get(slug, _DEMO_THREAD_FALLBACK)
@@ -3865,15 +3879,17 @@ def _demo_notifications() -> list[dict]:
 async def lock_notifications(request: Request):
     """Collated notification stacks for the lock screen. Console-only.
 
-    DEMO CONTENT ONLY, on the same flag as the placeholder agents and their
-    scripted threads: one switch governs everything invented on this screen, so
-    a device cannot end up showing made-up mail while believing it is in its
-    real state. With demo mode off there is nothing to serve and the answer is
-    404 -- the page treats that as "no notifications" and renders no stack.
+    DEMO CONTENT ONLY, and OFF BY DEFAULT while the stacks are redesigned: this
+    needs TAOS_LOCK_DEMO_NOTIFICATIONS on top of TAOS_LOCK_DEMO_AGENTS, so the
+    islands can stay up with no stacks under them. The master flag still governs
+    everything invented on this screen, so a device cannot end up showing made-up
+    mail while believing it is in its real state. With either flag off there is
+    nothing to serve and the answer is 404 -- the page treats that as "no
+    notifications" and renders no stack.
     """
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
-    if not _demo_enabled():
+    if not _demo_notifications_enabled():
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse({"groups": _demo_notifications(), "demo": True})
 
