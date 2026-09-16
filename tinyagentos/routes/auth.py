@@ -281,6 +281,41 @@ _LOCK_SCREEN_STYLE = """
 /* A handset is tall, and a sign-in card floating in the middle of 2400px of
    glass reads as a web page, not as an OS. The lock screen splits the height
    the way iOS and Android do: status up top, passcode down by the thumb. */
+/* THE COLUMN WIDTH. Everything stacked down the middle of this screen -- the
+   agent islands, the notification groups, the view row, the stats card -- is
+   one column, and it was six copies of the same number. A token, so widening
+   the islands cannot leave the row above them at the old width.
+
+   It is a cap, not a width: the elements are `width: 100%` under it. On
+   spacewar it BINDS, which is why this is the knob that moves them. Measured
+   on the device rather than assumed: sway drives DSI-1 at 1080x2400 with
+   `"scale": 2.0`, so the page gets a 540px CSS viewport, and .lockscreen's
+   10px side padding leaves 520px of content. Widening the padding instead
+   would only have moved the gutters -- the cap would still have held the
+   cards at their old width. */
+:root { --ls-card-w: 436px; }
+/* THE CAMERA LINE. The status row -- the taOS wordmark and the battery -- sits
+   level with the middle of the punch-hole camera, so the top edge reads as one
+   line of hardware and text rather than as text floating above a hole.
+
+   MEASURED, not nudged. There is no cutout information anywhere on this device
+   (nothing under /sys/firmware/devicetree/base, nothing in the pmaports device
+   package), so the number comes from the panel's own vendor description: the
+   stock Nothing OS overlay FrameworksResCommon_Sys_Spacewar.apk carries
+
+     config_mainBuiltInDisplayCutout = M89.3,42.31 m0,26.19 a26.19,26.19 0 1,0
+                                       52.38,0 a26.19,26.19 0 1,0 -52.38,0 Z @left
+
+   which is a circle of r=26.19 centred at (115.49, 68.50) in PHYSICAL pixels
+   from the top-left of the panel -- Android's path is in px unless it ends
+   @dp, and @left only moves the origin. The identical string is in LineageOS's
+   spacewar device tree, so it is two independent sources, not one dump.
+
+   68.50 physical px / 2 = 34.25 CSS px, because sway drives DSI-1 at
+   "scale": 2.0 (measured on the handset, same reading as --ls-card-w rests on).
+   The row is given an explicit height so "centred" is arithmetic rather than a
+   guess about line-height: its centre is padding-top + half of it. */
+:root { --ls-cam-centre-y: 34.25px; --ls-status-h: 20px; }
 /* display:block, NOT a flex row. The base stylesheet makes <body> a centring
    flex container for the sign-in card, and the on-screen keyboard appends its
    panel, toggle and live region to <body> -- under a flex ROW those become
@@ -309,7 +344,11 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
   width: 100%;
   height: 100vh;
   height: 100dvh;
-  padding: calc(env(safe-area-inset-top, 0px) + 14px) 10px calc(env(safe-area-inset-bottom, 0px) + 18px);
+  /* Top padding puts the status row's CENTRE on the camera line; it is not a
+     margin chosen by eye. See --ls-cam-centre-y. */
+  padding: calc(env(safe-area-inset-top, 0px) + var(--ls-cam-centre-y) - var(--ls-status-h) / 2)
+           10px
+           calc(env(safe-area-inset-bottom, 0px) + 18px);
   gap: 16px;
 }
 /* The clock keeps its distance from the status bar rather than the screen top. */
@@ -376,6 +415,10 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
      every time the battery string changed width (9% -> 100%). */
   display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
   align-self: stretch; flex: none;
+  /* An explicit height, so the camera line above is arithmetic and not a bet on
+     what line-height resolves to. align-items:center already centres the text
+     inside it. */
+  min-height: var(--ls-status-h);
   width: 100%; padding: 0 6px; gap: 10px;
   transition: filter 320ms cubic-bezier(0.32, 0.72, 0, 1), opacity 320ms ease;
 }
@@ -461,6 +504,158 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 26px, #000 calc(100% - 34px), transparent 100%);
   mask-image: linear-gradient(to bottom, transparent 0, #000 26px, #000 calc(100% - 34px), transparent 100%);
 }
+/* THE VIEW ROW. Seven icons that choose what the feed shows.
+
+   It sits OUTSIDE .ls-feed, above it, and that placement is load-bearing twice
+   over. It must not scroll away with the feed it steers. And .ls-feed is the
+   region where an upward drag is vetoed from unlocking the phone (see the
+   touchstart veto in the script): a row INSIDE the feed would mean a swipe that
+   begins on a view icon cannot unlock, which is the bug that veto exists to
+   avoid re-creating somewhere else. */
+.ls-views {
+  display: flex; align-items: center; justify-content: center;
+  gap: 2px; flex: 0 0 auto;
+  margin-top: 18px;
+  /* The row is fixed chrome; only the feed under it is allowed to overflow. */
+  width: 100%; max-width: var(--ls-card-w); align-self: center;
+}
+.ls-view-tab {
+  -webkit-appearance: none; appearance: none;
+  background: none; border: 0; padding: 7px 8px 5px;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  flex: 1 1 0; min-width: 0;
+  cursor: pointer; color: rgba(255,255,255,0.42);
+  -webkit-tap-highlight-color: transparent;
+  border-radius: 12px;
+  transition: color 160ms ease, transform 160ms cubic-bezier(0.32,0.72,0,1);
+}
+.ls-view-tab:hover { color: rgba(255,255,255,0.68); }
+.ls-view-tab:active { transform: scale(0.92); }
+.ls-view-tab:focus-visible { outline: 3px solid #4c9aff; outline-offset: 2px; }
+.ls-view-tab[aria-selected="true"] { color: rgba(255,255,255,0.96); }
+/* Stroke, not fill: these are line-art marks in the same set as the framework
+   badges. currentColor is what makes the selected state a single colour change
+   rather than seven hand-tuned icon states. */
+.ls-view-icon {
+  fill: none; stroke: currentColor; stroke-width: 1.7;
+  stroke-linecap: round; stroke-linejoin: round;
+  display: block; flex: 0 0 auto;
+}
+/* The selected marker. A 3px dot rather than an underline or a pill: the row
+   sits directly above a feed of rounded cards, and a filled pill behind the
+   icon would read as an eighth card. */
+.ls-view-dot {
+  width: 3px; height: 3px; border-radius: 50%;
+  background: currentColor; opacity: 0;
+  transition: opacity 160ms ease;
+}
+.ls-view-tab[aria-selected="true"] .ls-view-dot { opacity: 1; }
+/* A view with something waiting carries a dot at rest, in the attention amber
+   the islands already use, so "there is mail" does not need a number. */
+.ls-view-tab[data-badge="1"]:not([aria-selected="true"]) .ls-view-dot {
+  opacity: 1; background: #ffb020;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ls-view-tab, .ls-view-dot { transition: none; }
+  .ls-view-tab:active { transform: none; }
+}
+
+/* PANEL VISIBILITY -- deliberately explicit, and NOT left to [hidden].
+   .ls-islands and .ls-notifs each declare display:flex, and an author rule beats
+   the user-agent's [hidden]{display:none} whatever its specificity, so `hidden`
+   alone does NOT hide a populated panel here. That has been harmless while the
+   two panels were only ever hidden when empty; with seven panels holding real
+   content it would show all of them at once. The attribute stays (it is what
+   assistive tech reads) and this gives it teeth.
+
+   TWO attributes, because there are two owners. `hidden` means "this panel has
+   nothing in it" and belongs to the 15s poll, which already sets it on the
+   agents and alerts panels as their content comes and goes. `data-off` means
+   "this is not the view you chose" and belongs to the switcher. If the switcher
+   drove `hidden` instead, the very next poll would un-hide the agents panel
+   underneath whichever view the user was actually on. Shown only when NEITHER
+   is set. */
+.ls-feed > [data-view][hidden],
+.ls-feed > [data-view][data-off] { display: none; }
+/* The five panels this row introduces. The two that predate it keep their own
+   layout rules above. */
+.ls-panel {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  width: 100%; align-self: stretch;
+}
+/* A panel with nothing in it yet says so, rather than showing the user a blank
+   screen and leaving them to wonder whether it failed to load. */
+.ls-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 34px 18px; text-align: center;
+  color: rgba(255,255,255,0.38);
+  font-size: 14px; line-height: 1.45;
+}
+.ls-empty b { display: block; font-weight: 600; color: rgba(255,255,255,0.62); font-size: 15px; }
+
+/* THE STATS CARD. One card in the same material as an island, so the system
+   readings read as another thing this screen shows rather than as a settings
+   page that wandered in. */
+.ls-stat-card {
+  width: 100%; max-width: var(--ls-card-w);
+  padding: 16px 18px;
+  display: flex; flex-direction: column; gap: 14px;
+  background: rgba(255,255,255,0.06);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  backdrop-filter: blur(18px) saturate(1.3);
+  border-radius: 22px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.42);
+  animation: ls-island-in 520ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.ls-stat { display: flex; flex-direction: column; gap: 7px; }
+.ls-stat-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.ls-stat-label { font-size: 13px; color: rgba(255,255,255,0.56); }
+/* Tabular figures: without them a changing percentage makes the whole row
+   twitch left and right every poll. */
+.ls-stat-value {
+  font-size: 15px; font-weight: 600; color: rgba(255,255,255,0.94);
+  font-variant-numeric: tabular-nums;
+}
+.ls-stat-track {
+  height: 4px; border-radius: 999px; overflow: hidden;
+  background: rgba(255,255,255,0.12);
+}
+.ls-stat-fill {
+  height: 100%; border-radius: 999px;
+  background: rgba(255,255,255,0.82);
+  transition: width 420ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* The honesty line. It is small, but it is the point of this panel: it says
+   what the number is and what the hardware refuses to tell us. */
+.ls-stat-note {
+  font-size: 11.5px; line-height: 1.45;
+  color: rgba(255,255,255,0.38);
+  max-width: var(--ls-card-w); text-align: center;
+}
+.ls-stat-card .ls-stat-note { text-align: left; }
+.ls-chips {
+  display: flex; flex-wrap: wrap; gap: 7px; justify-content: center;
+  width: 100%; max-width: var(--ls-card-w);
+}
+.ls-chip {
+  font-size: 12px; padding: 5px 11px; border-radius: 999px;
+  background: rgba(255,255,255,0.07);
+  color: rgba(255,255,255,0.52);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+/* The dot IS the state; the word next to it is the same fact in text, for
+   anyone who cannot tell the two greens apart. */
+.ls-chip::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: rgba(255,255,255,0.28);
+}
+.ls-chip[data-on="1"] { color: rgba(255,255,255,0.78); }
+.ls-chip[data-on="1"]::before { background: #46d17f; }
+@media (prefers-reduced-motion: reduce) {
+  .ls-stat-card { animation: none; }
+  .ls-stat-fill { transition: none; }
+}
+
 /* NOTIFICATIONS. Collated the way a phone does it: one stack per source, the
    newest banner on top and the rest of that source's banners tucked behind it
    as peeking edges. A flat list of every notification would bury the agent
@@ -474,7 +669,7 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
 }
 .ls-notif-group {
   position: relative;
-  width: 100%; max-width: 396px;
+  width: 100%; max-width: var(--ls-card-w);
   animation: ls-island-in 520ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 /* Collapsed: only the newest card is in flow, so the group is exactly one card
@@ -549,7 +744,7 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
 .ls-notif-group[data-open="1"] .ls-notif-count { display: none; }
 .ls-island {
   display: flex; align-items: center; gap: 10px;
-  width: 100%; max-width: 396px;
+  width: 100%; max-width: var(--ls-card-w);
   padding: 7px 16px 7px 7px;
   border-radius: 999px;
   background: rgba(30, 30, 34, 0.92);
@@ -793,6 +988,15 @@ body.lockscreen-on .osk-toggle { display: none !important; }
   cursor: pointer; -webkit-tap-highlight-color: transparent;
 }
 .ls-unlock-btn:focus-visible { outline: 3px solid #4c9aff; outline-offset: 4px; border-radius: 16px; }
+/* Why the keypad just appeared. Without it, tapping "Stop agent" and getting a
+   passcode reads as the phone having re-locked itself rather than as the
+   action waiting on the unlock. role=status so it is announced, not just seen. */
+.ls-unlock-note {
+  font-size: 13px; line-height: 1.4; text-align: center;
+  color: rgba(255,255,255,0.62);
+  padding: 0 24px 8px;
+}
+.ls-unlock-note[hidden] { display: none; }
 .ls-unlock-label {
   font-size: 13.5px; font-weight: 500; letter-spacing: 0.01em;
   color: rgba(255,255,255,0.62);
@@ -996,6 +1200,67 @@ body.lockscreen-on .osk-toggle { display: none !important; }
 .ls-island { cursor: pointer; -webkit-tap-highlight-color: transparent; transition: transform 160ms cubic-bezier(0.32, 0.72, 0, 1); }
 .ls-island[data-press="1"] { transform: scale(0.955); }
 .ls-island[data-press="2"] { transform: scale(1.035); transition-duration: 220ms; }
+/* The avatar is the long-press target for the agent menu, so selection and the
+   copy/share callout must never arm on it. body.lockscreen-on already turns
+   selection off screen-wide, which makes this redundant TODAY -- it is here
+   because the island carries an agent's name and status, text there is a
+   reasonable thing to want to copy, and the day someone re-enables selection on
+   the island the way .ls-msg does, this is what keeps the press target from
+   turning back into a text handle. */
+.ls-avatar {
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none;
+}
+/* The avatar reads as its own control once it has its own gesture. */
+.ls-island[data-press="avatar"] .ls-avatar { transform: scale(1.08); }
+.ls-avatar { transition: transform 200ms cubic-bezier(0.32, 0.72, 0, 1); }
+
+/* THE AGENT MENU. Anchored over the island rather than dropped from the top of
+   the screen: it acts on THAT agent, and a sheet that covers the islands would
+   hide which one you pressed. */
+.ls-menu {
+  position: fixed; z-index: 60;
+  min-width: 208px; max-width: min(300px, calc(100vw - 32px));
+  padding: 6px;
+  background: rgba(26, 26, 30, 0.92);
+  -webkit-backdrop-filter: blur(22px) saturate(1.4);
+  backdrop-filter: blur(22px) saturate(1.4);
+  border-radius: 18px;
+  box-shadow: 0 18px 48px rgba(0,0,0,0.58);
+  display: flex; flex-direction: column; gap: 2px;
+  transform-origin: top center;
+  animation: ls-menu-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.ls-menu[hidden] { display: none; }
+@keyframes ls-menu-in {
+  from { opacity: 0; transform: scale(0.9) translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+.ls-menu-head {
+  padding: 8px 12px 6px; display: flex; flex-direction: column; gap: 1px;
+}
+.ls-menu-name { font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.94); }
+.ls-menu-sub { font-size: 12px; color: rgba(255,255,255,0.46); }
+.ls-menu-item {
+  -webkit-appearance: none; appearance: none; background: none; border: 0;
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 12px; border-radius: 12px;
+  font: inherit; font-size: 15px; text-align: left;
+  color: rgba(255,255,255,0.92); cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.ls-menu-item:hover, .ls-menu-item:focus-visible { background: rgba(255,255,255,0.09); }
+.ls-menu-item:focus-visible { outline: 2px solid #4c9aff; outline-offset: -2px; }
+.ls-menu-item[data-danger="1"] { color: #ff6b6b; }
+/* Disabled rather than absent: an agent that is already stopped should still
+   show "Stop", greyed, so the menu does not change shape under the finger. */
+.ls-menu-item[disabled] { opacity: 0.38; cursor: default; }
+.ls-menu-item[disabled]:hover { background: none; }
+.ls-menu-sep { height: 1px; margin: 4px 8px; background: rgba(255,255,255,0.09); }
+@media (prefers-reduced-motion: reduce) {
+  .ls-menu { animation: none; }
+  .ls-avatar { transition: none; }
+}
 .ls-island:focus-visible { outline: 3px solid #4c9aff; outline-offset: 3px; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1265,6 +1530,63 @@ _FRAMEWORK_SPRITE = """
 """
 
 
+# The view switcher's icons. A SECOND sprite rather than four more symbols in
+# the one above: that sprite is the framework badges an agent carries, and these
+# are chrome the user steers with. Merging them would make "which symbols may I
+# delete when a framework is dropped" unanswerable.
+#
+# Authored in the same line-art set as the framework marks -- 24x24, stroked,
+# no fills -- so the row does not read as icons borrowed from somewhere else.
+_VIEW_SPRITE = """
+      <svg class="ls-sprite" aria-hidden="true" focusable="false" width="0" height="0">
+        <defs>
+          <symbol id="lv-agents" viewBox="0 0 24 24">
+            <!-- two overlapping islands: the stack this screen is built around -->
+            <rect x="3" y="6" width="14" height="6" rx="3" />
+            <rect x="7" y="13" width="14" height="6" rx="3" />
+          </symbol>
+          <symbol id="lv-phone" viewBox="0 0 24 24">
+            <!-- handset -->
+            <path d="M8.2 4.5c.7 0 1.3.4 1.5 1.1l.8 2.3c.2.6 0 1.3-.5 1.7l-1.1.9a11 11 0 0 0 4.6 4.6l.9-1.1c.4-.5 1.1-.7 1.7-.5l2.3.8c.7.2 1.1.8 1.1 1.5v2.1c0 .9-.8 1.6-1.7 1.5A14.5 14.5 0 0 1 4.6 6.2C4.5 5.3 5.2 4.5 6.1 4.5z" />
+          </symbol>
+          <symbol id="lv-mailbox" viewBox="0 0 24 24">
+            <!-- envelope: the flap is a separate stroke so it reads at 18px -->
+            <rect x="3" y="6" width="18" height="12" rx="2.5" />
+            <path d="M3.8 7.6 12 13l8.2-5.4" />
+          </symbol>
+          <symbol id="lv-apps" viewBox="0 0 24 24">
+            <!-- four tiles -->
+            <rect x="4" y="4" width="6.5" height="6.5" rx="1.8" />
+            <rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8" />
+            <rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8" />
+            <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.8" />
+          </symbol>
+          <symbol id="lv-alerts" viewBox="0 0 24 24">
+            <!-- exclamation in a ring. The dot is a 0-length line with a round
+                 cap: a filled circle would be the only solid shape in the set. -->
+            <circle cx="12" cy="12" r="8.5" />
+            <path d="M12 7.5v5" />
+            <path d="M12 16.2v0" />
+          </symbol>
+          <symbol id="lv-stats" viewBox="0 0 24 24">
+            <!-- three bars on a baseline -->
+            <path d="M4 20h16" />
+            <path d="M7.5 20v-5.5" />
+            <path d="M12 20V8" />
+            <path d="M16.5 20v-8.5" />
+          </symbol>
+          <symbol id="lv-settings" viewBox="0 0 24 24">
+            <!-- cog: an octagonal rosette, not a 12-tooth gear, which turns to
+                 mud at 18px on a phone -->
+            <circle cx="12" cy="12" r="3" />
+            <path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8" />
+            <path d="m18.5 5.5-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5" />
+          </symbol>
+        </defs>
+      </svg>
+"""
+
+
 def _device_label() -> str:
     """The handset's own name, for the lock-screen chip.
 
@@ -1277,6 +1599,61 @@ def _device_label() -> str:
     except OSError:
         name = ""
     return name or "taOS"
+
+
+# The view row, defined ONCE. The tab markup below and the script's view list
+# are both generated from this, because two hand-maintained lists of the same
+# seven views is a drift waiting to happen: a tab with no panel renders a blank
+# screen, and a panel with no tab is unreachable.
+#
+# Order is Jay's: agents first and agents default -- this is the resting screen,
+# and the islands are what it is for.
+#
+# The panel id is carried here rather than derived as "ls-" + key, because two
+# of the seven panels predate this row and keep their own names: the agents
+# panel is #ls-activity (#ls-agents is the box INSIDE it) and the alerts panel
+# is #ls-notifs. Deriving the id would have pointed aria-controls at the inner
+# agents box and at an #ls-alerts that does not exist.
+_LOCK_VIEWS = (
+    ("agents", "Agents", "lv-agents", "ls-activity"),
+    ("phone", "Phone", "lv-phone", "ls-phone"),
+    ("mailbox", "Mailbox", "lv-mailbox", "ls-mailbox"),
+    ("apps", "Apps", "lv-apps", "ls-apps"),
+    ("alerts", "Alerts", "lv-alerts", "ls-notifs"),
+    ("stats", "System", "lv-stats", "ls-stats"),
+    ("settings", "Settings", "lv-settings", "ls-settings"),
+)
+_LOCK_DEFAULT_VIEW = "agents"
+
+
+def _view_tabs_html() -> str:
+    """The seven view tabs.
+
+    Each is a real <button> in a tablist rather than a styled <div>: this row is
+    the only way to reach five of the seven panels, so it has to be operable by
+    keyboard and announced as a tab, not as decoration.
+
+    aria-selected is set here for the default and thereafter maintained by the
+    script, so the markup is already correct before any JS runs.
+    """
+    out = []
+    for key, label, icon, panel in _LOCK_VIEWS:
+        selected = "true" if key == _LOCK_DEFAULT_VIEW else "false"
+        # Only the selected tab is in the tab order. A tablist takes ONE tab
+        # stop and is then traversed with arrow keys; seven tab stops would put
+        # six dead ends between the clock and the unlock button.
+        tabindex = "0" if key == _LOCK_DEFAULT_VIEW else "-1"
+        out.append(
+            f'<button type="button" class="ls-view-tab" id="ls-tab-{key}"'
+            f' role="tab" data-view="{key}" aria-selected="{selected}"'
+            f' aria-controls="{panel}" tabindex="{tabindex}"'
+            f' title="{label}" aria-label="{label}">'
+            f'<svg class="ls-view-icon" aria-hidden="true" focusable="false"'
+            f' width="22" height="22"><use href="#{icon}"></use></svg>'
+            f'<span class="ls-view-dot" aria-hidden="true"></span>'
+            f"</button>"
+        )
+    return "\n        ".join(out)
 
 
 def _lock_head_html() -> str:
@@ -1301,17 +1678,34 @@ def _lock_head_html() -> str:
       <div class="ls-time" id="ls-time" role="timer" aria-live="off">&nbsp;</div>
       <div class="ls-date" id="ls-date"></div>
       <div class="ls-weather" id="ls-weather" role="group" aria-label="Weather" hidden></div>
-      <div class="ls-feed" id="ls-feed">
-        <div class="ls-islands" id="ls-activity" role="group" aria-label="Agent activity" hidden>
+      <div class="ls-views" id="ls-views" role="tablist" aria-label="Lock screen views">
+        {_view_tabs_html()}
+      </div>
+      <div class="ls-feed" id="ls-feed" data-view="agents">
+        <div class="ls-islands" id="ls-activity" data-view="agents"
+             role="tabpanel" aria-labelledby="ls-tab-agents" aria-label="Agent activity" hidden>
           <div class="ls-agents" id="ls-agents"></div>
           <div class="ls-tasks" id="ls-tasks"></div>
         </div>
-        <div class="ls-notifs" id="ls-notifs" role="group" aria-label="Notifications" hidden></div>
+        <div class="ls-notifs" id="ls-notifs" data-view="alerts"
+             role="tabpanel" aria-labelledby="ls-tab-alerts" aria-label="Notifications" hidden></div>
+        <div class="ls-panel" id="ls-phone" data-view="phone"
+             role="tabpanel" aria-labelledby="ls-tab-phone" aria-label="Phone" hidden></div>
+        <div class="ls-panel" id="ls-mailbox" data-view="mailbox"
+             role="tabpanel" aria-labelledby="ls-tab-mailbox" aria-label="Mailbox" hidden></div>
+        <div class="ls-panel" id="ls-apps" data-view="apps"
+             role="tabpanel" aria-labelledby="ls-tab-apps" aria-label="Apps" hidden></div>
+        <div class="ls-panel" id="ls-stats" data-view="stats"
+             role="tabpanel" aria-labelledby="ls-tab-stats" aria-label="System" hidden></div>
+        <div class="ls-panel" id="ls-settings" data-view="settings"
+             role="tabpanel" aria-labelledby="ls-tab-settings" aria-label="Settings" hidden></div>
       </div>
       {_FRAMEWORK_SPRITE}
+      {_VIEW_SPRITE}
     </div>
     <div class="ls-spacer"></div>
     <div class="ls-unlock" id="ls-unlock">
+      <div class="ls-unlock-note" id="ls-unlock-note" role="status" hidden></div>
       <button type="button" class="ls-unlock-btn" id="ls-unlock-btn"
               aria-expanded="false" aria-controls="ls-foot">
         <span class="ls-grabber"></span>
@@ -1410,6 +1804,9 @@ def _lock_tail_html() -> str:
 _LOCK_SCREEN_SCRIPT = r"""
 (function () {
   "use strict";
+  // The view list is generated from _LOCK_VIEWS at serve time, so the tab row
+  // and this script cannot disagree about which views exist.
+/*__LOCK_VIEWS__*/
   // Lock-screen chrome only: the clock, the battery chip and the keypad. PIN
   // submission, the dots and the error line stay in /auth/pin-panel.js -- this
   // script types into the same #pin-input and lets that one do the rest, so
@@ -1703,6 +2100,12 @@ _LOCK_SCREEN_SCRIPT = r"""
       var openSheetName = screenEl ? screenEl.getAttribute("data-sheet") : "none";
       if (openSheetName && openSheetName !== "none") return;
 
+      // Same reasoning for the agent menu: it is anchored to an island and is
+      // ABOUT that island, so a repaint would leave a menu floating over a
+      // rebuilt list, still holding the record of an element that no longer
+      // exists. It is not a sheet, so the check above does not cover it.
+      if (menuEl) return;
+
       // Wiping agentsEl destroys whichever island holds keyboard focus, and the
       // browser drops focus to the body. At a 15s poll that means a keyboard or
       // switch-access user is thrown back to the top of the page every 15
@@ -1904,6 +2307,260 @@ _LOCK_SCREEN_SCRIPT = r"""
       feedEl.addEventListener("scroll", syncFeedFade, { passive: true });
       window.addEventListener("resize", syncFeedFade);
       syncFeedFade();
+    }
+
+    // -----------------------------------------------------------------------
+    // THE VIEW SWITCHER. The icon row above the feed chooses which panel the
+    // feed shows. Agents is the default and the resting state.
+    //
+    // It marks the inactive panels with data-off and NEVER touches `hidden`:
+    // `hidden` is the poll's way of saying a panel is empty, and the two would
+    // otherwise overwrite each other every 15 seconds. See the CSS.
+    // -----------------------------------------------------------------------
+    var viewsEl = document.getElementById("ls-views");
+    var currentView = VIEW_DEFAULT;
+
+    function viewTabs() {
+      return viewsEl ? [].slice.call(viewsEl.querySelectorAll(".ls-view-tab")) : [];
+    }
+
+    function showView(key, focusTab) {
+      if (!VIEWS[key]) key = VIEW_DEFAULT;
+      currentView = key;
+
+      var tabs = viewTabs();
+      for (var i = 0; i < tabs.length; i++) {
+        var on = tabs[i].getAttribute("data-view") === key;
+        tabs[i].setAttribute("aria-selected", on ? "true" : "false");
+        // One tab stop for the whole row: the arrow keys move within it.
+        tabs[i].setAttribute("tabindex", on ? "0" : "-1");
+        if (on && focusTab) tabs[i].focus();
+      }
+
+      if (feedEl) {
+        var panels = feedEl.querySelectorAll("[data-view]");
+        for (var j = 0; j < panels.length; j++) {
+          if (panels[j].getAttribute("data-view") === key) {
+            panels[j].removeAttribute("data-off");
+          } else {
+            panels[j].setAttribute("data-off", "1");
+          }
+        }
+        feedEl.setAttribute("data-view", key);
+        // A new panel is a different height, so the old scroll offset is
+        // meaningless and the cut-edge fade is now describing content that is
+        // no longer on screen. Reset, then re-measure -- do not assume.
+        feedEl.scrollTop = 0;
+      }
+
+      renderView(key);
+      syncFeedFade();
+    }
+
+    // Panels that are built on demand rather than polled. Agents and alerts
+    // are already kept current by the poll and want nothing here.
+    function renderView(key) {
+      // Numbers that are not on screen are not worth a request every 3s, and
+      // the CPU reading is a DELTA -- polling it while hidden would hand the
+      // stats view a first sample taken minutes ago.
+      if (key === "stats") startStats(); else stopStats();
+      if (key !== "agents" && key !== "alerts" && key !== "stats") renderPlaceholder(key);
+    }
+
+    // -----------------------------------------------------------------------
+    // THE STATS VIEW.
+    //
+    // ⛔ THE RULE FOR THIS PANEL: a reading the hardware does not expose is
+    // shown as "--", never as a number. Probed on the handset before any of
+    // this was designed -- the cDSP (the "NPU") reports state and nothing else,
+    // and the GPU's devfreq node has no `load` file. An "NPU usage 34%" here
+    // would be invented. This is the first screen the phone shows anyone.
+    // -----------------------------------------------------------------------
+    var statsEl = document.getElementById("ls-stats");
+    var statsTimer = null;
+
+    function stopStats() {
+      if (statsTimer) { window.clearInterval(statsTimer); statsTimer = null; }
+    }
+
+    function startStats() {
+      stopStats();
+      pollStats();
+      statsTimer = window.setInterval(pollStats, 3000);
+    }
+
+    function pollStats() {
+      fetch("/auth/lock-stats", { credentials: "same-origin" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { if (d) paintStats(d); })
+        .catch(function () { /* a lock screen does not show network errors */ });
+    }
+
+    function statRow(label, value, pct) {
+      var row = document.createElement("div");
+      row.className = "ls-stat";
+      var top = document.createElement("div");
+      top.className = "ls-stat-top";
+      var l = document.createElement("span");
+      l.className = "ls-stat-label";
+      l.textContent = label;
+      var v = document.createElement("span");
+      v.className = "ls-stat-value";
+      v.textContent = value;
+      top.appendChild(l); top.appendChild(v);
+      row.appendChild(top);
+      // A bar ONLY when there is a real percentage behind it. A meter drawn at
+      // zero because nothing was measured looks exactly like a meter drawn at
+      // zero because the thing is idle.
+      if (typeof pct === "number") {
+        var track = document.createElement("div");
+        track.className = "ls-stat-track";
+        var fill = document.createElement("div");
+        fill.className = "ls-stat-fill";
+        fill.style.width = Math.max(0, Math.min(100, pct)) + "%";
+        track.appendChild(fill);
+        row.appendChild(track);
+      }
+      return row;
+    }
+
+    function gib(kb) { return (kb / 1048576).toFixed(1) + " GB"; }
+
+    function paintStats(d) {
+      if (!statsEl) return;
+      statsEl.textContent = "";
+      // Same as the placeholders: `hidden` meant "empty", and it no longer is.
+      statsEl.hidden = false;
+
+      var card = document.createElement("div");
+      card.className = "ls-stat-card";
+
+      var cores = d.cpu_cores ? " · " + d.cpu_cores + " cores" : "";
+      card.appendChild(statRow(
+        "CPU" + cores,
+        typeof d.cpu_percent === "number" ? d.cpu_percent.toFixed(0) + "%" : "--",
+        typeof d.cpu_percent === "number" ? d.cpu_percent : null
+      ));
+
+      if (d.memory) {
+        card.appendChild(statRow(
+          "Memory",
+          gib(d.memory.used_kb) + " / " + gib(d.memory.total_kb),
+          d.memory.percent
+        ));
+      } else {
+        card.appendChild(statRow("Memory", "--"));
+      }
+
+      // GPU: LABELLED AS FREQUENCY, because that is what it is. The bar is the
+      // clock against its own maximum, and the caption says so -- a parked GPU
+      // is not "23% used".
+      if (d.gpu && d.gpu.freq_hz) {
+        var mhz = Math.round(d.gpu.freq_hz / 1000000);
+        var maxMhz = d.gpu.max_freq_hz ? Math.round(d.gpu.max_freq_hz / 1000000) : 0;
+        card.appendChild(statRow(
+          "GPU clock",
+          maxMhz ? mhz + " / " + maxMhz + " MHz" : mhz + " MHz",
+          maxMhz ? (mhz * 100 / maxMhz) : null
+        ));
+        if (typeof d.gpu.active_percent === "number") {
+          var note = document.createElement("div");
+          note.className = "ls-stat-note";
+          note.textContent = "Above idle clock " + d.gpu.active_percent.toFixed(0)
+            + "% of uptime. The GPU reports no utilisation counter.";
+          card.appendChild(note);
+        }
+      } else {
+        card.appendChild(statRow("GPU clock", "--"));
+      }
+
+      statsEl.appendChild(card);
+
+      // The remote processors, as state chips. This is where the NPU lives, and
+      // running/offline is genuinely all it reports.
+      if (d.dsps && d.dsps.length) {
+        var chips = document.createElement("div");
+        chips.className = "ls-chips";
+        for (var i = 0; i < d.dsps.length; i++) {
+          var c = document.createElement("span");
+          c.className = "ls-chip";
+          var up = String(d.dsps[i].state || "") === "running";
+          c.setAttribute("data-on", up ? "1" : "0");
+          c.textContent = (d.dsps[i].name || "dsp") + " · " + (d.dsps[i].state || "unknown");
+          chips.appendChild(c);
+        }
+        statsEl.appendChild(chips);
+        var why = document.createElement("div");
+        why.className = "ls-stat-note";
+        why.textContent = "Accelerators report running or offline only — no usage counter exists for them.";
+        statsEl.appendChild(why);
+      }
+
+      // "Nobody asked" and "none loaded" are different answers.
+      var models = document.createElement("div");
+      models.className = "ls-stat-note";
+      models.textContent = d.models
+        ? (d.models.length ? d.models.join(", ") : "No models loaded.")
+        : "Loaded models are not reported by this device.";
+      statsEl.appendChild(models);
+
+      syncFeedFade();
+    }
+
+    // The four views that have no data source yet say so plainly, once.
+    var PLACEHOLDERS = {
+      phone: ["Phone", "Calls and dialler are not wired up on this device yet."],
+      mailbox: ["Mailbox", "No mail account is connected to this device yet."],
+      apps: ["Apps", "Installed apps will appear here."],
+      settings: ["Settings", "Unlock to change settings."]
+    };
+
+    function renderPlaceholder(key) {
+      var host = document.getElementById("ls-" + key);
+      var text = PLACEHOLDERS[key];
+      if (!host || !text || host.firstChild) return;
+      var wrap = document.createElement("div");
+      wrap.className = "ls-empty";
+      var b = document.createElement("b");
+      b.textContent = text[0];
+      var p = document.createElement("span");
+      p.textContent = text[1];
+      wrap.appendChild(b); wrap.appendChild(p);
+      host.appendChild(wrap);
+      // `hidden` on these panels means "nothing in it yet", which is true in
+      // the markup and false from here on. Leaving it set would hide the panel
+      // even while its own tab is selected.
+      host.hidden = false;
+    }
+
+    if (viewsEl) {
+      viewsEl.addEventListener("click", function (ev) {
+        var tab = ev.target.closest(".ls-view-tab");
+        if (!tab) return;
+        showView(tab.getAttribute("data-view"), false);
+      });
+
+      // Arrow-key traversal is what makes this a tablist rather than seven
+      // buttons. Home/End because the row is long enough for it to matter.
+      viewsEl.addEventListener("keydown", function (ev) {
+        var tabs = viewTabs();
+        if (!tabs.length) return;
+        var at = -1;
+        for (var i = 0; i < tabs.length; i++) {
+          if (tabs[i].getAttribute("data-view") === currentView) { at = i; break; }
+        }
+        if (at < 0) return;
+        var to = -1;
+        if (ev.key === "ArrowRight") to = (at + 1) % tabs.length;
+        else if (ev.key === "ArrowLeft") to = (at - 1 + tabs.length) % tabs.length;
+        else if (ev.key === "Home") to = 0;
+        else if (ev.key === "End") to = tabs.length - 1;
+        if (to < 0) return;
+        ev.preventDefault();
+        showView(tabs[to].getAttribute("data-view"), true);
+      });
+
+      showView(VIEW_DEFAULT, false);
     }
 
     var notifsEl = document.getElementById("ls-notifs");
@@ -2595,6 +3252,175 @@ _LOCK_SCREEN_SCRIPT = r"""
     }
 
     // -----------------------------------------------------------------------
+    // THE AGENT MENU. Long-pressing an island's AVATAR opens it.
+    //
+    // ⚠ NOTHING HERE ACTS ON THE AGENT. This screen renders BEFORE sign-in, so
+    // a "Stop agent" that stopped an agent would let anyone holding the locked
+    // phone kill the work on it. The menu collects the INTENT and then asks for
+    // the passcode -- which is exactly what the decision sheet above already
+    // does ("Unlock to approve this"), so this is that rule applied again
+    // rather than a new one. The intent is handed over only after the unlock.
+    // -----------------------------------------------------------------------
+    var menuEl = null;
+    var menuReturn = null;
+
+    // What the user asked for before unlocking. Read by the console once it is
+    // signed in; deliberately not sent anywhere from this screen.
+    window.__lsPendingAgentAction = null;
+
+    // Used as a scroll/resize listener, where the argument is an Event. It must
+    // be its own function: passing closeAgentMenu straight to addEventListener
+    // hands it the Event as `restoreFocus`, which is truthy, so every scroll
+    // would yank focus back to the island.
+    function dismissAgentMenu() { closeAgentMenu(false); }
+
+    function closeAgentMenu(restoreFocus) {
+      if (!menuEl) return;
+      menuEl.remove();
+      menuEl = null;
+      document.removeEventListener("pointerdown", onDocPointer, true);
+      document.removeEventListener("keydown", onMenuKey, true);
+      window.removeEventListener("resize", dismissAgentMenu);
+      if (feedEl) feedEl.removeEventListener("scroll", dismissAgentMenu);
+      // Focus goes back where it came from, or the island the menu was about
+      // becomes unreachable by keyboard after the menu closes.
+      if (restoreFocus && menuReturn && document.contains(menuReturn)) {
+        try { menuReturn.focus(); } catch (e) {}
+      }
+      menuReturn = null;
+    }
+
+    function onDocPointer(ev) {
+      if (menuEl && !menuEl.contains(ev.target)) closeAgentMenu(false);
+    }
+
+    function onMenuKey(ev) {
+      if (!menuEl) return;
+      if (ev.key === "Escape") { ev.preventDefault(); closeAgentMenu(true); return; }
+      if (ev.key !== "Tab") return;
+      // The menu is modal while it is open: Tab must not walk out of it and
+      // leave an open menu behind with focus somewhere on the screen under it.
+      var items = [].slice.call(menuEl.querySelectorAll(".ls-menu-item:not([disabled])"));
+      if (!items.length) return;
+      var first = items[0], last = items[items.length - 1];
+      if (ev.shiftKey && document.activeElement === first) {
+        ev.preventDefault(); last.focus();
+      } else if (!ev.shiftKey && document.activeElement === last) {
+        ev.preventDefault(); first.focus();
+      }
+    }
+
+    // Hand the action to the passcode. The label tells the user what they are
+    // unlocking FOR -- an unexplained keypad after a menu tap reads as the
+    // phone having simply locked itself again.
+    function requireUnlock(agent, action, label) {
+      window.__lsPendingAgentAction = {
+        agent: agent.name || "", action: action, at: Date.now()
+      };
+      closeAgentMenu(false);
+      var note = document.getElementById("ls-unlock-note");
+      if (note) {
+        note.textContent = "Unlock to " + label;
+        note.hidden = false;
+      }
+      openPasscode();
+    }
+
+    function menuItem(label, opts) {
+      opts = opts || {};
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "ls-menu-item";
+      b.textContent = label;
+      if (opts.danger) b.setAttribute("data-danger", "1");
+      if (opts.disabled) b.disabled = true;
+      else if (opts.onClick) b.addEventListener("click", opts.onClick);
+      return b;
+    }
+
+    function openAgentMenu(island) {
+      var agent = island.__agent || {};
+      closeAgentMenu(false);
+      menuReturn = island;
+
+      var m = document.createElement("div");
+      m.className = "ls-menu";
+      m.setAttribute("role", "menu");
+      m.setAttribute("aria-label", (agent.name || "Agent") + " actions");
+
+      var head = document.createElement("div");
+      head.className = "ls-menu-head";
+      var nm = document.createElement("div");
+      nm.className = "ls-menu-name";
+      nm.textContent = agent.name || "agent";
+      var sub = document.createElement("div");
+      sub.className = "ls-menu-sub";
+      var model = agent.model || "";
+      // The model belongs here when we know it: "Change model" with no idea
+      // what the current one is asks the user to choose blind.
+      sub.textContent = model
+        ? (agent.status || "idle") + " · " + model
+        : (agent.status || "idle");
+      head.appendChild(nm); head.appendChild(sub);
+      m.appendChild(head);
+
+      m.appendChild(menuItem("Open conversation", {
+        onClick: function () { closeAgentMenu(false); openChat(agent); }
+      }));
+
+      var sep = document.createElement("div");
+      sep.className = "ls-menu-sep";
+      m.appendChild(sep);
+
+      m.appendChild(menuItem("Change model", {
+        onClick: function () {
+          requireUnlock(agent, "change-model", "change " + (agent.name || "this agent") + "'s model");
+        }
+      }));
+
+      // An agent that is already at rest cannot be stopped. Shown greyed rather
+      // than removed so the menu does not change shape between two agents.
+      var resting = RESTING.indexOf(String(agent.status || "").trim().toLowerCase()) !== -1;
+      m.appendChild(menuItem("Stop agent", {
+        danger: true,
+        disabled: resting,
+        onClick: function () {
+          requireUnlock(agent, "stop", "stop " + (agent.name || "this agent"));
+        }
+      }));
+
+      document.body.appendChild(m);
+      menuEl = m;
+
+      // Anchored to the island, then pulled back inside the viewport. Measured
+      // after insertion: the menu's height depends on which items it got.
+      var r = island.getBoundingClientRect();
+      var mr = m.getBoundingClientRect();
+      var gap = 8;
+      var left = r.left + (r.width - mr.width) / 2;
+      left = Math.max(12, Math.min(left, window.innerWidth - mr.width - 12));
+      // Below the island, unless it would fall off the bottom -- then above it.
+      var top = r.bottom + gap;
+      if (top + mr.height > window.innerHeight - 12) {
+        top = Math.max(12, r.top - mr.height - gap);
+      }
+      m.style.left = Math.round(left) + "px";
+      m.style.top = Math.round(top) + "px";
+
+      var firstItem = m.querySelector(".ls-menu-item:not([disabled])");
+      if (firstItem) { try { firstItem.focus(); } catch (e) {} }
+
+      // Capture phase: an outside press must close the menu BEFORE it reaches
+      // whatever is underneath, or the tap that dismisses also opens something.
+      document.addEventListener("pointerdown", onDocPointer, true);
+      document.addEventListener("keydown", onMenuKey, true);
+      window.addEventListener("resize", dismissAgentMenu);
+      // The menu is positioned in viewport coordinates against an island that
+      // scrolls, so a scrolling feed would leave it pointing at nothing.
+      if (feedEl) feedEl.addEventListener("scroll", dismissAgentMenu);
+    }
+
+    // -----------------------------------------------------------------------
     // ISLAND PRESS. Press-and-hold opens the conversation, the way a long press
     // expands a notification on a phone. A short tap opens too -- the decision
     // when the island is asking for one, the conversation otherwise -- because
@@ -2604,11 +3430,13 @@ _LOCK_SCREEN_SCRIPT = r"""
     var HOLD_MS = 420;
     (function () {
       var timer = null, held = false, startY = 0, startX = 0, pressed = null;
+      var onAvatar = false;
 
       function clear() {
         if (timer) { window.clearTimeout(timer); timer = null; }
         if (pressed) { pressed.removeAttribute("data-press"); }
         pressed = null;
+        onAvatar = false;
       }
 
       function open(el) {
@@ -2627,15 +3455,25 @@ _LOCK_SCREEN_SCRIPT = r"""
         held = false;
         startY = ev.clientY; startX = ev.clientX;
         pressed = el;
-        el.setAttribute("data-press", "1");
+        // WHERE the press began, latched HERE and never re-read. A long press
+        // that starts on the avatar opens the agent's menu; anywhere else on
+        // the island it opens the conversation, as it always has.
+        //
+        // Latched at pointerdown for the same reason the unlock-swipe veto is:
+        // the finger moves during a 420ms hold, and deciding at the END would
+        // make the gesture mean different things depending on where a fingertip
+        // happened to settle. The user pressed the avatar or they did not.
+        onAvatar = !!ev.target.closest(".ls-avatar");
+        el.setAttribute("data-press", onAvatar ? "avatar" : "1");
         timer = window.setTimeout(function () {
           held = true;
-          el.setAttribute("data-press", "2");
+          if (!onAvatar) el.setAttribute("data-press", "2");
           // Haptics where the platform offers them: a long press that only
           // changes pixels does not feel like a press.
           if (navigator.vibrate) { try { navigator.vibrate(12); } catch (e) {} }
           window.setTimeout(function () { el.removeAttribute("data-press"); }, 200);
-          openChat(el.__agent || {});
+          if (onAvatar) openAgentMenu(el);
+          else openChat(el.__agent || {});
         }, HOLD_MS);
       });
 
@@ -3298,11 +4136,41 @@ async def pin_panel_script(request: Request):
 
 
 
+_LOCK_VIEWS_TOKEN = "/*__LOCK_VIEWS__*/"
+
+
+def _lock_screen_js() -> str:
+    """The lock-screen script with its view list generated in.
+
+    The seven views are declared once, in _LOCK_VIEWS, and reach the script
+    here instead of being re-typed in JavaScript. A view present in one list and
+    not the other is the failure this avoids: a tab with no panel shows a blank
+    feed, and a panel with no tab cannot be reached at all.
+
+    The token MUST be present. Without this check a rename upstream would
+    silently serve a script whose VIEWS is undefined -- the switcher would throw
+    on the first tap and the lock screen would look merely unresponsive, which
+    is a much harder thing to trace back to here than an error at startup.
+    """
+    if _LOCK_VIEWS_TOKEN not in _LOCK_SCREEN_SCRIPT:
+        raise RuntimeError(
+            "lock-screen.js is missing the %s marker: the view list has "
+            "nowhere to go and the switcher would fail at runtime."
+            % _LOCK_VIEWS_TOKEN
+        )
+    keys = ", ".join('"%s": 1' % key for key, _label, _icon, _panel in _LOCK_VIEWS)
+    preamble = '  var VIEWS = {%s};\n  var VIEW_DEFAULT = "%s";' % (
+        keys,
+        _LOCK_DEFAULT_VIEW,
+    )
+    return _LOCK_SCREEN_SCRIPT.replace(_LOCK_VIEWS_TOKEN, preamble)
+
+
 @router.get("/lock-screen.js")
 async def lock_screen_script(request: Request):
     """Serve the lock-screen chrome. Same CSP reasoning as /auth/osk.js."""
     return Response(
-        content=_LOCK_SCREEN_SCRIPT,
+        content=_lock_screen_js(),
         media_type="application/javascript",
         headers={"Cache-Control": "public, max-age=300"},
     )
@@ -4058,6 +4926,223 @@ def _demo_notifications() -> list[dict]:
         })
     groups.sort(key=lambda group: group["items"][0]["at"], reverse=True)
     return groups
+
+
+#: Previous /proc/stat reading, so CPU can be a PERCENTAGE. A single sample of
+#: /proc/stat gives cumulative jiffies since boot; dividing those by uptime
+#: yields the average load since the phone was switched on, which on a device
+#: that has been up for days barely moves. Utilisation is a delta between two
+#: readings or it is not utilisation.
+_CPU_LAST: dict[str, float] = {}
+
+
+def _read_cpu_percent() -> float | None:
+    """Busy share of all cores since the previous call, or None on the first.
+
+    None rather than 0.0 on the first call, and the caller shows "--": zero is a
+    claim that the CPU is idle, and we do not know that yet. The lock screen
+    polls, so the second call lands a few seconds later and has a real number.
+    """
+    try:
+        with open("/proc/stat", "r", encoding="ascii") as fh:
+            parts = fh.readline().split()
+    except OSError:
+        return None
+    if len(parts) < 5 or parts[0] != "cpu":
+        return None
+    try:
+        vals = [float(v) for v in parts[1:]]
+    except ValueError:
+        return None
+    total = sum(vals)
+    # idle + iowait. iowait is time the CPU had nothing to run, so counting it
+    # as busy would show a phone reading from flash as a phone under load.
+    idle = vals[3] + (vals[4] if len(vals) > 4 else 0.0)
+
+    prev_total = _CPU_LAST.get("total")
+    prev_idle = _CPU_LAST.get("idle")
+    _CPU_LAST["total"] = total
+    _CPU_LAST["idle"] = idle
+    if prev_total is None or prev_idle is None:
+        return None
+    d_total = total - prev_total
+    d_idle = idle - prev_idle
+    # A counter that did not move (or went backwards, which /proc/stat does
+    # across a suspend) tells us nothing; do not divide by it.
+    if d_total <= 0:
+        return None
+    pct = (1.0 - (d_idle / d_total)) * 100.0
+    return max(0.0, min(100.0, round(pct, 1)))
+
+
+def _read_memory() -> dict | None:
+    """Total and in-use RAM in kB, from MemAvailable rather than MemFree.
+
+    MemFree counts the page cache as used and would report a healthy Linux
+    phone as almost out of memory.
+    """
+    want = ("MemTotal", "MemAvailable")
+    found: dict[str, int] = {}
+    try:
+        with open("/proc/meminfo", "r", encoding="ascii") as fh:
+            for line in fh:
+                key, _, rest = line.partition(":")
+                if key in want:
+                    try:
+                        found[key] = int(rest.split()[0])
+                    except (IndexError, ValueError):
+                        return None
+                    if len(found) == len(want):
+                        break
+    except OSError:
+        return None
+    if len(found) != len(want) or found["MemTotal"] <= 0:
+        return None
+    total = found["MemTotal"]
+    used = max(0, total - found["MemAvailable"])
+    return {
+        "total_kb": total,
+        "used_kb": used,
+        "percent": round(used * 100.0 / total, 1),
+    }
+
+
+#: The GPU's devfreq node on this SoC.
+_GPU_DEVFREQ = "/sys/class/devfreq/3d00000.gpu"
+
+
+def _read_gpu() -> dict | None:
+    """GPU frequency, and an activity proxy derived from trans_stat.
+
+    ⛔ THIS IS NOT A UTILISATION COUNTER, and the field names say so. Measured
+    on the handset: this devfreq node has cur_freq, max_freq, governor and
+    trans_stat, and NO `load` file. There is no busy-percent to read.
+
+    So two honest numbers instead of one invented one:
+      * freq_hz / max_freq_hz -- what the GPU is clocked at right now. A ratio
+        of these is a FREQUENCY ratio; an idle GPU parked at its minimum is not
+        "23% used". The UI labels it as frequency.
+      * active_percent -- share of time since boot spent above the LOWEST
+        frequency state, from trans_stat. That is a real measurement of a real
+        thing, but it is time-above-idle-clock, not busy time, and it is
+        cumulative since boot rather than current. Named to match.
+    """
+    out: dict = {}
+    for key, name in (("freq_hz", "cur_freq"), ("max_freq_hz", "max_freq")):
+        try:
+            with open("%s/%s" % (_GPU_DEVFREQ, name), "r", encoding="ascii") as fh:
+                out[key] = int(fh.read().strip())
+        except (OSError, ValueError):
+            pass
+    try:
+        with open("%s/trans_stat" % _GPU_DEVFREQ, "r", encoding="ascii") as fh:
+            rows = fh.read().splitlines()
+    except OSError:
+        rows = []
+
+    # trans_stat is a transition MATRIX with a time-in-state column; the data
+    # rows start with a frequency (and a ':' marker on the current state) and
+    # end with that state's total time in ms. Anything else is the header or
+    # the total-transitions footer.
+    states: list[tuple[int, int]] = []
+    for row in rows:
+        head, sep, _ = row.partition(":")
+        if not sep:
+            continue
+        # The kernel marks the CURRENT state with a leading '*'. Parsing the
+        # row without stripping it raises, which silently drops exactly one
+        # row -- and on an idle phone the current state IS the lowest one, so
+        # the idle time would vanish and every reading would look busier than
+        # the GPU really is.
+        try:
+            freq = int(head.strip().lstrip("*").strip())
+        except ValueError:
+            continue
+        cells = row.split()
+        try:
+            states.append((freq, int(cells[-1])))
+        except (IndexError, ValueError):
+            continue
+    if states:
+        total_ms = sum(ms for _f, ms in states)
+        lowest = min(f for f, _ms in states)
+        idle_ms = sum(ms for f, ms in states if f == lowest)
+        if total_ms > 0:
+            out["active_percent"] = round((total_ms - idle_ms) * 100.0 / total_ms, 1)
+    return out or None
+
+
+def _read_dsp_states() -> list[dict]:
+    """The remote processors, as NAMED STATES. No utilisation, by necessity.
+
+    ⛔ The cDSP -- the "NPU" -- exposes state, name, firmware, coredump and
+    recovery, and NOTHING about how busy it is. Mainline remoteproc has no such
+    counter, so an "NPU usage %" on this screen would be a number with nothing
+    behind it. A gauge that is always making something up is worse than an
+    honest running/offline chip, and this is the first screen the phone shows.
+    """
+    import glob
+
+    out: list[dict] = []
+    for path in sorted(glob.glob("/sys/class/remoteproc/remoteproc*")):
+        entry: dict = {}
+        for key in ("name", "state"):
+            try:
+                with open("%s/%s" % (path, key), "r", encoding="utf-8") as fh:
+                    entry[key] = fh.read().strip()
+            except OSError:
+                pass
+        if entry.get("name"):
+            out.append(entry)
+    return out
+
+
+@router.get("/lock-stats")
+async def lock_stats(request: Request):
+    """System readings for the lock screen's stats view. Console-only.
+
+    Same containment as the other lock endpoints: it renders pre-auth, so the
+    console gate is what keeps it off the LAN, and what it returns is what the
+    phone already shows anyone holding it -- load, memory, clock speeds. No
+    process names, no paths, no config.
+
+    Every field is optional. A reading the kernel does not expose is ABSENT
+    rather than zero, and the UI shows "--" for it: a zero here would be a claim
+    about the hardware that nothing measured.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+
+    payload: dict = {}
+
+    cpu = _read_cpu_percent()
+    if cpu is not None:
+        payload["cpu_percent"] = cpu
+    try:
+        cores = os.cpu_count()
+    except Exception:  # noqa: BLE001 - a missing core count is cosmetic
+        cores = None
+    if cores:
+        payload["cpu_cores"] = cores
+
+    mem = _read_memory()
+    if mem:
+        payload["memory"] = mem
+
+    gpu = _read_gpu()
+    if gpu:
+        payload["gpu"] = gpu
+
+    dsps = _read_dsp_states()
+    if dsps:
+        payload["dsps"] = dsps
+
+    # Loaded models are NOT an OS reading. Measured on the handset: no ollama
+    # binary and nothing listening on 11434, so there is no local runtime to
+    # ask. They belong to the controller, and until it offers them this key is
+    # absent rather than an empty list -- "none loaded" and "nobody asked" are
+    # different answers and the UI says so.
+    return JSONResponse(payload)
 
 
 @router.get("/lock-notifications")

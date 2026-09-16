@@ -351,7 +351,15 @@ class TestNumericLayoutForPin:
         assert 'el.setAttribute("role", "button")' in LOCK_SCRIPT
         assert 'el.setAttribute("tabindex", "0")' in LOCK_SCRIPT
         # A role="list" whose children are buttons is an invalid a11y tree.
-        assert 'id="ls-activity" role="group"' in login_console
+        # The panel is now a tabpanel under the view row, not a bare group: the
+        # role moved with the feature, and it has to KEEP naming its tab, or the
+        # fan-out has no accessible owner.
+        assert 'id="ls-activity" data-view="agents"' in login_console
+        assert re.search(
+            r'id="ls-activity"[^>]*role="tabpanel"[^>]*aria-labelledby="ls-tab-agents"',
+            login_console,
+            re.S,
+        )
 
     def test_lock_chrome_does_not_select_text_like_a_browser(self, login_console):
         """Press-and-hold is bound to the islands. Without this, chromium starts
@@ -658,7 +666,11 @@ class TestLockScreenNotifications:
         operable by Enter -- the same rule the islands already follow."""
         assert 'el.setAttribute("role", "button")' in LOCK_SCRIPT
         assert 'el.setAttribute("aria-expanded"' in LOCK_SCRIPT
-        assert 'id="ls-notifs" role="group"' in login_console
+        assert re.search(
+            r'id="ls-notifs"[^>]*role="tabpanel"[^>]*aria-labelledby="ls-tab-alerts"',
+            login_console,
+            re.S,
+        )
 
     def test_notification_text_is_never_written_as_markup(self):
         """Titles and bodies are content. The only innerHTML on this path is an
