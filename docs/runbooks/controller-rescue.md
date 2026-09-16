@@ -148,6 +148,12 @@ sudo systemctl start tinyagentos
 If the restored copy predates a password change, reset it offline rather than
 guessing: `sudo -u taos /opt/taos/.venv/bin/taos recover-password --username <user>`.
 
+To re-run onboarding from scratch (for example, after modifying the setup flow),
+stop the controller and run `taos reset --onboarding --yes`. This deletes the
+account store and setup checklist preference, creating a backup under
+`data/backups/reset-<timestamp>/` so the previous state is recoverable.
+Downloaded models and installed apps are preserved.
+
 Then check whether anything else was truncated by the same event — a shell test
 like `tr -d '\0' | grep .` gives false positives on binary files, so test the
 bytes directly:

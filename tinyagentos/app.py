@@ -1938,6 +1938,191 @@ def _recover_password_cli(argv) -> int:
     return 0
 
 
+def _reset_cli(argv) -> int:
+    """``taos reset`` -- wipe identity / onboarding state or all mutable data.
+
+    Two modes:
+    - --onboarding: clear identity + onboarding state only. Deletes auth files,
+      onboarding-related SQLite stores, and the setup-checklist preference.
+    - --all: the above plus every other mutable store in data_dir. Downloaded
+      models (data_dir/models) and installed apps (data_dir/apps) are preserved.
+    """
+    import argparse
+    import json
+    import os
+    import shutil
+    import socket
+    import sqlite3
+    import sys
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from tinyagentos.config import load_config
+
+    parser = argparse.ArgumentParser(
+        prog="taos reset",
+        description="Reset taOS identity and/or mutable state.",
+    )
+    parser.add_argument(
+        "--onboarding",
+        action="store_true",
+        help="Clear identity and onboarding state only (keeps models, apps, config).",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Clear all mutable state in data_dir (keeps config.yaml, models, apps).",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip interactive confirmation.",
+    )
+    parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip creating a timestamped backup.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Run even if the taOS controller appears to be listening on its port.",
+    )
+    parser.add_argument(
+        "--data-dir",
+        help="Data directory (default: TAOS_DATA_DIR env, else <project>/data).",
+    )
+    ns = parser.parse_args(argv)
+
+    if not ns.onboarding and not ns.all:
+        print("error: one of --onboarding or --all is required", file=sys.stderr)
+        return 1
+
+    if ns.onboarding and ns.all:
+        print("error: --onboarding and --all are mutually exclusive", file=sys.stderr)
+        return 1
+
+    override = ns.data_dir or os.environ.get("TAOS_DATA_DIR")
+    data_dir = Path(override) if override else (PROJECT_DIR / "data")
+
+    config_path = data_dir / "config.yaml"
+    if config_path.exists():
+        config = load_config(config_path)
+        port = config.server.get("port", 6969)
+    else:
+        port = 6969
+
+    if not ns.force:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.5)
+        try:
+            sock.connect(("localhost", port))
+            sock.close()
+            print(
+                f"taOS controller appears to be running on port {port}. "
+                f"Stop it first, or pass --force to proceed.",
+                file=sys.stderr,
+            )
+            return 1
+        except (OSError, socket.timeout):
+            pass
+
+    identity_paths = [
+        data_dir / ".auth_user.json",
+        data_dir / ".auth_password",
+        data_dir / ".auth_sessions",
+        data_dir / ".auth_local_token",
+    ]
+
+    onboarding_db_paths = [
+        data_dir / "auth_requests.db",
+        data_dir / "password_resets.db",
+        data_dir / "user_shares.db",
+        data_dir / "agent_grants.db",
+        data_dir / "agent_scope_requests.db",
+        data_dir / "app_grants.db",
+        data_dir / "license_acceptances.db",
+    ]
+
+    all_removable = []
+    if data_dir.exists():
+        for p in data_dir.iterdir():
+            if p.name == "config.yaml":
+                continue
+            if p.name == "backups":
+                continue
+            if p.is_dir() and p.name in ("models", "apps"):
+                continue
+            all_removable.append(p)
+
+    if ns.all:
+        to_remove = [p for p in identity_paths + onboarding_db_paths + all_removable if p.exists()]
+    else:
+        to_remove = [p for p in identity_paths + onboarding_db_paths if p.exists()]
+
+    desktop_db = data_dir / "desktop.db"
+    clear_setup_pref = desktop_db.exists()
+
+    if not to_remove and not clear_setup_pref:
+        print("Nothing to remove.")
+        return 0
+
+    print("Will remove the following paths:")
+    for p in to_remove:
+        print(f"  {p}")
+    if clear_setup_pref:
+        print(f"  (will clear 'setup' preference from {desktop_db})")
+
+    if not ns.yes:
+        answer = input("Proceed? [y/N] ")
+        if answer.lower() != "y":
+            print("Aborted.")
+            return 1
+
+    backup_dir = None
+    if not ns.no_backup:
+        backup_root = data_dir / "backups"
+        backup_root.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_dir = backup_root / f"reset-{timestamp}"
+        backup_dir.mkdir(parents=True)
+
+        for p in to_remove:
+            target = backup_dir / p.name
+            if p.is_file():
+                shutil.copy2(p, target)
+            elif p.is_dir():
+                shutil.copytree(p, target)
+
+        if clear_setup_pref:
+            shutil.copy2(desktop_db, backup_dir / "desktop.db")
+
+        print(f"Backup saved to {backup_dir}")
+
+    for p in to_remove:
+        if p.is_file():
+            p.unlink()
+        elif p.is_dir():
+            shutil.rmtree(p)
+
+    if clear_setup_pref:
+        conn = sqlite3.connect(str(desktop_db))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM desktop_settings WHERE user_id = ? AND key = ?",
+                ("user", "pref:setup"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    print("Reset complete. Restart the taOS controller so open sessions re-authenticate.")
+    if backup_dir:
+        print(f"Backup: {backup_dir}")
+    return 0
+
+
 def main():
     import sys
     # `taos rollback [ref]` -- undo the last update (restore branch + version) and
@@ -1947,6 +2132,12 @@ def main():
         import subprocess
         script = PROJECT_DIR / "scripts" / "rollback.sh"
         raise SystemExit(subprocess.call(["bash", str(script), *sys.argv[2:]]))
+
+    # `taos reset [--onboarding | --all] [--yes] [--no-backup] [--force]` --
+    # offline reset of identity/onboarding state or all mutable data. Resets
+    # the auth store directly (no running server needed).
+    if len(sys.argv) > 1 and sys.argv[1] == "reset":
+        raise SystemExit(_reset_cli(sys.argv[2:]))
 
     # `taos recover-password [--username U] [--password P]` -- offline recovery
     # of a local account when the admin is locked out of the web login. Resets

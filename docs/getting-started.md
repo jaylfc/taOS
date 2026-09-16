@@ -136,6 +136,8 @@ The wizard shows:
 
 You don't have to follow the wizard step-by-step — you can dismiss it and navigate freely. But if this is your first time, the steps below mirror the recommended path.
 
+If you need to re-run onboarding (for example, after iterating on the setup flow), stop the controller and run `taos reset --onboarding --yes` from the install directory. This wipes the account store and setup checklist state so the next page load shows onboarding from the start, without creating duplicate users. Downloaded models and installed apps are preserved.
+
 ---
 
 ## 3a. Using the Desktop Shell
