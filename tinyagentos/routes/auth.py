@@ -2179,6 +2179,18 @@ _LOCK_SCREEN_SCRIPT = r"""
       return !!feedEl && feedEl.scrollHeight - feedEl.clientHeight > 4;
     }
 
+    // How far the feed can still travel toward its end, RIGHT NOW. Overflow
+    // asks whether the feed is taller than its viewport; this asks where it is
+    // scrolled, and they are different questions: a feed scrolled to its bottom
+    // overflows and yet cannot move. Both the fade and the unlock veto need
+    // this one, so like the overflow tolerance it is defined once.
+    //
+    // A feed that cannot scroll at all reads as zero room here, which is what
+    // it should: it is already at its end.
+    function feedScrollRoom() {
+      return feedEl ? feedEl.scrollHeight - feedEl.clientHeight - feedEl.scrollTop : 0;
+    }
+
     // Which edges of the feed are cut. Measured rather than assumed: whether
     // this device's screen can hold its agents and notifications at once
     // depends on how many of each it has and how tall the panel is.
@@ -2186,7 +2198,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       if (!feedEl) return;
       var over = feedOverflows();
       var atTop = feedEl.scrollTop <= 2;
-      var atEnd = feedEl.scrollTop + feedEl.clientHeight >= feedEl.scrollHeight - 2;
+      var atEnd = feedScrollRoom() <= 4;
       var fade = "none";
       if (over) fade = atTop ? "bottom" : (atEnd ? "top" : "both");
       feedEl.setAttribute("data-fade", fade);
@@ -2829,17 +2841,29 @@ _LOCK_SCREEN_SCRIPT = r"""
     // keypad. `overscroll-behavior: contain` cannot help; it stops scroll
     // CHAINING, not an ancestor's JS listener.
     //
-    // The exception is narrowed to the case that actually collides: a feed with
-    // somewhere to scroll. A feed that cannot move is not being read, and
-    // vetoing there would kill unlock across most of the glass on a device with
-    // one agent and no notifications -- the first screen a new user ever sees.
-    // Same reasoning, and the same measurement, as the cut-edge fade.
+    // The exception is narrowed to the case that actually collides: a feed that
+    // still has somewhere to go IN THE DIRECTION THIS DRAG WOULD TAKE IT. An
+    // upward swipe is both the unlock gesture and the gesture that scrolls the
+    // feed toward its end, so the feed has a claim on it only while it can
+    // still move that way.
+    //
+    // Asking overflow alone was the bug (tsk-36i6ed): at the bottom of a long
+    // feed an upward drag cannot scroll -- there is nowhere left -- and was
+    // vetoed anyway, so nothing happened at all over most of the glass. That is
+    // the ordinary flow: read to the end, then swipe up to unlock. Room is
+    // read once, at touchstart, and it is a tolerance rather than an equality
+    // because scrollTop, clientHeight and scrollHeight are all fractional under
+    // a non-integer device pixel ratio and never sum exactly.
+    //
+    // A feed that cannot scroll at all has no room either, so it still unlocks
+    // across the whole screen -- the device with one agent and no
+    // notifications, which is the first screen a new user ever sees.
     swipe(document.body, openPasscode, null, function () {
       return !screenEl || screenEl.getAttribute("data-sheet") === "none";
     }, function (ev) {
       var t = ev.target;
       if (!t || !t.closest || !t.closest(".ls-feed")) return false;
-      return feedOverflows();
+      return feedScrollRoom() > 4;
     });
     // Dismiss: only by dragging the sheet's own header.
     var chatHead = chatSheet ? chatSheet.querySelector(".ls-sheet-head") : null;

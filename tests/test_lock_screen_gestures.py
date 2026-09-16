@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -109,6 +110,9 @@ var feedEl = makeEl({
   sel: [".ls-feed"], parent: body,
   scrollHeight: SCN.feedScrollHeight, clientHeight: SCN.feedClientHeight
 });
+// WHERE the feed is scrolled, which is the whole of tsk-36i6ed. A real browser
+// clamps this to [0, scrollHeight - clientHeight]; scenarios stay inside that.
+feedEl.scrollTop = SCN.feedScrollTop;
 // A notification card inside the feed -- what the finger actually lands on.
 var card = makeEl({ sel: [".ls-note"], parent: feedEl });
 var document = { body: body };
@@ -127,29 +131,45 @@ body.fire("touchmove", {
   target: startT,
   touches: [{ clientX: (SCN.x0 + SCN.x1) / 2, clientY: (SCN.y0 + SCN.y1) / 2 }]
 });
+// The feed may move UNDER the finger -- that is what a read-to-the-end drag
+// does. Whatever the veto decided at touchstart has to stand.
+if (SCN.scrollDuringDrag !== null) feedEl.scrollTop = SCN.scrollDuringDrag;
 body.fire("touchend", { target: endT, changedTouches: [{ clientX: SCN.x1, clientY: SCN.y1 }] });
 
 process.stdout.write(JSON.stringify({ unlocked: unlocked }));
 """
 
 
-def _gesture_source(*, with_fix: bool = True) -> str:
+def _gesture_source(*, with_fix: bool = True, ignore_scroll: bool = False) -> str:
     """The real source of the gesture machinery, optionally de-fixed.
 
     `with_fix=False` rebuilds the wiring as it stood before tsk-6bjsvg -- the
     unlock swipe bound to the body with no origin veto -- so a test can prove
     the harness is able to observe the bug at all.
+
+    `ignore_scroll=True` is the tsk-36i6ed mutation: it makes the veto ask
+    whether the feed overflows and NOT where it is scrolled, which is precisely
+    what the merged #3102 code did. It is the plausible wrong answer, so a suite
+    that cannot fail under it has not separated the two cases at all.
     """
+    room = _function("feedScrollRoom")
+    if ignore_scroll:
+        mutated = room.replace(" - feedEl.scrollTop", "")
+        assert mutated != room, (
+            "the mutation changed nothing -- feedScrollRoom() no longer reads "
+            "scrollTop the way this mutation assumes, so it proves nothing"
+        )
+        room = mutated
     wiring = _unlock_wiring()
     if not with_fix:
         # Drop the 5th argument (the veto) and nothing else.
         guard_end = wiring.rindex("}, function (ev) {")
         wiring = wiring[: guard_end + 1] + ");"
         assert "closest" not in wiring, "de-fixed wiring still carries the veto"
-    return "\n".join([_function("feedOverflows"), _function("swipe"), wiring])
+    return "\n".join([_function("feedOverflows"), room, _function("swipe"), wiring])
 
 
-def _drive(scenario: dict, *, with_fix: bool = True) -> int:
+def _drive(scenario: dict, *, with_fix: bool = True, ignore_scroll: bool = False) -> int:
     """Run one gesture and return how many times unlock was triggered."""
     node = shutil.which("node")
     if node is None:  # pragma: no cover - depends on the runner image
@@ -163,7 +183,10 @@ def _drive(scenario: dict, *, with_fix: bool = True) -> int:
             "not found on PATH. These tests cannot be skipped: skipping them would "
             "report green while proving nothing about the unlock gesture."
         )
-    script = _HARNESS.replace("__GESTURE_SOURCE__", _gesture_source(with_fix=with_fix))
+    script = _HARNESS.replace(
+        "__GESTURE_SOURCE__",
+        _gesture_source(with_fix=with_fix, ignore_scroll=ignore_scroll),
+    )
     done = subprocess.run(
         [node, "-e", script],
         env={**os.environ, "LS_SCENARIO": json.dumps(scenario)},
@@ -176,11 +199,17 @@ def _drive(scenario: dict, *, with_fix: bool = True) -> int:
 
 
 def _scenario(**over) -> dict:
-    """A 200px upward drag on the resting screen, over an overflowing feed."""
+    """A 200px upward drag on the resting screen, over an overflowing feed.
+
+    The feed is 900 tall in a 300 viewport, so its scrollTop runs 0..600 and
+    600 is its end.
+    """
     base = {
         "sheet": "none",
         "feedScrollHeight": 900,
         "feedClientHeight": 300,
+        "feedScrollTop": 0,
+        "scrollDuringDrag": None,
         "startOn": "card",
         "endOn": "card",
         "x0": 160,
@@ -243,6 +272,73 @@ class TestUnlockSwipeOrigin:
         assert _drive(_scenario(), with_fix=False) == 1
 
 
+class TestUnlockAtTheEndOfTheFeed:
+    """tsk-36i6ed: the hole #3102 left behind.
+
+    #3102 asked whether the feed OVERFLOWS. It never asked where the feed was
+    SCROLLED -- and swipe-up is both the unlock gesture and the gesture that
+    scrolls the feed toward its end. At the bottom of a long feed an upward drag
+    cannot scroll (nothing left to reach) and was vetoed anyway, so nothing
+    happened at all, over most of the glass, in the plainest flow there is: read
+    to the end of your notifications, then swipe up to unlock.
+
+    Cases 1 and 2 below are the SAME overflowing feed and the SAME drag. They
+    differ in one number, `feedScrollTop`, and nothing else -- so an
+    implementation that ignores scroll position cannot satisfy both.
+    """
+
+    def test_1_mid_feed_still_does_not_unlock(self):
+        """CASE 1. Scrolled to the top of a 600px range: still being read."""
+        assert _drive(_scenario(feedScrollTop=0)) == 0
+
+    def test_2_at_the_end_of_the_feed_unlocks(self):
+        """CASE 2. Same feed, same drag, scrolled to its end. Jay's bug."""
+        assert _drive(_scenario(feedScrollTop=600)) == 1
+
+    def test_one_screenful_from_the_end_still_does_not_unlock(self):
+        """Room left is room left. 300 of 600 is mid-feed by any reading."""
+        assert _drive(_scenario(feedScrollTop=300)) == 0
+
+    def test_a_fractional_pixel_short_of_the_end_counts_as_the_end(self):
+        """The DPR case, and the reason this is a tolerance and not `==`.
+
+        On a 2.75x panel these three numbers are fractional and their difference
+        lands near zero without reaching it. A fix written as an equality passes
+        every whole-pixel scenario above and still strands the user on the glass.
+        """
+        assert _drive(_scenario(feedScrollTop=599.6)) == 1
+
+    def test_a_feed_with_nothing_to_scroll_is_already_at_its_end(self):
+        """#3102's narrowing, restated in the new terms and still true."""
+        assert _drive(_scenario(feedScrollHeight=300, feedScrollTop=0)) == 1
+
+    def test_the_end_of_the_feed_is_judged_from_where_the_touch_LANDED(self):
+        """The latch, measured rather than asserted on structure.
+
+        Reaching the end of the feed is the last part of the very drag that
+        gets there, so scroll position at touchEND is the plausible wrong
+        answer: it would unlock the phone at the end of the read itself, which
+        is the #3102 bug wearing a different hat. The harness scrolls the feed
+        to its end DURING the drag; the gesture must still be judged by the 0
+        it started at.
+        """
+        assert _drive(_scenario(feedScrollTop=0, scrollDuringDrag=600)) == 0
+
+    def test_the_suite_fails_the_mutation_that_ignores_scroll_position(self):
+        """THE MUTATION CONTROL, and the acceptance criterion @taOS-dev set.
+
+        Strip `- feedEl.scrollTop` out of the measurement and the veto is back
+        to asking only about overflow -- merged #3102 exactly. Case 2 must go
+        RED under it. If it stays green, these scenarios do not separate scroll
+        position from overflow and the suite is wrong even when it is all green.
+        """
+        assert _drive(_scenario(feedScrollTop=600), ignore_scroll=True) == 0
+        # ...while case 1, which the mutation gets right by accident, is unmoved.
+        # Naming this keeps the control honest: the mutation must break the case
+        # that discriminates, not simply break everything.
+        assert _drive(_scenario(feedScrollTop=0), ignore_scroll=True) == 0
+
+
 class TestGestureLatching:
     """Properties of `swipe()` itself that the scenarios above rely on."""
 
@@ -261,6 +357,41 @@ class TestGestureLatching:
         assert touchstart < LOCK_SCRIPT.index(latch) < touchend
 
     def test_overflow_is_measured_in_exactly_one_place(self):
-        """The fade and the veto must not drift apart about "can this scroll"."""
-        assert LOCK_SCRIPT.count("feedEl.scrollHeight - feedEl.clientHeight") == 1
-        assert LOCK_SCRIPT.count("feedOverflows()") >= 2
+        """Unchanged in intent. `feedOverflows()` is still the only definition of
+        "this feed is taller than its viewport".
+
+        What changed is that it is no longer the veto's question. tsk-36i6ed
+        needed a SECOND one -- how far the feed can still travel -- and asking
+        both would have left an arm that cannot fail: a feed that does not
+        overflow has `scrollTop` clamped to 0 by the browser, so it always reads
+        as already at its end, and the overflow conjunct could never change the
+        answer. The fade still asks it, and it stays defined once.
+        """
+        assert LOCK_SCRIPT.count("function feedOverflows(") == 1
+        # Callers, not occurrences: the definition line contains the call text.
+        assert LOCK_SCRIPT.count("feedOverflows()") - 1 >= 1
+
+    def test_the_feed_is_measured_only_inside_its_two_helpers(self):
+        """The fade and the veto must not drift apart about the same feed.
+
+        There are two questions, and tsk-36i6ed happened because only the first
+        was being asked: `feedOverflows()` -- is it taller than its viewport --
+        and `feedScrollRoom()` -- how far can it still travel. Each is defined
+        once. This asserts nothing ELSE reads the feed's geometry, because a
+        third, inline copy with its own tolerance is how they drift.
+        """
+        helpers = _function("feedOverflows") + _function("feedScrollRoom")
+        assert helpers.count("feedEl.scrollHeight") == 2
+        assert helpers.count("feedEl.clientHeight") == 2
+        elsewhere = LOCK_SCRIPT.replace(helpers[: len(_function("feedOverflows"))], "")
+        elsewhere = elsewhere.replace(_function("feedScrollRoom"), "")
+        assert "feedEl.scrollHeight" not in elsewhere
+        assert "feedEl.clientHeight" not in elsewhere
+        # scrollTop is READ outside them exactly once, for the top edge's fade,
+        # which is the one edge neither helper answers. Writes are not
+        # measurements and stay allowed: the view switcher resets the offset
+        # when it swaps panels, and counting that as a rogue measurement would
+        # make this check fail for doing the right thing.
+        reads = re.findall(r"feedEl\.scrollTop(?!\s*=(?!=))", elsewhere)
+        assert len(reads) == 1, f"feedEl.scrollTop is read {len(reads)} times outside the helpers"
+        assert "var atTop" in elsewhere
