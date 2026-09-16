@@ -372,3 +372,41 @@ async def test_aggregate_skips_project_on_auth_failure(client, monkeypatch):
     ids = _project_ids(resp)
     assert pid_ok in ids
     assert pid_bad not in ids
+
+
+@pytest.mark.asyncio
+async def test_human_token_aggregate_gets_distinguishable_403(agent_ctx):
+    """A valid human-principal token on the project-tasks aggregate must return
+    403 with a human-specific detail, not the generic 'agent is not active'
+    message that a missing registry record produces."""
+    app = agent_ctx.app
+    auth = app.state.auth
+
+    invite = auth.add_user_invite("human-agg-403", invited_by_username="admin")
+    auth.complete_invite(
+        username="human-agg-403",
+        invite_code=invite,
+        full_name="Human Aggregate",
+        email="human-agg-403@test.local",
+        password="humanpass1",
+    )
+    user = auth.find_user("human-agg-403")
+    assert user is not None
+    uid = user["id"]
+
+    resp = await agent_ctx.client.post("/api/a2a/bus/human-assertion")
+    assert resp.status_code == 200
+    token = resp.json()["assertion"]
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as bare:
+        resp = await bare.get(
+            "/api/projects/tasks/aggregate",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert resp.status_code == 403
+    assert (
+        resp.json().get("detail")
+        == "human-principal token cannot enumerate agent project grants"
+    )
