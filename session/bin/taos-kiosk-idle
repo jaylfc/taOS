@@ -19,7 +19,20 @@ pkill -x swayidle 2>/dev/null || true
 # `output * power off` is wlr-output-power-management: the panel is POWERED
 # DOWN, not dimmed, and sway gates input while it is off so a touch wakes the
 # screen rather than pressing whatever is under the finger.
+# NO `resume` POWER-ON. This used to carry
+#     resume 'swaymsg "output * power on"'
+# which lit the panel on ANY input -- a stray touch in a pocket, a knee, the
+# desk. Jay, from the glass: "Tap to wake just worked, i think it does sometimes
+# just not when i want it to!" That unpredictability IS the bug; waking on
+# everything and waking reliably are not the same property.
+#
+# taos-kiosk-dt2w owns the wake now and requires a deliberate double tap.
+# swayidle still sees the touch as input, so it resumes and re-arms its own
+# timeout -- which is why this does not hit the latch documented in
+# taos-kiosk-power, where an IPC-only wake leaves swayidle stuck for good.
+#
+# THE POWER KEY REMAINS THE FALLBACK, bound with --locked in sway.conf: if the
+# daemon is dead the screen is still reachable.
 exec swayidle -w \
     timeout "$IDLE_SECS" 'swaymsg "output * power off"' \
-    resume               'swaymsg "output * power on"' \
     before-sleep         'swaymsg "output * power off"'

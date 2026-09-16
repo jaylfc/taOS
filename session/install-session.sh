@@ -70,6 +70,38 @@ grep -q 'taos-kiosk-app.sh' /usr/local/bin/taos-kiosk-launch || {
     echo "FAIL: installed launcher has no runtime app script - wrong version"; exit 1; }
 echo "PASS: launcher installed and parses"
 
+# 3b. The session helpers the sway config execs by absolute path.
+#
+# These were NOT installed here before, so a reflash produced a config naming
+# /usr/local/bin/taos-kiosk-idle and friends with nothing at those paths: sway
+# came up, the execs failed silently (a bindsym's exec output goes nowhere), and
+# the phone had no idle blanking and no power key. Anything the config names has
+# to be installed by the same script that installs the config.
+for helper in taos-kiosk-idle taos-kiosk-power taos-kiosk-dt2w taos-kiosk-dt2w-run; do
+    install -m 755 "$HERE/bin/$helper" "/usr/local/bin/$helper"
+    echo "installed /usr/local/bin/$helper"
+done
+
+# Every path the config execs must now exist and be executable. The loop above
+# is not the check: it installs what THIS script knows about, while the config
+# is what actually gets run, so a helper added to the config and forgotten here
+# is exactly the failure this catches.
+MISSING=""
+for path in $(grep -oE '/usr/local/bin/taos-kiosk-[a-z0-9-]+' "$CONF_SRC" | sort -u); do
+    [ -x "$path" ] || MISSING="$MISSING $path"
+done
+[ -z "$MISSING" ] || { echo "FAIL: sway config execs missing binaries:$MISSING"; exit 1; }
+echo "PASS: every taos-kiosk-* path named by the config is installed and executable"
+
+# Control: prove the grep above actually found paths. An empty list would make
+# the check pass by looking at nothing -- the same vacuous green that has bitten
+# this repo before.
+EXEC_COUNT="$(grep -coE '/usr/local/bin/taos-kiosk-[a-z0-9-]+' "$CONF_SRC" || true)"
+[ "${EXEC_COUNT:-0}" -ge 2 ] || {
+    echo "FAIL: only ${EXEC_COUNT:-0} taos-kiosk-* paths found in the config - the check above measured nothing"
+    exit 1; }
+echo "PASS: config names $EXEC_COUNT taos-kiosk-* paths"
+
 # 4. The sway config.
 install -d -m 755 /etc/taos
 install -m 644 "$CONF_SRC" /etc/taos/sway-kiosk.conf
