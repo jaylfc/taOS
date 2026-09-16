@@ -57,6 +57,25 @@ BROWSER_ARGS="--ozone-platform=wayland \
 --user-data-dir=/var/lib/taos-kiosk/chrome \
 --app=$TAOS_URL"
 
+# Remote debugging, OFF unless TAOS_KIOSK_DEBUG_PORT is set.
+#
+# There is no other way to see the kiosk page's console. The screen is the only
+# output this browser has, `grim` cannot capture on this compositor ("no
+# supported format found"), and a headless probe with its own profile is a
+# DIFFERENT browser -- it answered every question correctly while the glass was
+# blank, which is exactly how a whole evening went into the wrong layer.
+#
+# Bound to 127.0.0.1 explicitly: the handset is on a tailnet, and an
+# unauthenticated DevTools port listening on all interfaces would let anything
+# that can reach the device drive the browser and read the screen.
+if [ -n "${TAOS_KIOSK_DEBUG_PORT:-}" ]; then
+    BROWSER_ARGS="$BROWSER_ARGS \
+--remote-debugging-port=$TAOS_KIOSK_DEBUG_PORT \
+--remote-debugging-address=127.0.0.1 \
+--remote-allow-origins=http://127.0.0.1:$TAOS_KIOSK_DEBUG_PORT"
+    echo "taos-kiosk: DEVTOOLS ENABLED on 127.0.0.1:$TAOS_KIOSK_DEBUG_PORT" >&2
+fi
+
 if [ "$COMPOSITOR_KIND" = "sway" ]; then
     [ -r "$SWAY_CONF" ] || { echo "taos-kiosk: $SWAY_CONF missing" >&2; exit 1; }
     # The browser command lives in a runtime include so the packaged config
