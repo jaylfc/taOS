@@ -1,2 +1,0 @@
-### Fixed
-- **S2-9 path traversal in trace DB path**: `_agent_trace_dir` now applies `_safe_slug` (rejecting anything outside `[a-z0-9._-]`) and raises `ValueError` for traversal attempts such as `../x`, `a/b`, `..`, and empty strings. `POST /api/trace` and `GET /api/agents/{name}/trace` now return 400 for invalid `agent_name` instead of silently creating files outside `data_dir`. Agent-token callers have their identity bound from the registry JWT (`request.state.agent_name`) rather than trusting the request body.

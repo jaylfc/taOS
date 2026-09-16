@@ -1,3 +1,0 @@
-### Fixed
-
-- `POST /api/taosgo/app-join`: removed the unreachable password-only bypass that minted a Headscale preauth key for an unauthenticated caller with no session and no Bearer (dead code masked by the global auth gate, rated CRITICAL by Kilo on #2904). The app-password Bearer path is now wired with `Depends(HTTPBearer(auto_error=False))` so it is no longer dead code, and the handler returns 401 directly for any caller lacking a session or a valid local-token Bearer (defence in depth). The auth-gate allowlist and CSRF dependency are unchanged, and taOSgo go-live is paused, so no caller-observable behaviour changed.

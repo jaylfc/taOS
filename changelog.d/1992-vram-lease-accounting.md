@@ -1,7 +1,0 @@
-### Changed
-
-- **cluster/manager.py** `claim_lease`: VRAM admission now sums `required_vram_mb` across all active leases on a worker, so two concurrent claims on different resources cannot together exceed free VRAM (H1).
-- **scheduling/leases.py** `_renew_locked`: renewal rejects expired leases (`expires_at < now`), so a purged lease is not resurrected by a fresh TTL (M1).
-- **scheduler/discovery.py** `normalise_vram_probe(free, total)` + `_gpu_vram_probe`: the probe now distinguishes *probe unavailable* (`total <= 0` → fail OPEN with a large value, so non-NVIDIA hosts are not permanently refused) from *probe ran, zero free* (`total > 0 and free <= 0` → fail CLOSED at 0). The prior fix collapsed both to 0, which made every `estimated_memory_mb > 0` task unschedulable on AMD/ROCm/Apple-Silicon/Rockchip hosts (M2).
-- **vram_reservation.py**: the `_thread_lock` now guards **all three** `_pending` / `_reserved_vram_mb` mutators — the sweep (renamed `_sweep_stale_locked`), `release()`, and the commit write in `reserve()` — so a sweep iterating `_pending` from a worker thread cannot race a concurrent `release()`/`reserve()` (`dictionary changed size during iteration`, lost accounting updates) (M3).
-- **tests/test_1992_vram_lease_accounting.py**: covers H1, M1, M2, M3, including a `Resource.can_admit()` path test proving a probe-unavailable host fails open while a measured-full GPU fails closed.
