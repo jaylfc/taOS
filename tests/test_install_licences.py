@@ -14,6 +14,8 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.version import Version
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -93,6 +95,108 @@ def test_proxy_extra_pins_litellm_to_the_minor_it_mirrors():
         "litellm's specifier must pin exactly the mirrored minor (>=1.94.2,<1.95), "
         f"not merely carry *some* upper bound (got {litellm_req!r})"
     )
+
+
+def _parse_snapshot(snapshot_path: Path) -> dict[str, str | None]:
+    """Return {canonical_name: effective_upper_bound_version} from the snapshot."""
+    result: dict[str, str | None] = {}
+    for line in snapshot_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        req = Requirement(line)
+        canonical_name = check_install_licences.canonical(req.name)
+        upper_specs = [s for s in req.specifier if s.operator in ("<", "<=", "==")]
+        if not upper_specs:
+            result[canonical_name] = None
+            continue
+        exact = [s for s in upper_specs if s.operator == "=="]
+        if exact:
+            result[canonical_name] = exact[0].version
+        else:
+            result[canonical_name] = str(
+                min(Version(s.version) for s in upper_specs)
+            )
+    return result
+
+
+def _effective_upper_bound(req_str: str) -> str | None:
+    """Return the effective upper bound version, or None if unconstrained."""
+    req = Requirement(req_str)
+    upper_specs = [s for s in req.specifier if s.operator in ("<", "<=", "==")]
+    if not upper_specs:
+        return None
+    exact = [s for s in upper_specs if s.operator == "=="]
+    if exact:
+        return exact[0].version
+    return str(min(Version(s.version) for s in upper_specs))
+
+
+def test_proxy_extra_ceilings_do_not_outrun_the_mirrored_snapshot():
+    """Ceilings of inlined proxy siblings must not exceed the mirrored snapshot.
+
+    ``pip install -e ".[proxy]"`` resolves fresh — it does not read uv.lock — so
+    every inlined sibling carries its own ceiling. Widening or removing that
+    ceiling lets a fresh install pull a version litellm 1.94.2 was not released
+    against (e.g. mcp 2.x, rich 15, websockets 17, gunicorn 26 from #3083).
+    A CVE floor bump (cryptography>=49 -> >=50) is legitimate: the ceiling is
+    unchanged. Re-mirroring onto a new litellm minor is a deliberate change that
+    must update both the inlined list and this snapshot together.
+    """
+    snapshot_path = REPO_ROOT / "tests" / "data" / "litellm-proxy-extra-1.94.2.txt"
+    snapshot = _parse_snapshot(snapshot_path)
+
+    with open(REPO_ROOT / "pyproject.toml", "rb") as fh:
+        doc = tomllib.load(fh)
+    proxy = doc["project"]["optional-dependencies"]["proxy"]
+
+    current: dict[str, str | None] = {}
+    for req_str in proxy:
+        req_str = req_str.strip()
+        if not req_str or req_str.startswith("#"):
+            continue
+        req = Requirement(req_str)
+        canonical_name = check_install_licences.canonical(req.name)
+        if canonical_name == "litellm":
+            continue
+        current[canonical_name] = _effective_upper_bound(req_str)
+
+    failures: list[str] = []
+
+    # Every pyproject entry must exist in the snapshot (re-mirror if not).
+    for name in current:
+        if name not in snapshot:
+            failures.append(
+                f"{name} is in pyproject.toml's proxy extra but absent from the "
+                f"mirrored snapshot ({snapshot_path.name}) — re-mirror from "
+                f"litellm's proxy extra and update the snapshot"
+            )
+
+    # Every snapshot entry must still be present in pyproject with a ceiling
+    # that has not been widened or removed.
+    for name, snap_upper in snapshot.items():
+        if name not in current:
+            failures.append(
+                f"{name} was in the mirrored snapshot but is now absent from "
+                f"pyproject.toml's proxy extra — its ceiling has been removed"
+            )
+            continue
+        py_upper = current[name]
+        if snap_upper is None:
+            # Snapshot has no ceiling; any ceiling (or none) in pyproject is fine.
+            continue
+        if py_upper is None:
+            failures.append(
+                f"{name} lost its upper bound (snapshot had <{snap_upper}, "
+                f"pyproject.toml now has no ceiling)"
+            )
+        elif Version(py_upper) > Version(snap_upper):
+            failures.append(
+                f"{name} ceiling widened from <{snap_upper} to <{py_upper} "
+                f"(snapshot pins the mirrored litellm 1.94.2 set)"
+            )
+
+    assert not failures, "\n".join(failures)
 
 
 def test_litellm_cap_helper_rejects_a_ceiling_wider_than_the_mirrored_minor():

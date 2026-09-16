@@ -27,6 +27,72 @@ updates:
       # Re-mirroring onto a new minor is a deliberate change, not an auto-bump.
       - dependency-name: "litellm"
         versions: [">=1.95"]
+      # The inlined proxy subset mirrors litellm 1.94.2's own [proxy] extra, minus
+      # litellm-enterprise. Each sibling carries its own ceiling; widening or
+      # removing it lets a fresh ``pip install -e ".[proxy]"`` pull a version
+      # litellm 1.94.2 was not released against (mcp 2.x, rich 15, websockets 17,
+      # gunicorn 26 in #3083). tests/test_install_licences.py::test_proxy_extra_ceilings_do_not_outrun_the_mirrored_snapshot
+      # rejects ceiling widening/removal. Re-mirroring is a deliberate change
+      # that must update both the inlined list and
+      # tests/data/litellm-proxy-extra-1.94.2.txt together.
+      - dependency-name: "apscheduler"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "azure-identity"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "azure-storage-blob"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "backoff"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "boto3"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "cryptography"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "expression"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "fastapi"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "fastapi-sso"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "granian"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "gunicorn"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "inquirerpy"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "litellm-proxy-extras"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "mcp"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "orjson"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "polars"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "pydantic-settings"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "pyjwt"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "pynacl"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "python-multipart"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "pyyaml"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "restrictedpython"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "rich"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "rq"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "soundfile"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "starlette"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "uvicorn"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "uvloop"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "websockets"
+        update-types: ["version-update:semver-major"]
 
   # Desktop SPA (Vite/React)
   - package-ecosystem: "npm"
