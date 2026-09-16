@@ -20,10 +20,10 @@ async def migrate(data_dir: Path) -> str:
 
     Returns:
         "no-db-configured" — no ``.litellm_db_url`` file, nothing to do.
-
-    Raises:
-        RuntimeError: if ``.litellm_db_url`` exists, because Postgres mode
-        is not supported without the prisma package.
+        "postgres-configured" — ``.litellm_db_url`` present but not used for
+            LiteLLM virtual keys; the in-house SQLite keystore is authoritative
+            for per-agent keys. Ensure Postgres is configured as a first-class
+            app database for other purposes.
     """
     db_url_path = data_dir / ".litellm_db_url"
     if not db_url_path.exists():
@@ -34,7 +34,10 @@ async def migrate(data_dir: Path) -> str:
         logger.info("litellm_migrate: .litellm_db_url empty — skipping")
         return "no-db-configured"
 
-    raise RuntimeError(
-        "litellm_migrate: Postgres/virtual-key mode is not supported "
-        "without the prisma package"
+    logger.warning(
+        "litellm_migrate: .litellm_db_url present but Postgres is not used "
+        "for LiteLLM virtual keys; the in-house SQLite keystore is authoritative "
+        "for per-agent keys. Ensure Postgres is configured as a first-class "
+        "app database for other purposes."
     )
+    return "postgres-configured"

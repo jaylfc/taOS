@@ -524,11 +524,13 @@ class LLMProxy:
             env["TAOS_LITELLM_KEYSTORE"] = str(default_keystore_path(base))
             from tinyagentos.agent_budget_store import default_budget_path
             env["TAOS_AGENT_BUDGETS"] = str(default_budget_path(base))
-        elif self.database_url:
-            # DATABASE_URL enables Postgres-backed virtual keys. Without it
-            # LiteLLM still routes chat/embeddings fine but /key/generate
-            # returns a server error.
-            env["DATABASE_URL"] = self.database_url
+        # NOTE: DATABASE_URL is NOT exported here (see issue tsk-yonaou). LiteLLM's
+        # Postgres/virtual-key mode is disabled; per-agent keys are authoritative
+        # from the in-house SQLite keystore, regardless of a present .litellm_db_url
+        # file or a Postgres companion. The keystore is authoritative for LiteLLM
+        # per-agent keys regardless of Postgres configuration. Keep
+        # ``.litellm_force_inhouse_keys`` / ``.litellm_disable_inhouse_keys`` as escape hatches.
+        # Postgres is only used as a first-class app database, not for LiteLLM virtual keys.
         # Resolve every api_key_secret into a real env var so the
         # os.environ/<name> markers in the generated config resolve to
         # actual API keys. LiteLLM reads them by name at request time.

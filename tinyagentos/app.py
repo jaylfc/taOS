@@ -374,19 +374,18 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     # LiteLLM's custom_auth hook, instead of its Postgres/prisma virtual-key
     # table. Lets per-agent keys work with NO DATABASE_URL and no prisma (the
     # ARM / no-Postgres fix) and gives every install real per-agent isolation.
-    # Default ON whenever there is NO Postgres configured (the common case,
-    # incl. every ARM install). A Postgres-backed install already has per-agent
-    # keys via LiteLLM's native table, so defer to it rather than silently
-    # switching on upgrade (which would orphan its already-minted keys and 401
-    # running agents). Force in-house even with Postgres via a
-    # ``.litellm_force_inhouse_keys`` marker; disable entirely via
-    # ``.litellm_disable_inhouse_keys``.
+    # Default ON for all installs - the keystore is authoritative for LiteLLM
+    # per-agent keys regardless of Postgres configuration. Keep
+    # ``.litellm_force_inhouse_keys`` / ``.litellm_disable_inhouse_keys`` as escape hatches.
+    # The inhouse_keys setting is now independent of db_url; the keystore
+    # remains authoritative for per-agent keys even when a .litellm_db_url file
+    # is present. The .litellm_db_url is only used by Postgres companions.
     if (data_dir / ".litellm_disable_inhouse_keys").exists():
         inhouse_keys = False
     elif (data_dir / ".litellm_force_inhouse_keys").exists():
         inhouse_keys = True
     else:
-        inhouse_keys = db_url is None
+        inhouse_keys = True
     # Read the local auth token so LLMProxy can forward it to LiteLLM's
     # subprocess — otherwise the taOS callback can't POST llm_call events
     # back to /api/trace and the 401s fill the log instead of trace rows.
