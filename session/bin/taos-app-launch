@@ -9,6 +9,14 @@
 # the session even under setsid -- measured, twice. A transient unit is owned
 # by systemd, so it outlives whoever asked for it.
 #
+# ⚠ --kiosk, AND NOT A COMPOSITOR FULLSCREEN ON TOP OF IT. Jay: "i loaded the
+# camera and got a chrome exit full screen dialog". That is chromium's
+# exclusive-access bubble, and it fires when something ELSE puts the window
+# fullscreen -- a sway `for_window ... fullscreen enable` rule I had added.
+# chromium's own kiosk mode fills the output and shows no chrome at all, which
+# is the same flag set taos-kiosk-launch already uses for the lock screen and
+# which has never produced a dialog. The sway rule is gone.
+#
 # ⚠ ONE WORKSPACE PER APP, not fullscreen. sway TILES, so an app launched
 # beside the kiosk gets half the screen -- Jay saw the camera and the lock
 # screen side by side in a vertical split. `fullscreen enable` did not settle
@@ -69,8 +77,12 @@ exec systemd-run \
   --setenv=XDG_SESSION_TYPE=wayland \
   --setenv=SWAYSOCK="$SWAYSOCK" \
   /usr/bin/chromium \
+    --kiosk \
     --app="$URL" \
     --ozone-platform=wayland \
     --no-first-run \
     --no-default-browser-check \
+    --disable-features=TranslateUI \
+    --disable-pinch \
+    --overscroll-history-navigation=0 \
     --user-data-dir="/home/taos/.config/chromium-app-${NAME}"
