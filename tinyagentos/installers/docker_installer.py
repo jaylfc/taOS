@@ -159,6 +159,58 @@ class DockerInstaller(AppInstaller):
                 }
             service["environment"] = env
 
+        # Companion services (e.g. postgres for linkwarden)
+        companions: list[dict] = install_config.get("companions", [])
+        companion_services: list[dict] = []
+        companion_names: list[str] = []
+        if companions:
+            companion_needs_secret = any(
+                isinstance(v, str) and "{secret_key}" in v
+                for comp in companions
+                for v in (comp.get("env") or {}).values()
+            )
+            secret_key = (
+                self._get_or_create_secret_key(app_id)
+                if companion_needs_secret
+                else ""
+            )
+
+            for comp in companions:
+                comp_name = comp.get("name", f"companion-{len(companion_services)}")
+                companion_names.append(comp_name)
+                comp_service = {
+                    "image": comp["image"],
+                    "restart": "unless-stopped",
+                }
+                # Copy healthcheck from manifest if declared
+                if "healthcheck" in comp:
+                    comp_service["healthcheck"] = comp["healthcheck"]
+                comp_named_volumes: dict[str, None] = {}
+                if "volumes" in comp:
+                    comp_service["volumes"] = comp["volumes"]
+                    for vol in comp["volumes"]:
+                        source = str(vol).split(":", 1)[0]
+                        if self._is_named_volume(source):
+                            comp_named_volumes[source] = None
+                if "env" in comp:
+                    comp_service["environment"] = {
+                        k: self._substitute_secret_key(v, secret_key) if isinstance(v, str) else v
+                        for k, v in comp["env"].items()
+                    }
+                companion_services.append(comp_service)
+                for vn in comp_named_volumes:
+                    named_volumes[vn] = None
+
+            # Add default healthcheck for postgres if it doesn't have one
+            if comp_name == "postgres" and "healthcheck" not in comp_service:
+                comp_service["healthcheck"] = {
+                    "test": ["CMD-SHELL", "pg_isready -U linkwarden -d linkwarden"],
+                    "interval": "5s",
+                    "timeout": "5s",
+                    "retries": 5,
+                    "start_period": "10s"
+                }
+
         # Collect the container-internal ports from the manifest.
         container_ports: list[int] = []
         if "ports" in install_config.get("requires", {}):
@@ -187,9 +239,28 @@ class DockerInstaller(AppInstaller):
                 for hp, cport in zip(host_ports, container_ports)
             ]
 
+        # Build the services dict: app service first, then companions
+        all_services: dict[str, dict] = {}
+        all_services[app_id] = service
+        for i, comp_service in enumerate(companion_services):
+            all_services[companion_names[i]] = comp_service
+
+        # Add depends_on configuration for the app service to manage companion startup order
+        if companion_names:
+            depends_on: dict[str, dict | list] = {}
+            for comp_name in companion_names:
+                comp_service = all_services[comp_name]
+                if "healthcheck" in comp_service:
+                    # Use service_healthy condition when companion has a healthcheck
+                    depends_on[comp_name] = {"condition": "service_healthy"}
+                else:
+                    # Plain dependency when no healthcheck is declared
+                    depends_on[comp_name] = [comp_name]
+            all_services[app_id]["depends_on"] = depends_on
+
         # No top-level `version:` — it's obsolete in Compose v2 and emits a
         # warning on every command.
-        compose: dict = {"services": {app_id: service}}
+        compose: dict = {"services": all_services}
         if named_volumes:
             compose["volumes"] = named_volumes
         return compose, allocated_host_port
