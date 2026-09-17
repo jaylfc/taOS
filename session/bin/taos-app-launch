@@ -1,0 +1,41 @@
+#!/bin/sh
+# taos-app-launch <name> <url> -- open a taOS app in its OWN window.
+#
+# This is the shape every taOS app is meant to take: one chromium window per
+# app, so the compositor sees it as its own toplevel and it lands in the task
+# switcher beside Linux apps and (later) Android ones. One browser, N windows.
+#
+# WHY systemd-run AND NOT nohup/setsid: a process started over ssh dies with
+# the session even under setsid -- measured, twice. A transient unit is owned
+# by systemd, so it outlives whoever asked for it.
+#
+# ⚠ THE APP ID. chromium on wayland derives app_id from the URL's HOST and
+# DROPS THE PORT, so every app served from 127.0.0.1 would collide on
+# `chrome-127.0.0.1__-Default` and be indistinguishable in a taskbar. Each app
+# therefore gets its own hostname alias in /etc/hosts (camera.taos -> 127.0.0.1)
+# and is opened by that name, which makes the app_id distinct AND readable.
+set -eu
+
+NAME="${1:?usage: taos-app-launch <name> <url>}"
+URL="${2:?usage: taos-app-launch <name> <url>}"
+
+TAOS_UID="$(id -u taos)"
+RUNDIR="/run/user/${TAOS_UID}"
+# The compositor's socket, read from what is actually running rather than
+# assumed: wayland-1 is the usual name but nothing guarantees it.
+WD="$(cd "$RUNDIR" 2>/dev/null && ls wayland-[0-9]* 2>/dev/null | grep -v '\.lock$' | head -1)"
+[ -n "${WD:-}" ] || { echo "no wayland socket in $RUNDIR -- is the kiosk session up?" >&2; exit 1; }
+
+exec systemd-run \
+  --unit="taos-app-${NAME}" \
+  --collect \
+  --uid="$TAOS_UID" \
+  --setenv=XDG_RUNTIME_DIR="$RUNDIR" \
+  --setenv=WAYLAND_DISPLAY="$WD" \
+  --setenv=XDG_SESSION_TYPE=wayland \
+  /usr/bin/chromium \
+    --app="$URL" \
+    --ozone-platform=wayland \
+    --no-first-run \
+    --no-default-browser-check \
+    --user-data-dir="/home/taos/.config/chromium-app-${NAME}"
