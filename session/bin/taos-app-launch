@@ -9,6 +9,13 @@
 # the session even under setsid -- measured, twice. A transient unit is owned
 # by systemd, so it outlives whoever asked for it.
 #
+# ⚠ ONE WORKSPACE PER APP, not fullscreen. sway TILES, so an app launched
+# beside the kiosk gets half the screen -- Jay saw the camera and the lock
+# screen side by side in a vertical split. `fullscreen enable` did not settle
+# it either. Switching to the app's own workspace first means the app opens
+# ALONE and fills the output, which is what a phone does, and it gives the
+# task switcher its unit of work for free: one workspace, one app.
+#
 # ⚠ THE APP ID. chromium on wayland derives app_id from the URL's HOST and
 # DROPS THE PORT, so every app served from 127.0.0.1 would collide on
 # `chrome-127.0.0.1__-Default` and be indistinguishable in a taskbar. Each app
@@ -26,6 +33,20 @@ RUNDIR="/run/user/${TAOS_UID}"
 WD="$(cd "$RUNDIR" 2>/dev/null && ls wayland-[0-9]* 2>/dev/null | grep -v '\.lock$' | head -1)"
 [ -n "${WD:-}" ] || { echo "no wayland socket in $RUNDIR -- is the kiosk session up?" >&2; exit 1; }
 
+# Switch first, launch second: chromium opens on whatever workspace is current
+# when its window maps.
+swaymsg_as_taos() {
+  # `su taos`, NOT `su "$(id -nu $TAOS_UID)"`: busybox id refuses a numeric
+  # argument ("id: unknown user 999"), the switch failed silently behind the
+  # `|| true`, and the app opened on the kiosk's workspace -- which is exactly
+  # the vertical split Jay saw.
+  su taos -s /bin/sh -c \
+    "XDG_RUNTIME_DIR=$RUNDIR SWAYSOCK=$SWAYSOCK swaymsg $1" >/dev/null 2>&1 || true
+}
+SWAYSOCK="$(ls "$RUNDIR"/sway-ipc.*.sock 2>/dev/null | head -1)"
+[ -n "$SWAYSOCK" ] || { echo "no sway ipc socket in $RUNDIR" >&2; exit 1; }
+swaymsg_as_taos "workspace app-${NAME}"
+
 exec systemd-run \
   --unit="taos-app-${NAME}" \
   --collect \
@@ -33,6 +54,7 @@ exec systemd-run \
   --setenv=XDG_RUNTIME_DIR="$RUNDIR" \
   --setenv=WAYLAND_DISPLAY="$WD" \
   --setenv=XDG_SESSION_TYPE=wayland \
+  --setenv=SWAYSOCK="$SWAYSOCK" \
   /usr/bin/chromium \
     --app="$URL" \
     --ozone-platform=wayland \
