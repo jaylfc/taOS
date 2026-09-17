@@ -45,6 +45,19 @@ swaymsg_as_taos() {
 }
 SWAYSOCK="$(ls "$RUNDIR"/sway-ipc.*.sock 2>/dev/null | head -1)"
 [ -n "$SWAYSOCK" ] || { echo "no sway ipc socket in $RUNDIR" >&2; exit 1; }
+# ALREADY RUNNING? BRING IT FORWARD, do not try to start it twice.
+#
+# Jay pressed the lock screen's camera button twice in six seconds. The second
+# press asked systemd-run for a unit name that already existed, which fails --
+# while the route that triggered it had already answered 200, so the screen
+# said nothing either way. Pressing an app's icon when the app is open should
+# simply show it, which is what every phone does.
+if systemctl is-active --quiet "taos-app-${NAME}.service"; then
+  swaymsg_as_taos "workspace app-${NAME}"
+  echo "taos-app-${NAME} already running; switched to it"
+  exit 0
+fi
+
 swaymsg_as_taos "workspace app-${NAME}"
 
 exec systemd-run \
