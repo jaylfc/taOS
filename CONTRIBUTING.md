@@ -78,6 +78,13 @@ Keep pull requests focused. One feature or fix per PR is easier to review.
 > If you open a PR against `master` by mistake, no problem - we'll retarget it
 > to `dev` (the commits and review carry over).
 
+### Fork PRs
+
+Fork PRs receive no automated review. A maintainer reviews them by hand.
+The `bot-review-gate` check stays red until a maintainer approves the PR
+or applies the `lead-reviewed` label. Expected turnaround is the same as
+in-repo PRs.
+
 ### Documentation
 
 Documentation improvements are always welcome - typo fixes, clarifications, better examples. Open a PR directly.
