@@ -400,3 +400,105 @@ class TestErrorsCountedAndReported:
         captured = capsys.readouterr()
         assert rc == 1
         assert "collection yielded 0 of 1 defined tests" in captured.out
+
+
+class TestFailureReasonOutput:
+    """The script must write failure_reason to GITHUB_OUTPUT so the workflow can choose the right comment."""
+
+    def test_collection_error_writes_reason_and_no_waiver(
+        self, check_mod, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        github_output = tmp_path / "github_output.txt"
+        test_file = tmp_path / "test_crash.py"
+        test_file.write_text(
+            "def test_a():\n    assert True\n"
+        )
+        with patch.object(check_mod, "resolve_base_ref", return_value="origin/dev"):
+            with patch.object(
+                check_mod,
+                "get_test_outcomes",
+                side_effect=check_mod.CollectionError(str(test_file)),
+            ):
+                with patch.object(check_mod, "find_changed_test_files", return_value=[str(test_file)]):
+                    with patch.object(check_mod, "get_pr_body", return_value=""):
+                        env = {"BASE_REF": "origin/dev", "GITHUB_OUTPUT": str(github_output)}
+                        with patch.object(check_mod.os, "environ", env):
+                            rc = check_mod.main()
+        captured = capsys.readouterr()
+        assert rc == 1
+        output_text = github_output.read_text()
+        assert "failure_reason=collection_error" in output_text
+        assert "Tests-Skipped-Intentionally" not in captured.out
+
+    def test_all_skip_writes_reason_and_contains_waiver(
+        self, check_mod, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        github_output = tmp_path / "github_output.txt"
+        results = {
+            "tests/test_foo.py": {
+                "total": 3,
+                "skipped": 3,
+                "passed": 0,
+                "failed": 0,
+                "errors": 0,
+                "returncode": 0,
+                "tail": "",
+                "import_guards": [],
+                "defined_tests": 3,
+            }
+        }
+        with patch.object(check_mod, "resolve_base_ref", return_value="origin/dev"):
+            with patch.object(check_mod, "get_test_outcomes", return_value=results):
+                with patch.object(check_mod, "find_changed_test_files", return_value=["tests/test_foo.py"]):
+                    with patch.object(check_mod, "get_pr_body", return_value=""):
+                        env = {"BASE_REF": "origin/dev", "GITHUB_OUTPUT": str(github_output)}
+                        with patch.object(check_mod.os, "environ", env):
+                            rc = check_mod.main()
+        captured = capsys.readouterr()
+        assert rc == 1
+        output_text = github_output.read_text()
+        assert "failure_reason=all_skip" in output_text
+
+    def test_collection_error_and_all_skip_produce_different_reasons(
+        self, check_mod, tmp_path: Path
+    ) -> None:
+        collection_output = tmp_path / "collection_output.txt"
+        allskip_output = tmp_path / "allskip_output.txt"
+
+        test_file = tmp_path / "test_crash.py"
+        test_file.write_text("def test_a():\n    assert True\n")
+
+        collection_results = {}  # not used, side_effect raises
+        allskip_results = {
+            "tests/test_foo.py": {
+                "total": 3, "skipped": 3, "passed": 0, "failed": 0,
+                "errors": 0, "returncode": 0, "tail": "",
+                "import_guards": [], "defined_tests": 3,
+            }
+        }
+
+        with patch.object(check_mod, "resolve_base_ref", return_value="origin/dev"):
+            with patch.object(
+                check_mod,
+                "get_test_outcomes",
+                side_effect=check_mod.CollectionError(str(test_file)),
+            ):
+                with patch.object(check_mod, "find_changed_test_files", return_value=[str(test_file)]):
+                    with patch.object(check_mod, "get_pr_body", return_value=""):
+                        env = {"BASE_REF": "origin/dev", "GITHUB_OUTPUT": str(collection_output)}
+                        with patch.object(check_mod.os, "environ", env):
+                            check_mod.main()
+
+        with patch.object(check_mod, "resolve_base_ref", return_value="origin/dev"):
+            with patch.object(check_mod, "get_test_outcomes", return_value=allskip_results):
+                with patch.object(check_mod, "find_changed_test_files", return_value=["tests/test_foo.py"]):
+                    with patch.object(check_mod, "get_pr_body", return_value=""):
+                        env = {"BASE_REF": "origin/dev", "GITHUB_OUTPUT": str(allskip_output)}
+                        with patch.object(check_mod.os, "environ", env):
+                            check_mod.main()
+
+        collection_reason = collection_output.read_text()
+        allskip_reason = allskip_output.read_text()
+        assert collection_reason != allskip_reason
+        assert "failure_reason=collection_error" in collection_reason
+        assert "failure_reason=all_skip" in allskip_reason
