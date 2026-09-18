@@ -8,13 +8,13 @@ do NOT need to modify tinyagentos/app.py for these tests.
 
 import pytest
 import pytest_asyncio
-import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.routes.x import router as x_router
 from tinyagentos.knowledge_fetchers.x import XWatchStore
 
@@ -35,22 +35,21 @@ SAMPLE_TWEET = {
 }
 
 
-def _build_test_app(tmp_path: Path) -> FastAPI:
-    """Build a minimal FastAPI app with x router and isolated watch store."""
+async def _build_test_app(tmp_path: Path) -> FastAPI:
     app = FastAPI()
     app.include_router(x_router)
     app.state.http_client = AsyncMock()
 
     store = XWatchStore(db_path=tmp_path / "x-watches.db")
-    store.init()
+    await store.init()
     app.state.x_watch_store = store
-
+    app.dependency_overrides[current_user] = lambda: CurrentUser(user_id="test-user", is_admin=False)
     return app
 
 
 @pytest_asyncio.fixture
 async def client(tmp_path):
-    app = _build_test_app(tmp_path)
+    app = await _build_test_app(tmp_path)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:

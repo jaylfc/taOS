@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import pytest
+import pytest_asyncio
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -247,114 +248,176 @@ def test_extract_metadata_keys():
 # XWatchStore tests
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def watch_store(tmp_path):
+@pytest_asyncio.fixture
+async def watch_store(tmp_path):
     store = XWatchStore(db_path=tmp_path / "x-watches.db")
-    store.init()
+    await store.init()
     yield store
-    store.close()
+    await store.close()
 
 
-def test_watch_store_init_creates_db(tmp_path):
+@pytest.mark.asyncio
+async def test_watch_store_init_creates_db(tmp_path):
     db_path = tmp_path / "sub" / "x-watches.db"
     store = XWatchStore(db_path=db_path)
-    store.init()
+    await store.init()
     assert db_path.exists()
-    store.close()
+    await store.close()
 
 
-def test_watch_store_create_and_get(watch_store):
-    watch = watch_store.create_watch("elonmusk", frequency=3600)
+@pytest.mark.asyncio
+async def test_watch_store_create_and_get(watch_store):
+    watch = await watch_store.create_watch("user-1", "elonmusk", frequency=3600)
     assert watch["handle"] == "elonmusk"
     assert watch["frequency"] == 3600
     assert watch["enabled"] == 1
     assert watch["filters"] == {}
     assert watch["last_check"] == 0
 
-    fetched = watch_store.get_watch("elonmusk")
+    fetched = await watch_store.get_watch("elonmusk", "user-1")
     assert fetched is not None
     assert fetched["handle"] == "elonmusk"
 
 
-def test_watch_store_create_strips_at(watch_store):
-    watch = watch_store.create_watch("@someuser")
+@pytest.mark.asyncio
+async def test_watch_store_create_strips_at(watch_store):
+    watch = await watch_store.create_watch("user-1", "@someuser")
     assert watch["handle"] == "someuser"
 
 
-def test_watch_store_create_duplicate_raises(watch_store):
-    watch_store.create_watch("alice")
+@pytest.mark.asyncio
+async def test_watch_store_create_duplicate_raises(watch_store):
+    await watch_store.create_watch("user-1", "alice")
     with pytest.raises(ValueError, match="already exists"):
-        watch_store.create_watch("alice")
+        await watch_store.create_watch("user-1", "alice")
 
 
-def test_watch_store_create_with_filters(watch_store):
+@pytest.mark.asyncio
+async def test_watch_store_create_with_filters(watch_store):
     filters = {"min_likes": 100, "threads_only": True}
-    watch = watch_store.create_watch("testuser", filters=filters, frequency=900)
+    watch = await watch_store.create_watch("user-1", "testuser", filters=filters, frequency=900)
     assert watch["filters"]["min_likes"] == 100
     assert watch["filters"]["threads_only"] is True
     assert watch["frequency"] == 900
 
 
-def test_watch_store_list_watches(watch_store):
-    watch_store.create_watch("user1")
-    watch_store.create_watch("user2")
-    watches = watch_store.list_watches()
+@pytest.mark.asyncio
+async def test_watch_store_list_watches(watch_store):
+    await watch_store.create_watch("user-1", "user1")
+    await watch_store.create_watch("user-1", "user2")
+    watches = await watch_store.list_watches("user-1")
     assert len(watches) == 2
     handles = {w["handle"] for w in watches}
     assert "user1" in handles
     assert "user2" in handles
 
 
-def test_watch_store_list_empty(watch_store):
-    watches = watch_store.list_watches()
+@pytest.mark.asyncio
+async def test_watch_store_list_empty(watch_store):
+    watches = await watch_store.list_watches("user-1")
     assert watches == []
 
 
-def test_watch_store_update_frequency(watch_store):
-    watch_store.create_watch("charlie", frequency=1800)
-    updated = watch_store.update_watch("charlie", {"frequency": 600})
+@pytest.mark.asyncio
+async def test_watch_store_update_frequency(watch_store):
+    await watch_store.create_watch("user-1", "charlie", frequency=1800)
+    updated = await watch_store.update_watch("charlie", "user-1", {"frequency": 600})
     assert updated is not None
     assert updated["frequency"] == 600
 
 
-def test_watch_store_update_enabled(watch_store):
-    watch_store.create_watch("dave")
-    updated = watch_store.update_watch("dave", {"enabled": 0})
+@pytest.mark.asyncio
+async def test_watch_store_update_enabled(watch_store):
+    await watch_store.create_watch("user-1", "dave")
+    updated = await watch_store.update_watch("dave", "user-1", {"enabled": 0})
     assert updated is not None
     assert updated["enabled"] == 0
 
 
-def test_watch_store_update_filters(watch_store):
-    watch_store.create_watch("eve")
+@pytest.mark.asyncio
+async def test_watch_store_update_filters(watch_store):
+    await watch_store.create_watch("user-1", "eve")
     new_filters = {"all_posts": True, "min_likes": 50}
-    updated = watch_store.update_watch("eve", {"filters": new_filters})
+    updated = await watch_store.update_watch("eve", "user-1", {"filters": new_filters})
     assert updated is not None
     assert updated["filters"]["all_posts"] is True
 
 
-def test_watch_store_update_nonexistent_returns_none(watch_store):
-    result = watch_store.update_watch("ghost", {"frequency": 100})
+@pytest.mark.asyncio
+async def test_watch_store_update_nonexistent_returns_none(watch_store):
+    result = await watch_store.update_watch("ghost", "user-1", {"frequency": 100})
     assert result is None
 
 
-def test_watch_store_delete_existing(watch_store):
-    watch_store.create_watch("frank")
-    deleted = watch_store.delete_watch("frank")
+@pytest.mark.asyncio
+async def test_watch_store_delete_existing(watch_store):
+    await watch_store.create_watch("user-1", "frank")
+    deleted = await watch_store.delete_watch("frank", "user-1")
     assert deleted is True
-    assert watch_store.get_watch("frank") is None
+    assert await watch_store.get_watch("frank", "user-1") is None
 
 
-def test_watch_store_delete_nonexistent(watch_store):
-    deleted = watch_store.delete_watch("nobody")
+@pytest.mark.asyncio
+async def test_watch_store_delete_nonexistent(watch_store):
+    deleted = await watch_store.delete_watch("nobody", "user-1")
     assert deleted is False
 
 
-def test_watch_store_get_nonexistent(watch_store):
-    result = watch_store.get_watch("nobody")
+@pytest.mark.asyncio
+async def test_watch_store_get_nonexistent(watch_store):
+    result = await watch_store.get_watch("nobody", "user-1")
     assert result is None
 
 
-def test_watch_store_requires_init():
-    store = XWatchStore()
+@pytest.mark.asyncio
+async def test_watch_store_requires_init(tmp_path):
+    store = XWatchStore(db_path=tmp_path / "x-watches.db")
     with pytest.raises(RuntimeError, match="init()"):
-        store.list_watches()
+        await store.list_watches("user")
+
+
+# ---------------------------------------------------------------------------
+# RED tests for R2-20: XWatchStore must use data_dir, aiosqlite, user_id scoping,
+# and be wired onto app.state.
+# ---------------------------------------------------------------------------
+
+def test_x_watch_store_app_state_after_create_app(tmp_path):
+    from tinyagentos.app import create_app
+
+    app = create_app(data_dir=tmp_path)
+    assert hasattr(app.state, "x_watch_store")
+    assert app.state.x_watch_store is not None
+    import asyncio
+
+    asyncio.run(app.state.x_watch_store.close())
+
+
+def test_x_watch_store_path_under_data_dir(tmp_path, monkeypatch):
+    from tinyagentos.app import create_app
+
+    other_cwd = tmp_path / "other_cwd"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+    data_dir = tmp_path / "my_data"
+    app = create_app(data_dir=data_dir)
+    store = app.state.x_watch_store
+    assert store is not None
+    assert store.db_path == data_dir / "x-watches.db"
+    import asyncio
+
+    asyncio.run(store.close())
+
+
+@pytest.mark.asyncio
+async def test_x_watch_store_list_scoped_by_user(tmp_path):
+    store = XWatchStore(db_path=tmp_path / "x-watches.db")
+    await store.init()
+    await store.create_watch("user-alice", "alice")
+    await store.create_watch("user-bob", "bob")
+    alice_watches = await store.list_watches("user-alice")
+    bob_watches = await store.list_watches("user-bob")
+    assert len(alice_watches) == 1
+    assert alice_watches[0]["handle"] == "alice"
+    assert len(bob_watches) == 1
+    assert bob_watches[0]["handle"] == "bob"
+    await store.close()

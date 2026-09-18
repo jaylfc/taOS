@@ -295,6 +295,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     user_shares_store = UserSharesStore(data_dir / "user_shares.db")
     from tinyagentos.app_grants_store import AppGrantsStore
     app_grants_store = AppGrantsStore(data_dir / "app_grants.db")
+    from tinyagentos.knowledge_fetchers.x import XWatchStore
+    x_watch_store = XWatchStore(data_dir / "x-watches.db")
     from tinyagentos.license_acceptances_store import LicenseAcceptancesStore
     license_acceptances_store = LicenseAcceptancesStore(data_dir / "license_acceptances.db")
     from tinyagentos.agent_model_key_store import AgentModelKeyStore
@@ -546,6 +548,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await agent_scope_requests_store.init()
         await agent_grants_store.init()
         app.state.agent_grants = agent_grants_store
+        await x_watch_store.init()
+        app.state.x_watch_store = x_watch_store
 
         # First-boot identity for the OS-native agent.  Runs on EVERY start, not
         # only on a fresh install: it is how an install that upgraded into this
@@ -1596,6 +1600,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await qmd_client.close()
         await http_client.aclose()
         await agent_grants_store.close()
+        await x_watch_store.close()
         await app_grants_store.close()
         await license_acceptances_store.close()
         await agent_model_key_store.close()
@@ -1849,6 +1854,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.password_reset = password_reset_store
     app.state.agent_scope_requests = agent_scope_requests_store
     app.state.agent_grants = agent_grants_store
+    app.state.x_watch_store = x_watch_store
     app.state.app_grants = app_grants_store
     app.state.license_acceptances = license_acceptances_store
     app.state.cluster_pairing = cluster_pairing_store
