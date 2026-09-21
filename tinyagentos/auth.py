@@ -936,7 +936,7 @@ class AuthManager:
 
     @_serialized
     def change_password(self, username: str, current_password: str, new_password: str) -> bool:
-        """Self-change, requires current password."""
+        """Self-change, requires current password. Revokes all other sessions."""
         if not new_password or len(new_password) < 8:
             return False
         data = self._read_users()
@@ -949,6 +949,7 @@ class AuthManager:
                 users[i] = u
                 data["users"] = users
                 self._write_users(data)
+                self.revoke_user_sessions(u.get("id", ""))
                 return True
         return False
 
@@ -1043,9 +1044,14 @@ class AuthManager:
                 pass
             return None
         # Client-binding check: only when the session was created with a
-        # user_agent_hash AND the caller supplies a user_agent for comparison.
+        # user_agent_hash.  When the header is omitted the caller cannot prove
+        # it is the same browser that created the session, so a stored hash
+        # MUST reject -- a missing User-Agent with a stored hash is a mismatch,
+        # not a free pass.
         stored_ua = entry.get("user_agent_hash")
-        if stored_ua and user_agent:
+        if stored_ua:
+            if not user_agent:
+                return None
             if not secrets.compare_digest(
                 stored_ua, hashlib.sha256(user_agent.encode()).hexdigest()
             ):
