@@ -1,0 +1,2 @@
+### Added
+- Non-discriminating gate: `scripts/check_non_discriminating.py` flags guard tests that cannot fail on the defect they name, starting with monkeypatch detection and heuristic checks for holder/token references.
