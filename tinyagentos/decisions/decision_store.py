@@ -170,7 +170,7 @@ class DecisionStore(BaseStore):
             rows = await (
                 await self._db.execute(
                     "SELECT id, metadata, created_at FROM decisions "
-                    "WHERE status = 'pending' AND created_at < ?",
+                    "WHERE created_at < ?",
                     (upgrade_at,),
                 )
             ).fetchall()
