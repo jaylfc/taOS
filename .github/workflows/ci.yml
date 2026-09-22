@@ -60,17 +60,16 @@ jobs:
     timeout-minutes: 75
     strategy:
       matrix:
-        # PR + push runs cover the latest two; the daily cron run
-        # below adds 3.11 so the minimum-supported version stays tested.
-        python-version: ${{ github.event_name == 'schedule' && fromJSON('["3.11", "3.12", "3.13"]') || fromJSON('["3.12", "3.13"]') }}
+        # ONE full sharded leg on the latest supported version; the other
+        # versions get import-smoke jobs instead.
+        python-version: ["3.14"]
         # Shard the suite across parallel jobs. xdist parallelises WITHIN a job,
         # but a hosted runner is 2 vCPU, so -n auto caps at 2 workers however
         # many tests exist -- and the suite has grown 4845 -> 10250 (#2135).
         # Cores per job were the bottleneck, not the tests.
         #
         # A public repo gets ~20 concurrent jobs free and we were using 2, so
-        # this costs nothing. 2 versions x 4 shards = 8 jobs on PR/push, and
-        # 12 on the scheduled run that adds 3.11.
+        # this costs nothing. 1 version x 4 shards = 4 jobs on PR/push.
         shard: [1, 2, 3, 4]
 
     steps:
@@ -128,10 +127,9 @@ jobs:
         if: matrix.shard == 1
         run: uv run --no-sync python -c "from tinyagentos.app import create_app; print('OK')"
 
-  # Import smoke for the declared minimum Python version (3.11). The shard
-  # matrix only runs 3.11 on the nightly schedule, so a 3.11-only regression
-  # could merge green and fail at import on every supported host. This job
-  # runs on every PR and push to catch that class of defect before merge.
+  # Import smoke for each supported Python version that is NOT the full-shard
+  # leg. The full suite runs only on 3.14; these jobs guard the remaining
+  # versions against import-time regressions that the shard leg would miss.
   py311-import-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -155,11 +153,58 @@ jobs:
       - name: Compile all tinyagentos modules
         run: uv run --no-sync python -m compileall -q tinyagentos
 
+  py312-import-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Provision Python 3.12 via uv
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+
+      - name: Verify app and routes import under 3.12
+        run: uv run --no-sync python -c "import pkgutil, importlib, tinyagentos.app, tinyagentos.routes as r; mods=[importlib.import_module(n) for _, n, _ in pkgutil.walk_packages(r.__path__, 'tinyagentos.routes.')]; print('3.12 import ok:', len(mods), 'route modules')"
+
+      - name: Compile all tinyagentos modules
+        run: uv run --no-sync python -m compileall -q tinyagentos
+
+  py313-import-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Provision Python 3.13 via uv
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.13
+
+      - name: Verify app and routes import under 3.13
+        run: uv run --no-sync python -c "import pkgutil, importlib, tinyagentos.app, tinyagentos.routes as r; mods=[importlib.import_module(n) for _, n, _ in pkgutil.walk_packages(r.__path__, 'tinyagentos.routes.')]; print('3.13 import ok:', len(mods), 'route modules')"
+
+      - name: Compile all tinyagentos modules
+        run: uv run --no-sync python -m compileall -q tinyagentos
+
   # Aggregate gate. Reports the exact check names branch protection requires
-  # ("test (3.11)", "test (3.12)", "test (3.13)") so the required-context list
-  # does not have to change when the shard count does. An explicit `name:` is
-  # used verbatim by GitHub rather than having the matrix values appended, which
-  # is what makes reproducing the old names possible at all.
+  # ("test (3.11)", "test (3.12)", "test (3.13)", "test (3.14)") so the
+  # required-context list does not have to change when the shard count does.
+  # An explicit `name:` is used verbatim by GitHub rather than having the
+  # matrix values appended, which is what makes reproducing the old names
+  # possible at all.
   #
   # `if: always()` is load-bearing. Without it this job is SKIPPED when the
   # shards fail, and GitHub treats a skipped required check as satisfied -- so a
@@ -169,19 +214,21 @@ jobs:
     needs:
       - shards
       - py311-import-smoke
+      - py312-import-smoke
+      - py313-import-smoke
     if: always()
     runs-on: ubuntu-latest
     strategy:
-      # Both gates must report their own conclusion. With the default
-      # fail-fast, the first gate to fail CANCELS its sibling, so a red suite
-      # reported "test (3.12) failure, test (3.13) cancelled" -- observed on a
-      # deliberate-failure branch. Cancelled is not success so protection still
-      # blocks, but which version broke becomes a coin flip, and a required
-      # check whose conclusion depends on scheduling order is not a gate worth
-      # trusting.
+      # Each version gates on its own import-smoke job (or shards for 3.14).
+      # With the default fail-fast, the first gate to fail CANCELS its sibling,
+      # so a red suite reported "test (3.12) failure, test (3.13) cancelled"
+      # -- observed on a deliberate-failure branch. Cancelled is not success so
+      # protection still blocks, but which version broke becomes a coin flip,
+      # and a required check whose conclusion depends on scheduling order is
+      # not a gate worth trusting.
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Gate on 3.11 import smoke
         if: matrix.python-version == '3.11'
@@ -192,8 +239,26 @@ jobs:
             exit 1
           fi
 
+      - name: Gate on 3.12 import smoke
+        if: matrix.python-version == '3.12'
+        run: |
+          echo "py312-import-smoke concluded: ${{ needs.py312-import-smoke.result }}"
+          if [ "${{ needs.py312-import-smoke.result }}" != "success" ]; then
+            echo "::error::3.12 import smoke did not pass"
+            exit 1
+          fi
+
+      - name: Gate on 3.13 import smoke
+        if: matrix.python-version == '3.13'
+        run: |
+          echo "py313-import-smoke concluded: ${{ needs.py313-import-smoke.result }}"
+          if [ "${{ needs.py313-import-smoke.result }}" != "success" ]; then
+            echo "::error::3.13 import smoke did not pass"
+            exit 1
+          fi
+
       - name: Gate on shard results
-        if: matrix.python-version != '3.11'
+        if: matrix.python-version == '3.14'
         run: |
           echo "shards concluded: ${{ needs.shards.result }}"
           if [ "${{ needs.shards.result }}" != "success" ]; then
