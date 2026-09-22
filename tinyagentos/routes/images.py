@@ -40,25 +40,52 @@ class GenerateRequest(BaseModel):
     guidance_scale: float = 7.5
 
 
+def _get_user_id(request: Request) -> str:
+    """Get the authenticated user's ID from request state."""
+    return getattr(request.state, "user_id", "")
+
+
 def _images_dir(request: Request) -> Path:
-    """Return the workspace/images/generated directory, creating it if needed.
+    """Return the user's workspace/images/generated directory, creating it if needed.
 
     Generated images live under the user's workspace so they can also be
-    browsed via the Files app.
+    browsed via the Files app. Each user has their own isolated directory.
     """
+    user_id = _get_user_id(request)
     config_path = getattr(request.app.state, "config_path", None)
     if config_path is not None:
         data_dir = Path(config_path).parent
     else:
         # Fall back to project-level data/
         data_dir = Path(__file__).parent.parent.parent / "data"
+    d = data_dir / "workspace" / "users" / user_id / "images" / "generated"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _legacy_images_dir(request: Request) -> Path:
+    """Return the legacy shared workspace/images/generated directory for backward compatibility.
+
+    Used for serving pre-existing files that were created before per-user isolation.
+    """
+    config_path = getattr(request.app.state, "config_path", None)
+    if config_path is not None:
+        data_dir = Path(config_path).parent
+    else:
+        data_dir = Path(__file__).parent.parent.parent / "data"
     d = data_dir / "workspace" / "images" / "generated"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def _image_url_path(filename: str) -> str:
-    """Web path for serving a generated image."""
+def _image_url_path(filename: str, user_id: str | None = None) -> str:
+    """Web path for serving a generated image.
+
+    If user_id is provided, returns a user-scoped path that will be protected
+    by the authentication middleware. Otherwise returns the legacy shared path.
+    """
+    if user_id:
+        return f"/data/workspace/users/{user_id}/images/generated/{filename}"
     return f"/data/workspace/images/generated/{filename}"
 
 
@@ -124,7 +151,7 @@ def _get_image_backend(
     return None, "", None
 
 
-def _list_images(images_dir: Path) -> list[dict]:
+def _list_images(images_dir: Path, user_id: str = "") -> list[dict]:
     """List generated images with metadata, newest first."""
     results = []
     for png in images_dir.glob("*.png"):
@@ -137,7 +164,7 @@ def _list_images(images_dir: Path) -> list[dict]:
                 pass
         results.append({
             "filename": png.name,
-            "path": _image_url_path(png.name),
+            "path": _image_url_path(png.name, user_id),
             "size_bytes": png.stat().st_size,
             "prompt": metadata.get("prompt", ""),
             "model": metadata.get("model", ""),
@@ -287,6 +314,7 @@ async def generate_image(request: Request, body: GenerateRequest):
 
     # Save to workspace
     images_dir = _images_dir(request)
+    user_id = _get_user_id(request)
     timestamp = int(time.time())
     filename = f"{timestamp}_{seed}.png"
     (images_dir / filename).write_bytes(image_bytes)
@@ -302,7 +330,7 @@ async def generate_image(request: Request, body: GenerateRequest):
     return {
         "status": "generated",
         "filename": filename,
-        "path": _image_url_path(filename),
+        "path": _image_url_path(filename, user_id),
         **metadata,
     }
 
@@ -368,6 +396,7 @@ async def _legacy_generate(request: Request, body: GenerateRequest, seed: int):
             lifecycle_mgr.notify_task_complete(backend_name)
     image_data = data["images"][0] if backend_type == "sd-cpp" else data["data"][0]["b64_json"]
     images_dir = _images_dir(request)
+    user_id = _get_user_id(request)
     timestamp = int(time.time())
     filename = f"{timestamp}_{seed}.png"
     (images_dir / filename).write_bytes(base64.b64decode(image_data))
@@ -376,14 +405,15 @@ async def _legacy_generate(request: Request, body: GenerateRequest, seed: int):
         "steps": body.steps, "seed": seed, "guidance_scale": body.guidance_scale,
     }
     (images_dir / f"{timestamp}_{seed}.json").write_text(json.dumps(metadata, indent=2))
-    return {"status": "generated", "filename": filename, "path": _image_url_path(filename), **metadata}
+    return {"status": "generated", "filename": filename, "path": _image_url_path(filename, user_id), **metadata}
 
 
 @router.get("/api/images")
 async def list_images(request: Request):
     """List all generated images with metadata, newest first."""
     images_dir = _images_dir(request)
-    return {"images": _list_images(images_dir)}
+    user_id = _get_user_id(request)
+    return {"images": _list_images(images_dir, user_id)}
 
 
 @router.delete("/api/images/{filename}")

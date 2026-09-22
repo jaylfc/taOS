@@ -30,8 +30,33 @@ class ComposeRequest(BaseModel):
     duration: int = Field(default=10, ge=1, le=30)
 
 
+def _get_user_id(request: Request) -> str:
+    """Get the authenticated user's ID from request state."""
+    return getattr(request.state, "user_id", "")
+
+
 def _music_dir(request: Request) -> Path:
-    """Return workspace/music/generated, creating it if needed."""
+    """Return the user's workspace/music/generated directory, creating it if needed.
+
+    Generated music lives under the user's workspace so it can also be
+    browsed via the Files app. Each user has their own isolated directory.
+    """
+    user_id = _get_user_id(request)
+    config_path = getattr(request.app.state, "config_path", None)
+    if config_path is not None:
+        data_dir = Path(config_path).parent
+    else:
+        data_dir = Path(__file__).parent.parent.parent / "data"
+    d = data_dir / "workspace" / "users" / user_id / "music" / "generated"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _legacy_music_dir(request: Request) -> Path:
+    """Return the legacy shared workspace/music/generated directory for backward compatibility.
+
+    Used for serving pre-existing files that were created before per-user isolation.
+    """
     config_path = getattr(request.app.state, "config_path", None)
     if config_path is not None:
         data_dir = Path(config_path).parent
@@ -42,7 +67,14 @@ def _music_dir(request: Request) -> Path:
     return d
 
 
-def _music_url_path(filename: str) -> str:
+def _music_url_path(filename: str, user_id: str | None = None) -> str:
+    """Web path for serving a generated music track.
+
+    If user_id is provided, returns a user-scoped path that will be protected
+    by the authentication middleware. Otherwise returns the legacy shared path.
+    """
+    if user_id:
+        return f"/data/workspace/users/{user_id}/music/generated/{filename}"
     return f"/data/workspace/music/generated/{filename}"
 
 
@@ -160,7 +192,7 @@ async def _resolve_music_backend(
     return None, None, ""
 
 
-def _list_tracks(music_dir: Path) -> list[dict]:
+def _list_tracks(music_dir: Path, user_id: str = "") -> list[dict]:
     results = []
     for ext in ("*.wav", "*.mp3"):
         for audio in music_dir.glob(ext):
@@ -173,7 +205,7 @@ def _list_tracks(music_dir: Path) -> list[dict]:
                     pass
             results.append({
                 "filename": audio.name,
-                "path": _music_url_path(audio.name),
+                "path": _music_url_path(audio.name, user_id),
                 "size_bytes": audio.stat().st_size,
                 "prompt": metadata.get("prompt", ""),
                 "duration": metadata.get("duration", 0),
@@ -353,6 +385,7 @@ async def compose_music(request: Request, body: ComposeRequest):
         )
 
     music_dir = _music_dir(request)
+    user_id = _get_user_id(request)
     timestamp = int(time.time())
     track_id = uuid.uuid4().hex[:8]
     filename = f"{timestamp}_{track_id}.wav"
@@ -399,7 +432,7 @@ async def compose_music(request: Request, body: ComposeRequest):
         return {
             "status": "generated",
             "filename": filename,
-            "path": _music_url_path(filename),
+            "path": _music_url_path(filename, user_id),
             "size_bytes": output_path.stat().st_size,
             **metadata,
         }
@@ -429,4 +462,6 @@ async def compose_music(request: Request, body: ComposeRequest):
 @router.get("/api/music")
 async def list_music(request: Request):
     """List generated music tracks, newest first."""
-    return {"tracks": _list_tracks(_music_dir(request))}
+    music_dir = _music_dir(request)
+    user_id = _get_user_id(request)
+    return {"tracks": _list_tracks(music_dir, user_id)}
