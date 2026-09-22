@@ -401,8 +401,8 @@ async def add_agent(request: Request, body: AgentCreate):
 
 @router.put("/api/agents/{name}")
 async def update_agent(request: Request, name: str, body: AgentUpdate, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, name)
     """Update an existing agent's configuration."""
+    await require_agent_owner_or_admin(request, user, name)
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
@@ -428,8 +428,8 @@ class AgentPermissions(BaseModel):
 
 @router.put("/api/agents/{name}/permissions")
 async def update_agent_permissions(request: Request, name: str, body: AgentPermissions, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, name)
     """Update an agent's permissions (e.g. user memory access)."""
+    await require_agent_owner_or_admin(request, user, name)
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
@@ -448,8 +448,8 @@ async def update_agent_permissions(request: Request, name: str, body: AgentPermi
 
 @router.delete("/api/agents/{name}")
 async def delete_agent(request: Request, name: str, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, name)
     """Archive an agent instead of hard-deleting it. The agent's
+    await require_agent_owner_or_admin(request, user, name)
     container, workspace, and memory are preserved under an archive
     bucket so the user can restore it later — or permanently purge it
     via ``DELETE /api/agents/archived/{id}``.
@@ -1178,16 +1178,16 @@ async def bulk_restart_agents(request: Request):
 
 @router.post("/api/agents/{name}/start")
 async def start_agent(request: Request, name: str, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, name)
     """Start an agent's LXC container."""
+    await require_agent_owner_or_admin(request, user, name)
     from tinyagentos.containers import start_container
     return await start_container(f"taos-agent-{name}")
 
 
 @router.post("/api/agents/{name}/pause")
 async def pause_agent(request: Request, name: str, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, name)
     """Gracefully prepare an agent for pause (paused=True, container still running)."""
+    await require_agent_owner_or_admin(request, user, name)
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
@@ -1201,8 +1201,8 @@ async def pause_agent(request: Request, name: str, user: CurrentUser = Depends(c
 
 @router.post("/api/agents/{name}/stop")
 async def stop_agent(request: Request, name: str, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, name)
     """Gracefully prepare, then stop an agent's LXC container with force-kill after 2s.
+    await require_agent_owner_or_admin(request, user, name)
 
     Sends SIGTERM via incus stop. After a 2-second grace window, if the container
     is still running, sends SIGKILL (incus stop --force) to guarantee termination.
@@ -1281,8 +1281,8 @@ async def stop_agent(request: Request, name: str, user: CurrentUser = Depends(cu
 
 @router.post("/api/agents/{name}/restart")
 async def restart_agent(request: Request, name: str, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, name)
     """Restart an agent's LXC container."""
+    await require_agent_owner_or_admin(request, user, name)
     from tinyagentos.containers import restart_container
     return await restart_container(f"taos-agent-{name}")
 
@@ -1440,8 +1440,8 @@ async def _import_agent_json(request: Request, body: AgentImport):
 
 @router.delete("/api/agents/{name}/destroy")
 async def destroy_agent(request: Request, name: str, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, name)
     """Kept for API compatibility. Same behaviour as DELETE
+    await require_agent_owner_or_admin(request, user, name)
     /api/agents/{name} — archives the agent. True permanent deletion
     happens via ``DELETE /api/agents/archived/{id}``.
     """
@@ -1453,12 +1453,14 @@ async def destroy_agent(request: Request, name: str, user: CurrentUser = Depends
 
 @router.post("/api/agents/archived/{archive_id}/restore")
 async def restore_archived_agent(request: Request, archive_id: str, user: CurrentUser = Depends(current_user)):
+    """Restore an archived agent back to active status."""
     await require_agent_owner_or_admin(request, user, archive_id)
     return await agent_archive.restore_archived(request, archive_id)
 
 
 @router.delete("/api/agents/archived/{archive_id}")
 async def purge_archived_agent(request: Request, archive_id: str, user: CurrentUser = Depends(current_user)):
+    """Permanently purge an archived agent."""
     await require_agent_owner_or_admin(request, user, archive_id)
     return await agent_archive.purge_archived(request, archive_id)
 
@@ -1507,8 +1509,8 @@ async def _registry_canonical_ids(state) -> list[str]:
 
 @router.post("/api/agents/{name}/resume")
 async def resume_agent(request: Request, name: str, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, name)
     """Clear the paused flag on an agent, allowing it to accept new calls."""
+    await require_agent_owner_or_admin(request, user, name)
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
@@ -1528,8 +1530,8 @@ class PersonaPatch(BaseModel):
 
 @router.patch("/api/agents/{slug}/persona")
 async def patch_agent_persona(request: Request, slug: str, body: PersonaPatch, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, slug)
     """Partially update an agent's persona fields (soul_md, agent_md, source_persona_id)."""
+    await require_agent_owner_or_admin(request, user, slug)
     config = request.app.state.config
     agent = find_agent(config, slug)
     if not agent:
@@ -1551,8 +1553,8 @@ class MemoryPatch(BaseModel):
 
 @router.patch("/api/agents/{slug}/memory")
 async def patch_agent_memory(request: Request, slug: str, body: MemoryPatch, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, slug)
     """Set the memory_plugin and/or memory_mode for an agent."""
+    await require_agent_owner_or_admin(request, user, slug)
     memory_error = _memory_selection_error(body.memory_plugin, body.memory_mode)
     if memory_error is not None:
         return JSONResponse({"error": memory_error}, status_code=400)
@@ -1569,8 +1571,8 @@ async def patch_agent_memory(request: Request, slug: str, body: MemoryPatch, use
 
 @router.post("/api/agents/{slug}/dismiss-migration-banner")
 async def dismiss_migration_banner(request: Request, slug: str, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, slug)
     """Flip migrated_to_v2_personas to True, hiding the migration banner."""
+    await require_agent_owner_or_admin(request, user, slug)
     config = request.app.state.config
     agent = find_agent(config, slug)
     if not agent:
@@ -1586,8 +1588,8 @@ class AgentModelUpdate(BaseModel):
 
 @router.post("/api/agents/{name}/model")
 async def update_agent_model(request: Request, name: str, body: AgentModelUpdate, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, name)
     """Update an agent's primary model and resume it if it was paused.
+    await require_agent_owner_or_admin(request, user, name)
 
     Validates the requested model against currently-reachable cluster models
     (local backend catalog + online workers).  Returns 409 if the model is
@@ -1729,8 +1731,8 @@ class PermittedModelsUpdate(BaseModel):
 
 @router.put("/api/agents/{name}/permitted-models")
 async def set_permitted_models(request: Request, name: str, body: PermittedModelsUpdate, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, name)
     """Set the permitted model set for an agent and re-scope its LiteLLM key."""
+    await require_agent_owner_or_admin(request, user, name)
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
@@ -1843,8 +1845,8 @@ class AgentBudgetUpdate(BaseModel):
 
 @router.put("/api/agents/{name}/budget")
 async def set_agent_budget(request: Request, name: str, body: AgentBudgetUpdate, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, name)
     """Set (or clear, with null) an agent's LLM budget cap."""
+    await require_agent_owner_or_admin(request, user, name)
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
@@ -1863,8 +1865,8 @@ async def set_agent_budget(request: Request, name: str, body: AgentBudgetUpdate,
 
 @router.post("/api/agents/{name}/budget/reset")
 async def reset_agent_budget(request: Request, name: str, user: CurrentUser = Depends(current_user)):
-    await require_agent_owner_or_admin(request, user, name)
     """Zero an agent's recorded spend, keeping its cap in place."""
+    await require_agent_owner_or_admin(request, user, name)
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
