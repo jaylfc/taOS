@@ -167,13 +167,16 @@ async def test_startup_complete_without_litellm(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_health_endpoint_responsive_during_litellm_bringup(tmp_path):
-    """Health endpoint must answer within 100 ms while LiteLLM bring-up blocks.
+    """Health endpoint must answer within 500 ms while _pids_listening_on blocks.
 
-    A synchronous sleep inside _litellm_bringup simulates the prisma generate
-    stall. The event loop must not be blocked, so /api/health stays fast
-    throughout startup.
+    A slow lsof inside LLMProxy.start() simulates the real event-loop
+    stall on the restart-over-stale-LiteLLM path. The event loop must not
+    be blocked, so /api/health stays fast throughout bring-up.
     """
+    import contextlib
     import yaml
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from tinyagentos.llm_proxy import LLMProxy
 
     config = {
         "server": {"host": "0.0.0.0", "port": 6969},
@@ -186,44 +189,61 @@ async def test_health_endpoint_responsive_during_litellm_bringup(tmp_path):
     config_path.write_text(yaml.dump(config))
     (tmp_path / ".setup_complete").touch()
 
-    loop_thread_id = threading.get_ident()
-    seen_thread_ids: list[int] = []
-    migrate_started = threading.Event()
+    slow_lsof_duration = 2.0
+    lsof_started = threading.Event()
+    lsof_finished = threading.Event()
 
-    def blocking_migrate(data_dir):
-        migrate_started.set()
-        seen_thread_ids.append(threading.get_ident())
-        time.sleep(0.5)
-        return "no-db-configured"
+    def slow_pids_listening_on(port):
+        lsof_started.set()
+        time.sleep(slow_lsof_duration)
+        lsof_finished.set()
+        return []
 
-    proxy_stub = MagicMock()
-    proxy_stub.is_running.return_value = False
-    proxy_stub.port = 7834
-    proxy_stub.start = AsyncMock(return_value=False)
-    proxy_stub.stop = MagicMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
 
-    with patch("tinyagentos.app.LLMProxy", return_value=proxy_stub):
-        with patch("tinyagentos.app._litellm_migrate", blocking_migrate):
-            from tinyagentos.app import create_app
-            app = create_app(data_dir=tmp_path)
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = False
+
+    proxy = LLMProxy(
+        port=7834,
+        controller_port=6969,
+        database_url=None,
+        local_token=None,
+        registry=MagicMock(),
+        data_dir=tmp_path,
+        inhouse_keys=True,
+    )
+
+    with patch("tinyagentos.llm_proxy._pids_listening_on", side_effect=slow_pids_listening_on):
+        with patch("tinyagentos.llm_proxy.httpx.AsyncClient", return_value=mock_client):
+            app = _make_app(tmp_path)
+            app.state._startup_complete = True
             transport = ASGITransport(app=app)
-            lifespan_ctx = app.router.lifespan_context(app)
 
-            await lifespan_ctx.__aenter__()
+            start_task = asyncio.create_task(proxy.start([], secrets={}))
             try:
-                for _ in range(100):
-                    if migrate_started.is_set():
+                for _ in range(200):
+                    if lsof_started.is_set():
                         break
                     await asyncio.sleep(0.01)
 
-                assert seen_thread_ids, "_litellm_migrate was never called"
-                assert seen_thread_ids[0] != loop_thread_id, (
-                    "_litellm_migrate ran on the event-loop thread -- its "
-                    "sync work blocks all concurrent request handling"
-                )
-
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    t0 = time.monotonic()
                     resp = await client.get("/api/health")
+                    elapsed = time.monotonic() - t0
                 assert resp.status_code == 200
+                assert elapsed < 0.5, (
+                    f"/api/health took {elapsed:.2f}s while lsof slept "
+                    f"{slow_lsof_duration}s"
+                )
+                assert not lsof_finished.is_set(), (
+                    "/api/health completed after _pids_listening_on finished "
+                    "(event loop was blocked)"
+                )
             finally:
-                await lifespan_ctx.__aexit__(None, None, None)
+                start_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await start_task
