@@ -208,8 +208,8 @@ async def test_health_endpoint_responsive_during_litellm_bringup(tmp_path):
     mock_client.__aexit__.return_value = False
 
     proxy = LLMProxy(
-        port=7834,
-        controller_port=6969,
+        port=17999,
+        controller_port=17998,
         database_url=None,
         local_token=None,
         registry=MagicMock(),
@@ -219,31 +219,58 @@ async def test_health_endpoint_responsive_during_litellm_bringup(tmp_path):
 
     with patch("tinyagentos.llm_proxy._pids_listening_on", side_effect=slow_pids_listening_on):
         with patch("tinyagentos.llm_proxy.httpx.AsyncClient", return_value=mock_client):
-            app = _make_app(tmp_path)
-            app.state._startup_complete = True
-            transport = ASGITransport(app=app)
 
-            start_task = asyncio.create_task(proxy.start([], secrets={}))
-            try:
-                for _ in range(200):
-                    if lsof_started.is_set():
-                        break
-                    await asyncio.sleep(0.01)
+            class _FakePopen:
+                def __init__(self, *args, **kwargs):
+                    self.args = args[0] if args else kwargs.get("args", [])
 
-                async with AsyncClient(transport=transport, base_url="http://test") as client:
-                    t0 = time.monotonic()
-                    resp = await client.get("/api/health")
-                    elapsed = time.monotonic() - t0
-                assert resp.status_code == 200
-                assert elapsed < 0.5, (
-                    f"/api/health took {elapsed:.2f}s while lsof slept "
-                    f"{slow_lsof_duration}s"
-                )
-                assert not lsof_finished.is_set(), (
-                    "/api/health completed after _pids_listening_on finished "
-                    "(event loop was blocked)"
-                )
-            finally:
-                start_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await start_task
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    return False
+
+                def communicate(self, input=None, timeout=None):
+                    return ("", "")
+
+                def poll(self):
+                    return 0
+
+                def wait(self, timeout=None):
+                    return 0
+
+                def terminate(self):
+                    pass
+
+                def kill(self):
+                    pass
+
+            with patch("tinyagentos.llm_proxy.subprocess.Popen", _FakePopen):
+                app = _make_app(tmp_path)
+                app.state._startup_complete = True
+                transport = ASGITransport(app=app)
+
+                start_task = asyncio.create_task(proxy.start([], secrets={}))
+                try:
+                    for _ in range(200):
+                        if lsof_started.is_set():
+                            break
+                        await asyncio.sleep(0.01)
+
+                    async with AsyncClient(transport=transport, base_url="http://test") as client:
+                        t0 = time.monotonic()
+                        resp = await client.get("/api/health")
+                        elapsed = time.monotonic() - t0
+                    assert resp.status_code == 200
+                    assert elapsed < 0.5, (
+                        f"/api/health took {elapsed:.2f}s while lsof slept "
+                        f"{slow_lsof_duration}s"
+                    )
+                    assert not lsof_finished.is_set(), (
+                        "/api/health completed after _pids_listening_on finished "
+                        "(event loop was blocked)"
+                    )
+                finally:
+                    start_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await start_task
