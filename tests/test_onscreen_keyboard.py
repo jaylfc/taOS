@@ -811,7 +811,12 @@ class TestTheIslandRepaintKeepsKeyboardFocus:
         """Restoring by index moves focus to a DIFFERENT agent whenever the list
         reorders between polls, which is worse than losing focus: the user's next
         Enter opens an agent they never selected."""
-        assert 'el.setAttribute("data-agent", name)' in LOCK_SCRIPT
+        # The KEY, not the literal line. It used to be the display name
+        # outright; a device agent now brings its own namespaced key
+        # (`device:<slug>`) so a plugged-in board and a demo placeholder of the
+        # same name cannot land on one island. Either way it is an identity
+        # from the payload and never an index, which is what this is about.
+        assert 'el.setAttribute("data-agent", agent.key || name)' in LOCK_SCRIPT
         body = self._paint_activity()
         assert '.ls-island[data-agent="' in body
 
