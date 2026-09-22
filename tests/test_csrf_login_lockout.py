@@ -437,11 +437,11 @@ class TestCsrfStillGuardsSessionAuthenticatedRoutes:
             assert name != "taos_session" or "Max-Age=0" not in raw, (
                 f"live session cookie was cleared: {raw!r}"
             )
-        assert any(
-            (len(c.args) > 1 and c.args[1] == UA) or c.kwargs.get("user_agent") == UA
+        assert all(
+            (len(c.args) > 1 and c.args[1] is not None) or c.kwargs.get("user_agent") is not None
             for c in spy.call_args_list
         ), (
-            f"verify_csrf did not pass User-Agent to validate_session in any call: "
+            f"Some validate_session calls during this request did not pass user_agent: "
             f"calls={spy.call_args_list!r}"
         )
 
