@@ -1,8 +1,13 @@
 """Tests for #642 — startup 503 guard and removal of duplicate eager init."""
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
+
 import pytest
 from httpx import ASGITransport, AsyncClient
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def _make_app(tmp_path):
@@ -153,3 +158,72 @@ async def test_startup_complete_without_litellm(tmp_path, monkeypatch):
         app = create_app(data_dir=tmp_path)
         async with app.router.lifespan_context(app):
             assert app.state._startup_complete is True
+
+
+# ---------------------------------------------------------------------------
+# Health endpoint responsiveness during LiteLLM bring-up
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint_responsive_during_litellm_bringup(tmp_path):
+    """Health endpoint must answer within 100 ms while LiteLLM bring-up blocks.
+
+    A synchronous sleep inside _litellm_bringup simulates the prisma generate
+    stall. The event loop must not be blocked, so /api/health stays fast
+    throughout startup.
+    """
+    import yaml
+
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config))
+    (tmp_path / ".setup_complete").touch()
+
+    loop_thread_id = threading.get_ident()
+    seen_thread_ids: list[int] = []
+    migrate_started = threading.Event()
+
+    def blocking_migrate(data_dir):
+        migrate_started.set()
+        seen_thread_ids.append(threading.get_ident())
+        time.sleep(0.5)
+        return "no-db-configured"
+
+    proxy_stub = MagicMock()
+    proxy_stub.is_running.return_value = False
+    proxy_stub.port = 7834
+    proxy_stub.start = AsyncMock(return_value=False)
+    proxy_stub.stop = MagicMock()
+
+    with patch("tinyagentos.app.LLMProxy", return_value=proxy_stub):
+        with patch("tinyagentos.app._litellm_migrate", blocking_migrate):
+            from tinyagentos.app import create_app
+            app = create_app(data_dir=tmp_path)
+            transport = ASGITransport(app=app)
+            lifespan_ctx = app.router.lifespan_context(app)
+
+            await lifespan_ctx.__aenter__()
+            try:
+                for _ in range(100):
+                    if migrate_started.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+
+                assert seen_thread_ids, "_litellm_migrate was never called"
+                assert seen_thread_ids[0] != loop_thread_id, (
+                    "_litellm_migrate ran on the event-loop thread -- its "
+                    "sync work blocks all concurrent request handling"
+                )
+
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    resp = await client.get("/api/health")
+                assert resp.status_code == 200
+            finally:
+                await lifespan_ctx.__aexit__(None, None, None)
