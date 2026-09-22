@@ -84,7 +84,7 @@ class TestApprovePathWiresExpiry:
         # project_id binding or membership sync needed).
         rec = await auth_store.create(
             identity_claim="@expiry-agent", framework="openclaw",
-            requested_scopes=["memory_read"], requested_skills=None, reason="",
+            requested_scopes=["registry_feeds_read"], requested_skills=None, reason="",
             duration_secs=duration_secs, project_id=None,
         )
         monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
@@ -94,14 +94,14 @@ class TestApprovePathWiresExpiry:
 
         resp = await client.post(
             f"/api/agents/auth-requests/{rec['id']}/approve",
-            json={"granted_scopes": ["memory_read"]},
+            json={"granted_scopes": ["registry_feeds_read"]},
         )
         assert resp.status_code == 200, resp.text
         cid = resp.json()["canonical_id"]
 
         agent_grants = await grants.list_grants(cid)
-        scoped = [g for g in agent_grants if g["scope"] == "memory_read"]
-        assert len(scoped) == 1, f"expected one memory_read grant, got {agent_grants}"
+        scoped = [g for g in agent_grants if g["scope"] == "registry_feeds_read"]
+        assert len(scoped) == 1, f"expected one registry_feeds_read grant, got {agent_grants}"
         expiry = scoped[0].get("expires_at")
 
         await registry.close()
@@ -126,3 +126,79 @@ class TestApprovePathWiresExpiry:
     ):
         expiry = await self._approve(client, monkeypatch, tmp_path, None)
         assert expiry is None, "grant must stay unbounded when duration_secs is absent"
+
+
+class TestDeferredPathWiresExpiry:
+    """The add_agent_to_project reuse arm must also receive expires_at from
+    duration_secs, but that path has no route-level test."""
+
+    async def _approve_via_reuse(self, client, monkeypatch, tmp_path, duration_secs):
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from unittest.mock import AsyncMock, MagicMock
+
+        registry = AgentRegistryStore(tmp_path / "reg.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth.db")
+        await auth_store.init()
+        grants_spy = AsyncMock()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys")
+
+        existing = await registry.register(
+            framework="openclaw",
+            display_name="@expiry-agent",
+            user_id="test",
+            origin="external-selfjoin",
+            handle="expiry-agent",
+            allow_reserved=True,
+        )
+        await registry.set_status(existing["canonical_id"], "active", actor="test")
+
+        rec = await auth_store.create(
+            identity_claim="@expiry-agent", framework="openclaw",
+            requested_scopes=["project_tasks"], requested_skills=None, reason="",
+            duration_secs=duration_secs, project_id="proj-1",
+        )
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants_spy)
+        monkeypatch.setattr(client._transport.app.state, "agent_registry_keypair", (priv, pub))
+
+        resp = await client.post(
+            f"/api/agents/auth-requests/{rec['id']}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": "proj-1"},
+        )
+        assert resp.status_code == 200, resp.text
+
+        add_grant_calls = [
+            c for c in grants_spy.add_grant.call_args_list
+            if c.args and len(c.args) > 1 and c.args[1] == "project_tasks"
+        ]
+        assert len(add_grant_calls) == 1, (
+            f"expected one project_tasks add_grant call through add_agent_to_project, "
+            f"got {add_grant_calls}"
+        )
+        expires_at = add_grant_calls[0].kwargs.get("expires_at")
+        return expires_at
+
+    @pytest.mark.asyncio
+    async def test_duration_secs_persists_expiry_via_add_agent_to_project(
+        self, client, monkeypatch, tmp_path
+    ):
+        expiry = await self._approve_via_reuse(client, monkeypatch, tmp_path, 3600)
+        assert expiry is not None, (
+            "add_agent_to_project must carry expires_at when duration_secs was set"
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_duration_stays_unbounded_via_add_agent_to_project(
+        self, client, monkeypatch, tmp_path
+    ):
+        expiry = await self._approve_via_reuse(client, monkeypatch, tmp_path, None)
+        assert expiry is None, (
+            "add_agent_to_project must receive None expires_at when duration_secs is absent"
+        )
+
