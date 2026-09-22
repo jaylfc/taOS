@@ -80,16 +80,34 @@ def probe_frame_grid_readback(socket_path: str) -> str:
         spawned = conduit.spawn("sh", ["-c", "echo test"], cols=80, rows=24)
 
         try:
-            for frame in conduit.iter_frames(timeout=2.0):
-                lines = TuiuiConduit.frame_lines(frame)
-                transcript_lines.append(f"Result: Frame with text: {lines}")
-                count = ansi_count(frame.cells)
-                if count:
-                    transcript_lines.append(f"FAILED: ANSI escape count: {count} (should be 0)")
+            # Collect all frames first
+            frames = list(conduit.iter_frames(timeout=2.0))
+            matched = first_match(
+                (TuiuiConduit.frame_lines(f) for f in frames),
+                lambda lines: any("test" in l for l in lines)
+            )
+            if matched is None:
+                transcript_lines.append("FAILED: no frame carried the command output")
+                failed = True
+            else:
+                # Find the matching frame that produced these lines
+                matched_frame = None
+                for f in frames:
+                    if TuiuiConduit.frame_lines(f) == matched:
+                        matched_frame = f
+                        break
+                
+                if matched_frame is None:
+                    transcript_lines.append("FAILED: could not find matching frame")
                     failed = True
                 else:
-                    transcript_lines.append(f"ANSI escape count: {count} (should be 0)")
-                break
+                    transcript_lines.append(f"Result: Frame with text: {matched}")
+                    count = ansi_count(matched_frame.cells)
+                    if count:
+                        transcript_lines.append(f"FAILED: ANSI escape count: {count} (should be 0)")
+                        failed = True
+                    else:
+                        transcript_lines.append(f"ANSI escape count: {count} (should be 0)")
         except TuiuiConduitError:
             transcript_lines.append("FAILED: timed out waiting for frame")
             failed = True

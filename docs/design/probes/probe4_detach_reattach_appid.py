@@ -67,16 +67,21 @@ def probe_detach_reattach_appid(socket_path: str) -> str:
     failed = False
 
     with TuiuiConduit(socket_path, timeout=2.0) as conduit:
-        spawned1 = conduit.spawn("sh", ["-c", "echo hello"], cols=80, rows=24)
-        transcript_lines.append(f"  Spawned app {spawned1.app} with pid {spawned1.pid}")
+        spawned1 = conduit.spawn("sh", ["-c", "sleep 30"], cols=80, rows=24)
+        try:
+            transcript_lines.append(f"  Spawned app {spawned1.app} with pid {spawned1.pid}")
 
-        apps1 = conduit.list_apps()
-        transcript_lines.append(f"  Current apps: {[app.app for app in apps1]}")
+            apps1 = conduit.list_apps()
+            transcript_lines.append(f"  Current apps: {[app.app for app in apps1]}")
 
-        conduit.set_meta(spawned1.app, [{"title": "agent-shell", "app_key": "test"}])
-        transcript_lines.append(f"  Set meta on app {spawned1.app}")
+            conduit.set_meta(spawned1.app, [{"title": "agent-shell", "app_key": "test"}])
+            transcript_lines.append(f"  Set meta on app {spawned1.app}")
 
-        transcript_lines.append("  Simulating detach (closing connection)")
+            transcript_lines.append("  Simulating detach (closing connection)")
+
+        finally:
+            transcript_lines.append(f"  Killing long-lived app {spawned1.app}")
+            conduit.kill(spawned1.app)
 
     transcript_lines.append("Step 2: Reconnect (reattach)")
     with TuiuiConduit(socket_path, timeout=2.0) as conduit:

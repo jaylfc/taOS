@@ -49,6 +49,11 @@ def test_probe1_first_match_over_window():
     assert mod.first_match([["hello"]], lambda lines: mod.input_echoed(lines, "got:hello")) is None
 
 
+def test_probe3_first_match_over_window():
+    mod = load_probe("probe3_frame_grid_readback.py")
+    assert mod.first_match([[""], ["test"]], lambda lines: any("test" in l for l in lines)) == ["test"]
+
+
 def test_input_probes_send_newline():
     for name in (
         "probe1_socket_enumerate_spawn.py",
