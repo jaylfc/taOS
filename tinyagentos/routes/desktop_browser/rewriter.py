@@ -32,19 +32,13 @@ import re
 from typing import Callable
 from urllib.parse import urljoin
 
+import tinycss2
 from lxml import html as lxml_html
 
 
 # Schemes we never rewrite — these aren't HTTP fetches the proxy can serve.
 _SKIP_PREFIXES = (
     "data:", "javascript:", "mailto:", "tel:", "blob:", "about:", "#",
-)
-
-
-# CSS url() rewriter — captures url(), url(""), url('').
-_CSS_URL_RE = re.compile(
-    r"""url\(\s*(['"]?)([^)'"]+)\1\s*\)""",
-    re.IGNORECASE,
 )
 
 
@@ -218,16 +212,116 @@ def _rewrite_srcset(
         el.set("srcset", ", ".join(parts))
 
 
+def rewrite_css(
+    css_text: str, *, base_url: str, proxy: Callable[[str], str],
+) -> str:
+    """Rewrite URLs inside a CSS stylesheet using tinycss2.
+
+    Handles both ``url()`` tokens (quoted and bare) and ``@import`` preludes.
+    Data-URI, javascript:, and other non-HTTP schemes are preserved.
+    Returns the original text unchanged if parsing fails.
+    """
+    if not css_text or "url(" not in css_text.lower() and "@import" not in css_text.lower():
+        return css_text
+
+    try:
+        rules = tinycss2.parse_stylesheet(css_text)
+    except Exception:
+        return css_text
+
+    if _has_only_invalid_errors(rules):
+        try:
+            rules = tinycss2.parse_declaration_list(css_text)
+        except Exception:
+            return css_text
+
+    for rule in rules:
+        _rewrite_css_rule(rule, base_url=base_url, proxy=proxy)
+
+    return tinycss2.serialize(rules)
+
+
+def _has_only_invalid_errors(rules) -> bool:
+    """Return True if every top-level token is an un-serializable ParseError."""
+    if not rules:
+        return False
+    return all(
+        isinstance(t, tinycss2.ast.ParseError) and t.kind == "invalid"
+        for t in rules
+    )
+
+
+def _rewrite_css_rule(rule, *, base_url: str, proxy: Callable[[str], str]) -> None:
+    """Recursively rewrite URLs inside a single tinycss2 rule or token."""
+    if isinstance(rule, tinycss2.ast.AtRule):
+        if rule.at_keyword.lower() == "import":
+            _rewrite_css_prelude(rule.prelude, base_url=base_url, proxy=proxy)
+        # Recurse into nested blocks (e.g. @media)
+        if rule.content is not None:
+            for inner in rule.content:
+                if hasattr(inner, "content") and inner.content is not None:
+                    for token in inner.content:
+                        _rewrite_css_rule(token, base_url=base_url, proxy=proxy)
+    elif isinstance(rule, tinycss2.ast.QualifiedRule):
+        _rewrite_css_prelude(rule.prelude, base_url=base_url, proxy=proxy)
+        if rule.content is not None:
+            _rewrite_css_token_list(rule.content, base_url=base_url, proxy=proxy)
+    elif isinstance(rule, tinycss2.ast.Declaration):
+        if rule.value is not None:
+            _rewrite_css_token_list(rule.value, base_url=base_url, proxy=proxy)
+
+
+def _rewrite_css_token_list(
+    tokens, *, base_url: str, proxy: Callable[[str], str],
+) -> None:
+    """Rewrite URLs inside a list of CSS tokens."""
+    for i, token in enumerate(tokens):
+        if isinstance(token, tinycss2.ast.FunctionBlock) and token.lower_name == "url":
+            _rewrite_css_function_block(token, base_url=base_url, proxy=proxy)
+        elif isinstance(token, tinycss2.ast.URLToken):
+            tokens[i] = _make_url_token(token, _rewrite_one(token.value, base_url=base_url, proxy=proxy))
+        elif hasattr(token, "content") and token.content is not None:
+            _rewrite_css_token_list(token.content, base_url=base_url, proxy=proxy)
+
+
+def _rewrite_css_function_block(block, *, base_url: str, proxy: Callable[[str], str]) -> None:
+    """Rewrite URLs inside a url() FunctionBlock."""
+    for i, arg in enumerate(block.arguments):
+        if isinstance(arg, tinycss2.ast.StringToken):
+            new_url = _rewrite_one(arg.value, base_url=base_url, proxy=proxy)
+            block.arguments[i] = tinycss2.ast.StringToken(
+                arg.source_line, arg.source_column, new_url, f'"{new_url}"',
+            )
+        elif isinstance(arg, tinycss2.ast.URLToken):
+            new_url = _rewrite_one(arg.value, base_url=base_url, proxy=proxy)
+            block.arguments[i] = _make_url_token(arg, new_url)
+
+
+def _rewrite_css_prelude(
+    tokens, *, base_url: str, proxy: Callable[[str], str],
+) -> None:
+    """Rewrite URLs in an at-rule prelude (e.g. @import URL)."""
+    for i, token in enumerate(tokens):
+        if isinstance(token, tinycss2.ast.StringToken):
+            new_url = _rewrite_one(token.value, base_url=base_url, proxy=proxy)
+            tokens[i] = tinycss2.ast.StringToken(
+                token.source_line, token.source_column, new_url, f'"{new_url}"',
+            )
+        elif isinstance(token, tinycss2.ast.URLToken):
+            new_url = _rewrite_one(token.value, base_url=base_url, proxy=proxy)
+            tokens[i] = _make_url_token(token, new_url)
+
+
+def _make_url_token(original, value: str) -> tinycss2.ast.URLToken:
+    return tinycss2.ast.URLToken(
+        original.source_line, original.source_column, value, f"url({value})",
+    )
+
+
 def _rewrite_css_text(
     text: str, *, base_url: str, proxy: Callable[[str], str],
 ) -> str:
-    def replace(match: re.Match) -> str:
-        quote = match.group(1)
-        url = match.group(2).strip()
-        new_url = _rewrite_one(url, base_url=base_url, proxy=proxy)
-        return f"url({quote}{new_url}{quote})"
-
-    return _CSS_URL_RE.sub(replace, text)
+    return rewrite_css(text, base_url=base_url, proxy=proxy)
 
 
 def _rewrite_inline_styles(
@@ -235,7 +329,10 @@ def _rewrite_inline_styles(
 ) -> None:
     for el in tree.iter():
         style = el.get("style")
-        if not style or "url(" not in style.lower():
+        if not style:
+            continue
+        lower_style = style.lower()
+        if "url(" not in lower_style and "@import" not in lower_style:
             continue
         el.set("style", _rewrite_css_text(style, base_url=base_url, proxy=proxy))
 
@@ -244,10 +341,13 @@ def _rewrite_style_tags(
     tree, *, base_url: str, proxy: Callable[[str], str],
 ) -> None:
     for style_el in tree.iter("style"):
-        if style_el.text is None or "url(" not in style_el.text.lower():
+        text = style_el.text or ""
+        if not text:
+            continue
+        if "url(" not in text.lower() and "@import" not in text.lower():
             continue
         style_el.text = _rewrite_css_text(
-            style_el.text, base_url=base_url, proxy=proxy
+            text, base_url=base_url, proxy=proxy
         )
 
 

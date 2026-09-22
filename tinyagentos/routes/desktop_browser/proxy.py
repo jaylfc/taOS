@@ -51,7 +51,7 @@ from tinyagentos.routes.desktop_browser.profile import (
     ensure_default_profiles,
     get_profile_or_404,
 )
-from tinyagentos.routes.desktop_browser.rewriter import rewrite_html
+from tinyagentos.routes.desktop_browser.rewriter import rewrite_css, rewrite_html
 from tinyagentos.routes.desktop_browser.ssrf import (
     SsrfBlockedError,
     guarded_async_client,
@@ -388,15 +388,6 @@ async def proxy_get(
 
     content_type = response.headers.get("content-type", "")
 
-    if len(response.content) > _MAX_RESPONSE_BYTES:
-        _logger.info(
-            "browser proxy response too large: bytes=%d limit=%d",
-            len(response.content), _MAX_RESPONSE_BYTES,
-        )
-        return JSONResponse(
-            {"error": "response too large"}, status_code=502,
-        )
-
     if "text/html" in content_type:
         # Rewrite + inject for HTML
         proxy_prefix = (
@@ -412,6 +403,15 @@ async def proxy_get(
             response.content, base_url=str(response.url), proxy=_proxy_url,
             charset=charset, profile_id=profile_id,
         )
+
+        if len(rewritten) > _MAX_RESPONSE_BYTES:
+            _logger.info(
+                "browser proxy rewritten HTML too large: bytes=%d limit=%d",
+                len(rewritten), _MAX_RESPONSE_BYTES,
+            )
+            return JSONResponse(
+                {"error": "response too large"}, status_code=502,
+            )
 
         # Use the effective scheme (honours x-forwarded-proto behind a TLS
         # terminator), matching the CSP below — otherwise a reverse-proxied
@@ -432,6 +432,15 @@ async def proxy_get(
             profile_id=profile_id,
             color_scheme=color_scheme if color_scheme in ("light", "dark") else "",
         )
+
+        if len(injected) > _MAX_RESPONSE_BYTES:
+            _logger.info(
+                "browser proxy injected HTML too large: bytes=%d limit=%d",
+                len(injected), _MAX_RESPONSE_BYTES,
+            )
+            return JSONResponse(
+                {"error": "response too large"}, status_code=502,
+            )
 
         # Page-change broadcast for any agents pinned to this tab.
         # Non-blocking — never delay the user's page load on agent fan-out.
@@ -482,7 +491,51 @@ async def proxy_get(
             media_type="text/html; charset=utf-8",
         )
 
-    # Non-HTML — pass through bytes verbatim
+    if "text/css" in content_type:
+        proxy_prefix = (
+            f"/api/desktop/browser/proxy?profile_id={quote(profile_id, safe='')}"
+            f"&url="
+        )
+
+        def _proxy_url(absolute: str) -> str:
+            return f"{proxy_prefix}{quote(absolute, safe='')}"
+
+        try:
+            decoded = response.content.decode(
+                _detect_charset(content_type, response.content) or "utf-8",
+                errors="replace",
+            )
+        except Exception:
+            decoded = response.content.decode("utf-8", errors="replace")
+
+        rewritten_css = rewrite_css(decoded, base_url=str(response.url), proxy=_proxy_url)
+
+        if len(rewritten_css.encode("utf-8")) > _MAX_RESPONSE_BYTES:
+            _logger.info(
+                "browser proxy rewritten CSS too large: bytes=%d limit=%d",
+                len(rewritten_css), _MAX_RESPONSE_BYTES,
+            )
+            return JSONResponse(
+                {"error": "response too large"}, status_code=502,
+            )
+
+        return Response(
+            content=rewritten_css.encode("utf-8"),
+            status_code=response.status_code,
+            headers=out_headers,
+            media_type="text/css; charset=utf-8",
+        )
+
+    # Non-HTML/non-CSS — pass through bytes verbatim
+    if len(response.content) > _MAX_RESPONSE_BYTES:
+        _logger.info(
+            "browser proxy response too large: bytes=%d limit=%d",
+            len(response.content), _MAX_RESPONSE_BYTES,
+        )
+        return JSONResponse(
+            {"error": "response too large"}, status_code=502,
+        )
+
     return Response(
         content=response.content,
         status_code=response.status_code,
