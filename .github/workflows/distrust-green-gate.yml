@@ -40,40 +40,18 @@ jobs:
         # must not post waiver instructions that do not apply
         if: failure() && steps.all-skip.outcome == 'failure'
         uses: actions/github-script@v9
-        env:
-          FAILURE_REASON: ${{ steps.all-skip.outputs.failure_reason }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const reason = process.env.FAILURE_REASON;
-            let body;
-            if (reason === 'collection_error') {
-              body = [
-                "**Distrust Green Gate**: this PR adds or modifies a test file that",
-                "fails to collect (crash or import error during collection). See the",
-                "check-all-skip job log for the file and error detail.",
-                "",
-                "Fix the collection error before requesting review.",
-              ].join("\n");
-            } else if (reason === 'other_failure') {
-              body = [
-                "**Distrust Green Gate**: this PR adds or modifies test file(s) where",
-                "test file(s) yielded NO collected tests or had setup/teardown errors.",
-                "See the check-all-skip job log for the file list.",
-                "",
-                "Fix the collection or setup error before requesting review.",
-              ].join("\n");
-            } else {
-              body = [
-                "**Distrust Green Gate**: this PR adds or modifies test file(s) where ALL",
-                "tests skip (e.g. `pytest.importorskip` on a module not yet available), so",
-                "CI reports GREEN while asserting nothing. See the check-all-skip job log",
-                "for the file and the guard that caused it.",
-                "",
-                "Either implement the guarded code, or waive deliberately with a",
-                "`Tests-Skipped-Intentionally: <file>, <why>` trailer in the PR body.",
-              ].join("\n");
-            }
+            const body = [
+              "**Distrust Green Gate**: this PR adds or modifies test file(s) where ALL",
+              "tests skip (e.g. `pytest.importorskip` on a module not yet available), so",
+              "CI reports GREEN while asserting nothing. See the check-all-skip job log",
+              "for the file and the guard that caused it.",
+              "",
+              "Either implement the guarded code, or waive deliberately with a",
+              "`Tests-Skipped-Intentionally: <file>, <why>` trailer in the PR body.",
+            ].join("\n");
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
