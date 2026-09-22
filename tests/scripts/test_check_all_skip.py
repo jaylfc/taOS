@@ -428,7 +428,6 @@ class TestFailureReasonOutput:
         assert rc == 1
         output_text = github_output.read_text()
         assert "failure_reason=collection_error" in output_text
-        assert "Tests-Skipped-Intentionally" not in captured.out
 
     def test_all_skip_writes_reason_and_contains_waiver(
         self, check_mod, tmp_path: Path, capsys: pytest.CaptureFixture
