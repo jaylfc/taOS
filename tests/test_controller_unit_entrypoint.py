@@ -12,30 +12,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _service_files() -> list[Path]:
-    service_files = sorted(REPO_ROOT.rglob("*.service"))
-    install_sh = REPO_ROOT / "install.sh"
-    if install_sh.exists():
-        service_files.append(install_sh)
-    return service_files
+    files = sorted(REPO_ROOT.rglob("*.service"))
+    for path in REPO_ROOT.rglob("*.sh"):
+        if ".venv" in path.parts or "node_modules" in path.parts:
+            continue
+        files.append(path)
+    return files
 
 
-def _exec_start_values(unit_text: str, is_install_sh: bool = False) -> list[str]:
+def _exec_start_values(unit_text: str) -> list[str]:
     values: list[str] = []
-    if is_install_sh:
-        in_install = False
-        for raw_line in unit_text.splitlines():
-            stripped = raw_line.strip()
-            if not in_install and stripped.startswith("cat > /etc/systemd/system/tinyagentos.service << EOF"):
-                in_install = True
-                continue
-            if in_install:
-                if stripped == "EOF":
-                    break
-                if stripped.startswith("ExecStart="):
-                    value = stripped.split("=", 1)[1].strip()
-                    values.append(value)
-        return values
-
     in_service = False
     pending: str | None = None
     for raw_line in unit_text.splitlines():
@@ -66,8 +52,7 @@ def test_units_start_via_module_entry() -> None:
     bad: list[tuple[Path, str]] = []
     for unit_path in _service_files():
         text = unit_path.read_text()
-        is_install_sh = unit_path.name == "install.sh"
-        for value in _exec_start_values(text, is_install_sh):
+        for value in _exec_start_values(text):
             if "tinyagentos.app" in value or "-m tinyagentos" in value:
                 if "-m tinyagentos" not in value or "-m uvicorn" in value:
                     bad.append((unit_path, value))
