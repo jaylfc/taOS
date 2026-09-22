@@ -432,3 +432,48 @@ async def test_capabilities_no_catalog_reports_all_unhealthy():
 
     assert result["image_editing"] is False
     assert result["image_editing_tiers"] == {"quality": False, "fast": False}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_edit_result_urls_resolve_to_written_file(tmp_path):
+    """Regression: edit result url and path must resolve to the per-user directory where the file was written.
+    
+    The generated-media chain moved files to per-user directories (tsk-3143), but images_edit.py
+    failed to pass user_id to _image_url_path, returning legacy shared URLs that 404.
+    Both result["url"] and result["path"] must point at the location _images_dir(request) actually wrote to.
+    """
+    result_png = base64.b64decode(_png_b64(color=(9, 9, 9)))
+    import httpx
+
+    route = respx.post("http://io/api/v1/inpaint").mock(
+        return_value=httpx.Response(200, content=result_png, headers={"content-type": "image/png"})
+    )
+    user_images_dir = tmp_path / "workspace" / "users" / "u1" / "images" / "generated"
+    user_images_dir.mkdir(parents=True)
+    (user_images_dir / "src.png").write_bytes(base64.b64decode(_png_b64()))
+
+    catalog = _FakeCatalog({"image-editing": [_backend("io", "iopaint")]})
+    app_state = SimpleNamespace(backend_catalog=catalog, config_path=str(tmp_path / "config.json"))
+    request = SimpleNamespace(app=SimpleNamespace(state=app_state), state=SimpleNamespace(user_id="u1"))
+
+    body = EditRequest(image_ref="src.png", op="erase", mask=_png_b64(), tier="fast")
+    result = await edit_image(request, body)
+
+    assert result["status"] == "edited"
+    saved_file = user_images_dir / result["filename"]
+    assert saved_file.exists()
+
+    # Both url and path must resolve to the file on disk
+    import httpx
+
+    # The result should contain a URL/path that resolves to the saved file
+    # Check that both url and path start with the expected per-user directory
+    # This ensures they're using the user-scoped path, not the legacy shared one
+    assert result["url"].startswith("/data/workspace/users/u1/images/generated/")
+    assert result["path"].startswith("/data/workspace/users/u1/images/generated/")
+
+    # Ensure the resolved paths match the actual saved location
+    # The serve_workspace_file route in app.py maps /data/workspace/users/<uid>/... to the per-user dir
+    assert result["url"] == f"/data/workspace/users/u1/images/generated/{result['filename']}"
+    assert result["path"] == f"/data/workspace/users/u1/images/generated/{result['filename']}"
