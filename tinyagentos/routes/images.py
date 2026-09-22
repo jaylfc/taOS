@@ -63,21 +63,6 @@ def _images_dir(request: Request) -> Path:
     return d
 
 
-def _legacy_images_dir(request: Request) -> Path:
-    """Return the legacy shared workspace/images/generated directory for backward compatibility.
-
-    Used for serving pre-existing files that were created before per-user isolation.
-    """
-    config_path = getattr(request.app.state, "config_path", None)
-    if config_path is not None:
-        data_dir = Path(config_path).parent
-    else:
-        data_dir = Path(__file__).parent.parent.parent / "data"
-    d = data_dir / "workspace" / "images" / "generated"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
 def _image_url_path(filename: str, user_id: str | None = None) -> str:
     """Web path for serving a generated image.
 
