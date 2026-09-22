@@ -91,6 +91,42 @@ class TestGeneratedMediaIsolation:
         await app.state.http_client.aclose()
         await app.state.metrics.close()
 
+    @pytest_asyncio.fixture
+    async def three_user_setup(self, tmp_data_dir):
+        """Set up app with three users: admin, alice (user B), bob (user C, non-admin)."""
+        app = await _create_app_with_users(tmp_data_dir, ["admin", "alice", "bob"])
+
+        admin_token = _get_token(app, "admin")
+        alice_token = _get_token(app, "alice")
+        bob_token = _get_token(app, "bob")
+
+        admin_client = _make_client(app, admin_token)
+        alice_client = _make_client(app, alice_token)
+        bob_client = _make_client(app, bob_token)
+
+        # Also create an unauthenticated client
+        transport = ASGITransport(app=app)
+        anon_client = AsyncClient(transport=transport, base_url="http://test")
+
+        yield {
+            "app": app,
+            "admin_client": admin_client,
+            "alice_client": alice_client,
+            "bob_client": bob_client,
+            "anon_client": anon_client,
+            "admin_id": app.state.auth.find_user("admin")["id"],
+            "alice_id": app.state.auth.find_user("alice")["id"],
+            "bob_id": app.state.auth.find_user("bob")["id"],
+        }
+
+        await admin_client.aclose()
+        await alice_client.aclose()
+        await bob_client.aclose()
+        await anon_client.aclose()
+        await app.state.qmd_client.close()
+        await app.state.http_client.aclose()
+        await app.state.metrics.close()
+
     async def _mock_image_backend(self, fake_image_b64):
         """Helper to mock the image generation backend."""
         mock_request = HttpxRequest("POST", "http://localhost:8080/v1/images/generations")
@@ -205,6 +241,46 @@ class TestGeneratedMediaIsolation:
         # Try to traverse out of the workspace
         resp = await admin_client.get("/data/workspace/users/../../etc/passwd")
         assert resp.status_code in (400, 404), f"Traversal should be blocked, got {resp.status_code}"
+
+    async def test_image_generated_by_alice_not_accessible_by_bob_via_user_scoped_path(self, three_user_setup):
+        """Non-admin member (bob) must NOT access another member's (alice) generated image via user-scoped path.
+
+        This tests the DENY branch of require_owner_or_admin: bob is neither the owner nor an admin.
+        """
+        app = three_user_setup["app"]
+        alice_client = three_user_setup["alice_client"]
+        bob_client = three_user_setup["bob_client"]
+        alice_id = three_user_setup["alice_id"]
+        bob_id = three_user_setup["bob_id"]
+
+        # Alice generates an image
+        fake_image = base64.b64encode(b"alice-secret-image").decode()
+        with patch("tinyagentos.routes.images.httpx.AsyncClient") as MockClient:
+            MockClient.return_value = await self._mock_image_backend(fake_image)
+            resp = await alice_client.post("/api/images/generate", json={
+                "prompt": "alice's secret",
+                "seed": 12345,
+            })
+
+        assert resp.status_code == 200
+        data = resp.json()
+        filename = data["filename"]
+        user_scoped_path = data["path"]  # Use server-provided path
+
+        # Verify the path is user-scoped to alice
+        assert user_scoped_path == f"/data/workspace/users/{alice_id}/images/generated/{filename}"
+
+        # Alice (owner) accesses her own image - should succeed
+        resp = await alice_client.get(user_scoped_path)
+        assert resp.status_code == 200, f"Owner should access own image: got {resp.status_code}"
+
+        # Bob (other non-admin member) tries to access Alice's image - should be forbidden
+        resp = await bob_client.get(user_scoped_path)
+        assert resp.status_code == 403, (
+            f"VULNERABILITY: Bob (non-admin member) accessed Alice's image! "
+            f"Got {resp.status_code}, expected 403. "
+            f"This proves member A can read member B's generated media."
+        )
 
     # ============ MUSIC TESTS ============
 
@@ -354,3 +430,59 @@ class TestGeneratedMediaIsolation:
 
         resp = await admin_client.get("/data/workspace/users/../../etc/passwd")
         assert resp.status_code in (400, 404), f"Traversal should be blocked, got {resp.status_code}"
+
+    async def test_music_generated_by_alice_not_accessible_by_bob_via_user_scoped_path(self, three_user_setup):
+        """Non-admin member (bob) must NOT access another member's (alice) generated music via user-scoped path.
+
+        This tests the DENY branch of require_owner_or_admin: bob is neither the owner nor an admin.
+        """
+        app = three_user_setup["app"]
+        alice_client = three_user_setup["alice_client"]
+        bob_client = three_user_setup["bob_client"]
+        alice_id = three_user_setup["alice_id"]
+        bob_id = three_user_setup["bob_id"]
+
+        # Set up music backend
+        app.state.config.server["music_backend_url"] = "http://localhost:9000"
+
+        fake_wav = base64.b64encode(b"alice-secret-music").decode()
+        mock_request = HttpxRequest("POST", "http://localhost:9000/v1/audio/generations")
+        mock_response = Response(
+            status_code=200,
+            json={"data": [{"b64_json": fake_wav}]},
+            request=mock_request,
+        )
+        mock_instance = AsyncMock()
+        mock_instance.post.return_value = mock_response
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("tinyagentos.routes.music._http_backend_reachable", new=AsyncMock(return_value=True)),
+            patch("tinyagentos.routes.music.httpx.AsyncClient") as MockClient,
+        ):
+            MockClient.return_value = mock_instance
+            resp = await alice_client.post("/api/music/compose", json={
+                "prompt": "alice's secret beat",
+                "duration": 5,
+            })
+
+        assert resp.status_code == 200
+        data = resp.json()
+        filename = data["filename"]
+        user_scoped_path = data["path"]  # Use server-provided path
+
+        # Verify the path is user-scoped to alice
+        assert user_scoped_path == f"/data/workspace/users/{alice_id}/music/generated/{filename}"
+
+        # Alice (owner) accesses her own music - should succeed
+        resp = await alice_client.get(user_scoped_path)
+        assert resp.status_code == 200, f"Owner should access own music: got {resp.status_code}"
+
+        # Bob (other non-admin member) tries to access Alice's music - should be forbidden
+        resp = await bob_client.get(user_scoped_path)
+        assert resp.status_code == 403, (
+            f"VULNERABILITY: Bob (non-admin member) accessed Alice's music! "
+            f"Got {resp.status_code}, expected 403. "
+            f"This proves member A can read member B's generated media."
+        )
