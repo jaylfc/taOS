@@ -1,8 +1,13 @@
 """Tests for #642 — startup 503 guard and removal of duplicate eager init."""
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
+
 import pytest
 from httpx import ASGITransport, AsyncClient
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def _make_app(tmp_path):
@@ -153,3 +158,92 @@ async def test_startup_complete_without_litellm(tmp_path, monkeypatch):
         app = create_app(data_dir=tmp_path)
         async with app.router.lifespan_context(app):
             assert app.state._startup_complete is True
+
+
+# ---------------------------------------------------------------------------
+# Health endpoint responsiveness during LiteLLM bring-up
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint_responsive_during_litellm_bringup(tmp_path):
+    """Health endpoint must answer within 500 ms while _pids_listening_on blocks.
+
+    A slow lsof inside LLMProxy.start() simulates the real event-loop
+    stall on the restart-over-stale-LiteLLM path. The event loop must not
+    be blocked, so /api/health stays fast throughout bring-up.
+    """
+    import contextlib
+    import yaml
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from tinyagentos.llm_proxy import LLMProxy
+
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config))
+    (tmp_path / ".setup_complete").touch()
+
+    slow_lsof_duration = 2.0
+    lsof_started = threading.Event()
+    lsof_finished = threading.Event()
+
+    def slow_pids_listening_on(port):
+        lsof_started.set()
+        time.sleep(slow_lsof_duration)
+        lsof_finished.set()
+        return []
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = False
+
+    proxy = LLMProxy(
+        port=7834,
+        controller_port=6969,
+        database_url=None,
+        local_token=None,
+        registry=MagicMock(),
+        data_dir=tmp_path,
+        inhouse_keys=True,
+    )
+
+    with patch("tinyagentos.llm_proxy._pids_listening_on", side_effect=slow_pids_listening_on):
+        with patch("tinyagentos.llm_proxy.httpx.AsyncClient", return_value=mock_client):
+            app = _make_app(tmp_path)
+            app.state._startup_complete = True
+            transport = ASGITransport(app=app)
+
+            start_task = asyncio.create_task(proxy.start([], secrets={}))
+            try:
+                for _ in range(200):
+                    if lsof_started.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    t0 = time.monotonic()
+                    resp = await client.get("/api/health")
+                    elapsed = time.monotonic() - t0
+                assert resp.status_code == 200
+                assert elapsed < 0.5, (
+                    f"/api/health took {elapsed:.2f}s while lsof slept "
+                    f"{slow_lsof_duration}s"
+                )
+                assert not lsof_finished.is_set(), (
+                    "/api/health completed after _pids_listening_on finished "
+                    "(event loop was blocked)"
+                )
+            finally:
+                start_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await start_task
