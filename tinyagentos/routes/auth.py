@@ -15,6 +15,7 @@ import threading
 import time
 import zlib
 from collections import OrderedDict
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 
 import httpx
@@ -7385,6 +7386,11 @@ _DEVICE_KEY_PREFIX = "device:"
 _DEVICE_THREAD_LINES = 200
 _DEVICE_THREAD_BYTES = 64 * 1024
 _DEVICE_MESSAGE_BYTES = 4 * 1024
+#: What may be RELAYED to the board. @taOS-dev's agentd 400s above 2000, so
+#: sending more is a round trip that can only fail.
+_DEVICE_SEND_CHARS = 2000
+#: Ceiling on the per-board dedup set.
+_DEVICE_SEEN_MAX = 2000
 _DEVICE_TRIM_MARKER = "…earlier output trimmed"
 
 #: Live boards and their threads. Guarded because heartbeats, messages and the
@@ -7525,9 +7531,36 @@ async def device_agent_heartbeat(request: Request):
     slug = str(body.get("slug", "")).strip()
     if not _DEVICE_SLUG_RE.match(slug):
         return JSONResponse({"error": "bad slug"}, status_code=400)
+    # THE URL IS PINNED TO THE CALLER, AND REBUILT FROM PARTS.
+    #
+    # @taOS-dev demonstrated the hole rather than arguing it: a heartbeat
+    # claiming url="http://127.0.0.1:<port>/internal/admin-action?x=" made the
+    # phone POST to "/internal/admin-action?x=/chat" -- the query swallows the
+    # path this code used to append -- against a LOCAL service, carrying the
+    # bearer token. That is an SSRF with credentials, from a pre-auth surface.
+    #
+    # Two defences, because one of them is only a filter. The host must be the
+    # address the heartbeat actually came from, so a board can only ever name
+    # itself; and the stored value is REBUILT from scheme/host/port, so there
+    # is no attacker-controlled string left to concatenate a path onto.
     url = str(body.get("url", "")).strip()
-    if not url.startswith(("http://", "https://")):
+    parsed = urlparse(url)
+    peer = getattr(getattr(request, "client", None), "host", None)
+    if parsed.scheme != "http" or not parsed.hostname:
         return JSONResponse({"error": "bad url"}, status_code=400)
+    if parsed.query or parsed.fragment or parsed.path not in ("", "/"):
+        return JSONResponse({"error": "url must have no path or query"}, status_code=400)
+    if parsed.username or parsed.password:
+        return JSONResponse({"error": "bad url"}, status_code=400)
+    if peer and parsed.hostname != peer:
+        # A board may only point at itself. The address it connects FROM is
+        # the one fact here nobody on the other end gets to choose.
+        return JSONResponse({"error": "url must match the caller"}, status_code=400)
+    try:
+        port = parsed.port or 80
+    except ValueError:
+        return JSONResponse({"error": "bad url"}, status_code=400)
+    url = "http://%s:%d" % (parsed.hostname, port)
     with _DEVICE_LOCK:
         _DEVICE_AGENTS[slug] = {
             "slug": slug,
@@ -7570,6 +7603,13 @@ async def device_agent_message(request: Request):
 
     with _DEVICE_LOCK:
         seen = _DEVICE_SEEN.setdefault(slug, set())
+        if len(seen) > _DEVICE_SEEN_MAX:
+            # Bounded: this grows once per message for the life of a board, and
+            # a board that is plugged in all day would otherwise be a slow leak
+            # on a phone. Clearing wholesale (rather than evicting) can only
+            # ever re-admit a retry of something older than the last 2000
+            # messages, which cannot still be in flight.
+            seen.clear()
         if (msg_id, seq) in seen:
             # Idempotent by contract: a retried delivery is a no-op, not a
             # second copy of the same line.
@@ -7609,6 +7649,13 @@ async def lock_send(slug: str, request: Request):
     text = str(body.get("text", "")).strip()
     if not text:
         return JSONResponse({"error": "text required"}, status_code=400)
+    if len(text) > _DEVICE_SEND_CHARS:
+        # Refused here rather than sent and bounced: the board answers 400
+        # above this, and a round trip that can only fail is worse than a
+        # straight answer.
+        return JSONResponse(
+            {"error": "text too long", "max": _DEVICE_SEND_CHARS}, status_code=400
+        )
 
     token = _device_token()
     msg_id = secrets.token_hex(8)
@@ -7621,7 +7668,7 @@ async def lock_send(slug: str, request: Request):
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                entry["url"].rstrip("/") + "/chat",
+                entry["url"] + "/chat",
                 json={"id": msg_id, "text": text},
                 headers={"Authorization": "Bearer %s" % token} if token else {},
             )

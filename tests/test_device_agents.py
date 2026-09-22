@@ -35,10 +35,19 @@ class _Headers(dict):
         return default
 
 
+class _Client:
+    def __init__(self, host):
+        self.host = host
+
+
 class _Req:
-    def __init__(self, body=None, headers=None):
+    def __init__(self, body=None, headers=None, peer="10.0.0.5"):
         self._body = body or {}
         self.headers = _Headers(headers or {})
+        # The address the heartbeat arrived FROM. The route pins the board's
+        # advertised url to this, so a stub without it would let every test
+        # pass against a url no real board could have sent.
+        self.client = _Client(peer)
         self.app = type("App", (), {"state": type("S", (), {})()})()
 
     async def json(self):
@@ -246,3 +255,65 @@ class TestTheRoutesAreReachableBeforeSignIn:
         while every test that called the function directly stayed green."""
         assert "/auth/lock-send/" in EXEMPT_PREFIXES
         assert "/auth/lock-send" not in EXEMPT_PATHS
+
+
+class TestTheHeartbeatUrlIsPinnedToTheCaller:
+    """@taOS-dev's finding, demonstrated rather than argued (bus 4497).
+
+    A board that could name any url made the phone POST to it WITH the bearer
+    token -- an SSRF with credentials, from a surface that answers before
+    anyone has signed in. The query string was the trick: appending "/chat" to
+    ".../internal/admin-action?x=" lands the path inside the query.
+    """
+
+    def test_the_exact_exploit_is_refused(self, armed):
+        resp = _beat(
+            armed,
+            url="http://127.0.0.1:9999/internal/admin-action?x=",
+        )
+        assert resp.status_code == 400
+        assert auth._device_live() == []
+
+    @pytest.mark.parametrize("bad", [
+        "http://10.0.0.5/internal/admin?x=",     # query
+        "http://10.0.0.5/some/path",             # path
+        "http://10.0.0.5#frag",                  # fragment
+        "https://10.0.0.5:8787",                 # scheme
+        "http://user:pw@10.0.0.5:8787",          # credentials
+        "http://10.0.0.9:8787",                  # a host that is not the caller
+        "ftp://10.0.0.5",
+        "",
+    ])
+    def test_anything_the_board_does_not_own_is_refused(self, armed, bad):
+        assert _beat(armed, url=bad).status_code == 400
+
+    def test_the_stored_url_is_rebuilt_from_parts(self, armed):
+        """Not merely validated: REBUILT, so there is no attacker-controlled
+        string left for a later path append to be smuggled into."""
+        _beat(armed, url="http://10.0.0.5:8787/")
+        with auth._DEVICE_LOCK:
+            assert auth._DEVICE_AGENTS["taosusb"]["url"] == "http://10.0.0.5:8787"
+
+    def test_a_board_may_name_itself(self, armed):
+        """The fix must not break the real device: @taOS-dev's board reports
+        the address it connects from, so this is the ordinary case."""
+        assert _beat(armed, url="http://10.0.0.5:8787").status_code == 200
+
+
+class TestTheRelayAndDedupAreBounded:
+    def test_text_longer_than_the_board_accepts_is_refused_here(self, armed):
+        """The board 400s above 2000 chars; a round trip that can only fail is
+        worse than a straight answer."""
+        _beat(armed)
+        resp = _call(auth.lock_send("taosusb", _Req({"text": "x" * 2001})))
+        assert resp.status_code == 400
+
+    def test_the_dedup_set_does_not_grow_without_bound(self, armed):
+        """A board plugged in all day would otherwise be a slow leak."""
+        _beat(armed)
+        for i in range(auth._DEVICE_SEEN_MAX + 50):
+            _call(auth.device_agent_message(_Req(
+                {"slug": "taosusb", "id": "run", "seq": i, "text": "."}, armed
+            )))
+        with auth._DEVICE_LOCK:
+            assert len(auth._DEVICE_SEEN["taosusb"]) <= auth._DEVICE_SEEN_MAX + 1
