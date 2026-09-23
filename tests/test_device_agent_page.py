@@ -51,7 +51,8 @@ class TestADeviceIslandHasItsOwnKey:
             _var("FRAMEWORKS"), _var("RESTING"),
             _function("hueFor"), _function("initials"),
             _function("islandIdentity"), _function("applyAgent"),
-            _function("setAttrIfChanged"), _function("island"),
+            _function("setAttrIfChanged"), _function("isDoneStatus"),
+            _function("island"),
         ])
         out = _run(_DOM + src + r"""
 var document = { createElement: makeNode };

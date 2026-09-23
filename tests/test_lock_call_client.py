@@ -346,13 +346,14 @@ class TestTheWiring:
         assert "active ? 300 : 2000" in sched[:400]
 
     def test_it_listens_whether_or_not_the_shared_stream_exists(self):
-        """The shared EventSource is created inside `if (powerSheet)`. The call
-        zone must not depend on that."""
+        """The zone uses the page's one shared stream (lockEvents(), created
+        outside `if (powerSheet)`), never an EventSource of its own."""
         src = LOCK_SCRIPT[LOCK_SCRIPT.index("var callStream ="):]
         src = src[:800]
-        assert 'typeof lockStream !== "undefined"' in src
-        assert 'new EventSource("/auth/lock-events")' in src
+        assert "var callStream = lockEvents();" in src
+        assert "new EventSource(" not in src
         assert 'addEventListener("call"' in src
+        assert LOCK_SCRIPT.count('new EventSource("/auth/lock-events")') == 1
 
     def test_the_feed_is_hidden_by_its_own_attribute_only(self):
         """The call must never borrow `hidden`, `data-off` or `data-hidden`:

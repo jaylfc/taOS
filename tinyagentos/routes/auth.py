@@ -8153,12 +8153,9 @@ _LOCK_SCREEN_SCRIPT = r"""
       });
 
       // The push is a nudge to look NOW; the poll is what makes it reliable.
-      // The shared stream only exists when the power sheet does, so the zone
-      // opens its own if it has to.
-      var callStream = (typeof lockStream !== "undefined" && lockStream) ? lockStream : null;
-      if (!callStream && window.EventSource) {
-        try { callStream = new EventSource("/auth/lock-events"); } catch (err) { callStream = null; }
-      }
+      // The page's ONE shared stream: a second EventSource would hold a second
+      // connection open to the controller for the same events.
+      var callStream = lockEvents();
       if (callStream) {
         callStream.addEventListener("call", function () { if (!callOff) pollCall(); });
         callStream.addEventListener("screen-on", function () {
