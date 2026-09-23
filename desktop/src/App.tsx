@@ -35,6 +35,7 @@ import { InstallPromptBanner } from "@/shell/InstallPromptBanner";
 import { EffectsLayer } from "@/theme/effects/EffectsLayer";
 import { SafetyFloor } from "@/components/SafetyFloor";
 import { withCsrf, getCsrfToken } from "@/lib/csrf";
+import { useLockOnScreenOff } from "@/shell/useLockOnScreenOff";
 
 interface SystemShortcutsProps {
   toggleSearch: () => void;
@@ -214,6 +215,9 @@ export function App() {
   // Browser-mode flag: when on mobile but not in PWA, apply browser-safe
   // layout that accounts for Safari's dynamic URL bar + share/tab bars
   const isBrowserMobile = mode !== "desktop" && !isPwa;
+
+  // On the handset, the power key locks: see useLockOnScreenOff.
+  useLockOnScreenOff();
 
   const activeWindow = windows.find((w) => w.id === activeWindowId);
 
