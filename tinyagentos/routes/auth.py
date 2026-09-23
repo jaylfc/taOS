@@ -1977,6 +1977,328 @@ body.lockscreen-on .osk-toggle { display: none !important; }
   .ls-notif { transition: none; }
   .lockscreen:not([data-sheet="none"]) .ls-head { filter: none; }
 }
+/* THE LIVE ZONE: an incoming call (demo). Jay: "not a siri type orb but
+   stylised rectangle widget type design that appears when needed adaptive to
+   its content". So it is ONE card, in the same material and column as the
+   islands, that exists only while there is a call and changes SHAPE with what
+   it holds: compact while ringing, tall while the PA talks, a one-line pill as
+   it ends.
+
+   It takes the feed's place rather than sitting over it. The feed is hidden
+   with its OWN attribute (data-call), never with `hidden`, `data-off` or
+   `data-hidden` -- those three already have owners (the poll, the switcher and
+   the collapse), and borrowing any of them would hand the feed back in the
+   wrong state when the call ends. */
+.ls-feed[data-call="1"] { display: none; }
+.ls-feed[data-call="return"] { opacity: 0; transition: none; }
+.ls-head[data-call] .ls-views { opacity: 0.28; pointer-events: none; transition: opacity 280ms ease; }
+
+.ls-call {
+  --ls-call-r: 28px;
+  position: relative; flex: none;
+  width: 100%; max-width: var(--ls-card-w);
+  margin-top: 6px;
+  padding: 1.5px;                    /* the edge the glow shows through */
+  border-radius: var(--ls-call-r);
+  overflow: hidden; isolation: isolate;
+  background: rgba(255,255,255,0.07);
+  box-shadow: 0 18px 40px -18px rgba(0,0,0,0.9), 0 2px 10px -4px rgba(0,0,0,0.6);
+  transition: width 480ms cubic-bezier(0.34, 1.2, 0.5, 1),
+              opacity 220ms ease;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.ls-call[hidden] { display: none; }
+/* Laid out but unseen, so its size can be measured before it is revealed. */
+.ls-call[data-phase="measure"] { position: absolute; visibility: hidden; transition: none; }
+.ls-call[data-phase="grow"] { opacity: 0; transition: none; }
+/* Its first size is a starting point, not a change: nothing to animate from. */
+.ls-call[data-phase="measure"] .ls-call-card,
+.ls-call[data-phase="grow"] .ls-call-card { transition: none; }
+/* A ring the script moved focus to is for keyboard users; on the glass, where
+   the finger is the pointer, it would read as a stray outline. */
+.ls-call[data-kbd="0"] :focus-visible,
+.ls-call[data-kbd="0"] :focus-visible .ls-call-dot { outline: none; }
+.ls-call[data-phase="leave"] { opacity: 0; transition: opacity 120ms ease; }
+
+/* THE EDGE. One conic gradient per voice, spun by the compositor (a transform
+   animation, no per-frame paint) and faded by the script from the speech
+   envelope -- opacity only. Square and oversized so the sweep covers the card
+   at every height it morphs through. */
+.ls-call-glow { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.ls-call-ring {
+  position: absolute; left: 50%; top: 50%;
+  width: 900px; height: 900px; margin: -450px 0 0 -450px;
+  opacity: 0; will-change: transform, opacity;
+  animation: ls-call-spin 5.2s linear infinite;
+}
+.ls-call-ring[data-tone="caller"] {
+  background: conic-gradient(from 0deg,
+    rgba(255,122,89,0) 0deg, #ff7a59 50deg, #ffb020 95deg, rgba(255,176,32,0) 150deg,
+    rgba(255,79,139,0) 185deg, #ff4f8b 245deg, #ff7a59 300deg, rgba(255,122,89,0) 360deg);
+}
+.ls-call-ring[data-tone="pa"] {
+  background: conic-gradient(from 90deg,
+    rgba(76,154,255,0) 0deg, #4c9aff 55deg, #8b5cf6 110deg, rgba(139,92,246,0) 160deg,
+    rgba(61,214,255,0) 190deg, #3dd6ff 250deg, #4c9aff 305deg, rgba(76,154,255,0) 360deg);
+  animation-duration: 6.4s; animation-direction: reverse;
+}
+.ls-call[data-state="ringing"] .ls-call-ring { animation-duration: 2.6s; }
+@keyframes ls-call-spin { to { transform: rotate(360deg); } }
+
+/* THE BODY. Solid rather than backdrop-blurred: the glow behind it moves every
+   frame, and a backdrop filter over a moving backdrop is a full blur per frame
+   on a phone GPU. The height is set by the script from the measured content,
+   so the card MORPHS between states instead of snapping. */
+.ls-call-card {
+  position: relative; z-index: 1;
+  border-radius: calc(var(--ls-call-r) - 1.5px);
+  background: rgba(22, 22, 27, 0.955);
+  overflow: hidden;
+  transition: height 480ms cubic-bezier(0.34, 1.2, 0.5, 1);
+}
+/* The ambient wash: each voice's colour pooled at the top of the card. */
+.ls-call-wash {
+  position: absolute; inset: 0; pointer-events: none; opacity: 0;
+  will-change: opacity;
+}
+.ls-call-wash[data-tone="caller"] {
+  background: radial-gradient(120% 90px at 50% 0%, rgba(255,122,89,0.26), rgba(255,79,139,0.08) 60%, transparent 100%);
+}
+.ls-call-wash[data-tone="pa"] {
+  background: radial-gradient(120% 110px at 50% 0%, rgba(76,154,255,0.28), rgba(139,92,246,0.10) 60%, transparent 100%);
+}
+.ls-call-views { position: relative; }
+.ls-call-view {
+  position: relative; display: flow-root;   /* contain the last child's margin, or the measure misses it */
+  transition: opacity 240ms ease 110ms, transform 380ms cubic-bezier(0.16, 1, 0.3, 1) 60ms;
+}
+.ls-call-view:not([data-on="1"]) {
+  position: absolute; left: 0; right: 0; top: 0;
+  opacity: 0; transform: scale(0.97); pointer-events: none; visibility: hidden;
+  transition: opacity 160ms ease, transform 200ms ease, visibility 0s linear 200ms;
+}
+
+/* RINGING. Compact: who, then the answers. */
+.ls-call-caller { display: flex; align-items: center; gap: 14px; padding: 18px 20px 4px; }
+.ls-call-avatar {
+  position: relative; flex: none;
+  width: 54px; height: 54px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; font-weight: 600; color: #fff;
+  background: linear-gradient(140deg, #ff9a62, #ff4f8b);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18);
+}
+.ls-call-avatar::after {
+  content: ""; position: absolute; inset: -5px; border-radius: 50%;
+  border: 2px solid rgba(255,138,101,0.6);
+  animation: ls-call-halo 1.6s cubic-bezier(0.2, 0.7, 0.3, 1) infinite;
+}
+.ls-call:not([data-state="ringing"]) .ls-call-avatar::after { animation: none; opacity: 0; }
+@keyframes ls-call-halo {
+  0% { transform: scale(0.94); opacity: 0.9; }
+  100% { transform: scale(1.32); opacity: 0; }
+}
+.ls-call-id { min-width: 0; display: flex; flex-direction: column; }
+.ls-call-kicker {
+  font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  color: rgba(255,255,255,0.55);
+}
+.ls-call-name { font-size: 30px; font-weight: 600; line-height: 1.12; letter-spacing: -0.015em; color: #fff; }
+.ls-call-label { font-size: 14px; color: rgba(255,255,255,0.55); }
+.ls-call-row {
+  display: flex; justify-content: space-around; align-items: flex-start;
+  padding: 14px 18px 4px;
+}
+.ls-call-btn {
+  -webkit-appearance: none; appearance: none; border: 0; background: none; padding: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  min-width: 72px; color: rgba(255,255,255,0.78);
+  font: inherit; font-size: 12.5px; font-weight: 500;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.ls-call-dot {
+  width: 58px; height: 58px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,0.12);
+  transition: transform 140ms cubic-bezier(0.32,0.72,0,1), background 160ms ease;
+}
+.ls-call-dot svg { width: 25px; height: 25px; fill: none; stroke: #fff; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.ls-call-btn[data-kind="danger"] .ls-call-dot { background: #ff4d4f; }
+.ls-call-btn[data-kind="go"] .ls-call-dot { background: #30c26a; }
+.ls-call-btn:active .ls-call-dot { transform: scale(0.92); }
+.ls-call-btn[aria-pressed="true"] .ls-call-dot { background: #fff; }
+.ls-call-btn[aria-pressed="true"] .ls-call-dot svg { stroke: #16161b; }
+.ls-call-btn:focus-visible { outline: none; }
+.ls-call-btn:focus-visible .ls-call-dot { outline: 3px solid #4c9aff; outline-offset: 3px; }
+/* The headline answer. Full width, the accent gradient, and a slow sheen, so
+   it reads as THE thing to press without shouting over the call itself. */
+.ls-call-pa {
+  -webkit-appearance: none; appearance: none; border: 0;
+  position: relative; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  width: calc(100% - 32px); height: 54px; margin: 14px 16px 16px;
+  border-radius: 999px;
+  font: inherit; font-size: 16.5px; font-weight: 600; letter-spacing: 0.005em; color: #fff;
+  background: linear-gradient(100deg, #3f7dff 0%, #4c9aff 38%, #7c5cff 100%);
+  box-shadow: 0 10px 26px -10px rgba(76,154,255,0.75), inset 0 1px 0 rgba(255,255,255,0.25);
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  transition: transform 140ms cubic-bezier(0.32,0.72,0,1);
+}
+.ls-call-pa::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -40%; width: 40%;
+  background: linear-gradient(100deg, transparent, rgba(255,255,255,0.28), transparent);
+  transform: skewX(-18deg);
+  animation: ls-call-sheen 3.2s cubic-bezier(0.4, 0, 0.2, 1) 0.8s infinite;
+}
+@keyframes ls-call-sheen { 0% { left: -40%; } 45%, 100% { left: 120%; } }
+.ls-call-pa svg { width: 20px; height: 20px; fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ls-call-pa:active { transform: scale(0.98); }
+.ls-call-pa:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+
+/* THE CONVERSATION: the PA talking, or you. */
+.ls-call-head {
+  display: flex; align-items: center; gap: 9px;
+  padding: 16px 20px 10px;
+  font-size: 15px; font-weight: 600; color: rgba(255,255,255,0.94);
+}
+.ls-call-live {
+  flex: none; width: 8px; height: 8px; border-radius: 50%; background: #3ddc84;
+  box-shadow: 0 0 0 0 rgba(61,220,132,0.55);
+  animation: ls-call-live 1.8s ease-out infinite;
+}
+@keyframes ls-call-live {
+  0% { box-shadow: 0 0 0 0 rgba(61,220,132,0.55); }
+  70%, 100% { box-shadow: 0 0 0 8px rgba(61,220,132,0); }
+}
+.ls-call-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ls-call-timer {
+  flex: none; font-size: 14px; font-weight: 500; color: rgba(255,255,255,0.55);
+  font-variant-numeric: tabular-nums;
+}
+.ls-call-log {
+  display: flex; flex-direction: column; gap: 8px;
+  max-height: 318px; overflow-y: auto; padding: 4px 16px 12px;
+  scrollbar-width: none; overscroll-behavior: contain;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+}
+.ls-call-log::-webkit-scrollbar { display: none; }
+.ls-call-log:empty { display: none; }
+.ls-call-line {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  max-width: 86%;
+  animation: ls-call-line-in 420ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.ls-call-line[data-who="pa"] { align-self: flex-end; align-items: flex-end; }
+@keyframes ls-call-line-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+.ls-call-speaker {
+  display: flex; align-items: center; gap: 6px; padding: 0 6px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+  color: rgba(255,255,255,0.45);
+}
+.ls-call-bars { display: inline-flex; align-items: center; gap: 2px; height: 10px; opacity: 0; transition: opacity 200ms ease; }
+.ls-call-bars i {
+  display: block; width: 2.5px; height: 10px; border-radius: 2px;
+  background: currentColor; transform: scaleY(0.3); transform-origin: 50% 50%;
+}
+.ls-call-line[data-speaking="1"] .ls-call-bars { opacity: 1; }
+.ls-call-line[data-who="pa"] .ls-call-speaker { color: #8fbcff; }
+.ls-call-line[data-who="caller"] .ls-call-speaker { color: #ffb09a; }
+.ls-call-text {
+  padding: 9px 13px; border-radius: 18px;
+  font-size: 15px; line-height: 1.38; color: rgba(255,255,255,0.92);
+  background: rgba(255,255,255,0.08);
+  border-bottom-left-radius: 6px;
+  min-height: 39px; min-width: 44px;
+}
+.ls-call-line[data-who="pa"] .ls-call-text {
+  background: linear-gradient(135deg, rgba(76,154,255,0.30), rgba(124,92,255,0.26));
+  border-bottom-left-radius: 18px; border-bottom-right-radius: 6px;
+}
+.ls-call-line[data-cut="1"] .ls-call-text::after { content: "\u2026"; color: rgba(255,255,255,0.45); }
+.ls-call-mark {
+  align-self: center; margin: 4px 0 2px; padding: 4px 11px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; color: #3ddc84;
+  background: rgba(61,220,132,0.12);
+  animation: ls-call-line-in 420ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.ls-call-ctls { position: relative; }
+.ls-call-ctl { display: flex; gap: 10px; padding: 4px 16px 16px; }
+.ls-call-ctl[data-for="live"] { justify-content: space-around; padding-top: 8px; }
+.ls-call-ctl:not([data-on="1"]) { display: none; }
+.ls-call-wide {
+  -webkit-appearance: none; appearance: none; border: 0;
+  flex: 1 1 0; height: 50px; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  font: inherit; font-size: 15.5px; font-weight: 600; color: #fff;
+  background: rgba(255,255,255,0.12);
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  transition: transform 140ms cubic-bezier(0.32,0.72,0,1);
+}
+.ls-call-wide svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.ls-call-wide[data-kind="primary"] {
+  background: linear-gradient(100deg, #3f7dff, #6d6bff);
+  box-shadow: 0 8px 22px -10px rgba(76,154,255,0.8), inset 0 1px 0 rgba(255,255,255,0.22);
+}
+.ls-call-wide[data-kind="danger"] { background: rgba(255,77,79,0.16); color: #ff7b7d; }
+.ls-call-wide:active { transform: scale(0.97); }
+.ls-call-wide:focus-visible { outline: 3px solid #4c9aff; outline-offset: 2px; }
+
+/* ENDED: one line, then gone. */
+.ls-call-view[data-for="ended"] { text-align: center; white-space: nowrap; }
+.ls-call-pill {
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 13px 20px; white-space: nowrap;
+  font-size: 14.5px; font-weight: 600; color: rgba(255,255,255,0.9);
+}
+.ls-call-pill-ico {
+  flex: none; width: 26px; height: 26px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,0.12);
+}
+.ls-call-pill-ico svg { width: 16px; height: 16px; fill: none; stroke: #fff; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.ls-call-pill[data-kind="event"] .ls-call-pill-ico { background: #ff453a; }
+.ls-call-pill-text { transition: opacity 200ms ease; }
+
+/* THE LIQUID. A throwaway layer that exists only during the hand-over: blobs
+   stand in for the cards, run together under an alpha-contrast (goo) filter
+   into one droplet, and the droplet stretches into the card. The filter never
+   touches the real cards -- a blur-and-threshold over text and backdrop-blurred
+   glass reads as mud, and a filtered ancestor would break their backdrop. */
+.ls-goo {
+  position: fixed; z-index: 30; pointer-events: none;
+  filter: url(#ls-goo-filter);
+  transition: opacity 240ms ease;
+}
+.ls-goo-blob {
+  position: absolute; left: 0; top: 0;
+  background: #2b2c33;
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+.ls-feed [data-call-card] { will-change: transform, opacity; }
+/* The event the PA just added. Drawn INSIDE the card -- the feed clips at its
+   edges, so an outer glow on the first card is cut off flat. */
+.ls-notif-group[data-fresh="1"] .ls-notif:first-child {
+  background: linear-gradient(180deg, rgba(255,69,58,0.16), rgba(255,69,58,0.04) 70%), rgba(30, 30, 34, 0.92);
+  box-shadow: inset 0 0 0 1.5px rgba(255,69,58,0.6), 0 6px 18px -6px rgba(0, 0, 0, 0.75);
+  animation: ls-call-fresh 1.3s ease-in-out 3;
+}
+@keyframes ls-call-fresh {
+  50% { box-shadow: inset 0 0 0 1.5px rgba(255,69,58,0.95), 0 6px 18px -6px rgba(0, 0, 0, 0.75); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ls-call, .ls-call-card, .ls-call-view, .ls-call-view:not([data-on="1"]) { transition: opacity 180ms ease; }
+  .ls-call-ring, .ls-call-avatar::after, .ls-call-pa::after, .ls-call-live,
+  .ls-call-line, .ls-call-mark, .ls-notif-group[data-fresh="1"] .ls-notif { animation: none; }
+  .ls-call-ring { opacity: 0.55; }
+  .ls-call-view:not([data-on="1"]) { transform: none; }
+}
+.lockscreen[data-blanked] .ls-call *, .lockscreen[data-blanked] .ls-call *::after { animation-play-state: paused; }
 /* Landscape: the keypad and the clock sit side by side or neither fits. */
 @media (orientation: landscape) and (max-height: 560px) {
   .lockscreen { flex-direction: row; align-items: center; gap: 24px; padding-top: 12px; }
@@ -2418,6 +2740,99 @@ def _lock_head_html() -> str:
         <div class="ls-panel" id="ls-stats" data-view="stats"
              role="tabpanel" aria-labelledby="ls-tab-stats" aria-label="System" hidden></div>
       </div>
+      <!-- THE LIVE ZONE (incoming-call demo). Present only while a call is;
+           /auth/lock-screen.js fills it from /auth/lock-call. Every word in it
+           is scripted server-side: this screen renders before sign-in. -->
+      <section class="ls-call" id="ls-call" aria-labelledby="ls-call-heading" hidden>
+        <div class="ls-call-glow" aria-hidden="true">
+          <span class="ls-call-ring" data-tone="caller"></span>
+          <span class="ls-call-ring" data-tone="pa"></span>
+        </div>
+        <div class="ls-call-card" id="ls-call-card">
+          <span class="ls-call-wash" data-tone="caller" aria-hidden="true"></span>
+          <span class="ls-call-wash" data-tone="pa" aria-hidden="true"></span>
+          <div class="ls-call-views">
+            <div class="ls-call-view" data-for="ringing">
+              <div class="ls-call-caller">
+                <div class="ls-call-avatar" id="ls-call-avatar" aria-hidden="true">N</div>
+                <div class="ls-call-id">
+                  <div class="ls-call-kicker" id="ls-call-heading">Incoming call</div>
+                  <div class="ls-call-name" id="ls-call-name">Naira</div>
+                  <div class="ls-call-label" id="ls-call-label">mobile</div>
+                </div>
+              </div>
+              <div class="ls-call-row">
+                <button type="button" class="ls-call-btn" data-kind="danger" data-call-act="decline">
+                  <span class="ls-call-dot"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.2 13.9c5-4.6 12.6-4.6 17.6 0l-1.8 2.6-3.6-1.2-.5-2.6a10 10 0 0 0-5.8 0l-.5 2.6-3.6 1.2z"/></svg></span>
+                  Decline
+                </button>
+                <button type="button" class="ls-call-btn" data-call-act="voicemail">
+                  <span class="ls-call-dot"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6.8" cy="12.5" r="4"/><circle cx="17.2" cy="12.5" r="4"/><path d="M6.8 16.5h10.4"/></svg></span>
+                  Voicemail
+                </button>
+                <button type="button" class="ls-call-btn" data-kind="go" data-call-act="answer">
+                  <span class="ls-call-dot"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.2 3.5l2.4 4-1.9 2a11 11 0 0 0 5.8 5.8l2-1.9 4 2.4v3.1a1.7 1.7 0 0 1-1.9 1.7A16.5 16.5 0 0 1 3.4 5.4 1.7 1.7 0 0 1 5.1 3.5z"/></svg></span>
+                  Answer
+                </button>
+              </div>
+              <button type="button" class="ls-call-pa" data-call-act="pa">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 3.5l1.9 5.1 5.1 1.9-5.1 1.9L11 17.5l-1.9-5.1L4 10.5l5.1-1.9z"/><path d="M18.3 14.8l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8z"/></svg>
+                Send to PA
+              </button>
+            </div>
+            <div class="ls-call-view" data-for="talk">
+              <div class="ls-call-head">
+                <span class="ls-call-live" aria-hidden="true"></span>
+                <span class="ls-call-title" id="ls-call-title"></span>
+                <span class="ls-call-timer" id="ls-call-timer" role="timer" aria-live="off">0:00</span>
+              </div>
+              <div class="ls-call-log" id="ls-call-log" role="log" aria-live="polite"
+                   aria-label="Call transcript"></div>
+              <div class="ls-call-ctls">
+                <div class="ls-call-ctl" data-for="pa">
+                  <button type="button" class="ls-call-wide" data-kind="primary" data-call-act="takeover">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.2 3.5l2.4 4-1.9 2a11 11 0 0 0 5.8 5.8l2-1.9 4 2.4v3.1a1.7 1.7 0 0 1-1.9 1.7A16.5 16.5 0 0 1 3.4 5.4 1.7 1.7 0 0 1 5.1 3.5z"/></svg>
+                    Take over
+                  </button>
+                  <button type="button" class="ls-call-wide" data-kind="danger" data-call-act="end">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.2 13.9c5-4.6 12.6-4.6 17.6 0l-1.8 2.6-3.6-1.2-.5-2.6a10 10 0 0 0-5.8 0l-.5 2.6-3.6 1.2z"/></svg>
+                    End call
+                  </button>
+                </div>
+                <div class="ls-call-ctl" data-for="live">
+                  <button type="button" class="ls-call-btn" data-call-toggle="mute" aria-pressed="false">
+                    <span class="ls-call-dot"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M4 4l16 16"/></svg></span>
+                    Mute
+                  </button>
+                  <button type="button" class="ls-call-btn" data-call-toggle="speaker" aria-pressed="false">
+                    <span class="ls-call-dot"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg></span>
+                    Speaker
+                  </button>
+                  <button type="button" class="ls-call-btn" data-kind="danger" data-call-act="end">
+                    <span class="ls-call-dot"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.2 13.9c5-4.6 12.6-4.6 17.6 0l-1.8 2.6-3.6-1.2-.5-2.6a10 10 0 0 0-5.8 0l-.5 2.6-3.6 1.2z"/></svg></span>
+                    End
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="ls-call-view" data-for="ended">
+              <div class="ls-call-pill" id="ls-call-pill" role="status">
+                <span class="ls-call-pill-ico" id="ls-call-pill-ico" aria-hidden="true"></span>
+                <span class="ls-call-pill-text" id="ls-call-outcome"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <svg class="ls-goo-defs" width="0" height="0" aria-hidden="true" focusable="false"
+           style="position:absolute;width:0;height:0">
+        <filter id="ls-goo-filter" x="-20%" y="-20%" width="140%" height="140%"
+                color-interpolation-filters="sRGB">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="9" result="blur"/>
+          <feColorMatrix in="blur" mode="matrix"
+                         values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -10"/>
+        </filter>
+      </svg>
       {_FRAMEWORK_SPRITE}
       {_VIEW_SPRITE}
     </div>
@@ -3494,7 +3909,9 @@ _LOCK_SCREEN_SCRIPT = r"""
       phone: '<path d="M6.2 3.5l2.4 4-1.9 2a11 11 0 0 0 5.8 5.8l2-1.9 4 2.4v3.1a1.7 1.7 0 0 1-1.9 1.7A16.5 16.5 0 0 1 3.4 5.4 1.7 1.7 0 0 1 5.1 3.5z"/>',
       sms: '<path d="M4 4.5h16v11H8.5L4 19z"/><path d="M8 8.6h8M8 11.6h5"/>',
       // Two rings joined by a bar: the mark every phone uses for voicemail.
-      voicemail: '<circle cx="6.8" cy="13.5" r="4.3"/><circle cx="17.2" cy="13.5" r="4.3"/><path d="M6.8 17.8h10.4"/>'
+      voicemail: '<circle cx="6.8" cy="13.5" r="4.3"/><circle cx="17.2" cy="13.5" r="4.3"/><path d="M6.8 17.8h10.4"/>',
+      // A page of a calendar: what the PA leaves behind after a call (demo).
+      calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.6"/><path d="M3.5 9.8h17M8 3v4M16 3v4"/>'
     };
 
     // Which stacks the user has fanned out, kept OUTSIDE the paint so a repaint
@@ -4506,6 +4923,8 @@ _LOCK_SCREEN_SCRIPT = r"""
         if (screenEl && screenEl.getAttribute("data-sheet") === "none") openShade();
       }, null, function (ev) {
         var t = ev.touches[0];
+        // Nor may a drag on the call card pull the shade down over it.
+        if (ev.target && ev.target.closest && ev.target.closest(".ls-call")) return true;
         return !t || t.clientY > 90;      // vetoed unless it began up top
       });
 
@@ -5466,6 +5885,9 @@ _LOCK_SCREEN_SCRIPT = r"""
       return !screenEl || screenEl.getAttribute("data-sheet") === "none";
     }, function (ev) {
       var t = ev.target;
+      // The call card is a surface of buttons: a drag that starts on it is
+      // never an unlock, whatever the feed underneath would have said.
+      if (t && t.closest && t.closest(".ls-call")) return true;
       if (!t || !t.closest || !t.closest(".ls-feed")) return false;
       return feedScrollRoom() > 4 || !feedOverflows();
     });
@@ -6153,6 +6575,823 @@ _LOCK_SCREEN_SCRIPT = r"""
           }
         }, 60);
       });
+    }
+
+    // -----------------------------------------------------------------------
+    // THE LIVE ZONE: an incoming call, and "Send to PA". DEMO.
+    //
+    // Jay: the collapsible area is also the live zone. A call from Naira
+    // collapses whatever cards are showing into one droplet, the droplet
+    // stretches into a call card, and the headline answer hands the call to the
+    // PA -- whose conversation then plays as a live transcript with Take over
+    // and End call always in reach. When it ends the zone runs backwards and
+    // the feed returns exactly as it was.
+    //
+    // Everything shown is scripted by /auth/lock-call; there is no phone line.
+    //
+    // Pure pieces first (callView, callOutcomeText, revealWords, callEnvelope,
+    // callRingPulse, callTimerText, callBubble, reconcileTranscript): they are
+    // executed under node by the test suite, so they take everything they need
+    // as arguments.
+    // -----------------------------------------------------------------------
+
+    // What the zone should show for a snapshot. `view` picks the panel,
+    // `controls` the pinned buttons, `log` whether the transcript is shown and
+    // `tone` whose colour the edge glows in.
+    function callView(snap) {
+      var state = snap && snap.state;
+      var who = (snap && snap.caller && snap.caller.name) || "Caller";
+      if (state === "ringing") {
+        return { view: "ringing", controls: null, log: false, tone: "caller", title: "" };
+      }
+      if (state === "pa") {
+        return { view: "talk", controls: "pa", log: true, tone: "pa",
+                 title: "Your PA is talking to " + who };
+      }
+      if (state === "live") {
+        return { view: "talk", controls: "live", log: !!snap.taken_over, tone: "caller",
+                 title: "On call with " + who };
+      }
+      if (state === "ended") {
+        return { view: "ended", controls: null, log: false,
+                 tone: snap.outcome === "pa-done" ? "pa" : "caller",
+                 title: callOutcomeText(snap) };
+      }
+      return { view: null, controls: null, log: false, tone: null, title: "" };
+    }
+
+    // The one line an ended call leaves on screen before the zone folds away.
+    function callOutcomeText(snap) {
+      var outcome = snap && snap.outcome;
+      if (outcome === "pa-done") return "Call ended · your PA took a message";
+      if (outcome === "declined") return "Declined";
+      if (outcome === "voicemail") return "Sent to voicemail";
+      if (snap && snap.taken_over) return "Call ended · you took over";
+      return "Call ended";
+    }
+
+    // The words of `text` already spoken at `progress` (0..1). Whole words
+    // only -- a half-drawn word reads as a rendering fault -- and a word shows
+    // as soon as it is begun, so the first appears the moment the line does.
+    function revealWords(text, progress) {
+      var words = String(text || "").split(" ");
+      if (!(progress > 0)) return "";
+      var n = Math.min(words.length, Math.ceil(progress * words.length));
+      return words.slice(0, n).join(" ");
+    }
+
+    // A synthetic speech envelope, 0..1, at time `t` seconds into a line that
+    // is `progress` of the way through. Two incommensurate syllable rates so it
+    // never visibly loops, tapered in and out so a line starts and ends softly.
+    function callEnvelope(t, progress) {
+      var a = Math.abs(Math.sin(t * 2 * Math.PI * 3.1) * 0.62
+                     + Math.sin(t * 2 * Math.PI * 5.3 + 1.3) * 0.38);
+      var p = progress > 0 ? progress : 0;
+      var taper = Math.max(0, Math.min(1, p * 7, (1 - p) * 7));
+      return Math.max(0, Math.min(1, 0.22 + 0.78 * a * taper));
+    }
+
+    // The ring: two quick swells and a rest, like a ringtone's cadence.
+    function callRingPulse(t) {
+      var ph = (t % 2.2);
+      var a = Math.exp(-Math.pow((ph - 0.18) / 0.13, 2));
+      var b = Math.exp(-Math.pow((ph - 0.62) / 0.13, 2));
+      return Math.max(a, b);
+    }
+
+    function callTimerText(ms) {
+      var s = Math.max(0, Math.floor((ms || 0) / 1000));
+      var m = Math.floor(s / 60);
+      s = s % 60;
+      return m + ":" + (s < 10 ? "0" : "") + s;
+    }
+
+    // One transcript bubble. Built once per line and then only ever updated in
+    // place: the reveal and the speaking state touch its text and attributes,
+    // never the node.
+    function callBubble(line, index) {
+      var el = document.createElement("div");
+      el.className = "ls-call-line";
+      el.setAttribute("data-line", String(index));
+      el.setAttribute("data-who", line.who === "pa" ? "pa" : "caller");
+      var head = document.createElement("div");
+      head.className = "ls-call-speaker";
+      var name = document.createElement("span");
+      name.textContent = line.who === "pa" ? "Your PA" : (line.name || "Caller");
+      var bars = document.createElement("span");
+      bars.className = "ls-call-bars";
+      bars.setAttribute("aria-hidden", "true");
+      for (var i = 0; i < 4; i++) bars.appendChild(document.createElement("i"));
+      head.appendChild(name);
+      head.appendChild(bars);
+      var text = document.createElement("div");
+      text.className = "ls-call-text";
+      el.appendChild(head);
+      el.appendChild(text);
+      return el;
+    }
+
+    // Bring the transcript up to date WITHOUT repainting it. Bubbles are keyed
+    // by line index: a line already on screen keeps its node (so it does not
+    // replay its entrance), a new line is appended, and only text that
+    // actually changed is written. The line being spoken is left for the
+    // animation loop to reveal word by word. Returns how many bubbles it added.
+    function reconcileTranscript(logEl, lines, speakingLine, tookOver, callerName) {
+      var have = {};
+      var marker = null;
+      for (var i = 0; i < logEl.children.length; i++) {
+        var kid = logEl.children[i];
+        var key = kid.getAttribute("data-line");
+        if (key !== null) have[key] = kid;
+        else if (kid.getAttribute("data-mark") === "takeover") marker = kid;
+      }
+      var added = 0;
+      for (var j = 0; j < lines.length; j++) {
+        var line = lines[j];
+        var el = have[String(j)];
+        if (!el) {
+          el = callBubble({ who: line.who, name: callerName }, j);
+          logEl.appendChild(el);
+          added += 1;
+        }
+        var speaking = j === speakingLine;
+        if (speaking) {
+          if (el.getAttribute("data-speaking") !== "1") el.setAttribute("data-speaking", "1");
+        } else {
+          if (el.hasAttribute("data-speaking")) el.removeAttribute("data-speaking");
+          var cut = typeof line.upto === "number";
+          var want = cut ? revealWords(line.text, line.upto) : line.text;
+          var textEl = el.children[1];
+          if (textEl && textEl.textContent !== want) textEl.textContent = want;
+          if (cut && el.getAttribute("data-cut") !== "1") el.setAttribute("data-cut", "1");
+        }
+      }
+      if (tookOver && !marker) {
+        marker = document.createElement("div");
+        marker.className = "ls-call-mark";
+        marker.setAttribute("data-mark", "takeover");
+        marker.textContent = "You took over";
+        logEl.appendChild(marker);
+        added += 1;
+      }
+      return added;
+    }
+
+    var callEl = document.getElementById("ls-call");
+    if (callEl) {
+      var callCard = document.getElementById("ls-call-card");
+      var callLog = document.getElementById("ls-call-log");
+      var callTitle = document.getElementById("ls-call-title");
+      var callTimer = document.getElementById("ls-call-timer");
+      var callOutcome = document.getElementById("ls-call-outcome");
+      var callPill = document.getElementById("ls-call-pill");
+      var callPillIco = document.getElementById("ls-call-pill-ico");
+      var callHead = callEl.parentNode;
+      var callRings = callEl.querySelectorAll(".ls-call-ring");
+      var callWashes = callEl.querySelectorAll(".ls-call-wash");
+      var CALL_ICONS = {
+        end: '<path d="M3.2 13.9c5-4.6 12.6-4.6 17.6 0l-1.8 2.6-3.6-1.2-.5-2.6a10 10 0 0 0-5.8 0l-.5 2.6-3.6 1.2z"/>',
+        voicemail: NOTIF_GLYPHS.voicemail,
+        calendar: NOTIF_GLYPHS.calendar
+      };
+      var reduceMotion = !!(window.matchMedia
+        && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+      var callOff = false;          // the demo is switched off: stop asking
+      var callTimerId = null;
+      var callSnap = null;          // the last snapshot applied
+      var callAt = 0;               // performance.now() when it arrived
+      var callId = null;            // the call the zone is showing (or last saw)
+      var callShown = false;        // is the zone up
+      var callPhase = "none";       // none | entering | shown | ended | leaving
+      var callPending = null;       // a snapshot that arrived mid-choreography
+      var callBusy = false;         // an action request is in flight
+      var callSaved = null;         // what the feed looked like before the call
+      var callEndTimers = [];
+      var callFrame = null;
+      var callToneW = { pa: 0, caller: 0 };
+      var callLastSec = -1;
+      var callSpeakEl = null;
+
+      var callNow = function () {
+        return (window.performance && performance.now) ? performance.now() : Date.now();
+      };
+
+      // The views and the pinned control rows, switched by attribute.
+      var callViews = {};
+      [].forEach.call(callEl.querySelectorAll(".ls-call-view"), function (v) {
+        callViews[v.getAttribute("data-for")] = v;
+      });
+      var callCtls = {};
+      [].forEach.call(callEl.querySelectorAll(".ls-call-ctl"), function (c) {
+        callCtls[c.getAttribute("data-for")] = c;
+      });
+      var callActive = null;
+
+      // THE MORPH. The card's size is always an explicit number taken from the
+      // content it now holds, so a change of state is a transition between two
+      // measured sizes rather than a jump.
+      var callFullWidth = function () {
+        var cap = callHead ? callHead.clientWidth : 436;
+        var css = parseFloat(getComputedStyle(callEl).maxWidth) || 436;
+        return Math.min(cap, css);
+      };
+      var callFit = function () {
+        // Not while hidden: a hidden card measures as nothing, and that
+        // "size" would be the start of the next entrance's transition.
+        if (!callActive || callEl.hidden) return;
+        var h = callActive.offsetHeight;
+        callCard.style.height = h + "px";
+        var w = callFullWidth();
+        if (callActive === callViews.ended && callPill) {
+          // A one-line pill: as wide as its words, never wider than the column.
+          w = Math.min(w, Math.ceil(callPill.offsetWidth) + 3);
+        }
+        callEl.style.width = w + "px";
+      };
+      if (window.ResizeObserver) {
+        var callRO = new ResizeObserver(function () { callFit(); });
+        for (var cv in callViews) callRO.observe(callViews[cv]);
+      }
+      window.addEventListener("resize", callFit);
+
+      var callSwitch = function (name) {
+        var next = callViews[name] || null;
+        if (next === callActive) return;
+        for (var k in callViews) {
+          if (callViews[k] === next) callViews[k].setAttribute("data-on", "1");
+          else callViews[k].removeAttribute("data-on");
+        }
+        callActive = next;
+        callFit();
+      };
+
+      // Keyboard or finger, whichever was used last: the focus ring is only
+      // drawn for a keyboard.
+      callEl.setAttribute("data-kbd", "0");
+      document.addEventListener("keydown", function () { callEl.setAttribute("data-kbd", "1"); }, true);
+      document.addEventListener("touchstart", function () { callEl.setAttribute("data-kbd", "0"); },
+        { passive: true, capture: true });
+      var callFocus = function (sel) {
+        var el = callEl.querySelector(sel);
+        if (el && el.focus) { try { el.focus({ preventScroll: true }); } catch (e) {} }
+      };
+
+      // Paint the zone for a snapshot. Idempotent: an unchanged poll writes
+      // nothing (the transcript reconcile guarantees it for the bubbles, and
+      // the rest are attribute and text writes guarded by comparison).
+      var paintCall = function (snap) {
+        var v = callView(snap);
+        var prevView = callEl.getAttribute("data-view");
+        var prevCtl = callEl.getAttribute("data-controls");
+        if (callEl.getAttribute("data-state") !== snap.state) {
+          callEl.setAttribute("data-state", snap.state);
+        }
+        if (snap.caller) {
+          var nameEl = document.getElementById("ls-call-name");
+          var labelEl = document.getElementById("ls-call-label");
+          var avEl = document.getElementById("ls-call-avatar");
+          setText(nameEl, snap.caller.name);
+          setText(labelEl, snap.caller.label);
+          setText(avEl, (snap.caller.name || "?").charAt(0));
+          callEl.setAttribute("aria-label", "Call from " + snap.caller.name);
+        }
+        if (v.view === "talk") {
+          setText(callTitle, v.title);
+          for (var c in callCtls) {
+            if (c === v.controls) callCtls[c].setAttribute("data-on", "1");
+            else callCtls[c].removeAttribute("data-on");
+          }
+          var lines = snap.transcript || [];
+          var speakingLine = snap.speaking ? snap.speaking.line : -1;
+          var added = reconcileTranscript(callLog, v.log ? lines : [], speakingLine,
+            !!snap.taken_over, snap.caller && snap.caller.name);
+          callSpeakEl = speakingLine >= 0
+            ? callLog.querySelector('[data-line="' + speakingLine + '"]') : null;
+          if (added && callLog.scrollTo) {
+            callLog.scrollTo({ top: callLog.scrollHeight, behavior: reduceMotion ? "auto" : "smooth" });
+          }
+        }
+        if (v.view === "ended") {
+          setText(callOutcome, v.title);
+          if (callPill) callPill.setAttribute("data-kind", "outcome");
+          if (callPillIco) callPillIco.innerHTML = '<svg viewBox="0 0 24 24">' + CALL_ICONS.end + "</svg>";
+        }
+        callEl.setAttribute("data-view", v.view || "");
+        callEl.setAttribute("data-controls", v.controls || "");
+        callSwitch(v.view);
+        // Move focus only when the thing under the finger changed, so a poll
+        // never steals it: the headline answer while ringing, Take over while
+        // the PA talks, End once you are on the line.
+        if (v.view !== prevView || v.controls !== prevCtl) {
+          if (v.view === "ringing") callFocus('[data-call-act="pa"]');
+          else if (v.controls === "pa") callFocus('[data-call-act="takeover"]');
+          else if (v.controls === "live") callFocus('.ls-call-ctl[data-for="live"] [data-call-act="end"]');
+        }
+      };
+
+      // THE ANIMATION LOOP: the edge glow, the wash, the speaking bars, the
+      // word-by-word reveal and the timer. Opacity and transform writes only.
+      // It runs only while the zone is up AND the panel is lit.
+      var callLoopOn = function () {
+        return callShown && callPhase !== "leaving"
+          && !(screenEl && screenEl.hasAttribute("data-blanked"))
+          && !document.hidden;
+      };
+      var callTick = function () {
+        callFrame = null;
+        if (!callLoopOn() || !callSnap) return;
+        var now = callNow();
+        var t = now / 1000;
+        var snap = callSnap;
+        var v = callView(snap);
+        var sp = snap.speaking;
+        var amp = 0.3;
+        var tone = v.tone || "caller";
+        var progress = 0;
+        if (sp) {
+          var line = (snap.transcript || [])[sp.line];
+          var dur = line ? line.dur_ms : 3000;
+          progress = Math.min(1, sp.progress + (now - callAt) / dur);
+          tone = sp.who === "pa" ? "pa" : "caller";
+          amp = progress < 1 ? callEnvelope(t, progress) : 0.3;
+          if (callSpeakEl && line) {
+            var tEl = callSpeakEl.children[1];
+            var want = revealWords(line.text, progress);
+            if (tEl && tEl.textContent !== want) tEl.textContent = want;
+            var bars = callSpeakEl.children[0] && callSpeakEl.children[0].children[1];
+            if (bars) {
+              for (var b = 0; b < bars.children.length; b++) {
+                var k = progress < 1 ? callEnvelope(t + b * 0.11, progress) : 0.2;
+                bars.children[b].style.transform = "scaleY(" + (0.25 + 0.75 * k).toFixed(3) + ")";
+              }
+            }
+          }
+        } else if (snap.state === "ringing") {
+          amp = 0.35 + 0.65 * callRingPulse(t);
+        } else if (snap.state === "pa") {
+          amp = 0.3 + 0.08 * Math.sin(t * 2.4);          // between lines: a breath
+        } else if (snap.state === "live") {
+          amp = 0.34 + 0.1 * Math.sin(t * 1.6);
+        } else {
+          amp = 0.2;
+        }
+        // Ease toward the voice now speaking so a change of speaker is a
+        // cross-fade of colour, not a cut.
+        callToneW.pa += ((tone === "pa" ? 1 : 0) - callToneW.pa) * 0.07;
+        callToneW.caller += ((tone === "caller" ? 1 : 0) - callToneW.caller) * 0.07;
+        for (var r = 0; r < callRings.length; r++) {
+          var w = callToneW[callRings[r].getAttribute("data-tone")] || 0;
+          callRings[r].style.opacity = (w * (0.28 + 0.72 * amp)).toFixed(3);
+        }
+        for (var q = 0; q < callWashes.length; q++) {
+          var ww = callToneW[callWashes[q].getAttribute("data-tone")] || 0;
+          callWashes[q].style.opacity = (ww * (0.35 + 0.65 * amp)).toFixed(3);
+        }
+        if (typeof snap.elapsed_ms === "number" && callTimer) {
+          var ms = snap.elapsed_ms + (now - callAt);
+          var sec = Math.floor(ms / 1000);
+          if (sec !== callLastSec) { callLastSec = sec; callTimer.textContent = callTimerText(ms); }
+        }
+        callFrame = requestAnimationFrame(callTick);
+      };
+      var callLoop = function () {
+        if (callFrame === null && callLoopOn()) callFrame = requestAnimationFrame(callTick);
+      };
+      document.addEventListener("visibilitychange", callLoop);
+
+      // THE LIQUID. The cards the feed is showing right now, measured.
+      var callCards = function () {
+        if (!feedEl || feedIsHidden()) return [];
+        var fr = feedEl.getBoundingClientRect();
+        if (fr.height < 4) return [];
+        var out = [];
+        var panels = feedEl.children;
+        for (var i = 0; i < panels.length; i++) {
+          var p = panels[i];
+          if (p.hidden || p.hasAttribute("data-off")) continue;
+          var cand = p.id === "ls-activity"
+            ? [].slice.call(p.querySelectorAll(".ls-agents > *, .ls-tasks > *"))
+            : [].slice.call(p.children);
+          for (var j = 0; j < cand.length; j++) {
+            var c = cand[j];
+            var r = c.getBoundingClientRect();
+            if (r.height < 8 || r.width < 8) continue;
+            if (r.bottom < fr.top || r.top > fr.bottom) continue;   // scrolled away
+            out.push({ el: c, r: r });
+            if (out.length >= 10) return out;
+          }
+        }
+        return out;
+      };
+      var callRadius = function (el, r) {
+        var rad = parseFloat(getComputedStyle(el).borderTopLeftRadius) || 20;
+        return Math.min(rad, r.height / 2, r.width / 2);
+      };
+      var gooLayer = function (box) {
+        var g = document.createElement("div");
+        g.className = "ls-goo";
+        g.setAttribute("aria-hidden", "true");
+        g.style.left = box.left + "px"; g.style.top = box.top + "px";
+        g.style.width = box.width + "px"; g.style.height = box.height + "px";
+        document.body.appendChild(g);
+        return g;
+      };
+      var gooBlob = function (layer, box, x, y, w, h, radius) {
+        var b = document.createElement("div");
+        b.className = "ls-goo-blob";
+        b.style.width = w + "px"; b.style.height = h + "px";
+        b.style.left = (x - box.left) + "px"; b.style.top = (y - box.top) + "px";
+        b.style.borderRadius = radius + "px";
+        layer.appendChild(b);
+        return b;
+      };
+      var unionBox = function (rects, pad) {
+        var l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+        for (var i = 0; i < rects.length; i++) {
+          l = Math.min(l, rects[i].left); t = Math.min(t, rects[i].top);
+          r = Math.max(r, rects[i].right); b = Math.max(b, rects[i].bottom);
+        }
+        l -= pad; t -= pad; r += pad; b += pad;
+        return { left: l, top: t, width: r - l, height: b - t, right: r, bottom: b };
+      };
+      var later = function (fn, ms) { var id = window.setTimeout(fn, ms); callEndTimers.push(id); return id; };
+      var clearLater = function () {
+        for (var i = 0; i < callEndTimers.length; i++) window.clearTimeout(callEndTimers[i]);
+        callEndTimers = [];
+      };
+      var DROP = 60;                 // the droplet's diameter
+      var EASE_IN = "cubic-bezier(0.55, 0, 0.25, 1)";
+      var SPRING = "cubic-bezier(0.34, 1.25, 0.5, 1)";
+
+      // In: the cards run together into a droplet, the droplet stretches into
+      // the call card. `done` fires once the card is showing.
+      var callEnter = function (snap, done) {
+        callPhase = "entering";
+        callSaved = {
+          scroll: feedEl ? feedEl.scrollTop : 0,
+          focus: document.activeElement
+        };
+        if (callHead) callHead.setAttribute("data-call", "1");
+        if (viewsEl) viewsEl.setAttribute("inert", "");
+        // Lay the card out unseen so the droplet knows where it is going.
+        callEl.hidden = false;
+        callEl.setAttribute("data-phase", "measure");
+        paintCall(snap);
+        callFit();
+        var cards = reduceMotion ? [] : callCards();
+        // Where the card WILL be, measured rather than predicted: put the
+        // layout into its end state, read the rect, and put it back, all in
+        // one task -- the browser never paints the in-between.
+        var target = null;
+        if (feedEl) feedEl.setAttribute("data-call", "1");
+        callEl.setAttribute("data-phase", "grow");
+        target = callEl.getBoundingClientRect();
+        if (feedEl) feedEl.removeAttribute("data-call");
+        callEl.setAttribute("data-phase", "measure");
+        var cx = target.left + target.width / 2;
+        var cy = target.top + Math.min(target.height, 180) / 2;
+
+        var reveal = function () {
+          if (feedEl) feedEl.setAttribute("data-call", "1");
+          callEl.setAttribute("data-phase", "grow");
+          callFit();
+          return callEl.getBoundingClientRect();
+        };
+
+        if (reduceMotion) {
+          if (feedEl) feedEl.setAttribute("data-call", "return");     // opacity 0
+          later(function () {
+            reveal();
+            requestAnimationFrame(function () {
+              callEl.removeAttribute("data-phase");
+              callPhase = "shown"; done();
+            });
+          }, 180);
+          return;
+        }
+
+        var rects = [target];
+        for (var i = 0; i < cards.length; i++) rects.push(cards[i].r);
+        var box = unionBox(rects, 40);
+        var layer = gooLayer(box);
+        var blobs = [];
+        for (var n = 0; n < cards.length; n++) {
+          var c = cards[n];
+          var rad = callRadius(c.el, c.r);
+          var bl = gooBlob(layer, box, c.r.left, c.r.top, c.r.width, c.r.height, rad);
+          blobs.push({ b: bl, r: c.r });
+        }
+        // The droplet itself, at the card's heart, from nothing.
+        var drop = gooBlob(layer, box, cx - DROP / 2, cy - DROP / 2, DROP, DROP, DROP / 2);
+        drop.style.transform = "scale(0)";
+        void layer.offsetWidth;                                  // commit the start
+
+        var STAG = 42, RUN = 560;
+        for (var m = 0; m < blobs.length; m++) {
+          var o = blobs[m], r = o.r;
+          var dx = cx - (r.left + r.width / 2), dy = cy - (r.top + r.height / 2);
+          var sx = DROP / r.width, sy = DROP / r.height;
+          var tr = "translate(" + dx.toFixed(1) + "px," + dy.toFixed(1) + "px) scale("
+            + sx.toFixed(3) + "," + sy.toFixed(3) + ")";
+          o.b.style.transition = "transform " + RUN + "ms " + EASE_IN + " " + (m * STAG) + "ms, border-radius "
+            + RUN + "ms ease " + (m * STAG) + "ms";
+          o.b.style.transform = tr;
+          // 50% of the unscaled box is an ellipse that the scale turns into a
+          // circle, so each card arrives as a drop, not a squashed tile.
+          o.b.style.borderRadius = "50%";
+          // The real card goes with it, and fades as the liquid takes over.
+          var el = cards[m].el;
+          el.setAttribute("data-call-card", "1");
+          el.style.transition = "transform " + RUN + "ms " + EASE_IN + " " + (m * STAG) + "ms, opacity 200ms ease "
+            + (m * STAG + 60) + "ms";
+          el.style.transform = "translate(" + (dx * 0.35).toFixed(1) + "px," + (dy * 0.35).toFixed(1) + "px) scale(0.9)";
+          el.style.opacity = "0";
+        }
+        var gathered = cards.length ? RUN + (cards.length - 1) * STAG : 120;
+        drop.style.transition = "transform " + Math.max(320, gathered - 160) + "ms " + SPRING
+          + " " + (cards.length ? 200 : 0) + "ms";
+        drop.style.transform = "scale(1)";
+
+        later(function () {
+          // Merged. The feed leaves the layout (its own attribute; its nodes
+          // and every state they carry stay exactly as they were) and the
+          // cards' borrowed styles are handed back while nobody can see them.
+          for (var k = 0; k < cards.length; k++) {
+            var e = cards[k].el;
+            e.style.transition = ""; e.style.transform = ""; e.style.opacity = "";
+            e.removeAttribute("data-call-card");
+          }
+          for (var q = 0; q < blobs.length; q++) blobs[q].b.remove();
+          var R = reveal();
+          // The droplet stretches into the card, with a little overshoot.
+          drop.style.transition = "left 460ms " + SPRING + ", top 460ms " + SPRING + ", width 460ms "
+            + SPRING + ", height 460ms " + SPRING + ", border-radius 460ms ease";
+          drop.style.left = (R.left - box.left) + "px";
+          drop.style.top = (R.top - box.top) + "px";
+          drop.style.width = R.width + "px";
+          drop.style.height = R.height + "px";
+          drop.style.borderRadius = "28px";
+          later(function () {
+            callEl.removeAttribute("data-phase");               // fades in
+            layer.style.opacity = "0";
+            later(function () { layer.remove(); }, 260);
+            callPhase = "shown";
+            done();
+          }, 400);
+        }, gathered + 30);
+      };
+
+      // Out: the card shrinks back to a droplet, which splits into the cards
+      // it came from. The feed comes back with the same nodes, view, scroll
+      // and collapsed state it had -- nothing was rebuilt, only un-hidden.
+      var callLeave = function () {
+        callPhase = "leaving";
+        clearLater();
+        var R = callEl.getBoundingClientRect();
+        var finish = function () {
+          callEl.hidden = true;
+          callEl.removeAttribute("data-phase");
+          callEl.removeAttribute("data-state");
+          callEl.removeAttribute("data-view");
+          callEl.removeAttribute("data-controls");
+          callShown = false;
+          callPhase = "none";
+          if (callHead) callHead.removeAttribute("data-call");
+          if (viewsEl) viewsEl.removeAttribute("inert");
+          if (callSaved && callSaved.focus && callSaved.focus !== document.body
+              && callSaved.focus.focus) {
+            try { callSaved.focus.focus({ preventScroll: true }); } catch (e) {}
+          } else if (document.activeElement && callEl.contains(document.activeElement)) {
+            document.activeElement.blur();
+          }
+          callSaved = null;
+          if (callPending) { var p = callPending; callPending = null; applyCall(p); }
+        };
+        var restoreFeed = function () {
+          if (!feedEl) return;
+          feedEl.setAttribute("data-call", "return");               // in layout, unseen
+          if (callSaved) feedEl.scrollTop = callSaved.scroll;
+          syncFeedFade();
+        };
+
+        if (reduceMotion || R.width < 4) {
+          callEl.setAttribute("data-phase", "leave");
+          later(function () {
+            callEl.hidden = true;
+            restoreFeed();
+            requestAnimationFrame(function () {
+              if (feedEl) feedEl.removeAttribute("data-call");
+              finish();
+            });
+          }, 140);
+          return;
+        }
+
+        var cx = R.left + R.width / 2, cy = R.top + R.height / 2;
+        var box = { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+        var layer = gooLayer(box);
+        var drop = gooBlob(layer, box, R.left, R.top, R.width, R.height, Math.min(28, R.height / 2));
+        void layer.offsetWidth;
+        callEl.setAttribute("data-phase", "leave");
+        drop.style.transition = "left 380ms " + EASE_IN + ", top 380ms " + EASE_IN + ", width 380ms "
+          + EASE_IN + ", height 380ms " + EASE_IN + ", border-radius 380ms ease";
+        drop.style.left = (cx - DROP / 2) + "px"; drop.style.top = (cy - DROP / 2) + "px";
+        drop.style.width = DROP + "px"; drop.style.height = DROP + "px";
+        drop.style.borderRadius = (DROP / 2) + "px";
+
+        later(function () {
+          callEl.hidden = true;
+          restoreFeed();
+          var cards = callCards();
+          var STAG = 36, RUN = 540;
+          var blobs = [];
+          for (var i = 0; i < cards.length; i++) {
+            var r = cards[i].r;
+            var b = gooBlob(layer, box, r.left, r.top, r.width, r.height, callRadius(cards[i].el, r));
+            var dx = cx - (r.left + r.width / 2), dy = cy - (r.top + r.height / 2);
+            b.style.transform = "translate(" + dx.toFixed(1) + "px," + dy.toFixed(1) + "px) scale("
+              + (DROP / r.width).toFixed(3) + "," + (DROP / r.height).toFixed(3) + ")";
+            b.setAttribute("data-r", b.style.borderRadius);
+            b.style.borderRadius = "50%";
+            blobs.push(b);
+          }
+          void layer.offsetWidth;
+          for (var j = 0; j < blobs.length; j++) {
+            blobs[j].style.transition = "transform " + RUN + "ms " + SPRING + " " + (j * STAG)
+              + "ms, border-radius " + RUN + "ms ease " + (j * STAG) + "ms";
+            blobs[j].style.transform = "none";
+            blobs[j].style.borderRadius = blobs[j].getAttribute("data-r");
+          }
+          drop.style.transition = "transform 420ms " + EASE_IN + " 120ms";
+          drop.style.transform = "scale(0)";
+          var spread = cards.length ? RUN + (cards.length - 1) * STAG : 420;
+          later(function () {
+            if (feedEl) feedEl.removeAttribute("data-call");      // the real cards return
+            layer.style.opacity = "0";
+            later(function () { layer.remove(); finish(); }, 250);
+          }, spread - 60);
+        }, 390);
+      };
+
+      // Mark the event the PA added, so it is the first thing seen when the
+      // alerts come into view, and flag the alerts tab if they are not showing.
+      var markFresh = function () {
+        if (!notifsEl) return;
+        var kids = notifsEl.children;
+        for (var i = 0; i < kids.length; i++) {
+          if (kids[i].getAttribute("data-source") === "calendar") {
+            kids[i].setAttribute("data-fresh", "1");
+            if (currentView !== "alerts" && viewsEl) {
+              var tab = viewsEl.querySelector('.ls-view-tab[data-view="alerts"]');
+              if (tab) tab.setAttribute("data-badge", "1");
+            }
+          }
+        }
+      };
+      if (viewsEl) {
+        viewsEl.addEventListener("click", function () {
+          window.setTimeout(function () {
+            if (currentView !== "alerts") return;
+            var tab = viewsEl.querySelector('.ls-view-tab[data-view="alerts"]');
+            if (tab) tab.removeAttribute("data-badge");
+          }, 0);
+        });
+      }
+      var fetchFreshNotifications = function () {
+        fetch("/auth/lock-notifications", { credentials: "same-origin" })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) { if (d) { paintNotifications(d); markFresh(); } })
+          .catch(function () { /* the 15-minute poll will bring it */ });
+      };
+
+      // The ended pill, then the fold. A finished PA call shows its outcome,
+      // then the event it added, before the zone goes.
+      var callEnded = function (snap) {
+        callPhase = "ended";
+        var hold = 1900;
+        if (snap.outcome === "pa-done") {
+          fetchFreshNotifications();
+          later(function () {
+            if (callOutcome) callOutcome.style.opacity = "0";
+            later(function () {
+              var note = snap.notification || {};
+              setText(callOutcome, (note.kind || "New event added") + " · "
+                + (note.title || "") + " · 5:30 pm");
+              if (callPill) callPill.setAttribute("data-kind", "event");
+              if (callPillIco) callPillIco.innerHTML = '<svg viewBox="0 0 24 24">' + CALL_ICONS.calendar + "</svg>";
+              if (callOutcome) callOutcome.style.opacity = "";
+              callFit();
+            }, 200);
+          }, 1500);
+          hold = 4300;
+        }
+        later(callLeave, hold);
+      };
+
+      var applyCall = function (snap) {
+        if (!snap || !snap.state) return;
+        if (callPhase === "entering" || callPhase === "leaving") {
+          callPending = snap;
+          // Keep the content current underneath an entrance; an exit is final.
+          if (callPhase === "entering" && callSnap && snap.call_id === callSnap.call_id) {
+            callSnap = snap; callAt = callNow(); paintCall(snap);
+          }
+          return;
+        }
+        var active = snap.state === "ringing" || snap.state === "pa" || snap.state === "live";
+        var prevId = callId;
+        callSnap = snap; callAt = callNow();
+        if (!callShown) {
+          callId = snap.call_id;
+          // A call that had already ended when we first saw it is history,
+          // not something to animate.
+          if (!active) return;
+          callShown = true;
+          if (callOutcome) callOutcome.style.opacity = "";
+          if (prevId !== snap.call_id) callLog.textContent = "";
+          callEnter(snap, function () {
+            var p = callPending; callPending = null;
+            if (p) applyCall(p);
+            callLoop();
+          });
+          return;
+        }
+        if (snap.call_id !== callId) {
+          callId = snap.call_id;
+          callLog.textContent = "";                // a genuinely new call
+        }
+        if (snap.state === "idle") { callLeave(); return; }
+        if (callPhase === "ended") return;           // the pill is already folding away
+        paintCall(snap);
+        if (snap.state === "ended") callEnded(snap);
+        callLoop();
+      };
+
+      var callSchedule = function () {
+        if (callOff) return;
+        if (callTimerId) window.clearTimeout(callTimerId);
+        var active = callShown && callPhase !== "ended" && callPhase !== "leaving";
+        callTimerId = window.setTimeout(pollCall, active ? 300 : 2000);
+      };
+      var pollCall = function () {
+        callTimerId = null;
+        if (callOff) return;
+        fetch("/auth/lock-call", { credentials: "same-origin" })
+          .then(function (r) {
+            if (r.status === 404 || r.status === 403) { callOff = true; return null; }
+            return r.ok ? r.json() : null;
+          })
+          .then(function (d) { if (d) applyCall(d); })
+          .catch(function () { /* offline: try again on the next tick */ })
+          .then(callSchedule);
+      };
+
+      var callAct = function (action) {
+        if (callBusy) return;
+        callBusy = true;
+        fetch("/auth/lock-call/action", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: action })
+        }).then(function (r) { return r.json().catch(function () { return null; }); })
+          .then(function (d) {
+            callBusy = false;
+            // A 409 carries only the state; fetch the whole picture instead.
+            if (d && d.transcript) applyCall(d); else pollCall();
+          })
+          .catch(function () { callBusy = false; });
+      };
+
+      callEl.addEventListener("click", function (ev) {
+        var btn = ev.target.closest ? ev.target.closest("button") : null;
+        if (!btn || !callEl.contains(btn)) return;
+        if (callPhase !== "shown") return;
+        var act = btn.getAttribute("data-call-act");
+        if (act) { callAct(act); return; }
+        if (btn.hasAttribute("data-call-toggle")) {
+          // Visual only: there is no audio path in a demo.
+          btn.setAttribute("aria-pressed", btn.getAttribute("aria-pressed") === "true" ? "false" : "true");
+        }
+      });
+
+      // The push is a nudge to look NOW; the poll is what makes it reliable.
+      // The shared stream only exists when the power sheet does, so the zone
+      // opens its own if it has to.
+      var callStream = (typeof lockStream !== "undefined" && lockStream) ? lockStream : null;
+      if (!callStream && window.EventSource) {
+        try { callStream = new EventSource("/auth/lock-events"); } catch (err) { callStream = null; }
+      }
+      if (callStream) {
+        callStream.addEventListener("call", function () { if (!callOff) pollCall(); });
+        callStream.addEventListener("screen-on", function () {
+          // The blanked flag is cleared by the stream's other listener; look
+          // once it has been.
+          window.setTimeout(callLoop, 0);
+        });
+      }
+      pollCall();
     }
 
     // Keypad -> the existing PIN input.
@@ -8330,9 +9569,363 @@ async def lock_notifications(request: Request):
     """
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
-    if not _demo_notifications_enabled():
+    # The call demo's calendar event rides here too, under ITS flag: a device
+    # running only the call demo still shows the event the PA added.
+    call_groups = _call_notification_groups()
+    if not _demo_notifications_enabled() and not call_groups:
         return JSONResponse({"error": "not found"}, status_code=404)
-    return JSONResponse({"groups": _demo_notifications(), "demo": True})
+    groups = _demo_notifications() if _demo_notifications_enabled() else []
+    groups = call_groups + groups
+    return JSONResponse({"groups": groups, "demo": True})
+
+
+# ---------------------------------------------------------------------------
+# THE INCOMING-CALL DEMO. "Send to PA".
+#
+# Jay: an incoming call from Naira lands in the lock screen's live zone, and
+# the headline answer is to hand it to the personal assistant, who takes a
+# message while the user watches the transcript and can take over at any
+# moment. When the PA finishes, a calendar event has been added.
+#
+# DEMO CONTENT, and it can never be anything else. This screen renders BEFORE
+# sign-in, so the caller, the script and the calendar event are all fixed
+# strings in this file. There is no code path from here to a phone line, a
+# contact list or a calendar: the "event" exists only as a notification this
+# process serves until it is reset. The number is from Ofcom's 07700 900xxx
+# drama range, reserved for fiction.
+#
+# Behind its OWN flag, TAOS_LOCK_DEMO_CALL, independent of the others: the call
+# is triggered by the demo daemon on the handset over loopback, and a device can
+# run it with or without the rest of the scripted content.
+# ---------------------------------------------------------------------------
+
+#: Who calls. A fictional number, and a label rather than a contact record.
+_CALL_CALLER: dict = {
+    "name": "Naira",
+    "label": "mobile",
+    "number": "07700 900318",
+}
+
+#: The script. The PA's opening line is Jay's, verbatim, and must stay so.
+_CALL_SCRIPT: tuple[tuple[str, str], ...] = (
+    ("pa", "Hi, and thank you for calling Jason's phone. This is his personal "
+           "assistant speaking — can I take a message?"),
+    ("caller", "Oh hi! Could you ask him to give me a call back? Any time after "
+               "five is fine."),
+    ("pa", "Of course. Does half past five work for you?"),
+    ("caller", "Half five's perfect, thank you."),
+    ("pa", "Lovely — I've added it to his calendar, and he'll call you at "
+           "5:30. Have a good afternoon!"),
+    ("caller", "You too, bye!"),
+)
+
+#: Speech pacing. ~165 words a minute is an unhurried phone voice; the floor
+#: keeps a two-word line from flashing past. The gap is the breath between
+#: turns and the lead-in is the PA picking up.
+_CALL_MS_PER_WORD = 360
+_CALL_MIN_LINE_MS = 1100
+_CALL_GAP_MS = 650
+_CALL_LEAD_MS = 900
+
+#: The only event the PA ever "adds". Served as a notification, never written
+#: anywhere.
+_CALL_EVENT: dict = {
+    "source": "calendar",
+    "app": "Calendar",
+    "kind": "New event added",
+    "title": "Call Naira",
+    "body": "Today · 5:30 pm · added by your PA",
+}
+
+#: Every action the page may send. Anything else is a 400; one of these at the
+#: wrong moment is a 409.
+_CALL_ACTIONS = frozenset({"answer", "decline", "voicemail", "pa", "takeover", "end"})
+
+
+def _call_timeline() -> list[dict]:
+    """The script as offsets from the moment the PA picked up.
+
+    Computed, not tabled: each line lasts as long as its words take to say, so
+    editing a line cannot leave its timing describing the old one.
+    """
+    out: list[dict] = []
+    at = _CALL_LEAD_MS
+    for who, text in _CALL_SCRIPT:
+        words = len(text.split())
+        dur = max(_CALL_MIN_LINE_MS, words * _CALL_MS_PER_WORD)
+        out.append({"who": who, "text": text, "at_ms": at, "dur_ms": dur})
+        at += dur + _CALL_GAP_MS
+    return out
+
+
+def _call_demo_enabled() -> bool:
+    """Whether the incoming-call demo is switched on. Its own flag, alone."""
+    return bool(os.environ.get("TAOS_LOCK_DEMO_CALL", "").strip())
+
+
+class _LockCall:
+    """One scripted call, as a small state machine. In memory, one per process.
+
+    idle -> ringing -> pa | live (answered) | ended (declined, voicemail)
+    pa   -> live (taken over) | ended (pa-done, ended-by-user)
+    live -> ended (ended-by-user)
+
+    There is NO background thread. The PA's progress is a pure function of the
+    clock and the moment the PA picked up, and the pa -> ended(pa-done) step is
+    taken lazily by whichever read notices the script has run out. That keeps
+    the state inspectable at any instant and lets a test drive it with a fake
+    clock instead of sleeping through thirty seconds of dialogue.
+    """
+
+    def __init__(self, clock=time.monotonic, wall=time.time):
+        self._clock = clock
+        self._wall = wall
+        self._lock = threading.Lock()
+        self._timeline = _call_timeline()
+        self._script_ms = (self._timeline[-1]["at_ms"] + self._timeline[-1]["dur_ms"])
+        self.notification: dict | None = None
+        self._reset_locked()
+
+    # -- internals, all called with the lock held --------------------------
+    def _reset_locked(self) -> None:
+        self.state = "idle"
+        self.outcome: str | None = None
+        self.call_id = getattr(self, "call_id", 0)
+        self._since = self._clock()
+        self._since_wall = self._wall()
+        self._pa_started: float | None = None
+        self._connected: float | None = None
+        self._taken_over_ms: int | None = None
+        self._ended_ms: int | None = None
+
+    def _enter(self, state: str, outcome: str | None = None) -> None:
+        self.state = state
+        self.outcome = outcome
+        self._since = self._clock()
+        self._since_wall = self._wall()
+
+    def _pa_ms(self) -> int:
+        if self._pa_started is None:
+            return 0
+        return int(round((self._clock() - self._pa_started) * 1000))
+
+    def _advance(self) -> None:
+        """Take the lazy step: a PA whose script has run out has finished."""
+        if self.state == "pa" and self._pa_ms() >= self._script_ms:
+            # Backdated to the instant the last line ended, not to whenever
+            # somebody happened to look.
+            self._ended_ms = self._script_ms
+            self._enter("ended", "pa-done")
+            self.notification = {
+                **_CALL_EVENT,
+                "at": self._wall(),
+                "demo": True,
+            }
+
+    def _transcript(self) -> tuple[list[dict], dict | None]:
+        """Lines heard so far, and who is speaking right now (or None)."""
+        if self._pa_started is None:
+            return [], None
+        if self.state == "pa":
+            now = self._pa_ms()
+        elif self._taken_over_ms is not None:
+            now = self._taken_over_ms
+        elif self._ended_ms is not None:
+            now = self._ended_ms
+        else:
+            now = self._script_ms
+        lines: list[dict] = []
+        speaking = None
+        for index, line in enumerate(self._timeline):
+            if line["at_ms"] > now:
+                break
+            entry = dict(line)
+            end = line["at_ms"] + line["dur_ms"]
+            if now < end:
+                progress = (now - line["at_ms"]) / line["dur_ms"]
+                if self.state == "pa":
+                    speaking = {"who": line["who"], "line": index,
+                                "progress": round(progress, 4)}
+                else:
+                    # Cut off mid-sentence by a take-over or a hang-up: the
+                    # page reveals only what had been said.
+                    entry["upto"] = round(progress, 4)
+            lines.append(entry)
+        return lines, speaking
+
+    def _snapshot(self) -> dict:
+        transcript, speaking = self._transcript()
+        connected_ms = None
+        if self._connected is not None and self.state in ("pa", "live"):
+            connected_ms = int(round((self._clock() - self._connected) * 1000))
+        return {
+            "demo": True,
+            "call_id": self.call_id,
+            "state": self.state,
+            "caller": dict(_CALL_CALLER) if self.state != "idle" else None,
+            "outcome": self.outcome,
+            "since": self._since_wall,
+            "elapsed_ms": connected_ms,
+            "taken_over": self._taken_over_ms is not None,
+            "transcript": transcript,
+            "speaking": speaking,
+            "notification": dict(self.notification) if self.notification else None,
+        }
+
+    # -- the public surface --------------------------------------------------
+    def snapshot(self) -> dict:
+        with self._lock:
+            self._advance()
+            return self._snapshot()
+
+    def ring(self) -> tuple[int, dict]:
+        """Start a call. Idempotent while it is already ringing."""
+        with self._lock:
+            self._advance()
+            if self.state == "ringing":
+                return 200, self._snapshot()
+            if self.state in ("pa", "live"):
+                return 409, {"error": "a call is already in progress",
+                             "state": self.state}
+            # From idle or from a finished call. A finished call's transcript
+            # goes; the calendar event it added stays until reset.
+            self.call_id += 1
+            self._pa_started = None
+            self._connected = None
+            self._taken_over_ms = None
+            self._ended_ms = None
+            self._enter("ringing")
+            return 201, self._snapshot()
+
+    def reset(self) -> dict:
+        with self._lock:
+            self._reset_locked()
+            self.notification = None
+            return self._snapshot()
+
+    def act(self, action: str) -> tuple[int, dict]:
+        if action not in _CALL_ACTIONS:
+            return 400, {"error": "unknown action"}
+        with self._lock:
+            # Advance FIRST: a take-over tapped after the PA had already
+            # finished is a take-over of nothing, and must not un-end the call.
+            self._advance()
+            state = self.state
+            if state == "ringing" and action == "answer":
+                self._connected = self._clock()
+                self._enter("live")
+            elif state == "ringing" and action == "decline":
+                self._enter("ended", "declined")
+            elif state == "ringing" and action == "voicemail":
+                self._enter("ended", "voicemail")
+            elif state == "ringing" and action == "pa":
+                self._pa_started = self._clock()
+                self._connected = self._pa_started
+                self._enter("pa")
+            elif state == "pa" and action == "takeover":
+                self._taken_over_ms = self._pa_ms()
+                self._enter("live")
+            elif state == "pa" and action == "end":
+                self._ended_ms = self._pa_ms()
+                self._enter("ended", "ended-by-user")
+            elif state == "live" and action == "end":
+                self._enter("ended", "ended-by-user")
+            else:
+                return 409, {"error": "not allowed now", "state": state,
+                             "action": action}
+            return 200, self._snapshot()
+
+
+_LOCK_CALL = _LockCall()
+
+
+def _call_notification_groups() -> list[dict]:
+    """The calendar stack the PA's finished call leaves behind, if it has."""
+    note = _LOCK_CALL.snapshot()["notification"] if _call_demo_enabled() else None
+    if not note:
+        return []
+    return [{
+        "source": note["source"],
+        "app": note["app"],
+        "glyph": "calendar",
+        "mono": "31",
+        "tint": "#ff453a",
+        "items": [{
+            "title": "%s · %s" % (note["kind"], note["title"]),
+            "text": note["body"],
+            "at": note["at"],
+        }],
+        "demo": True,
+    }]
+
+
+def _call_gate(request: Request):
+    """The two refusals every call route shares, in the order they matter."""
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    if not _call_demo_enabled():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return None
+
+
+@router.get("/lock-call")
+async def lock_call(request: Request):
+    """The call as the lock screen should draw it right now. Console-only.
+
+    Polled by the page (every ~2s idle, ~300ms during a call) because the push
+    stream is not guaranteed to exist; a 404 means the demo is off and the page
+    stops asking.
+    """
+    refused = _call_gate(request)
+    if refused is not None:
+        return refused
+    return JSONResponse(_LOCK_CALL.snapshot())
+
+
+@router.post("/lock-call/ring")
+async def lock_call_ring(request: Request):
+    """Ring the phone: Naira calling. Console-only; the demo daemon's button."""
+    refused = _call_gate(request)
+    if refused is not None:
+        return refused
+    status, body = _LOCK_CALL.ring()
+    if status < 300:
+        # No content on the stream -- the page fetches /auth/lock-call itself.
+        body["delivered"] = _push_lock_event("call", {"state": body["state"]})
+    return JSONResponse(body, status_code=status)
+
+
+@router.post("/lock-call/reset")
+async def lock_call_reset(request: Request):
+    """Back to idle, and the calendar notification goes with it. Console-only."""
+    refused = _call_gate(request)
+    if refused is not None:
+        return refused
+    body = _LOCK_CALL.reset()
+    body["delivered"] = _push_lock_event("call", {"state": body["state"]})
+    return JSONResponse(body)
+
+
+@router.post("/lock-call/action")
+async def lock_call_action(request: Request):
+    """Answer, decline, voicemail, send to the PA, take over, or end.
+
+    400 for anything that is not one of those six, 409 for one of them at the
+    wrong moment -- a take-over while it is still ringing, say.
+    """
+    refused = _call_gate(request)
+    if refused is not None:
+        return refused
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "body must be JSON"}, status_code=400)
+    if not isinstance(body, dict) or not isinstance(body.get("action"), str):
+        return JSONResponse({"error": "action required"}, status_code=400)
+    status, out = _LOCK_CALL.act(body["action"].strip())
+    if status == 200:
+        out["delivered"] = _push_lock_event("call", {"state": out["state"]})
+    return JSONResponse(out, status_code=status)
 
 
 #: Where the privileged helper looks for a power request. The controller runs as

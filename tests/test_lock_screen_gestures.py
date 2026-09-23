@@ -486,6 +486,14 @@ class TestGestureLatching:
         # measurements and stay allowed: the view switcher resets the offset
         # when it swaps panels, and counting that as a rogue measurement would
         # make this check fail for doing the right thing.
+        #
+        # The call zone SAVES the offset before it hides the feed and writes it
+        # back when the feed returns. That is a copy for restoration, not a
+        # question about the feed's geometry, so it is removed by its exact
+        # text -- one named site, not a loosened count.
+        save = "scroll: feedEl ? feedEl.scrollTop : 0"
+        assert elsewhere.count(save) == 1
+        elsewhere = elsewhere.replace(save, "")
         reads = re.findall(r"feedEl\.scrollTop(?!\s*=(?!=))", elsewhere)
         assert len(reads) == 1, f"feedEl.scrollTop is read {len(reads)} times outside the helpers"
         assert "var atTop" in elsewhere
