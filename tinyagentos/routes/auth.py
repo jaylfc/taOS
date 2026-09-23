@@ -29,12 +29,13 @@ from tinyagentos.auth import (
     PIN_MIN_LEN,
     AuthStoreCorruptError,
     _PinAttemptLimiter,
+    effective_unlock_method,
     is_console_origin,
     validate_pin,
 )
 from tinyagentos.atomic_io import atomic_write_text
-from tinyagentos.middleware.csrf import verify_csrf
 from tinyagentos.demo_mode import demo_env
+from tinyagentos.middleware.csrf import verify_csrf
 from tinyagentos.routes.onscreen_keyboard import OSK_SCRIPT, osk_assets
 from tinyagentos.taos_agent_runtime import system_agent_framework
 
@@ -2370,7 +2371,7 @@ def _view_tabs_html() -> str:
     return "\n        ".join(out)
 
 
-def _lock_head_html() -> str:
+def _lock_head_html(unlock_method: str = "pin") -> str:
     """Opening half of the lock screen: clock, date and the widget row.
 
     Emitted as the page's first element and closed by the caller, so the
@@ -2382,8 +2383,10 @@ def _lock_head_html() -> str:
     server-rendered time would be the SERVER's clock and, worse, frozen at page
     load, so a phone left on the lock screen would show a stale time.
     """
+    method = unlock_method if unlock_method in ("swipe", "pin", "password") else "password"
+    label = "Swipe up to open" if method == "swipe" else "Swipe up to unlock"
     return f"""
-  <div class="lockscreen" id="lockscreen">
+  <div class="lockscreen" id="lockscreen" data-unlock="{method}">
     <div class="ls-statusbar">
       <span class="ls-widget ls-brand"><b>taOS</b></span>
       <span class="ls-widget" id="ls-battery" hidden></span>
@@ -2440,7 +2443,7 @@ def _lock_head_html() -> str:
         <button type="button" class="ls-unlock-btn" id="ls-unlock-btn"
                 aria-expanded="false" aria-controls="ls-foot">
           <span class="ls-grabber"></span>
-          <span class="ls-unlock-label">Swipe up to unlock</span>
+          <span class="ls-unlock-label">{label}</span>
         </button>
         <button type="button" class="ls-quick" id="ls-camera" aria-label="Camera">
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -5361,7 +5364,61 @@ _LOCK_SCREEN_SCRIPT = r"""
     // shortcut for someone who knows it, the button is what makes the phone
     // openable by someone who does not (or cannot make the drag at all).
     // -----------------------------------------------------------------------
+    // How THIS device unlocks, chosen by its owner in Settings -> Lock screen
+    // and rendered by the server as data-unlock: "pin" (the keypad), "password"
+    // (the password form rises in the same sheet) or "swipe" (no credential:
+    // the gesture itself opens taOS, via /auth/swipe-unlock, which re-checks
+    // every condition server-side -- this attribute is never trusted for that).
+    var UNLOCK = (screenEl && screenEl.getAttribute("data-unlock")) || "pin";
+    var swipeBusy = false;
+
+    function unlockNext() {
+      var f = document.querySelector('#pw-panel input[name="next"]');
+      var v = f ? f.value : "";
+      // Relative paths only, the same rule the server applied when it rendered
+      // the field: never follow "//host" off this device.
+      return (v && v.charAt(0) === "/" && v.charAt(1) !== "/") ? v : "/desktop";
+    }
+
+    function openPasswordSheet(note) {
+      openSheet("passcode");
+      var msg = document.getElementById("ls-unlock-note");
+      if (note && msg) { msg.textContent = note; msg.hidden = false; }
+      var pw = document.querySelector("#pw-panel input[type=password]");
+      if (pw && window.taosOSK) {
+        window.taosOSK.enable();
+        window.taosOSK.focusField(pw);
+      } else if (pw) {
+        try { pw.focus({ preventScroll: true }); } catch (e) { pw.focus(); }
+      }
+      window.setTimeout(syncKeyboard, 60);
+    }
+
+    function swipeUnlock() {
+      if (swipeBusy) return;
+      swipeBusy = true;
+      fetch("/auth/swipe-unlock", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      }).then(function (r) {
+        swipeBusy = false;
+        if (r.ok) { window.location.assign(unlockNext()); return; }
+        // Refused (the server's answer wins over this page's attribute):
+        // fall back to the password, never to nothing.
+        openPasswordSheet(r.status === 429
+          ? "Too many attempts. Sign in with your password."
+          : "Sign in with your password.");
+      }).catch(function () {
+        swipeBusy = false;
+        openPasswordSheet("Could not reach taOS. Sign in with your password.");
+      });
+    }
+
     function openPasscode() {
+      if (UNLOCK === "swipe") { swipeUnlock(); return; }
+      if (UNLOCK === "password") { openPasswordSheet(""); return; }
       openSheet("passcode");
       var pinInput = document.getElementById("pin-input");
       // Focus the field so a physical keyboard types into it, but do NOT raise
@@ -6202,7 +6259,21 @@ def _login_page(
     multi_user: bool = False,
     next_url: str = "",
     pin_available: bool = False,
+    unlock_method: str | None = None,
 ) -> str:
+    """The sign-in page.
+
+    ``unlock_method`` is set ONLY for a console request on a single-account
+    install (see login_page); it turns the page into the lock screen and picks
+    how that screen opens. ``pin_available=True`` alone is the older spelling of
+    ``unlock_method="pin"``.
+    """
+    if unlock_method is None and pin_available:
+        unlock_method = "pin"
+    if unlock_method not in (None, "swipe", "pin", "password"):
+        # Never render a lock screen for a method this page cannot honour.
+        unlock_method = "password"
+    pin_available = unlock_method == "pin"
     err = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ""
     pwd_placeholder = "Password or invite code" if multi_user else "Password"
     autologin_default = "" if multi_user else "checked"
@@ -6219,7 +6290,7 @@ def _login_page(
     # be refused (and never learns that a PIN exists on this box).
     # pin_available is already console-only, so the lock screen never reaches a
     # LAN browser: off-console this page stays exactly the card it has always been.
-    lock_screen = pin_available
+    lock_screen = unlock_method is not None
     pin_panel = _pin_panel_html(next_url, keypad=lock_screen) if pin_available else ""
     pin_switch = (
         '<button type="button" class="method-switch" id="use-pin">Use my PIN instead</button>'
@@ -6240,7 +6311,7 @@ def _login_page(
         '      <p>Sign in to continue</p>\n'
         '    </div>'
     )
-    lock_head = _lock_head_html() if lock_screen else ""
+    lock_head = _lock_head_html(unlock_method or "pin") if lock_screen else ""
     lock_foot = _lock_tail_html() if lock_screen else ""
     lock_script = '<script src="/auth/lock-screen.js" defer></script>' if lock_screen else ""
     lock_style = f"<style>{_LOCK_SCREEN_STYLE}</style>" if lock_screen else ""
@@ -6419,17 +6490,20 @@ async def login_page(request: Request, error: str = "", next: str = ""):
         err_text = ""
     # Only allow relative paths starting with / to prevent open redirect
     safe_next = next if (next.startswith("/") and not next.startswith("//")) else ""
-    # Same rule as /auth/status and /auth/pin-login: offer the keypad only where
-    # it would actually be accepted.
-    try:
-        pin_available = _request_is_console(request) and auth_mgr.has_pin()
-    except AuthStoreCorruptError:
-        pin_available = False
+    # The lock screen is the CONSOLE of a SINGLE-ACCOUNT install, whatever
+    # its unlock method -- it no longer needs a PIN to exist. Off-console, or
+    # with more than one account, this stays the plain card it always was, so a
+    # LAN browser is never told how this device's own screen unlocks.
+    unlock_method = None
+    if _request_is_console(request):
+        sole = auth_mgr.lock_screen_user()
+        if sole is not None:
+            unlock_method = effective_unlock_method(sole)
     return HTMLResponse(_login_page(
         err_text,
         multi_user=auth_mgr.is_multi_user(),
         next_url=safe_next,
-        pin_available=pin_available,
+        unlock_method=unlock_method,
     ))
 
 
@@ -9193,6 +9267,12 @@ async def pin_login(request: Request):
             headers={"Retry-After": str(wait)},
         )
 
+    # The owner chose how this screen unlocks. A PIN that still exists after
+    # they switched to "password" must not keep working behind their back --
+    # that is the whole of "disable my pin entry". Same answer as "no PIN here".
+    if record is not None and effective_unlock_method(record) != "pin":
+        return JSONResponse({"error": "PIN sign-in is not available"}, status_code=404)
+
     ok, user_record = auth_mgr.check_pin(pin, username=username)
     if not ok or user_record is None:
         _pin_limiter.record_failure(limiter_key)
@@ -9208,6 +9288,86 @@ async def pin_login(request: Request):
         user_agent=request.headers.get("user-agent", ""),
     )
     resp = JSONResponse({"ok": True, "user": auth_mgr._public_user(user_record)})
+    resp.set_cookie(
+        "taos_session", token, httponly=True, samesite="strict",
+        max_age=auth_mgr.session_ttl_for(True),
+    )
+    return resp
+
+
+def _same_origin_or_absent(request: Request) -> bool:
+    """False when the browser says this request came from ANOTHER origin.
+
+    Not a security boundary on its own -- a local process can omit or forge
+    both headers -- but it stops a web page open in the kiosk's own browser
+    from firing an unlock at localhost behind the user's back.
+    """
+    site = request.headers.get("sec-fetch-site")
+    if site and site not in ("same-origin", "none"):
+        return False
+    origin = request.headers.get("origin")
+    if origin:
+        host = request.headers.get("host", "")
+        if origin.split("://", 1)[-1].rstrip("/") != host:
+            return False
+    return True
+
+
+@router.post("/swipe-unlock")
+async def swipe_unlock(request: Request):
+    """Open the console lock screen with no credential, for a "swipe" owner.
+
+    ⚠ PRE-AUTH AND CREDENTIAL-FREE. Every condition below must hold, and any
+    failure is a 403 with no session:
+
+    * the request is the device's own console (``is_console_origin``: loopback
+      and NO forwarding header -- behind a proxy every LAN request is loopback);
+    * the browser does not report a cross-origin caller;
+    * the install has exactly one account (``lock_screen_user``) -- on a shared
+      device a swipe cannot know whose session to open;
+    * that account's effective unlock method is ``swipe``, which costs the
+      account password to select (PUT /api/settings/lock);
+    * the PIN throttle for that account is not engaged (same limiter and key as
+      /auth/pin-login, so the two cannot be played against each other).
+
+    The session is minted exactly as /auth/pin-login mints one: long-lived,
+    bound to this User-Agent, HttpOnly + SameSite=Strict. The csrf_token cookie
+    comes from CSRFMiddleware on this response like on every other.
+    """
+    auth_mgr = request.app.state.auth
+    refused = JSONResponse({"error": "swipe unlock is not available"}, status_code=403)
+    # Off-console callers are refused BEFORE the throttle is touched: a LAN
+    # client must not be able to push the owner's PIN into a lockout.
+    if not _request_is_console(request):
+        return refused
+    if not _same_origin_or_absent(request):
+        return refused
+
+    record = auth_mgr.lock_screen_user()
+    limiter_key = (record or {}).get("id") or "unknown:"
+    wait = _pin_limiter.retry_after(limiter_key)
+    if wait > 0:
+        return JSONResponse(
+            {
+                "error": f"Too many attempts. Try again in {wait} seconds.",
+                "retry_after": wait,
+            },
+            status_code=429,
+            headers={"Retry-After": str(wait)},
+        )
+    if record is None or effective_unlock_method(record) != "swipe":
+        # A console swipe at a device that needs a PIN or password is an
+        # attempt to get in without one; it counts like a wrong PIN.
+        _pin_limiter.record_failure(limiter_key)
+        return refused
+
+    auth_mgr.update_last_login(record["id"])
+    token = auth_mgr.create_session(
+        user_id=record["id"],
+        long_lived=True,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    resp = JSONResponse({"ok": True, "user": auth_mgr._public_user(record)})
     resp.set_cookie(
         "taos_session", token, httponly=True, samesite="strict",
         max_age=auth_mgr.session_ttl_for(True),
@@ -9548,7 +9708,8 @@ async def auth_status(request: Request):
     pin_available = False
     if configured and store_error is None and not authenticated:
         try:
-            pin_available = _request_is_console(request) and auth_mgr.has_pin()
+            sole = auth_mgr.lock_screen_user() if _request_is_console(request) else None
+            pin_available = bool(sole) and effective_unlock_method(sole) == "pin"
         except AuthStoreCorruptError:
             pin_available = False
 
