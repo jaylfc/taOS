@@ -72,6 +72,7 @@ async def list_share_destinations(request: Request):
                             "kind": "agent_chat",
                             "id": member,
                             "label": agent.get("display_name") or member,
+                            "channel_id": ch.get("id"),
                         })
                 except RuntimeError:
                     pass

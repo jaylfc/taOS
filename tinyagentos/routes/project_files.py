@@ -68,6 +68,19 @@ async def _authorize_files_actor(
         if project is not None and not is_admin and project.get("user_id") != uid:
             return JSONResponse({"error": "not found"}, status_code=404)
         return ("user", uid)
+    
+    # Check if the caller is a device bearer
+    device = getattr(request.state, "_device", None)
+    if device:
+        # Device bearer path: the device must be paired to the project owner
+        # (the user who created/owns the project). Device bearers don't have
+        # grants; they are simply paired to a specific user and can act on
+        # behalf of that user for device-only routes.
+        if project is not None and project.get("user_id") != device["user_id"]:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        # Device bearer acting as the project owner
+        return ("device_bearer", device["user_id"])
+    
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.lower().startswith("bearer "):
         # Middleware normally 401s unauthenticated requests before the route

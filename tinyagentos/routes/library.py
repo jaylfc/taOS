@@ -114,6 +114,19 @@ async def ingest(
     Returns ``{item_id, status: \"pending\"}`` immediately — pipeline processing
     happens asynchronously in a background task.
     """
+    # Device bearer authorization: a device can only ingest to its own user's library
+    uid = getattr(request.state, "user_id", None)
+    if not uid:
+        # Check if the caller is a device bearer
+        device = getattr(request.state, "_device", None)
+        if device:
+            # Device bearer: must be paired to the user who owns the library
+            uid = device["user_id"]
+        else:
+            # No authentication -> 401
+            from fastapi import HTTPException
+            raise HTTPException(status_code=401, detail="Authentication required")
+    
     store = await _get_library_store(request)
     storage_dir = _library_dir(request)
 

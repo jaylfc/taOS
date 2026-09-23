@@ -259,6 +259,9 @@ _DEVICE_BEARER_PATHS = (
     ("GET", re.compile(r"^/api/decisions/[^/]+$")),
     ("GET", re.compile(r"^/api/decisions/[^/]+/history$")),
     ("POST", re.compile(r"^/api/decisions/[^/]+/answer$")),
+    ("POST", re.compile(r"^/api/library/ingest$")),
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/files/upload$")),
+    ("POST", re.compile(r"^/api/chat/messages$")),
 )
 
 
