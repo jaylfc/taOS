@@ -782,3 +782,71 @@ class TestBusSendCredentialTransport:
         assert resp.status_code == 200
         headers = client.post.call_args.kwargs["headers"]
         assert headers is None
+
+    async def test_remote_http_withholds_credential_and_signal(self, bus_client):
+        """Non-loopback http:// bus URL: no Authorization header is forwarded,
+        and credential_forwarded is False in the response."""
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        resp, client = await self._post_with_bus_url(
+            bus_client._app, token, "http://bus.example.test:7900"
+        )
+        assert resp.status_code == 200
+        headers = client.post.call_args.kwargs["headers"]
+        assert headers is None
+        assert resp.json()["credential_forwarded"] is False
+
+    async def test_loopback_http_forwards_credential_and_signal(self, bus_client):
+        """Loopback http:// (127.0.0.1) forwards the credential and signals True."""
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        resp, client = await self._post_with_bus_url(
+            bus_client._app, token, "http://127.0.0.1:7900"
+        )
+        assert resp.status_code == 200
+        headers = client.post.call_args.kwargs["headers"]
+        assert headers == {"Authorization": f"Bearer {token}"}
+        assert resp.json()["credential_forwarded"] is True
+
+    async def test_remote_http_opt_in_forwards_credential_and_signal(self, bus_client):
+        """TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL restores forwarding and signals True."""
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        resp, client = await self._post_with_bus_url(
+            bus_client._app,
+            token,
+            "http://bus.example.test:7900",
+            allow_insecure="1",
+        )
+        assert resp.status_code == 200
+        headers = client.post.call_args.kwargs["headers"]
+        assert headers == {"Authorization": f"Bearer {token}"}
+        assert resp.json()["credential_forwarded"] is True
+
+    async def test_scheme_fail_open_withholds_credential(self, bus_client):
+        """A bus URL with no scheme (or any non-http(s) scheme) must NOT build an
+        Authorization header, even though httpx would reject the URL anyway."""
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        old_bus_url = os.environ.get("TAOS_A2A_BUS_URL")
+        old_allow = os.environ.get("TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL")
+        os.environ["TAOS_A2A_BUS_URL"] = "bus.example.test:7900"
+        if "TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL" in os.environ:
+            del os.environ["TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL"]
+        try:
+            ctx, client = _mock_bus_post({"id": 1, "from": "x", "thread": "build"})
+            with patch(_BUS_PATCH, return_value=ctx):
+                async with _bare(bus_client._app) as bare:
+                    resp = await bare.post(
+                        "/api/a2a/bus/send",
+                        json={"thread": "build", "body": "hi"},
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+        finally:
+            if old_bus_url is None:
+                os.environ.pop("TAOS_A2A_BUS_URL", None)
+            else:
+                os.environ["TAOS_A2A_BUS_URL"] = old_bus_url
+            if old_allow is None:
+                os.environ.pop("TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL", None)
+            else:
+                os.environ["TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL"] = old_allow
+        assert resp.status_code == 200
+        headers = client.post.call_args.kwargs["headers"]
+        assert headers is None

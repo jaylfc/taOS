@@ -341,6 +341,8 @@ Two details of the agent path are load-bearing, so do not "tidy" either one:
   `http://` bus drops the credential to avoid sending it in cleartext across
   the LAN. Operators with a remote `http://` bus can restore forwarding by
   setting `TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL`.
+  The send response includes `credential_forwarded: bool` so the caller can
+  tell whether the proxy actually forwarded its credential.
 
 Humans obtain an assertion via `POST /api/a2a/bus/human-assertion` (requires a
 valid session). For a human principal the controller derives the sender from the
