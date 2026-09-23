@@ -30,6 +30,17 @@ import pytest
 import tinyagentos.routes.auth as auth
 from tinyagentos.auth_middleware import EXEMPT_PATHS
 
+# The demo helpers read the Settings demo-mode switch from the app's data dir.
+# A fresh dir with no switch file is a device that has never flipped it: ON
+# exactly when a demo flag is set, which is what these tests were written for.
+import tempfile as _tempfile
+from pathlib import Path as _Path
+from types import SimpleNamespace as _NS
+
+_DEMO_DIR = _Path(_tempfile.mkdtemp())
+_DEMO_REQ = _NS(app=_NS(state=_NS(data_dir=_DEMO_DIR)))
+
+
 
 class _Req:
     """Enough of a Request for the handlers under test."""
@@ -37,6 +48,7 @@ class _Req:
     def __init__(self, body=None, *, raw_error=False):
         self._body = body
         self._raw_error = raw_error
+        self.app = _NS(state=_NS(data_dir=_DEMO_DIR))
 
     async def json(self):
         if self._raw_error:
@@ -134,10 +146,10 @@ class TestTheGate:
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "a,b")
         monkeypatch.setenv("TAOS_LOCK_DEMO_NOTIFICATIONS", "1")
         monkeypatch.delenv("TAOS_LOCK_DEMO_CALL", raising=False)
-        assert auth._call_demo_enabled() is False
+        assert auth._call_demo_enabled(_DEMO_REQ) is False
         monkeypatch.delenv("TAOS_LOCK_DEMO_AGENTS", raising=False)
         monkeypatch.setenv("TAOS_LOCK_DEMO_CALL", "1")
-        assert auth._call_demo_enabled() is True
+        assert auth._call_demo_enabled(_DEMO_REQ) is True
 
     def test_every_route_is_exempt_from_the_session_gate(self):
         """Fetched before sign-in. /auth/lock-stats once shipped without this

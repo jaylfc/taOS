@@ -229,6 +229,40 @@ def validate_pin(pin: str) -> str:
     return pin
 
 
+#: How the console lock screen opens. Stored per user as ``unlock_method``.
+#:
+#: ``swipe`` is NO credential at all: whoever holds the device opens taOS. It is
+#: honoured only on the console of a single-user install (see
+#: ``routes.auth.swipe_unlock``), and choosing it costs the account password.
+UNLOCK_METHODS: tuple[str, ...] = ("swipe", "pin", "password")
+
+#: Shown in Settings but not implemented. Refused by the API until they are, so
+#: a stored value can never name a method no route knows how to honour.
+UNLOCK_METHODS_PLANNED: tuple[str, ...] = ("pattern",)
+
+
+def effective_unlock_method(record: Mapping[str, Any] | None) -> str:
+    """The unlock method that actually applies to *record*, never a wish.
+
+    An unset or unknown stored value falls back to the pre-existing behaviour:
+    ``pin`` when the user has a PIN, otherwise ``password``. A stored ``pin``
+    with no PIN behind it (the PIN was turned off afterwards) also degrades to
+    ``password`` rather than rendering a keypad nothing can satisfy.
+
+    Only ever degrades toward a STRONGER method: nothing here can turn a
+    missing or malformed value into ``swipe``.
+    """
+    if not record:
+        return "password"
+    has_pin = bool(record.get("pin_hash"))
+    method = record.get("unlock_method")
+    if method not in UNLOCK_METHODS:
+        method = "pin" if has_pin else "password"
+    if method == "pin" and not has_pin:
+        method = "password"
+    return method
+
+
 def _is_loopback(host: str) -> bool:
     """True when *host* is a loopback literal (127.0.0.0/8, ::1, mapped v4)."""
     if not host:
@@ -592,14 +626,14 @@ class AuthManager:
                 return u
         return None
 
-    def get_user(self, token: str | None = None) -> dict | None:
+    def get_user(self, token: str | None = None, user_agent: str | None = None) -> dict | None:
         """Return public profile.
 
         When *token* is given, return the user who owns that session.
         Otherwise fall back to the first user (back-compat).
         """
         if token:
-            user_id = self.validate_session(token)
+            user_id = self.validate_session(token, user_agent=user_agent)
             if user_id:
                 record = self._find_user_by_id(user_id)
                 if record:
@@ -866,6 +900,54 @@ class AuthManager:
             return (False, None)
         return (True, record)
 
+    # ------------------------------------------------------------------ #
+    #  Lock-screen unlock method (console-only; see effective_unlock_method) #
+    # ------------------------------------------------------------------ #
+
+    def lock_screen_user(self) -> dict | None:
+        """The one account the console lock screen belongs to, or None.
+
+        Exactly one record in the store, and it is a full account (has a
+        password). Anything else -- no users, two users, a pending invite beside
+        the owner -- is not single-user, and the lock screen must not guess
+        whose device this is. Fails closed on an unreadable store.
+        """
+        try:
+            users = self._read_users().get("users", [])
+        except AuthStoreCorruptError:
+            return None
+        if len(users) != 1:
+            return None
+        record = users[0]
+        if not isinstance(record, dict) or "password_hash" not in record:
+            return None
+        return record
+
+    def unlock_method(self, username: str) -> str:
+        """*username*'s effective unlock method."""
+        return effective_unlock_method(self.find_user(username))
+
+    @_serialized
+    def set_unlock_method(self, username: str, method: str) -> None:
+        """Store *username*'s unlock method.
+
+        The caller must already have re-verified the account password; like
+        ``set_pin`` this does not re-check it. Only implemented methods are
+        accepted, and ``pin`` only once a PIN exists -- a stored ``pin`` with no
+        PIN would silently mean ``password``, which is not what was asked for.
+        """
+        if method not in UNLOCK_METHODS:
+            raise ValueError(f"unknown unlock method '{method}'")
+        data = self._read_users()
+        for i, u in enumerate(data.get("users", [])):
+            if u.get("username") == username:
+                if method == "pin" and not u.get("pin_hash"):
+                    raise ValueError("set a PIN first")
+                data["users"][i]["unlock_method"] = method
+                self._write_users(data)
+                return
+        raise ValueError(f"user '{username}' not found")
+
     def check_password(self, password: str, username: str | None = None) -> tuple[bool, dict | None]:
         """Verify credentials.
 
@@ -936,7 +1018,7 @@ class AuthManager:
 
     @_serialized
     def change_password(self, username: str, current_password: str, new_password: str) -> bool:
-        """Self-change, requires current password."""
+        """Self-change, requires current password. Revokes all other sessions."""
         if not new_password or len(new_password) < 8:
             return False
         data = self._read_users()
@@ -949,6 +1031,7 @@ class AuthManager:
                 users[i] = u
                 data["users"] = users
                 self._write_users(data)
+                self.revoke_user_sessions(u.get("id", ""))
                 return True
         return False
 
@@ -1043,9 +1126,14 @@ class AuthManager:
                 pass
             return None
         # Client-binding check: only when the session was created with a
-        # user_agent_hash AND the caller supplies a user_agent for comparison.
+        # user_agent_hash.  When the header is omitted the caller cannot prove
+        # it is the same browser that created the session, so a stored hash
+        # MUST reject -- a missing User-Agent with a stored hash is a mismatch,
+        # not a free pass.
         stored_ua = entry.get("user_agent_hash")
-        if stored_ua and user_agent:
+        if stored_ua:
+            if not user_agent:
+                return None
             if not secrets.compare_digest(
                 stored_ua, hashlib.sha256(user_agent.encode()).hexdigest()
             ):
@@ -1069,9 +1157,9 @@ class AuthManager:
             self._sessions.pop(token, None)
         return len(to_revoke)
 
-    def session_user(self, token: str) -> dict | None:
+    def session_user(self, token: str, user_agent: str | None = None) -> dict | None:
         """Return public profile of the user owning this session."""
-        user_id = self.validate_session(token)
+        user_id = self.validate_session(token, user_agent=user_agent)
         if user_id is None:
             return None
         if user_id:
@@ -1080,6 +1168,22 @@ class AuthManager:
                 return self._public_user(record)
         # Legacy or no user_id — return first user
         return self.get_user()
+
+    def session_user_for_request(self, request: Request) -> dict | None:
+        """Return public profile of the user owning this session, reading user-agent from request."""
+        user_agent = request.headers.get("user-agent", "")
+        token = request.cookies.get("taos_session", "")
+        if not token:
+            return None
+        return self.session_user(token, user_agent=user_agent)
+
+    def validate_session_for_request(self, request: Request) -> str | None:
+        """Return user_id if the session is valid, reading user-agent from request."""
+        user_agent = request.headers.get("user-agent", "")
+        token = request.cookies.get("taos_session", "")
+        if not token:
+            return None
+        return self.validate_session(token, user_agent=user_agent)
 
     def cleanup_sessions(self) -> None:
         now = time.time()
@@ -1244,10 +1348,7 @@ def get_current_user(request: Request) -> dict[str, Any]:
     user dict needed for capability checks.
     """
     auth_mgr = request.app.state.auth
-    token = request.cookies.get("taos_session", "")
-    if not token:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    user = auth_mgr.session_user(token)
+    user = auth_mgr.session_user_for_request(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     return user

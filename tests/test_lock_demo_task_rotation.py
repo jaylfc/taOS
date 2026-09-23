@@ -53,6 +53,17 @@ from tinyagentos.routes.auth import _LOCK_SCREEN_SCRIPT as LOCK_SCRIPT
 from test_lock_screen_gestures import _function
 from test_lock_screen_repaint import _DOM, _var
 
+# The demo helpers read the Settings demo-mode switch from the app's data dir.
+# A fresh dir with no switch file is a device that has never flipped it: ON
+# exactly when a demo flag is set, which is what these tests were written for.
+import tempfile as _tempfile
+from pathlib import Path as _Path
+from types import SimpleNamespace as _NS
+
+_DEMO_DIR = _Path(_tempfile.mkdtemp())
+_DEMO_REQ = _NS(app=_NS(state=_NS(data_dir=_DEMO_DIR)))
+
+
 
 # =============================================================================
 # SERVER: the pure rotation functions.
@@ -82,7 +93,7 @@ class TestHostileCasesFirst:
             "Accountant:hermes:Chasing invoices: overdue clients this month",
         )
         monkeypatch.setattr(auth, "_demo_task_clock", lambda: 0.0)
-        resp = asyncio.run(auth.lock_widgets(object()))
+        resp = asyncio.run(auth.lock_widgets(_DEMO_REQ))
         body = json.loads(bytes(resp.body))
         accountant = next(a for a in body["agents"] if a["name"] == "Accountant")
         # Accountant DOES have a script, so its configured status becomes
@@ -99,7 +110,7 @@ class TestHostileCasesFirst:
         ever ran unconditionally this is what would catch it."""
         monkeypatch.setattr(auth, "_request_is_console", lambda _r: True)
         monkeypatch.delenv("TAOS_LOCK_DEMO_AGENTS", raising=False)
-        resp = asyncio.run(auth.lock_widgets(object()))
+        resp = asyncio.run(auth.lock_widgets(_DEMO_REQ))
         body = json.loads(bytes(resp.body))
         assert "refresh_in_ms" not in body
         for agent in body["agents"]:
@@ -110,7 +121,7 @@ class TestHostileCasesFirst:
         monkeypatch.setattr(auth, "_request_is_console", lambda _r: True)
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Nobody:hermes:Idle chat")
         monkeypatch.setattr(auth, "_demo_task_clock", lambda: 12345.0)
-        resp = asyncio.run(auth.lock_widgets(object()))
+        resp = asyncio.run(auth.lock_widgets(_DEMO_REQ))
         body = json.loads(bytes(resp.body))
         nobody = next(a for a in body["agents"] if a["name"] == "Nobody")
         assert nobody["status"] == "Idle chat"
@@ -400,7 +411,7 @@ class TestTheRoute:
         else:
             monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", agents)
         monkeypatch.setattr(auth, "_demo_task_clock", lambda: now)
-        return asyncio.run(auth.lock_widgets(object()))
+        return asyncio.run(auth.lock_widgets(_DEMO_REQ))
 
     def test_a_scripted_agent_gets_next_change_ms(self, monkeypatch):
         resp = self._call(monkeypatch)

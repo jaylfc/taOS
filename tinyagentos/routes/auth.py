@@ -32,10 +32,12 @@ from tinyagentos.auth import (
     PIN_MIN_LEN,
     AuthStoreCorruptError,
     _PinAttemptLimiter,
+    effective_unlock_method,
     is_console_origin,
     validate_pin,
 )
 from tinyagentos.atomic_io import atomic_write_text
+from tinyagentos.demo_mode import demo_env
 from tinyagentos.middleware.csrf import verify_csrf
 from tinyagentos.routes.onscreen_keyboard import OSK_SCRIPT, osk_assets
 
@@ -2910,7 +2912,7 @@ def _view_tabs_html() -> str:
     return "\n        ".join(out)
 
 
-def _lock_head_html() -> str:
+def _lock_head_html(unlock_method: str = "pin") -> str:
     """Opening half of the lock screen: clock, date and the widget row.
 
     Emitted as the page's first element and closed by the caller, so the
@@ -2922,8 +2924,10 @@ def _lock_head_html() -> str:
     server-rendered time would be the SERVER's clock and, worse, frozen at page
     load, so a phone left on the lock screen would show a stale time.
     """
+    method = unlock_method if unlock_method in ("swipe", "pin", "password") else "password"
+    label = "Swipe up to open" if method == "swipe" else "Swipe up to unlock"
     return f"""
-  <div class="lockscreen" id="lockscreen">
+  <div class="lockscreen" id="lockscreen" data-unlock="{method}">
     <div class="ls-statusbar">
       <span class="ls-widget ls-brand"><b>taOS</b></span>
       <span class="ls-widget" id="ls-battery" hidden></span>
@@ -3073,7 +3077,7 @@ def _lock_head_html() -> str:
         <button type="button" class="ls-unlock-btn" id="ls-unlock-btn"
                 aria-expanded="false" aria-controls="ls-foot">
           <span class="ls-grabber"></span>
-          <span class="ls-unlock-label">Swipe up to unlock</span>
+          <span class="ls-unlock-label">{label}</span>
         </button>
         <button type="button" class="ls-quick" id="ls-camera" aria-label="Camera">
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -6496,7 +6500,61 @@ _LOCK_SCREEN_SCRIPT = r"""
     // shortcut for someone who knows it, the button is what makes the phone
     // openable by someone who does not (or cannot make the drag at all).
     // -----------------------------------------------------------------------
+    // How THIS device unlocks, chosen by its owner in Settings -> Lock screen
+    // and rendered by the server as data-unlock: "pin" (the keypad), "password"
+    // (the password form rises in the same sheet) or "swipe" (no credential:
+    // the gesture itself opens taOS, via /auth/swipe-unlock, which re-checks
+    // every condition server-side -- this attribute is never trusted for that).
+    var UNLOCK = (screenEl && screenEl.getAttribute("data-unlock")) || "pin";
+    var swipeBusy = false;
+
+    function unlockNext() {
+      var f = document.querySelector('#pw-panel input[name="next"]');
+      var v = f ? f.value : "";
+      // Relative paths only, the same rule the server applied when it rendered
+      // the field: never follow "//host" off this device.
+      return (v && v.charAt(0) === "/" && v.charAt(1) !== "/") ? v : "/desktop";
+    }
+
+    function openPasswordSheet(note) {
+      openSheet("passcode");
+      var msg = document.getElementById("ls-unlock-note");
+      if (note && msg) { msg.textContent = note; msg.hidden = false; }
+      var pw = document.querySelector("#pw-panel input[type=password]");
+      if (pw && window.taosOSK) {
+        window.taosOSK.enable();
+        window.taosOSK.focusField(pw);
+      } else if (pw) {
+        try { pw.focus({ preventScroll: true }); } catch (e) { pw.focus(); }
+      }
+      window.setTimeout(syncKeyboard, 60);
+    }
+
+    function swipeUnlock() {
+      if (swipeBusy) return;
+      swipeBusy = true;
+      fetch("/auth/swipe-unlock", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      }).then(function (r) {
+        swipeBusy = false;
+        if (r.ok) { window.location.assign(unlockNext()); return; }
+        // Refused (the server's answer wins over this page's attribute):
+        // fall back to the password, never to nothing.
+        openPasswordSheet(r.status === 429
+          ? "Too many attempts. Sign in with your password."
+          : "Sign in with your password.");
+      }).catch(function () {
+        swipeBusy = false;
+        openPasswordSheet("Could not reach taOS. Sign in with your password.");
+      });
+    }
+
     function openPasscode() {
+      if (UNLOCK === "swipe") { swipeUnlock(); return; }
+      if (UNLOCK === "password") { openPasswordSheet(""); return; }
       openSheet("passcode");
       var pinInput = document.getElementById("pin-input");
       // Focus the field so a physical keyboard types into it, but do NOT raise
@@ -8420,7 +8478,21 @@ def _login_page(
     multi_user: bool = False,
     next_url: str = "",
     pin_available: bool = False,
+    unlock_method: str | None = None,
 ) -> str:
+    """The sign-in page.
+
+    ``unlock_method`` is set ONLY for a console request on a single-account
+    install (see login_page); it turns the page into the lock screen and picks
+    how that screen opens. ``pin_available=True`` alone is the older spelling of
+    ``unlock_method="pin"``.
+    """
+    if unlock_method is None and pin_available:
+        unlock_method = "pin"
+    if unlock_method not in (None, "swipe", "pin", "password"):
+        # Never render a lock screen for a method this page cannot honour.
+        unlock_method = "password"
+    pin_available = unlock_method == "pin"
     err = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ""
     pwd_placeholder = "Password or invite code" if multi_user else "Password"
     autologin_default = "" if multi_user else "checked"
@@ -8437,7 +8509,7 @@ def _login_page(
     # be refused (and never learns that a PIN exists on this box).
     # pin_available is already console-only, so the lock screen never reaches a
     # LAN browser: off-console this page stays exactly the card it has always been.
-    lock_screen = pin_available
+    lock_screen = unlock_method is not None
     pin_panel = _pin_panel_html(next_url, keypad=lock_screen) if pin_available else ""
     pin_switch = (
         '<button type="button" class="method-switch" id="use-pin">Use my PIN instead</button>'
@@ -8458,7 +8530,7 @@ def _login_page(
         '      <p>Sign in to continue</p>\n'
         '    </div>'
     )
-    lock_head = _lock_head_html() if lock_screen else ""
+    lock_head = _lock_head_html(unlock_method or "pin") if lock_screen else ""
     lock_foot = _lock_tail_html() if lock_screen else ""
     lock_script = '<script src="/auth/lock-screen.js" defer></script>' if lock_screen else ""
     lock_style = f"<style>{_LOCK_SCREEN_STYLE}</style>" if lock_screen else ""
@@ -8573,7 +8645,9 @@ def _require_admin(request: Request) -> tuple[bool, JSONResponse | None]:
     token = request.cookies.get("taos_session", "")
     if not token:
         return False, JSONResponse({"error": "forbidden"}, status_code=403)
-    user = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    user = auth_mgr.session_user(token, user_agent=user_agent)
     if not user or not user.get("is_admin"):
         return False, JSONResponse({"error": "forbidden"}, status_code=403)
     return True, None
@@ -8585,7 +8659,9 @@ def _require_self(request: Request, username: str) -> tuple[bool, JSONResponse |
     token = request.cookies.get("taos_session", "")
     if not token:
         return False, JSONResponse({"error": "forbidden"}, status_code=403)
-    user = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    user = auth_mgr.session_user(token, user_agent=user_agent)
     if not user or user.get("username") != username:
         return False, JSONResponse({"error": "forbidden"}, status_code=403)
     return True, None
@@ -8633,17 +8709,20 @@ async def login_page(request: Request, error: str = "", next: str = ""):
         err_text = ""
     # Only allow relative paths starting with / to prevent open redirect
     safe_next = next if (next.startswith("/") and not next.startswith("//")) else ""
-    # Same rule as /auth/status and /auth/pin-login: offer the keypad only where
-    # it would actually be accepted.
-    try:
-        pin_available = _request_is_console(request) and auth_mgr.has_pin()
-    except AuthStoreCorruptError:
-        pin_available = False
+    # The lock screen is the CONSOLE of a SINGLE-ACCOUNT install, whatever
+    # its unlock method -- it no longer needs a PIN to exist. Off-console, or
+    # with more than one account, this stays the plain card it always was, so a
+    # LAN browser is never told how this device's own screen unlocks.
+    unlock_method = None
+    if _request_is_console(request):
+        sole = auth_mgr.lock_screen_user()
+        if sole is not None:
+            unlock_method = effective_unlock_method(sole)
     return HTMLResponse(_login_page(
         err_text,
         multi_user=auth_mgr.is_multi_user(),
         next_url=safe_next,
-        pin_available=pin_available,
+        unlock_method=unlock_method,
     ))
 
 
@@ -9211,7 +9290,7 @@ async def lock_widgets(request: Request):
     # so a demo machine can show a populated lock screen without standing up
     # three real container-backed agents first; anything it lists is a
     # placeholder, not a running process.
-    demo = os.environ.get("TAOS_LOCK_DEMO_AGENTS", "").strip()
+    demo = _demo_value("TAOS_LOCK_DEMO_AGENTS", request)
     if demo:
         existing = {a["name"] for a in agents}
         for raw in demo.split(","):
@@ -9257,7 +9336,7 @@ async def lock_widgets(request: Request):
     # second list would mean a second poll and two painters racing over the
     # same row. Their keys are namespaced (`device:<slug>`) so a board can
     # never collide with a TAOS_LOCK_DEMO_AGENTS placeholder of the same name.
-    if _device_agents_enabled():
+    if _device_agents_enabled(request):
         for entry in _device_live():
             agents.append(_device_island(entry))
 
@@ -9314,7 +9393,7 @@ async def lock_widgets(request: Request):
     # lie about the state of the machine. It carries no decision id, which is
     # what the client uses to tell a demo prompt from an answerable one.
     if demo and not any(a.get("attention") for a in agents):
-        want = os.environ.get("TAOS_LOCK_DEMO_DECISION_AGENT", "").strip().lower()
+        want = _demo_value("TAOS_LOCK_DEMO_DECISION_AGENT", request).lower()
         target = None
         for a in agents:
             if not a.get("demo") or a.get("system"):
@@ -9327,10 +9406,8 @@ async def lock_widgets(request: Request):
             target["attention"] = True
             target["decision"] = {
                 "id": "",
-                "question": os.environ.get(
-                    "TAOS_LOCK_DEMO_DECISION",
-                    "Approve \u00a31,340 for the second Raspberry Pi order?",
-                ),
+                "question": _demo_value("TAOS_LOCK_DEMO_DECISION", request)
+                or "Approve \u00a31,340 for the second Raspberry Pi order?",
                 "priority": "normal",
                 "options": ["Approve", "Deny"],
                 "demo": True,
@@ -9551,17 +9628,39 @@ _DEMO_THREAD_FALLBACK: tuple[tuple[int, int, int, str, str], ...] = (
 )
 
 
-def _demo_enabled() -> bool:
+def _demo_value(flag_name: str, request: Request) -> str:
+    """The value of demo flag *flag_name*, or "" while it must not apply.
+
+    THE one place the lock screen reads a ``TAOS_LOCK_DEMO_*`` flag. The env
+    flag says WHAT demo content exists; the Settings switch (data/demo_mode.json,
+    see tinyagentos.demo_mode) says whether it is SHOWN. With the switch off
+    this answers "" -- identical to the flag being unset -- so every surface
+    takes its flag-off path, 404s included. A demo read that bypassed this would
+    keep invented content on a pre-sign-in screen the owner has switched to its
+    real state, so tests/test_demo_mode.py greps for exactly that.
+    """
+    # No app state to read the switch from reads as switch OFF (fail closed):
+    # demo content is never shown on a guess.
+    state = getattr(getattr(request, "app", None), "state", None)
+    return demo_env(flag_name, getattr(state, "data_dir", None))
+
+
+def _demo_active(flag_name: str, request: Request) -> bool:
+    """Demo flag *flag_name* is set AND the demo-mode switch is on."""
+    return bool(_demo_value(flag_name, request))
+
+
+def _demo_enabled(request: Request) -> bool:
     """Whether the lock screen's demo content is switched on.
 
     One flag governs the placeholder agents, their scripted threads and the
     demo decision, so a machine cannot end up showing invented conversations
     while believing it is in its real state.
     """
-    return bool(os.environ.get("TAOS_LOCK_DEMO_AGENTS", "").strip())
+    return _demo_active("TAOS_LOCK_DEMO_AGENTS", request)
 
 
-def _demo_notifications_enabled() -> bool:
+def _demo_notifications_enabled(request: Request) -> bool:
     """Whether the lock screen's notification stacks are switched on.
 
     Narrower than _demo_enabled and OFF by default: the stacks are being
@@ -9570,12 +9669,12 @@ def _demo_notifications_enabled() -> bool:
     one, so switching off TAOS_LOCK_DEMO_AGENTS still takes down everything
     invented on this pre-sign-in screen in a single move.
     """
-    if not _demo_enabled():
+    if not _demo_enabled(request):
         return False
-    return bool(os.environ.get("TAOS_LOCK_DEMO_NOTIFICATIONS", "").strip())
+    return _demo_active("TAOS_LOCK_DEMO_NOTIFICATIONS", request)
 
 
-def _demo_panels_enabled() -> bool:
+def _demo_panels_enabled(request: Request) -> bool:
     """Whether the scripted phone/mailbox/apps/decisions/settings panels are on.
 
     Same two-flag shape as the stacks, and for the same reason: the master flag
@@ -9584,9 +9683,9 @@ def _demo_panels_enabled() -> bool:
     part of this screen that shows REAL state -- with none of the scripted
     inbox content beside them.
     """
-    if not _demo_enabled():
+    if not _demo_enabled(request):
         return False
-    return bool(os.environ.get("TAOS_LOCK_DEMO_PANELS", "").strip())
+    return _demo_active("TAOS_LOCK_DEMO_PANELS", request)
 
 
 def _demo_thread(slug: str) -> list[dict]:
@@ -9616,7 +9715,7 @@ async def lock_thread(slug: str, request: Request):
     # A DEVICE thread is real, not scripted, so it is checked first and on its
     # own flag. The sheet polls one endpoint either way -- it should not have
     # to know whether the agent it is talking to is a board or a placeholder.
-    if _device_agents_enabled() and _DEVICE_SLUG_RE.match(slug or ""):
+    if _device_agents_enabled(request) and _DEVICE_SLUG_RE.match(slug or ""):
         live = {e["slug"] for e in _device_live()}
         with _DEVICE_LOCK:
             thread = list(_DEVICE_THREADS.get(slug, []))
@@ -9627,7 +9726,7 @@ async def lock_thread(slug: str, request: Request):
                 "online": slug in live,
             })
 
-    if not _demo_enabled():
+    if not _demo_enabled(request):
         return JSONResponse({"error": "not found"}, status_code=404)
 
     safe = _avatar_slug(slug)
@@ -9707,14 +9806,16 @@ _DEVICE_THREADS: dict[str, list[dict]] = {}
 _DEVICE_SEEN: dict[str, set] = {}
 
 
-def _device_agents_enabled() -> bool:
+def _device_agents_enabled(request: Request) -> bool:
     """Its OWN flag, not the demo-agents one.
 
     Device agents are a bigger exposure than a scripted island -- they carry a
     real command path to real hardware -- so turning the scripted demo on must
     never turn this on as a side effect.
     """
-    return bool(os.environ.get("TAOS_LOCK_DEMO_DEVICE_AGENTS", "").strip())
+    # Through the Settings demo switch like every other demo flag: switching
+    # demo mode off takes the device islands (and their command path) down too.
+    return _demo_active("TAOS_LOCK_DEMO_DEVICE_AGENTS", request)
 
 
 def _device_token() -> str | None:
@@ -9826,7 +9927,7 @@ async def device_agent_heartbeat(request: Request):
     the whole point. The token is therefore the entire gate, which is why a
     missing token file refuses rather than opens.
     """
-    if not _device_agents_enabled():
+    if not _device_agents_enabled(request):
         return JSONResponse({"error": "not found"}, status_code=404)
     if not _device_authorised(request):
         return JSONResponse({"error": "unauthorised"}, status_code=401)
@@ -9882,7 +9983,7 @@ async def device_agent_heartbeat(request: Request):
 @router.post("/device-agent/message")
 async def device_agent_message(request: Request):
     """Progress lines and final replies, posted back by the board."""
-    if not _device_agents_enabled():
+    if not _device_agents_enabled(request):
         return JSONResponse({"error": "not found"}, status_code=404)
     if not _device_authorised(request):
         return JSONResponse({"error": "unauthorised"}, status_code=401)
@@ -9939,7 +10040,7 @@ async def lock_send(slug: str, request: Request):
     """
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
-    if not _device_agents_enabled():
+    if not _device_agents_enabled(request):
         return JSONResponse({"error": "not found"}, status_code=404)
     if not _DEVICE_SLUG_RE.match(slug or ""):
         return JSONResponse({"error": "not found"}, status_code=404)
@@ -10824,14 +10925,14 @@ def _demo_panels() -> dict:
     }
 
 
-def _demo_agent_names() -> list[str]:
+def _demo_agent_names(request: Request) -> list[str]:
     """The demo agent labels, parsed exactly as /auth/lock-widgets parses them.
 
     Keyed off the SAME env var rather than a second list, so the stats panel and
     the islands can never disagree about who is running. A separate table here
     would drift the first time Jay edited one drop-in and not the other.
     """
-    demo = os.environ.get("TAOS_LOCK_DEMO_AGENTS", "").strip()
+    demo = _demo_value("TAOS_LOCK_DEMO_AGENTS", request)
     names: list[str] = []
     for raw in demo.split(","):
         parts = [seg.strip() for seg in raw.split(":")]
@@ -10860,13 +10961,13 @@ _SIM_HISTORY = 20
 _SIM_BASE_EMA: dict[str, float] = {}
 
 
-def _demo_agent_specs() -> list[tuple[str, bool]]:
+def _demo_agent_specs(request: Request) -> list[tuple[str, bool]]:
     """(name, busy) per demo agent, parsed exactly as /auth/lock-widgets does.
 
     Busy is the island's own answer: a free-text status ("Drafting replies") is
     working, a resting word is not, and an agent with no status is "running".
     """
-    demo = os.environ.get("TAOS_LOCK_DEMO_AGENTS", "").strip()
+    demo = _demo_value("TAOS_LOCK_DEMO_AGENTS", request)
     out: list[tuple[str, bool]] = []
     seen: set[str] = set()
     for raw in demo.split(","):
@@ -11060,7 +11161,7 @@ def _stats_model(
     }
 
 
-def _demo_agent_usage() -> list[dict]:
+def _demo_agent_usage(request: Request) -> list[dict]:
     """Per-agent readings from the shared stats model, at the current time.
 
     Jay asked for "live demo data for agents cpu, ram and storage usage", and
@@ -11068,7 +11169,7 @@ def _demo_agent_usage() -> list[dict]:
     now come from _stats_model, so an agent's CPU share is part of the system
     CPU the panel shows beside it.
     """
-    return _stats_model(time.time(), _demo_agent_specs())["agents"]
+    return _stats_model(time.time(), _demo_agent_specs(request))["agents"]
 
 
 #: Previous /proc/stat reading, so CPU can be a PERCENTAGE. A single sample of
@@ -11288,8 +11389,8 @@ async def lock_stats(request: Request):
     # rather than an empty list when the flag is off -- "no agents running" and
     # "nothing is measuring agents" are different answers, and this endpoint
     # already draws that distinction for every hardware reading above.
-    if _demo_enabled():
-        specs = _demo_agent_specs()
+    if _demo_enabled(request):
+        specs = _demo_agent_specs(request)
         if specs:
             # ONE model for the agents and the system, so the totals are the
             # agents' sums plus the OS's own load rather than two unrelated
@@ -11324,7 +11425,7 @@ async def lock_notifications(request: Request):
     """
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
-    if not _demo_notifications_enabled():
+    if not _demo_notifications_enabled(request):
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse({"groups": _demo_notifications(), "demo": True})
 
@@ -11416,9 +11517,10 @@ def _call_timeline() -> list[dict]:
     return out
 
 
-def _call_demo_enabled() -> bool:
+def _call_demo_enabled(request: Request) -> bool:
     """Whether the incoming-call demo is switched on. Its own flag, alone."""
-    return bool(os.environ.get("TAOS_LOCK_DEMO_CALL", "").strip())
+    # Through the Settings demo switch: demo mode off means no scripted call.
+    return _demo_active("TAOS_LOCK_DEMO_CALL", request)
 
 
 class _LockCall:
@@ -11610,7 +11712,7 @@ def _call_gate(request: Request):
     """The two refusals every call route shares, in the order they matter."""
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
-    if not _call_demo_enabled():
+    if not _call_demo_enabled(request):
         return JSONResponse({"error": "not found"}, status_code=404)
     return None
 
@@ -12466,7 +12568,7 @@ async def lock_panels(request: Request):
     """
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
-    if not _demo_panels_enabled():
+    if not _demo_panels_enabled(request):
         return JSONResponse({"error": "not found"}, status_code=404)
     payload = _demo_panels()
     payload["demo"] = True
@@ -12549,6 +12651,12 @@ async def pin_login(request: Request):
             headers={"Retry-After": str(wait)},
         )
 
+    # The owner chose how this screen unlocks. A PIN that still exists after
+    # they switched to "password" must not keep working behind their back --
+    # that is the whole of "disable my pin entry". Same answer as "no PIN here".
+    if record is not None and effective_unlock_method(record) != "pin":
+        return JSONResponse({"error": "PIN sign-in is not available"}, status_code=404)
+
     ok, user_record = auth_mgr.check_pin(pin, username=username)
     if not ok or user_record is None:
         _pin_limiter.record_failure(limiter_key)
@@ -12564,6 +12672,86 @@ async def pin_login(request: Request):
         user_agent=request.headers.get("user-agent", ""),
     )
     resp = JSONResponse({"ok": True, "user": auth_mgr._public_user(user_record)})
+    resp.set_cookie(
+        "taos_session", token, httponly=True, samesite="strict",
+        max_age=auth_mgr.session_ttl_for(True),
+    )
+    return resp
+
+
+def _same_origin_or_absent(request: Request) -> bool:
+    """False when the browser says this request came from ANOTHER origin.
+
+    Not a security boundary on its own -- a local process can omit or forge
+    both headers -- but it stops a web page open in the kiosk's own browser
+    from firing an unlock at localhost behind the user's back.
+    """
+    site = request.headers.get("sec-fetch-site")
+    if site and site not in ("same-origin", "none"):
+        return False
+    origin = request.headers.get("origin")
+    if origin:
+        host = request.headers.get("host", "")
+        if origin.split("://", 1)[-1].rstrip("/") != host:
+            return False
+    return True
+
+
+@router.post("/swipe-unlock")
+async def swipe_unlock(request: Request):
+    """Open the console lock screen with no credential, for a "swipe" owner.
+
+    ⚠ PRE-AUTH AND CREDENTIAL-FREE. Every condition below must hold, and any
+    failure is a 403 with no session:
+
+    * the request is the device's own console (``is_console_origin``: loopback
+      and NO forwarding header -- behind a proxy every LAN request is loopback);
+    * the browser does not report a cross-origin caller;
+    * the install has exactly one account (``lock_screen_user``) -- on a shared
+      device a swipe cannot know whose session to open;
+    * that account's effective unlock method is ``swipe``, which costs the
+      account password to select (PUT /api/settings/lock);
+    * the PIN throttle for that account is not engaged (same limiter and key as
+      /auth/pin-login, so the two cannot be played against each other).
+
+    The session is minted exactly as /auth/pin-login mints one: long-lived,
+    bound to this User-Agent, HttpOnly + SameSite=Strict. The csrf_token cookie
+    comes from CSRFMiddleware on this response like on every other.
+    """
+    auth_mgr = request.app.state.auth
+    refused = JSONResponse({"error": "swipe unlock is not available"}, status_code=403)
+    # Off-console callers are refused BEFORE the throttle is touched: a LAN
+    # client must not be able to push the owner's PIN into a lockout.
+    if not _request_is_console(request):
+        return refused
+    if not _same_origin_or_absent(request):
+        return refused
+
+    record = auth_mgr.lock_screen_user()
+    limiter_key = (record or {}).get("id") or "unknown:"
+    wait = _pin_limiter.retry_after(limiter_key)
+    if wait > 0:
+        return JSONResponse(
+            {
+                "error": f"Too many attempts. Try again in {wait} seconds.",
+                "retry_after": wait,
+            },
+            status_code=429,
+            headers={"Retry-After": str(wait)},
+        )
+    if record is None or effective_unlock_method(record) != "swipe":
+        # A console swipe at a device that needs a PIN or password is an
+        # attempt to get in without one; it counts like a wrong PIN.
+        _pin_limiter.record_failure(limiter_key)
+        return refused
+
+    auth_mgr.update_last_login(record["id"])
+    token = auth_mgr.create_session(
+        user_id=record["id"],
+        long_lived=True,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    resp = JSONResponse({"ok": True, "user": auth_mgr._public_user(record)})
     resp.set_cookie(
         "taos_session", token, httponly=True, samesite="strict",
         max_age=auth_mgr.session_ttl_for(True),
@@ -12886,10 +13074,12 @@ async def auth_status(request: Request):
     # so consulting them here would raise and turn this endpoint into a 500 --
     # exactly the answer the store_error field exists to replace.
     if configured and authenticated and store_error is None:
-        user = auth_mgr.get_user(token=token)
+        user = auth_mgr.get_user(token=token, user_agent=_ua)
         # Check if session user is pending
         if token:
-            session_user = auth_mgr.session_user(token)
+            # Get user_agent from request headers for session validation
+            user_agent = request.headers.get("user-agent", "")
+            session_user = auth_mgr.session_user(token, user_agent=user_agent)
             if session_user and session_user.get("pending"):
                 needs_onboarding = True
 
@@ -12902,7 +13092,8 @@ async def auth_status(request: Request):
     pin_available = False
     if configured and store_error is None and not authenticated:
         try:
-            pin_available = _request_is_console(request) and auth_mgr.has_pin()
+            sole = auth_mgr.lock_screen_user() if _request_is_console(request) else None
+            pin_available = bool(sole) and effective_unlock_method(sole) == "pin"
         except AuthStoreCorruptError:
             pin_available = False
 
@@ -12926,7 +13117,7 @@ async def auth_me(request: Request):
         token, user_agent=request.headers.get("user-agent", "")
     ) is None:
         return JSONResponse({"error": "not authenticated"}, status_code=401)
-    user = auth_mgr.get_user(token=token)
+    user = auth_mgr.get_user(token=token, user_agent=request.headers.get("user-agent", ""))
     if user is None:
         return JSONResponse({"error": "no user configured"}, status_code=404)
     return JSONResponse({"user": user})
@@ -12961,7 +13152,9 @@ async def add_user(request: Request):
         return JSONResponse({"error": "username is required"}, status_code=400)
     auth_mgr = request.app.state.auth
     token = request.cookies.get("taos_session", "")
-    caller = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    caller = auth_mgr.session_user(token, user_agent=user_agent)
     caller_username = caller["username"] if caller else ""
     try:
         code = auth_mgr.add_user_invite(username, caller_username)
@@ -12978,7 +13171,9 @@ async def admin_reset_password(username: str, request: Request):
         return err
     auth_mgr = request.app.state.auth
     token = request.cookies.get("taos_session", "")
-    caller = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    caller = auth_mgr.session_user(token, user_agent=user_agent)
     caller_username = caller["username"] if caller else ""
     try:
         code = auth_mgr.admin_reset_password(username, caller_username)
@@ -12995,7 +13190,9 @@ async def delete_user(username: str, request: Request):
         return err
     auth_mgr = request.app.state.auth
     token = request.cookies.get("taos_session", "")
-    caller = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    caller = auth_mgr.session_user(token, user_agent=user_agent)
     caller_username = caller["username"] if caller else ""
     try:
         auth_mgr.delete_user(username, caller_username)

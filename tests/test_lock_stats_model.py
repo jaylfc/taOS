@@ -31,6 +31,17 @@ _SPECS = [
     ("Customer Service", True), ("Archivist", False), ("Night Owl", False),
 ]
 
+# The demo helpers read the Settings demo-mode switch from the app's data dir.
+# A fresh dir with no switch file is a device that has never flipped it: ON
+# exactly when a demo flag is set, which is what these tests were written for.
+import tempfile as _tempfile
+from pathlib import Path as _Path
+from types import SimpleNamespace as _NS
+
+_DEMO_DIR = _Path(_tempfile.mkdtemp())
+_DEMO_REQ = _NS(app=_NS(state=_NS(data_dir=_DEMO_DIR)))
+
+
 
 def _minute(specs=_SPECS, start=_T0, real_cpu=None, samples=21):
     """A simulated minute of 3 s polls."""
@@ -128,7 +139,7 @@ class TestBusyOutworksIdle:
     def test_busy_is_the_islands_answer(self, monkeypatch):
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS",
                            "A:hermes:Drafting replies,B:openclaw:idle,C,D:x:Stopped")
-        assert auth._demo_agent_specs() == [
+        assert auth._demo_agent_specs(_DEMO_REQ) == [
             ("A", True), ("B", False), ("C", True), ("D", False)]
 
 
@@ -146,7 +157,7 @@ class TestTheRouteServesTheModel:
             monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", demo)
         else:
             monkeypatch.delenv("TAOS_LOCK_DEMO_AGENTS", raising=False)
-        resp = asyncio.run(auth.lock_stats(_Req()))
+        resp = asyncio.run(auth.lock_stats(_DEMO_REQ))
         return json.loads(bytes(resp.body).decode())
 
     def test_a_non_console_request_is_refused(self, monkeypatch):

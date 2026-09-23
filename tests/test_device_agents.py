@@ -19,6 +19,17 @@ import pytest
 import tinyagentos.routes.auth as auth
 from tinyagentos.auth_middleware import EXEMPT_PATHS, EXEMPT_PREFIXES
 
+# The demo helpers read the Settings demo-mode switch from the app's data dir.
+# A fresh dir with no switch file is a device that has never flipped it: ON
+# exactly when a demo flag is set, which is what these tests were written for.
+import tempfile as _tempfile
+from pathlib import Path as _Path
+from types import SimpleNamespace as _NS
+
+_DEMO_DIR = _Path(_tempfile.mkdtemp())
+_DEMO_REQ = _NS(app=_NS(state=_NS(data_dir=_DEMO_DIR)))
+
+
 
 class _Headers(dict):
     """Case-insensitive, like Starlette's.
@@ -48,7 +59,7 @@ class _Req:
         # advertised url to this, so a stub without it would let every test
         # pass against a url no real board could have sent.
         self.client = _Client(peer)
-        self.app = type("App", (), {"state": type("S", (), {})()})()
+        self.app = _NS(state=_NS(data_dir=_DEMO_DIR))
 
     async def json(self):
         return self._body

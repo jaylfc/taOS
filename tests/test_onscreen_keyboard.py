@@ -25,6 +25,16 @@ from tinyagentos.routes.onscreen_keyboard import (
     osk_assets,
 )
 
+# The demo helpers read the Settings demo-mode switch from the app's data dir.
+# A fresh dir with no switch file is a device that has never flipped it: ON
+# exactly when a demo flag is set, which is what these tests were written for.
+import tempfile as _tempfile
+from pathlib import Path as _Path
+from types import SimpleNamespace as _NS
+
+_DEMO_REQ = _NS(app=_NS(state=_NS(data_dir=_Path(_tempfile.mkdtemp()))))
+
+
 
 @pytest.fixture()
 def login_console():
@@ -599,10 +609,10 @@ class TestLockScreenNotifications:
         monkeypatch.setattr(auth_mod, "_request_is_console", lambda _request: True)
         monkeypatch.delenv("TAOS_LOCK_DEMO_AGENTS", raising=False)
         monkeypatch.setenv("TAOS_LOCK_DEMO_NOTIFICATIONS", "1")
-        assert (await auth_mod.lock_notifications(None)).status_code == 404
+        assert (await auth_mod.lock_notifications(_DEMO_REQ)).status_code == 404
 
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Demo")
-        resp = await auth_mod.lock_notifications(None)
+        resp = await auth_mod.lock_notifications(_DEMO_REQ)
         assert resp.status_code == 200
         assert json.loads(resp.body)["demo"] is True
 
@@ -622,9 +632,9 @@ class TestLockScreenNotifications:
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Demo")
         monkeypatch.delenv("TAOS_LOCK_DEMO_NOTIFICATIONS", raising=False)
 
-        assert (await auth_mod.lock_notifications(None)).status_code == 404
+        assert (await auth_mod.lock_notifications(_DEMO_REQ)).status_code == 404
         # The islands are deliberately untouched by the same switch.
-        assert auth_mod._demo_enabled() is True
+        assert auth_mod._demo_enabled(_DEMO_REQ) is True
 
     @pytest.mark.asyncio
     async def test_notifications_are_console_only(self, monkeypatch):
@@ -633,7 +643,7 @@ class TestLockScreenNotifications:
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Demo")
         monkeypatch.setenv("TAOS_LOCK_DEMO_NOTIFICATIONS", "1")
         monkeypatch.setattr(auth_mod, "_request_is_console", lambda _request: False)
-        assert (await auth_mod.lock_notifications(None)).status_code == 403
+        assert (await auth_mod.lock_notifications(_DEMO_REQ)).status_code == 403
 
     def test_every_source_jay_asked_for_has_a_stack(self):
         """Jay moved four of the five original stacks out of Alerts: "the alerts
