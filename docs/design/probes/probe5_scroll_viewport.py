@@ -93,7 +93,8 @@ def probe_scroll_viewport_behavior(socket_path: str) -> str:
     transcript_lines.append("")
 
     transcript_lines.append("=== Test 2: Scroll Command ===")
-    transcript_lines.append("Command: Send Scroll(app, lines=1) to view previous lines (positive = forward into history)")
+    transcript_lines.append("Command: Send Scroll(app, lines=1) to view previous lines (positive = back into history)")
+    transcript_lines.append("from source: jaylfc/tuiui/src/ptyhost.rs:PtyHost::scroll")
 
     with TuiuiConduit(socket_path, timeout=2.0) as conduit:
         try:

@@ -4,7 +4,6 @@
 Verifies that tuiui apphost correctly handles raw byte input (not base64).
 """
 
-import json
 import os
 import sys
 from pathlib import Path

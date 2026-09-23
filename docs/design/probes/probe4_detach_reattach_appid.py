@@ -60,15 +60,15 @@ def verify_apphost(socket_path: str) -> None:
 def probe_detach_reattach_appid(socket_path: str) -> str:
     """Probe AppId stability across detach/reattach and reset on restart."""
     transcript_lines = []
-
-    transcript_lines.append("=== Test 1: Detach/Reattach AppId Stability ===")
-    transcript_lines.append("Step 1: Spawn an app")
-
     failed = False
+    spawned1 = None
 
-    with TuiuiConduit(socket_path, timeout=2.0) as conduit:
-        spawned1 = conduit.spawn("sh", ["-c", "sleep 30"], cols=80, rows=24)
-        try:
+    try:
+        transcript_lines.append("=== Test 1: Detach/Reattach AppId Stability ===")
+        transcript_lines.append("Step 1: Spawn an app")
+
+        with TuiuiConduit(socket_path, timeout=2.0) as conduit:
+            spawned1 = conduit.spawn("sh", ["-c", "sleep 30"], cols=80, rows=24)
             transcript_lines.append(f"  Spawned app {spawned1.app} with pid {spawned1.pid}")
 
             apps1 = conduit.list_apps()
@@ -79,31 +79,32 @@ def probe_detach_reattach_appid(socket_path: str) -> str:
 
             transcript_lines.append("  Simulating detach (closing connection)")
 
-        finally:
-            transcript_lines.append(f"  Killing long-lived app {spawned1.app}")
-            conduit.kill(spawned1.app)
+        transcript_lines.append("Step 2: Reconnect (reattach)")
+        with TuiuiConduit(socket_path, timeout=2.0) as conduit:
+            app_after = conduit.rebind_by_meta("agent-shell", app_key="test")
 
-    transcript_lines.append("Step 2: Reconnect (reattach)")
-    with TuiuiConduit(socket_path, timeout=2.0) as conduit:
-        app_after = conduit.rebind_by_meta("agent-shell", app_key="test")
-
-        if app_after:
-            transcript_lines.append(f"  Found app via meta: app {app_after.app}")
-            transcript_lines.append(f"  Meta title: {app_after.meta[0]['title']}")
-            if not appid_stable(spawned1.app, app_after.app):
-                transcript_lines.append(f"  FAILED: AppId changed (before {spawned1.app}, after {app_after.app})")
-                failed = True
+            if app_after:
+                transcript_lines.append(f"  Found app via meta: app {app_after.app}")
+                transcript_lines.append(f"  Meta title: {app_after.meta[0]['title']}")
+                if not appid_stable(spawned1.app, app_after.app):
+                    transcript_lines.append(f"  FAILED: AppId changed (before {spawned1.app}, after {app_after.app})")
+                    failed = True
+                else:
+                    transcript_lines.append("  SUCCESS: AppId recovered via meta after reconnect")
             else:
-                transcript_lines.append("  SUCCESS: AppId recovered via meta after reconnect")
-        else:
-            transcript_lines.append("  FAILED: Could not find app after reconnect")
-            failed = True
+                transcript_lines.append("  FAILED: Could not find app after reconnect")
+                failed = True
+    finally:
+        if spawned1 is not None:
+            transcript_lines.append(f"  Killing long-lived app {spawned1.app}")
+            with TuiuiConduit(socket_path, timeout=2.0) as conduit:
+                conduit.kill(spawned1.app)
 
     transcript_lines.append("")
 
     transcript_lines.append("=== Test 2: AppId Reset on Daemon Restart ===")
     transcript_lines.append("not run: needs a daemon restart")
-    transcript_lines.append("from source: tinyagentos/tuiui_conduit.py:RosterEntry.app")
+    transcript_lines.append("from source: tinyagentos/tuiui_conduit.py:TuiuiConduit.rebind_by_meta")
     transcript_lines.append("")
 
     transcript = "\n".join(transcript_lines)
