@@ -621,8 +621,8 @@ def _paint_notifs_plain(ticks):
 class TestTheReminderCard:
     def test_the_words_are_the_pas(self):
         assert _pure_with("callReminderPill", 'callReminderPill({title: "Reminder added", '
-                          'event: "Call Mary", time: "5:30 pm"})') == \
-            "Reminder added · Call Mary · 5:30 pm"
+                          'event: "Call Mary", time: "Tomorrow 12:30 pm"})') == \
+            "Reminder added · Call Mary · Tomorrow 12:30 pm"
 
     def test_it_has_a_real_dismiss_button_that_clears_it_on_the_server(self):
         block = LOCK_SCRIPT[LOCK_SCRIPT.index("var buildReminder = function"):]

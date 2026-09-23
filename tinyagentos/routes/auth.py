@@ -11357,13 +11357,15 @@ _CALL_CALLER: dict = {
 _CALL_SCRIPT: tuple[tuple[str, str], ...] = (
     ("pa", "Hi, and thank you for calling Jason's phone. This is his personal "
            "assistant speaking — can I take a message?"),
-    ("caller", "Oh hi! Could you ask him to give me a call back? Any time after "
-               "five is fine."),
-    ("pa", "Of course. Does half past five work for you?"),
-    ("caller", "Half five's perfect, thank you."),
-    ("pa", "Lovely — I've added it to his calendar, and he'll call you at "
-           "5:30. Have a good evening!"),
-    ("caller", "You too, bye!"),
+    # Jay: "call me back tomorrow lunch time instead, the demo works any time
+    # of the day then" -- nothing here names a time of day it is NOW.
+    ("caller", "Oh hi! Could you ask him to give me a call back tomorrow? "
+               "Lunchtime would be best."),
+    ("pa", "Of course. Does half past twelve tomorrow work for you?"),
+    ("caller", "Half twelve's perfect, thank you."),
+    ("pa", "Lovely — I've added it to his calendar, and he'll call you "
+           "tomorrow at 12:30. Take care!"),
+    ("caller", "Thanks, bye!"),
 )
 
 #: Speech pacing. 200 words a minute: Jay, from the glass, "the agent needs to
@@ -11384,10 +11386,10 @@ _CALL_REMINDER: dict = {
     "kind": "reminder",
     "from": "Your PA",
     "title": "Reminder added",
-    "body": "Reminder to call Mary at 5:30 pm added to your calendar. "
+    "body": "Reminder to call Mary tomorrow at 12:30 pm added to your calendar. "
             "I'll remind you closer to the time.",
     "event": "Call Mary",
-    "time": "5:30 pm",
+    "time": "Tomorrow 12:30 pm",
 }
 
 #: Every action the page may send. Anything else is a 400; one of these at the

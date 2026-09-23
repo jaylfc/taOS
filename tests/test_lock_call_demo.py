@@ -4,7 +4,7 @@ Jay: an incoming call lands in the lock screen's live zone with Answer, Decline,
 Send to voicemail and the headline button, **Send to PA**. The PA then talks to
 the caller in a live transcript, with **Take over** and **End call** visible the
 whole time, and when it finishes a notification says **New event added · Call
-Mary · 5:30 pm**.
+Mary · Tomorrow 12:30 pm**.
 
 THE THING TO KEEP HOLD OF: **the lock screen renders before sign-in.** So the
 caller, the script and the calendar event are fixed strings in the controller,
@@ -436,9 +436,9 @@ class TestTheNotification:
         note = snap["notification"]
         assert note["kind"] == "reminder"
         assert note["title"] == "Reminder added"
-        assert note["body"] == ("Reminder to call Mary at 5:30 pm added to your "
+        assert note["body"] == ("Reminder to call Mary tomorrow at 12:30 pm added to your "
                                 "calendar. I'll remind you closer to the time.")
-        assert (note["event"], note["time"], note["from"]) == ("Call Mary", "5:30 pm", "Your PA")
+        assert (note["event"], note["time"], note["from"]) == ("Call Mary", "Tomorrow 12:30 pm", "Your PA")
         assert note["demo"] is True
 
     def test_the_finished_transcript_is_whole(self, clock):
