@@ -4,16 +4,17 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from tinyagentos.containers import migrate_container, remote_add, remote_generate_token, remote_list, remote_remove
 from tinyagentos.cluster.service_migrator import migrate_service
+from tinyagentos.auth_context import require_admin
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 def _install_dict(manifest) -> dict:

@@ -251,7 +251,7 @@ class TestPutPersona:
 class TestAdminGate:
     async def test_put_permitted_models_forbidden_for_non_admin(self, client, app):
         """PUT /api/taos-agent/permitted-models -> 403 for a non-admin session."""
-        app.state.auth.session_user = lambda token: {"is_admin": False, "username": "guest"}
+        app.state.auth.session_user = lambda token, user_agent=None: {"is_admin": False, "username": "guest"}
         resp = await client.put(
             "/api/taos-agent/permitted-models",
             json={"models": ["ollama/m1"]},
@@ -260,7 +260,7 @@ class TestAdminGate:
 
     async def test_put_persona_forbidden_for_non_admin(self, client, app):
         """PUT /api/taos-agent/persona -> 403 for a non-admin session."""
-        app.state.auth.session_user = lambda token: {"is_admin": False, "username": "guest"}
+        app.state.auth.session_user = lambda token, user_agent=None: {"is_admin": False, "username": "guest"}
         resp = await client.put(
             "/api/taos-agent/persona",
             json={"persona": "Hacked!"},
@@ -269,7 +269,7 @@ class TestAdminGate:
 
     async def test_patch_settings_forbidden_for_non_admin(self, client, app):
         """PATCH /api/taos-agent/settings -> 403 for a non-admin session."""
-        app.state.auth.session_user = lambda token: {"is_admin": False, "username": "guest"}
+        app.state.auth.session_user = lambda token, user_agent=None: {"is_admin": False, "username": "guest"}
         resp = await client.patch(
             "/api/taos-agent/settings",
             json={"model": "ollama/hacked"},
@@ -278,7 +278,7 @@ class TestAdminGate:
 
     async def test_get_config_open_for_non_admin(self, client, app):
         """GET /api/taos-agent/config is open — no admin required."""
-        app.state.auth.session_user = lambda token: {"is_admin": False, "username": "guest"}
+        app.state.auth.session_user = lambda token, user_agent=None: {"is_admin": False, "username": "guest"}
         resp = await client.get("/api/taos-agent/config")
         assert resp.status_code == 200
 
