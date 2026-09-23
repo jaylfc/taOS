@@ -1,0 +1,2 @@
+### Added
+- Changelog fragment gate: new CI check (`scripts/check_changelog_fragment.py` + `.github/workflows/changelog-fragment-gate.yml`) that enforces the changelog-fragment rule for non-test changes under `tinyagentos/` or `desktop/src/`, with escape hatches via `no-changelog-needed` PR label or `Changelog-Not-Needed:` PR body trailer.

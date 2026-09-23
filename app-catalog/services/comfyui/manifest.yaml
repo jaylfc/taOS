@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: ghcr.io/ai-dock/comfyui:latest
+  image: ghcr.io/ai-dock/comfyui:0.3.0
   volumes:
     - data:/workspace
     - models:/workspace/ComfyUI/models
