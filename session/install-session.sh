@@ -80,6 +80,7 @@ echo "PASS: launcher installed and parses"
 for helper in taos-kiosk-idle taos-kiosk-power taos-kiosk-screen \
               taos-kiosk-dt2w taos-kiosk-dt2w-run taos-kiosk-power-hold \
               taos-kiosk-volume taos-sensord taos-kiosk-charger \
+              taos-kiosk-live \
               taos-power-apply; do
     install -m 755 "$HERE/bin/$helper" "/usr/local/bin/$helper"
     echo "installed /usr/local/bin/$helper"
