@@ -276,3 +276,6 @@ For both, then:
 
 Reviewer's job: ask where the fixture came from. A green test over a fictional
 contract is worse than no test, because it certifies the bug.
+
+**25. Adding or changing a dependency in pyproject.toml requires regenerating uv.lock in the same PR.**
+`uv sync --frozen` installs from `uv.lock` only and does NOT warn when `pyproject.toml` declares a dependency the lock lacks -- it simply installs nothing for it and exits 0. CI therefore tests with the new dependency ABSENT while production installs it present (install-server.sh uses pip from pyproject.toml, which does not read uv.lock). A PR that adds a dependency without updating the lock ships untested. Always run `uv lock` after any change to `[project].dependencies` or `[project.optional-dependencies]` in `pyproject.toml`, and commit the updated `uv.lock` in the same PR.

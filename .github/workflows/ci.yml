@@ -42,8 +42,26 @@ jobs:
   # one that would fix it. The aggregate "test" job below keeps reporting those
   # two exact names, so no protection change is needed and there is no window
   # where dev is wedged.
+  # Lock-freshness gate: fails the run when pyproject.toml declares a dependency
+  # that uv.lock does not carry. uv sync --frozen silently installs nothing for
+  # missing entries, so a new dependency ships tested only in its absence; this
+  # single check catches that class of drift before any shard runs.
+  check-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Check lockfile freshness
+        run: uv lock --check
+
   shards:
     runs-on: ubuntu-latest
+    needs: check-lock
     # Measured 2026-07-26 over the last 12 job records: 3.13 runs 31-35 min and
     # 3.12 runs 38-41 min. The previous comment claimed "~16 min", which had
     # stopped being true, so the 45 min cap sat about 4 minutes above the slowest
@@ -135,6 +153,7 @@ jobs:
   py311-import-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: check-lock
     steps:
       - uses: actions/checkout@v7
 
@@ -208,6 +227,7 @@ jobs:
     # turns the skip off - a missing mkdocs fails here instead of passing by
     # default. A guard no job executes is a no-op.
     runs-on: ubuntu-latest
+    needs: check-lock
     steps:
       - uses: actions/checkout@v7
 
@@ -249,6 +269,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    needs: check-lock
     steps:
       - uses: actions/checkout@v7
 
@@ -359,6 +380,7 @@ jobs:
   # forbidOnly and reuseExistingServer: false from that config.
   desktop-e2e:
     runs-on: ubuntu-latest
+    needs: check-lock
     steps:
       - uses: actions/checkout@v7
 
