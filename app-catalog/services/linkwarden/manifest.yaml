@@ -2,7 +2,7 @@ id: linkwarden
 name: Linkwarden
 type: service
 category: productivity
-version: latest
+version: 2.13.0
 description: "Bookmark and link manager — agents save and organize research links with archiving"
 homepage: https://linkwarden.app
 license: AGPL-3.0
@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: ghcr.io/linkwarden/linkwarden:latest
+  image: ghcr.io/linkwarden/linkwarden:2.13.0
   volumes:
     - data:/data/data
   ports: [3000]

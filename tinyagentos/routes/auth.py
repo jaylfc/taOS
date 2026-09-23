@@ -3,18 +3,27 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import math
+import random
 import socket
 from pathlib import Path
 import logging
 import os
 import threading
 import time
+import zlib
 from collections import OrderedDict
 from datetime import datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from tinyagentos.auth import (
     PIN_MAX_LEN,
     PIN_MIN_LEN,
@@ -23,6 +32,7 @@ from tinyagentos.auth import (
     is_console_origin,
     validate_pin,
 )
+from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.middleware.csrf import verify_csrf
 from tinyagentos.routes.onscreen_keyboard import OSK_SCRIPT, osk_assets
 
@@ -434,7 +444,11 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
 .ls-statusbar .ls-widget b { color: rgba(255,255,255,0.80); }
 .ls-brand { grid-column: 2; justify-self: center; }
 .ls-brand b { font-weight: 700; }
-#ls-battery { grid-column: 3; justify-self: end; margin-right: 4px; }
+/* 7px, not 4: Jay asked for the percentage 3px further left (it sat too close
+   to the rounded corner). It is justify-self:end, so the RIGHT margin is what
+   moves it -- padding or a transform would either move the brand with it or
+   leave the real box where it was. */
+#ls-battery { grid-column: 3; justify-self: end; margin-right: 7px; }
 /* Widgets are CLIENT-SIDE only (clock, battery) plus the device's own name.
    Nothing here reads the account or its data: this surface is shown BEFORE
    authentication, so anything account-derived would be a pre-auth leak. */
@@ -486,6 +500,34 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
   overscroll-behavior: contain;
 }
 .ls-feed::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+/* PRESSING THE ACTIVE CATEGORY CLEARS THE FEED AWAY. Jay asked for it, and it
+   is the one thing a lock screen full of cards could not do: see the screen
+   underneath without unlocking or waiting for it to blank.
+
+   Faded, NOT display:none. The row of category icons has to stay exactly where
+   it is so the same press brings the content back, and a display change would
+   collapse the column and jump the row down the screen mid-animation.
+   translateY gives the fade somewhere to go so it reads as the cards dropping
+   away rather than the screen dimming.
+
+   pointer-events is what makes it honest: an invisible feed must not swallow a
+   touch. It also hands the unlock swipe back the whole screen, because the
+   swipe's veto only fires for touches that start inside .ls-feed -- with the
+   cards gone, a swipe up unlocks from anywhere, which is what an empty screen
+   should do. */
+.ls-feed {
+  transition: opacity 260ms cubic-bezier(.2, .8, .2, 1),
+              transform 260ms cubic-bezier(.2, .8, .2, 1);
+}
+.ls-feed[data-hidden="1"] {
+  opacity: 0;
+  transform: translateY(10px);
+  pointer-events: none;
+}
+/* The tab that is holding its content hidden says so rather than looking
+   identical to one that is showing it. */
+.ls-view-tab[aria-expanded="false"] { opacity: .55; }
 /* The cut edge. With the bar hidden, a scrolling feed ends in a card sliced
    clean in half against the unlock bar, which reads as a rendering fault rather
    than as more content. A fade says "this continues".
@@ -593,6 +635,142 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
 }
 .ls-empty b { display: block; font-weight: 600; color: rgba(255,255,255,0.62); font-size: 15px; }
 
+/* THE ROW. Phone, mailbox and decisions are all the same object -- a tinted
+   source mark, a line about it, and how long ago -- so they are one shape in
+   one material rather than three panels that happen to look similar. It is the
+   notification card's material deliberately: on this screen a missed call and a
+   notification ARE the same kind of thing. */
+.ls-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  width: 100%; max-width: var(--ls-card-w);
+  padding: 10px 13px;
+  border-radius: 20px;
+  text-align: left;
+  background: rgba(30, 30, 34, 0.92);
+  box-shadow: 0 6px 18px -6px rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(24px) saturate(1.3);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+  /* Entrance animation, `backwards` like the islands. The whole point of
+     reconciling by key is that a row which persists across a repaint never
+     re-enters this animation -- see the repaint tests. */
+  animation: ls-island-in 520ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+}
+.ls-row-tile {
+  flex: none; width: 30px; height: 30px; border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; color: #fff;
+  background: var(--ls-n, #4c9aff);
+}
+.ls-row-tile svg { width: 17px; height: 17px; fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ls-row-body { min-width: 0; flex: 1; }
+.ls-row-meta {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  color: rgba(255,255,255,0.45);
+}
+.ls-row-app { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ls-row-when { margin-left: auto; flex: none; text-transform: none; letter-spacing: 0; font-weight: 500; }
+.ls-row-title {
+  margin-top: 2px;
+  font-size: 14px; font-weight: 600; color: #fff;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ls-row-sub {
+  margin-top: 1px;
+  font-size: 13px; line-height: 1.35; color: rgba(255,255,255,0.68);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+/* In a unified list the SUBJECT is what the eye lands on after the sender, so
+   it is brighter than the preview under it. */
+.ls-row-subject { color: rgba(255,255,255,0.88); font-weight: 500; -webkit-line-clamp: 1; }
+/* A missed call is the one row whose SOURCE line is the alarming part, so the
+   red sits on "Missed call", not on the caller's name. */
+.ls-row[data-kind="missed"] .ls-row-app { color: #ff6b6b; }
+/* Unread, in the place a phone puts it: a dot on the leading edge of the row.
+   It is drawn on the row rather than added as an element so marking something
+   read is one attribute, not a DOM change. */
+.ls-row[data-unread="1"] { border-left: 3px solid #4c9aff; padding-left: 10px; }
+
+/* APPS. A grid, because these are the only things on the screen the user picks
+   rather than reads. */
+.ls-apps-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  width: 100%; max-width: var(--ls-card-w);
+}
+.ls-app {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 13px; border-radius: 20px;
+  background: rgba(30, 30, 34, 0.92);
+  box-shadow: 0 6px 18px -6px rgba(0, 0, 0, 0.75);
+  animation: ls-island-in 520ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+}
+.ls-app-body { min-width: 0; flex: 1; }
+.ls-app-name {
+  font-size: 14px; font-weight: 600; color: #fff;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ls-app-note {
+  margin-top: 1px; font-size: 12px; line-height: 1.3; color: rgba(255,255,255,0.6);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+/* The badge rides on the tile, the way it does on a home screen. The wrapper
+   exists so the badge is a sibling of the mark rather than a child of it --
+   the mark's contents are rewritten by the painter. */
+.ls-app-tile { position: relative; flex: none; }
+.ls-app-badge {
+  position: absolute; top: -6px; right: -7px;
+  min-width: 17px; height: 17px; padding: 0 4px; box-sizing: border-box;
+  border-radius: 999px; background: #ff3b30; color: #fff;
+  font-size: 11px; font-weight: 700; line-height: 17px; text-align: center;
+  box-shadow: 0 0 0 2px rgba(20,20,22,0.92);
+}
+
+/* DECISIONS. The only rows on this screen the user ANSWERS, so they carry
+   buttons and the buttons are the widest thing in the card. */
+.ls-dec-actions { display: flex; gap: 8px; margin-top: 9px; }
+.ls-dec-btn {
+  flex: 1; padding: 8px 10px; border: 0; border-radius: 12px;
+  font: inherit; font-size: 13px; font-weight: 600; color: #fff;
+  background: rgba(255,255,255,0.12);
+}
+.ls-dec-btn[data-act="approve"] { background: rgba(48,209,88,0.22); color: #6ee787; }
+.ls-dec-btn:focus-visible { outline: 3px solid #4c9aff; outline-offset: 2px; }
+.ls-dec-done {
+  margin-top: 9px; font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.6);
+}
+.ls-row[data-answered="1"] .ls-dec-actions { display: none; }
+
+/* PROJECTS. The tab that replaced settings, second in the row after the
+   agents: this is a projects-focused OS, so what the agents are working ON
+   belongs next to the agents themselves. Same row material as everything else
+   here, plus the one quantity on this screen. */
+.ls-proj-bar {
+  margin-top: 8px; height: 4px; border-radius: 999px;
+  background: rgba(255,255,255,0.14); overflow: hidden;
+}
+.ls-proj-fill {
+  display: block; height: 100%; width: var(--ls-pct, 0%);
+  border-radius: 999px; background: var(--ls-n, #4c9aff);
+  /* The width is written by the painter on a node that PERSISTS across a
+     repaint, so this animates from where it was rather than from zero. Had the
+     rows been rebuilt, every bar would have re-run this from 0% every poll --
+     the same flicker as the islands, in a different costume. */
+  transition: width 420ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.ls-row[data-blocked="1"] .ls-proj-fill { background: #ffb020; }
+/* Blocked: work that has stopped and is waiting on a person. It is the reason
+   this panel is on a LOCK screen, so it is the one thing in the row that is
+   allowed to shout. */
+.ls-proj-flag {
+  flex: none; padding: 1px 7px; border-radius: 999px;
+  background: rgba(255,176,32,0.18); color: #ffb020;
+  letter-spacing: 0.04em;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ls-row, .ls-app { animation: none; }
+  .ls-proj-fill { transition: none; }
+}
+
 /* THE STATS CARD. One card in the same material as an island, so the system
    readings read as another thing this screen shows rather than as a settings
    page that wandered in. */
@@ -664,8 +842,517 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
    Pressing a stack fans it out in place. That is ALL a press does: this screen
    renders before sign-in, so there is nothing here to open into. */
 .ls-notifs {
-  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  /* 18px, not 12: Jay, from the glass -- "the alert cards/banners need a little
+     space between eachother vertically". A collapsed stack also carries 13px of
+     padding-bottom for the cards peeking out behind it, so at 12px a
+     single-item alert (which has nothing peeking) sat visually tighter against
+     its neighbour than a stack did. */
+  display: flex; flex-direction: column; align-items: center; gap: 18px;
   width: 100%; align-self: stretch;
+}
+/* The pending-decision list at the head of the alerts panel. It had NO rule at
+   all, so its .ls-row cards -- which rely on a flex gap like every other list
+   on this screen -- stacked flush against each other with nothing between
+   them. It is the first thing in the panel, so that was the tightest spot on
+   the screen. */
+.ls-decisions {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  width: 100%;
+}
+.ls-decisions:empty { display: none; }
+
+/* THE VOLUME BEZEL. Right edge, vertical, level with the rocker. */
+.ls-vol {
+  position: fixed; right: 10px; top: 50%; z-index: 80;
+  transform: translate(120%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 14px 10px; border-radius: 22px;
+  background: rgba(24,24,27,0.86);
+  backdrop-filter: blur(24px) saturate(1.3);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+  box-shadow: 0 12px 34px -10px rgba(0,0,0,0.85);
+  opacity: 0;
+  transition: transform 260ms cubic-bezier(0.32,0.72,0,1), opacity 200ms ease;
+  pointer-events: none;     /* a heads-up, never a target */
+}
+.ls-vol[data-on="1"] { transform: translate(0, -50%); opacity: 1; }
+.ls-vol-track {
+  width: 8px; height: 150px; border-radius: 999px;
+  background: rgba(255,255,255,0.18);
+  display: flex; align-items: flex-end; overflow: hidden;
+}
+.ls-vol-fill {
+  display: block; width: 100%; height: var(--ls-vol, 50%);
+  border-radius: 999px; background: #fff;
+  transition: height 140ms ease;
+}
+.ls-vol-num {
+  font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.8);
+  font-variant-numeric: tabular-nums;
+}
+.ls-vol-note {
+  max-width: 76px; font-size: 10px; line-height: 1.25; text-align: center;
+  color: rgba(255,176,32,0.92);
+}
+
+/* THE AGENT CAROUSEL -- RADIAL, pivoting on the volume rocker.
+ *
+ * Jay: "left edge thumb pivot around the button". So the faces sit on an ARC
+ * swept from the left edge at the rocker's height, not in a vertical strip.
+ * The thumb stays on the button and the agents come to it, which is the whole
+ * point of pivoting there rather than centring the arc on the screen.
+ *
+ * --ls-car-pivot is where the rocker is, as a share of screen height. 34% is a
+ * STARTING GUESS, not a measurement -- unlike the camera cutout, there is no
+ * vendor file that gives the button's position, so this is the one number here
+ * that wants a human to look at it. It is a single custom property so nudging
+ * it is a one-line change.
+ */
+:root { --ls-car-pivot: 34%; --ls-car-radius: 104px; }
+.ls-carousel {
+  position: fixed; left: 0; top: 0; bottom: 0; right: 0; z-index: 80;
+  opacity: 0; pointer-events: none;
+  transition: opacity 200ms ease;
+}
+.ls-carousel[data-on="1"] { opacity: 1; }
+/* THE SCREEN BEHIND THE ARC IS BLURRED. Jay asked for it, and it earns its
+   place: the faces are small, low-contrast circles sitting over a feed of cards
+   and text, and without separation the focused one is genuinely hard to pick
+   out at a glance -- which is the one thing a chooser driven by a physical key
+   has to get right, because your eye is not already on the screen.
+ *
+ * Applied to .lockscreen, which is a SIBLING of the carousel and the scrim, so
+ * neither the arc nor the dim gets blurred with it. The existing sheets blur
+ * their chrome piecemeal (.ls-head, .ls-statusbar, .ls-weather) because a sheet
+ * only covers the bottom; this covers the middle of the screen, so the whole
+ * surface goes.
+ *
+ * NOT applied to the volume bezel, deliberately: that is a transient heads-up
+ * for a key you are already holding, and blurring the entire screen to show a
+ * volume level would be heavy-handed for it. */
+.lockscreen[data-radial="1"] {
+  filter: blur(7px);
+  transition: filter 260ms ease;
+}
+/* Summoned onto a DARK panel: the lock screen is not blurred, it is gone. On
+   OLED an unlit pixel emits nothing, so the faces sit on real black rather than
+   on a dimmed photograph of a lock screen -- which is the effect Jay was after
+   and the one thing an OLED does that no amount of blur imitates.
+   visibility rather than display:none, so nothing reflows on the way in. */
+.lockscreen[data-radial="dark"] {
+  visibility: hidden;
+  transition: none;
+}
+.lockscreen[data-radial="dark"] ~ .ls-scrim { background: #000; opacity: 1; }
+
+/* BLANKED: what the panel holds in its scanout buffer while it is off.
+ *
+ * No transition on the way IN -- the panel is about to go down and there is no
+ * time for one; the point is that the last painted frame is black. Coming back
+ * it fades, so an ordinary wake rises out of black rather than snapping on,
+ * which is both nicer and the same motion the arc uses.
+ *
+ * opacity, not visibility: it animates, and an OLED showing opacity 0 over a
+ * black page body is emitting nothing anyway. */
+.lockscreen[data-blanked="1"] {
+  opacity: 0;
+  transition: none;
+}
+/* THE BODY GOES BLACK TOO, and this is the bit I kept missing.
+ *
+ * `body` carries a dark GREY GRADIENT (#141415 -> #202024) for the ordinary
+ * sign-in card, and .lockscreen has no background of its own. So hiding the
+ * lock screen revealed that gradient, which is exactly what Jay reported twice:
+ * "it shows the lock screen background grey", and "it even flashes sometimes on
+ * rotary start/open" -- the flash being the frame where the lock screen was
+ * hidden and the black scrim had not painted yet.
+ *
+ * Hiding a transparent layer over grey shows grey. The layer underneath has to
+ * be black, so it is, in the same style recalculation -- there is no frame in
+ * between for the gradient to appear in.
+ *
+ * Specificity does the work: body.ls-black (0,1,1) beats body (0,0,1), so no
+ * !important is needed. */
+body.ls-black { background: #000; }
+.lockscreen {
+  transition: opacity 320ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lockscreen { transition: none; }
+}
+
+/* EMERGING FROM THE BLACK. Jay: "it would be nice if the the rotary menu could
+ * have an appear effect like fading into view out of the deep black oled
+ * display."
+ *
+ * Slower and softer than the lit-screen case on purpose. Over a blurred lock
+ * screen the arc only has to arrive; over true black it is the ONLY thing on
+ * the panel, so the eye follows it completely and a 200ms snap reads as a
+ * flash. This gives it time to resolve out of nothing.
+ *
+ * The scale grows from the PIVOT, not the centre, so it unfurls from under the
+ * thumb rather than swelling out of the middle of a dark screen -- the pivot is
+ * the whole conceit of this layout and the animation should say so.
+ *
+ * Opacity is eased out of zero slowly at first (the cubic starts shallow):
+ * on OLED the first few percent of brightness off true black is the most
+ * visible step there is, and a linear fade shows a hard edge appearing. */
+.lockscreen[data-radial="dark"] ~ #ls-carousel {
+  transform-origin: 0 var(--ls-car-pivot);
+  transform: scale(0.9);
+  transition: opacity 520ms cubic-bezier(0.4, 0, 0.2, 1),
+              transform 620ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.lockscreen[data-radial="dark"] ~ #ls-carousel[data-on="1"] {
+  transform: scale(1);
+}
+/* The faces arrive just behind the ring they sit on, so the arc reads as a
+   thing that appeared and then filled, rather than everything at once. */
+.lockscreen[data-radial="dark"] ~ #ls-carousel .ls-face {
+  transition: transform 420ms cubic-bezier(0.32,0.72,0,1),
+              opacity 480ms ease 90ms,
+              box-shadow 180ms ease;
+}
+/* The banner last. It is text, and text arriving first on a black screen is
+   what makes an animation feel like a page load. */
+.lockscreen[data-radial="dark"] ~ #ls-carousel .ls-carousel-banner {
+  transition: opacity 420ms ease 180ms;
+}
+.lockscreen[data-radial="dark"] ~ #ls-carousel:not([data-on="1"]) .ls-carousel-banner {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lockscreen[data-radial="dark"] ~ #ls-carousel,
+  .lockscreen[data-radial="dark"] ~ #ls-carousel[data-on="1"] {
+    transform: none; transition: opacity 200ms ease;
+  }
+  .lockscreen[data-radial="dark"] ~ #ls-carousel .ls-face,
+  .lockscreen[data-radial="dark"] ~ #ls-carousel .ls-carousel-banner {
+    transition: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lockscreen[data-radial="1"] { transition: none; }
+}
+/* The pivot itself: a zero-size origin on the left edge at the rocker's
+   height. Every face is placed relative to THIS, so moving the pivot moves the
+   whole arc and nothing else needs to know. */
+.ls-carousel-strip {
+  position: absolute; left: 0; top: var(--ls-car-pivot);
+  width: 0; height: 0;
+}
+/* Each face rides the arc. The double rotation is what keeps a face UPRIGHT
+   while sitting on a curve: rotate to its angle, push out along the radius,
+   then rotate back by the same amount. Without the second rotation the avatars
+   tilt, which on a ring of faces reads as a rendering fault rather than style. */
+.ls-face {
+  position: absolute; left: 0; top: 0;
+  width: 46px; height: 46px; margin: -23px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.1) center/cover no-repeat;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; color: rgba(255,255,255,0.7);
+  transform:
+    rotate(var(--a, 0deg))
+    translateX(var(--ls-car-radius))
+    rotate(calc(-1 * var(--a, 0deg)))
+    scale(var(--s, 0.82));
+  opacity: var(--o, 0.35);
+  transition: transform 300ms cubic-bezier(0.32,0.72,0,1), opacity 220ms ease,
+              box-shadow 180ms ease;
+}
+.ls-face[data-focus="1"] {
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.9), 0 8px 22px -6px rgba(0,0,0,0.8);
+  color: #fff;
+}
+/* A faint arc behind the faces, so the ring reads as one object rather than
+   scattered dots. Drawn as a ring clipped to the pivot side. */
+.ls-carousel-arc {
+  position: absolute; left: 0; top: var(--ls-car-pivot);
+  width: calc(var(--ls-car-radius) * 2); height: calc(var(--ls-car-radius) * 2);
+  margin: calc(var(--ls-car-radius) * -1);
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.1);
+  pointer-events: none;
+}
+/* The banner sits OUTSIDE the arc, level with the pivot, so the name is beside
+   the focused face rather than under the thumb. */
+.ls-carousel-banner {
+  position: absolute; top: var(--ls-car-pivot);
+  left: calc(var(--ls-car-radius) + 46px);
+  transform: translateY(-50%);
+  max-width: 200px;
+  padding: 12px 15px; border-radius: 20px;
+  background: rgba(24,24,27,0.9);
+  backdrop-filter: blur(26px) saturate(1.3);
+  -webkit-backdrop-filter: blur(26px) saturate(1.3);
+  box-shadow: 0 14px 40px -12px rgba(0,0,0,0.85);
+}
+.ls-carousel-name { font-size: 16px; font-weight: 700; color: #fff; }
+.ls-carousel-role {
+  margin-top: 1px; font-size: 11px; color: rgba(255,255,255,0.62);
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.ls-carousel-ptt { margin-top: 8px; font-size: 12px; color: rgba(255,255,255,0.45); }
+.ls-carousel[data-talking="1"] .ls-carousel-ptt { color: #6ee787; font-weight: 600; }
+.ls-carousel[data-talking="1"] .ls-face[data-focus="1"] {
+  box-shadow: 0 0 0 3px #30d158;
+  animation: ls-ptt 1.1s ease-in-out infinite;
+}
+@keyframes ls-ptt {
+  0%, 100% { box-shadow: 0 0 0 3px #30d158; }
+  50%      { box-shadow: 0 0 0 8px rgba(48,209,88,0.32); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ls-vol, .ls-carousel, .ls-face, .ls-vol-fill { transition: none; }
+  .ls-carousel[data-talking="1"] .ls-face[data-focus="1"] { animation: none; }
+}
+
+/* TORCH AND CAMERA, flanking the unlock bar.
+ *
+ * Round, dim, and the same size as each other: they are landmarks found by
+ * position rather than read, which is why they sit at the edges with the bar
+ * between them. Big targets because they are pressed with a thumb, often in
+ * the dark -- the torch especially, which is the one control on this screen
+ * someone reaches for precisely when they cannot see. */
+.ls-unlock-row {
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  width: 100%; max-width: var(--ls-card-w); margin: 0 auto;
+}
+.ls-unlock-row .ls-unlock-btn { flex: 1; min-width: 0; }
+.ls-quick {
+  flex: none; width: 46px; height: 46px; padding: 0;
+  border: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.82);
+  transition: background 200ms ease, color 200ms ease, transform 140ms ease;
+}
+.ls-quick svg {
+  width: 21px; height: 21px; fill: none; stroke: currentColor;
+  stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+}
+.ls-quick:active { transform: scale(0.92); }
+.ls-quick:focus-visible { outline: 3px solid #4c9aff; outline-offset: 3px; }
+/* Lit: the torch inverts, the way it does on every phone, so its state is
+   unmistakable from the corner of the eye in a dark room. */
+.ls-quick[aria-pressed="true"] { background: #fff; color: #111; }
+/* Unavailable rather than hidden. A missing control is a thing the user hunts
+   for; a dimmed one answers the question. */
+.ls-quick[disabled] { opacity: 0.38; }
+.ls-quick[data-note]::after {
+  content: attr(data-note);
+  position: absolute; bottom: 54px; left: 50%; transform: translateX(-50%);
+  white-space: nowrap; padding: 6px 10px; border-radius: 10px;
+  background: rgba(24,24,27,0.94); color: rgba(255,255,255,0.8);
+  font-size: 11px; font-weight: 500;
+}
+.ls-quick { position: relative; }
+
+/* THE PULL-DOWN SHADE, from the TOP edge -- the one surface on this screen that
+   does not come from the bottom, because that is where the gesture starts. It
+   deliberately does NOT cover the whole screen: a shade that fills the display
+   for one slider reads as a mode you have to escape, and the clock staying
+   visible behind it is what makes it feel like a shade rather than a page. */
+.ls-shade {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 70;
+  padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px 14px;
+  transform: translateY(-101%);
+  transition: transform 340ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.ls-shade[hidden] { display: none; }
+.lockscreen[data-sheet="shade"] ~ #ls-shade { transform: translateY(0); }
+.ls-shade-inner {
+  position: relative;
+  margin: 0 auto; width: 100%; max-width: var(--ls-card-w);
+  padding: 16px 16px 20px;
+  border-radius: 0 0 26px 26px;
+  background: rgba(24, 24, 27, 0.9);
+  box-shadow: 0 20px 50px -14px rgba(0, 0, 0, 0.9);
+  backdrop-filter: blur(30px) saturate(1.3);
+  -webkit-backdrop-filter: blur(30px) saturate(1.3);
+}
+.ls-shade-toggles {
+  display: flex; gap: 10px; padding-bottom: 14px;
+}
+.ls-toggle {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 12px 6px; border: 0; border-radius: 20px;
+  font: inherit; font-size: 11px; font-weight: 600;
+  background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.6);
+  transition: background 200ms ease, color 200ms ease;
+}
+/* ON is a filled tile, not a tick: at a glance across a room the FILL is what
+   reads, and these are glanced at rather than studied. */
+.ls-toggle[aria-pressed="true"] { background: #4c9aff; color: #fff; }
+.ls-toggle:focus-visible { outline: 3px solid #4c9aff; outline-offset: 2px; }
+.ls-toggle svg { width: 22px; height: 22px; fill: none; stroke: currentColor;
+                 stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* Mid-flight. A radio takes a moment to come up, and a switch that snapped back
+   to its old position while waiting would read as having refused the tap. */
+.ls-toggle[data-busy="1"] { opacity: 0.55; }
+.ls-shade-row { display: flex; align-items: center; gap: 12px; }
+.ls-shade-icon {
+  flex: none; width: 22px; height: 22px;
+  fill: none; stroke: rgba(255,255,255,0.8);
+  stroke-width: 1.7; stroke-linecap: round;
+}
+.ls-shade-value {
+  flex: none; min-width: 42px; text-align: right;
+  font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.75);
+  font-variant-numeric: tabular-nums;
+}
+/* A tall track and a big thumb: this is dragged with a thumb in the dark, and
+   it is the control someone reaches for precisely when they cannot see well. */
+.ls-shade-slider {
+  flex: 1; min-width: 0; height: 34px; margin: 0;
+  -webkit-appearance: none; appearance: none; background: none;
+}
+.ls-shade-slider::-webkit-slider-runnable-track {
+  height: 10px; border-radius: 999px; background: rgba(255,255,255,0.18);
+}
+.ls-shade-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 26px; height: 26px; margin-top: -8px;
+  border-radius: 50%; background: #fff;
+  box-shadow: 0 2px 8px -1px rgba(0,0,0,0.6);
+}
+.ls-shade-slider:focus-visible { outline: 3px solid #4c9aff; outline-offset: 4px; border-radius: 999px; }
+.ls-shade-note {
+  margin-top: 10px; font-size: 12px; line-height: 1.35;
+  color: rgba(255,176,32,0.9);
+}
+/* The grip, echoing the unlock grabber at the other end of the screen so the
+   two read as the same vocabulary. */
+.ls-shade-grip {
+  position: absolute; left: 50%; bottom: 7px; transform: translateX(-50%);
+  width: 38px; height: 4px; border-radius: 999px;
+  background: rgba(255,255,255,0.28);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ls-shade { transition: none; }
+}
+
+/* THE POWER MENU. Jay: "I rather the power button menu be buttons centred on
+   the screen against blurred background like iOS."
+ *
+ * So it is NOT a bottom sheet. It is a centred dialog that scales up out of the
+ * blur -- the same shape iOS uses for an alert, and the right one here: this is
+ * a modal question with four answers, not a drawer of content you might browse.
+ * Centring also puts the targets under the thumb from either hand, which a
+ * bottom sheet does not once it is five rows tall.
+ *
+ * The backdrop blur is already there: `.lockscreen:not([data-sheet="none"])`
+ * blurs the chrome and `.ls-scrim` darkens behind it, both driven by the same
+ * data-sheet attribute this rides on. */
+.ls-modal {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  /* Not shown until the attribute says so. pointer-events:none while hidden so
+     the invisible full-screen box cannot swallow a touch meant for the page --
+     a modal that is closed but still eating input is indistinguishable from a
+     frozen screen. */
+  opacity: 0; pointer-events: none;
+  transform: scale(0.92);
+  transition: opacity 200ms ease, transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.ls-modal[hidden] { display: none; }
+/* Set for the duration of a close that happens while the panel is powering
+   down. Nothing is compositing then, so an animated close has nowhere to run
+   and would replay on wake -- the user sees the menu close half a second after
+   the screen comes back, which reads as the phone catching up with itself. */
+.lockscreen[data-instant="1"] ~ .ls-modal,
+.lockscreen[data-instant="1"] ~ .ls-shade,
+.lockscreen[data-instant="1"] ~ .ls-sheet,
+/* The volume surfaces too. They are siblings of .lockscreen, so hiding the
+   lock screen never touched them -- a panel blanking mid-fade kept a half-lit
+   arc in its buffer and showed it on the next wake. */
+.lockscreen[data-instant="1"] ~ #ls-vol,
+.lockscreen[data-instant="1"] ~ #ls-carousel,
+.lockscreen[data-instant="1"] ~ #ls-carousel .ls-face,
+.lockscreen[data-instant="1"] ~ #ls-carousel .ls-carousel-banner { transition: none; }
+.lockscreen[data-sheet="power"] ~ #ls-power {
+  opacity: 1; pointer-events: auto; transform: scale(1);
+}
+.ls-modal-card {
+  width: 100%; max-width: var(--ls-card-w);
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 20px 16px 14px;
+  border-radius: 28px;
+  background: rgba(28, 28, 30, 0.78);
+  box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.9);
+  backdrop-filter: blur(34px) saturate(1.35);
+  -webkit-backdrop-filter: blur(34px) saturate(1.35);
+}
+.ls-modal-title {
+  text-align: center; font-size: 19px; font-weight: 700; color: #fff;
+}
+.ls-modal-sub {
+  text-align: center; margin-top: -4px; padding-bottom: 4px;
+  font-size: 12px; color: rgba(255,255,255,0.5);
+}
+/* Cancel, set apart from the actions above it. iOS puts the safe choice last
+   and makes it the plainest thing on the card; the dangerous ones should never
+   be what the thumb finds by default. */
+.ls-modal-cancel {
+  margin-top: 4px; padding: 13px; border: 0; border-radius: 16px;
+  font: inherit; font-size: 16px; font-weight: 600;
+  background: rgba(255,255,255,0.14); color: #fff;
+}
+.ls-modal-cancel:focus-visible { outline: 3px solid #4c9aff; outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .ls-modal { transition: none; transform: none; }
+  .lockscreen[data-sheet="power"] ~ #ls-power { transform: none; }
+}
+
+/* The action rows. Big targets: this is reached by feel, often in the dark,
+   sometimes in a hurry, and it is the one surface here where picking the wrong
+   row costs something. */
+.ls-power-body { display: flex; flex-direction: column; gap: 8px; padding: 2px 0 4px; }
+.ls-power-item {
+  display: flex; align-items: center; gap: 13px;
+  width: 100%; padding: 14px 15px; border: 0; border-radius: 18px;
+  font: inherit; font-size: 16px; font-weight: 600; text-align: left;
+  color: #fff; background: rgba(255,255,255,0.09);
+}
+.ls-power-item:focus-visible { outline: 3px solid #4c9aff; outline-offset: 2px; }
+.ls-power-item[data-danger="1"] { color: #ff6b6b; }
+/* Emergency is not "destructive", it is URGENT: the whole row carries the
+   colour rather than just the label, so it is findable without reading. */
+.ls-power-item[data-emergency="1"] {
+  background: rgba(255,59,48,0.22); color: #ff8a80;
+}
+.ls-power-item[data-emergency="1"] .ls-power-glyph { background: rgba(255,59,48,0.28); }
+.ls-power-glyph {
+  flex: none; width: 30px; height: 30px; border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; background: rgba(255,255,255,0.10);
+}
+.ls-power-note {
+  display: block; margin-top: 2px;
+  font-size: 12px; font-weight: 500; color: rgba(255,255,255,0.55);
+}
+/* The confirm step for the two Jay asked to guard. It REPLACES the row rather
+   than opening a second dialog: a nested modal on a lock screen is a place to
+   get lost, and the question should sit where the answer was given. */
+.ls-power-confirm {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 13px 15px; border-radius: 18px;
+  background: rgba(255,59,48,0.14);
+}
+.ls-power-confirm-q { font-size: 14px; font-weight: 600; color: #fff; }
+.ls-power-confirm-note { font-size: 12px; line-height: 1.35; color: rgba(255,255,255,0.68); }
+.ls-power-confirm-row { display: flex; gap: 8px; margin-top: 2px; }
+.ls-power-confirm-row button {
+  flex: 1; padding: 10px; border: 0; border-radius: 12px;
+  font: inherit; font-size: 14px; font-weight: 600;
+  background: rgba(255,255,255,0.12); color: #fff;
+}
+.ls-power-confirm-row button[data-go="1"] { background: rgba(255,59,48,0.34); color: #ffb3ad; }
+.ls-power-result {
+  padding: 11px 15px; border-radius: 14px;
+  background: rgba(255,255,255,0.08);
+  font-size: 13px; line-height: 1.4; color: rgba(255,255,255,0.78);
 }
 .ls-notif-group {
   position: relative;
@@ -1039,6 +1726,13 @@ body.lockscreen-on .osk-toggle { display: none !important; }
 .ls-sheet[hidden] { display: none; }
 .lockscreen[data-sheet="chat"] ~ #ls-chat,
 .lockscreen[data-sheet="decision"] ~ #ls-decision { transform: translateY(0); }
+/* ⚠ EVERY sheet needs a line here. `.ls-sheet` rests at translateY(101%) and
+   only the names listed are pulled up, while the backdrop blur is driven by the
+   generic `:not([data-sheet="none"])` rules. So a sheet that is opened but not
+   named here produces EXACTLY what Jay saw: "Power button blurs screen but no
+   buttons show" -- the chrome reacts, the sheet stays off-screen, and nothing
+   errors. Same shape as the panels that painted 354 rows while `hidden`: a new
+   element added to a system whose visibility is a hand-written list of names. */
 /* The passcode sheet is the sign-in shell itself, so it gets the same motion
    rather than a second implementation of "a sheet". */
 .lockscreen .ls-foot {
@@ -1192,7 +1886,19 @@ body.lockscreen-on .osk-toggle { display: none !important; }
 }
 .ls-voice-text[data-error="1"] { font-size: 14px; color: rgba(255,176,32,0.92); }
 .ls-voice-acts { display: flex; gap: 10px; padding-top: 2px; }
-.lockscreen[data-sheet="voice"] ~ #ls-voice { transform: translateY(0); }
+/* The dictation dialog is a MODAL now, not a sheet, so it scales up out of the
+   blur like the power menu instead of sliding from the bottom edge. Its reveal
+   rule has to live beside the other modal one, or it opens invisibly -- the
+   failure the sheet-name test exists to catch. */
+.lockscreen[data-sheet="voice"] ~ #ls-voice {
+  opacity: 1; pointer-events: auto; transform: scale(1);
+}
+.ls-modal-voice .ls-voice-head {
+  display: flex; align-items: center; gap: 11px; padding-bottom: 4px;
+}
+.ls-modal-voice .ls-voice-who { min-width: 0; flex: 1; text-align: left; }
+.ls-modal-voice .ls-sheet-close { flex: none; }
+.ls-modal-voice .ls-voice-acts { padding-top: 4px; }
 
 /* Force-touch feel: the island sinks under the finger, then pops as it opens.
    Without the sink there is no feedback that a HOLD is doing anything, and the
@@ -1561,6 +2267,14 @@ _VIEW_SPRITE = """
             <rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8" />
             <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.8" />
           </symbol>
+          <symbol id="lv-projects" viewBox="0 0 24 24">
+            <!-- stacked layers, the shape of a thing with work under it. Not a
+                 folder: a folder says "files", and a project here is a body of
+                 work agents are moving, not a place documents are kept. -->
+            <path d="M12 3.2 21 7.6 12 12 3 7.6z" />
+            <path d="M3.4 12 12 16.3 20.6 12" />
+            <path d="M3.4 16.4 12 20.7l8.6-4.3" />
+          </symbol>
           <symbol id="lv-alerts" viewBox="0 0 24 24">
             <!-- exclamation in a ring. The dot is a 0-length line with a round
                  cap: a filled circle would be the only solid shape in the set. -->
@@ -1574,13 +2288,6 @@ _VIEW_SPRITE = """
             <path d="M7.5 20v-5.5" />
             <path d="M12 20V8" />
             <path d="M16.5 20v-8.5" />
-          </symbol>
-          <symbol id="lv-settings" viewBox="0 0 24 24">
-            <!-- cog: an octagonal rosette, not a 12-tooth gear, which turns to
-                 mud at 18px on a phone -->
-            <circle cx="12" cy="12" r="3" />
-            <path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8" />
-            <path d="m18.5 5.5-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5" />
           </symbol>
         </defs>
       </svg>
@@ -1615,13 +2322,18 @@ def _device_label() -> str:
 # is #ls-notifs. Deriving the id would have pointed aria-controls at the inner
 # agents box and at an #ls-alerts that does not exist.
 _LOCK_VIEWS = (
+    # Jay's order, from the glass: agents, projects, alerts, mailbox, phone,
+    # stats -- then apps, which he asked to keep but did not place. Projects
+    # sits second because this is a projects-focused OS and it replaced the
+    # settings tab outright; pending decisions are not a tab of their own, they
+    # ride at the top of ALERTS where they can be answered quickly.
     ("agents", "Agents", "lv-agents", "ls-activity"),
-    ("phone", "Phone", "lv-phone", "ls-phone"),
-    ("mailbox", "Mailbox", "lv-mailbox", "ls-mailbox"),
-    ("apps", "Apps", "lv-apps", "ls-apps"),
+    ("projects", "Projects", "lv-projects", "ls-projects"),
     ("alerts", "Alerts", "lv-alerts", "ls-notifs"),
+    ("mailbox", "Mailbox", "lv-mailbox", "ls-mailbox"),
+    ("phone", "Phone", "lv-phone", "ls-phone"),
     ("stats", "System", "lv-stats", "ls-stats"),
-    ("settings", "Settings", "lv-settings", "ls-settings"),
+    ("apps", "Apps", "lv-apps", "ls-apps"),
 )
 _LOCK_DEFAULT_VIEW = "agents"
 
@@ -1688,17 +2400,23 @@ def _lock_head_html() -> str:
           <div class="ls-tasks" id="ls-tasks"></div>
         </div>
         <div class="ls-notifs" id="ls-notifs" data-view="alerts"
-             role="tabpanel" aria-labelledby="ls-tab-alerts" aria-label="Notifications" hidden></div>
+             role="tabpanel" aria-labelledby="ls-tab-alerts" aria-label="Alerts" hidden>
+          <!-- Pending decisions live at the TOP OF ALERTS rather than in a tab
+               of their own (Jay, from the glass: "thats where decisions will go
+               for quick answering"). They are the only thing in this panel the
+               user answers rather than reads, so they sit above the stacks. -->
+          <div class="ls-decisions" id="ls-decisions"></div>
+        </div>
         <div class="ls-panel" id="ls-phone" data-view="phone"
              role="tabpanel" aria-labelledby="ls-tab-phone" aria-label="Phone" hidden></div>
         <div class="ls-panel" id="ls-mailbox" data-view="mailbox"
              role="tabpanel" aria-labelledby="ls-tab-mailbox" aria-label="Mailbox" hidden></div>
         <div class="ls-panel" id="ls-apps" data-view="apps"
              role="tabpanel" aria-labelledby="ls-tab-apps" aria-label="Apps" hidden></div>
+        <div class="ls-panel" id="ls-projects" data-view="projects"
+             role="tabpanel" aria-labelledby="ls-tab-projects" aria-label="Projects" hidden></div>
         <div class="ls-panel" id="ls-stats" data-view="stats"
              role="tabpanel" aria-labelledby="ls-tab-stats" aria-label="System" hidden></div>
-        <div class="ls-panel" id="ls-settings" data-view="settings"
-             role="tabpanel" aria-labelledby="ls-tab-settings" aria-label="Settings" hidden></div>
       </div>
       {_FRAMEWORK_SPRITE}
       {_VIEW_SPRITE}
@@ -1706,11 +2424,29 @@ def _lock_head_html() -> str:
     <div class="ls-spacer"></div>
     <div class="ls-unlock" id="ls-unlock">
       <div class="ls-unlock-note" id="ls-unlock-note" role="status" hidden></div>
-      <button type="button" class="ls-unlock-btn" id="ls-unlock-btn"
-              aria-expanded="false" aria-controls="ls-foot">
-        <span class="ls-grabber"></span>
-        <span class="ls-unlock-label">Swipe up to unlock</span>
-      </button>
+      <!-- Torch and camera flank the unlock bar, where every phone puts them.
+           They are OUTSIDE the unlock button, not inside it: a tap meant for
+           the torch must never be read as a swipe toward the keypad. -->
+      <div class="ls-unlock-row">
+        <button type="button" class="ls-quick" id="ls-torch"
+                aria-pressed="false" aria-label="Torch">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M9 2.6h6l-.7 3.2H9.7z"/>
+            <path d="M9.7 5.8h4.6l.5 2.6-1 1.4v11.6h-3.6V9.8l-1-1.4z"/>
+          </svg>
+        </button>
+        <button type="button" class="ls-unlock-btn" id="ls-unlock-btn"
+                aria-expanded="false" aria-controls="ls-foot">
+          <span class="ls-grabber"></span>
+          <span class="ls-unlock-label">Swipe up to unlock</span>
+        </button>
+        <button type="button" class="ls-quick" id="ls-camera" aria-label="Camera">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3.4 8.2h3l1.3-2h6.6l1.3 2h3a1.4 1.4 0 0 1 1.4 1.4v8.6a1.4 1.4 0 0 1-1.4 1.4H3.4A1.4 1.4 0 0 1 2 18.2V9.6a1.4 1.4 0 0 1 1.4-1.4z"/>
+            <circle cx="12" cy="13.6" r="3.4"/>
+          </svg>
+        </button>
+      </div>
     </div>"""
 
 
@@ -1752,6 +2488,74 @@ def _lock_tail_html() -> str:
       </button>
     </div>
   </section>
+  <!-- The power menu. Raised by HOLDING the power key: sway posts to
+       /auth/lock-power-menu on loopback and the stream below brings it here.
+       ⚠ This sheet is reachable BEFORE SIGN-IN, exactly as holding the physical
+       key always was. Power off and Restart add nothing the hardware key did
+       not already allow; "Stop all agents" and "Emergency call" DO ask for
+       something more, which is why Jay asked for both to confirm first. -->
+  <!-- THE VOLUME BEZEL. Vertical, on the RIGHT, because that is the side the
+       rocker is on -- the readout should be next to the finger that caused it.
+       It does NOT take a sheet slot: volume is a transient heads-up, and taking
+       the sheet slot would mean nudging the volume dismissed an open menu. -->
+  <div class="ls-vol" id="ls-vol" aria-hidden="true">
+    <div class="ls-vol-track"><span class="ls-vol-fill" id="ls-vol-fill"></span></div>
+    <div class="ls-vol-num" id="ls-vol-num">--</div>
+    <div class="ls-vol-note" id="ls-vol-note" hidden></div>
+  </div>
+
+  <!-- THE AGENT CAROUSEL. Jay: "a carousel type animation slides out from the
+       left of the screen where the buttons are with the agents avatars/faces",
+       then: "left edge thumb pivot around the button". So it is RADIAL --
+       faces on an arc swept from the left edge at the volume rocker's height,
+       and the thumb stays on the button while the agents come to it. -->
+  <div class="ls-carousel" id="ls-carousel" aria-hidden="true">
+    <div class="ls-carousel-arc" aria-hidden="true"></div>
+    <div class="ls-carousel-strip" id="ls-carousel-strip"></div>
+    <div class="ls-carousel-banner" id="ls-carousel-banner">
+      <div class="ls-carousel-name" id="ls-carousel-name"></div>
+      <div class="ls-carousel-role" id="ls-carousel-role"></div>
+      <div class="ls-carousel-ptt" id="ls-carousel-ptt">Hold a volume key to talk</div>
+    </div>
+  </div>
+
+  <!-- THE PULL-DOWN SHADE. Jay: "We need a pull down area from the top of the
+       screen for things like brightness". Swipe down from the top edge.
+       "things like" is the brief, so this is a container with one control in it
+       today rather than a brightness dialog -- the next toggle goes beside it
+       without moving anything. -->
+  <section class="ls-shade" id="ls-shade" role="dialog" aria-modal="true"
+           aria-label="Quick settings" hidden>
+    <div class="ls-shade-inner">
+      <!-- Radio switches. Big round targets in a row, the way a phone's control
+           centre does it, because these are hit with a thumb and not read. -->
+      <div class="ls-shade-toggles" id="ls-shade-toggles"></div>
+      <div class="ls-shade-row">
+        <svg class="ls-shade-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="4.2" />
+          <path d="M12 2.6v2.6M12 18.8v2.6M21.4 12h-2.6M5.2 12H2.6" />
+          <path d="m18.6 5.4-1.8 1.8M7.2 16.8l-1.8 1.8M18.6 18.6l-1.8-1.8M7.2 7.2 5.4 5.4" />
+        </svg>
+        <input type="range" class="ls-shade-slider" id="ls-brightness"
+               min="4" max="100" step="1" value="60"
+               aria-label="Screen brightness" />
+        <span class="ls-shade-value" id="ls-brightness-value">--</span>
+      </div>
+      <div class="ls-shade-note" id="ls-shade-note" hidden></div>
+      <span class="ls-shade-grip" aria-hidden="true"></span>
+    </div>
+  </section>
+
+  <section class="ls-modal" id="ls-power" role="dialog" aria-modal="true"
+           aria-labelledby="ls-power-title" hidden>
+    <div class="ls-modal-card">
+      <div class="ls-modal-title" id="ls-power-title">Power</div>
+      <div class="ls-modal-sub" id="ls-power-sub">Hold the power key to reach this</div>
+      <div class="ls-power-body" id="ls-power-body"></div>
+      <button type="button" class="ls-modal-cancel" id="ls-power-close">Cancel</button>
+    </div>
+  </section>
+
   <section class="ls-sheet" id="ls-decision" role="dialog" aria-modal="true"
            aria-labelledby="ls-decision-q" hidden>
     <header class="ls-sheet-head">
@@ -1776,26 +2580,32 @@ def _lock_tail_html() -> str:
     </div>
     <p class="ls-decision-done" id="ls-decision-done" hidden></p>
   </section>
-  <section class="ls-sheet ls-sheet-voice" id="ls-voice" role="dialog" aria-modal="true"
+  <!-- Dictation. A CENTRED DIALOG, not a bottom sheet: Jay, of the microphone
+       on an agent island -- "instead of a slide up menu at the bottom can we
+       have a dialog in the centre of the screen against a blur effect". Same
+       .ls-modal shell as the power menu, so the two modal surfaces on this
+       screen read as one thing rather than two designs.
+       The grabber is gone with the sheet: it was the affordance for dragging a
+       sheet down, and there is nothing to drag now. -->
+  <section class="ls-modal ls-modal-voice" id="ls-voice" role="dialog" aria-modal="true"
            aria-labelledby="ls-voice-title" hidden>
-    <header class="ls-sheet-head">
-      <span class="ls-grabber"></span>
-      <div class="ls-sheet-title">
+    <div class="ls-modal-card">
+      <div class="ls-voice-head">
         <div class="ls-sheet-avatar" id="ls-voice-avatar" aria-hidden="true"></div>
-        <div>
+        <div class="ls-voice-who">
           <div class="ls-sheet-name" id="ls-voice-title"></div>
           <div class="ls-sheet-sub" id="ls-voice-state">Listening\u2026</div>
         </div>
+        <button type="button" class="ls-sheet-close" id="ls-voice-close" aria-label="Cancel dictation">&#10005;</button>
       </div>
-      <button type="button" class="ls-sheet-close" id="ls-voice-close" aria-label="Cancel dictation">&#10005;</button>
-    </header>
-    <div class="ls-voice-body">
-      <canvas class="ls-wave" id="ls-wave" width="600" height="120" aria-hidden="true"></canvas>
-      <p class="ls-voice-text" id="ls-voice-text" aria-live="polite"></p>
-    </div>
-    <div class="ls-voice-acts">
-      <button type="button" class="ls-act" id="ls-voice-cancel">Cancel</button>
-      <button type="button" class="ls-act" data-act="approve" id="ls-voice-send" disabled>Send</button>
+      <div class="ls-voice-body">
+        <canvas class="ls-wave" id="ls-wave" width="600" height="120" aria-hidden="true"></canvas>
+        <p class="ls-voice-text" id="ls-voice-text" aria-live="polite"></p>
+      </div>
+      <div class="ls-voice-acts">
+        <button type="button" class="ls-act" id="ls-voice-cancel">Cancel</button>
+        <button type="button" class="ls-act" data-act="approve" id="ls-voice-send" disabled>Send</button>
+      </div>
     </div>
   </section>"""
 
@@ -2385,8 +3195,40 @@ _LOCK_SCREEN_SCRIPT = r"""
         feedEl.scrollTop = 0;
       }
 
+      // Reached by a tap on another tab, by the arrow keys, or at startup.
+      // Any of them means "show me this", so the feed comes back.
+      setFeedHidden(false);
       renderView(key);
       syncFeedFade();
+    }
+
+    // Pressing the ACTIVE category hides the feed; pressing it again restores
+    // it. Jay: "pressing on the active category icon on the lock screen hides
+    // the notifications/banners etc."
+    //
+    // The state lives on the feed rather than in a variable so the CSS owns the
+    // animation and nothing here has to know how long it takes.
+    function setFeedHidden(hidden) {
+      if (!feedEl) return;
+      if (hidden) feedEl.setAttribute("data-hidden", "1");
+      else feedEl.removeAttribute("data-hidden");
+      // The whole point is that it is out of the way, so it must be out of the
+      // way for a screen reader too -- a faded panel is still readable to one.
+      feedEl.setAttribute("aria-hidden", hidden ? "true" : "false");
+      var tabs = viewTabs();
+      for (var i = 0; i < tabs.length; i++) {
+        // Only the SELECTED tab carries the state: the others are not holding
+        // anything hidden, and saying they are would be a lie to a reader.
+        if (tabs[i].getAttribute("aria-selected") === "true") {
+          tabs[i].setAttribute("aria-expanded", hidden ? "false" : "true");
+        } else {
+          tabs[i].removeAttribute("aria-expanded");
+        }
+      }
+    }
+
+    function feedIsHidden() {
+      return !!(feedEl && feedEl.hasAttribute("data-hidden"));
     }
 
     // Panels that are built on demand rather than polled. Agents and alerts
@@ -2396,7 +3238,6 @@ _LOCK_SCREEN_SCRIPT = r"""
       // the CPU reading is a DELTA -- polling it while hidden would hand the
       // stats view a first sample taken minutes ago.
       if (key === "stats") startStats(); else stopStats();
-      if (key !== "agents" && key !== "alerts" && key !== "stats") renderPlaceholder(key);
     }
 
     // -----------------------------------------------------------------------
@@ -2554,6 +3395,41 @@ _LOCK_SCREEN_SCRIPT = r"""
       // With no DSPs the chips and their caption are simply absent from
       // `parts`, and placeInOrder takes them out.
 
+      // PER-AGENT CPU / RAM / STORAGE. Jay: "in the stats it should show live
+      // demo data for agents cpu, ram and storage usage".
+      //
+      // Its own card, below the hardware one, because these are a different
+      // KIND of reading: the card above is the device, this is what is running
+      // on it. Reconciled by agent name like everything else here, which
+      // matters more than usual at a 3s poll -- a rebuilt row every three
+      // seconds is the flicker bug with numbers in it.
+      if (d.agents && d.agents.length) {
+        var acard = partOf(statsEl, "agents", "ls-stat-card");
+        var arows = [statNote(acard, "agents-head", "Agents")];
+        for (var a = 0; a < d.agents.length; a++) {
+          var ag = d.agents[a];
+          var nm = ag.name || "agent";
+          // One row per agent, all three readings on it: three rows per agent
+          // would push a six-agent phone off the bottom of the panel.
+          arows.push(statRow(acard, "agent-" + nm,
+            nm,
+            ag.cpu_percent.toFixed(1) + "%  ·  "
+              + Math.round(ag.ram_mb) + " MB  ·  "
+              + (ag.storage_mb >= 1024
+                  ? (ag.storage_mb / 1024).toFixed(1) + " GB"
+                  : Math.round(ag.storage_mb) + " MB"),
+            // The bar is CPU, the only one of the three with a natural 0-100
+            // scale. RAM and storage have no ceiling to draw them against, and
+            // a bar against an invented maximum is worse than no bar.
+            ag.cpu_percent
+          ));
+        }
+        arows.push(statNote(acard, "agents-note",
+          "Demo readings. taOS does not meter per-agent usage on this device yet."));
+        placeInOrder(acard, arows);
+        parts.push(acard);
+      }
+
       // "Nobody asked" and "none loaded" are different answers.
       parts.push(statNote(statsEl, "models", d.models
         ? (d.models.length ? d.models.join(", ") : "No models loaded.")
@@ -2563,37 +3439,30 @@ _LOCK_SCREEN_SCRIPT = r"""
       syncFeedFade();
     }
 
-    // The four views that have no data source yet say so plainly, once.
-    var PLACEHOLDERS = {
-      phone: ["Phone", "Calls and dialler are not wired up on this device yet."],
-      mailbox: ["Mailbox", "No mail account is connected to this device yet."],
-      apps: ["Apps", "Installed apps will appear here."],
-      settings: ["Settings", "Unlock to change settings."]
-    };
-
-    function renderPlaceholder(key) {
-      var host = document.getElementById("ls-" + key);
-      var text = PLACEHOLDERS[key];
-      if (!host || !text || host.firstChild) return;
-      var wrap = document.createElement("div");
-      wrap.className = "ls-empty";
-      var b = document.createElement("b");
-      b.textContent = text[0];
-      var p = document.createElement("span");
-      p.textContent = text[1];
-      wrap.appendChild(b); wrap.appendChild(p);
-      host.appendChild(wrap);
-      // `hidden` on these panels means "nothing in it yet", which is true in
-      // the markup and false from here on. Leaving it set would hide the panel
-      // even while its own tab is selected.
-      host.hidden = false;
-    }
-
+    // THE PLACEHOLDER TABLE IS GONE, and so is renderPlaceholder.
+    //
+    // It listed phone / mailbox / apps / settings as "no data source yet" and
+    // said things like "Calls and dialler are not wired up on this device yet"
+    // -- over a panel that now has ten missed calls in it. It also named a
+    // `settings` panel that no longer exists, since Projects replaced it.
+    //
+    // Every view has a source now, and each panel renders its OWN empty state
+    // (paintEmpty), which is both honest and specific: "No missed calls" rather
+    // than "not wired up". A second, staler answer to the same question is
+    // worse than none.
     if (viewsEl) {
       viewsEl.addEventListener("click", function (ev) {
         var tab = ev.target.closest(".ls-view-tab");
         if (!tab) return;
-        showView(tab.getAttribute("data-view"), false);
+        var key = tab.getAttribute("data-view");
+        // The ACTIVE one toggles; any other one switches to it, and switching
+        // always brings the feed back -- asking for a different category means
+        // asking to see it.
+        if (key === currentView) {
+          setFeedHidden(!feedIsHidden());
+          return;
+        }
+        showView(key, false);
       });
 
       // Arrow-key traversal is what makes this a tablist rather than seven
@@ -2623,7 +3492,9 @@ _LOCK_SCREEN_SCRIPT = r"""
     var NOTIF_GLYPHS = {
       mail: '<path d="M3 6.5h18v11H3z"/><path d="M3.4 7l8.6 6 8.6-6"/>',
       phone: '<path d="M6.2 3.5l2.4 4-1.9 2a11 11 0 0 0 5.8 5.8l2-1.9 4 2.4v3.1a1.7 1.7 0 0 1-1.9 1.7A16.5 16.5 0 0 1 3.4 5.4 1.7 1.7 0 0 1 5.1 3.5z"/>',
-      sms: '<path d="M4 4.5h16v11H8.5L4 19z"/><path d="M8 8.6h8M8 11.6h5"/>'
+      sms: '<path d="M4 4.5h16v11H8.5L4 19z"/><path d="M8 8.6h8M8 11.6h5"/>',
+      // Two rings joined by a bar: the mark every phone uses for voicemail.
+      voicemail: '<circle cx="6.8" cy="13.5" r="4.3"/><circle cx="17.2" cy="13.5" r="4.3"/><path d="M6.8 17.8h10.4"/>'
     };
 
     // Which stacks the user has fanned out, kept OUTSIDE the paint so a repaint
@@ -2798,6 +3669,14 @@ _LOCK_SCREEN_SCRIPT = r"""
         delete existing[source];
         want.push(el);
       }
+      // Pending decisions ride at the TOP of this panel -- they are the only
+      // thing in it the user ANSWERS rather than reads. Included in `want`
+      // rather than left where they sit, because placeInOrder removes
+      // everything past the last wanted element: left out, the decisions would
+      // be deleted by the next notification poll.
+      var decEl = document.getElementById("ls-decisions");
+      if (decEl && decEl.children.length) want.unshift(decEl);
+
       placeInOrder(notifsEl, want);
 
       // The minute labels are retouched in place on their own timer, so the
@@ -2829,6 +3708,1445 @@ _LOCK_SCREEN_SCRIPT = r"""
       setInterval(function () {
         for (var i = 0; i < notifClocks.length; i++) {
           notifClocks[i].el.textContent = whenText(notifClocks[i].at);
+        }
+      }, 60000);
+    }
+
+    // THE SAFETY NET for data-blanked. If the screen-on event never arrives --
+    // a dead stream, a restarted controller -- the page must not be left black
+    // on a lit panel, which is indistinguishable from a broken phone. Any real
+    // input clears it, and input is exactly what is happening when someone is
+    // looking at a screen they expected to be showing something.
+    ["touchstart", "keydown", "pointerdown"].forEach(function (evt) {
+      document.addEventListener(evt, function () {
+        if (screenEl && screenEl.hasAttribute("data-blanked")
+            && !screenEl.hasAttribute("data-fromdark")) {
+          screenEl.removeAttribute("data-blanked");
+          setBlack(false);
+        }
+      }, { passive: true, capture: true });
+    });
+
+    // ------------------------------------------------------------------
+    // TORCH AND CAMERA, either side of the unlock bar.
+    // ------------------------------------------------------------------
+    var torchBtn = document.getElementById("ls-torch");
+    var cameraBtn = document.getElementById("ls-camera");
+
+    function paintTorch(state) {
+      if (!torchBtn) return;
+      if (!state || typeof state.on !== "boolean") {
+        // No torch on this device. Dimmed and inert rather than removed: a
+        // missing control is something the user hunts for, a dimmed one
+        // answers the question.
+        torchBtn.disabled = true;
+        return;
+      }
+      torchBtn.disabled = false;
+      setAttrIfChanged(torchBtn, "aria-pressed", state.on ? "true" : "false");
+    }
+
+    if (torchBtn) {
+      fetch("/auth/lock-torch", { credentials: "same-origin" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(paintTorch)
+        .catch(function () { paintTorch(null); });
+
+      torchBtn.addEventListener("click", function () {
+        var want = torchBtn.getAttribute("aria-pressed") !== "true";
+        // Optimistic, then corrected by the read-back: an LED is instant, so
+        // waiting for the round trip would make a real control feel dead.
+        setAttrIfChanged(torchBtn, "aria-pressed", want ? "true" : "false");
+        fetch("/auth/lock-torch", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ on: want })
+        }).then(function (r) { return r.ok ? r.json() : null; })
+          // What the LED took, not what was asked -- the level is clamped well
+          // below maximum, so the answer is not always the question.
+          .then(function (d) { if (d) paintTorch(d); })
+          .catch(function () { paintTorch(null); });
+      });
+    }
+
+    if (cameraBtn) {
+      // There IS a camera app now: taos-camerad serves it and taos-app-launch
+      // opens it in its own window, on its own workspace, so it covers the
+      // lock screen the way a camera shortcut does on any phone.
+      //
+      // The honest note stays for the FAILURE path, and for the same reason it
+      // existed when there was no app at all: a shortcut that silently does
+      // nothing is worse than one that admits it, because the user retries it.
+      cameraBtn.addEventListener("click", function () {
+        function note(text) {
+          cameraBtn.setAttribute("data-note", text);
+          window.setTimeout(function () {
+            cameraBtn.removeAttribute("data-note");
+          }, 1800);
+        }
+        fetch("/auth/lock-app", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ app: "camera" })
+        })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (d) {
+            // The window takes a couple of seconds to map, so there is nothing
+            // to show on success -- it simply appears over this screen.
+            if (!d || !d.ok) note((d && d.detail) || "Camera unavailable");
+          })
+          .catch(function () { note("Camera unavailable"); });
+      });
+    }
+
+    // ------------------------------------------------------------------
+    // THE VOLUME KEYS. Jay's spec, and all of the policy lives here because it
+    // is all STATE -- the compositor only reports press and release.
+    //
+    //   up   from rest -> reveal the bezel. THE FIRST PRESS DOES NOT CHANGE THE
+    //                     VOLUME. That is the point of it: on a phone with no
+    //                     on-screen volume, the first press today changes a
+    //                     level you cannot see. This makes the first press the
+    //                     one that shows you what you are about to change.
+    //   down from rest -> slide the agent carousel out of the LEFT edge.
+    //   then           -> up/down move whichever surface is open.
+    //   HOLD           -> walkie-talkie with the focused agent. MOCK: Jay,
+    //                     "just for demo/mock purposes for now so we can play
+    //                     around with designs and testing". No mic is opened,
+    //                     nothing is recorded, nothing is sent.
+    // ------------------------------------------------------------------
+    var volEl = document.getElementById("ls-vol");
+    var volFill = document.getElementById("ls-vol-fill");
+    var volNum = document.getElementById("ls-vol-num");
+    var volNote = document.getElementById("ls-vol-note");
+    var carEl = document.getElementById("ls-carousel");
+    var carStrip = document.getElementById("ls-carousel-strip");
+    var carName = document.getElementById("ls-carousel-name");
+    var carRole = document.getElementById("ls-carousel-role");
+    var carPtt = document.getElementById("ls-carousel-ptt");
+
+    var volPct = 50;          // last known level
+    var volArmed = false;     // has the reveal press been spent?
+    var volHideTimer = null;
+    var carIndex = 0;
+    var holdTimer = null;
+    var talking = false;
+    // Set when a press OPENS a surface, so that press's own release does not
+    // then act on what it just opened. Jay: "the first click of the volume down
+    // should not rotate the menu just make it appear" -- without this, the
+    // release of the opening press sees an open arc and cycles it, so the arc
+    // appeared already one agent along.
+    var pressOpened = false;
+    // Set when the hold timer fires, so the RELEASE can tell a tap from a hold.
+    // Without it, a hold that did not manage to start talking -- the arc closed
+    // under it, say -- would be read as a tap and advance the selection.
+    var pressWasHold = false;
+    // 600ms: past a deliberate press, short enough that holding to talk feels
+    // immediate rather than like waiting for the phone to agree.
+    //
+    // Named for push-to-talk, and deliberately NOT the island press machinery's
+    // own hold constant further down. test_lock_screen_views.py locates that
+    // machinery by searching for its declaration, so a second declaration of
+    // the same name earlier in the script makes it slice from here instead --
+    // "SyntaxError: Unexpected end of input", five tests red, in code that was
+    // itself perfectly valid. A landmark another file navigates by is part of
+    // the interface whether it was meant to be or not, and that includes
+    // repeating it in a comment: the first version of this note spelled the
+    // other name out and broke the search all over again.
+    var PTT_HOLD_MS = 600;
+
+    function volShow() {
+      if (!volEl) return;
+      volEl.setAttribute("data-on", "1");
+      restartIdleHide();
+    }
+
+    function hideAll() {
+      // READ EVERYTHING FIRST, THEN TEAR DOWN.
+      //
+      // This function used to remove data-on at the top and then ask, further
+      // down, whether data-on was set -- so the branch that records the parked
+      // agent could never run. Jay: "the last used agent isnt always the first
+      // one in the list." The fix for that was live code that never executed,
+      // and the test asserting its order was satisfied by text that could not
+      // fire. Presence is not effect, for the second time on this feature.
+      var wasOpen = !!(carEl && carEl.getAttribute("data-on") === "1");
+      // Darkness is read off the ELEMENT rather than the carDark variable. The
+      // attribute is the thing the stylesheet actually acted on, so it cannot
+      // disagree with what is on screen, and it cannot be cleared early by some
+      // other path resetting a flag.
+      // Read from data-fromdark, which BOTH surfaces set, rather than from
+      // data-radial, which only the arc does -- that asymmetry is what left a
+      // volume-only session on the lock screen.
+      var wasDark = !!(screenEl && screenEl.hasAttribute("data-fromdark"));
+
+      // WHERE YOU LEFT IT COUNTS AS USING IT -- recorded before anything is
+      // dismantled, and only when the arc was genuinely open: hideAll also runs
+      // for the volume bezel, which has no focused agent.
+      if (wasOpen) {
+        var parked = carAgents()[carIndex];
+        if (parked && parked.name) {
+          carUsed[parked.name] = Date.now();
+          carFocusName = parked.name;
+          carSave();
+        }
+      }
+
+      if (volEl) volEl.removeAttribute("data-on");
+      if (carEl) { carEl.removeAttribute("data-on"); carEl.removeAttribute("data-talking"); }
+      // Let the next open re-arrange. Held only while the arc is visible.
+      carOrder = null;
+
+      // THE PANEL WAS DARK WHEN THIS STARTED, so put it back to dark rather
+      // than revealing a lock screen nobody asked for. Jay: "if i PRESS the
+      // volume down to reveal the menu but dont use it, it then leaves me on
+      // the lock screen. the screen should be off."
+      //
+      // Keeping the page black is how that is done without the page needing a
+      // way to power the panel down, which it has no business having. On OLED a
+      // black frame emits nothing, so it reads as off, and swayidle blanks the
+      // panel properly a moment later -- the volume key re-armed it, so the
+      // timer is running.
+      if (screenEl) {
+        screenEl.removeAttribute("data-radial");
+        screenEl.removeAttribute("data-fromdark");
+        if (wasDark) { screenEl.setAttribute("data-blanked", "1"); setBlack(true); }
+        else { screenEl.removeAttribute("data-blanked"); setBlack(false); }
+      }
+      carDark = false;
+      if (scrim) {
+        scrim.removeAttribute("data-on");
+        // Only take the scrim away if nothing ELSE is using it. A sheet keeps it
+        // up through its own rule, and hiding the element here would pull the
+        // dim out from under an open menu.
+        var sheetNow = screenEl ? screenEl.getAttribute("data-sheet") : "none";
+        if (!sheetNow || sheetNow === "none") scrim.hidden = true;
+      }
+      volArmed = false;
+      talking = false;
+    }
+
+    function restartIdleHide() {
+      if (volHideTimer) window.clearTimeout(volHideTimer);
+      // Long enough to nudge the level twice without it vanishing between
+      // presses, short enough that it is gone before it becomes clutter.
+      volHideTimer = window.setTimeout(hideAll, 2600);
+    }
+
+    function paintVolume(d) {
+      if (!d || typeof d.percent !== "number") return;
+      volPct = Math.round(d.percent);
+      if (volFill) volFill.style.setProperty("--ls-vol", volPct + "%");
+      setText(volNum, volPct + "%");
+      // Said on the glass, because it is the difference between a broken
+      // slider and an honest one: PipeWire answers, and has no sink behind it.
+      if (volNote) {
+        if (d.no_sink) {
+          setText(volNote, "No audio output");
+          volNote.hidden = false;
+        } else {
+          volNote.hidden = true;
+        }
+      }
+    }
+
+    function loadVolume() {
+      fetch("/auth/lock-volume", { credentials: "same-origin" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { if (d) paintVolume(d); })
+        .catch(function () { /* the bezel keeps its last reading */ });
+    }
+
+    function nudgeVolume(delta) {
+      volPct = Math.max(0, Math.min(100, volPct + delta));
+      if (volFill) volFill.style.setProperty("--ls-vol", volPct + "%");
+      setText(volNum, volPct + "%");
+      fetch("/auth/lock-volume", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ percent: volPct })
+      }).then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { if (d) paintVolume(d); })
+        .catch(function () { /* the bar has already moved; leave it */ });
+    }
+
+    // WHAT THE ARC REMEMBERS, and where.
+    //
+    // Jay: "we need the rotary chooser to remember its position, so a person
+    // can leave their most used agent ready in walking talkie mode. Might be
+    // best to have them auto arrange in order of last used too."
+    //
+    // Two SEPARATE pieces of state, because they answer different questions:
+    //   carFocusName  which agent the arc opens on -- "where I left it"
+    //   carUsed       when each agent was last talked to -- the sort order
+    // They agree when the agent you parked on is the one you last used, and
+    // diverge when you park on one without talking to it. Keeping them apart
+    // is what makes that case behave.
+    //
+    // KEYED BY NAME, NEVER BY INDEX. Agents come and go, and the reordering
+    // below moves them, so a remembered index would quietly point at a
+    // different face -- exactly the sort of bug that looks like the feature
+    // working until you notice it picked the wrong agent.
+    //
+    // localStorage because the kiosk profile is persistent
+    // (--user-data-dir=/var/lib/taos-kiosk/chrome), so it survives a restart
+    // without the pre-auth screen needing a write path to the server. Wrapped
+    // because it throws in a private context and can come back empty.
+    var CAR_STORE = "taos.ls.carousel";
+    var carFocusName = null;
+    var carUsed = {};
+    // Black behind everything. Toggled with the lock screen's own hiding, never
+    // separately: two flags for one visual state is how a grey frame gets in.
+    function setBlack(on) {
+      if (document.body) document.body.classList.toggle("ls-black", !!on);
+    }
+
+    // Whether this showing of the arc began on a dark panel.
+    var carDark = false;
+    // The order the arc is CURRENTLY showing. Computed when it opens and held
+    // while it is up: re-sorting on every repaint would shuffle the faces under
+    // the thumb mid-cycle.
+    var carOrder = null;
+
+    try {
+      var saved = JSON.parse(window.localStorage.getItem(CAR_STORE) || "{}");
+      if (saved && typeof saved === "object") {
+        carFocusName = typeof saved.focus === "string" ? saved.focus : null;
+        carUsed = (saved.used && typeof saved.used === "object") ? saved.used : {};
+      }
+    } catch (err) {
+      // No memory is a fine state to start in; it just opens on the first agent.
+    }
+
+    function carSave() {
+      try {
+        window.localStorage.setItem(CAR_STORE, JSON.stringify({
+          focus: carFocusName, used: carUsed
+        }));
+      } catch (err) { /* nothing here is worth failing a keypress over */ }
+    }
+
+    function carLive() {
+      // The islands are the source. The carousel must never show an agent the
+      // screen behind it does not, and re-fetching would let the two disagree.
+      var out = [];
+      if (!agentsEl) return out;
+      for (var i = 0; i < agentsEl.children.length; i++) {
+        var el = agentsEl.children[i];
+        var rec = el.__agent;
+        if (rec && rec.name) out.push(rec);
+      }
+      return out;
+    }
+
+    // The order to show, most recently used first. Ties keep the islands' own
+    // order, so agents that have never been talked to stay in the arrangement
+    // the user already sees behind the arc rather than in an arbitrary one.
+    function carArrange() {
+      var live = carLive();
+      var decorated = live.map(function (agent, index) {
+        return { agent: agent, index: index, used: Number(carUsed[agent.name]) || 0 };
+      });
+      // OLDEST FIRST, MOST RECENT LAST -- and that is deliberate, not a slip.
+      //
+      // Jay: "the ordering of recently used needs reversing so i can press down
+      // to get to my second most used agent quickly using the volume down
+      // button." It follows from the two decisions already made: the arc OPENS
+      // focused on the most recently used agent, and volume-down DECREMENTS the
+      // index. With the most recent at the front, down had nowhere to go but
+      // round the back to the least used one.
+      //
+      // With it at the END, down walks most-used -> second -> third, which is
+      // the order someone actually reaches for, and up goes back the way it
+      // came. The arrangement on screen is the same ring either way; what
+      // changes is which direction the rocker travels through it.
+      decorated.sort(function (a, b) {
+        if (a.used !== b.used) return a.used - b.used;
+        return a.index - b.index;
+      });
+      return decorated.map(function (d) { return d.agent; });
+    }
+
+    function carAgents() {
+      // While the arc is open, the order is frozen -- see carOrder. The live
+      // list is still consulted for agents that APPEARED or LEFT, so a poll
+      // adding an agent does not leave a gap in the ring.
+      var live = carLive();
+      if (!carOrder) return carArrange();
+      var names = {};
+      for (var i = 0; i < live.length; i++) names[live[i].name] = live[i];
+      var out = [];
+      for (var j = 0; j < carOrder.length; j++) {
+        var kept = names[carOrder[j].name];
+        if (kept) { out.push(kept); delete names[kept.name]; }
+      }
+      // Anything new goes on the end rather than reshuffling what is on screen.
+      for (var k = 0; k < live.length; k++) {
+        if (names[live[k].name]) out.push(live[k]);
+      }
+      return out;
+    }
+
+    function paintCarousel() {
+      var list = carAgents();
+      if (!carStrip) return;
+      if (!list.length) {
+        setText(carName, "No agents");
+        setText(carRole, "");
+        return;
+      }
+      if (carIndex >= list.length) carIndex = 0;
+      if (carIndex < 0) carIndex = list.length - 1;
+      var want = [];
+      // The arc rotates under a fixed pointer rather than a marker moving along
+      // it: the focused face is always at 0deg -- straight out from the pivot,
+      // level with the thumb -- and cycling swings the others past it. A marker
+      // that travelled instead would walk the selection away from the button
+      // the thumb is resting on, which is the one thing this layout is for.
+      var STEP = 34;        // degrees between faces
+      var SPAN = 2;         // how many either side stay visible
+      for (var i = 0; i < list.length; i++) {
+        var agent = list[i];
+        var face = partOf(carStrip, agent.name, "ls-face");
+        if (agent.avatar) {
+          // Sanitised with split/join rather than a REGEX LITERAL. A regex
+          // containing a quote breaks the JS extractor the tests use to lift
+          // functions out of this script: it is quote-aware but not
+          // regex-aware, so the quote inside the literal opens a string that
+          // never closes and the capture runs off the end of the file.
+          var safe = String(agent.avatar).split("\"").join("").split("\\").join("");
+          var url = "url(\"" + safe + "\")";
+          if (face.style.getPropertyValue("background-image") !== url) {
+            face.style.setProperty("background-image", url);
+          }
+        } else {
+          setText(face, (agent.name || "?").slice(0, 2));
+        }
+        // Offset from the focused one, wrapped the SHORT way round so a list of
+        // six does not send a face the long way across the arc when the
+        // selection passes the end.
+        var off = i - carIndex;
+        if (off > list.length / 2) off -= list.length;
+        if (off < -list.length / 2) off += list.length;
+        var away = Math.abs(off);
+        // NEGATED: a lower index -- a more recently used agent -- sits BELOW
+        // the pointer, so the face that volume-down brings up to the pointer is
+        // the one that was visually below it. With the old sign, down moved the
+        // ring toward older agents while the faces travelled the other way.
+        face.style.setProperty("--a", (-off * STEP) + "deg");
+        face.style.setProperty("--s", off === 0 ? "1.1" : (away === 1 ? "0.86" : "0.7"));
+        // Past the span they fade out entirely rather than piling up behind the
+        // visible ones, where they would show as a smudge on the arc.
+        face.style.setProperty("--o", away === 0 ? "1"
+          : (away <= SPAN ? String(0.62 - (away - 1) * 0.22) : "0"));
+        setAttrIfChanged(face, "data-focus", off === 0 ? "1" : "0");
+        want.push(face);
+      }
+      placeInOrder(carStrip, want);
+      var focused = list[carIndex];
+      setText(carName, focused.name || "");
+      setText(carRole, focused.framework || focused.status || "agent");
+      if (!talking) setText(carPtt, "Hold a volume key to talk");
+    }
+
+    function carShow() {
+      if (!carEl) return;
+      // Arrange ONCE, here. Held for as long as the arc is up so the faces do
+      // not shuffle under the thumb between one key press and the next.
+      carOrder = carArrange();
+      // Open where it was left. By name, so a reorder or a departed agent
+      // cannot leave this pointing at the wrong face; if that agent is gone,
+      // fall back to the front of the arc rather than an arbitrary index.
+      carIndex = 0;
+      if (carFocusName) {
+        for (var i = 0; i < carOrder.length; i++) {
+          if (carOrder[i].name === carFocusName) { carIndex = i; break; }
+        }
+      }
+      paintCarousel();
+      carEl.setAttribute("data-on", "1");
+      // Blur and dim what is behind, so the faces read against the feed --
+      // or hide it outright when the arc was summoned onto a dark screen,
+      // which on OLED means the faces float on real black.
+      if (screenEl) screenEl.setAttribute("data-radial", carDark ? "dark" : "1");
+      if (carDark) setBlack(true);
+      if (scrim) { scrim.hidden = false; scrim.setAttribute("data-on", "1"); }
+      restartIdleHide();
+    }
+
+    function armTalk() {
+      pressWasHold = true;
+      startTalking();
+    }
+
+    // Where the arc was left. Read back off the painted list rather than from
+    // carIndex alone, so a wrap-around or a changed list cannot record a name
+    // that is not the one under the pointer.
+    function rememberFocus() {
+      var list = carAgents();
+      if (!list.length) return;
+      var at = carIndex;
+      if (at < 0) at = list.length - 1;
+      if (at >= list.length) at = 0;
+      var focused = list[at];
+      if (focused && focused.name && focused.name !== carFocusName) {
+        carFocusName = focused.name;
+        carSave();
+      }
+    }
+
+    function startTalking() {
+      if (!carEl || carEl.getAttribute("data-on") !== "1") return;
+      talking = true;
+      carEl.setAttribute("data-talking", "1");
+      // Talking to an agent is what "last used" MEANS, so it is recorded here
+      // and not on mere focus: cycling past six agents to reach one would
+      // otherwise rewrite the whole order on the way.
+      var list = carAgents();
+      var focused = list[carIndex];
+      if (focused && focused.name) {
+        carUsed[focused.name] = Date.now();
+        carFocusName = focused.name;
+        carSave();
+      }
+      // MOCK. No getUserMedia, no recorder, no upload. The word "demo" stays on
+      // screen so this can never be mistaken for a live channel.
+      setText(carPtt, "Talking… (demo)");
+      if (volHideTimer) window.clearTimeout(volHideTimer);
+    }
+
+    function stopTalking() {
+      if (!talking) return;
+      talking = false;
+      if (carEl) carEl.removeAttribute("data-talking");
+      setText(carPtt, "Sent (demo)");
+      restartIdleHide();
+    }
+
+    function volumeKey(key, action, fromDark) {
+      // Never over the passcode: a volume nudge must not cover the keypad
+      // someone is typing a PIN into.
+      var sheet = screenEl ? screenEl.getAttribute("data-sheet") : "none";
+      if (sheet && sheet !== "none") return;
+
+      var carOpen = carEl && carEl.getAttribute("data-on") === "1";
+      var volOpen = volEl && volEl.getAttribute("data-on") === "1";
+
+      if (action === "press") {
+        if (holdTimer) { window.clearTimeout(holdTimer); holdTimer = null; }
+        pressWasHold = false;
+        pressOpened = false;
+
+        if (!carOpen && !volOpen) {
+          // From rest: which key was pressed decides which surface appears.
+          // This press is spent on APPEARING -- its release must not also act.
+          pressOpened = true;
+          // SUMMONED FROM A DARK PANEL -- recorded for either surface, not just
+          // the arc. Jay: "the same after changing the volume with the screen
+          // off, when the volume slider goes away im left at the lock screen
+          // instead of screen off." The bezel never set data-radial, so the
+          // close read "not dark" and revealed the lock screen -- and the
+          // screen-on handler, which only skipped clearing for the ARC, had
+          // already revealed it the moment the panel woke.
+          //
+          // On the element rather than in a variable, because two separate
+          // handlers need the answer and the attribute is the one thing that
+          // cannot drift from what is on screen.
+          // THE RULE, in Jay's words: "if opened from standby, back to
+          // standby." And standby means THE PAGE WAS BLACK, not that the panel
+          // was powered down.
+          //
+          // Those come apart, which is why this was intermittent. After a dark
+          // session the page is left black while the panel is still ON --
+          // swayidle has not reached its timeout yet. A second summon inside
+          // that window asked the compositor, got "panel is on", and treated it
+          // as an awake summon: the arc opened blurred over the lock screen and
+          // the close revealed it. Jay: "sometimes ... im still being sent to
+          // the lock screen instead of screen off."
+          //
+          // So the PAGE's own state decides, and the compositor's hint is only
+          // a fallback -- it still matters for the first summon after a
+          // controller restart, when the page has never seen a screen-off.
+          var dark = !!fromDark
+            || !!(screenEl && screenEl.hasAttribute("data-blanked"));
+          if (screenEl) {
+            if (dark) screenEl.setAttribute("data-fromdark", "1");
+            else screenEl.removeAttribute("data-fromdark");
+          }
+          if (key === "up") { loadVolume(); volShow(); volArmed = true; return; }
+          // Opened from a dark panel: the arc goes over black, not over the
+          // whole lock screen. Jay: "it will look nice against the black oled
+          // screen". The compositor woke the panel before telling us.
+          carDark = dark;
+          // carIndex is NOT reset here: carShow() restores where the arc was
+          // left, which is the whole point of remembering it. Zeroing it first
+          // would make every open land on the front regardless.
+          carShow();
+          // Holding down from rest opens the arc and then talks to whoever is
+          // focused, which is what "press down then hold" should naturally do.
+          holdTimer = window.setTimeout(armTalk, PTT_HOLD_MS);
+          return;
+        }
+
+        restartIdleHide();
+        if (carOpen) {
+          // ⚠ CYCLING HAPPENS ON RELEASE, NOT HERE. Jay, from the glass:
+          // "holding to talk doesnt work, it moves to the next agent and then
+          // starts input capture" -- because this branch used to advance the
+          // selection on the press and the hold timer then fired on top of it.
+          // A press cannot be classified until it ends, so the only thing a
+          // press may do here is start the clock.
+          holdTimer = window.setTimeout(armTalk, PTT_HOLD_MS);
+          return;
+        }
+
+        // The bezel is showing, so the keys move the level. Nudged on PRESS
+        // rather than release: hold has no second meaning here, and a volume
+        // key that waited for the release would feel laggy in the one place
+        // people expect it to be immediate.
+        nudgeVolume(key === "up" ? 5 : -5);
+        return;
+      }
+
+      // RELEASE. This is where a press gets classified.
+      if (holdTimer) { window.clearTimeout(holdTimer); holdTimer = null; }
+
+      if (talking) {          // it was a hold: end the transmission, do not cycle
+        stopTalking();
+        return;
+      }
+      if (pressWasHold) {     // the hold fired but talking did not take
+        pressWasHold = false;
+        return;
+      }
+      if (pressOpened) {      // this press made the surface appear; that is all
+        pressOpened = false;
+        return;
+      }
+      if (carOpen) {          // a genuine tap: move one agent
+        // DOWN walks TOWARD the front of the arc, which is the most recently
+        // used agent. Jay: "currently to go to the last used agent on the
+        // rotary I have to press volume up, can you change it so it's on
+        // volume down." The arc's angles are flipped to match (see
+        // paintCarousel), so "down" still means down on the glass -- swapping
+        // the keys alone would have made the ring travel the wrong way.
+        carIndex += (key === "up" ? 1 : -1);
+        paintCarousel();
+        rememberFocus();
+        restartIdleHide();
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // THE PULL-DOWN SHADE. Swipe down from the TOP EDGE.
+    //
+    // Jay: "We need a pull down area from the top of the screen for things like
+    // brightness, implement brightness controls asap". Brightness is the one
+    // setting that plainly belongs on a PRE-AUTH screen: someone holding an
+    // unreadably dim phone has to be able to fix it before they can read the
+    // PIN prompt.
+    // ------------------------------------------------------------------
+    var shadeEl = document.getElementById("ls-shade");
+    var brightEl = document.getElementById("ls-brightness");
+    var brightValEl = document.getElementById("ls-brightness-value");
+    var shadeNote = document.getElementById("ls-shade-note");
+
+    // The radio switches. Built once and then only their pressed state changes,
+    // like everything else on this screen.
+    var togglesEl = document.getElementById("ls-shade-toggles");
+    var RADIO_GLYPHS = {
+      wifi: '<path d="M2.6 9.2a14 14 0 0 1 18.8 0"/><path d="M5.8 12.6a9.4 9.4 0 0 1 12.4 0"/>'
+          + '<path d="M9 16a4.8 4.8 0 0 1 6 0"/><path d="M12 19.4v0"/>',
+      bluetooth: '<path d="M7.5 7.6 16.5 16 12 20V4l4.5 4-9 8.4"/>'
+    };
+    var RADIOS = [["wifi", "Wi‑Fi"], ["bluetooth", "Bluetooth"]];
+
+    function paintRadios(state) {
+      if (!togglesEl) return;
+      var want = [];
+      for (var i = 0; i < RADIOS.length; i++) {
+        (function (key, label) {
+          var btn = partOf(togglesEl, key, "ls-toggle", "button");
+          if (btn.type !== "button") {
+            btn.type = "button";
+            btn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">'
+              + RADIO_GLYPHS[key] + "</svg>";
+            var cap = document.createElement("span");
+            cap.textContent = label;
+            btn.appendChild(cap);
+            btn.addEventListener("click", function () {
+              // Read the CURRENT pressed state rather than a captured one: the
+              // handler outlives many repaints, and a stale closure would send
+              // the same request forever.
+              var now = btn.getAttribute("aria-pressed") === "true";
+              setRadio(key, !now, btn);
+            });
+          }
+          // Unknown (the reading failed) is NOT the same as off. The button is
+          // disabled rather than shown convincingly in a state nobody measured.
+          if (typeof state[key] === "boolean") {
+            btn.disabled = false;
+            setAttrIfChanged(btn, "aria-pressed", state[key] ? "true" : "false");
+          } else {
+            btn.disabled = true;
+            setAttrIfChanged(btn, "aria-pressed", "false");
+          }
+          want.push(btn);
+        })(RADIOS[i][0], RADIOS[i][1]);
+      }
+      placeInOrder(togglesEl, want);
+    }
+
+    function setRadio(key, on, btn) {
+      // Optimistic, then corrected by the read-back. A radio takes a moment to
+      // come up and a switch that did not move until it had would feel broken.
+      setAttrIfChanged(btn, "aria-pressed", on ? "true" : "false");
+      btn.setAttribute("data-busy", "1");
+      fetch("/auth/lock-radios", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ radio: key, on: on })
+      }).then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          btn.removeAttribute("data-busy");
+          // The server reports what the RADIO did, not what was asked. If it
+          // refused, the switch goes back -- which is the only honest thing a
+          // switch can do.
+          if (d) paintRadios(d);
+        })
+        .catch(function () {
+          btn.removeAttribute("data-busy");
+          loadRadios();
+        });
+    }
+
+    function loadRadios() {
+      fetch("/auth/lock-radios", { credentials: "same-origin" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { if (d) paintRadios(d); })
+        .catch(function () { /* leave the switches as they are */ });
+    }
+
+    function showBrightness(reading) {
+      if (!reading || typeof reading.percent !== "number") return;
+      var pct = Math.round(reading.percent);
+      // Only write the input's value when the user is NOT dragging it: a poll
+      // landing mid-drag would yank the thumb back under the finger.
+      if (document.activeElement !== brightEl) brightEl.value = String(pct);
+      setText(brightValEl, pct + "%");
+    }
+
+    function loadBrightness() {
+      fetch("/auth/lock-brightness", { credentials: "same-origin" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (d) return showBrightness(d);
+          // 404 is the honest answer on a device with no backlight node.
+          if (shadeNote) {
+            setText(shadeNote, "This device reports no backlight.");
+            shadeNote.hidden = false;
+          }
+          if (brightEl) brightEl.disabled = true;
+        })
+        .catch(function () { /* leave the slider where it is */ });
+    }
+
+    // Throttled, not debounced. A drag fires `input` continuously and every one
+    // of those is a sysfs write; throttling keeps the panel following the finger
+    // (which debouncing would not), while capping the writes.
+    var brightPending = null;
+    var brightTimer = null;
+
+    function pushBrightness() {
+      brightTimer = null;
+      if (brightPending === null) return;
+      var want = brightPending;
+      brightPending = null;
+      fetch("/auth/lock-brightness", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ percent: want })
+      }).then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          // The server reports what the PANEL took, not what was asked for --
+          // the write's own result is not trustworthy on this hardware, and the
+          // level is clamped away from full dark. Showing the read-back is how
+          // the slider stops lying about a floor it cannot go below.
+          if (d) setText(brightValEl, Math.round(d.percent) + "%");
+        })
+        .catch(function () { /* the panel is the feedback */ });
+    }
+
+    if (brightEl) {
+      brightEl.addEventListener("input", function () {
+        var pct = Number(brightEl.value);
+        setText(brightValEl, pct + "%");
+        brightPending = pct;
+        if (!brightTimer) brightTimer = window.setTimeout(pushBrightness, 90);
+      });
+    }
+
+    function openShade() {
+      loadBrightness();
+      loadRadios();
+      openSheet("shade");
+    }
+
+    if (shadeEl) {
+      // Down from the TOP EDGE only. The veto is what keeps this off the feed:
+      // a downward drag anywhere else is a scroll, and stealing it would make
+      // the panels unusable. 90px is a thumb's reach from the edge, measured
+      // against the 540px-wide CSS viewport this device renders at.
+      swipe(document.body, null, function () {
+        if (screenEl && screenEl.getAttribute("data-sheet") === "none") openShade();
+      }, null, function (ev) {
+        var t = ev.touches[0];
+        return !t || t.clientY > 90;      // vetoed unless it began up top
+      });
+
+      // Swipe back up, or tap the dimmed screen behind it, to put it away.
+      swipe(shadeEl, function () { closeSheet(); }, null);
+      shadeEl.addEventListener("click", function (ev) {
+        if (ev.target === shadeEl) closeSheet();
+      });
+    }
+
+    // ------------------------------------------------------------------
+    // THE POWER MENU. Raised by HOLDING the power key, not by anything on
+    // screen: sway owns that key and posts to /auth/lock-power-menu, which
+    // arrives here over /auth/lock-events.
+    //
+    // A push, not a poll. The key is a physical button, so the menu has to be
+    // up by the time the thumb lifts; this screen's fastest poll is 3s.
+    // ------------------------------------------------------------------
+    var powerSheet = document.getElementById("ls-power");
+    var powerBody = document.getElementById("ls-power-body");
+    var powerSub = document.getElementById("ls-power-sub");
+
+    // label, verb, glyph, note, and whether Jay asked for a confirm step.
+    var POWER_ITEMS = [
+      ["Power off", "poweroff", "⏻", "", true],
+      ["Restart", "reboot", "↻", "", true],
+      ["Stop all agents", "stop-agents", "■", "Halts every running agent", true],
+      ["Screenshot", "screenshot", "⌘", "Saves to the device", false],
+      ["Emergency call", "emergency", "✢", "", true]
+    ];
+
+    function powerResult(text) {
+      var el = document.createElement("div");
+      el.className = "ls-power-result";
+      el.textContent = text;                       // textContent, never innerHTML
+      powerBody.appendChild(el);
+    }
+
+    function runPowerAction(verb, label) {
+      fetch("/auth/lock-power-action", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: verb })
+      }).then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (d) {
+          // Power off and restart never come back -- the phone is going down,
+          // and a "done" message would be a lie either way.
+          if (verb === "poweroff" || verb === "reboot") return;
+          if (d && d.ok) {
+            powerResult(label + ": done." + (d.path ? " Saved to " + d.path : ""));
+          } else {
+            // The failure TEXT, not a generic apology: "no supported format
+            // found" is the difference between a bug report and a shrug, and
+            // screenshot genuinely does fail on this compositor today.
+            powerResult(label + " failed. " + ((d && d.detail) || "No detail."));
+          }
+        })
+        .catch(function () { powerResult(label + " failed: no answer from taOS."); });
+    }
+
+    function paintPowerMenu() {
+      if (!powerBody) return;
+      powerBody.textContent = "";
+      for (var i = 0; i < POWER_ITEMS.length; i++) {
+        (function (item) {
+          var btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "ls-power-item";
+          // Red: the three that cost something. Emergency call is red because
+          // that is what it is FOR -- on every phone it is the one control you
+          // should be able to find without reading, and colour is how.
+          if (item[1] === "poweroff" || item[1] === "stop-agents"
+              || item[1] === "emergency") {
+            btn.setAttribute("data-danger", "1");
+          }
+          if (item[1] === "emergency") btn.setAttribute("data-emergency", "1");
+          var glyph = document.createElement("span");
+          glyph.className = "ls-power-glyph";
+          glyph.setAttribute("aria-hidden", "true");
+          glyph.textContent = item[2];
+          var text = document.createElement("span");
+          text.textContent = item[0];
+          if (item[3]) {
+            var note = document.createElement("span");
+            note.className = "ls-power-note";
+            note.textContent = item[3];
+            text.appendChild(note);
+          }
+          btn.appendChild(glyph);
+          btn.appendChild(text);
+          btn.addEventListener("click", function () {
+            if (!item[4]) return runPowerAction(item[1], item[0]);
+            confirmPower(btn, item);
+          });
+          powerBody.appendChild(btn);
+        })(POWER_ITEMS[i]);
+      }
+    }
+
+    // THE PASSCODE GATE ON "STOP ALL AGENTS". Jay ruled it, and the shape is
+    // the one this screen already uses twice: the agent menu "collects the
+    // INTENT and then asks for the passcode", and the decision sheet says
+    // "Unlock to approve this". This is that rule applied a third time rather
+    // than a new one -- stopping a SINGLE agent already demanded an unlock, and
+    // stopping all of them was the one place the rule was not applied.
+    //
+    // The verb is GATED, NOT REMOVED: _POWER_ACTIONS still carries it and
+    // /auth/lock-power-action still answers it once a session exists. The gate
+    // belongs in the page, which is where the locked screen is.
+    //
+    // Power off and restart stay pre-auth on their own argument: holding the
+    // hardware key already took the phone down from this state, so the menu
+    // adds no capability there. The key cannot drain every agent on the device.
+    // That asymmetry IS the reason this is the one verb.
+    //
+    // Its own store rather than __lsPendingAgentAction: that one is keyed on an
+    // agent, and this is the verb that is about all of them.
+    window.__lsPendingPowerAction = null;
+
+    function requirePasscodeForPower(item) {
+      window.__lsPendingPowerAction = { action: item[1], at: Date.now() };
+      // NOT closeSheet() first: openSheet already hides whatever sheet is up
+      // before revealing the next, and closing first would leave closeSheet's
+      // 400ms hide to find data-sheet already "passcode" and bail -- the power
+      // sheet would stay in the tree, behind the keypad.
+      var note = document.getElementById("ls-unlock-note");
+      if (note) {
+        // What they are unlocking FOR. An unexplained keypad straight after a
+        // menu tap reads as the phone having simply re-locked itself.
+        note.textContent = "Unlock to stop all agents";
+        note.hidden = false;
+      }
+      openPasscode();
+    }
+
+    // Replace the row with its own question. Jay: "stop all agents and
+    // emergency call needs confirmation".
+    function confirmPower(btn, item) {
+      var box = document.createElement("div");
+      box.className = "ls-power-confirm";
+      var q = document.createElement("div");
+      q.className = "ls-power-confirm-q";
+      q.textContent = item[0] + "?";
+      var note = document.createElement("div");
+      note.className = "ls-power-confirm-note";
+      // Jay asked for the shutdown button to confirm too, after tapping it by
+      // accident while testing. Restart gets the same treatment: on a phone
+      // being demoed, an accidental restart costs the same minute.
+      var NOTES = {
+        "poweroff": "The phone switches off. It needs the power key to come back.",
+        "reboot": "The phone restarts. Agents stop and come back with it.",
+        "stop-agents": "Every running agent stops. Nobody is signed in, so this cannot be undone from here.",
+        "emergency": "There is no dialer configured on this device."
+      };
+      note.textContent = NOTES[item[1]] || "";
+      var row = document.createElement("div");
+      row.className = "ls-power-confirm-row";
+      var no = document.createElement("button");
+      no.type = "button";
+      no.textContent = "Cancel";
+      var yes = document.createElement("button");
+      yes.type = "button";
+      yes.setAttribute("data-go", "1");
+      yes.textContent = item[0];
+      no.addEventListener("click", paintPowerMenu);
+      yes.addEventListener("click", function () {
+        box.remove();
+        // JAY'S RULING: "Stop all agents" demands the passcode. It is the one
+        // verb here that moves, and see requirePasscodeForPower for why.
+        if (item[1] === "stop-agents") {
+          // Put the menu back first: the confirm REPLACED this row, so leaving
+          // it removed would mean the next time the power key is held the menu
+          // is one item short.
+          paintPowerMenu();
+          requirePasscodeForPower(item);
+          return;
+        }
+        runPowerAction(item[1], item[0]);
+      });
+      row.appendChild(no); row.appendChild(yes);
+      box.appendChild(q); box.appendChild(note); box.appendChild(row);
+      btn.replaceWith(box);
+    }
+
+    if (powerSheet) {
+      var powerClose = document.getElementById("ls-power-close");
+      if (powerClose) powerClose.addEventListener("click", function () { closeSheet(); });
+
+      // EventSource reconnects on its own after a drop, which matters here:
+      // the controller restarts on every deploy and the page does not.
+      try {
+        var lockStream = new EventSource("/auth/lock-events");
+        // The panel is going dark. Put the sheet away NOW rather than leaving
+        // it up behind a black screen for the next wake to land on.
+        lockStream.addEventListener("screen-off", function () {
+          if (!screenEl) return;
+          var open = screenEl.getAttribute("data-sheet");
+          // The passcode sheet is deliberately left alone: the panel blanking
+          // on a timeout must not throw away a half-typed PIN.
+          if (open !== "power" && open !== "shade") return;
+          // CLOSE IT WITHOUT ANIMATING. Jay: "when I turn the screen back on I
+          // see the menu close, it needs close when the screen turns off".
+          // The close already fires at screen-off -- but the panel is powering
+          // down, nothing is compositing, and the 340ms transition has nowhere
+          // to run. It then plays on wake, so the menu appears to close half a
+          // second after the screen returns. Suppressing the transition makes
+          // the close land while the screen is dark, which is the only place it
+          // can be invisible.
+          screenEl.setAttribute("data-instant", "1");
+          closeSheet();
+        });
+
+        // BLACKEN BEFORE THE PANEL GOES DOWN.
+        //
+        // Jay, twice: "the lock screen still flashes into view first." The
+        // first fix told the page before waking the panel, which was the wrong
+        // half of the problem -- THE PAGE CANNOT PAINT WHILE THE OUTPUT IS OFF.
+        // Wayland stops delivering frame callbacks to a surface on a
+        // powered-down output, which is the same reason the power menu's close
+        // animation used to play on WAKE rather than while dark. So the DOM
+        // change landed and the panel lit showing the stale frame still in the
+        // scanout buffer: the lock screen exactly as it was when the screen
+        // went off.
+        //
+        // The only frame that can be on a waking panel is the last one painted
+        // BEFORE it blanked. So that frame is made black here, while there is
+        // still a compositor listening.
+        lockStream.addEventListener("screen-off", function () {
+          if (!screenEl) return;
+          // TAKE THE VOLUME SURFACES DOWN TOO, and without a fade.
+          //
+          // Jay: "if i change volume with screen off after using the rotary
+          // menu the rotary menu flashes up first and vice versa." The
+          // symmetry -- whichever was used LAST is what flashes -- is the tell:
+          // it is the scanout buffer again.
+          //
+          // data-blanked hides .lockscreen, but the bezel and the arc are
+          // SIBLINGS of it, not children. So a panel that blanked while one of
+          // them was up left a last painted frame of black WITH that surface
+          // still on it, and the next wake showed it before the new surface
+          // could paint. Hiding the lock screen was never going to reach them.
+          //
+          // data-instant first, so their transitions do not run: a 200ms fade
+          // has nowhere to go on a panel that is powering down in 120ms, and
+          // an unfinished fade is exactly the half-lit ghost being described.
+          screenEl.setAttribute("data-instant", "1");
+          hideAll();
+          // After hideAll, which decides blackness for itself and would
+          // otherwise clear what is set here.
+          screenEl.setAttribute("data-blanked", "1");
+          setBlack(true);
+        });
+
+        // And back. Un-blackened on wake -- but NOT when the arc is up, because
+        // that is the case where black is the point.
+        lockStream.addEventListener("screen-on", function () {
+          if (!screenEl) return;
+          // Anything summoned onto a dark panel keeps its black: the arc, and
+          // the volume bezel just the same. Asking about the arc alone was what
+          // let the lock screen appear behind the slider.
+          if (screenEl.hasAttribute("data-fromdark")) return;
+          screenEl.removeAttribute("data-blanked");
+          setBlack(false);
+        });
+        // One listener shape for all four, reading the payload rather than
+        // relying on the event name to carry the screen state.
+        var volKeys = [["up", "press"], ["up", "release"],
+                       ["down", "press"], ["down", "release"]];
+        for (var vk = 0; vk < volKeys.length; vk++) {
+          (function (key, action) {
+            lockStream.addEventListener("volume-" + key + "-" + action, function (ev) {
+              var data = {};
+              try { data = JSON.parse(ev.data || "{}"); } catch (err) { data = {}; }
+              volumeKey(key, action, data.screen === "off");
+            });
+          })(volKeys[vk][0], volKeys[vk][1]);
+        }
+        lockStream.addEventListener("power-menu", function () {
+          paintPowerMenu();
+          if (powerSub) {
+            powerSub.textContent = new Date().toLocaleTimeString([], {
+              hour: "2-digit", minute: "2-digit"
+            });
+          }
+          openSheet("power");
+        });
+      } catch (err) {
+        // No stream means no menu, and the power key still toggles the screen.
+        // That is the fallback direction this whole layer is built around.
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // THE SCRIPTED PANELS: phone, mailbox, apps, projects, decisions.
+    //
+    // Five more pollers on a screen whose last bug was "every poller that wipes
+    // its container and rebuilds makes the whole panel flicker". So not one of
+    // these ever wipes. Every row is found by its payload key through partOf(),
+    // updated in place through setText()/setAttrIfChanged(), and ordered with
+    // placeInOrder() -- a row that persists across a repaint keeps its identity
+    // and therefore never replays its entrance animation. That is the property
+    // the repaint tests assert, and it is why these were built this way from
+    // the first line rather than fixed afterwards five times over.
+    //
+    // Everything here is scripted demo content served by /auth/lock-panels,
+    // which 404s unless the demo flags are on. This screen renders BEFORE
+    // sign-in: there is no code path from any of it to a real account.
+    // ------------------------------------------------------------------
+    var panelEls = {
+      phone: document.getElementById("ls-phone"),
+      mailbox: document.getElementById("ls-mailbox"),
+      apps: document.getElementById("ls-apps"),
+      projects: document.getElementById("ls-projects"),
+      // Not a panel of its own: this container lives INSIDE the alerts panel,
+      // above the notification stacks.
+      decisions: document.getElementById("ls-decisions")
+    };
+    // Every minute label currently on a panel, rebuilt from the DOM after each
+    // paint so a row left untouched still gets its minutes retouched.
+    var panelClocks = [];
+    // User state that must OUTLIVE a repaint: which decisions they have
+    // answered. Kept out here for the same reason notifOpen is -- a paint must
+    // never undo what the user just did, and a poll lands whatever they are in
+    // the middle of.
+    var decAnswered = {};
+
+    // The tile every row leads with. Written only when it changes, so a repaint
+    // of an unchanged row touches no DOM at all.
+    function paintTile(tile, spec) {
+      // Only a colour literal is ever taken from the payload, and only after it
+      // is checked -- an unchecked value here would be written into a style.
+      if (/^#[0-9a-fA-F]{3,8}$/.test(spec.tint || "")
+          && tile.style.getPropertyValue("--ls-n") !== spec.tint) {
+        tile.style.setProperty("--ls-n", spec.tint);
+      }
+      var glyph = (spec.glyph && NOTIF_GLYPHS[spec.glyph]) ? spec.glyph : "";
+      if (tile.getAttribute("data-glyph") !== glyph) {
+        tile.setAttribute("data-glyph", glyph);
+        // innerHTML only ever from NOTIF_GLYPHS, which is a literal in this
+        // file. The payload chooses a key; it never supplies markup.
+        tile.innerHTML = glyph ? '<svg viewBox="0 0 24 24">' + NOTIF_GLYPHS[glyph] + "</svg>" : "";
+      }
+      if (!glyph) setText(tile, (spec.mono || spec.app || "?").slice(0, 2));
+    }
+
+    // The head of a row: tile, APP · when, title, and up to two sub-lines.
+    //
+    // `extra` is a function given the body element and returning any further
+    // parts to sit under the sub-lines. It exists because this function ends in
+    // placeInOrder(), which REMOVES everything past the last wanted element --
+    // a caller that appended its buttons afterwards would have them deleted on
+    // the next repaint and silently rebuilt, which is the very rebuild all of
+    // this is here to avoid.
+    function paintRowHead(parent, item, cls, title, sub, subject, extra) {
+      var row = partOf(parent, item.key, cls);
+      var tile = partOf(row, "tile", "ls-row-tile");
+      paintTile(tile, item);
+      var body = partOf(row, "body", "ls-row-body");
+      var meta = partOf(body, "meta", "ls-row-meta");
+      var app = setText(partOf(meta, "app", "ls-row-app"), item.app || "");
+      var parts = [app];
+      if (item.at) {
+        var when = setText(partOf(meta, "when", "ls-row-when"), whenText(item.at));
+        when.setAttribute("data-at", item.at);
+        parts.push(when);
+      }
+      placeInOrder(meta, parts);
+      var bodyParts = [meta, setText(partOf(body, "title", "ls-row-title"), title)];
+      if (subject) {
+        bodyParts.push(setText(partOf(body, "subject", "ls-row-sub ls-row-subject"), subject));
+      }
+      if (sub) bodyParts.push(setText(partOf(body, "sub", "ls-row-sub"), sub));
+      if (extra) bodyParts = bodyParts.concat(extra(body));
+      placeInOrder(body, bodyParts);
+      placeInOrder(row, [tile, body]);
+      return row;
+    }
+
+    // "Nothing here" rather than a blank screen, so a panel that served no rows
+    // is distinguishable from one that failed to load.
+    function paintEmpty(el, head, line) {
+      var empty = partOf(el, "empty", "ls-empty");
+      var b = setText(partOf(empty, "head", "", "b"), head);
+      var p = setText(partOf(empty, "line", "", "span"), line);
+      placeInOrder(empty, [b, p]);
+      placeInOrder(el, [empty]);
+    }
+
+    function paintPhone(items) {
+      var el = panelEls.phone;
+      if (!el) return;
+      if (!items.length) return paintEmpty(el, "No missed calls", "The dialer and your agents' lines are quiet.");
+      var want = [];
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        var row = paintRowHead(el, it, "ls-row ls-call", it.who || "", it.detail || "", "");
+        setAttrIfChanged(row, "data-kind", it.kind || "missed");
+        want.push(row);
+      }
+      placeInOrder(el, want);
+    }
+
+    function paintMailbox(items) {
+      var el = panelEls.mailbox;
+      if (!el) return;
+      if (!items.length) return paintEmpty(el, "Nothing new", "Mail, messages and DMs all read.");
+      var want = [];
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        // One stream, ordered by arrival, each line saying where it came from:
+        // that IS the unified-inbox design, not decoration on top of one.
+        var row = paintRowHead(el, it, "ls-row ls-msg", it.who || "", it.preview || "", it.subject || "");
+        if (it.unread) setAttrIfChanged(row, "data-unread", "1");
+        else if (row.hasAttribute("data-unread")) row.removeAttribute("data-unread");
+        want.push(row);
+      }
+      placeInOrder(el, want);
+    }
+
+    function paintApps(items) {
+      var el = panelEls.apps;
+      if (!el) return;
+      if (!items.length) return paintEmpty(el, "No apps", "Nothing is waiting in your apps.");
+      var grid = partOf(el, "grid", "ls-apps-grid");
+      var want = [];
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        var tile = partOf(grid, it.key, "ls-app");
+        // The badge is a SIBLING of the mark, not a child of it: paintTile owns
+        // the mark's contents outright -- it writes the monogram with setText,
+        // which replaces every child -- so a badge parented there would be
+        // wiped on the first paint of any tile without a glyph, which is all
+        // four of these.
+        var wrap = partOf(tile, "tile", "ls-app-tile");
+        var mark = partOf(wrap, "mark", "ls-row-tile");
+        paintTile(mark, it);
+        var wrapParts = [mark];
+        if (it.badge) {
+          wrapParts.push(setText(partOf(wrap, "badge", "ls-app-badge", "span"), String(it.badge)));
+        }
+        placeInOrder(wrap, wrapParts);
+        var body = partOf(tile, "body", "ls-app-body");
+        var name = setText(partOf(body, "name", "ls-app-name"), it.app || "");
+        var note = setText(partOf(body, "note", "ls-app-note"), it.note || "");
+        placeInOrder(body, [name, note]);
+        placeInOrder(tile, [wrap, body]);
+        want.push(tile);
+      }
+      placeInOrder(grid, want);
+      placeInOrder(el, [grid]);
+    }
+
+    function paintDecisions(items) {
+      var el = panelEls.decisions;
+      if (!el) return;
+      // No "nothing to decide" card: this container is not a panel, it is the
+      // head of the ALERTS panel, and an empty-state card sitting above the
+      // notification stacks would be noise on the screen the user opened to
+      // read the stacks. With nothing pending it empties and steps out of the
+      // way entirely.
+      if (!items.length) {
+        placeInOrder(el, []);
+        if (el.parentNode) el.parentNode.removeChild(el);
+        return;
+      }
+      var want = [];
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        // The agent that is blocked is this row's "source", so a decision reads
+        // as "who is waiting on me" in the same shape as everything else here.
+        var spec = {
+          key: it.key, app: it.agent || "agent", at: it.at,
+          mono: (it.agent || "?").slice(0, 2), tint: "#ffb020"
+        };
+        var row = paintRowHead(el, spec, "ls-row ls-dec", it.title || "", it.detail || "", "",
+          (function (key) {
+            return function (body) {
+              var answer = decAnswered[key];
+              if (answer) {
+                return [setText(partOf(body, "done", "ls-dec-done"),
+                  (answer === "approve" ? "Approved" : "Denied") + " (demo)")];
+              }
+              var actions = partOf(body, "actions", "ls-dec-actions");
+              var deny = partOf(actions, "deny", "ls-dec-btn", "button");
+              var approve = partOf(actions, "approve", "ls-dec-btn ls-dec-approve", "button");
+              // Wired once, when the elements are first created: re-binding on
+              // every paint is how a reconciled list quietly grows duplicate
+              // handlers and fires an action four times on the fourth repaint.
+              if (deny.type !== "button") {
+                deny.type = "button";
+                deny.setAttribute("data-act", "deny");
+                setText(deny, "Not now");
+                approve.type = "button";
+                approve.setAttribute("data-act", "approve");
+                setText(approve, "Approve");
+                actions.addEventListener("click", function (ev) {
+                  var btn = ev.target.closest ? ev.target.closest(".ls-dec-btn") : null;
+                  if (!btn) return;
+                  // DEMO ONLY. This screen renders before sign-in, so an answer
+                  // is remembered in the page and goes nowhere near an agent.
+                  decAnswered[key] = btn.getAttribute("data-act");
+                  paintDecisions(lastPanels.decisions || []);
+                });
+              }
+              placeInOrder(actions, [deny, approve]);
+              return [actions];
+            };
+          })(it.key));
+        if (decAnswered[it.key]) setAttrIfChanged(row, "data-answered", "1");
+        want.push(row);
+      }
+      placeInOrder(el, want);
+      // Put the container back at the top of the alerts panel if a
+      // notification paint has dropped it: paintNotifications ends in
+      // placeInOrder(notifsEl, groups), which removes everything past the last
+      // group, and the two run on independent timers. Without this the
+      // decisions would survive in a detached node -- painted, correct, and
+      // invisible, which is the worst of the three.
+      if (notifsEl && el.parentNode !== notifsEl) {
+        notifsEl.insertBefore(el, notifsEl.firstChild);
+      }
+      if (notifsEl) notifsEl.hidden = false;
+    }
+
+    function paintProjects(items) {
+      var el = panelEls.projects;
+      if (!el) return;
+      if (!items.length) return paintEmpty(el, "No projects", "Nothing is on the go.");
+      var want = [];
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        var row = partOf(el, it.key, "ls-row ls-project");
+        // Blocked is the state this panel exists to surface: work that has
+        // stopped and is waiting on a person.
+        if (it.blocked) setAttrIfChanged(row, "data-blocked", "1");
+        else if (row.hasAttribute("data-blocked")) row.removeAttribute("data-blocked");
+        var tile = partOf(row, "tile", "ls-row-tile");
+        paintTile(tile, it);
+        var body = partOf(row, "body", "ls-row-body");
+        var meta = partOf(body, "meta", "ls-row-meta");
+        var who = setText(partOf(meta, "app", "ls-row-app"),
+          it.agents === 1 ? "1 agent" : (it.agents || 0) + " agents");
+        var metaParts = [who];
+        if (it.blocked) {
+          metaParts.push(setText(partOf(meta, "flag", "ls-proj-flag", "span"), "Blocked"));
+        }
+        if (it.at) {
+          var when = setText(partOf(meta, "when", "ls-row-when"), whenText(it.at));
+          when.setAttribute("data-at", it.at);
+          metaParts.push(when);
+        }
+        placeInOrder(meta, metaParts);
+        var name = setText(partOf(body, "title", "ls-row-title"), it.name || "");
+        var note = setText(partOf(body, "sub", "ls-row-sub"), it.note || "");
+        // The bar is the only quantity on this screen, so it is drawn rather
+        // than written: a row of percentages reads as a spreadsheet.
+        var bar = partOf(body, "bar", "ls-proj-bar");
+        var fill = partOf(bar, "fill", "ls-proj-fill");
+        var pct = Math.max(0, Math.min(100, Number(it.progress) || 0));
+        if (fill.style.getPropertyValue("--ls-pct") !== pct + "%") {
+          fill.style.setProperty("--ls-pct", pct + "%");
+        }
+        setAttrIfChanged(bar, "role", "progressbar");
+        setAttrIfChanged(bar, "aria-valuenow", String(pct));
+        setAttrIfChanged(bar, "aria-valuemin", "0");
+        setAttrIfChanged(bar, "aria-valuemax", "100");
+        setAttrIfChanged(bar, "aria-label", (it.name || "Project") + " progress");
+        placeInOrder(bar, [fill]);
+        placeInOrder(body, [meta, name, note, bar]);
+        placeInOrder(row, [tile, body]);
+        want.push(row);
+      }
+      placeInOrder(el, want);
+    }
+
+    // The last payload, so an in-page answer can repaint one panel without
+    // waiting for the next poll.
+    var lastPanels = {};
+
+    function paintPanels(data) {
+      lastPanels = data || {};
+      // Clear the markup's `hidden` on every panel we paint.
+      //
+      // The panels are SERVER-RENDERED HIDDEN, and the view switcher only ever
+      // toggles `data-off` -- it never touches `hidden`. The two panels that
+      // predate this row get away with it because their own painters set
+      // `hidden` themselves (notifsEl.hidden = !notifsEl.firstChild). These
+      // four had nobody doing that, so `.ls-feed > [data-view][hidden]` kept
+      // them at display:none no matter which tab was selected: fully painted,
+      // 354 rows in the DOM, and invisible on the glass.
+      //
+      // Cleared here rather than per-painter so a panel showing its "nothing
+      // here" card is still shown -- an empty panel the user selected must
+      // render its empty state, not vanish.
+      for (var p in panelEls) {
+        if (panelEls[p] && p !== "decisions") panelEls[p].hidden = false;
+      }
+      paintPhone(data.phone || []);
+      paintMailbox(data.mailbox || []);
+      paintApps(data.apps || []);
+      paintProjects(data.projects || []);
+      paintDecisions(data.decisions || []);
+      // Rebuilt from what is ACTUALLY on screen, for the same reason the
+      // notification stacks do it: rows left untouched still own their labels.
+      panelClocks = [];
+      for (var name in panelEls) {
+        if (!panelEls[name]) continue;
+        var whens = panelEls[name].querySelectorAll(".ls-row-when[data-at]");
+        for (var k = 0; k < whens.length; k++) {
+          panelClocks.push({ el: whens[k], at: Number(whens[k].getAttribute("data-at")) });
+        }
+      }
+      syncFeedFade();
+    }
+
+    function pollPanels() {
+      fetch("/auth/lock-panels", { credentials: "same-origin" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        // A dead network answers the same way a flagged-off device does: with
+        // nothing. Both are ordinary here, so both go down the same path.
+        .catch(function () { return null; })
+        // PAINT EVEN WITH NOTHING TO PAINT. A 404 is the ordinary answer with
+        // the demo content off, and `paintPanels` is the ONLY thing that clears
+        // the markup's `hidden` -- so skipping the call on that branch left all
+        // four panels not empty but BLANK on every device that is not in demo
+        // mode, which is every real one. `paintPanels({})` unhides them and
+        // paints each "nothing here" card; `paintDecisions([])` detaches the
+        // decisions head, which is right on a device with nothing pending.
+        .then(function (d) { paintPanels(d || {}); });
+    }
+    if (panelEls.phone || panelEls.mailbox || panelEls.apps
+        || panelEls.projects || panelEls.decisions) {
+      pollPanels();
+      // Scripted tables do not change, so this is slow on purpose: it exists to
+      // pick the content up if the flag is turned on while the phone is sitting
+      // on the lock screen, not to animate anything.
+      setInterval(pollPanels, 15 * 60 * 1000);
+      setInterval(function () {
+        for (var i = 0; i < panelClocks.length; i++) {
+          panelClocks[i].el.textContent = whenText(panelClocks[i].at);
         }
       }, 60000);
     }
@@ -2885,12 +5203,17 @@ _LOCK_SCREEN_SCRIPT = r"""
       if (name === "chat") return chatSheet;
       if (name === "decision") return decSheet;
       if (name === "voice") return voiceSheet;
+      if (name === "power") return document.getElementById("ls-power");
+      if (name === "shade") return document.getElementById("ls-shade");
       if (name === "passcode") return document.getElementById("ls-foot");
       return null;
     }
 
     function openSheet(name) {
       if (!screenEl) return;
+      // Drop the no-animation flag set by a screen-off close. Cleared HERE
+      // rather than on a timer, which would race the transition it suppresses.
+      if (screenEl.hasAttribute("data-instant")) screenEl.removeAttribute("data-instant");
       var current = screenEl.getAttribute("data-sheet");
       if (current === name) return;
       // Remember where the user was so closing returns them there rather than
@@ -2901,6 +5224,9 @@ _LOCK_SCREEN_SCRIPT = r"""
         var prev = sheetEl(current);
         if (prev && prev.id !== "ls-foot") prev.hidden = true;
       }
+      // Before the sheet is revealed, so its single slide lands at the final
+      // position rather than being pushed up again once the keyboard measures.
+      if (name === "chat" || name === "passcode") preloadKeyboardOffset();
       var el = sheetEl(name);
       if (el) el.hidden = false;
       if (scrim) scrim.hidden = false;
@@ -2963,8 +5289,46 @@ _LOCK_SCREEN_SCRIPT = r"""
     // itself rather than duplicating its height as a guess that drifts when the
     // keyboard switches between its letter, symbol and numeric layers.
     // -----------------------------------------------------------------------
+    // The last MEASURED keyboard height, remembered so the next sheet can be
+    // opened at its final position instead of being pushed there afterwards.
+    //
+    // Jay: "the thread slides up, then the keybard appears and pushes that app
+    // creating almost a jerkiness motion. can the message thread and keybard
+    // not be linked so they slide up as one animation?"
+    //
+    // They were two motions because the height was not KNOWN until the keyboard
+    // had rendered: the sheet slid up over 380ms against --ls-kb:0, the OSK then
+    // appeared, the ResizeObserver measured it, and the sheet's `bottom`
+    // animated a second time. Nothing was wrong with either animation; the
+    // trouble was that the first one ran against a number that was not final.
+    //
+    // Cached in localStorage because the height is a property of the DEVICE and
+    // its layout, not of a visit -- so it is already right on the first open
+    // after a restart, which is when a demo gets looked at.
+    var KB_STORE = "taos.ls.kb";
+    var kbCache = 0;
+    try { kbCache = Number(window.localStorage.getItem(KB_STORE)) || 0; } catch (err) { kbCache = 0; }
+
     function setKeyboardOffset(px) {
-      document.documentElement.style.setProperty("--ls-kb", (px || 0) + "px");
+      var value = px || 0;
+      document.documentElement.style.setProperty("--ls-kb", value + "px");
+      // Only remember a REAL measurement. Caching the zero we set on close
+      // would defeat the whole thing on the very next open.
+      if (value > 0 && value !== kbCache) {
+        kbCache = value;
+        try { window.localStorage.setItem(KB_STORE, String(value)); } catch (err) { /* fine */ }
+      }
+    }
+
+    // Applied at the moment a keyboard-bearing sheet opens, so the sheet's one
+    // transform lands where it will finally sit. If the measurement that
+    // follows disagrees, the difference is a few pixels and the existing
+    // `bottom` transition absorbs it -- which is also what handles the keyboard
+    // switching between its letter, symbol and numeric layers.
+    function preloadKeyboardOffset() {
+      if (kbCache > 0) {
+        document.documentElement.style.setProperty("--ls-kb", kbCache + "px");
+      }
     }
 
     var oskPanel = document.querySelector(".osk");
@@ -4235,7 +6599,19 @@ async def osk_script(request: Request):
     return Response(
         content=OSK_SCRIPT,
         media_type="application/javascript",
-        headers={"Cache-Control": "public, max-age=300"},
+        headers={
+            # no-cache, NOT no-store: the browser may keep the copy, it just has
+            # to revalidate, so an unchanged script still costs a 304.
+            #
+            # max-age=300 was five minutes of the kiosk running code that had
+            # already been replaced. Twice this cost real time: a fix was
+            # deployed, the service restarted, the page still ran the old
+            # script, and the bug looked unfixed -- once badly enough that the
+            # cause was "ruled out" on a grep that could not tell the two
+            # builds apart. This screen is iterated on against the glass, so
+            # staleness is the expensive failure and a revalidation is cheap.
+            "Cache-Control": "no-cache",
+        },
     )
 
 
@@ -4245,7 +6621,19 @@ async def pin_panel_script(request: Request):
     return Response(
         content=_PIN_PANEL_SCRIPT,
         media_type="application/javascript",
-        headers={"Cache-Control": "public, max-age=300"},
+        headers={
+            # no-cache, NOT no-store: the browser may keep the copy, it just has
+            # to revalidate, so an unchanged script still costs a 304.
+            #
+            # max-age=300 was five minutes of the kiosk running code that had
+            # already been replaced. Twice this cost real time: a fix was
+            # deployed, the service restarted, the page still ran the old
+            # script, and the bug looked unfixed -- once badly enough that the
+            # cause was "ruled out" on a grep that could not tell the two
+            # builds apart. This screen is iterated on against the glass, so
+            # staleness is the expensive failure and a revalidation is cheap.
+            "Cache-Control": "no-cache",
+        },
     )
 
 
@@ -4286,7 +6674,19 @@ async def lock_screen_script(request: Request):
     return Response(
         content=_lock_screen_js(),
         media_type="application/javascript",
-        headers={"Cache-Control": "public, max-age=300"},
+        headers={
+            # no-cache, NOT no-store: the browser may keep the copy, it just has
+            # to revalidate, so an unchanged script still costs a 304.
+            #
+            # max-age=300 was five minutes of the kiosk running code that had
+            # already been replaced. Twice this cost real time: a fix was
+            # deployed, the service restarted, the page still ran the old
+            # script, and the bug looked unfixed -- once badly enough that the
+            # cause was "ruled out" on a grep that could not tell the two
+            # builds apart. This screen is iterated on against the glass, so
+            # staleness is the expensive failure and a revalidation is cheap.
+            "Cache-Control": "no-cache",
+        },
     )
 
 
@@ -4734,6 +7134,20 @@ def _demo_notifications_enabled() -> bool:
     return bool(os.environ.get("TAOS_LOCK_DEMO_NOTIFICATIONS", "").strip())
 
 
+def _demo_panels_enabled() -> bool:
+    """Whether the scripted phone/mailbox/apps/decisions/settings panels are on.
+
+    Same two-flag shape as the stacks, and for the same reason: the master flag
+    must remain the one move that takes down everything invented on this
+    pre-sign-in screen. It also means a device can run the agent islands -- the
+    part of this screen that shows REAL state -- with none of the scripted
+    inbox content beside them.
+    """
+    if not _demo_enabled():
+        return False
+    return bool(os.environ.get("TAOS_LOCK_DEMO_PANELS", "").strip())
+
+
 def _demo_thread(slug: str) -> list[dict]:
     """Build one scripted thread as absolute timestamps relative to now."""
     script = _DEMO_THREADS.get(slug, _DEMO_THREAD_FALLBACK)
@@ -4956,53 +7370,41 @@ async def lock_weather(request: Request):
 #: glyph for that source.
 _DEMO_NOTIFICATIONS: tuple[dict, ...] = (
     {
-        "source": "mail",
-        "app": "Mail",
-        "glyph": "mail",
-        "tint": "#2f6fd0",
+        "source": "agent",
+        "app": "Agents",
+        "mono": "ta",
+        "tint": "#4c9aff",
         "items": (
-            (12, "Hargreaves & Co", "Re: Thursday's site visit — 09:15 works for us. I'll bring the revised drawings."),
-            (74, "Companies House", "Your confirmation statement is due on 3 October."),
-            (221, "Liverpool FC", "Your ticket ballot result for Newcastle (H) is ready to view."),
+            (6, "Accountant finished reconciling", "September invoices are matched. 2 need your eye."),
+            (52, "Social Media Manager posted", "3 scheduled posts went out this morning."),
         ),
     },
     {
-        "source": "x",
-        "app": "X",
-        "mono": "X",
-        "tint": "#3b3b42",
+        "source": "system",
+        "app": "System",
+        "mono": "sy",
+        "tint": "#8e8e93",
         "items": (
-            (8, "@marcus_dev mentioned you", "what's the actual memory floor for running this on a 4GB board?"),
-            (96, "12 posts from people you follow", "including 3 about on-device inference"),
+            (23, "Battery health check passed", "Capacity 94%. Next check in 30 days."),
+            (140, "taOS updated to build 412", "Lock screen panels and the new Projects view."),
         ),
     },
     {
-        "source": "reddit",
-        "app": "Reddit",
-        "mono": "r",
-        "tint": "#ff4500",
+        "source": "security",
+        "app": "Security",
+        "mono": "se",
+        "tint": "#ff9f0a",
         "items": (
-            (34, "r/selfhosted · 47 upvotes", "Someone replied to your comment on “Running an agent OS on a single board”."),
-            (150, "r/LocalLLaMA", "Today's discussion thread is up."),
+            (88, "New sign-in on the desktop app", "From your usual network. Tap if this was not you."),
         ),
     },
     {
-        "source": "phone",
-        "app": "Phone",
-        "glyph": "phone",
-        "tint": "#34c759",
+        "source": "backup",
+        "app": "Backup",
+        "mono": "bk",
+        "tint": "#30d158",
         "items": (
-            (41, "Missed call", "2 missed calls"),
-        ),
-    },
-    {
-        "source": "sms",
-        "app": "Messages",
-        "glyph": "sms",
-        "tint": "#25c05d",
-        "items": (
-            (19, "Sam", "are you still alright for Sunday?"),
-            (310, "O2", "You've used 80% of your data allowance this month."),
+            (300, "Nightly backup completed", "412 MB in 41s. Nothing skipped."),
         ),
     },
 )
@@ -5040,6 +7442,648 @@ def _demo_notifications() -> list[dict]:
         })
     groups.sort(key=lambda group: group["items"][0]["at"], reverse=True)
     return groups
+
+
+#: The four panels the view row reaches and nothing had ever put anything in:
+#: phone, mailbox, apps and decisions, plus the settings sheet. Same rule as the
+#: notification stacks and for the same reason -- THIS SCREEN RENDERS BEFORE
+#: SIGN-IN, so every line here is scripted and server-side and there is no code
+#: path from any of it to a real account. A "helpful" wiring of the mailbox to
+#: the user's actual inbox would be a pre-auth leak, not a feature.
+#:
+#: `at` offsets are minutes-ago rather than timestamps, so the phone reads as
+#: having had a plausible morning whenever the demo is run.
+#:
+#: Phone numbers are drawn from Ofcom's 07700 900xxx drama range, which is
+#: reserved for fiction and can never reach a real subscriber.
+_DEMO_PHONE: tuple[dict, ...] = (
+    {
+        "key": "call-kenwright",
+        "kind": "missed",
+        "app": "Phone",
+        "who": "Dave Kenwright",
+        "detail": "Mobile · 07700 900461",
+        "minutes": 22,
+        "glyph": "phone",
+        "tint": "#34c759",
+    },
+    {
+        "key": "call-wa-brightside",
+        "kind": "missed",
+        # Jay named the app by the name it carries on the phone.
+        "app": "WA+",
+        "who": "Brightside Joinery",
+        "detail": "WhatsApp Business · voice call",
+        "minutes": 47,
+        "mono": "WA",
+        "tint": "#25d366",
+    },
+    {
+        "key": "call-twilio-agent",
+        "kind": "missed",
+        "app": "Twilio",
+        "who": "taOS agent line",
+        # The one entry that is about the product rather than the person: an
+        # agent holds a phone number and something rang it while the user was
+        # away. That is the whole point of the demo.
+        "detail": "Inbound · 07700 900118 · agent was mid-task",
+        "minutes": 63,
+        "mono": "TW",
+        "tint": "#f22f46",
+    },
+    {
+        "key": "call-wa-ellis",
+        "kind": "missed",
+        "app": "WA+",
+        "who": "Ellis & Daughters",
+        "detail": "WhatsApp Business · 2 calls",
+        "minutes": 140,
+        "mono": "WA",
+        "tint": "#25d366",
+    },
+    {
+        "key": "call-dentist",
+        "kind": "missed",
+        "app": "Phone",
+        "who": "Mersey Dental Practice",
+        "detail": "Mobile · 07700 900233",
+        "minutes": 8,
+        "glyph": "phone",
+        "tint": "#34c759",
+    },
+    {
+        "key": "call-wa-northlight",
+        "kind": "missed",
+        "app": "WA+",
+        "who": "Northlight Systems",
+        "detail": "WhatsApp Business · video call",
+        "minutes": 35,
+        "mono": "WA",
+        "tint": "#25d366",
+    },
+    {
+        "key": "call-twilio-outbound",
+        "kind": "missed",
+        "app": "Twilio",
+        "who": "taOS agent line",
+        "detail": "Callback requested · 07700 900874",
+        "minutes": 112,
+        "mono": "TW",
+        "tint": "#f22f46",
+    },
+    {
+        "key": "call-unknown",
+        "kind": "missed",
+        "app": "Phone",
+        "who": "No caller ID",
+        "detail": "Mobile · 2 calls",
+        "minutes": 171,
+        "glyph": "phone",
+        "tint": "#34c759",
+    },
+    {
+        "key": "voicemail-brightside",
+        "kind": "voicemail",
+        "app": "Voicemail",
+        "who": "Brightside Joinery",
+        "detail": "1:12 · \u201c\u2026chasing the invoice, give us a ring\u2026\u201d",
+        "minutes": 210,
+        "glyph": "voicemail",
+        "tint": "#8e8e93",
+    },
+    {
+        "key": "voicemail-hargreaves",
+        "kind": "voicemail",
+        "app": "Voicemail",
+        "who": "Hargreaves & Co",
+        "detail": "0:38 · “…bringing the revised drawings Thursday…”",
+        "minutes": 96,
+        "glyph": "voicemail",
+        "tint": "#8e8e93",
+    },
+)
+
+#: Unified messaging, explicitly the BlackBerry Hub shape Jay asked for: mail,
+#: SMS, X DMs and LinkedIn in ONE stream ordered by arrival. The per-item source
+#: is the design, not decoration -- a unified list that does not say where each
+#: line came from is just a worse inbox.
+_DEMO_MAILBOX: tuple[dict, ...] = (
+    {
+        "key": "mail-hargreaves",
+        "source": "mail",
+        "app": "Mail",
+        "who": "Hargreaves & Co",
+        "subject": "Re: Thursday's site visit",
+        "preview": "09:15 works for us. I'll bring the revised drawings.",
+        "minutes": 12,
+        "glyph": "mail",
+        "tint": "#2f6fd0",
+        "unread": True,
+    },
+    {
+        "key": "dm-x-marcus",
+        "source": "x",
+        "app": "X",
+        "who": "@marcus_dev",
+        "subject": "Direct message",
+        "preview": "what's the actual memory floor for running this on a 4GB board?",
+        "minutes": 26,
+        "mono": "X",
+        "tint": "#3b3b42",
+        "unread": True,
+    },
+    {
+        "key": "sms-sam",
+        "source": "sms",
+        "app": "Messages",
+        "who": "Sam",
+        "subject": "SMS",
+        "preview": "are you still alright for Sunday?",
+        "minutes": 19,
+        "glyph": "sms",
+        "tint": "#25c05d",
+        "unread": True,
+    },
+    {
+        "key": "li-recruiter",
+        "source": "linkedin",
+        "app": "LinkedIn",
+        "who": "Priya Raman",
+        "subject": "InMail",
+        "preview": "Saw the on-device agent work — are you open to a conversation?",
+        "minutes": 88,
+        "mono": "in",
+        "tint": "#0a66c2",
+        "unread": True,
+    },
+    {
+        "key": "mail-lfc",
+        "source": "mail",
+        "app": "Mail",
+        "who": "Liverpool FC",
+        "subject": "Ticket ballot result: Newcastle (H)",
+        "preview": "Your ballot result is ready to view.",
+        "minutes": 68,
+        "glyph": "mail",
+        "tint": "#2f6fd0",
+        "unread": True,
+    },
+    {
+        "key": "mail-companies-house",
+        "source": "mail",
+        "app": "Mail",
+        "who": "Companies House",
+        "subject": "Confirmation statement due 3 October",
+        "preview": "No action needed if your details are unchanged.",
+        "minutes": 74,
+        "glyph": "mail",
+        "tint": "#2f6fd0",
+        "unread": False,
+    },
+    {
+        "key": "li-post",
+        "source": "linkedin",
+        "app": "LinkedIn",
+        "who": "Northlight Systems",
+        "subject": "Message",
+        "preview": "Thanks for the demo yesterday — sending the write-up over.",
+        "minutes": 190,
+        "mono": "in",
+        "tint": "#0a66c2",
+        "unread": False,
+    },
+    {
+        "key": "dm-x-agentdev",
+        "source": "x",
+        "app": "X",
+        "who": "@agentops",
+        "subject": "Direct message",
+        "preview": "Would you do a walkthrough of the lock screen for the newsletter?",
+        "minutes": 44,
+        "mono": "X",
+        "tint": "#3b3b42",
+        "unread": True,
+    },
+    {
+        "key": "mail-stripe",
+        "source": "mail",
+        "app": "Mail",
+        "who": "Payments",
+        "subject": "Payout of \u00a32,410.00 is on its way",
+        "preview": "Expected in your account on Thursday.",
+        "minutes": 51,
+        "glyph": "mail",
+        "tint": "#2f6fd0",
+        "unread": True,
+    },
+    {
+        "key": "sms-dentist",
+        "source": "sms",
+        "app": "Messages",
+        "who": "Mersey Dental",
+        "subject": "SMS",
+        "preview": "Reminder: appointment Friday 11:20. Reply C to confirm.",
+        "minutes": 63,
+        "glyph": "sms",
+        "tint": "#25c05d",
+        "unread": True,
+    },
+    {
+        "key": "li-northlight",
+        "source": "linkedin",
+        "app": "LinkedIn",
+        "who": "Dan Mercer",
+        "subject": "Message",
+        "preview": "Good to meet you Tuesday \u2014 sending the pilot scope across.",
+        "minutes": 121,
+        "mono": "in",
+        "tint": "#0a66c2",
+        "unread": False,
+    },
+    {
+        "key": "mail-hosting",
+        "source": "mail",
+        "app": "Mail",
+        "who": "Hetzner",
+        "subject": "Scheduled maintenance, Sunday 02:00\u201304:00 UTC",
+        "preview": "One reboot expected. No action required.",
+        "minutes": 240,
+        "glyph": "mail",
+        "tint": "#2f6fd0",
+        "unread": False,
+    },
+    {
+        "key": "dm-x-liverpool",
+        "source": "x",
+        "app": "X",
+        "who": "@anfieldwatch",
+        "subject": "Direct message",
+        "preview": "spare for Newcastle if you still want one",
+        "minutes": 275,
+        "mono": "X",
+        "tint": "#3b3b42",
+        "unread": False,
+    },
+    {
+        "key": "sms-o2",
+        "source": "sms",
+        "app": "Messages",
+        "who": "O2",
+        "subject": "SMS",
+        "preview": "You've used 80% of your data allowance this month.",
+        "minutes": 310,
+        "glyph": "sms",
+        "tint": "#25c05d",
+        "unread": False,
+    },
+)
+
+#: The four apps Jay named. A badge is a count; `note` is the one line the tile
+#: shows underneath, because a grid of bare icons on a lock screen says nothing
+#: a user could act on.
+_DEMO_APPS: tuple[dict, ...] = (
+    {
+        "key": "app-instagram",
+        "app": "Instagram",
+        "mono": "ig",
+        "tint": "#c13584",
+        "badge": 7,
+        "note": "3 DMs, 4 mentions",
+    },
+    {
+        "key": "app-reddit",
+        "app": "Reddit",
+        "mono": "r",
+        "tint": "#ff4500",
+        "badge": 12,
+        "note": "Reply on “Running an agent OS”",
+    },
+    {
+        "key": "app-bank",
+        "app": "Bank",
+        "mono": "£",
+        "tint": "#1b7f5a",
+        "badge": 1,
+        # A balance would be the one genuinely sensitive-looking line on a
+        # pre-auth screen, so the tile says a payment needs a look and no more.
+        "note": "Card payment needs approval",
+    },
+    {
+        "key": "app-youtube",
+        "app": "YouTube",
+        "mono": "▶",
+        "tint": "#ff0000",
+        "badge": 3,
+        "note": "3 new from your subscriptions",
+    },
+
+    {
+        "key": "app-whatsapp",
+        "app": "WhatsApp",
+        "mono": "wa",
+        "tint": "#25d366",
+        "badge": 14,
+        "note": "4 chats, 2 business",
+    },
+    {
+        "key": "app-x",
+        "app": "X",
+        "mono": "X",
+        "tint": "#3b3b42",
+        "badge": 9,
+        "note": "12 posts from people you follow",
+    },
+    {
+        "key": "app-photos",
+        "app": "Photos",
+        "mono": "ph",
+        "tint": "#ff9f0a",
+        "badge": 0,
+        "note": "Yesterday's shots ready",
+    },
+    {
+        "key": "app-calendar",
+        "app": "Calendar",
+        "mono": "16",
+        "tint": "#ff453a",
+        "badge": 2,
+        "note": "Site visit 09:15 Thursday",
+    },
+)
+
+#: Pending approvals waiting on the user. These are the lock screen's reason to
+#: exist: an agent got far enough to need a human and stopped. Each carries the
+#: agent that is blocked, so the panel reads as "who is waiting on me".
+_DEMO_DECISIONS: tuple[dict, ...] = (
+    {
+        "key": "dec-invoice",
+        "title": "Pay Brightside Joinery invoice",
+        "detail": "£1,840.00 · matches quote BJ-2291 · due Friday",
+        "agent": "finance",
+        "minutes": 31,
+    },
+    {
+        "key": "dec-reply",
+        "title": "Send drafted reply to Hargreaves & Co",
+        "detail": "Confirms 09:15 Thursday and asks for parking details",
+        "agent": "inbox",
+        "minutes": 54,
+    },
+    {
+        "key": "dec-refund",
+        "title": "Approve \u00a3120 refund to Ellis & Daughters",
+        "detail": "Duplicate charge on order ED-8841 \u00b7 confirmed by the bank feed",
+        "agent": "finance",
+        "minutes": 18,
+    },
+    {
+        "key": "dec-hire",
+        "title": "Book the Thursday site survey",
+        "detail": "09:15 slot held \u00b7 confirms to Hargreaves and blocks your morning",
+        "agent": "diary",
+        "minutes": 42,
+    },
+    {
+        "key": "dec-spend",
+        "title": "Renew the Twilio number for 12 months",
+        "detail": "\u00a38.50/mo \u00b7 the agent line drops if it lapses on the 28th",
+        "agent": "ops",
+        "minutes": 96,
+    },
+    {
+        "key": "dec-post",
+        "title": "Publish the Northlight case study",
+        "detail": "Drafted and proofed \u00b7 goes to the site and LinkedIn",
+        "agent": "comms",
+        "minutes": 150,
+    },
+    {
+        "key": "dec-deploy",
+        "title": "Deploy taos-website build 412",
+        "detail": "All checks green · changes the pricing page copy",
+        "agent": "builder",
+        "minutes": 120,
+    },
+)
+
+#: PROJECTS -- the tab that replaced settings (Jay: "makes sense as its a
+#: projects focused os"). It sits second in the row, right after the agents.
+#:
+#: A project is a body of work with agents on it, so each row says how far along
+#: it is, how many agents are working it, and the one thing that happened most
+#: recently. `blocked` is the state the lock screen exists to surface: work that
+#: has stopped and is waiting on a person.
+#:
+#: Read-only, and deliberately so. This replaced a panel of pre-auth ACTIONS
+#: ("stop all agents" reachable by anyone holding the phone), and swapping it
+#: for content removed that exposure rather than moving it somewhere else.
+_DEMO_PROJECTS: tuple[dict, ...] = (
+    {
+        "key": "prj-brightside",
+        "name": "Brightside Joinery fit-out",
+        "note": "Quote accepted · scheduling the survey",
+        "progress": 72,
+        "agents": 3,
+        "blocked": True,
+        "mono": "BJ",
+        "tint": "#ffb020",
+        "minutes": 31,
+    },
+    {
+        "key": "prj-taos-site",
+        "name": "taOS website relaunch",
+        "note": "Build 412 green · pricing copy rewritten",
+        "progress": 88,
+        "agents": 2,
+        "blocked": False,
+        "mono": "tw",
+        "tint": "#4c9aff",
+        "minutes": 54,
+    },
+    {
+        "key": "prj-handset",
+        "name": "Handset demo build",
+        "note": "Lock screen panels landed · splash handover next",
+        "progress": 64,
+        "agents": 4,
+        "blocked": False,
+        "mono": "hd",
+        "tint": "#30d158",
+        "minutes": 12,
+    },
+    {
+        "key": "prj-accounts",
+        "name": "Year end accounts",
+        "note": "Waiting on two receipts · filing due 3 October",
+        "progress": 40,
+        "agents": 1,
+        "blocked": True,
+        "mono": "ya",
+        "tint": "#bf5af2",
+        "minutes": 190,
+    },
+    {
+        "key": "prj-ellis",
+        "name": "Ellis & Daughters shopfit",
+        "note": "Survey booked \u00b7 materials list out for pricing",
+        "progress": 22,
+        "agents": 2,
+        "blocked": False,
+        "mono": "ED",
+        "tint": "#ff9f0a",
+        "minutes": 78,
+    },
+    {
+        "key": "prj-voice",
+        "name": "Agent voice comms",
+        "note": "Spec only \u00b7 walkie-talkie over the volume keys",
+        "progress": 8,
+        "agents": 1,
+        "blocked": True,
+        "mono": "vc",
+        "tint": "#ff375f",
+        "minutes": 25,
+    },
+    {
+        "key": "prj-splash",
+        "name": "Boot splash handover",
+        "note": "Wordmark holds to first paint \u00b7 fade tuning left",
+        "progress": 80,
+        "agents": 1,
+        "blocked": False,
+        "mono": "bs",
+        "tint": "#5e5ce6",
+        "minutes": 420,
+    },
+    {
+        "key": "prj-northlight",
+        "name": "Northlight pilot",
+        "note": "Write-up drafted, ready to send",
+        "progress": 95,
+        "agents": 1,
+        "blocked": False,
+        "mono": "np",
+        "tint": "#64d2ff",
+        "minutes": 300,
+    },
+)
+
+
+def _demo_panels() -> dict:
+    """Every scripted panel, timestamped relative to now and newest-first.
+
+    One payload for all five rather than an endpoint each: they are all the same
+    switch, they are all static tables, and five pollers on one screen is five
+    chances to repaint something the user is reading. The client paints each
+    panel from its own key, so a panel the payload omits is simply empty.
+    """
+    now = time.time()
+
+    def stamped(rows: tuple[dict, ...]) -> list[dict]:
+        out = []
+        for spec in rows:
+            item = dict(spec)
+            if "minutes" in item:
+                item["at"] = now - (item.pop("minutes") * 60)
+            # Marked at construction, like the stacks: nothing downstream should
+            # have to work out that these are placeholders by elimination.
+            item["demo"] = True
+            out.append(item)
+        return out
+
+    phone = stamped(_DEMO_PHONE)
+    phone.sort(key=lambda item: item["at"], reverse=True)
+    mailbox = stamped(_DEMO_MAILBOX)
+    mailbox.sort(key=lambda item: item["at"], reverse=True)
+    decisions = stamped(_DEMO_DECISIONS)
+    decisions.sort(key=lambda item: item["at"], reverse=True)
+    # Projects lead with whatever moved most recently, the way the rest of this
+    # screen does -- except that anything BLOCKED comes first regardless. A
+    # project waiting on a person is the reason to look at this panel, and it
+    # going quiet is precisely what would sink it to the bottom of a pure
+    # recency sort.
+    projects = stamped(_DEMO_PROJECTS)
+    projects.sort(key=lambda item: (item["blocked"], item["at"]), reverse=True)
+    return {
+        "phone": phone,
+        "mailbox": mailbox,
+        # Apps are a fixed grid: their order is the author's, not the clock's.
+        "apps": stamped(_DEMO_APPS),
+        "decisions": decisions,
+        "projects": projects,
+    }
+
+
+def _demo_agent_names() -> list[str]:
+    """The demo agent labels, parsed exactly as /auth/lock-widgets parses them.
+
+    Keyed off the SAME env var rather than a second list, so the stats panel and
+    the islands can never disagree about who is running. A separate table here
+    would drift the first time Jay edited one drop-in and not the other.
+    """
+    demo = os.environ.get("TAOS_LOCK_DEMO_AGENTS", "").strip()
+    names: list[str] = []
+    for raw in demo.split(","):
+        parts = [seg.strip() for seg in raw.split(":")]
+        if parts and parts[0] and parts[0] not in names:
+            names.append(parts[0])
+    return names
+
+
+def _demo_agent_usage() -> list[dict]:
+    """Per-agent CPU / RAM / storage that MOVES between polls.
+
+    Jay asked for "live demo data for agents cpu, ram and storage usage". Live
+    is the load-bearing word: the stats view polls every 3 SECONDS, so a fixed
+    table would sit there dead and read as broken rather than as demo content.
+
+    Each agent gets a baseline derived from a CRC of its NAME, so it is stable
+    across restarts -- an agent that shows 6% now and 21% after a controller
+    bounce looks like a different agent. On top of that:
+
+      cpu     a sine drift plus small jitter. The volatile one, because it is.
+      ram     a much slower, shallower drift. Memory does not thrash.
+      storage GROWS ONLY, slowly. Storage that wobbles downward is a tell that
+              the number is invented, and it is the one reading here a viewer
+              might actually reason about.
+
+    Percentages are per-agent, not shares of the device, and the total is capped
+    so six agents cannot add up to a machine that is 300% busy.
+    """
+    names = _demo_agent_names()
+    now = time.time()
+    out: list[dict] = []
+    budget = 82.0                      # leave headroom for the system itself
+    for name in names:
+        seed = zlib.crc32(name.encode("utf-8", "replace"))
+        phase = (seed % 1000) / 1000.0 * (2 * math.pi)
+        base_cpu = 2.5 + (seed % 17)
+        base_ram = 160 + (seed % 880)
+        base_store = 35 + (seed % 420)
+
+        cpu = base_cpu * (1 + 0.5 * math.sin(now / 7.0 + phase))
+        cpu += random.uniform(-1.2, 1.2)
+        ram = base_ram * (1 + 0.05 * math.sin(now / 29.0 + phase))
+        # A day's worth of slow creep, so it moves visibly over a demo without
+        # implying the phone is filling up.
+        store = base_store + ((now % 86400) / 86400.0) * 14.0
+
+        out.append({
+            "name": name,
+            "cpu_percent": round(max(0.2, cpu), 1),
+            "ram_mb": int(max(48, ram)),
+            "storage_mb": round(store, 1),
+            # Marked at construction, like every other invented row on this
+            # screen, so nothing downstream has to deduce it.
+            "demo": True,
+        })
+
+    total = sum(a["cpu_percent"] for a in out)
+    if total > budget and total > 0:
+        scale = budget / total
+        for agent in out:
+            agent["cpu_percent"] = round(agent["cpu_percent"] * scale, 1)
+    return out
 
 
 #: Previous /proc/stat reading, so CPU can be a PERCENTAGE. A single sample of
@@ -5251,6 +8295,19 @@ async def lock_stats(request: Request):
     if dsps:
         payload["dsps"] = dsps
 
+    # Per-agent CPU / RAM / storage. Jay: "in the stats it should show live demo
+    # data for agents cpu, ram and storage usage".
+    #
+    # DEMO ONLY, and gated on the master demo flag, because taOS does not
+    # measure per-agent resource use on this handset yet. The key is absent
+    # rather than an empty list when the flag is off -- "no agents running" and
+    # "nothing is measuring agents" are different answers, and this endpoint
+    # already draws that distinction for every hardware reading above.
+    if _demo_enabled():
+        usage = _demo_agent_usage()
+        if usage:
+            payload["agents"] = usage
+
     # Loaded models are NOT an OS reading. Measured on the handset: no ollama
     # binary and nothing listening on 11434, so there is no local runtime to
     # ask. They belong to the controller, and until it offers them this key is
@@ -5276,6 +8333,744 @@ async def lock_notifications(request: Request):
     if not _demo_notifications_enabled():
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse({"groups": _demo_notifications(), "demo": True})
+
+
+#: Where the privileged helper looks for a power request. The controller runs as
+#: `taos` and CANNOT power the handset off itself -- logind answers "challenge"
+#: to that user, and a challenge on a device with no keyboard and no polkit
+#: agent is a refusal. It drops a verb here instead and taos-power.path (root)
+#: acts on it. The directory is 0700 taos:taos, so this is not a channel anyone
+#: else can shout down.
+_POWER_REQUEST = "/run/taos-power/request"
+
+#: Listeners on /auth/lock-events. The power key is a PHYSICAL button: the menu
+#: has to be on screen by the time the user's thumb lifts, so this is a push.
+#: The lock screen's fastest poll is 3s and its panels are 15 MINUTES -- a menu
+#: that arrives on a poll is a broken menu.
+_LOCK_EVENT_WAITERS: set = set()
+
+
+def _push_lock_event(kind: str, payload: dict | None = None) -> int:
+    """Fan an event out to every open lock-screen stream. Returns the count.
+
+    The count is returned rather than discarded so the caller -- and the test --
+    can tell "delivered to nobody" from "delivered", which are the same silence
+    otherwise.
+    """
+    delivered = 0
+    for queue in list(_LOCK_EVENT_WAITERS):
+        try:
+            queue.put_nowait((kind, payload or {}))
+            delivered += 1
+        except Exception:
+            # A full or closed queue is one dead listener, not a reason to drop
+            # the event for everyone else.
+            _LOCK_EVENT_WAITERS.discard(queue)
+    return delivered
+
+
+@router.get("/lock-events")
+async def lock_events(request: Request):
+    """Server-sent events for the lock screen. Console-only.
+
+    Carries only UI signals the device itself raises -- today, "the power key
+    was held". It deliberately carries no content: everything on this screen is
+    fetched by its own endpoint, and this stream renders before sign-in, so it
+    must never become a second way to read anything.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=8)
+    _LOCK_EVENT_WAITERS.add(queue)
+
+    async def stream():
+        try:
+            # An immediate byte, so the browser's EventSource resolves its
+            # connection rather than sitting in CONNECTING until the first real
+            # event -- which could be hours.
+            yield ": connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    kind, payload = await asyncio.wait_for(queue.get(), timeout=20)
+                except asyncio.TimeoutError:
+                    # A comment line. Without it a silent stream is
+                    # indistinguishable from a dead one, and the socket is free
+                    # to be reaped by anything in between.
+                    yield ": keepalive\n\n"
+                    continue
+                # The payload rides in `data` rather than being baked into the
+                # event NAME. Encoding it in the name meant one listener per
+                # combination -- four volume events became eight the moment the
+                # screen state joined them -- and each new dimension doubled it.
+                yield "event: %s\ndata: %s\n\n" % (kind, json.dumps(payload))
+        finally:
+            _LOCK_EVENT_WAITERS.discard(queue)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+#: The panel's backlight. Discovered rather than hardcoded: the node is named
+#: after the DSI controller (ae94000.dsi.0 on this handset), so a different
+#: panel or a kernel rename would break a literal path.
+_BACKLIGHT_DIR = "/sys/class/backlight"
+
+
+def _backlight_path() -> str | None:
+    """The first backlight device's directory, or None if there is no panel."""
+    try:
+        names = sorted(os.listdir(_BACKLIGHT_DIR))
+    except OSError:
+        return None
+    return os.path.join(_BACKLIGHT_DIR, names[0]) if names else None
+
+
+def _read_brightness() -> dict | None:
+    """Current and maximum backlight level, or None if unreadable.
+
+    Returns raw levels rather than a percentage, and the client does the
+    arithmetic: the maximum here is 4095, and rounding through a 0-100 integer
+    on the way in and out would make the slider jump under the finger.
+    """
+    base = _backlight_path()
+    if not base:
+        return None
+    try:
+        with open(os.path.join(base, "brightness")) as handle:
+            current = int(handle.read().strip())
+        with open(os.path.join(base, "max_brightness")) as handle:
+            maximum = int(handle.read().strip())
+    except (OSError, ValueError):
+        return None
+    if maximum <= 0:
+        return None
+    return {"current": current, "max": maximum,
+            "percent": round(current * 100.0 / maximum, 1)}
+
+
+def _write_brightness(level: int) -> dict | None:
+    """Set the backlight, then READ IT BACK and report what the panel took.
+
+    ⚠ THE WRITE'S OWN RESULT CANNOT BE TRUSTED HERE, measured on the device:
+    writing through a shell reported "write error: Invalid argument" for three
+    different values in a row while the level plainly changed -- the final read
+    showed the last value written. The driver accepts the value and then errors
+    on close, so the exit status describes the REQUEST and not the STATE. The
+    only honest answer is the read-back, which is what this returns.
+
+    Refuses to go fully dark. A slider that can reach 0 on a phone with no
+    hardware brightness key leaves a screen that is on, unreadable, and looks
+    broken -- and the way back is a control the user can no longer see.
+    """
+    base = _backlight_path()
+    if not base:
+        return None
+    reading = _read_brightness()
+    if not reading:
+        return None
+    floor = max(1, int(reading["max"] * 0.04))
+    level = max(floor, min(reading["max"], int(level)))
+    try:
+        with open(os.path.join(base, "brightness"), "w") as handle:
+            handle.write(str(level))
+    except OSError:
+        # Deliberately NOT a failure return: the value may well have landed.
+        # The read-back below is the measurement.
+        pass
+    return _read_brightness()
+
+
+def _read_radios() -> dict:
+    """WiFi and Bluetooth state. Reading needs no privilege; writing does.
+
+    WiFi is read from NetworkManager because NM owns it, and Bluetooth from
+    rfkill because that is what the switch actually sets. Reading each from the
+    thing that controls it means the switch can never show a state its own
+    write would not produce.
+    """
+    import subprocess
+
+    state: dict = {}
+    try:
+        got = subprocess.run(
+            ["nmcli", "-t", "-f", "WIFI", "g"],
+            capture_output=True, text=True, timeout=4,
+        )
+        if got.returncode == 0:
+            state["wifi"] = got.stdout.strip().lower().startswith("enabled")
+    except Exception:
+        pass
+    try:
+        got = subprocess.run(
+            ["rfkill", "-n", "-o", "TYPE,SOFT,HARD", "list", "bluetooth"],
+            capture_output=True, text=True, timeout=4,
+        )
+        if got.returncode == 0 and got.stdout.strip():
+            fields = got.stdout.split()
+            # "bluetooth unblocked unblocked" -- on only when NEITHER block is
+            # set. A hard block is a physical kill switch and software cannot
+            # clear it, so a switch that ignored it would be a lie.
+            state["bluetooth"] = ("blocked" not in fields[1:3])
+    except Exception:
+        pass
+    return state
+
+
+@router.get("/lock-radios")
+async def lock_radios(request: Request):
+    """Current WiFi/Bluetooth state. Console-only."""
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    return JSONResponse(_read_radios())
+
+
+#: Radio verbs the drop box will accept, mapped from what the page sends.
+def _write_power_request(verb: str) -> None:
+    """Drop a verb for the root helper, durably and in one place.
+
+    atomic_io gives what the hand-rolled temp+replace here did not: an fsync,
+    which matters on a verb that powers the machine off, and a RANDOM temp
+    name opened O_EXCL. All three callers used to share the fixed name
+    `<request>.part`, so two near-simultaneous taps could interleave and let
+    the camera button turn Wi-Fi off. (@taOS-dev, reviewing #3108.)
+
+    ⚠ IT WILL ALSO CREATE THE PARENT, AND THIS PARENT MUST NOT BE CREATED
+    HERE. /run/taos-power is 0700 taos:taos by design, and a directory this
+    process made under the default umask would be 0755 -- widening the single
+    boundary taos-power-apply's trust argument rests on ("the directory is
+    0700 owned by taos, so that means the controller and root"). A missing
+    drop box means the helper is not installed, which is worth saying out
+    loud rather than papering over: every caller already promised a 503.
+    """
+    parent = Path(_POWER_REQUEST).parent
+    if not parent.is_dir():
+        raise FileNotFoundError("drop box directory is missing: %s" % parent)
+    atomic_write_text(Path(_POWER_REQUEST), verb)
+
+
+_RADIO_VERBS = {
+    ("wifi", True): "wifi-on",
+    ("wifi", False): "wifi-off",
+    ("bluetooth", True): "bt-on",
+    ("bluetooth", False): "bt-off",
+}
+
+
+@router.post("/lock-radios")
+async def set_lock_radios(request: Request):
+    """Turn WiFi or Bluetooth on or off. Console-only.
+
+    Goes through the same root drop box as the power menu: NetworkManager
+    answers `no` to enable-disable-wifi for this user, and /dev/rfkill is not
+    writable by it either.
+
+    ⚠ Turning WiFi off from here can cut the only route to a headless handset.
+    That is correct for a switch a PERSON flicks -- every phone allows it -- and
+    it is exactly why the verb list is closed and nothing automated writes it.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    radio = str(body.get("radio", "")).strip()
+    want = body.get("on")
+    if radio not in ("wifi", "bluetooth") or not isinstance(want, bool):
+        return JSONResponse({"error": "radio and on required"}, status_code=400)
+
+    verb = _RADIO_VERBS[(radio, want)]
+    try:
+        _write_power_request(verb)
+    except OSError as exc:
+        return JSONResponse(
+            {"error": "request failed", "detail": str(exc)}, status_code=503
+        )
+    # The helper is triggered by a systemd path unit, so it runs a moment after
+    # the file lands. Wait, then report the READ-BACK rather than the request --
+    # a switch that reports what it asked for is a switch that lies when the
+    # radio refuses.
+    await asyncio.sleep(1.2)
+    return JSONResponse(_read_radios())
+
+
+@router.post("/lock-volume-key")
+async def lock_volume_key(request: Request):
+    """A volume key went down or came up. Console-only.
+
+    Posted by the compositor. The BEHAVIOUR is not decided here: the page owns
+    which surface is open, which agent is focused and whether the first press
+    has been spent, and splitting that across a route and a page would give two
+    places a different idea of whether the slider is showing.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    key = str(body.get("key", "")).strip()
+    action = str(body.get("action", "")).strip()
+    if key not in ("up", "down") or action not in ("press", "release"):
+        return JSONResponse({"error": "bad key or action"}, status_code=400)
+    # Whether the panel was dark when the key went down. The compositor knows
+    # and the page does not, and it changes how the arc is drawn: over black
+    # rather than over the whole lock screen.
+    screen = "off" if str(body.get("screen", "")).strip() == "off" else "on"
+    delivered = _push_lock_event(
+        "volume-%s-%s" % (key, action), {"screen": screen}
+    )
+    return JSONResponse({"ok": True, "delivered": delivered})
+
+
+def _read_volume() -> dict | None:
+    """Current output volume via PipeWire, or None if there is nothing to ask.
+
+    ⚠ MEASURED ON THIS HANDSET: PipeWire is running and answers
+    `wpctl get-volume @DEFAULT_AUDIO_SINK@` with 1.00, but `wpctl status` lists
+    NO SINKS AND NO SOURCES. So the number is real and there is nothing behind
+    it -- setting it would succeed and make nothing louder. `no_sink` is
+    reported rather than hidden, because a volume slider that silently drives
+    nothing is worse than one that says so.
+    """
+    import subprocess
+
+    env = dict(os.environ, XDG_RUNTIME_DIR="/run/user/%d" % os.getuid())
+    try:
+        got = subprocess.run(
+            ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"],
+            capture_output=True, text=True, timeout=4, env=env,
+        )
+    except Exception:
+        return None
+    if got.returncode != 0:
+        return None
+    # "Volume: 0.75" or "Volume: 0.75 [MUTED]"
+    parts = got.stdout.split()
+    level = None
+    for index, token in enumerate(parts):
+        if token.rstrip(":").lower() == "volume" and index + 1 < len(parts):
+            try:
+                level = float(parts[index + 1])
+            except ValueError:
+                level = None
+            break
+    if level is None:
+        return None
+    sinks = False
+    try:
+        status = subprocess.run(
+            ["wpctl", "status"], capture_output=True, text=True, timeout=4, env=env
+        ).stdout
+        after = status.split("Sinks:", 1)
+        # A populated list has an id line under the heading; an empty one goes
+        # straight to the next section.
+        sinks = bool(after[1:] and any(
+            ch.isdigit() for ch in after[1].split("Sources:", 1)[0]
+        ))
+    except Exception:
+        sinks = False
+    return {
+        "percent": round(level * 100, 1),
+        "muted": "MUTED" in got.stdout.upper(),
+        "no_sink": not sinks,
+    }
+
+
+@router.get("/lock-volume")
+async def lock_volume(request: Request):
+    """Current output volume. Console-only."""
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    reading = _read_volume()
+    if reading is None:
+        return JSONResponse({"error": "no audio"}, status_code=404)
+    return JSONResponse(reading)
+
+
+@router.post("/lock-volume")
+async def set_lock_volume(request: Request):
+    """Set the output volume. Console-only. Returns the READ-BACK."""
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        percent = max(0.0, min(100.0, float(body.get("percent"))))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "percent required"}, status_code=400)
+
+    import subprocess
+
+    env = dict(os.environ, XDG_RUNTIME_DIR="/run/user/%d" % os.getuid())
+    try:
+        subprocess.run(
+            ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "%.2f" % (percent / 100.0)],
+            capture_output=True, text=True, timeout=4, env=env,
+        )
+    except Exception:
+        pass
+    after = _read_volume()
+    if after is None:
+        return JSONResponse({"error": "no audio"}, status_code=404)
+    return JSONResponse(after)
+
+
+#: The torch. Discovered rather than hardcoded: this handset's node is
+#: `white:flash`, but the name is the driver's and another panel or kernel would
+#: call it something else.
+_LEDS_DIR = "/sys/class/leds"
+
+#: Torch brightness as a share of the LED's maximum. NOT full: this is a CAMERA
+#: FLASH LED being held on continuously, which is not what it was designed for,
+#: and whether this driver limits the current is not something this code can
+#: see. 40% is bright enough to be a torch and well inside what the part will
+#: take indefinitely.
+_TORCH_SHARE = 0.4
+
+
+def _torch_path() -> str | None:
+    """The first flash/torch LED, or None if this device has none."""
+    try:
+        names = sorted(os.listdir(_LEDS_DIR))
+    except OSError:
+        return None
+    for name in names:
+        low = name.lower()
+        if "flash" in low or "torch" in low:
+            return os.path.join(_LEDS_DIR, name)
+    return None
+
+
+def _read_torch() -> dict | None:
+    base = _torch_path()
+    if not base:
+        return None
+    try:
+        with open(os.path.join(base, "brightness")) as handle:
+            current = int(handle.read().strip())
+        with open(os.path.join(base, "max_brightness")) as handle:
+            maximum = int(handle.read().strip())
+    except (OSError, ValueError):
+        return None
+    return {"on": current > 0, "level": current, "max": maximum}
+
+
+@router.get("/lock-torch")
+async def lock_torch(request: Request):
+    """Whether the torch is lit. Console-only."""
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    reading = _read_torch()
+    if reading is None:
+        return JSONResponse({"error": "no torch"}, status_code=404)
+    return JSONResponse(reading)
+
+
+@router.post("/lock-torch")
+async def set_lock_torch(request: Request):
+    """Light or extinguish the torch. Console-only.
+
+    No root helper needed, unlike the radios: this handset's LED node is
+    world-writable (root:feedbackd, rw-rw-rw-), so the controller can drive it
+    as itself. Measured before relying on it.
+
+    Returns the READ-BACK, for the same reason brightness does: what the LED
+    took is the only honest answer.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    want = body.get("on")
+    if not isinstance(want, bool):
+        return JSONResponse({"error": "on required"}, status_code=400)
+    base = _torch_path()
+    reading = _read_torch()
+    if not base or reading is None:
+        return JSONResponse({"error": "no torch"}, status_code=404)
+    level = int(reading["max"] * _TORCH_SHARE) if want else 0
+    try:
+        with open(os.path.join(base, "brightness"), "w") as handle:
+            handle.write(str(level))
+    except OSError as exc:
+        return JSONResponse(
+            {"error": "torch write failed", "detail": str(exc)}, status_code=503
+        )
+    after = _read_torch()
+    return JSONResponse(after or {"error": "unreadable"})
+
+
+@router.get("/lock-brightness")
+async def lock_brightness(request: Request):
+    """Current backlight level. Console-only."""
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    reading = _read_brightness()
+    if reading is None:
+        return JSONResponse({"error": "no backlight"}, status_code=404)
+    return JSONResponse(reading)
+
+
+@router.post("/lock-brightness")
+async def set_lock_brightness(request: Request):
+    """Set the backlight. Console-only.
+
+    Reachable before sign-in, like the rest of this screen. Brightness is the
+    one setting where that is plainly right: someone holding an unreadably dim
+    phone has to be able to fix it without first reading the PIN prompt.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    raw = body.get("level", body.get("percent"))
+    if raw is None:
+        return JSONResponse({"error": "level or percent required"}, status_code=400)
+    reading = _read_brightness()
+    if reading is None:
+        return JSONResponse({"error": "no backlight"}, status_code=404)
+    try:
+        if "level" in body:
+            level = int(raw)
+        else:
+            level = int(float(raw) * reading["max"] / 100.0)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "not a number"}, status_code=400)
+    after = _write_brightness(level)
+    if after is None:
+        return JSONResponse({"error": "backlight write failed"}, status_code=503)
+    return JSONResponse(after)
+
+
+@router.post("/lock-screen-off")
+async def lock_screen_off(request: Request):
+    """The panel is being powered down. Put any open sheet away. Console-only.
+
+    Jay: "if I turn the screen off on the power menu it should also dismiss the
+    menu". Without this the menu is still up behind a dark screen, so the next
+    wake lands on a stale power menu the user has to dismiss before they can do
+    anything -- and on a lock screen that reads as the phone being stuck.
+
+    Posted by taos-kiosk-power as it powers the output off, so it covers every
+    route to a dark screen that goes through that script rather than only the
+    power key.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    return JSONResponse({"ok": True, "delivered": _push_lock_event("screen-off")})
+
+
+@router.post("/lock-screen-on")
+async def lock_screen_on(request: Request):
+    """The panel is coming back up. Un-blacken the page. Console-only.
+
+    The pair to /auth/lock-screen-off, and the reason both exist: the page
+    cannot paint while the output is off, so whatever is on a waking panel is
+    the last frame painted before it blanked. That frame is deliberately black,
+    and this is what takes it away again.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    return JSONResponse({"ok": True, "delivered": _push_lock_event("screen-on")})
+
+
+@router.post("/lock-power-menu")
+async def lock_power_menu(request: Request):
+    """The power key was held. Raise the menu on the lock screen. Console-only.
+
+    Posted by the compositor (taos-kiosk-power-hold) on loopback. sway owns the
+    key -- a logind config this image deliberately ships without once made a
+    short press shut the phone down outright -- so the long press has to reach
+    the page from outside it.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    delivered = _push_lock_event("power-menu")
+    return JSONResponse({"ok": True, "delivered": delivered})
+
+
+#: What the power menu is allowed to do. A closed set, named here rather than
+#: derived from the request: this menu is reachable BEFORE sign-in, so the list
+#: of things a stranger holding the phone can trigger has to be readable in one
+#: place.
+_POWER_ACTIONS = ("poweroff", "reboot", "stop-agents", "screenshot", "emergency")
+
+#: Apps the lock screen may open, and the drop-box verb that opens each.
+#:
+#: A CLOSED MAP, not a name the page hands over: whatever ends up in the drop
+#: box is run as root by taos-power-apply, so the page must never be able to
+#: name the command. It chooses from this list or it gets a 400.
+#:
+#: Deliberately NOT part of _POWER_ACTIONS. That set is the power menu's five
+#: verbs and @taOS-dev asked for it to stay closed and exactly that; opening an
+#: app is not a power action and putting it there would blur what that list
+#: means. The privileged channel underneath is shared, the vocabulary is not.
+_LOCK_APPS = {"camera": "app-camera"}
+
+
+@router.post("/lock-power-action")
+async def lock_power_action(request: Request):
+    """Carry out a power-menu choice. Console-only.
+
+    Jay asked for confirmation on "stop all agents" and "emergency call"; that
+    confirm step lives in the page, because it is a question about intent and
+    the answer never needs to leave the device.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    action = str(body.get("action", "")).strip()
+    if action not in _POWER_ACTIONS:
+        return JSONResponse({"error": "unknown action"}, status_code=400)
+
+    if action in ("poweroff", "reboot"):
+        try:
+            # atomic_write_text: fires-on-existence is preserved, an fsync is
+            # gained on the verb that powers the machine off, and the shared
+            # fixed temp name is gone. See lock_app for the full reasoning.
+            _write_power_request(action)
+        except OSError as exc:
+            return JSONResponse(
+                {"error": "power request failed", "detail": str(exc)}, status_code=503
+            )
+        return JSONResponse({"ok": True, "action": action})
+
+    if action == "stop-agents":
+        orchestrator = getattr(request.app.state, "orchestrator", None)
+        if orchestrator is None:
+            return JSONResponse({"error": "orchestrator unavailable"}, status_code=503)
+        try:
+            # The same call /api/system/prepare-shutdown makes, deliberately:
+            # "stop all agents" from the lock screen and the systemd stop hook
+            # should drain agents the same way, or one of the two paths is
+            # quietly doing something else.
+            report = await orchestrator.prepare("all", "lock-screen-power-menu")
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse({"ok": True, "action": action, "report": report})
+
+    if action == "screenshot":
+        return JSONResponse(_take_screenshot())
+
+    # Emergency call. There is no dialer on this handset and no telephony stack
+    # behind it, so this says so rather than pretending: a menu entry that
+    # silently does nothing in an emergency is worse than one that is honest.
+    return JSONResponse(
+        {"ok": False, "action": "emergency", "demo": True,
+         "detail": "No dialer is configured on this device."}
+    )
+
+
+def _take_screenshot() -> dict:
+    """Grab the screen with grim, into /var/lib/taos-kiosk/screenshots.
+
+    ⚠ grim currently FAILS on this compositor with "no supported format found"
+    -- measured on the device. That is why this reports the error text instead
+    of a bare False: the next person needs to know the capture was attempted
+    and what refused it, not just that no file appeared.
+    """
+    import subprocess
+
+    target_dir = "/var/lib/taos-kiosk/screenshots"
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    path = "%s/%s.png" % (target_dir, stamp)
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        proc = subprocess.run(
+            ["grim", path], capture_output=True, text=True, timeout=15
+        )
+    except Exception as exc:
+        return {"ok": False, "action": "screenshot", "detail": str(exc)}
+    if proc.returncode != 0 or not os.path.exists(path):
+        return {
+            "ok": False, "action": "screenshot",
+            "detail": (proc.stderr or proc.stdout or "grim failed").strip()[:200],
+        }
+    return {"ok": True, "action": "screenshot", "path": path,
+            "bytes": os.path.getsize(path)}
+
+
+@router.get("/lock-panels")
+async def lock_panels(request: Request):
+    """Scripted contents of the phone, mailbox, apps, projects and decisions
+    panels. Console-only, demo-only.
+
+    Gated exactly like the notification stacks: TAOS_LOCK_DEMO_PANELS on top of
+    the master TAOS_LOCK_DEMO_AGENTS flag, so a real device shows five empty
+    panels rather than an invented inbox, and one flag takes the whole lot down.
+    404 with either flag off; the page treats that as "nothing to show".
+
+    Everything served here is READ-ONLY content. The panel that used to carry
+    actions was replaced by projects; the actions themselves moved to the power
+    menu, where "stop all agents" is now gated behind the passcode rather than
+    being reachable by anyone holding the phone. Relocated AND gated, not
+    removed -- poweroff and reboot stay pre-auth because the hardware key
+    already does both from this screen.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    if not _demo_panels_enabled():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    payload = _demo_panels()
+    payload["demo"] = True
+    return JSONResponse(payload)
+
+
+@router.post("/lock-app")
+async def lock_app(request: Request):
+    """Open one of the lock screen's apps. Console-only.
+
+    THE PRE-AUTH QUESTION, answered rather than assumed: this runs before
+    anyone signs in, so the only apps that may be listed here are ones that a
+    stranger holding the phone may already reach. The camera qualifies on every
+    phone ever made, and taOS's camera app shows a viewfinder and the photos
+    taken from it -- it is not a door into a signed-in user's files, because at
+    this point there is no signed-in user.
+
+    The app is launched by the same root drop box the power menu uses. The page
+    picks a NAME from a closed map; the verb that reaches root is never anything
+    the page said.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    app = str(body.get("app", "")).strip()
+    verb = _LOCK_APPS.get(app)
+    if verb is None:
+        return JSONResponse({"error": "unknown app"}, status_code=400)
+    try:
+        # atomic_write_text, not a hand-rolled temp+replace. The watcher fires
+        # on the path EXISTING, so a partial write could be read as a verb that
+        # was never finished -- and the helper also fsyncs, which matters on a
+        # verb that powers the machine off, and uses a RANDOM temp name with
+        # O_EXCL. All three writers here shared the fixed name
+        # `_POWER_REQUEST + ".part"`, so two near-simultaneous taps could let
+        # the camera button turn Wi-Fi off. (@taOS-dev, reviewing #3108.)
+        _write_power_request(verb)
+    except OSError as exc:
+        return JSONResponse(
+            {"error": "launch failed", "detail": str(exc)}, status_code=503
+        )
+    return JSONResponse({"ok": True, "app": app})
 
 
 @router.post("/pin-login")

@@ -503,31 +503,69 @@ class TestCatalogManifestAudit:
     the shipped default ``"changeme"``.
     """
 
-    def test_no_hardcoded_secrets_in_manifests(self):
-        manifest_paths = sorted((_CATALOG_ROOT / "services").rglob("manifest.yaml"))
-        assert manifest_paths, "no service manifests found under app-catalog/services"
-
-        failures: list[str] = []
+    def _audit_manifest(self, data, rel="tmp/manifest.yaml"):
+        failures = []
         secret_suffixes = ("_SECRET", "_KEY")
-        for mp in manifest_paths:
-            data = yaml.safe_load(mp.read_text())
-            if not isinstance(data, dict):
-                continue
-            env = (data.get("install") or {}).get("env") or {}
+
+        def _check_env(env, prefix):
             if not isinstance(env, dict):
-                continue
-            rel = mp.relative_to(_CATALOG_ROOT)
+                return
             for key, val in env.items():
                 if not isinstance(val, str):
                     continue
                 if val == "changeme":
-                    failures.append(f"{rel}: {key} == 'changeme'")
+                    failures.append(f"{rel}: {prefix}{key} == 'changeme'")
                 if key.endswith(secret_suffixes) and "{secret_key}" not in val:
                     failures.append(
-                        f"{rel}: {key} is a literal secret (no {{secret_key}} placeholder)"
+                        f"{rel}: {prefix}{key} is a literal secret (no {{secret_key}} placeholder)"
                     )
 
+        env = (data.get("install") or {}).get("env") or {}
+        _check_env(env, "")
+        for companion in (data.get("install") or {}).get("companions") or []:
+            if not isinstance(companion, dict):
+                continue
+            c_name = companion.get("name", "unnamed")
+            c_env = companion.get("env")
+            _check_env(c_env, f"companions[{c_name}].")
+        return failures
+
+    def test_no_hardcoded_secrets_in_manifests(self):
+        manifest_paths = sorted((_CATALOG_ROOT / "services").rglob("manifest.yaml"))
+        assert manifest_paths, "no service manifests found under app-catalog/services"
+
+        failures = []
+        for mp in manifest_paths:
+            data = yaml.safe_load(mp.read_text())
+            if not isinstance(data, dict):
+                continue
+            rel = mp.relative_to(_CATALOG_ROOT)
+            failures.extend(self._audit_manifest(data, rel=str(rel) + ": "))
+
         assert not failures, "; ".join(failures)
+
+    def test_companion_literal_secret_is_rejected(self):
+        manifest = {
+            "install": {
+                "method": "docker",
+                "image": "test:latest",
+                "env": {
+                    "SAFE_VAR": "ok",
+                },
+                "companions": [
+                    {
+                        "name": "postgres",
+                        "image": "postgres:16",
+                        "env": {
+                            "POSTGRES_SECRET": "hunter2",
+                        },
+                    }
+                ],
+            }
+        }
+        failures = self._audit_manifest(manifest)
+        assert failures, "expected failures for literal companion secret, got none"
+        assert any("companions[postgres].POSTGRES_SECRET" in f for f in failures)
 
 
 class TestDownloadInstaller:

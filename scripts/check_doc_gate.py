@@ -342,7 +342,7 @@ def _is_test_path(path: str) -> bool:
     if base.startswith("test_") and base.endswith(".py"):
         return True
     return base.endswith(
-        (".test.tsx", ".test.ts", ".test.jsx", ".test.js", ".spec.tsx", ".spec.ts")
+        (".test.tsx", ".test.ts", ".test.jsx", ".test.js", ".spec.tsx", ".spec.ts", ".spec.jsx", ".spec.js")
     )
 
 

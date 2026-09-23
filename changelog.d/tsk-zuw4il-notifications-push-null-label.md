@@ -1,0 +1,2 @@
+### Fixed
+- `_build_device_push_payload` no longer raises `TypeError` when an option's `label` or `value` is `null` in stored notification rows. Both fields are now coerced to empty strings at the read site, keeping the builder total (never raises) per the `send_device_push` contract.

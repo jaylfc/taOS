@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: mintplexlabs/anythingllm:latest
+  image: mintplexlabs/anythingllm:1.7.0
   volumes:
     - storage:/app/server/storage
   ports: [3001]

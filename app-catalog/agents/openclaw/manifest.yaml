@@ -13,7 +13,7 @@ requires:
 
 install:
   method: script
-  script: scripts/install-openclaw.sh
+  script: scripts/install.sh
   note: |
     Clones openclaw/openclaw into /opt/openclaw and installs with pip.
     No PyPI package — `openclaw` on PyPI resolves to an unrelated CMDOP

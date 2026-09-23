@@ -2,7 +2,7 @@ id: piper
 name: Piper TTS
 type: service
 category: tts-runtime
-version: latest
+version: 1.7.0
 description: "Fast local text-to-speech — VITS-based, runs on CPU, many voice models available."
 homepage: https://github.com/rhasspy/piper
 license: MIT

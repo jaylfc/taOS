@@ -1162,6 +1162,10 @@ async def mark_task_claimable(
     ``claimable`` label and preserves every other label, so granting it to the
     lead agent does not widen the ``project_tasks`` scope beyond a single-label
     toggle.
+
+    The grant adds only ``claimable`` (following the free-builders convention),
+    but the revoke removes BOTH ``claimable`` and ``fleet:claimable`` because
+    safety is paramount: the dispatcher must not select this card after a hold.
     """
     pstore = request.app.state.project_store
     auth = await _authorize_project_lead(request, pstore, project_id)
@@ -1173,11 +1177,12 @@ async def mark_task_claimable(
     if existing is None or existing["project_id"] != project_id:
         return JSONResponse({"error": "not found"}, status_code=404)
     labels = list(existing.get("labels") or [])
-    has = "claimable" in labels
-    if payload.claimable and not has:
+    has_claimable = "claimable" in labels
+    has_fleet = "fleet:claimable" in labels
+    if payload.claimable and not has_claimable:
         labels.append("claimable")
-    elif not payload.claimable and has:
-        labels = [lbl for lbl in labels if lbl != "claimable"]
+    elif not payload.claimable and (has_claimable or has_fleet):
+        labels = [lbl for lbl in labels if lbl not in ("claimable", "fleet:claimable")]
     else:
         return await store.get_task(task_id)  # already in the requested state
     await store.update_task(task_id, labels=labels)
