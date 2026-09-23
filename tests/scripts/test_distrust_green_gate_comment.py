@@ -40,22 +40,19 @@ class TestDistrustGreenGateComment:
         # Find the 'other_failure' branch and assert waiver text is not reachable from it
         lines = script.splitlines()
         in_other_failure = False
-        depth = 0
-        waiver_in_other = False
+        body_lines: list[str] = []
         for line in lines:
             if "reason === 'other_failure'" in line or 'reason === "other_failure"' in line:
                 in_other_failure = True
-                depth = line.index("if")
                 continue
             if in_other_failure:
                 stripped = line.lstrip()
-                if stripped and not stripped.startswith("//") and not stripped.startswith("*"):
-                    indent = len(line) - len(line.lstrip())
-                    if indent <= depth and stripped:
-                        in_other_failure = False
-                        continue
-                if "Tests-Skipped-Intentionally" in line:
-                    waiver_in_other = True
+                if stripped.startswith("}"):
+                    in_other_failure = False
+                    continue
+                body_lines.append(line)
+        assert body_lines, "other_failure branch body is empty; test cannot verify waiver absence"
+        waiver_in_other = any("Tests-Skipped-Intentionally" in ln for ln in body_lines)
         assert not waiver_in_other, "Tests-Skipped-Intentionally found in other_failure branch"
 
     def test_no_raw_github_expression_in_script_body(self) -> None:
