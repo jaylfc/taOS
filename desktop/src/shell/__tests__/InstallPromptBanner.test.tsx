@@ -28,6 +28,22 @@ describe("InstallPromptBanner", () => {
     Object.defineProperty(window, "innerWidth", { value: 400, configurable: true });
   });
 
+  it("stays hidden in a fullscreen kiosk even after beforeinstallprompt (taOSmobile)", async () => {
+    Object.defineProperty(window, "matchMedia", {
+      value: (q: string) => ({
+        matches: q.includes("max-width") || q.includes("display-mode: fullscreen"),
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }),
+      configurable: true,
+    });
+    const { container } = render(<InstallPromptBanner />);
+    await act(async () => {
+      fireBeforeInstallPrompt(vi.fn(() => Promise.resolve({ outcome: "accepted" })));
+    });
+    expect(container.firstChild).toBeNull();
+  });
+
   it("renders nothing until beforeinstallprompt fires", () => {
     const { container } = render(<InstallPromptBanner />);
     expect(container.firstChild).toBeNull();
