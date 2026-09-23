@@ -176,7 +176,7 @@ class TestPresenceIsHeartbeatShaped:
         wall charger says `power`, and claiming USB for it would put the
         story back where the measurement belongs."""
         _beat(armed, link="power")
-        assert "power only" in auth._device_island(auth._device_live()[0])["status"]
+        assert auth._device_island(auth._device_live()[0])["status"] == "Idle"
         _beat(armed, link="usb")
         assert auth._device_island(auth._device_live()[0])["status"] == "Online · USB"
 
