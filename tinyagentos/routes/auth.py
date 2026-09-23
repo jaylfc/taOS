@@ -2974,7 +2974,7 @@ def _lock_head_html() -> str:
                 <div class="ls-call-avatar" id="ls-call-avatar" aria-hidden="true">N</div>
                 <div class="ls-call-id">
                   <div class="ls-call-kicker" id="ls-call-heading">Incoming call</div>
-                  <div class="ls-call-name" id="ls-call-name">Naira</div>
+                  <div class="ls-call-name" id="ls-call-name">Mary</div>
                   <div class="ls-call-label" id="ls-call-label">mobile</div>
                 </div>
               </div>
@@ -7462,7 +7462,7 @@ _LOCK_SCREEN_SCRIPT = r"""
     // -----------------------------------------------------------------------
     // THE LIVE ZONE: an incoming call, and "Send to PA". DEMO.
     //
-    // Jay: the collapsible area is also the live zone. A call from Naira
+    // Jay: the collapsible area is also the live zone. A call from Mary
     // collapses whatever cards are showing into one droplet, the droplet
     // stretches into a call card, and the headline answer hands the call to the
     // PA -- whose conversation then plays as a live transcript with Take over
@@ -11320,7 +11320,7 @@ async def lock_notifications(request: Request):
 # ---------------------------------------------------------------------------
 # THE INCOMING-CALL DEMO. "Send to PA".
 #
-# Jay: an incoming call from Naira lands in the lock screen's live zone, and
+# Jay: an incoming call from Mary lands in the lock screen's live zone, and
 # the headline answer is to hand it to the personal assistant, who takes a
 # message while the user watches the transcript and can take over at any
 # moment. When the PA finishes, a calendar event has been added.
@@ -11339,7 +11339,7 @@ async def lock_notifications(request: Request):
 
 #: Who calls. A fictional number, and a label rather than a contact record.
 _CALL_CALLER: dict = {
-    "name": "Naira",
+    "name": "Mary",
     "label": "mobile",
     "number": "07700 900318",
 }
@@ -11353,7 +11353,7 @@ _CALL_SCRIPT: tuple[tuple[str, str], ...] = (
     ("pa", "Of course. Does half past five work for you?"),
     ("caller", "Half five's perfect, thank you."),
     ("pa", "Lovely — I've added it to his calendar, and he'll call you at "
-           "5:30. Have a good afternoon!"),
+           "5:30. Have a good evening!"),
     ("caller", "You too, bye!"),
 )
 
@@ -11368,16 +11368,16 @@ _CALL_GAP_MS = 520
 _CALL_LEAD_MS = 700
 
 #: What the PA leaves behind: a reminder, in its own voice, shown at the top of
-#: the Alerts panel until the user dismisses it. Jay: "reminder to call naira
+#: the Alerts panel until the user dismisses it. Jay: "reminder to call Mary
 #: at time etc added to calendar, I will remind you closer to the time". It is
 #: never written anywhere -- the "calendar" is this dict.
 _CALL_REMINDER: dict = {
     "kind": "reminder",
     "from": "Your PA",
     "title": "Reminder added",
-    "body": "Reminder to call Naira at 5:30 pm added to your calendar. "
+    "body": "Reminder to call Mary at 5:30 pm added to your calendar. "
             "I'll remind you closer to the time.",
-    "event": "Call Naira",
+    "event": "Call Mary",
     "time": "5:30 pm",
 }
 
@@ -11617,7 +11617,7 @@ async def lock_call(request: Request):
 
 @router.post("/lock-call/ring")
 async def lock_call_ring(request: Request):
-    """Ring the phone: Naira calling. Console-only; the demo daemon's button."""
+    """Ring the phone: Mary calling. Console-only; the demo daemon's button."""
     refused = _call_gate(request)
     if refused is not None:
         return refused

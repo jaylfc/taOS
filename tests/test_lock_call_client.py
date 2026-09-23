@@ -82,10 +82,10 @@ SCRIPT = [
 class TestTheStateDecidesTheView:
     def test_every_state_maps_to_its_view(self):
         got = _pure("""[
-          callView({state: "ringing", caller: {name: "Naira"}}),
-          callView({state: "pa", caller: {name: "Naira"}}),
-          callView({state: "live", caller: {name: "Naira"}, taken_over: false}),
-          callView({state: "live", caller: {name: "Naira"}, taken_over: true}),
+          callView({state: "ringing", caller: {name: "Mary"}}),
+          callView({state: "pa", caller: {name: "Mary"}}),
+          callView({state: "live", caller: {name: "Mary"}, taken_over: false}),
+          callView({state: "live", caller: {name: "Mary"}, taken_over: true}),
           callView({state: "ended", outcome: "pa-done"}),
           callView({state: "idle"}),
           callView(null)
@@ -93,9 +93,9 @@ class TestTheStateDecidesTheView:
         ringing, pa, answered, taken, ended, idle, none = got
         assert (ringing["view"], ringing["controls"], ringing["tone"]) == ("ringing", None, "caller")
         assert (pa["view"], pa["controls"], pa["log"], pa["tone"]) == ("talk", "pa", True, "pa")
-        assert pa["title"] == "Your PA is talking to Naira"
+        assert pa["title"] == "Your PA is talking to Mary"
         assert (answered["view"], answered["controls"], answered["log"]) == ("talk", "live", False)
-        assert answered["title"] == "On call with Naira"
+        assert answered["title"] == "On call with Mary"
         # After a take-over the transcript STAYS -- the spec's "marked You took
         # over" has nothing to mark without it.
         assert (taken["controls"], taken["log"]) == ("live", True)
@@ -193,7 +193,7 @@ var SCN = JSON.parse(process.env.LS_CALL);
 var snaps = [];
 for (var t = 0; t < SCN.ticks.length; t++) {
   var tk = SCN.ticks[t];
-  __PAINT__(logEl, tk.lines, tk.speaking, !!tk.tookOver, "Naira");
+  __PAINT__(logEl, tk.lines, tk.speaking, !!tk.tookOver, "Mary");
   snaps.push(logEl.children.map(function (el) {
     return { id: el.__id, line: el.getAttribute("data-line"),
              who: el.getAttribute("data-who"), speaking: el.getAttribute("data-speaking"),
@@ -256,7 +256,7 @@ class TestTheTranscriptIsReconciledNotRepainted:
         assert _ids(s2)[:2] == _ids(s1)
         assert out["built"] == 3
         assert [r["who"] for r in s2] == ["pa", "caller", "pa"]
-        assert [r["label"] for r in s2] == ["Your PA", "Naira", "Your PA"]
+        assert [r["label"] for r in s2] == ["Your PA", "Mary", "Your PA"]
 
     def test_only_the_line_being_spoken_is_marked_and_left_for_the_reveal(self):
         """The reconcile writes finished lines in full and leaves the current
@@ -526,16 +526,16 @@ def _paint_twice(snap, *, unconditional=False):
 
 
 _SNAPS = {
-    "ringing": {"state": "ringing", "call_id": 1, "caller": {"name": "Naira", "label": "mobile"},
+    "ringing": {"state": "ringing", "call_id": 1, "caller": {"name": "Mary", "label": "mobile"},
                 "transcript": [], "speaking": None, "taken_over": False},
-    "pa": {"state": "pa", "call_id": 1, "caller": {"name": "Naira", "label": "mobile"},
+    "pa": {"state": "pa", "call_id": 1, "caller": {"name": "Mary", "label": "mobile"},
            "transcript": SCRIPT[:2], "speaking": {"who": "caller", "line": 1, "progress": 0.4},
            "taken_over": False, "elapsed_ms": 5000},
-    "live": {"state": "live", "call_id": 1, "caller": {"name": "Naira", "label": "mobile"},
+    "live": {"state": "live", "call_id": 1, "caller": {"name": "Mary", "label": "mobile"},
              "transcript": [SCRIPT[0], dict(SCRIPT[1], upto=0.5)], "speaking": None,
              "taken_over": True, "elapsed_ms": 9000},
     "ended": {"state": "ended", "call_id": 1, "outcome": "pa-done",
-              "caller": {"name": "Naira", "label": "mobile"}, "transcript": SCRIPT,
+              "caller": {"name": "Mary", "label": "mobile"}, "transcript": SCRIPT,
               "speaking": None, "taken_over": False},
 }
 
@@ -621,8 +621,8 @@ def _paint_notifs_plain(ticks):
 class TestTheReminderCard:
     def test_the_words_are_the_pas(self):
         assert _pure_with("callReminderPill", 'callReminderPill({title: "Reminder added", '
-                          'event: "Call Naira", time: "5:30 pm"})') == \
-            "Reminder added · Call Naira · 5:30 pm"
+                          'event: "Call Mary", time: "5:30 pm"})') == \
+            "Reminder added · Call Mary · 5:30 pm"
 
     def test_it_has_a_real_dismiss_button_that_clears_it_on_the_server(self):
         block = LOCK_SCRIPT[LOCK_SCRIPT.index("var buildReminder = function"):]

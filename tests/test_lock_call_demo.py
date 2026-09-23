@@ -1,10 +1,10 @@
-"""The lock screen's incoming-call demo: Naira rings, the PA takes a message.
+"""The lock screen's incoming-call demo: Mary rings, the PA takes a message.
 
 Jay: an incoming call lands in the lock screen's live zone with Answer, Decline,
 Send to voicemail and the headline button, **Send to PA**. The PA then talks to
 the caller in a live transcript, with **Take over** and **End call** visible the
 whole time, and when it finishes a notification says **New event added · Call
-Naira · 5:30 pm**.
+Mary · 5:30 pm**.
 
 THE THING TO KEEP HOLD OF: **the lock screen renders before sign-in.** So the
 caller, the script and the calendar event are fixed strings in the controller,
@@ -268,7 +268,7 @@ class TestRinging:
         slip in unnoticed."""
         _, body = _ring()
         assert body["demo"] is True
-        assert body["caller"]["name"] == "Naira"
+        assert body["caller"]["name"] == "Mary"
         assert body["caller"]["label"] == "mobile"
         assert body["caller"]["number"].startswith("07700 900")
         assert set(body["caller"]) == {"name", "label", "number"}
@@ -436,9 +436,9 @@ class TestTheNotification:
         note = snap["notification"]
         assert note["kind"] == "reminder"
         assert note["title"] == "Reminder added"
-        assert note["body"] == ("Reminder to call Naira at 5:30 pm added to your "
+        assert note["body"] == ("Reminder to call Mary at 5:30 pm added to your "
                                 "calendar. I'll remind you closer to the time.")
-        assert (note["event"], note["time"], note["from"]) == ("Call Naira", "5:30 pm", "Your PA")
+        assert (note["event"], note["time"], note["from"]) == ("Call Mary", "5:30 pm", "Your PA")
         assert note["demo"] is True
 
     def test_the_finished_transcript_is_whole(self, clock):
@@ -606,3 +606,12 @@ class TestDismissingTheReminder:
         _dismiss()
         _finish_a_pa_call(clock)
         assert _get()["notification"]["title"] == "Reminder added"
+
+
+def test_the_pa_says_jason_with_a_capital_j():
+    """Jay: "make sure the PA calls me Jason and not jason". The opening line
+    is his, verbatim; nothing on the way to the screen may lowercase it."""
+    from tinyagentos.routes import auth as _auth
+    opening = _auth._CALL_SCRIPT[0][1]
+    assert "Jason's phone" in opening
+    assert "jason" not in opening
