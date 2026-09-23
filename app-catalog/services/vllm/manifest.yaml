@@ -2,7 +2,7 @@ id: vllm
 name: vLLM
 type: service
 category: llm-runtime
-version: latest
+version: 0.7.0
 description: "High-throughput LLM inference engine — PagedAttention, continuous batching, CUDA required."
 homepage: https://github.com/vllm-project/vllm
 license: Apache-2.0

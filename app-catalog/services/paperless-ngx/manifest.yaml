@@ -12,7 +12,7 @@ requires:
   ports: [8000]
 install:
   method: docker
-  image: ghcr.io/paperless-ngx/paperless-ngx:latest
+  image: ghcr.io/paperless-ngx/paperless-ngx:2.14.0
   volumes: [data:/usr/src/paperless/data, media:/usr/src/paperless/media]
   ports: [8000]
 hardware_tiers:

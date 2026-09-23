@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: ghcr.io/docker-mailserver/docker-mailserver:latest
+  image: ghcr.io/docker-mailserver/docker-mailserver:14.0.0
   volumes:
     - mail-data:/var/mail
     - mail-state:/var/mail-state

@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: ghcr.io/ai-dock/stable-diffusion-webui:latest
+  image: ghcr.io/ai-dock/stable-diffusion-webui:1.10.0
   volumes:
     - data:/workspace
     - models:/workspace/stable-diffusion-webui/models

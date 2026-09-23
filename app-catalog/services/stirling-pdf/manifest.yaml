@@ -12,7 +12,7 @@ requires:
   ports: [8080]
 install:
   method: docker
-  image: frooodle/s-pdf:latest
+  image: frooodle/s-pdf:0.36.0
   volumes: [data:/usr/share/tesseract-ocr]
   ports: [8080]
 hardware_tiers:

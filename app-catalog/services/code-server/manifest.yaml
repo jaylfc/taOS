@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: lscr.io/linuxserver/code-server:latest
+  image: lscr.io/linuxserver/code-server:4.135.0
   volumes:
     - config:/config
     - workspace:/home/coder/workspace

@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: louislam/uptime-kuma:1
+  image: louislam/uptime-kuma:1.23
   volumes:
     - data:/app/data
   ports: [3001]

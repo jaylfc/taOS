@@ -637,7 +637,18 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
                         ),
                     },
                     status_code=500,
-                )
+                 )
+
+    # Reject unknown install methods instead of silently marking installed.
+    _KNOWN_BACKENDS = frozenset({
+        "rkllama", "rkllamacpp", "lxc", "script", "docker", "pip",
+        "download", "huggingface", "ollama",
+    })
+    if backend not in _KNOWN_BACKENDS:
+        return JSONResponse(
+            {"error": f"unknown install method {backend!r} for {app_id}"},
+            status_code=400,
+        )
 
     # Default: delegate to InstalledAppsStore (records the install in db / store).
     store = request.app.state.installed_apps
