@@ -3988,7 +3988,9 @@ def _require_admin(request: Request) -> tuple[bool, JSONResponse | None]:
     token = request.cookies.get("taos_session", "")
     if not token:
         return False, JSONResponse({"error": "forbidden"}, status_code=403)
-    user = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    user = auth_mgr.session_user(token, user_agent=user_agent)
     if not user or not user.get("is_admin"):
         return False, JSONResponse({"error": "forbidden"}, status_code=403)
     return True, None
@@ -4000,7 +4002,9 @@ def _require_self(request: Request, username: str) -> tuple[bool, JSONResponse |
     token = request.cookies.get("taos_session", "")
     if not token:
         return False, JSONResponse({"error": "forbidden"}, status_code=403)
-    user = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    user = auth_mgr.session_user(token, user_agent=user_agent)
     if not user or user.get("username") != username:
         return False, JSONResponse({"error": "forbidden"}, status_code=403)
     return True, None
@@ -5653,7 +5657,9 @@ async def auth_status(request: Request):
         user = auth_mgr.get_user(token=token)
         # Check if session user is pending
         if token:
-            session_user = auth_mgr.session_user(token)
+            # Get user_agent from request headers for session validation
+            user_agent = request.headers.get("user-agent", "")
+            session_user = auth_mgr.session_user(token, user_agent=user_agent)
             if session_user and session_user.get("pending"):
                 needs_onboarding = True
 
@@ -5725,7 +5731,9 @@ async def add_user(request: Request):
         return JSONResponse({"error": "username is required"}, status_code=400)
     auth_mgr = request.app.state.auth
     token = request.cookies.get("taos_session", "")
-    caller = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    caller = auth_mgr.session_user(token, user_agent=user_agent)
     caller_username = caller["username"] if caller else ""
     try:
         code = auth_mgr.add_user_invite(username, caller_username)
@@ -5742,7 +5750,9 @@ async def admin_reset_password(username: str, request: Request):
         return err
     auth_mgr = request.app.state.auth
     token = request.cookies.get("taos_session", "")
-    caller = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    caller = auth_mgr.session_user(token, user_agent=user_agent)
     caller_username = caller["username"] if caller else ""
     try:
         code = auth_mgr.admin_reset_password(username, caller_username)
@@ -5759,7 +5769,9 @@ async def delete_user(username: str, request: Request):
         return err
     auth_mgr = request.app.state.auth
     token = request.cookies.get("taos_session", "")
-    caller = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    caller = auth_mgr.session_user(token, user_agent=user_agent)
     caller_username = caller["username"] if caller else ""
     try:
         auth_mgr.delete_user(username, caller_username)

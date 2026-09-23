@@ -1075,9 +1075,9 @@ class AuthManager:
             self._sessions.pop(token, None)
         return len(to_revoke)
 
-    def session_user(self, token: str) -> dict | None:
+    def session_user(self, token: str, user_agent: str | None = None) -> dict | None:
         """Return public profile of the user owning this session."""
-        user_id = self.validate_session(token)
+        user_id = self.validate_session(token, user_agent=user_agent)
         if user_id is None:
             return None
         if user_id:

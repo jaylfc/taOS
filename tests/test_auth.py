@@ -250,6 +250,15 @@ async def auth_client(app):
     if relationship_mgr._db is not None:
         await relationship_mgr.close()
     await relationship_mgr.init()
+    # Initialise agent registry and grants stores used by auth routes
+    agent_registry = app.state.agent_registry
+    if agent_registry._db is not None:
+        await agent_registry.close()
+    await agent_registry.init()
+    agent_grants = app.state.agent_grants
+    if agent_grants._db is not None:
+        await agent_grants.close()
+    await agent_grants.init()
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport,
@@ -268,6 +277,8 @@ async def auth_client(app):
     await store.close()
     await app.state.qmd_client.close()
     await app.state.http_client.aclose()
+    await agent_grants.close()
+    await agent_registry.close()
 
 
 class TestCorruptStoreOverTheApi:
@@ -853,6 +864,15 @@ async def no_cookie_client(app):
     if relationship_mgr._db is not None:
         await relationship_mgr.close()
     await relationship_mgr.init()
+    # Initialise agent registry and grants stores used by auth routes
+    agent_registry = app.state.agent_registry
+    if agent_registry._db is not None:
+        await agent_registry.close()
+    await agent_registry.init()
+    agent_grants = app.state.agent_grants
+    if agent_grants._db is not None:
+        await agent_grants.close()
+    await agent_grants.init()
     # Configure auth so the app isn't in onboarding mode
     app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
     transport = ASGITransport(app=app)
@@ -873,6 +893,8 @@ async def no_cookie_client(app):
     await store.close()
     await app.state.qmd_client.close()
     await app.state.http_client.aclose()
+    await agent_grants.close()
+    await agent_registry.close()
 
 
 class TestMiddlewareBearerPath:
@@ -1266,16 +1288,16 @@ class TestSessionClientBinding:
         assert user_id == rec["id"]
 
     def test_session_with_ua_hash_validates_without_ua_param(self, tmp_path):
-        """When caller doesn't supply user_agent, hash check is skipped."""
+        """When caller doesn't supply user_agent and session has a UA hash, validation fails."""
         mgr = AuthManager(tmp_path)
         mgr.setup_user("alice", "Alice", "", "alicepwd1")
         rec = mgr.find_user("alice")
         token = mgr.create_session(
             user_id=rec["id"], user_agent="TestAgent/1.0"
         )
-        # No user_agent param => skip check
+        # User-Agent hash is stored, but no user_agent param supplied -> validation fails
         user_id = mgr.validate_session(token)
-        assert user_id == rec["id"]
+        assert user_id is None
 
 
 class TestAuthStatusUserAgentSymmetry:
