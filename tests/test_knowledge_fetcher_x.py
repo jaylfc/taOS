@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import pytest
 import pytest_asyncio
+import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -420,4 +421,42 @@ async def test_x_watch_store_list_scoped_by_user(tmp_path):
     assert alice_watches[0]["handle"] == "alice"
     assert len(bob_watches) == 1
     assert bob_watches[0]["handle"] == "bob"
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_x_watch_store_upgrades_pre_user_id_db(tmp_path):
+    db_path = tmp_path / "pre-user-id.db"
+    old_schema = """
+    CREATE TABLE x_author_watches (
+        handle TEXT PRIMARY KEY,
+        filters_json TEXT NOT NULL DEFAULT '{}',
+        frequency INTEGER NOT NULL DEFAULT 1800,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        last_check REAL NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL
+    );
+    """
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(old_schema)
+    conn.execute(
+        "INSERT INTO x_author_watches (handle, filters_json, frequency, enabled, last_check, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("oldhandle", "{}", 3600, 1, 0, 1700000000.0),
+    )
+    conn.commit()
+    conn.close()
+
+    store = XWatchStore(db_path=db_path)
+    await store.init()
+
+    conn2 = sqlite3.connect(str(db_path))
+    cols = [row[1] for row in conn2.execute("PRAGMA table_info(x_author_watches)").fetchall()]
+    assert "user_id" in cols
+
+    row = conn2.execute("SELECT handle, user_id FROM x_author_watches WHERE handle = 'oldhandle'").fetchone()
+    assert row is not None
+    assert row[0] == "oldhandle"
+    assert row[1] == "legacy"
+    conn2.close()
+
     await store.close()

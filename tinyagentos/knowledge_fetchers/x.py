@@ -232,7 +232,6 @@ CREATE TABLE IF NOT EXISTS x_author_watches (
     created_at REAL NOT NULL,
     PRIMARY KEY (user_id, handle)
 );
-CREATE INDEX IF NOT EXISTS idx_x_author_watches_user ON x_author_watches(user_id);
 """
 
 
@@ -253,6 +252,50 @@ class XWatchStore(BaseStore):
         if self._db is not None:
             import aiosqlite
             self._db.row_factory = aiosqlite.Row
+
+    async def _post_init(self) -> None:
+        db = self._require_db()
+        cursor = await db.execute("PRAGMA table_info(x_author_watches)")
+        columns = await cursor.fetchall()
+        column_names = {row[1] for row in columns}
+
+        if "user_id" not in column_names:
+            count_cursor = await db.execute("SELECT COUNT(*) FROM x_author_watches")
+            count_row = await count_cursor.fetchone()
+            migrated = count_row[0] if count_row is not None else 0
+
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS x_author_watches_new (
+                    user_id TEXT NOT NULL,
+                    handle TEXT NOT NULL,
+                    filters_json TEXT NOT NULL DEFAULT '{}',
+                    frequency INTEGER NOT NULL DEFAULT 1800,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    last_check REAL NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (user_id, handle)
+                )
+                """
+            )
+            await db.execute(
+                """
+                INSERT INTO x_author_watches_new
+                    (user_id, handle, filters_json, frequency, enabled, last_check, created_at)
+                SELECT 'legacy', handle, filters_json, frequency, enabled, last_check, created_at
+                FROM x_author_watches
+                """
+            )
+            await db.execute("DROP TABLE x_author_watches")
+            await db.execute("ALTER TABLE x_author_watches_new RENAME TO x_author_watches")
+            logger.info("Migrated %d X watch rows to user-scoped schema", migrated)
+
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_x_author_watches_user ON x_author_watches(user_id)
+            """
+        )
+        await db.commit()
 
     def _require_db(self):
         if self._db is None:
