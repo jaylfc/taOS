@@ -5,8 +5,14 @@
 # transcript) is on screen". The 30 s blank is swayidle (taos-kiosk-idle), and
 # swayidle -w honours Wayland idle inhibitors, so this holds sway's own
 # `inhibit_idle open` on the lock screen's window for as long as the event is
-# live and drops it after. Dropping it restarts the idle timer, so the panel
-# blanks 30 s after the call ends, not the instant it ends.
+# live and drops it after.
+#
+# ⚠ DROPPING IT DOES NOT RESTART swayidle's TIMER (measured on the handset):
+# after a call longer than the 30 s timeout, the panel blanked the instant the
+# inhibitor went. Jay: "there should be a delay after the inhibit to keep the
+# screen on for a few seconds afterwards". So the hold outlives the event by
+# GRACE seconds -- long enough to watch the call fold away and the reminder
+# card land -- and a new live event in that window just carries on holding.
 #
 # WHY POLL THE CONTROLLER. What is live is the page's state, and the
 # controller is where that state is authoritative (/auth/lock-call). A second
@@ -47,13 +53,23 @@ live() {
     return 1
 }
 
+GRACE="${TAOS_LIVE_GRACE_S:-12}"
+POLL=2
+
 held=0
+quiet=0     # seconds since the last live reading, while still holding
 # Start from a known state: a previous copy killed mid-call may have left the
 # inhibitor open.
 swaymsg "$WINDOW inhibit_idle none" >/dev/null 2>&1 || true
 while :; do
     want=0
-    live && want=1
+    if live; then
+        quiet=0
+        want=1
+    elif [ "$held" = 1 ]; then
+        quiet=$((quiet + POLL))
+        [ "$quiet" -lt "$GRACE" ] && want=1
+    fi
     if [ "$want" != "$held" ]; then
         if [ "$want" = 1 ]; then
             swaymsg "$WINDOW inhibit_idle open" >/dev/null 2>&1 && held=1
@@ -61,5 +77,5 @@ while :; do
             swaymsg "$WINDOW inhibit_idle none" >/dev/null 2>&1 && held=0
         fi
     fi
-    sleep 2
+    sleep "$POLL"
 done
