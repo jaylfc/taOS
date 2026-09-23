@@ -5654,7 +5654,7 @@ async def auth_status(request: Request):
     # so consulting them here would raise and turn this endpoint into a 500 --
     # exactly the answer the store_error field exists to replace.
     if configured and authenticated and store_error is None:
-        user = auth_mgr.get_user(token=token)
+        user = auth_mgr.get_user(token=token, user_agent=_ua)
         # Check if session user is pending
         if token:
             # Get user_agent from request headers for session validation
@@ -5696,7 +5696,7 @@ async def auth_me(request: Request):
         token, user_agent=request.headers.get("user-agent", "")
     ) is None:
         return JSONResponse({"error": "not authenticated"}, status_code=401)
-    user = auth_mgr.get_user(token=token)
+    user = auth_mgr.get_user(token=token, user_agent=request.headers.get("user-agent", ""))
     if user is None:
         return JSONResponse({"error": "no user configured"}, status_code=404)
     return JSONResponse({"user": user})
