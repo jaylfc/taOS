@@ -1515,8 +1515,49 @@ body.ls-black { background: #000; }
   letter-spacing: -0.01em;
 }
 .ls-status {
+  position: relative;
   font-size: 11.5px; color: rgba(255,255,255,0.52);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* A demo agent's task rotation (see _DEMO_TASK_SCRIPTS): a completion beat
+   ("✓ ...") reads as just-finished rather than as the ongoing task, so
+   it gets the same live green as the busy pip instead of the resting grey. */
+.ls-island[data-done="1"] .ls-status { color: #3ddc84; }
+/* The status-change slide: the OLD text is a `::before` ghost carrying
+   `data-prev` (set immediately before the real text swaps, see
+   animateStatusChange), sliding up and out while the real node -- already
+   holding the NEW text -- slides in from below. Both on the same DOM node:
+   the island is never rebuilt for a status change. */
+.ls-status[data-prev]::before {
+  content: attr(data-prev);
+  position: absolute; inset: 0;
+  color: inherit; background: inherit; pointer-events: none;
+  animation: ls-status-out 380ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.ls-status.ls-status-slide {
+  animation: ls-status-in 380ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+@keyframes ls-status-out {
+  from { transform: translateY(0); opacity: 1; }
+  to   { transform: translateY(-100%); opacity: 0; }
+}
+@keyframes ls-status-in {
+  from { transform: translateY(100%); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+/* prefers-reduced-motion: a crossfade instead of a slide -- the ghost still
+   fades out and the real text still fades in, just with no motion. */
+.ls-status.ls-status-crossfade::before { animation: ls-status-out-fade 380ms ease forwards; }
+.ls-status.ls-status-crossfade { animation: ls-status-in-fade 380ms ease backwards; }
+@keyframes ls-status-out-fade { from { opacity: 1; } to { opacity: 0; } }
+@keyframes ls-status-in-fade { from { opacity: 0; } to { opacity: 1; } }
+/* A brief soft highlight on the whole island in the agent's own hue, so a
+   task rotation reads as "this one, right now" even from across a room. */
+.ls-island[data-status-pulse="1"] { animation: ls-status-pulse 700ms ease-out; }
+@keyframes ls-status-pulse {
+  0%   { box-shadow: 0 6px 18px -6px rgba(0,0,0,0.75), 0 0 0 0 transparent; }
+  45%  { box-shadow: 0 6px 18px -6px rgba(0,0,0,0.75), 0 0 22px 3px var(--ls-a, #4c9aff); }
+  100% { box-shadow: 0 6px 18px -6px rgba(0,0,0,0.75), 0 0 0 0 transparent; }
 }
 /* Live pip: present only while the agent is actually doing something. */
 .ls-pip {
@@ -1540,6 +1581,9 @@ body.ls-black { background: #000; }
 @media (prefers-reduced-motion: reduce) {
   .ls-island, .ls-island[data-attention="1"] { animation: none; }
   .ls-island[data-attention="1"] { outline: 2px solid rgba(255,176,32,0.7); outline-offset: 2px; }
+  .ls-status.ls-status-slide,
+  .ls-status.ls-status-slide::before,
+  .ls-island[data-status-pulse="1"] { animation: none; }
 }
 /* Scheduled tasks stay quieter than the agents: they are context, not actors. */
 .ls-tasks { width: 100%; align-self: stretch; }
@@ -3137,6 +3181,49 @@ _LOCK_SCREEN_SCRIPT = r"""
       ]);
     }
 
+    // Whether a status reads as a just-finished completion beat ("✓
+    // Table booked at Dishoom") rather than an ongoing task -- shared between
+    // paint and animation so the two never disagree about which one a status
+    // is.
+    function isDoneStatus(status) {
+      return /^✓\s/.test(status || "");
+    }
+
+    // How long the status-change animation runs. The swap below happens at
+    // roughly the halfway point of this same duration, so the two stay in
+    // sync by construction rather than by two numbers that can drift apart.
+    var STATUS_CHANGE_MS = 380;
+
+    // Slide the OLD status up and out while the NEW one slides in from below,
+    // on the SAME `.ls-status` node -- the island must never be rebuilt for
+    // this (see reconcileIslands). `data-prev` carries the outgoing text for
+    // a `::before` ghost to render and animate out; the real node's
+    // textContent is swapped to the new status IMMEDIATELY and synchronously,
+    // so a caller reading `.textContent` right after this call -- as the
+    // repaint tests do -- sees the new value with no animation-timing
+    // dependency. The ghost and the pulse attribute are cosmetic cleanup only
+    // and are cleared after the animation via a sequence number, so a second
+    // change arriving before the first finishes cannot clear the newer one's
+    // state early.
+    function animateStatusChange(el, s, status) {
+      s.setAttribute("data-prev", s.textContent);
+      s.textContent = status;
+      var reduced = false;
+      try {
+        reduced = !!(window.matchMedia
+          && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      } catch (err) { reduced = false; }
+      s.className = "ls-status" + (reduced ? " ls-status-crossfade" : " ls-status-slide");
+      setAttrIfChanged(el, "data-status-pulse", "1");
+      var seq = (s.__statusChangeSeq = (s.__statusChangeSeq || 0) + 1);
+      setTimeout(function () {
+        if (s.__statusChangeSeq !== seq) return; // superseded by a newer change
+        s.removeAttribute("data-prev");
+        s.className = "ls-status";
+        el.removeAttribute("data-status-pulse");
+      }, STATUS_CHANGE_MS);
+    }
+
     // An island's MUTABLE half: everything a 15s poll can legitimately change.
     // Written in place, and only where the value actually differs, so that a
     // tick which changes nothing touches nothing.
@@ -3151,11 +3238,13 @@ _LOCK_SCREEN_SCRIPT = r"""
       setAttrIfChanged(el, "data-state", busy ? "busy" : "idle");
       if (agent.attention) setAttrIfChanged(el, "data-attention", "1");
       else if (el.hasAttribute("data-attention")) el.removeAttribute("data-attention");
+      if (isDoneStatus(status)) setAttrIfChanged(el, "data-done", "1");
+      else if (el.hasAttribute("data-done")) el.removeAttribute("data-done");
       setAttrIfChanged(el, "aria-label", (agent.attention && agent.decision)
         ? name + " needs a decision: " + (agent.decision.question || "")
         : name + ", " + status + ". Open conversation.");
       var s = el.querySelector(".ls-status");
-      if (s && s.textContent !== status) s.textContent = status;
+      if (s && s.textContent !== status) animateStatusChange(el, s, status);
     }
 
     function setAttrIfChanged(el, attr, value) {
@@ -3180,6 +3269,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       el.setAttribute("data-agent", agent.key || name);
       el.setAttribute("data-state", busy ? "busy" : "idle");
       if (agent.attention) el.setAttribute("data-attention", "1");
+      if (isDoneStatus(status)) el.setAttribute("data-done", "1");
       // An island OPENS something, so it is a button, not a list item: it has
       // to be reachable by tab and operable by Enter, not only by a press.
       el.setAttribute("role", "button");
@@ -3201,6 +3291,10 @@ _LOCK_SCREEN_SCRIPT = r"""
       var hue = hueFor(name);
       av.style.setProperty("--ls-a", "hsl(" + hue + " 62% 58%)");
       av.style.setProperty("--ls-b", "hsl(" + ((hue + 28) % 360) + " 58% 38%)");
+      // Also set on the ISLAND itself, not only its avatar child: the status
+      // pulse glow lives on `.ls-island` and a custom property set on a
+      // descendant does not flow back up to its ancestor.
+      el.style.setProperty("--ls-a", "hsl(" + hue + " 62% 58%)");
       // A photo when one is configured; the monogram is the fallback, so a
       // missing file degrades to initials rather than a broken image frame.
       if (agent.avatar) {
@@ -3445,15 +3539,61 @@ _LOCK_SCREEN_SCRIPT = r"""
       syncFeedFade();
     }
 
+    // Default cadence when the server does not say otherwise (demo mode off,
+    // or on but nothing scheduled to change).
+    var WIDGETS_POLL_MS = 15000;
+    var widgetsTimer = null;
+    var widgetsPaused = false;
+
+    // Schedules the NEXT fetch rather than re-arming a fixed interval, so a
+    // rotating demo task's `refresh_in_ms` can pull the next poll in tighter
+    // than 15s and land the fetch right as the status is due to change,
+    // instead of the change sitting there stale for up to 15s.
+    function scheduleWidgetsPoll(ms) {
+      if (widgetsTimer) { clearTimeout(widgetsTimer); widgetsTimer = null; }
+      if (widgetsPaused) return;
+      widgetsTimer = setTimeout(pollActivity, ms || WIDGETS_POLL_MS);
+    }
+
     function pollActivity() {
       fetch("/auth/lock-widgets", { credentials: "same-origin" })
         .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (d) { if (d) paintActivity(d); })
-        .catch(function () { /* offline or off-console: leave the card as is */ });
+        .then(function (d) {
+          if (d) paintActivity(d);
+          scheduleWidgetsPoll(d && d.refresh_in_ms);
+        })
+        .catch(function () {
+          // Offline or off-console: leave the card as is, but keep polling --
+          // the network coming back is exactly when this needs to recover.
+          scheduleWidgetsPoll();
+        });
     }
+
+    // The screen is off or the tab/app is backgrounded: a poll landing then
+    // paints nothing anyone can see and just burns battery and radio, so this
+    // pauses the schedule entirely rather than merely slowing it down.
+    function pauseWidgetsPoll() {
+      widgetsPaused = true;
+      if (widgetsTimer) { clearTimeout(widgetsTimer); widgetsTimer = null; }
+    }
+
+    // Coming back: fetch immediately rather than waiting out whatever was
+    // left of the paused schedule, so a lock screen that was just woken shows
+    // this instant's state, not a stale one from before it went dark.
+    function resumeWidgetsPoll() {
+      if (!widgetsPaused) return;
+      widgetsPaused = false;
+      pollActivity();
+    }
+
     if (card) {
       pollActivity();
-      setInterval(pollActivity, 15000);
+      try {
+        document.addEventListener("visibilitychange", function () {
+          if (document.visibilityState === "hidden") pauseWidgetsPoll();
+          else resumeWidgetsPoll();
+        });
+      } catch (err) { /* no document in this harness: keep polling on the timer */ }
     }
 
     // -----------------------------------------------------------------------
@@ -5211,6 +5351,14 @@ _LOCK_SCREEN_SCRIPT = r"""
           screenEl.removeAttribute("data-blanked");
           setBlack(false);
         });
+
+        // The widgets poll (agent islands, rotating demo tasks) has no
+        // reason to run against a dark panel -- pause it there and catch up
+        // the instant the screen wakes, same as visibilitychange does for a
+        // backgrounded app.
+        lockStream.addEventListener("screen-off", function () { pauseWidgetsPoll(); });
+        lockStream.addEventListener("screen-on", function () { resumeWidgetsPoll(); });
+
         // One listener shape for all four, reading the payload rather than
         // relying on the event name to carry the screen state.
         var volKeys = [["up", "press"], ["up", "release"],
@@ -8103,6 +8251,159 @@ def _avatar_url(name: str) -> str:
     return f"/auth/lock-avatar/{slug}"
 
 
+#: Scripted "current task" follow-ons for the lock screen's demo agent
+#: islands. Keyed by the demo agent's NAME exactly as it appears in
+#: TAOS_LOCK_DEMO_AGENTS. Jay: "it would be nice if the agents' current task
+#: changed whilst being on the lock screen" -- an agent with no entry here
+#: just holds its configured status forever; its task cycle is itself alone,
+#: so it never enters the round-robin below and never gets a `next_change_ms`.
+_DEMO_TASK_SCRIPTS: dict[str, list[str]] = {
+    "Personal Assistant": [
+        "✓ Morning brief ready",
+        "Rescheduling your 3pm with Dana",
+        "Booking a table for Friday, 7:30",
+        "✓ Table booked at Dishoom",
+    ],
+    "Social Media Manager": [
+        "✓ 3 posts scheduled",
+        "Replying to 12 comments",
+        "Drafting Thursday's launch thread",
+        "Reviewing reel analytics",
+    ],
+    "Accountant": [
+        "✓ 41 invoices reconciled",
+        "Categorising card spend",
+        "Chasing 2 overdue invoices",
+        "Preparing the VAT summary",
+    ],
+    "Sales Manager": [
+        "✓ 4 follow-ups sent",
+        "Updating the pipeline",
+        "Booking a demo with Northwind",
+        "Drafting a proposal for Acme",
+    ],
+    "Customer Service": [
+        "✓ Inbox cleared",
+        "Answering 3 new tickets",
+        "Processing a refund for #4821",
+        "Tagging feedback for the roadmap",
+    ],
+}
+
+#: How long a normal scripted status holds before its turn ends.
+_DEMO_TASK_DWELL_S = 11.0
+#: A completion beat ("✓ ...") reads as just-finished rather than as the
+#: ongoing task, so its turn is a much shorter beat before moving on.
+_DEMO_TASK_DONE_DWELL_S = 3.0
+
+
+def _demo_task_clock() -> float:
+    """Wall-clock seconds. A function, not a bare `time.time()` call, so a
+    test can substitute a fixed or stepped clock without sleeping in real
+    time to observe the rotation."""
+    return time.time()
+
+
+def _demo_task_cycle(name: str, configured_status: str) -> list[str]:
+    """The full rotation for a demo agent: its configured status first, then
+    any scripted follow-ons for that name. No script -> a cycle of exactly
+    one entry, which never changes and never enters the round-robin below."""
+    script = _DEMO_TASK_SCRIPTS.get(name)
+    if not script:
+        return [configured_status]
+    return [configured_status, *script]
+
+
+def _demo_task_dwell(status: str) -> float:
+    """Seconds a status holds once it is this agent's turn."""
+    return (
+        _DEMO_TASK_DONE_DWELL_S
+        if status.startswith("✓ ")
+        else _DEMO_TASK_DWELL_S
+    )
+
+
+#: One entry per turn: (agent name, status shown during the turn, the turn's
+#: start offset within the schedule's period, and its dwell).
+_DemoTurn = tuple[str, str, float, float]
+
+
+def _demo_rotation_schedule(
+    rotating: list[tuple[str, list[str]]],
+) -> tuple[list[_DemoTurn], float]:
+    """The round-robin schedule shared by every rotating demo agent.
+
+    Independent per-agent clocks were the first thing tried here, each with
+    its own phase offset -- and they cannot deliver "never two agents change
+    within 2s of each other": with 5 agents x 5 states cycling every ~40s,
+    the birthday-paradox math means SOME pair lands under 2s apart no matter
+    how the offsets are chosen (verified by exhaustive search: the best
+    achievable minimum gap tops out under 2s). A round-robin fixes this by
+    construction instead of by tuning: agents take turns in list order, one
+    state each, and only the agent whose turn it is changes -- so the gap
+    between ANY two changes, anywhere, is always exactly one turn's dwell
+    (>= _DEMO_TASK_DONE_DWELL_S, comfortably over 2s), never a coincidence of
+    two independent clocks landing close together.
+
+    One "round" gives every rotating agent exactly one turn, in order; the
+    schedule repeats once every agent has looped back to its own first state
+    at the same instant, i.e. after lcm(len(cycle) for each agent) rounds.
+    """
+    lengths = [len(cycle) for _, cycle in rotating]
+    rounds = 1
+    for length in lengths:
+        rounds = rounds * length // math.gcd(rounds, length)
+    turns: list[_DemoTurn] = []
+    t = 0.0
+    for round_ in range(rounds):
+        for name, cycle in rotating:
+            status = cycle[round_ % len(cycle)]
+            dwell = _demo_task_dwell(status)
+            turns.append((name, status, t, dwell))
+            t += dwell
+    return turns, t
+
+
+def _demo_agent_rotation_state(
+    turns: list[_DemoTurn], period: float, name: str, now: float
+) -> tuple[str, float]:
+    """(current status, seconds until it next changes) for one agent's own
+    turns within the shared schedule `turns` built by _demo_rotation_schedule.
+
+    Time-based, not poll-counted: recomputed fresh from `now` every call, so
+    the server stays authoritative -- a poll landing late or early never
+    desyncs from what the rotation says right now, and a client-side
+    animation can never be reverted by a poll that catches a change mid-air.
+    """
+    own = [(status, start, dwell) for turn_name, status, start, dwell in turns
+           if turn_name == name]
+    local = now % period
+    current = own[-1]  # default: still holding from the previous lap's last turn
+    for status, start, dwell in own:
+        if start <= local:
+            current = (status, start, dwell)
+        else:
+            break
+    idx = own.index(current)
+    next_start = own[(idx + 1) % len(own)][1]
+    remaining = (next_start - local) if next_start > local else (period - local) + next_start
+    return current[0], remaining
+
+
+def _demo_refresh_in_ms(next_change_candidates: list[int]) -> int | None:
+    """The top-level `refresh_in_ms`: soonest scheduled change plus a small
+    margin so it lands on or just after the change rather than just before
+    it, clamped so a pathological value can never make the client hammer the
+    endpoint or go silent for the rest of the lock screen's timeout.
+
+    None when nothing is scheduled to change, so the client keeps its own
+    15s default instead of being told to poll on an arbitrary cadence.
+    """
+    if not next_change_candidates:
+        return None
+    return max(1000, min(15000, min(next_change_candidates) + 150))
+
+
 @router.get("/lock-widgets")
 async def lock_widgets(request: Request):
     """Agent activity + scheduled tasks for the lock screen. Console-only.
@@ -8203,6 +8504,32 @@ async def lock_widgets(request: Request):
                     "demo": True,
                 })
 
+        # Rotating "current task": each demo agent with a script (see
+        # _DEMO_TASK_SCRIPTS) cycles through it turn by turn in a shared
+        # round-robin, list order, instead of sitting on its configured
+        # status forever. Computed fresh from the clock on every request --
+        # the SERVER is authoritative, so a 15s poll landing while the client
+        # is mid-animation can never revert what the client is showing, and a
+        # late or early poll just sees whatever the rotation says right now
+        # rather than drifting out of sync with it.
+        rotating = [
+            (a["name"], _demo_task_cycle(a["name"], a["status"]))
+            for a in agents
+            if a.get("demo") and len(_demo_task_cycle(a["name"], a["status"])) > 1
+        ]
+        if rotating:
+            now = _demo_task_clock()
+            turns, period = _demo_rotation_schedule(rotating)
+            rotating_names = {name for name, _ in rotating}
+            for agent in agents:
+                if agent["name"] not in rotating_names:
+                    continue
+                status, remaining = _demo_agent_rotation_state(
+                    turns, period, agent["name"], now
+                )
+                agent["status"] = status
+                agent["next_change_ms"] = int(round(remaining * 1000))
+
     # Live device agents: physical boards that are plugged in right now.
     #
     # MERGED HERE rather than served from their own endpoint because the lock
@@ -8301,14 +8628,24 @@ async def lock_widgets(request: Request):
     # A cap of six silently cut off a plugged-in board, which is appended last,
     # whenever five demo agents were configured. New agents go at the BOTTOM,
     # in arrival order (Jay; custom ordering comes later).
-    return JSONResponse({
-        "agents": agents,
+    visible = agents
+    payload = {
+        "agents": visible,
         "agent_total": len(agents),
         "agent_running": running,
         "tasks": tasks[:4],
         "task_total": len(tasks),
         "threads": bool(demo),
-    })
+    }
+    # Only agents actually SENT can schedule the client's next fetch -- a
+    # rotation on an agent not sent would tell the client to poll
+    # sooner for a change it could never paint anyway.
+    refresh_in_ms = _demo_refresh_in_ms(
+        [a["next_change_ms"] for a in visible if "next_change_ms" in a]
+    )
+    if refresh_in_ms is not None:
+        payload["refresh_in_ms"] = refresh_in_ms
+    return JSONResponse(payload)
 
 
 
