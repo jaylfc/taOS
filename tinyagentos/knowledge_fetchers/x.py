@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _YTDLP_NOT_FOUND_MSG = "yt-dlp not installed -- install the optional media extra"
+LEGACY_USER_ID = "legacy"
 
 # ---------------------------------------------------------------------------
 # yt-dlp fetcher
@@ -278,13 +279,17 @@ class XWatchStore(BaseStore):
                 )
                 """
             )
+            # Pre-user-scoping watches have no owner; the lead ruled that
+            # recreating them under a shared legacy owner is cheaper than
+            # inventing per-handle ownership retroactively.
             await db.execute(
                 """
                 INSERT INTO x_author_watches_new
                     (user_id, handle, filters_json, frequency, enabled, last_check, created_at)
-                SELECT 'legacy', handle, filters_json, frequency, enabled, last_check, created_at
+                SELECT ?, handle, filters_json, frequency, enabled, last_check, created_at
                 FROM x_author_watches
-                """
+                """,
+                (LEGACY_USER_ID,),
             )
             await db.execute("DROP TABLE x_author_watches")
             await db.execute("ALTER TABLE x_author_watches_new RENAME TO x_author_watches")

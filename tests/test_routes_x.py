@@ -50,10 +50,14 @@ async def _build_test_app(tmp_path: Path) -> FastAPI:
 @pytest_asyncio.fixture
 async def client(tmp_path):
     app = await _build_test_app(tmp_path)
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as ac:
-        yield ac
+    store = app.state.x_watch_store
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            yield ac
+    finally:
+        await store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -268,3 +272,13 @@ async def test_delete_watch_at_prefix(client):
     resp = await client.delete("/api/x/watch/@grace")
     assert resp.status_code == 200
     assert resp.json()["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_client_fixture_closes_watch_store(tmp_path):
+    gen = client._fixture_function(tmp_path)
+    ac = await gen.__anext__()
+    store = ac._transport.app.state.x_watch_store
+    assert store._db is not None
+    await gen.aclose()
+    assert store._db is None
