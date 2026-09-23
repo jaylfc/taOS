@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: qmcgaw/ddns-updater:latest
+  image: qmcgaw/ddns-updater:v1
   volumes:
     - data:/updater/data
   ports: [8000]

@@ -118,6 +118,36 @@ from tinyagentos.frameworks import FRAMEWORKS, FrameworkManifestError, validate_
 
 PROJECT_DIR = Path(__file__).parent.parent
 
+
+def resolve_data_dir(data_dir: Path | None = None) -> Path:
+    """Resolve the taOS data directory.
+
+    Precedence:
+      1. ``data_dir`` argument (what the caller configured)
+      2. ``TAOS_DATA_DIR`` environment variable
+      3. ``<project>/data`` default
+
+    Raises ``RuntimeError`` when both the explicit argument and the environment
+    variable are set to different paths, so the operator notices a misconfiguration
+    instead of the server silently writing to one directory and reading from another.
+    """
+    env_data_dir = os.environ.get("TAOS_DATA_DIR")
+    if env_data_dir and data_dir is not None:
+        env_path = Path(env_data_dir).resolve()
+        data_path = Path(data_dir).resolve()
+        if env_path != data_path:
+            raise RuntimeError(
+                f"Refusing to start: TAOS_DATA_DIR={env_data_dir} conflicts with "
+                f"configured data_dir={data_dir}. Unset one or make them match."
+            )
+        return env_path
+    if env_data_dir:
+        return Path(env_data_dir)
+    if data_dir is not None:
+        return Path(data_dir)
+    return PROJECT_DIR / "data"
+
+
 # Paths that must remain accessible before startup completes (health checks,
 # static assets, auth endpoints).  Everything else gets 503 until the lifespan
 # finishes its init sequence.
@@ -170,7 +200,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.registry import AppRegistry
     from tinyagentos.hardware import get_hardware_profile
 
-    data_dir = data_dir or PROJECT_DIR / "data"
+    data_dir = resolve_data_dir(data_dir)
     config_path = data_dir / "config.yaml"
     # Copy example config on first run
     if not config_path.exists():
@@ -1916,7 +1946,7 @@ def _recover_password_cli(argv) -> int:
     ns = parser.parse_args(argv)
 
     override = ns.data_dir or os.environ.get("TAOS_DATA_DIR")
-    data_dir = Path(override) if override else (PROJECT_DIR / "data")
+    data_dir = resolve_data_dir(Path(override) if override else None)
 
     new_password = ns.password
     if not new_password:

@@ -19,7 +19,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
 # --break-system-packages is intentional: the agent container is Debian
 # (PEP 668 externally-managed-environment), and this is a dedicated
 # single-purpose container, so a system-wide install is correct here.
-pip3 install --break-system-packages hermes-agent
+pip3 install --break-system-packages hermes-agent==0.2.0
 
 # Verify + resolve the binary's real path (pip may install it to
 # /usr/local/bin, /usr/bin, or ~/.local/bin depending on the base image),

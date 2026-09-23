@@ -644,6 +644,7 @@ install_hailo_if_pending() {
         return 0
     fi
     local hailo_script="$INSTALL_DIR/scripts/install-hailo.sh"
+    local rc
     # We invoke via `bash "$hailo_script"`, so executable bit isn't
     # required - only readable.
     if [[ ! -f "$hailo_script" || ! -r "$hailo_script" ]]; then
@@ -652,8 +653,17 @@ install_hailo_if_pending() {
         return 0
     fi
     log "chaining into $hailo_script (hailo-ollama auto-install)"
-    sudo -E bash "$hailo_script" --yes \
-        || warn "install-hailo.sh failed - continuing controller install anyway"
+    if sudo -E bash "$hailo_script" --yes; then
+        :
+    else
+        rc=$?
+        if (( rc == 3 )); then
+            warn "install-hailo.sh refused: pre-existing hailo-ollama on :8000; taOS backend not installed on 7836"
+            warn "  continuing controller install anyway"
+        else
+            warn "install-hailo.sh failed - continuing controller install anyway"
+        fi
+    fi
 }
 
 # Install the RK3588 performance-mode systemd service when the NPU is

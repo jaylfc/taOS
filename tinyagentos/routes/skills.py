@@ -41,6 +41,9 @@ async def assign_skill(request: Request, agent_id: str):
     skill_id = body.get("skill_id")
     if not skill_id:
         return JSONResponse({"error": "skill_id required"}, status_code=400)
+    skill = await _store(request).get_skill(skill_id)
+    if not skill:
+        return JSONResponse({"error": "Skill not found"}, status_code=404)
     await _store(request).assign_skill(agent_id, skill_id, body.get("config"))
     return JSONResponse({"ok": True})
 

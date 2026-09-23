@@ -27,7 +27,7 @@ import pytest
 
 from tinyagentos.routes import auth
 from tinyagentos.routes.auth import _LOCK_SCREEN_SCRIPT as LOCK_SCRIPT
-from test_lock_screen_gestures import _balanced
+from test_lock_screen_gestures import _balanced, _function
 
 
 class Failed(AssertionError):
@@ -90,6 +90,12 @@ function makeEl(opts) {
     removeEventListener: function () {},
     setAttribute: function (k, v) { this._attrs[k] = String(v); },
     removeAttribute: function (k) { delete this._attrs[k]; },
+    // The shipped code asks this before toggling the feed. Without it the
+    // stand-in throws, which reads as the feature being broken rather than as
+    // the harness being short of a method.
+    hasAttribute: function (k) {
+      return Object.prototype.hasOwnProperty.call(this._attrs, k);
+    },
     getAttribute: function (k) {
       return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null;
     },
@@ -127,7 +133,10 @@ _VIEW_KEYS = [key for key, _l, _i, _p in auth._LOCK_VIEWS]
 
 def _run_views(*, target: str, mutate: bool = False) -> dict:
     """Drive the real showView and report what it did to the panels."""
-    source = _show_view()
+    # showView now clears the hidden state as well, so the real setFeedHidden
+    # comes along rather than a stub -- a stub here would let showView claim to
+    # restore a feed it never touched.
+    source = _show_view() + "\n" + _function("setFeedHidden")
     if mutate:
         # THE MUTATION: drive `hidden` instead of `data-off`. This is the shape
         # the code would have had if the two owners had not been separated, and
@@ -613,3 +622,158 @@ class TestTheTopEdgeIsMeasured:
         viewport_css_px = 1080 / self.OUTPUT_SCALE
         side_padding = 10
         assert self._token("--ls-card-w") <= viewport_css_px - 2 * side_padding
+
+
+def _tab_click_handler() -> str:
+    """The SHIPPED click handler, lifted out of the served script.
+
+    Not re-typed as `if (key === currentView) toggle()`: that would be a test of
+    the copy, and the whole question here is what the real handler does when the
+    tab you press is the one already selected.
+    """
+    head = 'viewsEl.addEventListener("click", function (ev) {'
+    assert head in LOCK_SCRIPT, "the view row's click handler has moved"
+    start = LOCK_SCRIPT.index(head) + head.index("function (ev) {")
+    body = _balanced(LOCK_SCRIPT, start, "{", "}")
+    # _balanced returns from `start`, so `body` already IS the function expression.
+    return "var onTabClick = " + body + ";"
+
+
+def _run_toggle(presses, *, mutate: bool = False) -> list:
+    """Press a sequence of tabs and report whether the feed is showing."""
+    source = _show_view() + "\n" + _function("setFeedHidden") + "\n" \
+        + _function("feedIsHidden") + "\n" + _tab_click_handler()
+    if mutate:
+        # THE MUTATION: the active tab switches to itself instead of toggling,
+        # which is what the code did before Jay asked for this. Rendered state
+        # is identical on every OTHER press, so only the repeat press can tell
+        # them apart.
+        source = source.replace("setFeedHidden(!feedIsHidden());", "showView(key, false);")
+
+    program = (
+        _DOM
+        + "\nvar VIEWS = %s;\nvar VIEW_DEFAULT = %s;\n"
+        % (json.dumps({k: 1 for k in _VIEW_KEYS}), json.dumps(_VIEW_KEYS[0]))
+        + r"""
+var panels = %(keys)s.map(function (k) {
+  return makeEl({ sel: [], attrs: { "data-view": k } });
+});
+var tabs = %(keys)s.map(function (k) {
+  return makeEl({ sel: [".ls-view-tab"], attrs: { "data-view": k } });
+});
+var feedEl = makeEl({ kids: panels });
+var viewsEl = makeEl({ kids: tabs });
+var currentView = VIEW_DEFAULT;
+function viewTabs() { return tabs; }
+function renderView() {}
+function syncFeedFade() {}
+function startStats() {}
+function stopStats() {}
+
+%(source)s
+
+function tabFor(key) {
+  for (var i = 0; i < tabs.length; i++) {
+    if (tabs[i].getAttribute("data-view") === key) return tabs[i];
+  }
+  throw new Error("no tab " + key);
+}
+showView(VIEW_DEFAULT, false);
+var out = [];
+%(presses)s.forEach(function (key) {
+  var t = tabFor(key);
+  // The real handler reaches the tab through ev.target.closest.
+  onTabClick({ target: { closest: function (sel) { return sel === ".ls-view-tab" ? t : null; } } });
+  out.push({
+    pressed: key,
+    view: currentView,
+    hidden: !!feedEl.getAttribute("data-hidden"),
+    ariaHidden: feedEl.getAttribute("aria-hidden"),
+    expanded: tabs.map(function (x) {
+      return x.getAttribute("data-view") + ":" + x.getAttribute("aria-expanded");
+    })
+  });
+});
+console.log(JSON.stringify(out));
+"""
+        % {
+            "keys": json.dumps(_VIEW_KEYS),
+            "source": source,
+            "presses": json.dumps(presses),
+        }
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "toggle.js"
+        path.write_text(program, encoding="utf-8")
+        proc = subprocess.run(
+            [_node(), str(path)], capture_output=True, text=True, timeout=60
+        )
+    if proc.returncode != 0:
+        raise Failed("the toggle source threw:\n" + proc.stderr[-2000:])
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+class TestPressingTheActiveCategoryHidesTheFeed:
+    """Jay: "pressing on the active category icon on the lock screen hides the
+    notifications/banners etc. pressing it should have a nice fade in fade out
+    animation for hiding and restoring the view".
+
+    It is the one thing a lock screen full of cards could not do: see what is
+    underneath without unlocking or waiting for the screen to blank.
+    """
+
+    FIRST = _VIEW_KEYS[0]
+    OTHER = _VIEW_KEYS[1]
+
+    def test_pressing_the_active_tab_hides_the_feed(self):
+        out = _run_toggle([self.FIRST])
+        assert out[-1]["hidden"] is True
+        assert out[-1]["view"] == self.FIRST, "hiding must not change the view"
+
+    def test_pressing_it_again_brings_the_feed_back(self):
+        out = _run_toggle([self.FIRST, self.FIRST])
+        assert [step["hidden"] for step in out] == [True, False]
+
+    def test_choosing_a_different_category_restores_the_feed(self):
+        """Asking for another category means asking to SEE it -- a tap that
+        switched to a hidden panel would look like a dead screen."""
+        out = _run_toggle([self.FIRST, self.OTHER])
+        assert out[0]["hidden"] is True
+        assert out[1]["hidden"] is False
+        assert out[1]["view"] == self.OTHER
+
+    def test_a_hidden_feed_is_hidden_from_a_screen_reader_too(self):
+        """Faded is still readable. Opacity alone would leave every card in the
+        accessibility tree while the screen looks empty."""
+        out = _run_toggle([self.FIRST])
+        assert out[-1]["ariaHidden"] == "true"
+        out = _run_toggle([self.FIRST, self.FIRST])
+        assert out[-1]["ariaHidden"] == "false"
+
+    def test_only_the_selected_tab_claims_to_be_holding_it(self):
+        """The other six are not hiding anything, and saying they are would be
+        a lie to a reader."""
+        out = _run_toggle([self.FIRST])
+        expanded = [e for e in out[-1]["expanded"] if not e.endswith(":null")]
+        assert expanded == ["%s:false" % self.FIRST], expanded
+
+    def test_the_fade_is_a_transition_not_a_display_change(self):
+        """Jay asked for the animation. display:none cannot be transitioned,
+        and collapsing the column would jump the icon row down the screen
+        mid-press -- so the state must be opacity, and the row must stay put."""
+        css = auth._LOCK_SCREEN_STYLE
+        assert 'data-hidden="1"' in css
+        block = css[css.index('.ls-feed[data-hidden="1"]'):]
+        block = block[: block.index("}")]
+        assert "opacity: 0" in block
+        assert "display" not in block
+        # The transition lives on .ls-feed itself, in its own rule: the state
+        # rule only names the end point, and a transition declared there would
+        # animate on the way out and snap on the way back.
+        assert "transition: opacity" in css
+
+    def test_the_harness_observes_the_defect(self):
+        """The control: with the repeat press switching to the same view
+        instead of toggling, every rendered value above is unchanged."""
+        out = _run_toggle([self.FIRST, self.FIRST], mutate=True)
+        assert [step["hidden"] for step in out] == [False, False]

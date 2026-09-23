@@ -636,18 +636,47 @@ class TestLockScreenNotifications:
         assert (await auth_mod.lock_notifications(None)).status_code == 403
 
     def test_every_source_jay_asked_for_has_a_stack(self):
-        from tinyagentos.routes.auth import _demo_notifications
+        """Jay moved four of the five original stacks out of Alerts: "the alerts
+        category has some of the old notifications that need moving into the
+        correct categories". The stacks predate the panels and were written when
+        Alerts was the only place anything could go -- mail, X and SMS repeated
+        the mailbox, and the phone stack repeated the missed calls.
+
+        So the sources he asked for are now the ones nothing else can carry, and
+        this asserts BOTH halves: what Alerts holds, and that it no longer holds
+        what another panel owns. Asserting only the first would still pass with
+        every duplicate stack back in place.
+        """
+        from tinyagentos.routes.auth import _demo_notifications, _demo_panels
 
         sources = {group["source"] for group in _demo_notifications()}
-        assert {"mail", "x", "reddit", "phone", "sms"} <= sources
+        assert {"agent", "system"} <= sources
+
+        # Read off the panels rather than a hand-typed list: a source that moves
+        # into a panel later is covered without anyone remembering to come here.
+        owned = {
+            str(item.get("app", "")).lower()
+            for key in ("phone", "mailbox", "apps")
+            for item in _demo_panels()[key]
+        }
+        clash = {s for s in sources if s in owned}
+        assert not clash, "Alerts is duplicating a panel again: %r" % (clash,)
 
     def test_items_are_collated_by_source_not_listed_flat(self):
         """The whole point of the stack: several mails are ONE pile, not three
         banners pushing the islands off the screen."""
         from tinyagentos.routes.auth import _demo_notifications
 
-        groups = {g["source"]: g for g in _demo_notifications()}
-        assert len(groups["mail"]["items"]) >= 3
+        groups = _demo_notifications()
+
+        # One stack per source is what "collated" MEANS: two groups with the
+        # same source are two banners for one pile, which is the flat list this
+        # is here to rule out.
+        sources = [g["source"] for g in groups]
+        assert len(sources) == len(set(sources)), sources
+        assert max(len(g["items"]) for g in groups) > 1, (
+            "no stack has more than one item -- every alert is its own banner"
+        )
 
     def test_stacks_and_their_items_are_newest_first(self):
         """A phone orders by arrival. A fixed table order would leave an

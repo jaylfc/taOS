@@ -2,7 +2,7 @@ id: excalidraw
 name: Excalidraw
 type: service
 category: productivity
-version: latest
+version: 0.17.0
 description: "Collaborative whiteboard — agents can generate and share diagrams and sketches"
 homepage: https://excalidraw.com
 license: MIT
@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: excalidraw/excalidraw:latest
+  image: excalidraw/excalidraw:0.17.0
   ports: [3000]
 
 lifecycle:

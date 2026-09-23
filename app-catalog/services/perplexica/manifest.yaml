@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: itzcrazykns/perplexica:latest
+  image: itzcrazykns/perplexica:1.9.0
   volumes:
     - data:/home/perplexica/data
   ports: [3001]
