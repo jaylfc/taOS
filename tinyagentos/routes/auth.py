@@ -9161,13 +9161,15 @@ async def lock_widgets(request: Request):
     # carries the product mark rather than a monogram, and the OMP harness badge
     # like any other agent -- it runs on OMP (oh-my-pi) over ACP, see
     # tinyagentos/adapters/omp_adapter.py.
-    # Its "status" says WHERE it is, not that it is busy -- this endpoint runs
-    # pre-auth and has no cheap, truthful way to read the agent's activity.
+    # Its status reads "Idle" (Jay; it used to say "On device", i.e. WHERE it
+    # is). This endpoint runs pre-auth and has no cheap, truthful way to read
+    # the agent's activity, and "Idle" is also a resting status to the page,
+    # so the island draws at rest.
     agents.insert(0, {
         "name": "taOS Agent",
         "framework": "omp",
         "framework_icon": _framework_icon("omp"),
-        "status": "On device",
+        "status": "Idle",
         "avatar": "/static/taos-logo.png",
         "system": True,
     })
