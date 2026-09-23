@@ -33,9 +33,10 @@ Routes exempt from the gate:
 """
 from __future__ import annotations
 
+import ast
 import importlib
 import inspect
-import re
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -68,54 +69,7 @@ _ALLOWED_DEP_NAMES = {
     "_require_admin",
 }
 
-_BODY_AUTHZ_CALLS = re.compile(
-    r"require_(agent_)?owner_or_admin\(",
-)
-
-# Regex to match an awaited authz call as a statement (not in a comment).
-# Matches lines like:     await require_agent_owner_or_admin(...)
-# but not:              # await require_agent_owner_or_admin(...)
-# or:                   x = require_agent_owner_or_admin(...)  (not awaited)
-# or:                   "require_agent_owner_or_admin("  (in string)
-_BODY_AUTHZ_AWAITED = re.compile(
-    r"^\s*await\s+require_(agent_)?owner_or_admin\s*\(",
-    re.MULTILINE,
-)
-
-
-def _strip_comments_and_strings(source: str) -> str:
-    """Remove comments and string literals from source code for safer regex matching."""
-    # Remove single-line comments and string literals
-    lines = source.splitlines()
-    cleaned_lines = []
-    for line in lines:
-        # Find first # not inside a string
-        in_string = False
-        string_char = None
-        escape = False
-        comment_pos = -1
-        for i, ch in enumerate(line):
-            if escape:
-                escape = False
-                continue
-            if ch == "\\":
-                escape = True
-                continue
-            if not in_string and ch in ('"', "'"):
-                in_string = True
-                string_char = ch
-                continue
-            if in_string and ch == string_char:
-                in_string = False
-                string_char = None
-                continue
-            if not in_string and ch == "#":
-                comment_pos = i
-                break
-        if comment_pos >= 0:
-            line = line[:comment_pos]
-        cleaned_lines.append(line)
-    return "\n".join(cleaned_lines)
+_BODY_AUTHZ_NAMES = {"require_owner_or_admin", "require_agent_owner_or_admin"}
 
 
 def _handler_has_body_authz(route) -> bool:
@@ -127,10 +81,25 @@ def _handler_has_body_authz(route) -> bool:
         source = inspect.getsource(endpoint)
     except (OSError, TypeError):
         return False
-    # Strip comments and string literals to avoid false positives
-    cleaned = _strip_comments_and_strings(source)
-    # Require the call to be awaited as a statement
-    return bool(_BODY_AUTHZ_AWAITED.search(cleaned))
+    try:
+        tree = ast.parse(textwrap.dedent(source))
+    except Exception:
+        return False
+    target_name = getattr(endpoint, "__name__", None)
+    if target_name is None:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == target_name:
+            for stmt in node.body:
+                if (
+                    isinstance(stmt, ast.Expr)
+                    and isinstance(stmt.value, ast.Await)
+                    and isinstance(stmt.value.value, ast.Call)
+                    and isinstance(stmt.value.value.func, ast.Name)
+                    and stmt.value.value.func.id in _BODY_AUTHZ_NAMES
+                ):
+                    return True
+    return False
 
 
 # Path prefixes that are exempt because their authz is enforced inside the
@@ -292,4 +261,61 @@ def test_handler_has_body_authz_rejects_commented_call():
     # This MUST fail with the current _handler_has_body_authz (regex matches comments)
     assert not _handler_has_body_authz(fake_route), (
         "Gate incorrectly passes handler with only commented-out authz call"
+    )
+
+
+def _make_fake_route_with_authz_in_docstring():
+    """Create a fake route object with a handler whose only authz text is inside a docstring."""
+    from types import SimpleNamespace
+
+    async def fake_handler_docstring(request):
+        """Update an agent.
+
+        await require_agent_owner_or_admin(request, user, name)
+        """
+        return {"status": "no authz ran"}
+
+    fake_dependant = SimpleNamespace(dependencies=[])
+    fake_route = SimpleNamespace(
+        endpoint=fake_handler_docstring,
+        methods={"POST"},
+        path="/api/test/fake",
+        dependant=fake_dependant,
+    )
+    return fake_route
+
+
+def _make_fake_route_with_authz_in_string_literal():
+    """Create a fake route object with a handler whose only authz text is inside a string literal."""
+    from types import SimpleNamespace
+
+    async def fake_handler_string(request):
+        doc = """
+        await require_owner_or_admin(request, user)
+        """
+        return {"status": "no authz ran", "d": doc}
+
+    fake_dependant = SimpleNamespace(dependencies=[])
+    fake_route = SimpleNamespace(
+        endpoint=fake_handler_string,
+        methods={"POST"},
+        path="/api/test/fake",
+        dependant=fake_dependant,
+    )
+    return fake_route
+
+
+def test_gate_rejects_authz_call_inside_docstring():
+    """The gate must NOT pass a handler whose only authz text is inside a docstring."""
+    fake_route = _make_fake_route_with_authz_in_docstring()
+    assert not _handler_has_body_authz(fake_route), (
+        "Gate passes a handler whose only authz text is inside a docstring"
+    )
+
+
+def test_gate_rejects_authz_call_inside_string_literal():
+    """The gate must NOT pass a handler whose only authz text is inside a string literal."""
+    fake_route = _make_fake_route_with_authz_in_string_literal()
+    assert not _handler_has_body_authz(fake_route), (
+        "Gate passes a handler whose only authz text is inside a string literal"
     )

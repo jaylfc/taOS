@@ -449,11 +449,11 @@ async def update_agent_permissions(request: Request, name: str, body: AgentPermi
 @router.delete("/api/agents/{name}")
 async def delete_agent(request: Request, name: str, user: CurrentUser = Depends(current_user)):
     """Archive an agent instead of hard-deleting it. The agent's
-    await require_agent_owner_or_admin(request, user, name)
     container, workspace, and memory are preserved under an archive
     bucket so the user can restore it later — or permanently purge it
     via ``DELETE /api/agents/archived/{id}``.
     """
+    await require_agent_owner_or_admin(request, user, name)
     result = await agent_archive.archive_agent_fully(request, name)
     if "error" in result:
         return JSONResponse({"error": result["error"]}, status_code=result["status_code"])
@@ -1202,11 +1202,11 @@ async def pause_agent(request: Request, name: str, user: CurrentUser = Depends(c
 @router.post("/api/agents/{name}/stop")
 async def stop_agent(request: Request, name: str, user: CurrentUser = Depends(current_user)):
     """Gracefully prepare, then stop an agent's LXC container with force-kill after 2s.
-    await require_agent_owner_or_admin(request, user, name)
 
     Sends SIGTERM via incus stop. After a 2-second grace window, if the container
     is still running, sends SIGKILL (incus stop --force) to guarantee termination.
     """
+    await require_agent_owner_or_admin(request, user, name)
     from tinyagentos.containers import stop_container, list_containers
 
     config = request.app.state.config
@@ -1441,10 +1441,10 @@ async def _import_agent_json(request: Request, body: AgentImport):
 @router.delete("/api/agents/{name}/destroy")
 async def destroy_agent(request: Request, name: str, user: CurrentUser = Depends(current_user)):
     """Kept for API compatibility. Same behaviour as DELETE
-    await require_agent_owner_or_admin(request, user, name)
     /api/agents/{name} — archives the agent. True permanent deletion
     happens via ``DELETE /api/agents/archived/{id}``.
     """
+    await require_agent_owner_or_admin(request, user, name)
     result = await agent_archive.archive_agent_fully(request, name)
     if "error" in result:
         return JSONResponse({"error": result["error"]}, status_code=result["status_code"])
@@ -1589,12 +1589,12 @@ class AgentModelUpdate(BaseModel):
 @router.post("/api/agents/{name}/model")
 async def update_agent_model(request: Request, name: str, body: AgentModelUpdate, user: CurrentUser = Depends(current_user)):
     """Update an agent's primary model and resume it if it was paused.
-    await require_agent_owner_or_admin(request, user, name)
 
     Validates the requested model against currently-reachable cluster models
     (local backend catalog + online workers).  Returns 409 if the model is
     not reachable anywhere in the cluster right now.
     """
+    await require_agent_owner_or_admin(request, user, name)
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
