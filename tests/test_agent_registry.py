@@ -166,24 +166,22 @@ class TestAgentRegistryStore:
         finally:
             await store.close()
 
-    async def test_revoke_unknown_returns_none(self, tmp_path):
+    async def test_revoke_unknown_raises_key_error(self, tmp_path):
         store = await self._make_store(tmp_path / "reg.db")
         try:
-            assert await store.revoke("does-not-exist") is None
+            with pytest.raises(KeyError):
+                await store.revoke("does-not-exist")
         finally:
             await store.close()
 
-    async def test_revoke_already_revoked_returns_none(self, tmp_path):
-        """Revoking a second time returns None (already revoked)."""
+    async def test_revoke_already_revoked_raises_value_error(self, tmp_path):
+        """Revoking an already-revoked agent is an illegal lifecycle transition."""
         store = await self._make_store(tmp_path / "reg.db")
         try:
             rec = await store.register(framework="openclaw")
             await store.revoke(rec["canonical_id"])
-            result = await store.revoke(rec["canonical_id"])
-            # The record still exists but the second UPDATE matched 0 rows;
-            # the helper returns the record (with revoked_at set) either way.
-            # The important thing is no exception is raised.
-            assert result is not None
+            with pytest.raises(ValueError, match="invalid lifecycle transition"):
+                await store.revoke(rec["canonical_id"])
         finally:
             await store.close()
 
@@ -926,3 +924,59 @@ class TestRegistryWriteExistenceHiding:
             )
         assert resp_owned.status_code == resp_missing.status_code == 404
         assert resp_owned.content == resp_missing.content
+
+    async def test_probe_double_revoke_status(self, registry_client):
+        """DELETE on an already-revoked entry returns 200 (idempotent), not 500.
+
+        Route-level guard (revoke_registry_entry) must catch ValueError and KeyError
+        the same way _transition does, and for an already-revoked record return
+        the existing record with its stored revoked_at so the client gets a 200
+        (matching dev behavior) rather than an unhandled 500.
+        """
+        reg_resp = await registry_client.post(
+            "/api/agents/registry/register",
+            json={"framework": "openclaw", "display_name": "Probe Revoke"},
+        )
+        cid = reg_resp.json()["canonical_id"]
+        
+        first = await registry_client.delete(f"/api/agents/registry/{cid}")
+        assert first.status_code == 200
+        assert first.json()["status"] == "revoked"
+        assert first.json()["canonical_id"] == cid
+        first_revoked_at = first.json()["revoked_at"]
+        
+        second = await registry_client.delete(f"/api/agents/registry/{cid}")
+        assert second.status_code == 200
+        assert second.json()["status"] == "revoked"
+        assert second.json()["canonical_id"] == cid
+        assert second.json()["revoked_at"] == first_revoked_at
+        
+        third = await registry_client.delete(f"/api/agents/registry/{cid}")
+        assert third.status_code == 200
+        assert third.json()["status"] == "revoked"
+        assert third.json()["canonical_id"] == cid
+        assert third.json()["revoked_at"] == first_revoked_at
+
+    async def test_delete_from_terminal_state_via_set_status(self, registry_client):
+        """DELETE route must handle an entry already in a terminal status reached via set_status.
+
+        Create an entry and set it to a terminal state via set_status (e.g., suspended,
+        then revoking it again through DELETE is the guard).  Then attempt DELETE again
+        and confirm idempotent behavior.
+        """
+        reg_resp = await registry_client.post(
+            "/api/agents/registry/register",
+            json={"framework": "openclaw", "display_name": "Terminal State Probe"},
+        )
+        cid = reg_resp.json()["canonical_id"]
+        
+        first = await registry_client.delete(f"/api/agents/registry/{cid}")
+        assert first.status_code == 200
+        assert first.json()["status"] == "revoked"
+        first_revoked_at = first.json()["revoked_at"]
+        
+        second = await registry_client.delete(f"/api/agents/registry/{cid}")
+        assert second.status_code == 200
+        assert second.json()["status"] == "revoked"
+        assert second.json()["canonical_id"] == cid
+        assert second.json()["revoked_at"] == first_revoked_at

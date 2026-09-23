@@ -53,9 +53,12 @@ def _pids_listening_on(port: int) -> list[int]:
     """
     try:
         out = subprocess.check_output(
-            ["lsof", "-ti", f":{port}", "-sTCP:LISTEN"], text=True, stderr=subprocess.DEVNULL
+            ["lsof", "-ti", f":{port}", "-sTCP:LISTEN"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
         ).strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
         return []
     pids: list[int] = []
     for line in out.split("\n"):
@@ -442,7 +445,7 @@ class LLMProxy:
             port_in_use = False
 
         if port_in_use:
-            pids = _pids_listening_on(self.port)
+            pids = await asyncio.to_thread(_pids_listening_on, self.port)
             if pids:
                 logger.info(
                     "LiteLLM on port %d owned by foreign PID(s) %r — "

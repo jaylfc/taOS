@@ -2,7 +2,7 @@ id: piper-tts
 name: Piper TTS
 type: service
 category: voice
-version: latest
+version: 1.7.0
 description: "Fast local text-to-speech via Wyoming Piper — agents can generate natural voice audio"
 homepage: https://github.com/rhasspy/piper
 license: MIT
@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: rhasspy/wyoming-piper:latest
+  image: rhasspy/wyoming-piper:1.7.0
   volumes:
     - voices:/data
   ports: [10200]

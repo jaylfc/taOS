@@ -2,7 +2,7 @@ id: filebrowser
 name: File Browser
 type: service
 category: productivity
-version: latest
+version: 2.27.0
 description: "Web file manager — browse and manage agent workspaces through a clean browser UI"
 homepage: https://filebrowser.org
 license: Apache-2.0
@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: filebrowser/filebrowser:latest
+  image: filebrowser/filebrowser:2.27.0
   volumes:
     - data:/srv
     - config:/config

@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: ghcr.io/lllyasviel/fooocus:latest
+  image: ghcr.io/lllyasviel/fooocus:2.5.0
   volumes:
     - data:/content/data
     - outputs:/content/outputs

@@ -1,0 +1,14 @@
+- Pin hermes-agent pip version (0.2.0) in hermes install script
+- Pin agent-zero git tag (v0.8.0) in manifest and install script
+- Pin all floating Docker image tags in service manifests (21 images)
+- Pin neko-browser base images (firefox, chromium, taos-neko-cdp) to 2.4.0
+- Pin openclaw npm package to 0.2.0
+- Pin engram go package to v0.1.0
+- Add digest-aware structure for pinned Docker images
+- Replace `version: latest` with concrete versions in 15 service manifests
+- Sync catalog.yaml version fields with pinned service versions
+- Fix supervisor.py indentation after get_manifest → get refactor
+- Extend audit-manifests.py with drift checks (missing version, duplicate IDs, unknown methods, deprecated health_check, non-canonical hardware_tiers)
+- Extend check_dependency_audit_ignores.py with stale CVE detection
+- Remove stale CVE-2026-3219 ignore from pip-audit-ignore.toml
+- Update branding: TinyAgentOS → taOS in index.html, mkdocs.yml, landing page
