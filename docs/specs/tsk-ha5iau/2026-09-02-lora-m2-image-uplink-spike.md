@@ -24,19 +24,20 @@
 
 ## 3. Identity Mapping: LXMF Destination to Channel Hub Seam
 
-**Proposed Mapping:** `platform="reticulum"` should map LXMF destinations onto the same per-device registration and `MessageRouter` seam as Meshtastic, creating a unified security model. 
+**Proposed Mapping:** `platform="reticulum"` should map LXMF destinations onto the same per-device registration and `MessageRouter` seam as Meshtastic, creating a unified security model.
 
-**Implementation:** The `assign_channel("reticulum", <lxmf_destination_hash>, <agent_name>)` call in `channel_hub/router.py` uses the LXMF destination hash (SHA-256 of the destination's public key) as the `bot_id`. This hash becomes the channel identifier in the `MessageRouter._channel_assignments` map alongside Meshtastic node IDs.
+**Implementation:** The `assign_channel("reticulum", <lxmf_destination_hash>, <agent_name>)` call in `tinyagentos/channel_hub/router.py:15` (`assign_channel`) uses the LXMF destination hash as the `bot_id`. This hash is a truncated 128-bit hash over the name-hash + identity, not the SHA-256 of the public key, and becomes the channel identifier in the `MessageRouter._channel_assignments` map alongside Meshtastic node IDs.
 
 **What is NOT shared:** 
-- Meshtastic uses AES-256-GCM with device-specific PSK
+- Meshtastic uses AES-256-CTR with device-specific PSK — source: https://meshtastic.org/docs/overview/encryption/
 - Reticulum/LXMF uses asymmetric encryption with LXMF destination's public key for message encryption
-- Meshtastic device keys are stored in the Heltec's EEPROM; LXMF identity keys are stored in the taOS controller's secure keystore
-- The radio frequency parameters (SF, bandwidth, channel) are platform-specific: Meshtastic uses its own channel hopping, Reticulum uses fixed frequency slots
+- Meshtastic does not channel-hop; the frequency slot is derived from the channel name hash — source: https://meshtastic.org/docs/overview/radio-settings/
+- Meshtastic device keys are stored in the Heltec's EEPROM; LXMF identity keys are stored in the Secrets app, or TBD — decide at build time
+- The radio frequency parameters (SF, bandwidth, channel) are platform-specific: Meshtastic uses its own channel scheduling, Reticulum uses fixed frequency slots
 
 This creates ONE security model at the `MessageRouter` level but preserves the cryptographic differences between the two transport protocols.
 
-**Source:** Based on existing `channel_hub/router.py` architecture in `/tmp/exec-tsk-ifxc3q/tinyagentos/channel_hub/router.py:15-20` and LXMF specification for destination-based addressing.
+**Source:** Based on existing `channel_hub/router.py` architecture in `tinyagentos/channel_hub/router.py:15` (`assign_channel`) and LXMF specification for destination-based addressing; Meshtastic encryption: https://meshtastic.org/docs/overview/encryption/; radio settings: https://meshtastic.org/docs/overview/radio-settings/.
 
 ## 4. Local VLM Path Integration
 
