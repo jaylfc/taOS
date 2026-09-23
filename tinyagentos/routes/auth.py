@@ -34,6 +34,7 @@ from tinyagentos.auth import (
 )
 from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.middleware.csrf import verify_csrf
+from tinyagentos.demo_mode import demo_env
 from tinyagentos.routes.onscreen_keyboard import OSK_SCRIPT, osk_assets
 
 logger = logging.getLogger(__name__)
@@ -6819,7 +6820,7 @@ async def lock_widgets(request: Request):
     # so a demo machine can show a populated lock screen without standing up
     # three real container-backed agents first; anything it lists is a
     # placeholder, not a running process.
-    demo = os.environ.get("TAOS_LOCK_DEMO_AGENTS", "").strip()
+    demo = _demo_value("TAOS_LOCK_DEMO_AGENTS", request)
     if demo:
         existing = {a["name"] for a in agents}
         for raw in demo.split(","):
@@ -6891,7 +6892,7 @@ async def lock_widgets(request: Request):
     # lie about the state of the machine. It carries no decision id, which is
     # what the client uses to tell a demo prompt from an answerable one.
     if demo and not any(a.get("attention") for a in agents):
-        want = os.environ.get("TAOS_LOCK_DEMO_DECISION_AGENT", "").strip().lower()
+        want = _demo_value("TAOS_LOCK_DEMO_DECISION_AGENT", request).lower()
         target = None
         for a in agents:
             if not a.get("demo") or a.get("system"):
@@ -6904,10 +6905,8 @@ async def lock_widgets(request: Request):
             target["attention"] = True
             target["decision"] = {
                 "id": "",
-                "question": os.environ.get(
-                    "TAOS_LOCK_DEMO_DECISION",
-                    "Approve \u00a31,340 for the second Raspberry Pi order?",
-                ),
+                "question": _demo_value("TAOS_LOCK_DEMO_DECISION", request)
+                or "Approve \u00a31,340 for the second Raspberry Pi order?",
                 "priority": "normal",
                 "options": ["Approve", "Deny"],
                 "demo": True,
@@ -7114,17 +7113,39 @@ _DEMO_THREAD_FALLBACK: tuple[tuple[int, int, int, str, str], ...] = (
 )
 
 
-def _demo_enabled() -> bool:
+def _demo_value(flag_name: str, request: Request) -> str:
+    """The value of demo flag *flag_name*, or "" while it must not apply.
+
+    THE one place the lock screen reads a ``TAOS_LOCK_DEMO_*`` flag. The env
+    flag says WHAT demo content exists; the Settings switch (data/demo_mode.json,
+    see tinyagentos.demo_mode) says whether it is SHOWN. With the switch off
+    this answers "" -- identical to the flag being unset -- so every surface
+    takes its flag-off path, 404s included. A demo read that bypassed this would
+    keep invented content on a pre-sign-in screen the owner has switched to its
+    real state, so tests/test_demo_mode.py greps for exactly that.
+    """
+    # No app state to read the switch from reads as switch OFF (fail closed):
+    # demo content is never shown on a guess.
+    state = getattr(getattr(request, "app", None), "state", None)
+    return demo_env(flag_name, getattr(state, "data_dir", None))
+
+
+def _demo_active(flag_name: str, request: Request) -> bool:
+    """Demo flag *flag_name* is set AND the demo-mode switch is on."""
+    return bool(_demo_value(flag_name, request))
+
+
+def _demo_enabled(request: Request) -> bool:
     """Whether the lock screen's demo content is switched on.
 
     One flag governs the placeholder agents, their scripted threads and the
     demo decision, so a machine cannot end up showing invented conversations
     while believing it is in its real state.
     """
-    return bool(os.environ.get("TAOS_LOCK_DEMO_AGENTS", "").strip())
+    return _demo_active("TAOS_LOCK_DEMO_AGENTS", request)
 
 
-def _demo_notifications_enabled() -> bool:
+def _demo_notifications_enabled(request: Request) -> bool:
     """Whether the lock screen's notification stacks are switched on.
 
     Narrower than _demo_enabled and OFF by default: the stacks are being
@@ -7133,12 +7154,12 @@ def _demo_notifications_enabled() -> bool:
     one, so switching off TAOS_LOCK_DEMO_AGENTS still takes down everything
     invented on this pre-sign-in screen in a single move.
     """
-    if not _demo_enabled():
+    if not _demo_enabled(request):
         return False
-    return bool(os.environ.get("TAOS_LOCK_DEMO_NOTIFICATIONS", "").strip())
+    return _demo_active("TAOS_LOCK_DEMO_NOTIFICATIONS", request)
 
 
-def _demo_panels_enabled() -> bool:
+def _demo_panels_enabled(request: Request) -> bool:
     """Whether the scripted phone/mailbox/apps/decisions/settings panels are on.
 
     Same two-flag shape as the stacks, and for the same reason: the master flag
@@ -7147,9 +7168,9 @@ def _demo_panels_enabled() -> bool:
     part of this screen that shows REAL state -- with none of the scripted
     inbox content beside them.
     """
-    if not _demo_enabled():
+    if not _demo_enabled(request):
         return False
-    return bool(os.environ.get("TAOS_LOCK_DEMO_PANELS", "").strip())
+    return _demo_active("TAOS_LOCK_DEMO_PANELS", request)
 
 
 def _demo_thread(slug: str) -> list[dict]:
@@ -7176,7 +7197,7 @@ async def lock_thread(slug: str, request: Request):
     """
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
-    if not _demo_enabled():
+    if not _demo_enabled(request):
         return JSONResponse({"error": "not found"}, status_code=404)
 
     safe = _avatar_slug(slug)
@@ -8018,14 +8039,14 @@ def _demo_panels() -> dict:
     }
 
 
-def _demo_agent_names() -> list[str]:
+def _demo_agent_names(request: Request) -> list[str]:
     """The demo agent labels, parsed exactly as /auth/lock-widgets parses them.
 
     Keyed off the SAME env var rather than a second list, so the stats panel and
     the islands can never disagree about who is running. A separate table here
     would drift the first time Jay edited one drop-in and not the other.
     """
-    demo = os.environ.get("TAOS_LOCK_DEMO_AGENTS", "").strip()
+    demo = _demo_value("TAOS_LOCK_DEMO_AGENTS", request)
     names: list[str] = []
     for raw in demo.split(","):
         parts = [seg.strip() for seg in raw.split(":")]
@@ -8034,7 +8055,7 @@ def _demo_agent_names() -> list[str]:
     return names
 
 
-def _demo_agent_usage() -> list[dict]:
+def _demo_agent_usage(request: Request) -> list[dict]:
     """Per-agent CPU / RAM / storage that MOVES between polls.
 
     Jay asked for "live demo data for agents cpu, ram and storage usage". Live
@@ -8054,7 +8075,7 @@ def _demo_agent_usage() -> list[dict]:
     Percentages are per-agent, not shares of the device, and the total is capped
     so six agents cannot add up to a machine that is 300% busy.
     """
-    names = _demo_agent_names()
+    names = _demo_agent_names(request)
     now = time.time()
     out: list[dict] = []
     budget = 82.0                      # leave headroom for the system itself
@@ -8307,8 +8328,8 @@ async def lock_stats(request: Request):
     # rather than an empty list when the flag is off -- "no agents running" and
     # "nothing is measuring agents" are different answers, and this endpoint
     # already draws that distinction for every hardware reading above.
-    if _demo_enabled():
-        usage = _demo_agent_usage()
+    if _demo_enabled(request):
+        usage = _demo_agent_usage(request)
         if usage:
             payload["agents"] = usage
 
@@ -8334,7 +8355,7 @@ async def lock_notifications(request: Request):
     """
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
-    if not _demo_notifications_enabled():
+    if not _demo_notifications_enabled(request):
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse({"groups": _demo_notifications(), "demo": True})
 
@@ -9029,7 +9050,7 @@ async def lock_panels(request: Request):
     """
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
-    if not _demo_panels_enabled():
+    if not _demo_panels_enabled(request):
         return JSONResponse({"error": "not found"}, status_code=404)
     payload = _demo_panels()
     payload["demo"] = True
