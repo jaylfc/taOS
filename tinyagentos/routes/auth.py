@@ -1005,12 +1005,12 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
 }
 /* SCREEN OFF / ON, ON TRUE BLACK. Jay: "close into the centre and expand out
  * from the centre animation to play on the true black of the oled screen? a
- * quick 0.5 second animation". Off: the screen squashes to a line through the
- * middle, then to a point, and is gone. On: the reverse. The body is already
+ * quick 0.5 second animation". Off: the screen falls into a point in the
+ * middle (see the keyframes). On: the reverse. The body is already
  * black (ls-black) for both, and the lock screen carries the body's own grey
  * gradient while it moves, so the shrinking rectangle is the whole picture
- * and not a transparent cut-out. Transform and opacity only: this is a
- * full-screen layer on a phone GPU.
+ * and not a transparent cut-out. Transform, opacity and a circle clip only:
+ * this is a full-screen layer on a phone GPU.
  *
  * taos-kiosk-screen waits for this before powering the output down -- the
  * page cannot paint once the panel is off -- so its last frame is black. */
@@ -1019,17 +1019,23 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
   background: linear-gradient(160deg, #141415 0%, #1a1a1d 45%, #202024 100%);
   will-change: transform, opacity;
 }
-.lockscreen[data-closing="1"] { animation: ls-tv-off 0.5s cubic-bezier(.55, 0, .8, .2) forwards; }
-.lockscreen[data-opening="1"] { animation: ls-tv-on 0.5s cubic-bezier(.2, .8, .2, 1) both; }
+.lockscreen[data-closing="1"] { animation: ls-tv-off 0.5s cubic-bezier(.6, 0, .95, .45) forwards; }
+.lockscreen[data-opening="1"] { animation: ls-tv-on 0.5s cubic-bezier(.05, .55, .4, 1) both; }
+/* Jay, after the first cut (a horizontal line): "i want more of a dot in the
+ * middle, like a warp/blackhole bend into the hole". So it shrinks toward ONE
+ * point while twisting into it, the corners rounding off into a disc as it
+ * goes (clip-path, so the content bends into the hole rather than a card
+ * sliding away), accelerating at the end the way something falling in does.
+ * On is the same fall run backwards: it spins out of the dot and unrolls. */
 @keyframes ls-tv-off {
-  0%   { transform: scale(1, 1);       opacity: 1; }
-  60%  { transform: scale(1, 0.006);   opacity: 1; }
-  100% { transform: scale(0, 0.006);   opacity: 0; }
+  0%   { transform: scale(1) rotate(0deg);      clip-path: circle(80% at 50% 50%); opacity: 1; }
+  55%  { transform: scale(0.42) rotate(95deg);  clip-path: circle(42% at 50% 50%); opacity: 1; }
+  100% { transform: scale(0) rotate(300deg);    clip-path: circle(0% at 50% 50%);  opacity: 0; }
 }
 @keyframes ls-tv-on {
-  0%   { transform: scale(0, 0.006);   opacity: 0; }
-  40%  { transform: scale(1, 0.006);   opacity: 1; }
-  100% { transform: scale(1, 1);       opacity: 1; }
+  0%   { transform: scale(0) rotate(-300deg);   clip-path: circle(0% at 50% 50%);  opacity: 0; }
+  45%  { transform: scale(0.42) rotate(-95deg); clip-path: circle(42% at 50% 50%); opacity: 1; }
+  100% { transform: scale(1) rotate(0deg);      clip-path: circle(80% at 50% 50%); opacity: 1; }
 }
 @keyframes ls-tv-fade-out { to { opacity: 0; } }
 @keyframes ls-tv-fade-in { from { opacity: 0; } }
