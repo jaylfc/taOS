@@ -7478,7 +7478,9 @@ def _device_island(entry: dict) -> dict:
     link = entry.get("link") or ""
     status = "Online · USB" if link == "usb" else "Online"
     if link == "power":
-        status = "Online · power only"
+        # Jay: "power only" -> "idle". Lowercase "idle" is also a RESTING
+        # status to the page, so the island draws as at rest, not busy.
+        status = "Idle"
     return {
         "key": _DEVICE_KEY_PREFIX + entry["slug"],
         "name": entry.get("name") or entry["slug"],
