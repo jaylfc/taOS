@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: ghcr.io/rashadphz/farfalle:latest
+  image: ghcr.io/rashadphz/farfalle:1.0.0
   ports: [3002]
 
 hardware_tiers:

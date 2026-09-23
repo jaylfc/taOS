@@ -2,7 +2,7 @@ id: sentence-transformers
 name: Sentence Transformers
 type: service
 category: embed-runtime
-version: latest
+version: 3.3.1
 description: "Python library for dense vector embeddings — wraps HuggingFace models for semantic search."
 homepage: https://github.com/UKPLab/sentence-transformers
 license: Apache-2.0

@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: ghcr.io/janhq/jan-server:latest
+  image: ghcr.io/janhq/jan-server:0.5.14
   ports: [1337]
 
 hardware_tiers:

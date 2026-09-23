@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: n8nio/n8n:latest
+  image: n8nio/n8n:1.80.0
   volumes:
     - data:/home/node/.n8n
   ports: [5678]
