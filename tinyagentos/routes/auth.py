@@ -1900,6 +1900,79 @@ body.lockscreen-on .osk-toggle { display: none !important; }
 .ls-modal-voice .ls-sheet-close { flex: none; }
 .ls-modal-voice .ls-voice-acts { padding-top: 4px; }
 
+/* THE CHARGE OVERLAY. Product owner: "a charger connected notification,
+ * screen on and animation for 3 seconds ... the charge screen emulates a
+ * claude code like cli". A homage to a coding-agent terminal, NOT a brand: no
+ * names, no marks, just the grammar -- a prompt, a spinner, a working slogan
+ * and a count.
+ *
+ * Centred in the LOWER half (padding-top: 50%), so the clock above stays
+ * readable when it plays over a lit lock screen. Over a dark panel the layer is
+ * pure black instead of a dim, which is what the arc does from standby: on
+ * OLED the terminal is then the only thing emitting light. */
+.ls-charge {
+  position: fixed; inset: 0; z-index: 90;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 50dvh 16px env(safe-area-inset-bottom, 0px);
+  box-sizing: border-box;
+  background: linear-gradient(to bottom, rgba(0,0,0,0) 25%, rgba(0,0,0,0.62) 70%);
+  opacity: 0; pointer-events: none;
+  transition: opacity 420ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.ls-charge[hidden] { display: none; }
+.ls-charge[data-on="1"] { opacity: 1; pointer-events: auto; }
+.ls-charge[data-dark="1"] { background: #000; }
+.ls-charge-term {
+  width: 100%; max-width: var(--ls-card-w, 420px); box-sizing: border-box;
+  padding: 15px 18px 16px;
+  background: #0c0c0e;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 16px;
+  box-shadow: 0 22px 60px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.04);
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", "DejaVu Sans Mono",
+               "Liberation Mono", Menlo, Consolas, monospace;
+  font-size: 15px; line-height: 1.75; letter-spacing: 0;
+  color: rgba(255,255,255,0.92);
+  font-variant-numeric: tabular-nums;
+  transform: translateY(12px) scale(0.985);
+  transition: transform 560ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.ls-charge[data-on="1"] .ls-charge-term { transform: none; }
+.ls-charge-line { display: flex; align-items: baseline; gap: 0.6ch; white-space: nowrap; min-width: 0; }
+.ls-charge-prompt { color: rgba(255,255,255,0.45); }
+.ls-charge-caret { color: #4c9aff; }
+.ls-charge-dim { color: rgba(255,255,255,0.45); flex: none; }
+.ls-charge-spin { color: #ff9e4a; flex: none; width: 1.2ch; text-align: center; }
+/* The slogan shimmer: a lighter band swept through amber text. The text is the
+   gradient's clip, so the band only exists where there are letters. */
+.ls-charge-slogan {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  color: #ff9e4a;
+  background: linear-gradient(100deg, #ff9e4a 0%, #ff9e4a 38%, #ffe2c2 50%,
+                              #ff9e4a 62%, #ff9e4a 100%);
+  background-size: 260% 100%;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: ls-charge-shimmer 1.7s linear infinite;
+}
+@keyframes ls-charge-shimmer {
+  from { background-position: 100% 0; }
+  to   { background-position: 0% 0; }
+}
+.ls-charge-pct { color: rgba(255,255,255,0.92); flex: none; min-width: 6ch; }
+.ls-charge-bar { letter-spacing: -0.02em; flex: none; }
+.ls-charge-fill { color: #3ddc84; }
+.ls-charge-rest { color: rgba(255,255,255,0.18); }
+/* The last beat. Space reserved from the start, so the card does not grow a
+   line under the thumb just before it goes. */
+.ls-charge-done { color: #3ddc84; opacity: 0; transition: opacity 220ms ease; }
+.ls-charge[data-done="1"] .ls-charge-done { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .ls-charge, .ls-charge-term, .ls-charge-done { transition: none; }
+  .ls-charge-term { transform: none; }
+  .ls-charge-slogan { animation: none; background: none; -webkit-text-fill-color: #ff9e4a; }
+}
+
 /* Force-touch feel: the island sinks under the finger, then pops as it opens.
    Without the sink there is no feedback that a HOLD is doing anything, and the
    gesture reads as an unresponsive tap. */
@@ -4691,6 +4764,21 @@ _LOCK_SCREEN_SCRIPT = r"""
       btn.replaceWith(box);
     }
 
+    // ONE stream for the whole page, created on first ask.
+    //
+    // It used to be created inside `if (powerSheet)`, which quietly made every
+    // other push on this screen -- screen state, volume keys, now the charger
+    // -- depend on the power menu's markup being present. A listener that has
+    // to work regardless asks here instead, and gets the same EventSource.
+    var lockStreamShared = null;
+    function lockEvents() {
+      if (lockStreamShared) return lockStreamShared;
+      if (typeof EventSource === "undefined") return null;
+      try { lockStreamShared = new EventSource("/auth/lock-events"); }
+      catch (err) { lockStreamShared = null; }
+      return lockStreamShared;
+    }
+
     if (powerSheet) {
       var powerClose = document.getElementById("ls-power-close");
       if (powerClose) powerClose.addEventListener("click", function () { closeSheet(); });
@@ -4698,7 +4786,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       // EventSource reconnects on its own after a drop, which matters here:
       // the controller restarts on every deploy and the page does not.
       try {
-        var lockStream = new EventSource("/auth/lock-events");
+        var lockStream = lockEvents();
         // The panel is going dark. Put the sheet away NOW rather than leaving
         // it up behind a black screen for the next wake to land on.
         lockStream.addEventListener("screen-off", function () {
@@ -4798,6 +4886,247 @@ _LOCK_SCREEN_SCRIPT = r"""
         // That is the fallback direction this whole layer is built around.
       }
     }
+
+    // ------------------------------------------------------------------
+    // THE CHARGE OVERLAY. Product owner: "a charger connected notification,
+    // screen on and animation for 3 seconds ... emulate a claude code session
+    // where it shows a percentage and a working message like 'Drinking the
+    // juice....'". A coding-agent CLI homage, unbranded.
+    //
+    // Pushed by /auth/lock-charge over the shared stream. The session watcher
+    // posts BEFORE it wakes a dark panel, so when screen == "off" the terminal
+    // is painted over pure black first and the waking panel's first frame is
+    // the terminal -- the same trick the volume keys use to open the arc from
+    // standby (data-fromdark + data-blanked + setBlack), mirrored here.
+    // ------------------------------------------------------------------
+    var CHARGE_SLOGANS = [
+      "Drinking the juice…", "Stealing your power…",
+      "Sipping electrons…", "Hoarding amperes…",
+      "Borrowing some lightning…", "Recharging my social battery…",
+      "Photosynthesising (indoors)…", "Refuelling the agents…",
+      "Nom-nom-ing volts…", "Charging my crystals…",
+      "Absorbing the grid…", "Topping up the vibes…"
+    ];
+    var CHARGE_SPIN = ["·", "✢", "✳", "✶", "✻", "✽"];
+    var CHARGE_MS = 3000;          // on screen, before the fade starts
+    var CHARGE_FADE_MS = 440;      // .ls-charge opacity transition, plus a frame
+    var CHARGE_COUNT_MS = 2200;    // the count-up
+    var CHARGE_DONE_MS = 2450;     // the green tick
+    var CHARGE_SLOGAN_MS = 900;
+    var CHARGE_SPIN_MS = 120;
+    var chargeEl = null, chargeRun = null;
+
+    // The count-up and its 20-cell bar at `t` ms in. Pure, so it is tested
+    // directly. Starts 15 points short of the real reading (never below 0) and
+    // eases out onto it, so the number lands rather than stops. null for a
+    // battery nobody could read: the overlay then shows no number at all.
+    function chargeCount(pct, t) {
+      if (typeof pct !== "number" || !isFinite(pct)) return null;
+      var target = Math.max(0, Math.min(100, Math.round(pct)));
+      var from = Math.max(0, target - 15);
+      var k = Math.max(0, Math.min(1, (t || 0) / CHARGE_COUNT_MS));
+      var eased = 1 - Math.pow(1 - k, 3);
+      var shown = Math.round(from + (target - from) * eased);
+      var cells = Math.round(shown / 5);
+      var fill = "", rest = "";
+      for (var i = 0; i < 20; i++) {
+        if (i < cells) fill += "█"; else rest += "░";
+      }
+      return { percent: shown, fill: fill, rest: rest };
+    }
+
+    // Ping-pong through the glyphs: · ✢ ✳ ✶ ✻ ✽ ✻ ✶ ✳ ✢ · ...
+    function chargeSpinGlyph(frame) {
+      var n = CHARGE_SPIN.length, period = 2 * n - 2;
+      var i = ((frame % period) + period) % period;
+      return CHARGE_SPIN[i < n ? i : period - i];
+    }
+
+    // A random slogan that has not been shown this time round. `used` is the
+    // list already shown, most recent last; once every slogan has been used it
+    // starts again, but never with the one just shown.
+    function pickSlogan(list, used, rand) {
+      rand = rand || Math.random;
+      var last = used.length ? used[used.length - 1] : null;
+      var pool = [];
+      for (var i = 0; i < list.length; i++) {
+        if (used.indexOf(list[i]) === -1) pool.push(list[i]);
+      }
+      if (!pool.length) {
+        for (var j = 0; j < list.length; j++) {
+          if (list[j] !== last) pool.push(list[j]);
+        }
+      }
+      if (!pool.length) return list[0];
+      return pool[Math.min(pool.length - 1, Math.floor(rand() * pool.length))];
+    }
+
+    function chargeReduced() {
+      try {
+        return !!(window.matchMedia
+          && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      } catch (err) { return false; }
+    }
+
+    function chargeBuild() {
+      if (chargeEl) return chargeEl;
+      var el = document.createElement("div");
+      el.className = "ls-charge";
+      el.id = "ls-charge";
+      el.setAttribute("role", "status");
+      el.setAttribute("aria-live", "polite");
+      el.hidden = true;
+      el.innerHTML =
+        '<div class="ls-charge-term">'
+        + '<div class="ls-charge-line ls-charge-prompt">~/taos'
+        + ' <span class="ls-charge-caret">❯</span> charge</div>'
+        + '<div class="ls-charge-line">'
+        + '<span class="ls-charge-spin" aria-hidden="true"></span>'
+        + '<span class="ls-charge-slogan"></span>'
+        + '<span class="ls-charge-dim">(⚡ charging)</span></div>'
+        + '<div class="ls-charge-line ls-charge-meter">'
+        + '<span class="ls-charge-pct"></span>'
+        + '<span class="ls-charge-bar" aria-hidden="true">'
+        + '<span class="ls-charge-fill"></span><span class="ls-charge-rest"></span>'
+        + '</span></div>'
+        + '<div class="ls-charge-line ls-charge-done"></div>'
+        + '</div>';
+      // A touch ends it early, like any phone's charging splash.
+      el.addEventListener("touchstart", function () { chargeFinish(false); },
+                          { passive: true });
+      el.addEventListener("click", function () { chargeFinish(false); });
+      document.body.appendChild(el);
+      chargeEl = el;
+      return el;
+    }
+
+    function chargePaint(run, t) {
+      var el = chargeEl;
+      if (!el) return;
+      var q = function (c) { return el.querySelector("." + c); };
+      // The spinner settles on its fullest glyph once the work is "done".
+      setText(q("ls-charge-spin"), (run.done || run.reduced)
+        ? "✻" : chargeSpinGlyph(Math.floor(t / CHARGE_SPIN_MS)));
+      var at = Math.min(run.slogans.length - 1, Math.floor(t / CHARGE_SLOGAN_MS));
+      setText(q("ls-charge-slogan"), run.slogans[at]);
+      var c = chargeCount(run.percent, run.reduced ? CHARGE_COUNT_MS : t);
+      if (c) {
+        setText(q("ls-charge-pct"), "⚡ " + c.percent + "%");
+        setText(q("ls-charge-fill"), c.fill);
+        setText(q("ls-charge-rest"), c.rest);
+      } else {
+        setText(q("ls-charge-pct"), "⚡ charging");
+        setText(q("ls-charge-fill"), "");
+        setText(q("ls-charge-rest"), "");
+      }
+      setText(q("ls-charge-done"), c
+        ? "✓ Charging · " + Math.round(Math.max(0, Math.min(100, run.percent))) + "%"
+        : "✓ Charging");
+    }
+
+    function chargeTick() {
+      var run = chargeRun;
+      if (!run) return;
+      var t = Date.now() - run.start;
+      if (!run.done && t >= CHARGE_DONE_MS) {
+        run.done = true;
+        if (chargeEl) chargeEl.setAttribute("data-done", "1");
+      }
+      chargePaint(run, t);
+      if (t < CHARGE_MS) run.raf = window.requestAnimationFrame(chargeTick);
+    }
+
+    // Take it down. `instant` is the screen-off case: nothing is compositing, so
+    // a fade would only play on the next wake. `reveal` says whether to bring
+    // the lock screen back up afterwards.
+    function chargeFinish(instant, reveal) {
+      var run = chargeRun;
+      if (!run) return;
+      chargeRun = null;
+      if (run.raf) window.cancelAnimationFrame(run.raf);
+      if (run.stop) window.clearTimeout(run.stop);
+      var el = chargeEl;
+      if (el) el.removeAttribute("data-on");
+      var after = function () {
+        if (el && !chargeRun) {
+          el.hidden = true;
+          el.removeAttribute("data-dark");
+          el.removeAttribute("data-done");
+        }
+        // Dark start: the lock screen fades up only once the terminal has
+        // gone, out of black -- unless something else summoned from the dark
+        // (the arc, the bezel) is now up and owns that black.
+        if (run.dark && reveal !== false && screenEl && !chargeRun) {
+          var carUp = carEl && carEl.getAttribute("data-on") === "1";
+          var volUp = volEl && volEl.getAttribute("data-on") === "1";
+          if (!carUp && !volUp) {
+            screenEl.removeAttribute("data-fromdark");
+            screenEl.removeAttribute("data-blanked");
+            setBlack(false);
+          }
+        }
+      };
+      if (instant || run.reduced) after();
+      else window.setTimeout(after, CHARGE_FADE_MS);
+    }
+
+    function chargeShow(data) {
+      if (!document.body) return;
+      var el = chargeBuild();
+      if (chargeRun) chargeFinish(true, false);
+      var dark = data.screen === "off"
+        || !!(screenEl && screenEl.hasAttribute("data-blanked"));
+      var used = [];
+      for (var s = 0; s < Math.ceil(CHARGE_MS / CHARGE_SLOGAN_MS); s++) {
+        used.push(pickSlogan(CHARGE_SLOGANS, used));
+      }
+      var run = {
+        start: Date.now(), percent: data.percent, dark: dark, done: false,
+        reduced: chargeReduced(), slogans: used, raf: 0, stop: 0
+      };
+      if (dark && screenEl) {
+        // What the volume keys do from standby: the lock screen is hidden and
+        // the page black BEFORE the panel lights, and data-fromdark tells the
+        // screen-on handler to leave that black alone.
+        screenEl.setAttribute("data-fromdark", "1");
+        screenEl.setAttribute("data-blanked", "1");
+        setBlack(true);
+        el.setAttribute("data-dark", "1");
+      } else {
+        el.removeAttribute("data-dark");
+      }
+      el.removeAttribute("data-done");
+      el.hidden = false;
+      // Force a style pass at opacity 0, or the fade-in has no start value.
+      void el.offsetWidth;
+      chargeRun = run;
+      chargePaint(run, 0);
+      // Next frame, so the opacity transition has a starting value to leave.
+      window.requestAnimationFrame(function () {
+        if (chargeRun === run) el.setAttribute("data-on", "1");
+      });
+      run.raf = window.requestAnimationFrame(chargeTick);
+      // A timer as well as the frames: a panel that never lights delivers no
+      // frames, and the overlay must still go.
+      run.stop = window.setTimeout(function () {
+        if (chargeRun === run) chargeFinish(false);
+      }, CHARGE_MS);
+    }
+
+    (function () {
+      var stream = lockEvents();
+      if (!stream) return;
+      stream.addEventListener("charger", function (ev) {
+        var data = {};
+        try { data = JSON.parse(ev.data || "{}") || {}; } catch (err) { data = {}; }
+        chargeShow(data);
+      });
+      // The panel went dark mid-animation: drop it now, without a fade, and
+      // leave the black the screen-off handler paints.
+      stream.addEventListener("screen-off", function () {
+        if (chargeRun) chargeFinish(true, false);
+      });
+    })();
 
     // ------------------------------------------------------------------
     // THE SCRIPTED PANELS: phone, mailbox, apps, projects, decisions.
@@ -8885,6 +9214,89 @@ async def lock_screen_on(request: Request):
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
     return JSONResponse({"ok": True, "delivered": _push_lock_event("screen-on")})
+
+
+#: Where the battery is read from. A module attribute rather than a literal in
+#: the reader, so a test can point it at a fake sysfs tree instead of the host's;
+#: the env override does the same for a desktop rig with no battery at all.
+_POWER_SUPPLY_DIR = os.environ.get("TAOS_POWER_SUPPLY_DIR", "/sys/class/power_supply")
+
+#: The kernel's own words for a battery's state. Anything else in the file is
+#: passed on as "" rather than echoed: this goes out on a pre-auth stream.
+_BATTERY_STATUSES = ("Charging", "Discharging", "Full", "Not charging", "Unknown")
+
+
+def _read_battery(root: str | None = None) -> dict:
+    """The first power_supply of type Battery: its capacity and status.
+
+    ``percent`` is None when there is no battery or its capacity cannot be read,
+    and the charge overlay then says "charging" with no number -- a 0% shown for
+    a battery nobody measured would read as a phone about to die.
+    """
+    base = root if root is not None else _POWER_SUPPLY_DIR
+    out: dict = {"percent": None, "status": ""}
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return out
+    for name in names:
+        node = os.path.join(base, name)
+        try:
+            with open(os.path.join(node, "type"), "r", encoding="ascii") as fh:
+                kind = fh.read().strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if kind != "Battery":
+            continue
+        try:
+            with open(os.path.join(node, "capacity"), "r", encoding="ascii") as fh:
+                out["percent"] = max(0, min(100, int(fh.read().strip())))
+        except (OSError, ValueError, UnicodeDecodeError):
+            out["percent"] = None
+        try:
+            with open(os.path.join(node, "status"), "r", encoding="ascii") as fh:
+                status = fh.read().strip()
+            out["status"] = status if status in _BATTERY_STATUSES else ""
+        except (OSError, UnicodeDecodeError):
+            pass
+        return out
+    return out
+
+
+@router.post("/lock-charge")
+async def lock_charge(request: Request):
+    """A charger was plugged in. Play the charge animation. Console-only.
+
+    Product owner: "we need a charger connected notification, screen on and
+    animation for 3 seconds". Posted by the handset's session watcher on every
+    plug-in, with ``{"screen": "on"|"off"}`` saying whether the panel was lit.
+    When it was dark the watcher wakes it 150 ms later, and the page has by then
+    painted the overlay over pure black, so the first lit frame is the terminal
+    rather than a flash of lock screen.
+
+    The battery reading is taken HERE, from sysfs, rather than trusted from the
+    body: the watcher only knows a plug event happened, and a pre-auth route
+    that relayed a caller's percentage would be a way to paint any number on
+    the phone.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be an object"}, status_code=400)
+    screen = body.get("screen")
+    if screen not in ("on", "off"):
+        return JSONResponse({"error": "screen must be on or off"}, status_code=400)
+    battery = _read_battery()
+    _push_lock_event("charger", {
+        "percent": battery["percent"],
+        "status": battery["status"],
+        "screen": screen,
+    })
+    return Response(status_code=204)
 
 
 @router.post("/lock-power-menu")
