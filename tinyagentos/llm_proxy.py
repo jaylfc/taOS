@@ -520,18 +520,13 @@ class LLMProxy:
         if self.inhouse_keys:
             # In-house key mode: the custom_auth hook authorizes per-agent
             # tokens from this SQLite store. Point the subprocess at it and do
-            # NOT export DATABASE_URL, so LiteLLM never starts prisma (the ARM
-            # fix). The router still works fully without a DB.
+            # NOT export DATABASE_URL, so LiteLLM never starts prisma. The
+            # router still works fully without a DB.
             from tinyagentos.litellm_keystore import default_keystore_path
             base = self._data_dir or self.config_dir
             env["TAOS_LITELLM_KEYSTORE"] = str(default_keystore_path(base))
             from tinyagentos.agent_budget_store import default_budget_path
             env["TAOS_AGENT_BUDGETS"] = str(default_budget_path(base))
-        elif self.database_url:
-            # DATABASE_URL enables Postgres-backed virtual keys. Without it
-            # LiteLLM still routes chat/embeddings fine but /key/generate
-            # returns a server error.
-            env["DATABASE_URL"] = self.database_url
         # Resolve every api_key_secret into a real env var so the
         # os.environ/<name> markers in the generated config resolve to
         # actual API keys. LiteLLM reads them by name at request time.

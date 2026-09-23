@@ -34,62 +34,53 @@ async def test_migrate_noop_when_db_url_empty(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_migrate_skips_when_prisma_client_already_importable(tmp_path):
-    """If a DATABASE_URL is present, Postgres mode is not supported without
-    the prisma package — raise a clear error regardless of client state."""
+async def test_migrate_warns_and_returns_status_when_db_url_set_without_prisma(tmp_path):
+    """With a DATABASE_URL configured, migrate must log a warning and return
+    a status string instead of raising, because taOS uses the in-house
+    keystore for per-agent keys regardless of Postgres."""
     data_dir = _write_db_url(tmp_path)
-    with pytest.raises(RuntimeError, match="not supported"):
-        await litellm_migrate.migrate(data_dir)
-
-
-@pytest.mark.asyncio
-async def test_migrate_raises_not_supported_when_db_url_set_without_prisma(tmp_path):
-    """With a DATABASE_URL configured and no prisma installed, migrate must
-    raise a clear 'not supported' error rather than attempting a runtime
-    prisma download."""
-    data_dir = _write_db_url(tmp_path)
-    with pytest.raises(RuntimeError, match="not supported"):
-        await litellm_migrate.migrate(data_dir)
+    result = await litellm_migrate.migrate(data_dir)
+    assert result == "postgres-not-supported"
 
 
 @pytest.mark.asyncio
 async def test_migrate_does_not_set_database_url(tmp_path):
     """Postgres mode is not supported without the prisma package."""
     data_dir = _write_db_url(tmp_path)
-    with pytest.raises(RuntimeError, match="not supported"):
-        await litellm_migrate.migrate(data_dir)
+    result = await litellm_migrate.migrate(data_dir)
+    assert result == "postgres-not-supported"
 
 
 @pytest.mark.asyncio
-async def test_migrate_raises_when_generate_fails(tmp_path):
+async def test_migrate_returns_status_when_generate_fails(tmp_path):
     """Postgres mode is not supported without the prisma package."""
     data_dir = _write_db_url(tmp_path)
-    with pytest.raises(RuntimeError, match="not supported"):
-        await litellm_migrate.migrate(data_dir)
+    result = await litellm_migrate.migrate(data_dir)
+    assert result == "postgres-not-supported"
 
 
 @pytest.mark.asyncio
-async def test_migrate_raises_when_client_still_missing_after_generate(tmp_path):
+async def test_migrate_returns_status_when_client_still_missing_after_generate(tmp_path):
     """Postgres mode is not supported without the prisma package."""
     data_dir = _write_db_url(tmp_path)
-    with pytest.raises(RuntimeError, match="not supported"):
-        await litellm_migrate.migrate(data_dir)
+    result = await litellm_migrate.migrate(data_dir)
+    assert result == "postgres-not-supported"
 
 
 @pytest.mark.asyncio
-async def test_migrate_raises_when_schema_missing(tmp_path):
+async def test_migrate_returns_status_when_schema_missing(tmp_path):
     """Postgres mode is not supported without the prisma package."""
     data_dir = _write_db_url(tmp_path)
-    with pytest.raises(RuntimeError, match="not supported"):
-        await litellm_migrate.migrate(data_dir)
+    result = await litellm_migrate.migrate(data_dir)
+    assert result == "postgres-not-supported"
 
 
 @pytest.mark.asyncio
-async def test_migrate_raises_when_prisma_cli_missing(tmp_path):
+async def test_migrate_returns_status_when_prisma_cli_missing(tmp_path):
     """Postgres mode is not supported without the prisma package."""
     data_dir = _write_db_url(tmp_path)
-    with pytest.raises(RuntimeError, match="not supported"):
-        await litellm_migrate.migrate(data_dir)
+    result = await litellm_migrate.migrate(data_dir)
+    assert result == "postgres-not-supported"
 
 
 def test_prisma_declared_nowhere_in_packaging():

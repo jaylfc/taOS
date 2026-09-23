@@ -419,7 +419,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     elif (data_dir / ".litellm_force_inhouse_keys").exists():
         inhouse_keys = True
     else:
-        inhouse_keys = db_url is None
+        inhouse_keys = True
     # Read the local auth token so LLMProxy can forward it to LiteLLM's
     # subprocess — otherwise the taOS callback can't POST llm_call events
     # back to /api/trace and the 401s fill the log instead of trace rows.

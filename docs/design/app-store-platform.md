@@ -209,6 +209,36 @@ hardware_tiers:
   cpu-only: full
 ```
 
+### Companion Services
+
+A service manifest can declare companion containers alongside the primary app.  The only companion type currently used in the catalog is Postgres, but the schema is generic.
+
+```yaml
+install:
+  method: container
+  image: ghcr.io/linkwarden/linkwarden:2.13.0
+  volumes:
+    - data:/data/data
+  ports: [3000]
+  env:
+    DATABASE_URL: "postgresql://linkwarden:{secret_key}@postgres:5432/linkwarden"
+  companions:
+    - name: postgres
+      image: postgres:16-alpine
+      volumes:
+        - pgdata:/var/lib/postgresql/data
+      env:
+        POSTGRES_PASSWORD: "{secret_key}"
+        POSTGRES_USER: "linkwarden"
+        POSTGRES_DB: "linkwarden"
+```
+
+Rules:
+- The companion service name becomes a top-level key in `docker-compose.yaml` alongside the app service.
+- The app service's `DATABASE_URL` (or equivalent) must point at the companion by service name (`postgres` in the example), not `localhost`.
+- Any `{secret_key}` placeholder inside `companions[].env` is replaced with the same per-app 64-hex secret used for the app's own `env` values, persisted in `<app_dir>/.secret_key`.
+- Named volumes declared on the companion are promoted to the top-level `volumes:` block automatically.
+
 ## App Catalog
 
 The catalog is a Git repository (`tinyagentos/app-catalog`) containing manifest files organized by type:

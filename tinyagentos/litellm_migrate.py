@@ -2,9 +2,9 @@
 
 taOS never runs LiteLLM's Postgres-backed virtual-key mode, so this module
 no longer shells out to ``prisma generate``.  If a ``.litellm_db_url`` file
-is present the operator has explicitly opted into Postgres mode — that path
-is not supported without the prisma package, so we raise a clear error
-instead of attempting a runtime download.
+is present the operator has explicitly opted into Postgres mode.  taOS
+authorizes per-agent keys through its own SQLite keystore, so we log a
+warning and continue rather than failing startup.
 """
 from __future__ import annotations
 
@@ -20,10 +20,8 @@ async def migrate(data_dir: Path) -> str:
 
     Returns:
         "no-db-configured" — no ``.litellm_db_url`` file, nothing to do.
-
-    Raises:
-        RuntimeError: if ``.litellm_db_url`` exists, because Postgres mode
-        is not supported without the prisma package.
+        "postgres-not-supported" — ``.litellm_db_url`` exists but Postgres
+        virtual-key mode is not supported; the keystore is authoritative.
     """
     db_url_path = data_dir / ".litellm_db_url"
     if not db_url_path.exists():
@@ -34,7 +32,9 @@ async def migrate(data_dir: Path) -> str:
         logger.info("litellm_migrate: .litellm_db_url empty — skipping")
         return "no-db-configured"
 
-    raise RuntimeError(
-        "litellm_migrate: Postgres/virtual-key mode is not supported "
-        "without the prisma package"
+    logger.warning(
+        "litellm_migrate: .litellm_db_url is present but Postgres virtual-key "
+        "mode is not supported; taOS keystore is authoritative for per-agent "
+        "keys. LiteLLM will start without DATABASE_URL."
     )
+    return "postgres-not-supported"

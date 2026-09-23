@@ -494,6 +494,50 @@ class TestLinkwardenCompose:
         docker_url = lw_env["DATABASE_URL"]
         assert "localhost" in docker_url
 
+    @pytest.mark.asyncio
+    async def test_generate_compose_generic_app_with_postgres_companion(self, tmp_path):
+        """Any app manifest can declare a Postgres companion using the same
+        pattern as linkwarden: persisted volume, secret_key-generated password,
+        and a service-name DSN."""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, host_port = installer._generate_compose(
+            "myapp",
+            {
+                "image": "myapp:latest",
+                "volumes": ["myapp-data:/data"],
+                "ports": [8080],
+                "env": {
+                    "DATABASE_URL": "postgresql://myapp:{secret_key}@postgres:5432/myapp",
+                },
+                "companions": [
+                    {
+                        "name": "postgres",
+                        "image": "postgres:16-alpine",
+                        "volumes": ["pgdata:/var/lib/postgresql/data"],
+                        "env": {
+                            "POSTGRES_PASSWORD": "{secret_key}",
+                            "POSTGRES_USER": "myapp",
+                            "POSTGRES_DB": "myapp",
+                        },
+                    }
+                ],
+            },
+        )
+        assert "myapp" in compose["services"]
+        assert "postgres" in compose["services"]
+        pg_service = compose["services"]["postgres"]
+        assert pg_service["image"] == "postgres:16-alpine"
+        assert "pgdata:/var/lib/postgresql/data" in pg_service["volumes"]
+        assert pg_service["environment"]["POSTGRES_USER"] == "myapp"
+        assert pg_service["environment"]["POSTGRES_DB"] == "myapp"
+        pg_pw = pg_service["environment"]["POSTGRES_PASSWORD"]
+        assert len(pg_pw) == 64
+        assert all(c in "0123456789abcdef" for c in pg_pw)
+        app_env = compose["services"]["myapp"]["environment"]
+        assert "postgres:5432/myapp" in app_env["DATABASE_URL"]
+        assert pg_pw in app_env["DATABASE_URL"]
+        assert "pgdata" in compose.get("volumes", {})
+
 
 class TestCatalogManifestAudit:
     """tsk-teaogm: catalog manifests must not ship literal secrets.

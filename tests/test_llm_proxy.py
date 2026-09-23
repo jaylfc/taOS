@@ -291,10 +291,11 @@ class TestLLMProxy:
         assert proxy.database_url == "postgresql://u:p@h/db"
 
 
-class TestDatabaseUrlPropagation:
+class TestDatabaseUrlNotPropagated:
     @pytest.mark.asyncio
-    async def test_start_passes_database_url_when_set(self, monkeypatch):
-        """DATABASE_URL lands in the litellm subprocess env when configured."""
+    async def test_start_does_not_pass_database_url_even_when_set(self, monkeypatch):
+        """DATABASE_URL must never land in the LiteLLM subprocess env, even when
+        configured, because taOS uses the in-house keystore for per-agent keys."""
         import shutil
         import tinyagentos.llm_proxy as mod
 
@@ -321,7 +322,7 @@ class TestDatabaseUrlPropagation:
         p = mod.LLMProxy(port=14001, database_url="postgresql://fake:pw@host/db")
         await p.start(backends=[])
 
-        assert captured["env"]["DATABASE_URL"] == "postgresql://fake:pw@host/db"
+        assert "DATABASE_URL" not in captured["env"]
         assert captured["env"]["LITELLM_MASTER_KEY"].startswith("sk-taos-")
 
     @pytest.mark.asyncio
@@ -340,8 +341,6 @@ class TestDatabaseUrlPropagation:
         monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
         monkeypatch.setattr(mod, "_pids_listening_on", lambda port: [])
         monkeypatch.setattr(mod.LLMProxy, "_resolve_litellm_cmd", lambda self: "/fake/litellm")
-        # Scrub any ambient DATABASE_URL from the test runner so we can
-        # assert the proxy didn't invent one.
         monkeypatch.delenv("DATABASE_URL", raising=False)
 
         captured: dict = {}
@@ -689,6 +688,46 @@ class TestInhouseKeys:
         assert proxy._keystore().lookup(key)["allowed_models"] == ["b", "c"]
         assert await proxy.delete_agent_key(key) is True
         assert proxy._keystore().lookup(key) is None
+
+    @pytest.mark.asyncio
+    async def test_inhouse_keys_does_not_export_database_url(self, tmp_path, monkeypatch):
+        """In-house mode must never export DATABASE_URL into the LiteLLM
+        subprocess, even when database_url is configured, so LiteLLM never
+        attempts prisma."""
+        import os
+        import subprocess
+
+        captured = {}
+
+        class FakePopen:
+            returncode = None
+
+            def __init__(self, *args, **kwargs):
+                captured["env"] = kwargs.get("env", {})
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+        async def fake_sleep(*args, **kwargs):
+            pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
+        proxy = LLMProxy(
+            port=14008, config_dir=tmp_path, data_dir=tmp_path,
+            inhouse_keys=True, database_url="postgresql://u:p@h/db",
+        )
+        proxy._process = None
+        result = await proxy.start([])
+        assert "DATABASE_URL" not in captured.get("env", {})
+        assert captured["env"].get("TAOS_LITELLM_KEYSTORE")
 
 
 class TestProxySelfHeal:

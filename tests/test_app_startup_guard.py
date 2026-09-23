@@ -90,8 +90,67 @@ def test_wants_reply_is_none_before_lifespan(tmp_path):
     assert app.state.wants_reply is None
 
 
+def test_inhouse_keys_true_even_with_postgres_db_url(tmp_path):
+    """A configured .litellm_db_url must NOT switch off inhouse_keys.
+    The keystore is authoritative for per-agent keys regardless of Postgres."""
+    import yaml
+    from tinyagentos.app import create_app
+
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config))
+    (tmp_path / ".setup_complete").touch()
+    (tmp_path / ".litellm_db_url").write_text("postgresql://u:p@h/db")
+
+    captured = {}
+
+    class FakeProxy:
+        def __init__(self, *args, **kwargs):
+            captured["inhouse_keys"] = kwargs.get("inhouse_keys")
+            captured["database_url"] = kwargs.get("database_url")
+
+    with patch("tinyagentos.app.LLMProxy", FakeProxy):
+        create_app(data_dir=tmp_path)
+    assert captured.get("inhouse_keys") is True
+    assert captured.get("database_url") == "postgresql://u:p@h/db"
+
+
+def test_inhouse_keys_false_with_disable_marker(tmp_path):
+    """.litellm_disable_inhouse_keys must disable in-house keys."""
+    import yaml
+    from tinyagentos.app import create_app
+
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config))
+    (tmp_path / ".setup_complete").touch()
+    (tmp_path / ".litellm_db_url").write_text("postgresql://u:p@h/db")
+    (tmp_path / ".litellm_disable_inhouse_keys").touch()
+
+    captured = {}
+
+    class FakeProxy:
+        def __init__(self, *args, **kwargs):
+            captured["inhouse_keys"] = kwargs.get("inhouse_keys")
+
+    with patch("tinyagentos.app.LLMProxy", FakeProxy):
+        create_app(data_dir=tmp_path)
+    assert captured.get("inhouse_keys") is False
+
+
 def test_typing_is_none_before_lifespan(tmp_path):
-    """typing must be None at create_app() — lifespan owns init."""
     app = _make_app(tmp_path)
     assert app.state.typing is None
 
