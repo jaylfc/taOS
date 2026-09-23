@@ -8800,8 +8800,13 @@ def _framework_icon(framework: str) -> str:
     for folder in _STORE_ICON_DIRS:
         for ext in ("svg", "png", "jpg", "webp"):
             rel = f"{folder}/{fw}.{ext}"
-            if (root / rel).is_file():
-                return "/" + rel
+            path = root / rel
+            if path.is_file():
+                # Versioned by mtime. A replaced icon kept its URL, and the
+                # kiosk's disk cache (which outlives a browser restart) went
+                # on showing the old one: Jay saw the Nous wordmark after the
+                # Hermes mascot had shipped.
+                return "/%s?v=%d" % (rel, int(path.stat().st_mtime))
     return ""
 
 
