@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -1968,6 +1970,237 @@ def _recover_password_cli(argv) -> int:
     return 0
 
 
+_ONBOARDING_DBS = (
+    "auth_requests.db",
+    "password_resets.db",
+    "user_shares.db",
+    "agent_grants.db",
+    "agent_scope_requests.db",
+    "app_grants.db",
+    "license_acceptances.db",
+)
+
+_IDENTITY_FILES = (
+    ".auth_user.json",
+    ".auth_password",
+    ".auth_sessions",
+    ".auth_local_token",
+    ".auth_local_token_bindings.json",
+)
+
+_PRESERVE_NAMES = frozenset({
+    "installed_apps.db",
+    "installed.json",
+    "config.yaml",
+    "hardware.json",
+    ".install_id",
+    ".litellm_db_url",
+    ".litellm_disable_inhouse_keys",
+    ".litellm_force_inhouse_keys",
+    "browser_cookie_key.hex",
+})
+
+_PRESERVE_DIRS = frozenset({
+    "models",
+    "apps",
+    "workspace",
+    "backups",
+    "knowledge-media",
+    "archive",
+    "shared-folders",
+    "coding-workspaces",
+})
+
+
+def _controller_running(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except (OSError, socket.timeout):
+        return False
+
+
+def _clear_setup_pref(data_dir: Path) -> None:
+    desktop_db = data_dir / "desktop.db"
+    if not desktop_db.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(desktop_db))
+        conn.execute(
+            "DELETE FROM desktop_settings WHERE user_id = ? AND key = ?",
+            ("user", "pref:setup"),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        raise RuntimeError(f"could not clear setup preference: {exc}") from exc
+
+
+def _reset_cli(argv) -> int:
+    """``taos reset`` -- wipe identity and/or mutable state without re-downloading models or apps.
+
+    Runs directly against the data directory (no server, no token). A
+    timestamped backup of every removed path is created under
+    ``data_dir/backups/reset-<UTC ISO>/`` by default.
+    """
+    import argparse
+    import shutil
+    import sqlite3
+    import socket
+    import sys
+    from datetime import datetime, timezone
+
+    from tinyagentos.auth import AuthManager
+    from tinyagentos.config import load_config
+
+    parser = argparse.ArgumentParser(
+        prog="taos reset",
+        description="Reset taOS identity and/or mutable state (offline, no server required).",
+    )
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--onboarding",
+        action="store_true",
+        help="Reset only identity and onboarding state so onboarding can be re-run.",
+    )
+    mode.add_argument(
+        "--all",
+        action="store_true",
+        help="Reset identity, onboarding state, and all mutable state except downloaded models and installed apps.",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the interactive confirmation prompt.",
+    )
+    parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip creating a timestamped backup of removed files.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Run even if the controller appears to be listening on its configured port.",
+    )
+    parser.add_argument(
+        "--data-dir",
+        help="Data directory (default: TAOS_DATA_DIR env, else <project>/data).",
+    )
+    ns = parser.parse_args(argv)
+
+    override = ns.data_dir or os.environ.get("TAOS_DATA_DIR")
+    data_dir = resolve_data_dir(Path(override) if override else None)
+
+    config_path = data_dir / "config.yaml"
+    try:
+        config = load_config(config_path)
+    except Exception:
+        config = None
+
+    port = None
+    if config is not None:
+        port = int(config.server.get("port", 6969))
+
+    if port is not None and not ns.force and _controller_running(port):
+        print(
+            f"ERROR: taOS controller is listening on port {port}.",
+            file=sys.stderr,
+        )
+        print(
+            "Stop it first (e.g. systemctl stop tinyagentos) or pass --force.",
+            file=sys.stderr,
+        )
+        return 1
+
+    identity_files = [data_dir / name for name in _IDENTITY_FILES]
+    onboarding_dbs = [data_dir / name for name in _ONBOARDING_DBS]
+
+    def _all_db_files():
+        for p in data_dir.iterdir():
+            if p.is_file() and p.suffix == ".db" and p.name not in _PRESERVE_NAMES:
+                yield p
+
+    if ns.all:
+        to_remove = (
+            [p for p in identity_files if p.exists()]
+            + [p for p in onboarding_dbs if p.exists()]
+            + [p for p in _all_db_files() if p.exists()]
+        )
+    else:
+        to_remove = (
+            [p for p in identity_files if p.exists()]
+            + [p for p in onboarding_dbs if p.exists()]
+        )
+
+    desktop_db = data_dir / "desktop.db"
+    setup_pref_removed = False
+    if desktop_db.exists() and not ns.all and desktop_db not in to_remove:
+        to_remove.append(desktop_db)
+
+    if not to_remove:
+        print("Nothing to remove -- the data_dir is already clean.", file=sys.stderr)
+        return 0
+
+    print("The following paths will be removed:")
+    for p in to_remove:
+        if p == desktop_db and not ns.all:
+            print(f"  {p} (setup preference namespace only)")
+        else:
+            print(f"  {p}")
+
+    if not ns.yes:
+        try:
+            ans = input("Proceed? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print(file=sys.stderr)
+            return 1
+        if ans != "y":
+            print("Aborted.", file=sys.stderr)
+            return 0
+
+    backup_dir = None
+    if not ns.no_backup:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_dir = data_dir / "backups" / f"reset-{ts}"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        for p in to_remove:
+            if p.exists():
+                if p.is_file():
+                    shutil.copy2(p, backup_dir / p.name)
+                elif p.is_dir():
+                    shutil.copytree(p, backup_dir / p.name)
+        print(f"Backup saved to {backup_dir}")
+
+    for p in to_remove:
+        if p == desktop_db and not ns.all:
+            _clear_setup_pref(data_dir)
+            setup_pref_removed = True
+        elif p.exists():
+            if p.is_file():
+                p.unlink()
+            elif p.is_dir():
+                shutil.rmtree(p)
+
+    if ns.all and desktop_db.exists():
+        try:
+            desktop_db.unlink()
+        except OSError:
+            pass
+
+    am = AuthManager(data_dir)
+    if am.is_configured():
+        print("ERROR: auth store still reports configured after reset.", file=sys.stderr)
+        return 1
+
+    print(f"Reset complete in {data_dir}.")
+    print(f"  is_configured() = False")
+    print(f"  needs_onboarding() = True")
+    if backup_dir is not None:
+        print(f"  Backup at {backup_dir}")
+    return 0
+
+
 def main():
     import sys
     # `taos rollback [ref]` -- undo the last update (restore branch + version) and
@@ -1983,6 +2216,11 @@ def main():
     # the auth store directly (no running server needed).
     if len(sys.argv) > 1 and sys.argv[1] == "recover-password":
         raise SystemExit(_recover_password_cli(sys.argv[2:]))
+
+    # `taos reset [--onboarding | --all] [--yes] [--no-backup] [--force]` -- wipe
+    # identity and/or mutable state without re-downloading models or apps.
+    if len(sys.argv) > 1 and sys.argv[1] == "reset":
+        raise SystemExit(_reset_cli(sys.argv[2:]))
 
     import uvicorn
     config = load_config(PROJECT_DIR / "data" / "config.yaml")

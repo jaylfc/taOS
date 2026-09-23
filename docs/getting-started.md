@@ -136,6 +136,22 @@ The wizard shows:
 
 You don't have to follow the wizard step-by-step — you can dismiss it and navigate freely. But if this is your first time, the steps below mirror the recommended path.
 
+### Resetting Onboarding
+
+If you need to re-run the onboarding wizard (for example, after changing hardware or reconfiguring backends), use the `taos reset` CLI command. It runs offline, so the controller does not need to be stopped for the `--onboarding` mode.
+
+```bash
+# Re-run onboarding (keeps downloaded models and installed apps)
+taos reset --onboarding --yes
+
+# Full factory reset (keeps models and apps, wipes everything else)
+taos reset --all --yes
+```
+
+`--yes` skips the interactive confirmation. Omit it to see the exact list of paths that will be removed before proceeding. A timestamped backup is created under `data/backups/reset-<UTC ISO>/` by default; pass `--no-backup` to opt out.
+
+If the controller is running, `taos reset` refuses to proceed unless you also pass `--force`.
+
 ---
 
 ## 3a. Using the Desktop Shell
