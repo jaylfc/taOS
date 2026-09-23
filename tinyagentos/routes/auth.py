@@ -2189,7 +2189,7 @@ body.lockscreen-on .osk-toggle { display: none !important; }
 .ls-feed[data-call="return"] { opacity: 0; transition: none; }
 .ls-head[data-call] .ls-views { opacity: 0.28; pointer-events: none; transition: opacity 280ms ease; }
 
-.ls-call {
+.ls-live-call {
   --ls-call-r: 28px;
   position: relative; flex: none;
   width: 100%; max-width: var(--ls-card-w);
@@ -2204,18 +2204,18 @@ body.lockscreen-on .osk-toggle { display: none !important; }
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
 }
-.ls-call[hidden] { display: none; }
+.ls-live-call[hidden] { display: none; }
 /* Laid out but unseen, so its size can be measured before it is revealed. */
-.ls-call[data-phase="measure"] { position: absolute; visibility: hidden; transition: none; }
-.ls-call[data-phase="grow"] { opacity: 0; transition: none; }
+.ls-live-call[data-phase="measure"] { position: absolute; visibility: hidden; transition: none; }
+.ls-live-call[data-phase="grow"] { opacity: 0; transition: none; }
 /* Its first size is a starting point, not a change: nothing to animate from. */
-.ls-call[data-phase="measure"] .ls-call-card,
-.ls-call[data-phase="grow"] .ls-call-card { transition: none; }
+.ls-live-call[data-phase="measure"] .ls-call-card,
+.ls-live-call[data-phase="grow"] .ls-call-card { transition: none; }
 /* A ring the script moved focus to is for keyboard users; on the glass, where
    the finger is the pointer, it would read as a stray outline. */
-.ls-call[data-kbd="0"] :focus-visible,
-.ls-call[data-kbd="0"] :focus-visible .ls-call-dot { outline: none; }
-.ls-call[data-phase="leave"] { opacity: 0; transition: opacity 120ms ease; }
+.ls-live-call[data-kbd="0"] :focus-visible,
+.ls-live-call[data-kbd="0"] :focus-visible .ls-call-dot { outline: none; }
+.ls-live-call[data-phase="leave"] { opacity: 0; transition: opacity 120ms ease; }
 
 /* THE EDGE. One conic gradient per voice, spun by the compositor (a transform
    animation, no per-frame paint) and faded by the script from the speech
@@ -2293,7 +2293,7 @@ body.lockscreen-on .osk-toggle { display: none !important; }
   border: 2px solid rgba(255,138,101,0.6);
   animation: ls-call-halo 1.6s cubic-bezier(0.2, 0.7, 0.3, 1) infinite;
 }
-.ls-call:not([data-state="ringing"]) .ls-call-avatar::after { animation: none; opacity: 0; }
+.ls-live-call:not([data-state="ringing"]) .ls-call-avatar::after { animation: none; opacity: 0; }
 @keyframes ls-call-halo {
   0% { transform: scale(0.94); opacity: 0.9; }
   100% { transform: scale(1.32); opacity: 0; }
@@ -2509,13 +2509,13 @@ body.lockscreen-on .osk-toggle { display: none !important; }
   to   { opacity: 0; transform: translateY(6px) scale(0.96); filter: blur(3px); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .ls-call, .ls-call-card, .ls-call-view, .ls-call-view:not([data-on="1"]) { transition: opacity 180ms ease; }
+  .ls-live-call, .ls-call-card, .ls-call-view, .ls-call-view:not([data-on="1"]) { transition: opacity 180ms ease; }
   .ls-call-ring, .ls-call-avatar::after, .ls-call-pa::after, .ls-call-live,
   .ls-call-line, .ls-call-mark, .ls-call-reminder[data-leaving="1"] { animation: none; }
   .ls-call-ring { opacity: 0.55; }
   .ls-call-view:not([data-on="1"]) { transform: none; }
 }
-.lockscreen[data-blanked] .ls-call *, .lockscreen[data-blanked] .ls-call *::after { animation-play-state: paused; }
+.lockscreen[data-blanked] .ls-live-call *, .lockscreen[data-blanked] .ls-live-call *::after { animation-play-state: paused; }
 /* Landscape: the keypad and the clock sit side by side or neither fits. */
 @media (orientation: landscape) and (max-height: 560px) {
   .lockscreen { flex-direction: row; align-items: center; gap: 24px; padding-top: 12px; }
@@ -2960,7 +2960,7 @@ def _lock_head_html() -> str:
       <!-- THE LIVE ZONE (incoming-call demo). Present only while a call is;
            /auth/lock-screen.js fills it from /auth/lock-call. Every word in it
            is scripted server-side: this screen renders before sign-in. -->
-      <section class="ls-call" id="ls-call" aria-labelledby="ls-call-heading" hidden>
+      <section class="ls-live-call" id="ls-call" aria-labelledby="ls-call-heading" hidden>
         <div class="ls-call-glow" aria-hidden="true">
           <span class="ls-call-ring" data-tone="caller"></span>
           <span class="ls-call-ring" data-tone="pa"></span>
@@ -5340,7 +5340,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       }, null, function (ev) {
         var t = ev.touches[0];
         // Nor may a drag on the call card pull the shade down over it.
-        if (ev.target && ev.target.closest && ev.target.closest(".ls-call")) return true;
+        if (ev.target && ev.target.closest && ev.target.closest(".ls-live-call")) return true;
         return !t || t.clientY > 90;      // vetoed unless it began up top
       });
 
@@ -6603,7 +6603,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       var t = ev.target;
       // The call card is a surface of buttons: a drag that starts on it is
       // never an unlock, whatever the feed underneath would have said.
-      if (t && t.closest && t.closest(".ls-call")) return true;
+      if (t && t.closest && t.closest(".ls-live-call")) return true;
       // Nor on the PA's reminder card: it carries a button, and a thumb
       // that lands on Dismiss and slips must not open the keypad.
       if (t && t.closest && t.closest(".ls-call-reminder")) return true;

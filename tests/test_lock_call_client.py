@@ -295,7 +295,7 @@ class TestTheTranscriptIsReconciledNotRepainted:
 
 _CALL_GESTURE_HARNESS = _GESTURE_HARNESS.replace(
     "var document = { body: body };",
-    "var callZone = makeEl({ sel: ['.ls-call'], parent: body });\n"
+    "var callZone = makeEl({ sel: ['.ls-live-call'], parent: body });\n"
     "var callButton = makeEl({ sel: ['button'], parent: callZone });\n"
     "var document = { body: body };",
 ).replace(
@@ -306,7 +306,7 @@ _CALL_GESTURE_HARNESS = _GESTURE_HARNESS.replace(
 
 def _drive_call(scenario, *, mutate=False):
     src = _gesture_source()
-    arm = '      if (t && t.closest && t.closest(".ls-call")) return true;\n'
+    arm = '      if (t && t.closest && t.closest(".ls-live-call")) return true;\n'
     if mutate:
         assert arm in src, "the call arm is gone from the unlock veto"
         src = src.replace(arm, "")
@@ -335,7 +335,7 @@ class TestTheZoneIsNotAnUnlockPad:
     def test_the_shade_refuses_a_pull_that_starts_on_the_call_card(self):
         start = LOCK_SCRIPT.index("vetoed unless it began up top")
         veto = LOCK_SCRIPT[start - 400:start]
-        assert 'closest(".ls-call")) return true' in veto
+        assert 'closest(".ls-live-call")) return true' in veto
 
 
 class TestTheWiring:
@@ -658,3 +658,27 @@ class TestTheReminderCard:
 
 def _pure_with(name, expr):
     return _run(_function(name) + "\nprocess.stdout.write(JSON.stringify(" + expr + "));")
+
+
+class TestTheWidgetDoesNotShareAClassWithPhoneRows:
+    """The Phone panel's rows are `ls-row ls-call`. The call widget once used
+    `.ls-call` as its own root class, so its 1.5 px padding, clipped overflow
+    and 28 px radius landed on every phone row -- the source icon sat in the
+    rounded corner and the time was cut off (Jay: "too high and cut off") --
+    and the unlock veto `closest(".ls-call")` refused swipes that started on
+    a missed call."""
+
+    def test_no_rule_or_lookup_targets_a_bare_ls_call(self):
+        import re
+        from tinyagentos.routes import auth
+        for name, text in (("script", auth._LOCK_SCREEN_SCRIPT),
+                           ("page", auth._lock_head_html() if callable(getattr(auth, "_lock_head_html", None)) else "")):
+            assert not re.search(r'closest\("\.ls-call"\)', text), name
+        css_and_all = open(auth.__file__, encoding="utf-8").read()
+        bare = re.findall(r'^\.ls-call(?![-\w])[^\n]*\{', css_and_all, re.M)
+        assert bare == [], bare
+
+    def test_the_widget_root_has_its_own_class(self):
+        from tinyagentos.routes import auth
+        src = open(auth.__file__, encoding="utf-8").read()
+        assert '<section class="ls-live-call" id="ls-call"' in src
