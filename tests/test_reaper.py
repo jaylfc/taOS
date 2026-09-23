@@ -81,7 +81,7 @@ def _make_mock_process(create_time: float, cmdline_parts: list, ppid: int = None
     """Create a mock process info object."""
     import os
     pid = os.getpid() + hash(tuple(cmdline_parts)) % 10000 + 1000  # uniqueish
-    actual_ppid = ppid if ppid is not None else max(os.getppid(), 1)
+    actual_ppid = ppid if ppid is not None else 4242  # Fixed non-1 default to avoid container PID-1 false orphan
     info = {
         "pid": pid,
         "cmdline": cmdline_parts,
@@ -250,6 +250,7 @@ async def test_wait_timeout_expired_not_reaped(monkeypatch):
     try:
         reaped = reap_hung_executor_sh(cap_seconds=300)
         assert len(reaped) == 0
+        assert proc.wait_called
     finally:
         monkeypatch.setattr(psutil, "process_iter", original_iter)
 
