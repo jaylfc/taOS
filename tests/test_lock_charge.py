@@ -203,7 +203,7 @@ process.stdout.write(JSON.stringify(out));
         return _node(script)
 
     def test_it_starts_fifteen_short_and_lands_on_the_reading(self):
-        frames = self._frames(73, [0, 500, 1100, 2200, 2600])
+        frames = self._frames(73, [0, 1500, 3500, 7500, 7900])
         assert frames[0]["percent"] == 58
         assert frames[3]["percent"] == 73 and frames[4]["percent"] == 73
         shown = [f["percent"] for f in frames]
@@ -214,15 +214,15 @@ process.stdout.write(JSON.stringify(out));
         assert self._frames(6, [0])[0]["percent"] == 0
 
     def test_the_bar_is_twenty_cells_and_fills_with_the_number(self):
-        for f in self._frames(73, [0, 700, 1400, 2200]):
+        for f in self._frames(73, [0, 2500, 5000, 7500]):
             assert len(f["fill"]) + len(f["rest"]) == 20
             assert set(f["fill"]) <= {"█"} and set(f["rest"]) <= {"░"}
             assert len(f["fill"]) == round(f["percent"] / 5)
-        assert len(self._frames(100, [2200])[0]["fill"]) == 20
-        assert len(self._frames(0, [2200])[0]["fill"]) == 0
+        assert len(self._frames(100, [7500])[0]["fill"]) == 20
+        assert len(self._frames(0, [7500])[0]["fill"]) == 0
 
     def test_an_unread_battery_has_no_number_and_no_bar(self):
-        assert self._frames(None, [0, 2200]) == [None, None]
+        assert self._frames(None, [0, 7500]) == [None, None]
 
 
 class TestTheSpinnerAndSlogans:
@@ -328,8 +328,8 @@ function setText(e, t) { e.textContent = t; return e; }
 var screenEl = el(), carEl = el(), volEl = el();
 var document = { body: { appendChild: function () {} }, createElement: function () { return el(); } };
 var chargeEl = null, chargeRun = null;
-var CHARGE_MS = 3000, CHARGE_FADE_MS = 440, CHARGE_DONE_MS = 2450;
-var CHARGE_SLOGAN_MS = 900, CHARGE_SPIN_MS = 120;
+var CHARGE_MS = 10000, CHARGE_FADE_MS = 440, CHARGE_DONE_MS = 8600;
+var CHARGE_SLOGAN_MS = 1600, CHARGE_SPIN_MS = 120;
 __SOURCE__
 function snap(label) {
   return { label: label, black: BLACK, blanked: screenEl.hasAttribute("data-blanked"),
@@ -344,8 +344,8 @@ chargeShow(SCN.data);
 out.push(snap("painted"));
 advance(16); out.push(snap("frame"));
 advance(1500); out.push(snap("mid"));
-advance(1200); out.push(snap("late"));
-advance(400); out.push(snap("fading"));
+advance(7400); out.push(snap("late"));
+advance(1200); out.push(snap("fading"));
 advance(600); out.push(snap("after"));
 process.stdout.write(JSON.stringify(out));
 """
@@ -373,11 +373,11 @@ class TestOverADarkPanel:
         assert painted["black"] and painted["blanked"] and painted["fromdark"]
         assert painted["shown"] and painted["dark"]
 
-    def test_it_holds_for_three_seconds_then_reveals_the_lock_screen(self):
+    def test_it_holds_for_ten_seconds_then_reveals_the_lock_screen(self):
         f = _flow({"percent": 64, "screen": "off"})
         assert f["mid"]["on"] and f["mid"]["black"], "still up at 1.5 s"
         assert f["late"]["done"], "the green tick lands before the fade"
-        assert not f["fading"]["on"], "fading by 3.1 s"
+        assert not f["fading"]["on"], "fading by 10.1 s"
         after = f["after"]
         assert not after["shown"]
         assert not after["black"] and not after["blanked"] and not after["fromdark"], \

@@ -1989,7 +1989,8 @@ body.lockscreen-on .osk-toggle { display: none !important; }
 .ls-modal-voice .ls-voice-acts { padding-top: 4px; }
 
 /* THE CHARGE OVERLAY. Product owner: "a charger connected notification,
- * screen on and animation for 3 seconds ... the charge screen emulates a
+ * screen on and animation for 3 seconds [later: "make the charge animation 10
+ * seconds"] ... the charge screen emulates a
  * claude code like cli". A homage to a coding-agent terminal, NOT a brand: no
  * names, no marks, just the grammar -- a prompt, a spinner, a working slogan
  * and a count.
@@ -5608,11 +5609,11 @@ _LOCK_SCREEN_SCRIPT = r"""
       "Absorbing the grid…", "Topping up the vibes…"
     ];
     var CHARGE_SPIN = ["·", "✢", "✳", "✶", "✻", "✽"];
-    var CHARGE_MS = 3000;          // on screen, before the fade starts
+    var CHARGE_MS = 10000;         // on screen, before the fade starts (Jay: 10 s)
     var CHARGE_FADE_MS = 440;      // .ls-charge opacity transition, plus a frame
-    var CHARGE_COUNT_MS = 2200;    // the count-up
-    var CHARGE_DONE_MS = 2450;     // the green tick
-    var CHARGE_SLOGAN_MS = 900;
+    var CHARGE_COUNT_MS = 7500;    // the count-up
+    var CHARGE_DONE_MS = 8600;     // the green tick
+    var CHARGE_SLOGAN_MS = 1600;
     var CHARGE_SPIN_MS = 120;
     var chargeEl = null, chargeRun = null;
 
