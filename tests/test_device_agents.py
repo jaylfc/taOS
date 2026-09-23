@@ -144,6 +144,20 @@ class TestPresenceIsHeartbeatShaped:
         assert island["key"] == "device:taosusb"
         assert island["device"] is True and island["demo"] is True
 
+    def test_a_board_survives_a_full_demo_roster(self, armed, monkeypatch):
+        """On the handset the roster is the system agent plus five demo agents,
+        and a cap of six cut the board off because it is appended last: the
+        heartbeat said 200 and no island ever appeared. No cap now, and a new
+        agent goes at the bottom (Jay)."""
+        monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", ",".join(
+            "Agent %d:hermes:working" % i for i in range(8)))
+        _beat(armed)
+        agents = _body(_call(auth.lock_widgets(_Req())))["agents"]
+        keys = [a.get("key") for a in agents]
+        assert "device:taosusb" in keys
+        assert len([a for a in agents if a.get("demo") and not a.get("device")]) == 8
+        assert agents[-1].get("key") == "device:taosusb"
+
     def test_a_board_older_than_the_liveness_window_is_gone(self, armed):
         _beat(armed)
         with auth._DEVICE_LOCK:

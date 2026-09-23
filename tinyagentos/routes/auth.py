@@ -7058,8 +7058,12 @@ async def lock_widgets(request: Request):
         1 for a in agents
         if not a.get("system") and a["status"].strip().lower() not in resting
     )
+    # NO cap on the islands (Jay: "there shouldnt be a cap"); the feed scrolls.
+    # A cap of six silently cut off a plugged-in board, which is appended last,
+    # whenever five demo agents were configured. New agents go at the BOTTOM,
+    # in arrival order (Jay; custom ordering comes later).
     return JSONResponse({
-        "agents": agents[:6],
+        "agents": agents,
         "agent_total": len(agents),
         "agent_running": running,
         "tasks": tasks[:4],
