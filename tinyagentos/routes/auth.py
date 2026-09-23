@@ -669,13 +669,16 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
      re-enters this animation -- see the repaint tests. */
   animation: ls-island-in 520ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
 }
+/* Centred on the row and a size up (Jay: "Shouldn't the icons be vertically
+   centred and slightly larger?"): a source mark pinned to the top of a
+   three-line row read as floating above it. */
 .ls-row-tile {
-  flex: none; width: 30px; height: 30px; border-radius: 9px;
+  flex: none; align-self: center; width: 36px; height: 36px; border-radius: 10px;
   display: flex; align-items: center; justify-content: center;
-  font-size: 13px; font-weight: 700; color: #fff;
+  font-size: 14px; font-weight: 700; color: #fff;
   background: var(--ls-n, #4c9aff);
 }
-.ls-row-tile svg { width: 17px; height: 17px; fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ls-row-tile svg { width: 20px; height: 20px; fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .ls-row-body { min-width: 0; flex: 1; }
 .ls-row-meta {
   display: flex; align-items: baseline; gap: 6px;
