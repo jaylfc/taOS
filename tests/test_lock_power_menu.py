@@ -435,12 +435,9 @@ class TestTheVolumeKeys:
         a real mic would be the worst possible surprise on a PRE-AUTH screen,
         so the absence is asserted rather than trusted to the comment.
 
-        Scoped to the volume/carousel code rather than the whole script,
-        because the script is NOT mic-free: the pre-existing `#ls-voice` sheet
-        calls navigator.mediaDevices.getUserMedia({audio: true}), and it is
-        reachable from the lock screen. That is worth knowing and is not this
-        feature's doing -- asserting it away here would have quietly taken
-        responsibility for someone else's microphone.
+        Scoped to the volume/carousel code. The `#ls-voice` sheet used to call
+        getUserMedia too; it no longer does, and the whole-script absence is
+        asserted in test_lock_voice_wave.py.
         """
         js = auth._LOCK_SCREEN_SCRIPT
         start = js.index("var volEl = document.getElementById")
@@ -452,15 +449,17 @@ class TestTheVolumeKeys:
                           "new AudioContext(", "navigator.mediaDevices"):
             assert forbidden not in block, forbidden
 
-    def test_the_talking_state_says_demo_on_screen(self):
-        # Sliced to the next function, not a fixed byte count. Adding the
-        # last-used recording inside startTalking pushed "(demo)" past a
-        # 600-char window and reddened this -- the fourth time in this file a
-        # fixed-length slice has broken on code growing inside its window.
+    def test_the_talking_state_shows_no_demo_text(self):
+        """Product owner: "we need to remove any demo text". The walkie-talkie
+        stays a mock -- no microphone, asserted above -- but what the viewer
+        reads is the finished product's wording, in both states."""
         js = auth._LOCK_SCREEN_SCRIPT
         start = js.index("function startTalking(")
-        body = js[start:js.index("function stopTalking(", start)]
-        assert "(demo)" in body, body
+        body = js[start:js.index("function volumeKey(", start)]
+        assert 'setText(carPtt, "Talking…")' in body, body
+        assert 'setText(carPtt, "Sent")' in body, body
+        code = "\n".join(l for l in body.splitlines() if not l.strip().startswith("//"))
+        assert "(demo)" not in code and "demo" not in code.lower(), code
 
     def test_the_volume_surfaces_never_cover_the_passcode(self):
         """A volume nudge must not drop a bezel over the keypad someone is

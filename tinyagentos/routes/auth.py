@@ -1884,7 +1884,6 @@ body.lockscreen-on .osk-toggle { display: none !important; }
 .ls-voice-text:empty::before {
   content: "Say something\2026"; color: rgba(255,255,255,0.32);
 }
-.ls-voice-text[data-error="1"] { font-size: 14px; color: rgba(255,176,32,0.92); }
 .ls-voice-acts { display: flex; gap: 10px; padding-top: 2px; }
 /* The dictation dialog is a MODAL now, not a sheet, so it scales up out of the
    blur like the power menu instead of sliding from the bottom edge. Its reveal
@@ -3438,8 +3437,7 @@ _LOCK_SCREEN_SCRIPT = r"""
         ));
         if (typeof d.gpu.active_percent === "number") {
           rows.push(statNote(card, "gpu-note",
-            "Above idle clock " + d.gpu.active_percent.toFixed(0)
-            + "% of uptime. The GPU reports no utilisation counter."));
+            "Above idle clock " + d.gpu.active_percent.toFixed(0) + "% of uptime"));
         }
       } else {
         rows.push(statRow(card, "gpu", "GPU clock", "--"));
@@ -3462,8 +3460,7 @@ _LOCK_SCREEN_SCRIPT = r"""
         }
         placeInOrder(chips, want);
         parts.push(chips);
-        parts.push(statNote(statsEl, "accel-note",
-          "Accelerators report running or offline only — no usage counter exists for them."));
+        parts.push(statNote(statsEl, "accel-note", "On-device accelerators"));
       }
       // With no DSPs the chips and their caption are simply absent from
       // `parts`, and placeInOrder takes them out.
@@ -3497,16 +3494,16 @@ _LOCK_SCREEN_SCRIPT = r"""
             ag.cpu_percent
           ));
         }
-        arows.push(statNote(acard, "agents-note",
-          "Demo readings. taOS does not meter per-agent usage on this device yet."));
         placeInOrder(acard, arows);
         parts.push(acard);
       }
 
-      // "Nobody asked" and "none loaded" are different answers.
-      parts.push(statNote(statsEl, "models", d.models
-        ? (d.models.length ? d.models.join(", ") : "No models loaded.")
-        : "Loaded models are not reported by this device."));
+      // "Nobody asked" and "none loaded" are different answers -- and the
+      // first is simply not shown, rather than printed as a caveat.
+      if (d.models) {
+        parts.push(statNote(statsEl, "models",
+          d.models.length ? d.models.join(", ") : "No models loaded"));
+      }
 
       placeInOrder(statsEl, parts);
       syncFeedFade();
@@ -3868,9 +3865,10 @@ _LOCK_SCREEN_SCRIPT = r"""
           .then(function (d) {
             // The window takes a couple of seconds to map, so there is nothing
             // to show on success -- it simply appears over this screen.
-            if (!d || !d.ok) note((d && d.detail) || "Camera unavailable");
+            // A friendly line, never the raw launch error.
+            if (!d || !d.ok) note("The camera couldn't open. Try again.");
           })
-          .catch(function () { note("Camera unavailable"); });
+          .catch(function () { note("The camera couldn't open. Try again."); });
       });
     }
 
@@ -4285,9 +4283,10 @@ _LOCK_SCREEN_SCRIPT = r"""
         carFocusName = focused.name;
         carSave();
       }
-      // MOCK. No getUserMedia, no recorder, no upload. The word "demo" stays on
-      // screen so this can never be mistaken for a live channel.
-      setText(carPtt, "Talking… (demo)");
+      // MOCK. No getUserMedia, no recorder, no upload. The on-screen words
+      // read as a finished product (product owner: remove any demo text); the
+      // absence of a microphone is asserted by the tests, not by a label.
+      setText(carPtt, "Talking…");
       if (volHideTimer) window.clearTimeout(volHideTimer);
     }
 
@@ -4295,7 +4294,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       if (!talking) return;
       talking = false;
       if (carEl) carEl.removeAttribute("data-talking");
-      setText(carPtt, "Sent (demo)");
+      setText(carPtt, "Sent");
       restartIdleHide();
     }
 
@@ -4520,7 +4519,7 @@ _LOCK_SCREEN_SCRIPT = r"""
           if (d) return showBrightness(d);
           // 404 is the honest answer on a device with no backlight node.
           if (shadeNote) {
-            setText(shadeNote, "This device reports no backlight.");
+            setText(shadeNote, "Brightness is fixed on this display.");
             shadeNote.hidden = false;
           }
           if (brightEl) brightEl.disabled = true;
@@ -4629,15 +4628,20 @@ _LOCK_SCREEN_SCRIPT = r"""
           // and a "done" message would be a lie either way.
           if (verb === "poweroff" || verb === "reboot") return;
           if (d && d.ok) {
-            powerResult(label + ": done." + (d.path ? " Saved to " + d.path : ""));
+            // No file path on the glass: it is an internal directory, not
+            // somewhere the person holding the phone can go.
+            powerResult(verb === "screenshot" ? "Screenshot saved." : label + ": done.");
           } else {
             // The failure TEXT, not a generic apology: "no supported format
             // found" is the difference between a bug report and a shrug, and
             // screenshot genuinely does fail on this compositor today.
-            powerResult(label + " failed. " + ((d && d.detail) || "No detail."));
+            // A sentence a viewer can act on, never a raw exception or an
+            // HTTP status. `message` is the server's own wording when it has
+            // one worth saying (the emergency case); `detail` stays for logs.
+            powerResult((d && d.message) || (label + " didn't go through. Try again."));
           }
         })
-        .catch(function () { powerResult(label + " failed: no answer from taOS."); });
+        .catch(function () { powerResult(label + " didn't go through. Try again."); });
     }
 
     function paintPowerMenu() {
@@ -4732,7 +4736,7 @@ _LOCK_SCREEN_SCRIPT = r"""
         "poweroff": "The phone switches off. It needs the power key to come back.",
         "reboot": "The phone restarts. Agents stop and come back with it.",
         "stop-agents": "Every running agent stops. Nobody is signed in, so this cannot be undone from here.",
-        "emergency": "There is no dialer configured on this device."
+        "emergency": "This phone can't place calls. Use another phone to reach emergency services."
       };
       note.textContent = NOTES[item[1]] || "";
       var row = document.createElement("div");
@@ -5316,7 +5320,7 @@ _LOCK_SCREEN_SCRIPT = r"""
               var answer = decAnswered[key];
               if (answer) {
                 return [setText(partOf(body, "done", "ls-dec-done"),
-                  (answer === "approve" ? "Approved" : "Denied") + " (demo)")];
+                  answer === "approve" ? "Approved" : "Denied")];
               }
               var actions = partOf(body, "actions", "ls-dec-actions");
               var deny = partOf(actions, "deny", "ls-dec-btn", "button");
@@ -5913,7 +5917,7 @@ _LOCK_SCREEN_SCRIPT = r"""
     function openChat(agent) {
       chatAgent = agent;
       chatName.textContent = agent.name || "agent";
-      chatSub.textContent = agent.demo ? "Demo conversation" : (agent.status || "");
+      chatSub.textContent = agent.status || "";
       fillAvatar(chatAv, agent);
       msgsEl.textContent = "";
       composer.value = "";
@@ -6027,8 +6031,10 @@ _LOCK_SCREEN_SCRIPT = r"""
       decMeta.textContent = d.priority && d.priority !== "normal"
         ? d.priority.charAt(0).toUpperCase() + d.priority.slice(1) + " priority"
         : "";
-      decNote.hidden = !!d.id;
-      decNote.textContent = d.id ? "" : "Demo prompt — nothing is actually approved.";
+      // No caption: the screen reads as a finished product either way, and a
+      // prompt with no id is still resolved in place below without a session.
+      decNote.hidden = true;
+      decNote.textContent = "";
       decActs.hidden = false;
       decDone.hidden = true;
       decActs.setAttribute("data-decision-id", d.id || "");
@@ -6045,7 +6051,7 @@ _LOCK_SCREEN_SCRIPT = r"""
           // Demo prompt: resolve in place and say so.
           decActs.hidden = true;
           decDone.hidden = false;
-          decDone.textContent = approved ? "Approved (demo)" : "Denied (demo)";
+          decDone.textContent = approved ? "Approved" : "Denied";
           window.setTimeout(closeSheet, 1100);
           return;
         }
@@ -6314,14 +6320,20 @@ _LOCK_SCREEN_SCRIPT = r"""
     })();
 
     // -----------------------------------------------------------------------
-    // DICTATION. The waveform is driven by the REAL microphone through an
-    // AnalyserNode, not by a canned animation: a fake waveform that moves while
-    // the mic is muted or denied is worse than no waveform, because it tells
-    // the user they are being heard when they are not.
+    // DICTATION, EMULATED. Product owner: "we need to remove any demo text,
+    // like the voice note window says microphone access refused etc, this
+    // should be animated waveform emulating voice input".
     //
-    // Transcription is a separate capability from capture. Where the browser
-    // has SpeechRecognition it is used; where it does not, the sheet says so
-    // plainly instead of listening forever into nothing.
+    // So this sheet no longer asks for the microphone at all. That is a
+    // security gain as much as a cosmetic one: the lock screen renders BEFORE
+    // sign-in, and a getUserMedia call here put a live microphone one tap away
+    // from whoever was holding the phone.
+    //
+    // The waveform is an emulated voice rather than a canned loop: words of
+    // syllable-rate bursts (4-6 Hz) with a soft attack and a smooth decay,
+    // random pauses between them, and a little jitter. It runs while the
+    // sheet is "recording" and lies flat otherwise. Every value is a pure
+    // function of time since the take began, so it is tested without a canvas.
     // -----------------------------------------------------------------------
     var waveCanvas = document.getElementById("ls-wave");
     var voiceText  = document.getElementById("ls-voice-text");
@@ -6330,8 +6342,16 @@ _LOCK_SCREEN_SCRIPT = r"""
     var voiceAv    = document.getElementById("ls-voice-avatar");
     var voiceSend  = document.getElementById("ls-voice-send");
     var voiceAgent = null;
-    var mediaStream = null, audioCtx = null, analyser = null, waveRAF = null;
-    var recog = null, finalText = "";
+    var waveRAF = null, voiceRun = null;
+    var VOICE_LEAD_MS = 380;       // a breath before the first word
+    var VOICE_ROOM = 0.02;         // the floor while recording: never dead flat
+    var VOICE_PHRASES = [
+      "Can you give me a quick update on where things are?",
+      "Let me know as soon as that is done.",
+      "What is next on your list today?",
+      "Remind me about this later this afternoon.",
+      "Go ahead with that and send me a summary."
+    ];
 
     function drawWave(level) {
       if (!waveCanvas) return;
@@ -6341,7 +6361,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       var bars = 48, gap = 3, bw = (w - gap * (bars - 1)) / bars;
       for (var i = 0; i < bars; i++) {
         // A travelling envelope so the bars read as a moving waveform rather
-        // than a level meter; scaled by the ACTUAL measured level.
+        // than a level meter.
         var phase = (Date.now() / 260) + i * 0.38;
         var env = 0.32 + 0.68 * Math.abs(Math.sin(phase));
         var mag = Math.max(2, level * env * mid * 1.9);
@@ -6354,100 +6374,141 @@ _LOCK_SCREEN_SCRIPT = r"""
       }
     }
 
-    function pumpWave() {
-      if (!analyser) return;
-      var buf = new Uint8Array(analyser.frequencyBinCount);
-      analyser.getByteTimeDomainData(buf);
-      // RMS around the 128 midpoint: a peak reading spikes on a single click
-      // and makes a quiet room look loud.
-      var sum = 0;
-      for (var i = 0; i < buf.length; i++) {
-        var v = (buf[i] - 128) / 128;
-        sum += v * v;
+    // A stable 0..1 per (take, word, channel). sin-hash rather than
+    // Math.random() so a given moment of a take always looks the same.
+    function voiceHash(seed, k) {
+      var x = Math.sin((seed + 1) * 12.9898 + k * 78.233) * 43758.5453;
+      return x - Math.floor(x);
+    }
+
+    // Word `k` of a take: its length, the pause after it, its syllable rate
+    // and how loudly it is said.
+    function voiceWord(seed, k) {
+      var pause = voiceHash(seed + 7, k);
+      return {
+        dur: 240 + voiceHash(seed, k) * 460,              // 240-700 ms
+        // Mostly short gaps, now and then a longer think.
+        gap: 70 + pause * pause * 460,
+        rate: 4 + voiceHash(seed + 3, k) * 2,              // 4-6 Hz syllables
+        loud: 0.6 + 0.4 * voiceHash(seed + 11, k)
+      };
+    }
+
+    // The envelope at `t` ms into a take of `words` words: 0..1. Exactly 0
+    // when not recording -- the flat line is the "idle" state.
+    function voiceEnvelope(t, recording, seed, words) {
+      if (!recording || !(t >= 0)) return 0;
+      var at = VOICE_LEAD_MS;
+      if (t < at) return VOICE_ROOM;
+      var n = typeof words === "number" ? words : 400;
+      for (var k = 0; k < n; k++) {
+        var w = voiceWord(seed || 0, k);
+        if (t < at + w.dur) {
+          var tw = t - at;
+          var syl = Math.abs(Math.sin(Math.PI * w.rate * tw / 1000));
+          syl = 0.3 + 0.7 * Math.pow(syl, 0.8);
+          var attack = Math.min(1, tw / 55);
+          // The smooth decay: the last 150 ms of a word eases down to the
+          // room floor instead of stopping.
+          var release = Math.min(1, (w.dur - tw) / 150);
+          release = release * release * (3 - 2 * release);
+          var jitter = 0.92 + 0.08 * Math.sin(tw / 17 + k) * Math.sin(tw / 29 + seed);
+          var level = w.loud * syl * attack * release * jitter;
+          return Math.max(VOICE_ROOM, Math.min(1, level));
+        }
+        at += w.dur;
+        if (t < at + w.gap) return VOICE_ROOM;
+        at += w.gap;
       }
-      drawWave(Math.min(1, Math.sqrt(sum / buf.length) * 3.2));
-      waveRAF = requestAnimationFrame(pumpWave);
+      return VOICE_ROOM;
+    }
+
+    // How many words of the take have been fully said by `t`. Drives the
+    // transcript, so text lands in step with the bursts that "said" it.
+    function voiceWordsDone(t, seed, words) {
+      var at = VOICE_LEAD_MS, done = 0;
+      for (var k = 0; k < words; k++) {
+        var w = voiceWord(seed || 0, k);
+        at += w.dur;
+        if (t < at) break;
+        done++;
+        at += w.gap;
+      }
+      return done;
+    }
+
+    // The bars scroll: the newest sample is on the right, each bar to its left
+    // is 40 ms older, so a word travels across the canvas as it is spoken.
+    function drawVoiceWave(t, run) {
+      if (!waveCanvas) return;
+      var ctx = waveCanvas.getContext("2d");
+      var w = waveCanvas.width, h = waveCanvas.height, mid = h / 2;
+      ctx.clearRect(0, 0, w, h);
+      var bars = 48, gap = 3, bw = (w - gap * (bars - 1)) / bars;
+      for (var i = 0; i < bars; i++) {
+        var ts = t - (bars - 1 - i) * 40;
+        var lvl = voiceEnvelope(ts, ts < run.endAt, run.seed, run.words.length);
+        // A little per-bar texture, so neighbouring bars are not identical.
+        var shape = 0.72 + 0.28 * Math.abs(Math.sin(i * 1.7 + ts / 190));
+        var mag = Math.max(2, lvl * shape * mid * 0.94);
+        var x = i * (bw + gap);
+        ctx.fillStyle = "rgba(10,132,255," + (0.45 + 0.55 * Math.min(1, lvl * 1.4)) + ")";
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(x, mid - mag, bw, mag * 2, bw / 2);
+        else ctx.rect(x, mid - mag, bw, mag * 2);
+        ctx.fill();
+      }
+    }
+
+    function voiceTick() {
+      var run = voiceRun;
+      if (!run) return;
+      var t = Date.now() - run.start;
+      var said = voiceWordsDone(t, run.seed, run.words.length);
+      if (said !== run.said) {
+        run.said = said;
+        if (voiceText) voiceText.textContent = run.words.slice(0, said).join(" ");
+        if (voiceSend) voiceSend.disabled = said === 0;
+      }
+      if (said >= run.words.length && !run.finished) {
+        run.finished = true;
+        if (voiceState) voiceState.textContent = "Ready to send";
+      }
+      drawVoiceWave(t, run);
+      // Keep drawing until the last word has scrolled off the canvas.
+      if (t < run.endAt + 48 * 40) waveRAF = requestAnimationFrame(voiceTick);
+      else { waveRAF = null; drawWave(0); }
     }
 
     function stopVoice() {
       if (waveRAF) { cancelAnimationFrame(waveRAF); waveRAF = null; }
-      if (recog) { try { recog.onend = null; recog.abort(); } catch (e) {} recog = null; }
-      if (mediaStream) {
-        mediaStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
-        mediaStream = null;
-      }
-      if (audioCtx) { try { audioCtx.close(); } catch (e) {} audioCtx = null; }
-      analyser = null;
-    }
-
-    function voiceFail(msg) {
-      stopVoice();
-      if (voiceState) voiceState.textContent = "Not available";
-      if (voiceText) { voiceText.setAttribute("data-error", "1"); voiceText.textContent = msg; }
-      drawWave(0);
+      voiceRun = null;
     }
 
     function openVoice(agent) {
+      stopVoice();
       voiceAgent = agent;
-      finalText = "";
       if (voiceTitle) voiceTitle.textContent = agent.name || "agent";
       if (voiceAv) fillAvatar(voiceAv, agent);
-      if (voiceText) { voiceText.removeAttribute("data-error"); voiceText.textContent = ""; }
-      if (voiceState) voiceState.textContent = "Listening\u2026";
+      if (voiceText) voiceText.textContent = "";
+      if (voiceState) voiceState.textContent = "Listening…";
       if (voiceSend) voiceSend.disabled = true;
       openSheet("voice");
 
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        voiceFail("This device has no microphone available to the browser.");
-        return;
+      var seed = Math.floor(Math.random() * 1000);
+      var phrase = VOICE_PHRASES[seed % VOICE_PHRASES.length];
+      var words = phrase.split(" ");
+      var end = VOICE_LEAD_MS;
+      for (var k = 0; k < words.length; k++) {
+        var w = voiceWord(seed, k);
+        end += w.dur + (k < words.length - 1 ? w.gap : 0);
       }
-      navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
-        if (!screenEl || screenEl.getAttribute("data-sheet") !== "voice") {
-          stream.getTracks().forEach(function (t) { t.stop(); });
-          return;
-        }
-        mediaStream = stream;
-        var AC = window.AudioContext || window.webkitAudioContext;
-        audioCtx = new AC();
-        analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 1024;
-        audioCtx.createMediaStreamSource(stream).connect(analyser);
-        pumpWave();
-
-        var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SR) {
-          // Capture works, transcription does not. Say exactly that rather than
-          // leaving a waveform moving under a caption that never appears.
-          if (voiceState) voiceState.textContent = "Dictation unavailable";
-          if (voiceText) {
-            voiceText.setAttribute("data-error", "1");
-            voiceText.textContent = "This build has no speech recognition, so it cannot turn speech into text. Type instead.";
-          }
-          return;
-        }
-        recog = new SR();
-        recog.continuous = true;
-        recog.interimResults = true;
-        recog.lang = navigator.language || "en-GB";
-        recog.onresult = function (ev) {
-          var interim = "";
-          for (var i = ev.resultIndex; i < ev.results.length; i++) {
-            var chunk = ev.results[i][0].transcript;
-            if (ev.results[i].isFinal) finalText += chunk;
-            else interim += chunk;
-          }
-          if (voiceText) voiceText.textContent = (finalText + interim).trim();
-          if (voiceSend) voiceSend.disabled = !(finalText + interim).trim();
-        };
-        recog.onerror = function (ev) {
-          voiceFail(ev && ev.error === "not-allowed"
-            ? "Microphone access was refused."
-            : "Dictation stopped. Type instead.");
-        };
-        try { recog.start(); } catch (e) { /* already running */ }
-      }).catch(function () {
-        voiceFail("Microphone access was refused, so nothing is being recorded.");
-      });
+      voiceRun = {
+        start: Date.now(), seed: seed, words: words, said: -1,
+        finished: false, endAt: end
+      };
+      drawWave(0);
+      waveRAF = requestAnimationFrame(voiceTick);
     }
 
     if (agentsEl) {
@@ -7975,7 +8036,7 @@ _DEMO_MAILBOX: tuple[dict, ...] = (
         "app": "LinkedIn",
         "who": "Northlight Systems",
         "subject": "Message",
-        "preview": "Thanks for the demo yesterday — sending the write-up over.",
+        "preview": "Thanks for the walkthrough yesterday — sending the write-up over.",
         "minutes": 190,
         "mono": "in",
         "tint": "#0a66c2",
@@ -8231,7 +8292,7 @@ _DEMO_PROJECTS: tuple[dict, ...] = (
     },
     {
         "key": "prj-handset",
-        "name": "Handset demo build",
+        "name": "Handset launch build",
         "note": "Lock screen panels landed · splash handover next",
         "progress": 64,
         "agents": 4,
@@ -9385,7 +9446,9 @@ async def lock_power_action(request: Request):
     # silently does nothing in an emergency is worse than one that is honest.
     return JSONResponse(
         {"ok": False, "action": "emergency", "demo": True,
-         "detail": "No dialer is configured on this device."}
+         "detail": "No dialer is configured on this device.",
+         "message": "This phone can't place calls. Use another phone to "
+                    "reach emergency services."}
     )
 
 
