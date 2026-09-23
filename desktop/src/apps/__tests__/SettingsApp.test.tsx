@@ -39,10 +39,14 @@ describe("SettingsApp admin-only sections", () => {
     });
     expect(screen.queryByText("Users")).not.toBeInTheDocument();
     expect(screen.queryByText("Advanced")).not.toBeInTheDocument();
+    // Demo mode changes the lock screen for everyone: admin-only.
+    expect(within(nav).queryByText("Demo mode")).not.toBeInTheDocument();
 
     // Personal sections stay visible in the sidebar.
     expect(within(nav).getByText("Themes")).toBeInTheDocument();
     expect(within(nav).getByText("Account")).toBeInTheDocument();
+    // Every user owns how their own lock screen opens.
+    expect(within(nav).getByText("Lock screen")).toBeInTheDocument();
   });
 
   it("shows admin-only sections to an admin user", async () => {
@@ -55,6 +59,8 @@ describe("SettingsApp admin-only sections", () => {
     });
     expect(within(nav).getByText("Users")).toBeInTheDocument();
     expect(within(nav).getByText("Advanced")).toBeInTheDocument();
+    expect(within(nav).getByText("Demo mode")).toBeInTheDocument();
+    expect(within(nav).getByText("Lock screen")).toBeInTheDocument();
 
     expect(within(nav).getByText("Themes")).toBeInTheDocument();
     expect(within(nav).getByText("Account")).toBeInTheDocument();

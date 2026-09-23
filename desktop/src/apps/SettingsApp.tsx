@@ -18,6 +18,8 @@ import {
   ScrollText,
   Save,
   Bell,
+  Lock,
+  Presentation,
 } from "lucide-react";
 import {
   Button,
@@ -38,12 +40,14 @@ import { UsersSection } from "@/apps/SettingsApp/UsersPanel";
 import { AccountSection } from "@/apps/SettingsApp/AccountPanel";
 import { LogsSection } from "@/apps/SettingsApp/LogsPanel";
 import { NotificationsPanel } from "@/apps/SettingsApp/NotificationsPanel";
+import { LockScreenPanel } from "@/apps/SettingsApp/LockScreenPanel";
+import { DemoModePanel } from "@/apps/SettingsApp/DemoModePanel";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs" | "notifications";
+type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs" | "notifications" | "lock" | "demo";
 
 interface SectionDef {
   id: Section;
@@ -86,11 +90,13 @@ const SECTIONS: SectionDef[] = [
   { id: "themes", label: "Themes", icon: Palette },
   { id: "logs", label: "Logs", icon: ScrollText },
   { id: "notifications", label: "Notifications", icon: Bell },
+  { id: "lock", label: "Lock screen", icon: Lock },
+  { id: "demo", label: "Demo mode", icon: Presentation },
 ];
 
 // Sections that require admin privileges to view (GHSA-47g9: backend already
 // 403s these for non-admins, this hides them from the sidebar/content too).
-const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "users", "logs"]);
+const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "users", "logs", "demo"]);
 
 const PLACEHOLDER_SYSTEM: SystemInfo = {
   cpu: "Detecting...",
@@ -940,6 +946,8 @@ export function SettingsApp({ windowId: _windowId, section: initialSection }: { 
     themes: <ThemesPanel />,
     logs: <LogsSection />,
     notifications: <NotificationsPanel />,
+    lock: <LockScreenPanel />,
+    demo: <DemoModePanel />,
   };
 
   const handleSelectSection = (id: Section) => {
