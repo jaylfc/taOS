@@ -62,6 +62,7 @@ _CREDENTIAL_PATHS = frozenset(
     {
         "/auth/login",       # password form + SPA handoff
         "/auth/pin-login",   # console PIN keypad
+        "/auth/swipe-unlock",  # console swipe (single-user, method "swipe")
         "/auth/setup",       # first-run account creation
         "/auth/complete",    # invited user setting their password
         "/setup/complete",   # first-boot wizard (dashboard router, form POST)

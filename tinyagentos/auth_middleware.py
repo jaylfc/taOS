@@ -20,9 +20,12 @@ logger = logging.getLogger(__name__)
 # how a session is obtained, so requiring one would be circular. It is NOT
 # unguarded -- the route refuses any request that is not from the device's own
 # console (see auth.is_console_origin) and throttles per user on top of that.
+# /auth/swipe-unlock is exempt on the same argument and guarded harder: console
+# only, single-account only, and only for an owner who chose "swipe" with their
+# password. See routes.auth.swipe_unlock.
 # Note /auth/pin (set/clear a PIN) is deliberately absent from this set: those
 # require a live session and must stay gated here.
-EXEMPT_PATHS = {"/auth/login", "/auth/pin-login", "/auth/osk.js", "/auth/pin-panel.js", "/auth/lock-screen.js", "/auth/lock-widgets", "/auth/lock-weather", "/auth/lock-notifications", "/auth/lock-stats", "/auth/lock-panels", "/auth/lock-events", "/auth/lock-power-menu", "/auth/lock-screen-off", "/auth/lock-screen-on", "/auth/lock-brightness", "/auth/lock-torch", "/auth/lock-volume", "/auth/lock-volume-key", "/auth/lock-radios", "/auth/lock-power-action", "/auth/lock-app", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
+EXEMPT_PATHS = {"/auth/login", "/auth/pin-login", "/auth/swipe-unlock", "/auth/osk.js", "/auth/pin-panel.js", "/auth/lock-screen.js", "/auth/lock-widgets", "/auth/lock-weather", "/auth/lock-notifications", "/auth/lock-stats", "/auth/lock-panels", "/auth/lock-events", "/auth/lock-power-menu", "/auth/lock-screen-off", "/auth/lock-screen-on", "/auth/lock-brightness", "/auth/lock-torch", "/auth/lock-volume", "/auth/lock-volume-key", "/auth/lock-radios", "/auth/lock-power-action", "/auth/lock-app", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
 
 # Registry feed endpoints accept EITHER an admin session OR a registry JWT.
 # When a Bearer token is present for these paths the request bypasses the
