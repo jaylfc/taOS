@@ -1003,6 +1003,40 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
   opacity: 0;
   transition: none;
 }
+/* SCREEN OFF / ON, ON TRUE BLACK. Jay: "close into the centre and expand out
+ * from the centre animation to play on the true black of the oled screen? a
+ * quick 0.5 second animation". Off: the screen squashes to a line through the
+ * middle, then to a point, and is gone. On: the reverse. The body is already
+ * black (ls-black) for both, and the lock screen carries the body's own grey
+ * gradient while it moves, so the shrinking rectangle is the whole picture
+ * and not a transparent cut-out. Transform and opacity only: this is a
+ * full-screen layer on a phone GPU.
+ *
+ * taos-kiosk-screen waits for this before powering the output down -- the
+ * page cannot paint once the panel is off -- so its last frame is black. */
+.lockscreen[data-closing="1"], .lockscreen[data-opening="1"] {
+  transform-origin: 50% 50%;
+  background: linear-gradient(160deg, #141415 0%, #1a1a1d 45%, #202024 100%);
+  will-change: transform, opacity;
+}
+.lockscreen[data-closing="1"] { animation: ls-tv-off 0.5s cubic-bezier(.55, 0, .8, .2) forwards; }
+.lockscreen[data-opening="1"] { animation: ls-tv-on 0.5s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes ls-tv-off {
+  0%   { transform: scale(1, 1);       opacity: 1; }
+  60%  { transform: scale(1, 0.006);   opacity: 1; }
+  100% { transform: scale(0, 0.006);   opacity: 0; }
+}
+@keyframes ls-tv-on {
+  0%   { transform: scale(0, 0.006);   opacity: 0; }
+  40%  { transform: scale(1, 0.006);   opacity: 1; }
+  100% { transform: scale(1, 1);       opacity: 1; }
+}
+@keyframes ls-tv-fade-out { to { opacity: 0; } }
+@keyframes ls-tv-fade-in { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .lockscreen[data-closing="1"] { animation: ls-tv-fade-out 0.5s forwards; }
+  .lockscreen[data-opening="1"] { animation: ls-tv-fade-in 0.5s both; }
+}
 /* THE BODY GOES BLACK TOO, and this is the bit I kept missing.
  *
  * `body` carries a dark GREY GRADIENT (#141415 -> #202024) for the ordinary
@@ -4758,6 +4792,17 @@ _LOCK_SCREEN_SCRIPT = r"""
     var carUsed = {};
     // Black behind everything. Toggled with the lock screen's own hiding, never
     // separately: two flags for one visual state is how a grey frame gets in.
+    // The screen-off / screen-on animation (ls-tv-off / ls-tv-on).
+    var TV_MS = 500;
+    var tvTimer = 0;
+    function tvStop() {
+      if (tvTimer) { window.clearTimeout(tvTimer); tvTimer = 0; }
+      if (screenEl) {
+        screenEl.removeAttribute("data-closing");
+        screenEl.removeAttribute("data-opening");
+      }
+    }
+
     function setBlack(on) {
       if (document.body) document.body.classList.toggle("ls-black", !!on);
     }
@@ -5533,12 +5578,29 @@ _LOCK_SCREEN_SCRIPT = r"""
           // data-instant first, so their transitions do not run: a 200ms fade
           // has nowhere to go on a panel that is powering down in 120ms, and
           // an unfinished fade is exactly the half-lit ghost being described.
+          // Showing the lock screen right now? Then it closes into the centre
+          // (see ls-tv-off) instead of vanishing. Read before hideAll, which
+          // changes what is showing.
+          var closeIt = !screenEl.hasAttribute("data-blanked")
+            && !screenEl.hasAttribute("data-fromdark");
           screenEl.setAttribute("data-instant", "1");
           hideAll();
           // After hideAll, which decides blackness for itself and would
           // otherwise clear what is set here.
-          screenEl.setAttribute("data-blanked", "1");
           setBlack(true);
+          tvStop();
+          if (!closeIt) {
+            screenEl.setAttribute("data-blanked", "1");
+            setBlack(true);
+          } else {
+            screenEl.setAttribute("data-closing", "1");
+            tvTimer = window.setTimeout(function () {
+              tvTimer = 0;
+              screenEl.setAttribute("data-blanked", "1");
+              setBlack(true);
+              screenEl.removeAttribute("data-closing");
+            }, TV_MS);
+          }
         });
 
         // And back. Un-blackened on wake -- but NOT when the arc is up, because
@@ -5549,8 +5611,19 @@ _LOCK_SCREEN_SCRIPT = r"""
           // the volume bezel just the same. Asking about the arc alone was what
           // let the lock screen appear behind the slider.
           if (screenEl.hasAttribute("data-fromdark")) return;
+          // Out of black: expand from the centre (ls-tv-on), then hand the
+          // background back to the body. A wake mid-close cancels the close.
+          var openIt = screenEl.hasAttribute("data-blanked")
+            || screenEl.hasAttribute("data-closing");
+          tvStop();
           screenEl.removeAttribute("data-blanked");
-          setBlack(false);
+          if (!openIt) { setBlack(false); return; }
+          screenEl.setAttribute("data-opening", "1");
+          tvTimer = window.setTimeout(function () {
+            tvTimer = 0;
+            screenEl.removeAttribute("data-opening");
+            setBlack(false);
+          }, TV_MS + 20);
         });
 
         // The widgets poll (agent islands, rotating demo tasks) has no
