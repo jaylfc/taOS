@@ -2239,7 +2239,10 @@ body.lockscreen-on .osk-toggle { display: none !important; }
     rgba(61,214,255,0) 190deg, #3dd6ff 250deg, #4c9aff 305deg, rgba(76,154,255,0) 360deg);
   animation-duration: 6.4s; animation-direction: reverse;
 }
-.ls-call[data-state="ringing"] .ls-call-ring { animation-duration: 2.6s; }
+/* ONE spin rate for every state. It used to be faster while ringing, but a
+   running animation's position is its elapsed time over its duration, so
+   changing the duration at ringing -> PA snapped the sweep to a new angle in a
+   single frame. Ringing reads through the pulse instead. */
 @keyframes ls-call-spin { to { transform: rotate(360deg); } }
 
 /* THE BODY. Solid rather than backdrop-blurred: the glow behind it moves every
@@ -2457,7 +2460,7 @@ body.lockscreen-on .osk-toggle { display: none !important; }
   background: rgba(255,255,255,0.12);
 }
 .ls-call-pill-ico svg { width: 16px; height: 16px; fill: none; stroke: #fff; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
-.ls-call-pill[data-kind="event"] .ls-call-pill-ico { background: #ff453a; }
+.ls-call-pill[data-kind="event"] .ls-call-pill-ico { background: linear-gradient(135deg, #4c9aff, #7c5cff); }
 .ls-call-pill-text { transition: opacity 200ms ease; }
 
 /* THE LIQUID. A throwaway layer that exists only during the hand-over: blobs
@@ -2477,20 +2480,38 @@ body.lockscreen-on .osk-toggle { display: none !important; }
   will-change: transform;
 }
 .ls-feed [data-call-card] { will-change: transform, opacity; }
-/* The event the PA just added. Drawn INSIDE the card -- the feed clips at its
-   edges, so an outer glow on the first card is cut off flat. */
-.ls-notif-group[data-fresh="1"] .ls-notif:first-child {
-  background: linear-gradient(180deg, rgba(255,69,58,0.16), rgba(255,69,58,0.04) 70%), rgba(30, 30, 34, 0.92);
-  box-shadow: inset 0 0 0 1.5px rgba(255,69,58,0.6), 0 6px 18px -6px rgba(0, 0, 0, 0.75);
-  animation: ls-call-fresh 1.3s ease-in-out 3;
+/* THE REMINDER the PA leaves in Alerts, in the PA's colours so it reads as
+   something your assistant did rather than one more app notification. Its exit
+   is the islands' entrance run backwards, so a dismissal looks like the same
+   material leaving rather than a node being deleted. */
+.ls-call-reminder {
+  background: linear-gradient(180deg, rgba(76,154,255,0.16), rgba(124,92,255,0.05) 75%), rgba(30, 30, 34, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(125,160,255,0.35), 0 6px 18px -6px rgba(0, 0, 0, 0.75);
 }
-@keyframes ls-call-fresh {
-  50% { box-shadow: inset 0 0 0 1.5px rgba(255,69,58,0.95), 0 6px 18px -6px rgba(0, 0, 0, 0.75); }
+.ls-call-reminder-tile {
+  flex: none; width: 30px; height: 30px; border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #4c9aff, #7c5cff);
+}
+.ls-call-reminder-tile svg { width: 17px; height: 17px; fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ls-call-reminder-meta {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  color: #8fbcff;
+}
+.ls-call-reminder-title { margin-top: 2px; font-size: 14px; font-weight: 600; color: #fff; }
+.ls-call-reminder-text { margin-top: 2px; font-size: 13px; line-height: 1.38; color: rgba(255,255,255,0.72); }
+.ls-call-reminder[data-leaving="1"] {
+  animation: ls-call-out 300ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  pointer-events: none;
+}
+@keyframes ls-call-out {
+  from { opacity: 1; transform: none; filter: none; }
+  to   { opacity: 0; transform: translateY(6px) scale(0.96); filter: blur(3px); }
 }
 @media (prefers-reduced-motion: reduce) {
   .ls-call, .ls-call-card, .ls-call-view, .ls-call-view:not([data-on="1"]) { transition: opacity 180ms ease; }
   .ls-call-ring, .ls-call-avatar::after, .ls-call-pa::after, .ls-call-live,
-  .ls-call-line, .ls-call-mark, .ls-notif-group[data-fresh="1"] .ls-notif { animation: none; }
+  .ls-call-line, .ls-call-mark, .ls-call-reminder[data-leaving="1"] { animation: none; }
   .ls-call-ring { opacity: 0.55; }
   .ls-call-view:not([data-on="1"]) { transform: none; }
 }
@@ -4422,10 +4443,17 @@ _LOCK_SCREEN_SCRIPT = r"""
       var sheetNow = screenEl ? screenEl.getAttribute("data-sheet") : "none";
       if (sheetNow && sheetNow !== "none") return;
       var groups = (data && data.groups) || [];
+      // The PA's reminder lives in this panel but is not a notification: it
+      // comes from the call, and it goes when it is DISMISSED, not when a poll
+      // finds no stacks. So an empty paint keeps it, node and all.
+      var remEl = document.getElementById("ls-call-reminder");
+      if (remEl && remEl.parentNode !== notifsEl) remEl = null;
       if (!groups.length) {
+        if (remEl) notifsEl.removeChild(remEl);
         notifsEl.textContent = "";
+        if (remEl) notifsEl.appendChild(remEl);
         notifClocks = [];
-        notifsEl.hidden = true;
+        notifsEl.hidden = !notifsEl.firstChild;
         return;
       }
 
@@ -4466,6 +4494,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       // everything past the last wanted element: left out, the decisions would
       // be deleted by the next notification poll.
       var decEl = document.getElementById("ls-decisions");
+      if (remEl) want.unshift(remEl);
       if (decEl && decEl.children.length) want.unshift(decEl);
 
       placeInOrder(notifsEl, want);
@@ -6575,6 +6604,9 @@ _LOCK_SCREEN_SCRIPT = r"""
       // The call card is a surface of buttons: a drag that starts on it is
       // never an unlock, whatever the feed underneath would have said.
       if (t && t.closest && t.closest(".ls-call")) return true;
+      // Nor on the PA's reminder card: it carries a button, and a thumb
+      // that lands on Dismiss and slips must not open the keypad.
+      if (t && t.closest && t.closest(".ls-call-reminder")) return true;
       if (!t || !t.closest || !t.closest(".ls-feed")) return false;
       return feedScrollRoom() > 4 || !feedOverflows();
     });
@@ -7509,6 +7541,26 @@ _LOCK_SCREEN_SCRIPT = r"""
       return Math.max(a, b);
     }
 
+    // The ended pill's second line once the PA has set a reminder: the same
+    // words as the card it leaves in Alerts, cut to one line.
+    function callReminderPill(note) {
+      var n = note || {};
+      return (n.title || "Reminder added") + " \u00b7 " + (n.event || "Call") + " \u00b7 " + (n.time || "");
+    }
+
+    // THE GLOW'S LOW-PASS. The edge used to take the speech envelope's value
+    // straight, and that envelope moves at syllable rate: measured in chromium
+    // at 540x1200, the ring's opacity stepped by up to 0.48 in ONE frame and by
+    // more than 0.08 on 99 of 230 frames while the PA spoke. That is a strobe,
+    // and it was Jay's "flickery". The glow now eases toward the envelope --
+    // quick to rise, slower to fall, the way a VU meter reads -- measured in
+    // milliseconds rather than frames, so a dropped frame cannot become a jump.
+    function callGlowStep(prev, target, dtMs) {
+      var dt = Math.max(0, Math.min(dtMs || 0, 100));
+      var tau = target > prev ? 160 : 360;
+      return prev + (target - prev) * (1 - Math.exp(-dt / tau));
+    }
+
     function callTimerText(ms) {
       var s = Math.max(0, Math.floor((ms || 0) / 1000));
       var m = Math.floor(s / 60);
@@ -7620,6 +7672,8 @@ _LOCK_SCREEN_SCRIPT = r"""
       var callEndTimers = [];
       var callFrame = null;
       var callToneW = { pa: 0, caller: 0 };
+      var callGlow = 0.3;           // the edge's smoothed amplitude
+      var callLastFrame = 0;
       var callLastSec = -1;
       var callSpeakEl = null;
 
@@ -7694,9 +7748,7 @@ _LOCK_SCREEN_SCRIPT = r"""
         var v = callView(snap);
         var prevView = callEl.getAttribute("data-view");
         var prevCtl = callEl.getAttribute("data-controls");
-        if (callEl.getAttribute("data-state") !== snap.state) {
-          callEl.setAttribute("data-state", snap.state);
-        }
+        setAttrIfChanged(callEl, "data-state", snap.state);
         if (snap.caller) {
           var nameEl = document.getElementById("ls-call-name");
           var labelEl = document.getElementById("ls-call-label");
@@ -7704,7 +7756,7 @@ _LOCK_SCREEN_SCRIPT = r"""
           setText(nameEl, snap.caller.name);
           setText(labelEl, snap.caller.label);
           setText(avEl, (snap.caller.name || "?").charAt(0));
-          callEl.setAttribute("aria-label", "Call from " + snap.caller.name);
+          setAttrIfChanged(callEl, "aria-label", "Call from " + snap.caller.name);
         }
         if (v.view === "talk") {
           setText(callTitle, v.title);
@@ -7724,11 +7776,15 @@ _LOCK_SCREEN_SCRIPT = r"""
         }
         if (v.view === "ended") {
           setText(callOutcome, v.title);
-          if (callPill) callPill.setAttribute("data-kind", "outcome");
-          if (callPillIco) callPillIco.innerHTML = '<svg viewBox="0 0 24 24">' + CALL_ICONS.end + "</svg>";
+          if (callPill && callPill.getAttribute("data-kind") !== "outcome") {
+            callPill.setAttribute("data-kind", "outcome");
+            if (callPillIco) callPillIco.innerHTML = '<svg viewBox="0 0 24 24">' + CALL_ICONS.end + "</svg>";
+          }
         }
-        callEl.setAttribute("data-view", v.view || "");
-        callEl.setAttribute("data-controls", v.controls || "");
+        // Only on a CHANGE. A poll lands every 300ms, and every write here is a
+        // style invalidation on the ancestor of the spinning edge.
+        setAttrIfChanged(callEl, "data-view", v.view || "");
+        setAttrIfChanged(callEl, "data-controls", v.controls || "");
         callSwitch(v.view);
         // Move focus only when the thing under the finger changed, so a poll
         // never steals it: the headline answer while ringing, Take over while
@@ -7786,17 +7842,22 @@ _LOCK_SCREEN_SCRIPT = r"""
         } else {
           amp = 0.2;
         }
-        // Ease toward the voice now speaking so a change of speaker is a
-        // cross-fade of colour, not a cut.
-        callToneW.pa += ((tone === "pa" ? 1 : 0) - callToneW.pa) * 0.07;
-        callToneW.caller += ((tone === "caller" ? 1 : 0) - callToneW.caller) * 0.07;
+        // Both by elapsed time, never by frame count: the bars above keep the
+        // raw envelope (they are MEANT to flutter), the edge and the wash get
+        // the smoothed one, and a change of speaker is a cross-fade of colour.
+        var dt = callLastFrame ? now - callLastFrame : 16;
+        callLastFrame = now;
+        callGlow = callGlowStep(callGlow, amp, dt);
+        var fade = 1 - Math.exp(-Math.max(0, Math.min(dt, 100)) / 380);
+        callToneW.pa += ((tone === "pa" ? 1 : 0) - callToneW.pa) * fade;
+        callToneW.caller += ((tone === "caller" ? 1 : 0) - callToneW.caller) * fade;
         for (var r = 0; r < callRings.length; r++) {
           var w = callToneW[callRings[r].getAttribute("data-tone")] || 0;
-          callRings[r].style.opacity = (w * (0.28 + 0.72 * amp)).toFixed(3);
+          callRings[r].style.opacity = (w * (0.45 + 0.55 * callGlow)).toFixed(3);
         }
         for (var q = 0; q < callWashes.length; q++) {
           var ww = callToneW[callWashes[q].getAttribute("data-tone")] || 0;
-          callWashes[q].style.opacity = (ww * (0.35 + 0.65 * amp)).toFixed(3);
+          callWashes[q].style.opacity = (ww * (0.4 + 0.6 * callGlow)).toFixed(3);
         }
         if (typeof snap.elapsed_ms === "number" && callTimer) {
           var ms = snap.elapsed_ms + (now - callAt);
@@ -7806,7 +7867,10 @@ _LOCK_SCREEN_SCRIPT = r"""
         callFrame = requestAnimationFrame(callTick);
       };
       var callLoop = function () {
-        if (callFrame === null && callLoopOn()) callFrame = requestAnimationFrame(callTick);
+        if (callFrame === null && callLoopOn()) {
+          callLastFrame = 0;                 // a resumed loop starts from rest
+          callFrame = requestAnimationFrame(callTick);
+        }
       };
       document.addEventListener("visibilitychange", callLoop);
 
@@ -8086,34 +8150,104 @@ _LOCK_SCREEN_SCRIPT = r"""
 
       // Mark the event the PA added, so it is the first thing seen when the
       // alerts come into view, and flag the alerts tab if they are not showing.
-      var markFresh = function () {
+      // THE REMINDER the PA leaves, as a card at the top of Alerts with a
+      // Dismiss button. Driven by the call snapshot (polled every 2s even when
+      // no call is up), so a dismissal on the server -- or a reset -- takes it
+      // down, and nothing but a finished PA call puts it up.
+      var callReminder = null;          // the card node, built once per reminder
+      var callReminderAt = null;        // which reminder it is showing
+      var callReminderGone = null;      // one the user dismissed, awaiting the server
+      var alertsTab = function () {
+        return viewsEl ? viewsEl.querySelector('.ls-view-tab[data-view="alerts"]') : null;
+      };
+      var buildReminder = function (note) {
+        var el = document.createElement("div");
+        el.className = "ls-row ls-call-reminder";
+        el.id = "ls-call-reminder";
+        el.setAttribute("role", "group");
+        el.setAttribute("aria-label", (note.title || "Reminder") + ". " + (note.body || ""));
+        var tile = document.createElement("div");
+        tile.className = "ls-call-reminder-tile";
+        tile.setAttribute("aria-hidden", "true");
+        tile.innerHTML = '<svg viewBox="0 0 24 24">' + NOTIF_GLYPHS.calendar + "</svg>";
+        var body = document.createElement("div");
+        body.className = "ls-row-body";
+        var meta = document.createElement("div");
+        meta.className = "ls-call-reminder-meta";
+        meta.textContent = (note.from || "Your PA") + " \u00b7 now";
+        var title = document.createElement("div");
+        title.className = "ls-call-reminder-title";
+        title.textContent = note.title || "";
+        var text = document.createElement("div");
+        text.className = "ls-call-reminder-text";
+        text.textContent = note.body || "";
+        var acts = document.createElement("div");
+        acts.className = "ls-dec-actions";
+        var dismiss = document.createElement("button");
+        dismiss.type = "button";
+        dismiss.className = "ls-dec-btn";
+        dismiss.setAttribute("data-act", "dismiss");
+        dismiss.textContent = "Dismiss";
+        acts.appendChild(dismiss);
+        body.appendChild(meta); body.appendChild(title); body.appendChild(text); body.appendChild(acts);
+        el.appendChild(tile); el.appendChild(body);
+        dismiss.addEventListener("click", function () {
+          callReminderGone = callReminderAt;
+          leaveReminder();
+          fetch("/auth/lock-call/dismiss", { method: "POST", credentials: "same-origin" })
+            .catch(function () { /* the next poll will show it again if it stuck */ })
+            .then(function () { pollCall(); });
+        });
+        return el;
+      };
+      // Out with the reverse of the entrance every card on this screen has.
+      var leaveReminder = function () {
+        var el = callReminder;
+        if (!el) return;
+        callReminder = null;
+        callReminderAt = null;
+        el.setAttribute("data-leaving", "1");
+        var tab = alertsTab();
+        if (tab) tab.removeAttribute("data-badge");
+        var gone = function () {
+          if (el.parentNode) el.parentNode.removeChild(el);
+          if (notifsEl && !notifsEl.firstChild) notifsEl.hidden = true;
+          syncFeedFade();
+        };
+        window.setTimeout(gone, reduceMotion ? 0 : 320);
+      };
+      var syncReminder = function (note) {
         if (!notifsEl) return;
-        var kids = notifsEl.children;
-        for (var i = 0; i < kids.length; i++) {
-          if (kids[i].getAttribute("data-source") === "calendar") {
-            kids[i].setAttribute("data-fresh", "1");
-            if (currentView !== "alerts" && viewsEl) {
-              var tab = viewsEl.querySelector('.ls-view-tab[data-view="alerts"]');
-              if (tab) tab.setAttribute("data-badge", "1");
-            }
-          }
+        if (note && callReminderGone !== null && note.at === callReminderGone) return;
+        if (!note) {
+          callReminderGone = null;
+          if (callReminder) leaveReminder();
+          return;
         }
+        if (callReminder && callReminderAt === note.at) return;      // unchanged
+        if (callReminder) { callReminder.remove(); callReminder = null; }
+        callReminder = buildReminder(note);
+        callReminderAt = note.at;
+        // Under the pending decisions, above the notification stacks.
+        var dec = document.getElementById("ls-decisions");
+        var ref = (dec && dec.parentNode === notifsEl) ? dec.nextSibling : notifsEl.firstChild;
+        notifsEl.insertBefore(callReminder, ref);
+        notifsEl.hidden = false;
+        if (currentView !== "alerts") {
+          var tab = alertsTab();
+          if (tab) tab.setAttribute("data-badge", "1");
+        }
+        syncFeedFade();
       };
       if (viewsEl) {
         viewsEl.addEventListener("click", function () {
           window.setTimeout(function () {
             if (currentView !== "alerts") return;
-            var tab = viewsEl.querySelector('.ls-view-tab[data-view="alerts"]');
+            var tab = alertsTab();
             if (tab) tab.removeAttribute("data-badge");
           }, 0);
         });
       }
-      var fetchFreshNotifications = function () {
-        fetch("/auth/lock-notifications", { credentials: "same-origin" })
-          .then(function (r) { return r.ok ? r.json() : null; })
-          .then(function (d) { if (d) { paintNotifications(d); markFresh(); } })
-          .catch(function () { /* the 15-minute poll will bring it */ });
-      };
 
       // The ended pill, then the fold. A finished PA call shows its outcome,
       // then the event it added, before the zone goes.
@@ -8121,13 +8255,10 @@ _LOCK_SCREEN_SCRIPT = r"""
         callPhase = "ended";
         var hold = 1900;
         if (snap.outcome === "pa-done") {
-          fetchFreshNotifications();
           later(function () {
             if (callOutcome) callOutcome.style.opacity = "0";
             later(function () {
-              var note = snap.notification || {};
-              setText(callOutcome, (note.kind || "New event added") + " · "
-                + (note.title || "") + " · 5:30 pm");
+              setText(callOutcome, callReminderPill(snap.notification));
               if (callPill) callPill.setAttribute("data-kind", "event");
               if (callPillIco) callPillIco.innerHTML = '<svg viewBox="0 0 24 24">' + CALL_ICONS.calendar + "</svg>";
               if (callOutcome) callOutcome.style.opacity = "";
@@ -8141,6 +8272,7 @@ _LOCK_SCREEN_SCRIPT = r"""
 
       var applyCall = function (snap) {
         if (!snap || !snap.state) return;
+        syncReminder(snap.notification || null);
         if (callPhase === "entering" || callPhase === "leaving") {
           callPending = snap;
           // Keep the content current underneath an entrance; an exit is final.
@@ -11178,14 +11310,9 @@ async def lock_notifications(request: Request):
     """
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
-    # The call demo's calendar event rides here too, under ITS flag: a device
-    # running only the call demo still shows the event the PA added.
-    call_groups = _call_notification_groups()
-    if not _demo_notifications_enabled() and not call_groups:
+    if not _demo_notifications_enabled():
         return JSONResponse({"error": "not found"}, status_code=404)
-    groups = _demo_notifications() if _demo_notifications_enabled() else []
-    groups = call_groups + groups
-    return JSONResponse({"groups": groups, "demo": True})
+    return JSONResponse({"groups": _demo_notifications(), "demo": True})
 
 
 # ---------------------------------------------------------------------------
@@ -11228,22 +11355,28 @@ _CALL_SCRIPT: tuple[tuple[str, str], ...] = (
     ("caller", "You too, bye!"),
 )
 
-#: Speech pacing. ~165 words a minute is an unhurried phone voice; the floor
-#: keeps a two-word line from flashing past. The gap is the breath between
-#: turns and the lead-in is the PA picking up.
-_CALL_MS_PER_WORD = 360
-_CALL_MIN_LINE_MS = 1100
-_CALL_GAP_MS = 650
-_CALL_LEAD_MS = 900
+#: Speech pacing. 200 words a minute: Jay, from the glass, "the agent needs to
+#: appear to be talking slightly faster" -- it was 165 (360ms a word), which
+#: read as the PA reading aloud. Both voices move together so the exchange
+#: keeps its rhythm. The floor keeps a two-word line from flashing past; the
+#: gap is the breath between turns and the lead-in is the PA picking up.
+_CALL_MS_PER_WORD = 300
+_CALL_MIN_LINE_MS = 900
+_CALL_GAP_MS = 520
+_CALL_LEAD_MS = 700
 
-#: The only event the PA ever "adds". Served as a notification, never written
-#: anywhere.
-_CALL_EVENT: dict = {
-    "source": "calendar",
-    "app": "Calendar",
-    "kind": "New event added",
-    "title": "Call Naira",
-    "body": "Today · 5:30 pm · added by your PA",
+#: What the PA leaves behind: a reminder, in its own voice, shown at the top of
+#: the Alerts panel until the user dismisses it. Jay: "reminder to call naira
+#: at time etc added to calendar, I will remind you closer to the time". It is
+#: never written anywhere -- the "calendar" is this dict.
+_CALL_REMINDER: dict = {
+    "kind": "reminder",
+    "from": "Your PA",
+    "title": "Reminder added",
+    "body": "Reminder to call Naira at 5:30 pm added to your calendar. "
+            "I'll remind you closer to the time.",
+    "event": "Call Naira",
+    "time": "5:30 pm",
 }
 
 #: Every action the page may send. Anything else is a 400; one of these at the
@@ -11326,7 +11459,7 @@ class _LockCall:
             self._ended_ms = self._script_ms
             self._enter("ended", "pa-done")
             self.notification = {
-                **_CALL_EVENT,
+                **_CALL_REMINDER,
                 "at": self._wall(),
                 "demo": True,
             }
@@ -11412,6 +11545,15 @@ class _LockCall:
             self.notification = None
             return self._snapshot()
 
+    def dismiss(self) -> tuple[int, dict]:
+        """The user put the reminder away. 409 when there is none to put away."""
+        with self._lock:
+            self._advance()
+            if self.notification is None:
+                return 409, {"error": "nothing to dismiss", "state": self.state}
+            self.notification = None
+            return 200, self._snapshot()
+
     def act(self, action: str) -> tuple[int, dict]:
         if action not in _CALL_ACTIONS:
             return 400, {"error": "unknown action"}
@@ -11446,26 +11588,6 @@ class _LockCall:
 
 
 _LOCK_CALL = _LockCall()
-
-
-def _call_notification_groups() -> list[dict]:
-    """The calendar stack the PA's finished call leaves behind, if it has."""
-    note = _LOCK_CALL.snapshot()["notification"] if _call_demo_enabled() else None
-    if not note:
-        return []
-    return [{
-        "source": note["source"],
-        "app": note["app"],
-        "glyph": "calendar",
-        "mono": "31",
-        "tint": "#ff453a",
-        "items": [{
-            "title": "%s · %s" % (note["kind"], note["title"]),
-            "text": note["body"],
-            "at": note["at"],
-        }],
-        "demo": True,
-    }]
 
 
 def _call_gate(request: Request):
@@ -11513,6 +11635,22 @@ async def lock_call_reset(request: Request):
     body = _LOCK_CALL.reset()
     body["delivered"] = _push_lock_event("call", {"state": body["state"]})
     return JSONResponse(body)
+
+
+@router.post("/lock-call/dismiss")
+async def lock_call_dismiss(request: Request):
+    """Put away the reminder the PA left. Console-only.
+
+    Cleared SERVER-side, so the next poll does not bring it back; 409 when
+    there is nothing to dismiss, so a double tap is visible as such.
+    """
+    refused = _call_gate(request)
+    if refused is not None:
+        return refused
+    status, body = _LOCK_CALL.dismiss()
+    if status == 200:
+        body["delivered"] = _push_lock_event("call", {"state": body["state"]})
+    return JSONResponse(body, status_code=status)
 
 
 @router.post("/lock-call/action")

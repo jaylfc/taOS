@@ -24,9 +24,11 @@ import pytest
 
 from tinyagentos.routes.auth import _LOCK_SCREEN_SCRIPT as LOCK_SCRIPT
 from tinyagentos.routes.auth import _lock_head_html
+import tinyagentos.routes.auth as auth
 
 from test_lock_screen_gestures import (
     _HARNESS as _GESTURE_HARNESS,
+    _balanced,
     _function,
     _gesture_source,
     _scenario,
@@ -372,3 +374,287 @@ class TestTheWiring:
         assert 'hasAttribute("data-blanked")' in src
         assert "document.hidden" in src
         assert "callShown" in src
+
+
+# ------------------------------------------------------------- the glow
+
+#: The flicker Jay saw, measured before the fix in chromium at 540x1200 while
+#: the PA spoke: the edge's opacity stepped by up to 0.48 in a single frame and
+#: by more than 0.08 on 99 of 230 frames. No animation restarted and no
+#: attribute changed on the ring -- the rotation's currentTime was continuous.
+#: The cause was the per-frame opacity taking the raw speech envelope, which
+#: moves at syllable rate. These drive the loop's arithmetic the way callTick
+#: does and bound the step per frame.
+_GLOW_SIM = r"""
+function simulate(fps, seconds, raw) {
+  var dt = 1000 / fps, glow = 0.3, prevOp = null, maxStep = 0, big = 0, n = 0;
+  for (var ms = 0; ms < seconds * 1000; ms += dt) {
+    var t = ms / 1000;
+    var progress = (ms % 4000) / 4000;          // a 4s line, repeated
+    var amp = callEnvelope(t, progress);
+    var op;
+    if (raw) op = 0.28 + 0.72 * amp;             // the shipped-then-flickering mapping
+    else { glow = callGlowStep(glow, amp, dt); op = 0.45 + 0.55 * glow; }
+    if (prevOp !== null) {
+      var d = Math.abs(op - prevOp);
+      maxStep = Math.max(maxStep, d); if (d > 0.08) big++; n++;
+    }
+    prevOp = op;
+  }
+  return { maxStep: maxStep, big: big, frames: n };
+}
+"""
+
+
+def _glow(expr):
+    src = "\n".join(_function(n) for n in ["callEnvelope", "callGlowStep"]) + _GLOW_SIM
+    return _run(src + "\nprocess.stdout.write(JSON.stringify(" + expr + "));")
+
+
+class TestTheGlowDoesNotFlicker:
+    def test_the_harness_sees_the_flicker_in_the_old_mapping(self):
+        """The control: the raw mapping this replaced must read as a flicker
+        here, or the bound below proves nothing."""
+        # At a clean 60fps the raw mapping steps up to ~0.22 a frame (the
+        # browser, with real frame jitter, measured 0.48) -- over four times
+        # the bound the fixed mapping is held to below.
+        got = _glow("simulate(60, 8, true)")
+        assert got["maxStep"] > 0.15
+        assert got["big"] > got["frames"] * 0.2
+
+    @pytest.mark.parametrize("fps", [60, 30])
+    def test_the_edge_changes_by_little_per_frame_while_speaking(self, fps):
+        got = _glow(f"simulate({fps}, 8, false)")
+        assert got["big"] == 0
+        assert got["maxStep"] <= (0.05 if fps == 60 else 0.09)
+
+    def test_it_still_breathes_with_the_voice(self):
+        """Smooth, not flat: a glow that no longer moved would pass the bound
+        above and fail the brief ("needs fixing not removing")."""
+        got = _run("\n".join(_function(n) for n in ["callEnvelope", "callGlowStep"]) + r"""
+          var g = 0.3, lo = 1, hi = 0;
+          for (var ms = 0; ms < 8000; ms += 16.7) {
+            g = callGlowStep(g, callEnvelope(ms / 1000, (ms % 4000) / 4000), 16.7);
+            if (ms > 1000) { lo = Math.min(lo, g); hi = Math.max(hi, g); }
+          }
+          process.stdout.write(JSON.stringify([lo, hi]));""")
+        lo, hi = got
+        assert hi - lo > 0.3
+
+    def test_a_long_pause_cannot_become_one_jump(self):
+        """The loop stops with the screen off. The first frame back must not
+        apply seconds of easing at once."""
+        got = _glow("[callGlowStep(0, 1, 5000), callGlowStep(0, 1, 100), callGlowStep(0.5, 0.5, 16)]")
+        assert got[0] == got[1] < 0.5
+        assert got[2] == 0.5
+
+    def test_the_spin_rate_does_not_change_with_the_state(self):
+        """A running animation's position is its elapsed time over its
+        duration, so a duration that changed at ringing -> PA snapped the
+        sweep to a new angle in one frame."""
+        style = auth._LOCK_SCREEN_STYLE
+        assert '[data-state="ringing"] .ls-call-ring' not in style
+        assert "animation-duration" not in style[style.index(".ls-call-ring {"):
+                                                 style.index("@keyframes ls-call-spin")].replace(
+            "animation-duration: 6.4s", "")
+
+
+# ------------------------------------ a poll must not touch the glow at all
+
+def _var_fn(name: str) -> str:
+    """The source of `var <name> = function (...) {...};`."""
+    head = f"var {name} = function"
+    assert head in LOCK_SCRIPT, f"{head!r} is gone from the lock screen script"
+    start = LOCK_SCRIPT.index(head)
+    return _balanced(LOCK_SCRIPT, start, "{", "}") + ";"
+
+
+_PAINT_HARNESS = _DOM + r"""
+__HELPERS__
+var WRITES = [];
+function watch(el, name) {
+  var s = el.setAttribute, r = el.removeAttribute;
+  el.setAttribute = function (k, v) { WRITES.push(name + " set " + k); return s.call(this, k, v); };
+  el.removeAttribute = function (k) { WRITES.push(name + " remove " + k); return r.call(this, k); };
+  var cls = el.className;
+  Object.defineProperty(el, "className", {
+    get: function () { return cls; },
+    set: function (v) { WRITES.push(name + " class"); cls = v; }
+  });
+  return el;
+}
+var callEl = makeNode("section");
+var glow = makeNode("div");
+var rings = [makeNode("span"), makeNode("span")];
+var washes = [makeNode("span"), makeNode("span")];
+callEl.appendChild(glow);
+rings.forEach(function (r) { glow.appendChild(r); });
+washes.forEach(function (w) { callEl.appendChild(w); });
+var callTitle = makeNode("span"), callLog = makeNode("div"), callOutcome = makeNode("span");
+var callPill = makeNode("div"), callPillIco = makeNode("span");
+var callCtls = { pa: makeNode("div"), live: makeNode("div") };
+["ls-call-name", "ls-call-label", "ls-call-avatar"].forEach(function (id) {
+  makeNode("div").setAttribute("id", id);
+});
+var callSpeakEl = null, reduceMotion = true;
+var CALL_ICONS = { end: "", calendar: "" };
+function callSwitch() {}
+function callFocus() {}
+__PAINT__
+var SCN = JSON.parse(process.env.LS_CALL);
+paintCall(SCN.snap);
+watch(callEl, "zone"); watch(glow, "glow");
+rings.forEach(function (r, i) { watch(r, "ring" + i); });
+washes.forEach(function (w, i) { watch(w, "wash" + i); });
+paintCall(SCN.snap);
+paintCall(SCN.snap);
+process.stdout.write(JSON.stringify({ writes: WRITES }));
+"""
+
+
+def _paint_twice(snap, *, unconditional=False):
+    helpers = "\n".join(_function(n) for n in [
+        "callView", "callOutcomeText", "revealWords", "callBubble",
+        "reconcileTranscript", "setText", "setAttrIfChanged"])
+    paint = _var_fn("paintCall")
+    if unconditional:
+        old = 'setAttrIfChanged(callEl, "data-view", v.view || "");'
+        assert old in paint, "the mutation no longer matches paintCall"
+        paint = paint.replace(old, 'callEl.setAttribute("data-view", v.view || "");')
+    body = _PAINT_HARNESS.replace("__HELPERS__", helpers).replace("__PAINT__", paint)
+    return _run(body, {"snap": snap})["writes"]
+
+
+_SNAPS = {
+    "ringing": {"state": "ringing", "call_id": 1, "caller": {"name": "Naira", "label": "mobile"},
+                "transcript": [], "speaking": None, "taken_over": False},
+    "pa": {"state": "pa", "call_id": 1, "caller": {"name": "Naira", "label": "mobile"},
+           "transcript": SCRIPT[:2], "speaking": {"who": "caller", "line": 1, "progress": 0.4},
+           "taken_over": False, "elapsed_ms": 5000},
+    "live": {"state": "live", "call_id": 1, "caller": {"name": "Naira", "label": "mobile"},
+             "transcript": [SCRIPT[0], dict(SCRIPT[1], upto=0.5)], "speaking": None,
+             "taken_over": True, "elapsed_ms": 9000},
+    "ended": {"state": "ended", "call_id": 1, "outcome": "pa-done",
+              "caller": {"name": "Naira", "label": "mobile"}, "transcript": SCRIPT,
+              "speaking": None, "taken_over": False},
+}
+
+
+class TestAnUnchangedPollLeavesTheGlowAlone:
+    @pytest.mark.parametrize("state", sorted(_SNAPS))
+    def test_no_attribute_or_class_write_on_the_zone_or_its_glow(self, state):
+        """Polled every 300ms. The zone is the ANCESTOR of the spinning edge,
+        so each write there is a style invalidation over the glow; the glow's
+        own nodes must not be touched by a poll at all."""
+        assert _paint_twice(_SNAPS[state]) == []
+
+    def test_the_harness_sees_an_unconditional_write(self):
+        """The control: put back one unconditional setAttribute and the
+        harness must report it, or the empty lists above prove nothing."""
+        writes = _paint_twice(_SNAPS["pa"], unconditional=True)
+        assert writes.count("zone set data-view") == 2
+
+    def test_nothing_else_in_the_script_writes_the_glows_attributes(self):
+        """The rings and washes are touched only through style.opacity, in the
+        animation loop. Their data-tone is read, never written."""
+        block = LOCK_SCRIPT[LOCK_SCRIPT.index("var callEl = document.getElementById"):]
+        block = block[: block.index("// Keypad -> the existing PIN input.")]
+        for name in ("callRings", "callWashes"):
+            for bad in (".setAttribute(", ".removeAttribute(", ".className", ".classList"):
+                assert f"{name}[r]{bad}" not in block and f"{name}[q]{bad}" not in block
+
+
+# ------------------------------------------- the PA's reminder in Alerts
+
+from test_lock_screen_repaint import _NOTIF_HARNESS, _notif_source, _stacks  # noqa: E402
+
+_REMINDER_HARNESS = _NOTIF_HARNESS.replace(
+    "__SOURCE__",
+    "__SOURCE__\n"
+    "var REM = makeNode('div'); REM.className = 'ls-row ls-call-reminder';\n"
+    "REM.setAttribute('id', 'ls-call-reminder'); notifsEl.appendChild(REM);\n"
+    "notifsEl.hidden = false;\n",
+).replace(
+    "process.stdout.write(JSON.stringify({",
+    "process.stdout.write(JSON.stringify({ rem: REM.__id, remIn: REM.parent === notifsEl, "
+    "remAt: notifsEl.children.indexOf(REM),",
+)
+
+
+def _paint_with_reminder(ticks):
+    body = _REMINDER_HARNESS.replace("__SOURCE__", _notif_source()).replace(
+        "__PAINT__", "paintNotifications")
+    done = subprocess.run([_node(), "-e", body],
+                          env={**os.environ, "LS_NOTIFS": json.dumps({"ticks": ticks})},
+                          capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+class TestTheReminderSurvivesTheNotificationPoll:
+    """The reminder sits in #ls-notifs but is not a notification: it comes and
+    goes with the call. The stacks' own reconcile removes everything past its
+    last wanted child, so it must carry the reminder through."""
+
+    def test_a_poll_with_stacks_keeps_the_reminder_node_on_top(self):
+        out = _paint_with_reminder([_stacks(), _stacks()])
+        assert out["remIn"] and out["remAt"] == 0
+        assert out["snapshots"][0][0]["id"] == out["snapshots"][1][0]["id"] == out["rem"]
+
+    def test_an_empty_poll_keeps_it_and_the_panel_showing(self):
+        out = _paint_with_reminder([_stacks(), {"groups": []}])
+        assert out["remIn"]
+        assert [r["id"] for r in out["snapshots"][1]] == [out["rem"]]
+        assert out["hidden"] is False
+
+    def test_without_it_an_empty_poll_still_hides_the_panel(self):
+        """The old behaviour is untouched when there is no reminder."""
+        out = _paint_notifs_plain([_stacks(), {"groups": []}])
+        assert out["snapshots"][1] == [] and out["hidden"] is True
+
+
+def _paint_notifs_plain(ticks):
+    from test_lock_screen_repaint import _paint_notifs
+    return _paint_notifs(ticks)
+
+
+class TestTheReminderCard:
+    def test_the_words_are_the_pas(self):
+        assert _pure_with("callReminderPill", 'callReminderPill({title: "Reminder added", '
+                          'event: "Call Naira", time: "5:30 pm"})') == \
+            "Reminder added · Call Naira · 5:30 pm"
+
+    def test_it_has_a_real_dismiss_button_that_clears_it_on_the_server(self):
+        block = LOCK_SCRIPT[LOCK_SCRIPT.index("var buildReminder = function"):]
+        block = block[: block.index("var leaveReminder = function")]
+        assert 'document.createElement("button")' in block
+        assert 'dismiss.type = "button"' in block
+        assert 'textContent = "Dismiss"' in block
+        assert 'fetch("/auth/lock-call/dismiss", { method: "POST"' in block
+
+    def test_a_drag_that_starts_on_the_reminder_does_not_unlock(self):
+        harness = _CALL_GESTURE_HARNESS.replace(
+            "var targets = { body: body, card: card, feed: feedEl, call: callButton };",
+            "var rem = makeEl({ sel: ['.ls-call-reminder'], parent: feedEl });\n"
+            "var remBtn = makeEl({ sel: ['button'], parent: rem });\n"
+            "var targets = { body: body, card: card, feed: feedEl, call: callButton, rem: remBtn };")
+        # A feed scrolled to its END, where a drag on a plain card DOES unlock
+        # (tsk-36i6ed): only the reminder arm can be what stops this one.
+        scn = _scenario(startOn="rem", endOn="rem", feedScrollTop=600)
+        plain = _scenario(startOn="card", endOn="card", feedScrollTop=600)
+        for s, want in ((scn, 0), (plain, 1)):
+            body = harness.replace("__GESTURE_SOURCE__", _gesture_source())
+            done = subprocess.run([_node(), "-e", body],
+                                  env={**os.environ, "LS_SCENARIO": json.dumps(s)},
+                                  capture_output=True, text=True, timeout=30)
+            assert done.returncode == 0, done.stderr
+            assert json.loads(done.stdout)["unlocked"] == want, s["startOn"]
+
+    def test_the_ended_pill_matches_the_card(self):
+        block = LOCK_SCRIPT[LOCK_SCRIPT.index("var callEnded = function"):][:1200]
+        assert "callReminderPill(snap.notification)" in block
+        assert "New event added" not in LOCK_SCRIPT
+
+
+def _pure_with(name, expr):
+    return _run(_function(name) + "\nprocess.stdout.write(JSON.stringify(" + expr + "));")

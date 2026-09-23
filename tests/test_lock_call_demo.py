@@ -71,6 +71,7 @@ ROUTES = [
     ("lock_call_ring", None),
     ("lock_call_reset", None),
     ("lock_call_action", {"action": "pa"}),
+    ("lock_call_dismiss", None),
 ]
 
 
@@ -142,7 +143,8 @@ class TestTheGate:
         """Fetched before sign-in. /auth/lock-stats once shipped without this
         and 401'd on the glass with no error anywhere."""
         for path in ("/auth/lock-call", "/auth/lock-call/ring",
-                     "/auth/lock-call/reset", "/auth/lock-call/action"):
+                     "/auth/lock-call/reset", "/auth/lock-call/action",
+                     "/auth/lock-call/dismiss"):
             assert path in EXEMPT_PATHS, path
 
 
@@ -353,10 +355,26 @@ class TestTheScript:
         for a, b in zip(tl, tl[1:]):
             assert a["at_ms"] + a["dur_ms"] < b["at_ms"]
 
-    def test_the_script_runs_about_half_a_minute(self):
+    def test_the_script_runs_under_half_a_minute(self):
         """Long enough to watch and to take over; short enough for a demo."""
         total = auth._LockCall(clock=_Clock())._script_ms
-        assert 20_000 <= total <= 40_000
+        assert 20_000 <= total <= 28_000
+
+    def test_the_voices_are_about_a_fifth_faster_than_before(self):
+        """Jay, from the glass: "the agent needs to appear to be talking
+        slightly faster". It was 360ms a word, so the PA's opening line took
+        7200ms. Both voices share the pace, so the caller's lines speed up too
+        and the exchange keeps its rhythm."""
+        tl = auth._call_timeline()
+        assert tl[0]["who"] == "pa" and tl[0]["dur_ms"] == 6000
+        assert auth._CALL_MS_PER_WORD <= 360 / 1.2
+        caller = [l for l in tl if l["who"] == "caller"][0]
+        assert caller["dur_ms"] == len(caller["text"].split()) * auth._CALL_MS_PER_WORD
+        # The gaps were trimmed as well, but not to nothing: a turn still needs
+        # a breath, or the transcript reads as one voice.
+        assert 300 <= auth._CALL_GAP_MS < 650
+        for a, b in zip(tl, tl[1:]):
+            assert b["at_ms"] - (a["at_ms"] + a["dur_ms"]) == auth._CALL_GAP_MS
 
 
 class TestTheTimeline:
@@ -416,9 +434,11 @@ class TestTheNotification:
         snap = _get()
         assert (snap["state"], snap["outcome"]) == ("ended", "pa-done")
         note = snap["notification"]
-        assert note["kind"] == "New event added"
-        assert note["title"] == "Call Naira"
-        assert "5:30 pm" in note["body"]
+        assert note["kind"] == "reminder"
+        assert note["title"] == "Reminder added"
+        assert note["body"] == ("Reminder to call Naira at 5:30 pm added to your "
+                                "calendar. I'll remind you closer to the time.")
+        assert (note["event"], note["time"], note["from"]) == ("Call Naira", "5:30 pm", "Your PA")
         assert note["demo"] is True
 
     def test_the_finished_transcript_is_whole(self, clock):
@@ -428,37 +448,18 @@ class TestTheNotification:
         assert [l["text"] for l in snap["transcript"]] == [t for _, t in auth._CALL_SCRIPT]
         assert all("upto" not in l for l in snap["transcript"])
 
-    def test_it_is_served_by_lock_notifications(self, clock, monkeypatch):
-        """With ONLY the call flag on, the notifications route still serves the
-        event -- otherwise a call-only demo would end in silence."""
-        monkeypatch.delenv("TAOS_LOCK_DEMO_NOTIFICATIONS", raising=False)
-        assert _call(auth.lock_notifications(_Req())).status_code == 404
-        _ring(); _act("pa")
-        clock.advance_ms(auth._LOCK_CALL._script_ms + 1)
-        resp = _call(auth.lock_notifications(_Req()))
-        assert resp.status_code == 200
-        groups = _body(resp)["groups"]
-        assert [g["source"] for g in groups] == ["calendar"]
-        item = groups[0]["items"][0]
-        assert item["title"] == "New event added · Call Naira"
-        assert "5:30 pm" in item["text"]
-        assert groups[0]["demo"] is True
-
-    def test_it_sits_on_top_of_the_scripted_stacks(self, clock, monkeypatch):
+    def test_it_is_not_a_notification_stack(self, clock, monkeypatch):
+        """The reminder is a card in Alerts with a Dismiss button, driven by
+        the call snapshot. Served as a notification stack as well it would be
+        drawn twice, and the stack copy could not be dismissed."""
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "a")
         monkeypatch.setenv("TAOS_LOCK_DEMO_NOTIFICATIONS", "1")
         _ring(); _act("pa")
         clock.advance_ms(auth._LOCK_CALL._script_ms + 1)
+        assert _get()["notification"] is not None
         groups = _body(_call(auth.lock_notifications(_Req())))["groups"]
-        assert groups[0]["source"] == "calendar"
-        assert len(groups) == 1 + len(auth._DEMO_NOTIFICATIONS)
-
-    def test_it_is_not_served_when_the_call_flag_goes_off(self, clock, monkeypatch):
-        _ring(); _act("pa")
-        clock.advance_ms(auth._LOCK_CALL._script_ms + 1)
-        _get()
-        monkeypatch.delenv("TAOS_LOCK_DEMO_CALL", raising=False)
-        assert _call(auth.lock_notifications(_Req())).status_code == 404
+        assert len(groups) == len(auth._DEMO_NOTIFICATIONS)
+        assert all(g["source"] != "calendar" for g in groups)
 
     @pytest.mark.parametrize("line", [0, 2, 4])
     def test_a_take_over_suppresses_it(self, clock, line):
@@ -475,7 +476,6 @@ class TestTheNotification:
         assert snap["state"] == "live" and snap["notification"] is None
         _act("end")
         assert _get()["notification"] is None
-        assert _call(auth.lock_notifications(_Req())).status_code == 404
 
     def test_the_taken_over_transcript_freezes_where_it_was_cut(self, clock):
         _ring(); _act("pa")
@@ -502,7 +502,6 @@ class TestTheNotification:
         assert _get()["notification"] is not None
         _call(auth.lock_call_reset(_Req()))
         assert _get()["notification"] is None
-        assert _call(auth.lock_notifications(_Req())).status_code == 404
 
     def test_a_new_call_keeps_the_event_the_last_one_added(self, clock):
         """"For the rest of the process lifetime (until reset)"."""
@@ -511,3 +510,99 @@ class TestTheNotification:
         _get()
         _ring()
         assert _get()["notification"] is not None
+
+
+# ------------------------------------------------------------- dismissing it
+
+
+def _dismiss():
+    resp = _call(auth.lock_call_dismiss(_Req()))
+    return resp.status_code, _body(resp)
+
+
+def _finish_a_pa_call(clock):
+    _ring(); _act("pa")
+    clock.advance_ms(auth._LOCK_CALL._script_ms + 1)
+    assert _get()["notification"] is not None
+
+
+class TestDismissingTheReminder:
+    """Jay: the reminder goes in Alerts "with a dismiss button". Hostile
+    cases first."""
+
+    def test_dismissing_nothing_is_409(self, clock):
+        status, body = _dismiss()
+        assert status == 409
+        assert body["error"] == "nothing to dismiss"
+
+    @pytest.mark.parametrize("path", [[], ["ring"], ["ring", "pa"], ["ring", "decline"]])
+    def test_dismissing_nothing_is_409_in_every_state(self, clock, path):
+        for step in path:
+            _ring() if step == "ring" else _act(step)
+        state = _get()["state"]
+        assert _dismiss()[0] == 409
+        assert _get()["state"] == state          # and nothing moved
+
+    def test_off_console_is_403_and_leaves_the_reminder(self, clock, monkeypatch):
+        _finish_a_pa_call(clock)
+        monkeypatch.setattr(auth, "_request_is_console", lambda _r: False)
+        assert _dismiss()[0] == 403
+        monkeypatch.setattr(auth, "_request_is_console", lambda _r: True)
+        assert _get()["notification"] is not None
+
+    def test_flag_off_is_404_and_leaves_the_reminder(self, clock, monkeypatch):
+        _finish_a_pa_call(clock)
+        monkeypatch.delenv("TAOS_LOCK_DEMO_CALL", raising=False)
+        assert _dismiss()[0] == 404
+        monkeypatch.setenv("TAOS_LOCK_DEMO_CALL", "1")
+        assert _get()["notification"] is not None
+
+    def test_a_second_dismiss_is_409(self, clock):
+        """A double tap is visible as such, not silently a success twice."""
+        _finish_a_pa_call(clock)
+        assert _dismiss()[0] == 200
+        assert _dismiss()[0] == 409
+
+    def test_dismiss_then_poll_it_stays_gone(self, clock):
+        """Cleared on the SERVER: the page polls every 2s, and a dismissal kept
+        only in the page would come back on the next one."""
+        _finish_a_pa_call(clock)
+        status, body = _dismiss()
+        assert status == 200 and body["notification"] is None
+        for _ in range(3):
+            clock.advance_ms(2000)
+            assert _get()["notification"] is None
+
+    def test_dismissing_leaves_the_call_itself_alone(self, clock):
+        _finish_a_pa_call(clock)
+        before = _get()
+        _dismiss()
+        after = _get()
+        assert (after["state"], after["outcome"], after["call_id"]) == (
+            before["state"], before["outcome"], before["call_id"])
+        assert after["transcript"] == before["transcript"]
+
+    def test_reset_after_dismiss(self, clock):
+        _finish_a_pa_call(clock)
+        _dismiss()
+        body = _body(_call(auth.lock_call_reset(_Req())))
+        assert body["state"] == "idle" and body["notification"] is None
+        assert _dismiss()[0] == 409
+
+    def test_the_dismissal_is_pushed_to_an_open_page(self, clock):
+        _finish_a_pa_call(clock)
+        auth._LOCK_EVENT_WAITERS.clear()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=8)
+        auth._LOCK_EVENT_WAITERS.add(queue)
+        try:
+            _, body = _dismiss()
+            assert body["delivered"] == 1
+            assert queue.get_nowait() == ("call", {"state": "ended"})
+        finally:
+            auth._LOCK_EVENT_WAITERS.clear()
+
+    def test_a_later_finished_call_sets_a_new_one(self, clock):
+        _finish_a_pa_call(clock)
+        _dismiss()
+        _finish_a_pa_call(clock)
+        assert _get()["notification"]["title"] == "Reminder added"
