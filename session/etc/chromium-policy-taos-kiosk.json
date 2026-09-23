@@ -1,0 +1,17 @@
+{
+  "PasswordManagerEnabled": false,
+  "PasswordLeakDetectionEnabled": false,
+  "ImportSavedPasswords": false,
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "TranslateEnabled": false,
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "PromotionalTabsEnabled": false,
+  "DefaultBrowserSettingEnabled": false,
+  "MetricsReportingEnabled": false,
+  "FeedbackSurveysEnabled": false,
+  "SearchSuggestEnabled": false,
+  "ShoppingListEnabled": false,
+  "PrivacySandboxPromptEnabled": false
+}

@@ -136,6 +136,19 @@ loginctl enable-linger taos >/dev/null 2>&1 || true
 su taos -s /bin/sh -c     'XDG_RUNTIME_DIR=/run/user/999 systemctl --user enable pipewire.socket pipewire.service wireplumber.service'     >/dev/null 2>&1 || true
 echo "enabled pipewire + wireplumber for the kiosk session"
 
+# 3d. Chromium's own prompts stay out of the kiosk.
+#
+# Jay, after signing in on the handset: "there is a chrome save password dialog
+# (all chrome dialogs like this should be suppressed)". Managed policy is the
+# one switch chromium honours for its bubbles -- save password, autofill,
+# translate, sign-in/sync, promos, surveys, the default-browser nag -- where
+# flags cover some and change between releases. Media, notifications and
+# pop-ups are deliberately NOT touched: taOS's own features use them.
+install -d -m 755 /etc/chromium/policies/managed
+install -m 644 "$HERE/etc/chromium-policy-taos-kiosk.json" \
+    /etc/chromium/policies/managed/taos-kiosk.json
+echo "installed chromium policy /etc/chromium/policies/managed/taos-kiosk.json"
+
 # 4. The sway config.
 install -d -m 755 /etc/taos
 install -m 644 "$CONF_SRC" /etc/taos/sway-kiosk.conf
