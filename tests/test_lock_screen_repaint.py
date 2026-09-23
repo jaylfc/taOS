@@ -497,6 +497,10 @@ def _stats_source() -> str:
         _function("statRow"),
         _function("statNote"),
         _function("gib"),
+        _function("rate"),
+        _function("setAttrIfChanged"),
+        _function("splitMeter"),
+        _function("statSpark"),
         _function("paintStats"),
     ])
 

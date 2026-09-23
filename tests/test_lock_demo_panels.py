@@ -798,10 +798,10 @@ class TestWhatTheUserDidSurvivesAPaint:
         )
         first = {r["key"]: r for r in snaps[0]["decisions"]}["dec-invoice"]
         assert first["answered"] == "1", "the click did nothing"
-        assert first["done"] == "Denied (demo)"
+        assert first["done"] == "Denied"
         after = {r["key"]: r for r in snaps[1]["decisions"]}["dec-invoice"]
         assert after["answered"] == "1"
-        assert after["done"] == "Denied (demo)"
+        assert after["done"] == "Denied"
         assert after["id"] == first["id"]
 
     def test_an_approval_is_distinguishable_from_a_refusal(self):
@@ -813,8 +813,8 @@ class TestWhatTheUserDidSurvivesAPaint:
                           ["decisions", "dec-reply", "ls-dec-approve"]]},
         )
         rows = {r["key"]: r for r in snaps[0]["decisions"]}
-        assert rows["dec-invoice"]["done"] == "Denied (demo)", rows["dec-invoice"]
-        assert rows["dec-reply"]["done"] == "Approved (demo)", rows["dec-reply"]
+        assert rows["dec-invoice"]["done"] == "Denied", rows["dec-invoice"]
+        assert rows["dec-reply"]["done"] == "Approved", rows["dec-reply"]
 
     def test_a_repaint_does_not_stack_a_second_click_handler(self):
         """The bug a reconciled list grows quietly: wiring on every paint means

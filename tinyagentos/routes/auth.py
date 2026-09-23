@@ -825,6 +825,37 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
   max-width: var(--ls-card-w); text-align: center;
 }
 .ls-stat-card .ls-stat-note { text-align: left; }
+/* THE AGENT-MODEL SPLIT. The system's own load is the grey head of the bar and
+   the agents' share the accent tail, so the two readings visibly add up. */
+.ls-stat-fill[data-split="1"] {
+  background: linear-gradient(90deg,
+    rgba(255,255,255,0.55) 0, rgba(255,255,255,0.55) var(--ls-split, 0%),
+    #4c9aff var(--ls-split, 0%), #4c9aff 100%);
+}
+.ls-stat[data-agent] .ls-stat-fill { background: #4c9aff; }
+.ls-stat[data-agent="idle"] .ls-stat-label::after {
+  content: "  \\00b7  idle"; color: rgba(255,255,255,0.45);
+}
+.ls-stat[data-agent="idle"] .ls-stat-value { color: rgba(255,255,255,0.68); }
+.ls-spark {
+  display: flex; align-items: flex-end; gap: 3px;
+  height: 38px; margin-top: -4px;
+}
+.ls-spark-col {
+  flex: 1 1 0; min-width: 0; border-radius: 2px 2px 1px 1px;
+  background: rgba(255,255,255,0.22);
+  display: flex; align-items: flex-end; overflow: hidden;
+  transition: height 420ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.ls-spark-part {
+  width: 100%; background: rgba(76,154,255,0.85);
+  transition: height 420ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.ls-spark-col:last-child { background: rgba(255,255,255,0.4); }
+.ls-spark-col:last-child .ls-spark-part { background: #4c9aff; }
+@media (prefers-reduced-motion: reduce) {
+  .ls-spark-col, .ls-spark-part { transition: none; }
+}
 .ls-chips {
   display: flex; flex-wrap: wrap; gap: 7px; justify-content: center;
   width: 100%; max-width: var(--ls-card-w);
@@ -1940,9 +1971,8 @@ body.lockscreen-on .osk-toggle { display: none !important; }
   font-size: 17px; line-height: 1.35; color: rgba(255,255,255,0.92);
 }
 .ls-voice-text:empty::before {
-  content: "Say something\2026"; color: rgba(255,255,255,0.32);
+  content: "Say something\\2026"; color: rgba(255,255,255,0.32);
 }
-.ls-voice-text[data-error="1"] { font-size: 14px; color: rgba(255,176,32,0.92); }
 .ls-voice-acts { display: flex; gap: 10px; padding-top: 2px; }
 /* The dictation dialog is a MODAL now, not a sheet, so it scales up out of the
    blur like the power menu instead of sliding from the bottom edge. Its reveal
@@ -1957,6 +1987,79 @@ body.lockscreen-on .osk-toggle { display: none !important; }
 .ls-modal-voice .ls-voice-who { min-width: 0; flex: 1; text-align: left; }
 .ls-modal-voice .ls-sheet-close { flex: none; }
 .ls-modal-voice .ls-voice-acts { padding-top: 4px; }
+
+/* THE CHARGE OVERLAY. Product owner: "a charger connected notification,
+ * screen on and animation for 3 seconds ... the charge screen emulates a
+ * claude code like cli". A homage to a coding-agent terminal, NOT a brand: no
+ * names, no marks, just the grammar -- a prompt, a spinner, a working slogan
+ * and a count.
+ *
+ * Centred in the LOWER half (padding-top: 50%), so the clock above stays
+ * readable when it plays over a lit lock screen. Over a dark panel the layer is
+ * pure black instead of a dim, which is what the arc does from standby: on
+ * OLED the terminal is then the only thing emitting light. */
+.ls-charge {
+  position: fixed; inset: 0; z-index: 90;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 50dvh 16px env(safe-area-inset-bottom, 0px);
+  box-sizing: border-box;
+  background: linear-gradient(to bottom, rgba(0,0,0,0) 25%, rgba(0,0,0,0.62) 70%);
+  opacity: 0; pointer-events: none;
+  transition: opacity 420ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.ls-charge[hidden] { display: none; }
+.ls-charge[data-on="1"] { opacity: 1; pointer-events: auto; }
+.ls-charge[data-dark="1"] { background: #000; }
+.ls-charge-term {
+  width: 100%; max-width: var(--ls-card-w, 420px); box-sizing: border-box;
+  padding: 15px 18px 16px;
+  background: #0c0c0e;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 16px;
+  box-shadow: 0 22px 60px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.04);
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", "DejaVu Sans Mono",
+               "Liberation Mono", Menlo, Consolas, monospace;
+  font-size: 15px; line-height: 1.75; letter-spacing: 0;
+  color: rgba(255,255,255,0.92);
+  font-variant-numeric: tabular-nums;
+  transform: translateY(12px) scale(0.985);
+  transition: transform 560ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.ls-charge[data-on="1"] .ls-charge-term { transform: none; }
+.ls-charge-line { display: flex; align-items: baseline; gap: 0.6ch; white-space: nowrap; min-width: 0; }
+.ls-charge-prompt { color: rgba(255,255,255,0.45); }
+.ls-charge-caret { color: #4c9aff; }
+.ls-charge-dim { color: rgba(255,255,255,0.45); flex: none; }
+.ls-charge-spin { color: #ff9e4a; flex: none; width: 1.2ch; text-align: center; }
+/* The slogan shimmer: a lighter band swept through amber text. The text is the
+   gradient's clip, so the band only exists where there are letters. */
+.ls-charge-slogan {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  color: #ff9e4a;
+  background: linear-gradient(100deg, #ff9e4a 0%, #ff9e4a 38%, #ffe2c2 50%,
+                              #ff9e4a 62%, #ff9e4a 100%);
+  background-size: 260% 100%;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: ls-charge-shimmer 1.7s linear infinite;
+}
+@keyframes ls-charge-shimmer {
+  from { background-position: 100% 0; }
+  to   { background-position: 0% 0; }
+}
+.ls-charge-pct { color: rgba(255,255,255,0.92); flex: none; min-width: 6ch; }
+.ls-charge-bar { letter-spacing: -0.02em; flex: none; }
+.ls-charge-fill { color: #3ddc84; }
+.ls-charge-rest { color: rgba(255,255,255,0.18); }
+/* The last beat. Space reserved from the start, so the card does not grow a
+   line under the thumb just before it goes. */
+.ls-charge-done { color: #3ddc84; opacity: 0; transition: opacity 220ms ease; }
+.ls-charge[data-done="1"] .ls-charge-done { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .ls-charge, .ls-charge-term, .ls-charge-done { transition: none; }
+  .ls-charge-term { transform: none; }
+  .ls-charge-slogan { animation: none; background: none; -webkit-text-fill-color: #ff9e4a; }
+}
 
 /* Force-touch feel: the island sinks under the finger, then pops as it opens.
    Without the sink there is no feedback that a HOLD is doing anything, and the
@@ -3902,6 +4005,47 @@ _LOCK_SCREEN_SCRIPT = r"""
 
     function gib(kb) { return (kb / 1048576).toFixed(1) + " GB"; }
 
+    function rate(kbps) {
+      return kbps >= 1000 ? (kbps / 1000).toFixed(1) + " MB/s" : Math.round(kbps) + " KB/s";
+    }
+
+    // Split a stat row's meter into the OS's own share (first, grey) and the
+    // agents' (the rest, accent). One element and a custom property, so the
+    // row's structure -- and its reconcile-by-key identity -- is unchanged.
+    function splitMeter(row, basePct, totalPct) {
+      var track = row && row.lastChild;
+      var fill = track && track.firstChild;
+      if (!fill || typeof basePct !== "number" || !(totalPct > 0)) return;
+      var at = Math.max(0, Math.min(100, basePct * 100 / totalPct));
+      fill.style.setProperty("--ls-split", at.toFixed(1) + "%");
+      setAttrIfChanged(fill, "data-split", "1");
+    }
+
+    // A stacked history: one column per sample, the whole column the system
+    // total and its lower part the agents' share. Columns are made once and
+    // then only resized, so the strip glides between polls instead of being
+    // rebuilt.
+    function statSpark(parent, key, totals, parts, scale) {
+      var el = partOf(parent, key, "ls-spark");
+      for (var i = 0; i < totals.length; i++) {
+        var col = el.children[i];
+        if (!col) {
+          col = document.createElement("div");
+          col.className = "ls-spark-col";
+          var part = document.createElement("div");
+          part.className = "ls-spark-part";
+          col.appendChild(part);
+          el.appendChild(col);
+        }
+        var tot = Math.max(0, totals[i] || 0);
+        col.style.height = Math.max(4, Math.min(100, tot * 100 / scale)).toFixed(1) + "%";
+        var p = parts && typeof parts[i] === "number" && tot > 0 ? parts[i] * 100 / tot : 0;
+        col.firstChild.style.height = Math.max(0, Math.min(100, p)).toFixed(1) + "%";
+      }
+      while (el.children.length > totals.length) el.removeChild(el.lastChild);
+      return el;
+    }
+
     function paintStats(d) {
       if (!statsEl) return;
       // Same as the placeholders: `hidden` meant "empty", and it no longer is.
@@ -3917,6 +4061,25 @@ _LOCK_SCREEN_SCRIPT = r"""
         typeof d.cpu_percent === "number" ? d.cpu_percent.toFixed(0) + "%" : "--",
         typeof d.cpu_percent === "number" ? d.cpu_percent : null
       ));
+      // THE CORRELATION, made visible: with the agent model on, the CPU bar is
+      // split into the OS's own load and the agents' share, the caption names
+      // both, and the history under it stacks the same two series -- so an
+      // agent's burst on the card below is seen landing in the total here.
+      var sys = d.system && typeof d.cpu_percent === "number" ? d.system : null;
+      if (sys) {
+        splitMeter(rows[rows.length - 1], sys.base_cpu_percent, d.cpu_percent);
+        rows.push(statNote(card, "cpu-split",
+          "Agents " + sys.agents_cpu_percent.toFixed(0) + "%  \u00b7  System "
+          + sys.base_cpu_percent.toFixed(0) + "%"));
+        if (d.history && d.history.cpu) {
+          // Scaled to the next 20% above the busiest bar, so a minute of real
+          // movement fills the strip instead of wobbling in its bottom third.
+          // It steps only when the load crosses a band, not every poll.
+          var peak = Math.max.apply(null, d.history.cpu.concat([1]));
+          rows.push(statSpark(card, "cpu-spark", d.history.cpu, d.history.agents_cpu,
+            Math.min(100, Math.max(40, Math.ceil(peak / 20) * 20))));
+        }
+      }
 
       if (d.memory) {
         rows.push(statRow(card, "memory",
@@ -3924,6 +4087,11 @@ _LOCK_SCREEN_SCRIPT = r"""
           gib(d.memory.used_kb) + " / " + gib(d.memory.total_kb),
           d.memory.percent
         ));
+        if (sys && typeof d.memory.agents_kb === "number" && d.memory.used_kb > 0) {
+          splitMeter(rows[rows.length - 1],
+            Math.max(0, d.memory.used_kb - d.memory.agents_kb) * 100 / d.memory.total_kb,
+            d.memory.percent);
+        }
       } else {
         rows.push(statRow(card, "memory", "Memory", "--"));
       }
@@ -3941,11 +4109,18 @@ _LOCK_SCREEN_SCRIPT = r"""
         ));
         if (typeof d.gpu.active_percent === "number") {
           rows.push(statNote(card, "gpu-note",
-            "Above idle clock " + d.gpu.active_percent.toFixed(0)
-            + "% of uptime. The GPU reports no utilisation counter."));
+            "Above idle clock " + d.gpu.active_percent.toFixed(0) + "% of uptime"));
         }
-      } else {
+      } else if (!sys) {
         rows.push(statRow(card, "gpu", "GPU clock", "--"));
+      }
+
+      // Throughput and thermals: sums and consequences of the same load.
+      if (sys) {
+        rows.push(statRow(card, "flow", "Throughput",
+          Math.round(sys.tokens_per_s) + " tok/s  \u00b7  " + rate(sys.net_kbps)));
+        rows.push(statRow(card, "thermal", "Temperature  \u00b7  power",
+          sys.temp_c.toFixed(0) + " \u00b0C  \u00b7  " + sys.power_w.toFixed(1) + " W"));
       }
 
       placeInOrder(card, rows);
@@ -3965,8 +4140,7 @@ _LOCK_SCREEN_SCRIPT = r"""
         }
         placeInOrder(chips, want);
         parts.push(chips);
-        parts.push(statNote(statsEl, "accel-note",
-          "Accelerators report running or offline only — no usage counter exists for them."));
+        parts.push(statNote(statsEl, "accel-note", "On-device accelerators"));
       }
       // With no DSPs the chips and their caption are simply absent from
       // `parts`, and placeInOrder takes them out.
@@ -3987,29 +4161,33 @@ _LOCK_SCREEN_SCRIPT = r"""
           var nm = ag.name || "agent";
           // One row per agent, all three readings on it: three rows per agent
           // would push a six-agent phone off the bottom of the panel.
-          arows.push(statRow(acard, "agent-" + nm,
+          var third = typeof ag.tokens_per_s === "number"
+            ? Math.round(ag.tokens_per_s) + " tok/s"
+            : (ag.storage_mb >= 1024
+                ? (ag.storage_mb / 1024).toFixed(1) + " GB"
+                : Math.round(ag.storage_mb) + " MB");
+          var arow = statRow(acard, "agent-" + nm,
             nm,
             ag.cpu_percent.toFixed(1) + "%  ·  "
-              + Math.round(ag.ram_mb) + " MB  ·  "
-              + (ag.storage_mb >= 1024
-                  ? (ag.storage_mb / 1024).toFixed(1) + " GB"
-                  : Math.round(ag.storage_mb) + " MB"),
-            // The bar is CPU, the only one of the three with a natural 0-100
-            // scale. RAM and storage have no ceiling to draw them against, and
-            // a bar against an invented maximum is worse than no bar.
-            ag.cpu_percent
-          ));
+              + Math.round(ag.ram_mb) + " MB  ·  " + third,
+            // With the system model on, the bar is this agent's share of the
+            // CPU the card above reports, so the rows add up to its blue
+            // segment. Without it, the bar is the agent's own CPU reading.
+            sys ? ag.cpu_percent * 100 / Math.max(1, d.cpu_percent) : ag.cpu_percent
+          );
+          setAttrIfChanged(arow, "data-agent", ag.busy === false ? "idle" : "busy");
+          arows.push(arow);
         }
-        arows.push(statNote(acard, "agents-note",
-          "Demo readings. taOS does not meter per-agent usage on this device yet."));
         placeInOrder(acard, arows);
         parts.push(acard);
       }
 
-      // "Nobody asked" and "none loaded" are different answers.
-      parts.push(statNote(statsEl, "models", d.models
-        ? (d.models.length ? d.models.join(", ") : "No models loaded.")
-        : "Loaded models are not reported by this device."));
+      // "Nobody asked" and "none loaded" are different answers -- and the
+      // first is simply not shown, rather than printed as a caveat.
+      if (d.models) {
+        parts.push(statNote(statsEl, "models",
+          d.models.length ? d.models.join(", ") : "No models loaded"));
+      }
 
       placeInOrder(statsEl, parts);
       syncFeedFade();
@@ -4373,9 +4551,10 @@ _LOCK_SCREEN_SCRIPT = r"""
           .then(function (d) {
             // The window takes a couple of seconds to map, so there is nothing
             // to show on success -- it simply appears over this screen.
-            if (!d || !d.ok) note((d && d.detail) || "Camera unavailable");
+            // A friendly line, never the raw launch error.
+            if (!d || !d.ok) note("The camera couldn't open. Try again.");
           })
-          .catch(function () { note("Camera unavailable"); });
+          .catch(function () { note("The camera couldn't open. Try again."); });
       });
     }
 
@@ -4790,9 +4969,10 @@ _LOCK_SCREEN_SCRIPT = r"""
         carFocusName = focused.name;
         carSave();
       }
-      // MOCK. No getUserMedia, no recorder, no upload. The word "demo" stays on
-      // screen so this can never be mistaken for a live channel.
-      setText(carPtt, "Talking… (demo)");
+      // MOCK. No getUserMedia, no recorder, no upload. The on-screen words
+      // read as a finished product (product owner: remove any demo text); the
+      // absence of a microphone is asserted by the tests, not by a label.
+      setText(carPtt, "Talking…");
       if (volHideTimer) window.clearTimeout(volHideTimer);
     }
 
@@ -4800,7 +4980,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       if (!talking) return;
       talking = false;
       if (carEl) carEl.removeAttribute("data-talking");
-      setText(carPtt, "Sent (demo)");
+      setText(carPtt, "Sent");
       restartIdleHide();
     }
 
@@ -5025,7 +5205,7 @@ _LOCK_SCREEN_SCRIPT = r"""
           if (d) return showBrightness(d);
           // 404 is the honest answer on a device with no backlight node.
           if (shadeNote) {
-            setText(shadeNote, "This device reports no backlight.");
+            setText(shadeNote, "Brightness is fixed on this display.");
             shadeNote.hidden = false;
           }
           if (brightEl) brightEl.disabled = true;
@@ -5136,15 +5316,20 @@ _LOCK_SCREEN_SCRIPT = r"""
           // and a "done" message would be a lie either way.
           if (verb === "poweroff" || verb === "reboot") return;
           if (d && d.ok) {
-            powerResult(label + ": done." + (d.path ? " Saved to " + d.path : ""));
+            // No file path on the glass: it is an internal directory, not
+            // somewhere the person holding the phone can go.
+            powerResult(verb === "screenshot" ? "Screenshot saved." : label + ": done.");
           } else {
             // The failure TEXT, not a generic apology: "no supported format
             // found" is the difference between a bug report and a shrug, and
             // screenshot genuinely does fail on this compositor today.
-            powerResult(label + " failed. " + ((d && d.detail) || "No detail."));
+            // A sentence a viewer can act on, never a raw exception or an
+            // HTTP status. `message` is the server's own wording when it has
+            // one worth saying (the emergency case); `detail` stays for logs.
+            powerResult((d && d.message) || (label + " didn't go through. Try again."));
           }
         })
-        .catch(function () { powerResult(label + " failed: no answer from taOS."); });
+        .catch(function () { powerResult(label + " didn't go through. Try again."); });
     }
 
     function paintPowerMenu() {
@@ -5239,7 +5424,7 @@ _LOCK_SCREEN_SCRIPT = r"""
         "poweroff": "The phone switches off. It needs the power key to come back.",
         "reboot": "The phone restarts. Agents stop and come back with it.",
         "stop-agents": "Every running agent stops. Nobody is signed in, so this cannot be undone from here.",
-        "emergency": "There is no dialer configured on this device."
+        "emergency": "This phone can't place calls. Use another phone to reach emergency services."
       };
       note.textContent = NOTES[item[1]] || "";
       var row = document.createElement("div");
@@ -5271,6 +5456,21 @@ _LOCK_SCREEN_SCRIPT = r"""
       btn.replaceWith(box);
     }
 
+    // ONE stream for the whole page, created on first ask.
+    //
+    // It used to be created inside `if (powerSheet)`, which quietly made every
+    // other push on this screen -- screen state, volume keys, now the charger
+    // -- depend on the power menu's markup being present. A listener that has
+    // to work regardless asks here instead, and gets the same EventSource.
+    var lockStreamShared = null;
+    function lockEvents() {
+      if (lockStreamShared) return lockStreamShared;
+      if (typeof EventSource === "undefined") return null;
+      try { lockStreamShared = new EventSource("/auth/lock-events"); }
+      catch (err) { lockStreamShared = null; }
+      return lockStreamShared;
+    }
+
     if (powerSheet) {
       var powerClose = document.getElementById("ls-power-close");
       if (powerClose) powerClose.addEventListener("click", function () { closeSheet(); });
@@ -5278,7 +5478,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       // EventSource reconnects on its own after a drop, which matters here:
       // the controller restarts on every deploy and the page does not.
       try {
-        var lockStream = new EventSource("/auth/lock-events");
+        var lockStream = lockEvents();
         // The panel is going dark. Put the sheet away NOW rather than leaving
         // it up behind a black screen for the next wake to land on.
         lockStream.addEventListener("screen-off", function () {
@@ -5386,6 +5586,247 @@ _LOCK_SCREEN_SCRIPT = r"""
         // That is the fallback direction this whole layer is built around.
       }
     }
+
+    // ------------------------------------------------------------------
+    // THE CHARGE OVERLAY. Product owner: "a charger connected notification,
+    // screen on and animation for 3 seconds ... emulate a claude code session
+    // where it shows a percentage and a working message like 'Drinking the
+    // juice....'". A coding-agent CLI homage, unbranded.
+    //
+    // Pushed by /auth/lock-charge over the shared stream. The session watcher
+    // posts BEFORE it wakes a dark panel, so when screen == "off" the terminal
+    // is painted over pure black first and the waking panel's first frame is
+    // the terminal -- the same trick the volume keys use to open the arc from
+    // standby (data-fromdark + data-blanked + setBlack), mirrored here.
+    // ------------------------------------------------------------------
+    var CHARGE_SLOGANS = [
+      "Drinking the juice…", "Stealing your power…",
+      "Sipping electrons…", "Hoarding amperes…",
+      "Borrowing some lightning…", "Recharging my social battery…",
+      "Photosynthesising (indoors)…", "Refuelling the agents…",
+      "Nom-nom-ing volts…", "Charging my crystals…",
+      "Absorbing the grid…", "Topping up the vibes…"
+    ];
+    var CHARGE_SPIN = ["·", "✢", "✳", "✶", "✻", "✽"];
+    var CHARGE_MS = 3000;          // on screen, before the fade starts
+    var CHARGE_FADE_MS = 440;      // .ls-charge opacity transition, plus a frame
+    var CHARGE_COUNT_MS = 2200;    // the count-up
+    var CHARGE_DONE_MS = 2450;     // the green tick
+    var CHARGE_SLOGAN_MS = 900;
+    var CHARGE_SPIN_MS = 120;
+    var chargeEl = null, chargeRun = null;
+
+    // The count-up and its 20-cell bar at `t` ms in. Pure, so it is tested
+    // directly. Starts 15 points short of the real reading (never below 0) and
+    // eases out onto it, so the number lands rather than stops. null for a
+    // battery nobody could read: the overlay then shows no number at all.
+    function chargeCount(pct, t) {
+      if (typeof pct !== "number" || !isFinite(pct)) return null;
+      var target = Math.max(0, Math.min(100, Math.round(pct)));
+      var from = Math.max(0, target - 15);
+      var k = Math.max(0, Math.min(1, (t || 0) / CHARGE_COUNT_MS));
+      var eased = 1 - Math.pow(1 - k, 3);
+      var shown = Math.round(from + (target - from) * eased);
+      var cells = Math.round(shown / 5);
+      var fill = "", rest = "";
+      for (var i = 0; i < 20; i++) {
+        if (i < cells) fill += "█"; else rest += "░";
+      }
+      return { percent: shown, fill: fill, rest: rest };
+    }
+
+    // Ping-pong through the glyphs: · ✢ ✳ ✶ ✻ ✽ ✻ ✶ ✳ ✢ · ...
+    function chargeSpinGlyph(frame) {
+      var n = CHARGE_SPIN.length, period = 2 * n - 2;
+      var i = ((frame % period) + period) % period;
+      return CHARGE_SPIN[i < n ? i : period - i];
+    }
+
+    // A random slogan that has not been shown this time round. `used` is the
+    // list already shown, most recent last; once every slogan has been used it
+    // starts again, but never with the one just shown.
+    function pickSlogan(list, used, rand) {
+      rand = rand || Math.random;
+      var last = used.length ? used[used.length - 1] : null;
+      var pool = [];
+      for (var i = 0; i < list.length; i++) {
+        if (used.indexOf(list[i]) === -1) pool.push(list[i]);
+      }
+      if (!pool.length) {
+        for (var j = 0; j < list.length; j++) {
+          if (list[j] !== last) pool.push(list[j]);
+        }
+      }
+      if (!pool.length) return list[0];
+      return pool[Math.min(pool.length - 1, Math.floor(rand() * pool.length))];
+    }
+
+    function chargeReduced() {
+      try {
+        return !!(window.matchMedia
+          && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      } catch (err) { return false; }
+    }
+
+    function chargeBuild() {
+      if (chargeEl) return chargeEl;
+      var el = document.createElement("div");
+      el.className = "ls-charge";
+      el.id = "ls-charge";
+      el.setAttribute("role", "status");
+      el.setAttribute("aria-live", "polite");
+      el.hidden = true;
+      el.innerHTML =
+        '<div class="ls-charge-term">'
+        + '<div class="ls-charge-line ls-charge-prompt">~/taos'
+        + ' <span class="ls-charge-caret">❯</span> charge</div>'
+        + '<div class="ls-charge-line">'
+        + '<span class="ls-charge-spin" aria-hidden="true"></span>'
+        + '<span class="ls-charge-slogan"></span>'
+        + '<span class="ls-charge-dim">(⚡ charging)</span></div>'
+        + '<div class="ls-charge-line ls-charge-meter">'
+        + '<span class="ls-charge-pct"></span>'
+        + '<span class="ls-charge-bar" aria-hidden="true">'
+        + '<span class="ls-charge-fill"></span><span class="ls-charge-rest"></span>'
+        + '</span></div>'
+        + '<div class="ls-charge-line ls-charge-done"></div>'
+        + '</div>';
+      // A touch ends it early, like any phone's charging splash.
+      el.addEventListener("touchstart", function () { chargeFinish(false); },
+                          { passive: true });
+      el.addEventListener("click", function () { chargeFinish(false); });
+      document.body.appendChild(el);
+      chargeEl = el;
+      return el;
+    }
+
+    function chargePaint(run, t) {
+      var el = chargeEl;
+      if (!el) return;
+      var q = function (c) { return el.querySelector("." + c); };
+      // The spinner settles on its fullest glyph once the work is "done".
+      setText(q("ls-charge-spin"), (run.done || run.reduced)
+        ? "✻" : chargeSpinGlyph(Math.floor(t / CHARGE_SPIN_MS)));
+      var at = Math.min(run.slogans.length - 1, Math.floor(t / CHARGE_SLOGAN_MS));
+      setText(q("ls-charge-slogan"), run.slogans[at]);
+      var c = chargeCount(run.percent, run.reduced ? CHARGE_COUNT_MS : t);
+      if (c) {
+        setText(q("ls-charge-pct"), "⚡ " + c.percent + "%");
+        setText(q("ls-charge-fill"), c.fill);
+        setText(q("ls-charge-rest"), c.rest);
+      } else {
+        setText(q("ls-charge-pct"), "⚡ charging");
+        setText(q("ls-charge-fill"), "");
+        setText(q("ls-charge-rest"), "");
+      }
+      setText(q("ls-charge-done"), c
+        ? "✓ Charging · " + Math.round(Math.max(0, Math.min(100, run.percent))) + "%"
+        : "✓ Charging");
+    }
+
+    function chargeTick() {
+      var run = chargeRun;
+      if (!run) return;
+      var t = Date.now() - run.start;
+      if (!run.done && t >= CHARGE_DONE_MS) {
+        run.done = true;
+        if (chargeEl) chargeEl.setAttribute("data-done", "1");
+      }
+      chargePaint(run, t);
+      if (t < CHARGE_MS) run.raf = window.requestAnimationFrame(chargeTick);
+    }
+
+    // Take it down. `instant` is the screen-off case: nothing is compositing, so
+    // a fade would only play on the next wake. `reveal` says whether to bring
+    // the lock screen back up afterwards.
+    function chargeFinish(instant, reveal) {
+      var run = chargeRun;
+      if (!run) return;
+      chargeRun = null;
+      if (run.raf) window.cancelAnimationFrame(run.raf);
+      if (run.stop) window.clearTimeout(run.stop);
+      var el = chargeEl;
+      if (el) el.removeAttribute("data-on");
+      var after = function () {
+        if (el && !chargeRun) {
+          el.hidden = true;
+          el.removeAttribute("data-dark");
+          el.removeAttribute("data-done");
+        }
+        // Dark start: the lock screen fades up only once the terminal has
+        // gone, out of black -- unless something else summoned from the dark
+        // (the arc, the bezel) is now up and owns that black.
+        if (run.dark && reveal !== false && screenEl && !chargeRun) {
+          var carUp = carEl && carEl.getAttribute("data-on") === "1";
+          var volUp = volEl && volEl.getAttribute("data-on") === "1";
+          if (!carUp && !volUp) {
+            screenEl.removeAttribute("data-fromdark");
+            screenEl.removeAttribute("data-blanked");
+            setBlack(false);
+          }
+        }
+      };
+      if (instant || run.reduced) after();
+      else window.setTimeout(after, CHARGE_FADE_MS);
+    }
+
+    function chargeShow(data) {
+      if (!document.body) return;
+      var el = chargeBuild();
+      if (chargeRun) chargeFinish(true, false);
+      var dark = data.screen === "off"
+        || !!(screenEl && screenEl.hasAttribute("data-blanked"));
+      var used = [];
+      for (var s = 0; s < Math.ceil(CHARGE_MS / CHARGE_SLOGAN_MS); s++) {
+        used.push(pickSlogan(CHARGE_SLOGANS, used));
+      }
+      var run = {
+        start: Date.now(), percent: data.percent, dark: dark, done: false,
+        reduced: chargeReduced(), slogans: used, raf: 0, stop: 0
+      };
+      if (dark && screenEl) {
+        // What the volume keys do from standby: the lock screen is hidden and
+        // the page black BEFORE the panel lights, and data-fromdark tells the
+        // screen-on handler to leave that black alone.
+        screenEl.setAttribute("data-fromdark", "1");
+        screenEl.setAttribute("data-blanked", "1");
+        setBlack(true);
+        el.setAttribute("data-dark", "1");
+      } else {
+        el.removeAttribute("data-dark");
+      }
+      el.removeAttribute("data-done");
+      el.hidden = false;
+      // Force a style pass at opacity 0, or the fade-in has no start value.
+      void el.offsetWidth;
+      chargeRun = run;
+      chargePaint(run, 0);
+      // Next frame, so the opacity transition has a starting value to leave.
+      window.requestAnimationFrame(function () {
+        if (chargeRun === run) el.setAttribute("data-on", "1");
+      });
+      run.raf = window.requestAnimationFrame(chargeTick);
+      // A timer as well as the frames: a panel that never lights delivers no
+      // frames, and the overlay must still go.
+      run.stop = window.setTimeout(function () {
+        if (chargeRun === run) chargeFinish(false);
+      }, CHARGE_MS);
+    }
+
+    (function () {
+      var stream = lockEvents();
+      if (!stream) return;
+      stream.addEventListener("charger", function (ev) {
+        var data = {};
+        try { data = JSON.parse(ev.data || "{}") || {}; } catch (err) { data = {}; }
+        chargeShow(data);
+      });
+      // The panel went dark mid-animation: drop it now, without a fade, and
+      // leave the black the screen-off handler paints.
+      stream.addEventListener("screen-off", function () {
+        if (chargeRun) chargeFinish(true, false);
+      });
+    })();
 
     // ------------------------------------------------------------------
     // THE SCRIPTED PANELS: phone, mailbox, apps, projects, decisions.
@@ -5575,7 +6016,7 @@ _LOCK_SCREEN_SCRIPT = r"""
               var answer = decAnswered[key];
               if (answer) {
                 return [setText(partOf(body, "done", "ls-dec-done"),
-                  (answer === "approve" ? "Approved" : "Denied") + " (demo)")];
+                  answer === "approve" ? "Approved" : "Denied")];
               }
               var actions = partOf(body, "actions", "ls-dec-actions");
               var deny = partOf(actions, "deny", "ls-dec-btn", "button");
@@ -6179,7 +6620,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       chatAgent = agent;
       startDevicePoll(agent);
       chatName.textContent = agent.name || "agent";
-      chatSub.textContent = agent.demo ? "Demo conversation" : (agent.status || "");
+      chatSub.textContent = agent.status || "";
       fillAvatar(chatAv, agent);
       msgsEl.textContent = "";
       composer.value = "";
@@ -6398,8 +6839,10 @@ _LOCK_SCREEN_SCRIPT = r"""
       decMeta.textContent = d.priority && d.priority !== "normal"
         ? d.priority.charAt(0).toUpperCase() + d.priority.slice(1) + " priority"
         : "";
-      decNote.hidden = !!d.id;
-      decNote.textContent = d.id ? "" : "Demo prompt — nothing is actually approved.";
+      // No caption: the screen reads as a finished product either way, and a
+      // prompt with no id is still resolved in place below without a session.
+      decNote.hidden = true;
+      decNote.textContent = "";
       decActs.hidden = false;
       decDone.hidden = true;
       decActs.setAttribute("data-decision-id", d.id || "");
@@ -6416,7 +6859,7 @@ _LOCK_SCREEN_SCRIPT = r"""
           // Demo prompt: resolve in place and say so.
           decActs.hidden = true;
           decDone.hidden = false;
-          decDone.textContent = approved ? "Approved (demo)" : "Denied (demo)";
+          decDone.textContent = approved ? "Approved" : "Denied";
           window.setTimeout(closeSheet, 1100);
           return;
         }
@@ -6685,14 +7128,20 @@ _LOCK_SCREEN_SCRIPT = r"""
     })();
 
     // -----------------------------------------------------------------------
-    // DICTATION. The waveform is driven by the REAL microphone through an
-    // AnalyserNode, not by a canned animation: a fake waveform that moves while
-    // the mic is muted or denied is worse than no waveform, because it tells
-    // the user they are being heard when they are not.
+    // DICTATION, EMULATED. Product owner: "we need to remove any demo text,
+    // like the voice note window says microphone access refused etc, this
+    // should be animated waveform emulating voice input".
     //
-    // Transcription is a separate capability from capture. Where the browser
-    // has SpeechRecognition it is used; where it does not, the sheet says so
-    // plainly instead of listening forever into nothing.
+    // So this sheet no longer asks for the microphone at all. That is a
+    // security gain as much as a cosmetic one: the lock screen renders BEFORE
+    // sign-in, and a getUserMedia call here put a live microphone one tap away
+    // from whoever was holding the phone.
+    //
+    // The waveform is an emulated voice rather than a canned loop: words of
+    // syllable-rate bursts (4-6 Hz) with a soft attack and a smooth decay,
+    // random pauses between them, and a little jitter. It runs while the
+    // sheet is "recording" and lies flat otherwise. Every value is a pure
+    // function of time since the take began, so it is tested without a canvas.
     // -----------------------------------------------------------------------
     var waveCanvas = document.getElementById("ls-wave");
     var voiceText  = document.getElementById("ls-voice-text");
@@ -6701,8 +7150,16 @@ _LOCK_SCREEN_SCRIPT = r"""
     var voiceAv    = document.getElementById("ls-voice-avatar");
     var voiceSend  = document.getElementById("ls-voice-send");
     var voiceAgent = null;
-    var mediaStream = null, audioCtx = null, analyser = null, waveRAF = null;
-    var recog = null, finalText = "";
+    var waveRAF = null, voiceRun = null;
+    var VOICE_LEAD_MS = 380;       // a breath before the first word
+    var VOICE_ROOM = 0.02;         // the floor while recording: never dead flat
+    var VOICE_PHRASES = [
+      "Can you give me a quick update on where things are?",
+      "Let me know as soon as that is done.",
+      "What is next on your list today?",
+      "Remind me about this later this afternoon.",
+      "Go ahead with that and send me a summary."
+    ];
 
     function drawWave(level) {
       if (!waveCanvas) return;
@@ -6712,7 +7169,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       var bars = 48, gap = 3, bw = (w - gap * (bars - 1)) / bars;
       for (var i = 0; i < bars; i++) {
         // A travelling envelope so the bars read as a moving waveform rather
-        // than a level meter; scaled by the ACTUAL measured level.
+        // than a level meter.
         var phase = (Date.now() / 260) + i * 0.38;
         var env = 0.32 + 0.68 * Math.abs(Math.sin(phase));
         var mag = Math.max(2, level * env * mid * 1.9);
@@ -6725,100 +7182,141 @@ _LOCK_SCREEN_SCRIPT = r"""
       }
     }
 
-    function pumpWave() {
-      if (!analyser) return;
-      var buf = new Uint8Array(analyser.frequencyBinCount);
-      analyser.getByteTimeDomainData(buf);
-      // RMS around the 128 midpoint: a peak reading spikes on a single click
-      // and makes a quiet room look loud.
-      var sum = 0;
-      for (var i = 0; i < buf.length; i++) {
-        var v = (buf[i] - 128) / 128;
-        sum += v * v;
+    // A stable 0..1 per (take, word, channel). sin-hash rather than
+    // Math.random() so a given moment of a take always looks the same.
+    function voiceHash(seed, k) {
+      var x = Math.sin((seed + 1) * 12.9898 + k * 78.233) * 43758.5453;
+      return x - Math.floor(x);
+    }
+
+    // Word `k` of a take: its length, the pause after it, its syllable rate
+    // and how loudly it is said.
+    function voiceWord(seed, k) {
+      var pause = voiceHash(seed + 7, k);
+      return {
+        dur: 240 + voiceHash(seed, k) * 460,              // 240-700 ms
+        // Mostly short gaps, now and then a longer think.
+        gap: 70 + pause * pause * 460,
+        rate: 4 + voiceHash(seed + 3, k) * 2,              // 4-6 Hz syllables
+        loud: 0.6 + 0.4 * voiceHash(seed + 11, k)
+      };
+    }
+
+    // The envelope at `t` ms into a take of `words` words: 0..1. Exactly 0
+    // when not recording -- the flat line is the "idle" state.
+    function voiceEnvelope(t, recording, seed, words) {
+      if (!recording || !(t >= 0)) return 0;
+      var at = VOICE_LEAD_MS;
+      if (t < at) return VOICE_ROOM;
+      var n = typeof words === "number" ? words : 400;
+      for (var k = 0; k < n; k++) {
+        var w = voiceWord(seed || 0, k);
+        if (t < at + w.dur) {
+          var tw = t - at;
+          var syl = Math.abs(Math.sin(Math.PI * w.rate * tw / 1000));
+          syl = 0.3 + 0.7 * Math.pow(syl, 0.8);
+          var attack = Math.min(1, tw / 55);
+          // The smooth decay: the last 150 ms of a word eases down to the
+          // room floor instead of stopping.
+          var release = Math.min(1, (w.dur - tw) / 150);
+          release = release * release * (3 - 2 * release);
+          var jitter = 0.92 + 0.08 * Math.sin(tw / 17 + k) * Math.sin(tw / 29 + seed);
+          var level = w.loud * syl * attack * release * jitter;
+          return Math.max(VOICE_ROOM, Math.min(1, level));
+        }
+        at += w.dur;
+        if (t < at + w.gap) return VOICE_ROOM;
+        at += w.gap;
       }
-      drawWave(Math.min(1, Math.sqrt(sum / buf.length) * 3.2));
-      waveRAF = requestAnimationFrame(pumpWave);
+      return VOICE_ROOM;
+    }
+
+    // How many words of the take have been fully said by `t`. Drives the
+    // transcript, so text lands in step with the bursts that "said" it.
+    function voiceWordsDone(t, seed, words) {
+      var at = VOICE_LEAD_MS, done = 0;
+      for (var k = 0; k < words; k++) {
+        var w = voiceWord(seed || 0, k);
+        at += w.dur;
+        if (t < at) break;
+        done++;
+        at += w.gap;
+      }
+      return done;
+    }
+
+    // The bars scroll: the newest sample is on the right, each bar to its left
+    // is 40 ms older, so a word travels across the canvas as it is spoken.
+    function drawVoiceWave(t, run) {
+      if (!waveCanvas) return;
+      var ctx = waveCanvas.getContext("2d");
+      var w = waveCanvas.width, h = waveCanvas.height, mid = h / 2;
+      ctx.clearRect(0, 0, w, h);
+      var bars = 48, gap = 3, bw = (w - gap * (bars - 1)) / bars;
+      for (var i = 0; i < bars; i++) {
+        var ts = t - (bars - 1 - i) * 40;
+        var lvl = voiceEnvelope(ts, ts < run.endAt, run.seed, run.words.length);
+        // A little per-bar texture, so neighbouring bars are not identical.
+        var shape = 0.72 + 0.28 * Math.abs(Math.sin(i * 1.7 + ts / 190));
+        var mag = Math.max(2, lvl * shape * mid * 0.94);
+        var x = i * (bw + gap);
+        ctx.fillStyle = "rgba(10,132,255," + (0.45 + 0.55 * Math.min(1, lvl * 1.4)) + ")";
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(x, mid - mag, bw, mag * 2, bw / 2);
+        else ctx.rect(x, mid - mag, bw, mag * 2);
+        ctx.fill();
+      }
+    }
+
+    function voiceTick() {
+      var run = voiceRun;
+      if (!run) return;
+      var t = Date.now() - run.start;
+      var said = voiceWordsDone(t, run.seed, run.words.length);
+      if (said !== run.said) {
+        run.said = said;
+        if (voiceText) voiceText.textContent = run.words.slice(0, said).join(" ");
+        if (voiceSend) voiceSend.disabled = said === 0;
+      }
+      if (said >= run.words.length && !run.finished) {
+        run.finished = true;
+        if (voiceState) voiceState.textContent = "Ready to send";
+      }
+      drawVoiceWave(t, run);
+      // Keep drawing until the last word has scrolled off the canvas.
+      if (t < run.endAt + 48 * 40) waveRAF = requestAnimationFrame(voiceTick);
+      else { waveRAF = null; drawWave(0); }
     }
 
     function stopVoice() {
       if (waveRAF) { cancelAnimationFrame(waveRAF); waveRAF = null; }
-      if (recog) { try { recog.onend = null; recog.abort(); } catch (e) {} recog = null; }
-      if (mediaStream) {
-        mediaStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
-        mediaStream = null;
-      }
-      if (audioCtx) { try { audioCtx.close(); } catch (e) {} audioCtx = null; }
-      analyser = null;
-    }
-
-    function voiceFail(msg) {
-      stopVoice();
-      if (voiceState) voiceState.textContent = "Not available";
-      if (voiceText) { voiceText.setAttribute("data-error", "1"); voiceText.textContent = msg; }
-      drawWave(0);
+      voiceRun = null;
     }
 
     function openVoice(agent) {
+      stopVoice();
       voiceAgent = agent;
-      finalText = "";
       if (voiceTitle) voiceTitle.textContent = agent.name || "agent";
       if (voiceAv) fillAvatar(voiceAv, agent);
-      if (voiceText) { voiceText.removeAttribute("data-error"); voiceText.textContent = ""; }
-      if (voiceState) voiceState.textContent = "Listening\u2026";
+      if (voiceText) voiceText.textContent = "";
+      if (voiceState) voiceState.textContent = "Listening…";
       if (voiceSend) voiceSend.disabled = true;
       openSheet("voice");
 
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        voiceFail("This device has no microphone available to the browser.");
-        return;
+      var seed = Math.floor(Math.random() * 1000);
+      var phrase = VOICE_PHRASES[seed % VOICE_PHRASES.length];
+      var words = phrase.split(" ");
+      var end = VOICE_LEAD_MS;
+      for (var k = 0; k < words.length; k++) {
+        var w = voiceWord(seed, k);
+        end += w.dur + (k < words.length - 1 ? w.gap : 0);
       }
-      navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
-        if (!screenEl || screenEl.getAttribute("data-sheet") !== "voice") {
-          stream.getTracks().forEach(function (t) { t.stop(); });
-          return;
-        }
-        mediaStream = stream;
-        var AC = window.AudioContext || window.webkitAudioContext;
-        audioCtx = new AC();
-        analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 1024;
-        audioCtx.createMediaStreamSource(stream).connect(analyser);
-        pumpWave();
-
-        var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SR) {
-          // Capture works, transcription does not. Say exactly that rather than
-          // leaving a waveform moving under a caption that never appears.
-          if (voiceState) voiceState.textContent = "Dictation unavailable";
-          if (voiceText) {
-            voiceText.setAttribute("data-error", "1");
-            voiceText.textContent = "This build has no speech recognition, so it cannot turn speech into text. Type instead.";
-          }
-          return;
-        }
-        recog = new SR();
-        recog.continuous = true;
-        recog.interimResults = true;
-        recog.lang = navigator.language || "en-GB";
-        recog.onresult = function (ev) {
-          var interim = "";
-          for (var i = ev.resultIndex; i < ev.results.length; i++) {
-            var chunk = ev.results[i][0].transcript;
-            if (ev.results[i].isFinal) finalText += chunk;
-            else interim += chunk;
-          }
-          if (voiceText) voiceText.textContent = (finalText + interim).trim();
-          if (voiceSend) voiceSend.disabled = !(finalText + interim).trim();
-        };
-        recog.onerror = function (ev) {
-          voiceFail(ev && ev.error === "not-allowed"
-            ? "Microphone access was refused."
-            : "Dictation stopped. Type instead.");
-        };
-        try { recog.start(); } catch (e) { /* already running */ }
-      }).catch(function () {
-        voiceFail("Microphone access was refused, so nothing is being recorded.");
-      });
+      voiceRun = {
+        start: Date.now(), seed: seed, words: words, said: -1,
+        finished: false, endAt: end
+      };
+      drawWave(0);
+      waveRAF = requestAnimationFrame(voiceTick);
     }
 
     if (agentsEl) {
@@ -9734,7 +10232,7 @@ _DEMO_MAILBOX: tuple[dict, ...] = (
         "app": "LinkedIn",
         "who": "Northlight Systems",
         "subject": "Message",
-        "preview": "Thanks for the demo yesterday — sending the write-up over.",
+        "preview": "Thanks for the walkthrough yesterday — sending the write-up over.",
         "minutes": 190,
         "mono": "in",
         "tint": "#0a66c2",
@@ -9990,7 +10488,7 @@ _DEMO_PROJECTS: tuple[dict, ...] = (
     },
     {
         "key": "prj-handset",
-        "name": "Handset demo build",
+        "name": "Handset launch build",
         "note": "Lock screen panels landed · splash handover next",
         "progress": 64,
         "agents": 4,
@@ -10118,60 +10616,235 @@ def _demo_agent_names() -> list[str]:
     return names
 
 
-def _demo_agent_usage() -> list[dict]:
-    """Per-agent CPU / RAM / storage that MOVES between polls.
+#: Island statuses that mean "not working". The same set lock_widgets uses to
+#: count running agents, so the stats panel and the islands agree about who is
+#: busy -- an agent the islands show idle must not be the one burning CPU here.
+_SIM_RESTING = frozenset({"", "stopped", "idle", "exited", "error"})
 
-    Jay asked for "live demo data for agents cpu, ram and storage usage". Live
-    is the load-bearing word: the stats view polls every 3 SECONDS, so a fixed
-    table would sit there dead and read as broken rather than as demo content.
+#: The handset the model is shaped for: a Snapdragon 778G with 8 GB. MemTotal
+#: on an 8 GB phone reads a little under 8 GiB once the carve-outs are taken.
+_SIM_MEM_TOTAL_KB = 7_650_000
 
-    Each agent gets a baseline derived from a CRC of its NAME, so it is stable
-    across restarts -- an agent that shows 6% now and 21% after a controller
-    bounce looks like a different agent. On top of that:
+#: Seconds between the history samples the sparklines draw -- the poll cadence,
+#: so one poll moves the history along by one bar.
+_SIM_STEP = 3.0
+_SIM_HISTORY = 20
 
-      cpu     a sine drift plus small jitter. The volatile one, because it is.
-      ram     a much slower, shallower drift. Memory does not thrash.
-      storage GROWS ONLY, slowly. Storage that wobbles downward is a tell that
-              the number is invented, and it is the one reading here a viewer
-              might actually reason about.
+#: The real CPU reading, smoothed across polls. Blended in as the OS's own base
+#: load so the phone's actual activity still shows through, without a single
+#: noisy /proc/stat delta making the whole panel jump.
+_SIM_BASE_EMA: dict[str, float] = {}
 
-    Percentages are per-agent, not shares of the device, and the total is capped
-    so six agents cannot add up to a machine that is 300% busy.
+
+def _demo_agent_specs() -> list[tuple[str, bool]]:
+    """(name, busy) per demo agent, parsed exactly as /auth/lock-widgets does.
+
+    Busy is the island's own answer: a free-text status ("Drafting replies") is
+    working, a resting word is not, and an agent with no status is "running".
     """
-    names = _demo_agent_names()
-    now = time.time()
-    out: list[dict] = []
-    budget = 82.0                      # leave headroom for the system itself
-    for name in names:
-        seed = zlib.crc32(name.encode("utf-8", "replace"))
-        phase = (seed % 1000) / 1000.0 * (2 * math.pi)
-        base_cpu = 2.5 + (seed % 17)
-        base_ram = 160 + (seed % 880)
-        base_store = 35 + (seed % 420)
+    demo = os.environ.get("TAOS_LOCK_DEMO_AGENTS", "").strip()
+    out: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+    for raw in demo.split(","):
+        parts = [seg.strip() for seg in raw.split(":")]
+        name = parts[0] if parts else ""
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        status = parts[2] if len(parts) > 2 and parts[2] else "running"
+        out.append((name, status.strip().lower() not in _SIM_RESTING))
+    return out
 
-        cpu = base_cpu * (1 + 0.5 * math.sin(now / 7.0 + phase))
-        cpu += random.uniform(-1.2, 1.2)
-        ram = base_ram * (1 + 0.05 * math.sin(now / 29.0 + phase))
-        # A day's worth of slow creep, so it moves visibly over a demo without
-        # implying the phone is filling up.
-        store = base_store + ((now % 86400) / 86400.0) * 14.0
 
-        out.append({
-            "name": name,
-            "cpu_percent": round(max(0.2, cpu), 1),
-            "ram_mb": int(max(48, ram)),
-            "storage_mb": round(store, 1),
+def _sim_lattice(seed: int, i: int) -> float:
+    """A stable pseudo-random value in [-1, 1] for integer lattice point i."""
+    return (zlib.crc32(b"%d:%d" % (seed, i)) / 0xFFFFFFFF) * 2.0 - 1.0
+
+
+def _sim_noise(x: float, seed: int) -> float:
+    """Smooth 1-D value noise in [-1, 1].
+
+    Continuous in x (smoothstep between lattice values), so a value sampled
+    3 s apart can only have moved so far. That is the whole point of deriving
+    the readings from TIME rather than from random() per request: a poll can
+    never land on a number unrelated to the previous one.
+    """
+    i = math.floor(x)
+    f = x - i
+    u = f * f * (3.0 - 2.0 * f)
+    a = _sim_lattice(seed, i)
+    return a + (_sim_lattice(seed, i + 1) - a) * u
+
+
+def _sim_activity(t: float, seed: int, busy: bool) -> float:
+    """How hard an agent is working at time t, 0..1.
+
+    Busy agents work in swells (a slow ~20 s drift) with bursts on top (~6 s),
+    so they sometimes pause to think and sometimes run flat out. Idle agents sit
+    near the floor with a faint heartbeat.
+    """
+    if busy:
+        swell = 0.5 + 0.5 * _sim_noise(t / 18.0, seed)
+        burst = 0.5 + 0.5 * _sim_noise(t / 5.5, seed + 101)
+        a = 0.12 + 0.5 * swell + 0.38 * burst
+    else:
+        a = 0.03 + 0.05 * (0.5 + 0.5 * _sim_noise(t / 17.0, seed + 202))
+    return max(0.0, min(1.0, a))
+
+
+def _sim_agent(name: str, busy: bool, t: float) -> dict:
+    """One agent's readings at time t, all driven by the same activity."""
+    seed = zlib.crc32(name.encode("utf-8", "replace"))
+    a = _sim_activity(t, seed, busy)
+    # Memory follows the work, but slowly: a lagged mean of the last minute.
+    a_slow = sum(_sim_activity(t - k * 8.0, seed, busy) for k in range(8)) / 8.0
+    peak_cpu = 6.0 + (seed % 7)                  # % of the whole device
+    return {
+        "name": name,
+        "busy": busy,
+        "activity": a,
+        "cpu_percent": 0.3 + a * peak_cpu,
+        "ram_mb": 150.0 + (seed % 230) + a_slow * (120.0 + (seed >> 8) % 200),
+        "tokens_per_s": a * (12.0 + (seed >> 4) % 20) if busy else a * 2.0,
+        "requests_per_min": a * (5.0 + (seed >> 12) % 9),
+        "net_kbps": 2.0 + a * (50.0 + (seed >> 16) % 140),
+        # Storage creeps, a day's worth over a day, and never shrinks.
+        "storage_mb": 35.0 + (seed % 420) + ((t % 86400) / 86400.0) * 14.0,
+    }
+
+
+def _sim_system_cpu(t: float, specs: list[tuple[str, bool]], base: float) -> tuple[float, float]:
+    """(system CPU %, sum of agent shares) at time t."""
+    agents = sum(_sim_agent(n, b, t)["cpu_percent"] for n, b in specs)
+    return min(97.0, base + agents), agents
+
+
+def _stats_model(
+    now: float,
+    specs: list[tuple[str, bool]],
+    real_cpu: float | None = None,
+    real_mem: dict | None = None,
+) -> dict:
+    """The stats panel's one coherent model: agents and system from one clock.
+
+    Everything is a function of `now` and the agent list, so the numbers are
+    CONSISTENT rather than merely plausible each on their own:
+
+      system CPU     = OS base load + the sum of every agent's CPU share
+      memory used    = OS base + the sum of every agent's RSS
+      tokens, network = the sum of the agents'
+      temperature     follows CPU with a long lag, power with a short one
+
+    The OS base is the phone's REAL CPU reading when there is one (smoothed
+    across polls), so what the phone is actually doing still shows through.
+    """
+    if real_cpu is not None:
+        prev = _SIM_BASE_EMA.get("cpu")
+        ema = real_cpu if prev is None else prev + 0.35 * (real_cpu - prev)
+        _SIM_BASE_EMA["cpu"] = ema
+        measured = max(2.5, min(30.0, 2.5 + 0.5 * ema))
+    else:
+        measured = None
+
+    def base_at(ts: float) -> float:
+        # With no real reading the OS load is simulated on the same clock, so
+        # the history bars are exactly what earlier polls printed.
+        if measured is not None:
+            return measured
+        return 4.0 + 1.5 * (0.5 + 0.5 * _sim_noise(ts / 11.0, 7))
+
+    base = base_at(now)
+
+    agents = [_sim_agent(n, b, now) for n, b in specs]
+    cpu, agents_cpu = _sim_system_cpu(now, specs, base)
+
+    total_kb = _SIM_MEM_TOTAL_KB
+    frac = 0.26
+    if real_mem and real_mem.get("total_kb"):
+        frac = max(0.18, min(0.40, real_mem.get("used_kb", 0) / real_mem["total_kb"]))
+    agents_kb = sum(a["ram_mb"] for a in agents) * 1024.0
+    used_kb = min(total_kb * 0.94, total_kb * frac + agents_kb)
+
+    def lagged(tau: float) -> float:
+        # An exponentially weighted look back over the last few taus.
+        num = den = 0.0
+        for k in range(10):
+            w = math.exp(-k / 3.0)
+            ts = now - k * tau / 3.0
+            num += w * _sim_system_cpu(ts, specs, base_at(ts))[0]
+            den += w
+        return num / den
+
+    temp_c = 31.0 + 0.3 * lagged(25.0)
+    power_w = 0.8 + 0.075 * lagged(4.0)
+
+    history_cpu: list[float] = []
+    history_agents: list[float] = []
+    history_tokens: list[float] = []
+    per_agent_hist: dict[str, list[float]] = {a["name"]: [] for a in agents}
+    for k in range(_SIM_HISTORY - 1, -1, -1):
+        ts = now - k * _SIM_STEP
+        snap = [_sim_agent(n, b, ts) for n, b in specs]
+        a_cpu = sum(s["cpu_percent"] for s in snap)
+        history_cpu.append(round(min(97.0, base_at(ts) + a_cpu), 1))
+        history_agents.append(round(a_cpu, 1))
+        history_tokens.append(round(sum(s["tokens_per_s"] for s in snap), 1))
+        for s in snap:
+            per_agent_hist[s["name"]].append(round(s["cpu_percent"], 1))
+
+    out_agents = []
+    for a in agents:
+        out_agents.append({
+            "name": a["name"],
+            "busy": a["busy"],
+            "cpu_percent": round(a["cpu_percent"], 1),
+            "ram_mb": int(a["ram_mb"]),
+            "storage_mb": round(a["storage_mb"], 1),
+            "tokens_per_s": round(a["tokens_per_s"], 1),
+            "requests_per_min": round(a["requests_per_min"], 1),
+            "history": per_agent_hist[a["name"]],
             # Marked at construction, like every other invented row on this
             # screen, so nothing downstream has to deduce it.
             "demo": True,
         })
 
-    total = sum(a["cpu_percent"] for a in out)
-    if total > budget and total > 0:
-        scale = budget / total
-        for agent in out:
-            agent["cpu_percent"] = round(agent["cpu_percent"] * scale, 1)
-    return out
+    return {
+        "cpu_percent": round(cpu, 1),
+        "memory": {
+            "total_kb": int(total_kb),
+            "used_kb": int(used_kb),
+            "percent": round(used_kb * 100.0 / total_kb, 1),
+            "agents_kb": int(agents_kb),
+        },
+        "agents": out_agents,
+        "system": {
+            "base_cpu_percent": round(base, 1),
+            "agents_cpu_percent": round(agents_cpu, 1),
+            "tokens_per_s": round(sum(a["tokens_per_s"] for a in agents), 1),
+            "requests_per_min": round(sum(a["requests_per_min"] for a in agents), 1),
+            "net_kbps": round(6.0 + sum(a["net_kbps"] for a in agents), 1),
+            "temp_c": round(temp_c, 1),
+            "power_w": round(power_w, 2),
+        },
+        "history": {
+            "step_s": _SIM_STEP,
+            "cpu": history_cpu,
+            "agents_cpu": history_agents,
+            "tokens_per_s": history_tokens,
+        },
+        "demo": True,
+    }
+
+
+def _demo_agent_usage() -> list[dict]:
+    """Per-agent readings from the shared stats model, at the current time.
+
+    Jay asked for "live demo data for agents cpu, ram and storage usage", and
+    the product owner then for numbers that CORRELATE with the system's: both
+    now come from _stats_model, so an agent's CPU share is part of the system
+    CPU the panel shows beside it.
+    """
+    return _stats_model(time.time(), _demo_agent_specs())["agents"]
 
 
 #: Previous /proc/stat reading, so CPU can be a PERCENTAGE. A single sample of
@@ -10392,9 +11065,18 @@ async def lock_stats(request: Request):
     # "nothing is measuring agents" are different answers, and this endpoint
     # already draws that distinction for every hardware reading above.
     if _demo_enabled():
-        usage = _demo_agent_usage()
-        if usage:
-            payload["agents"] = usage
+        specs = _demo_agent_specs()
+        if specs:
+            # ONE model for the agents and the system, so the totals are the
+            # agents' sums plus the OS's own load rather than two unrelated
+            # sets of numbers. The real CPU and memory readings feed it as the
+            # base, which is how the phone's actual activity still shows.
+            model = _stats_model(time.time(), specs, cpu, mem)
+            payload["cpu_percent"] = model["cpu_percent"]
+            payload["memory"] = model["memory"]
+            payload["agents"] = model["agents"]
+            payload["system"] = model["system"]
+            payload["history"] = model["history"]
 
     # Loaded models are NOT an OS reading. Measured on the handset: no ollama
     # binary and nothing listening on 11434, so there is no local runtime to
@@ -11329,6 +12011,89 @@ async def lock_screen_on(request: Request):
     return JSONResponse({"ok": True, "delivered": _push_lock_event("screen-on")})
 
 
+#: Where the battery is read from. A module attribute rather than a literal in
+#: the reader, so a test can point it at a fake sysfs tree instead of the host's;
+#: the env override does the same for a desktop rig with no battery at all.
+_POWER_SUPPLY_DIR = os.environ.get("TAOS_POWER_SUPPLY_DIR", "/sys/class/power_supply")
+
+#: The kernel's own words for a battery's state. Anything else in the file is
+#: passed on as "" rather than echoed: this goes out on a pre-auth stream.
+_BATTERY_STATUSES = ("Charging", "Discharging", "Full", "Not charging", "Unknown")
+
+
+def _read_battery(root: str | None = None) -> dict:
+    """The first power_supply of type Battery: its capacity and status.
+
+    ``percent`` is None when there is no battery or its capacity cannot be read,
+    and the charge overlay then says "charging" with no number -- a 0% shown for
+    a battery nobody measured would read as a phone about to die.
+    """
+    base = root if root is not None else _POWER_SUPPLY_DIR
+    out: dict = {"percent": None, "status": ""}
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return out
+    for name in names:
+        node = os.path.join(base, name)
+        try:
+            with open(os.path.join(node, "type"), "r", encoding="ascii") as fh:
+                kind = fh.read().strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if kind != "Battery":
+            continue
+        try:
+            with open(os.path.join(node, "capacity"), "r", encoding="ascii") as fh:
+                out["percent"] = max(0, min(100, int(fh.read().strip())))
+        except (OSError, ValueError, UnicodeDecodeError):
+            out["percent"] = None
+        try:
+            with open(os.path.join(node, "status"), "r", encoding="ascii") as fh:
+                status = fh.read().strip()
+            out["status"] = status if status in _BATTERY_STATUSES else ""
+        except (OSError, UnicodeDecodeError):
+            pass
+        return out
+    return out
+
+
+@router.post("/lock-charge")
+async def lock_charge(request: Request):
+    """A charger was plugged in. Play the charge animation. Console-only.
+
+    Product owner: "we need a charger connected notification, screen on and
+    animation for 3 seconds". Posted by the handset's session watcher on every
+    plug-in, with ``{"screen": "on"|"off"}`` saying whether the panel was lit.
+    When it was dark the watcher wakes it 150 ms later, and the page has by then
+    painted the overlay over pure black, so the first lit frame is the terminal
+    rather than a flash of lock screen.
+
+    The battery reading is taken HERE, from sysfs, rather than trusted from the
+    body: the watcher only knows a plug event happened, and a pre-auth route
+    that relayed a caller's percentage would be a way to paint any number on
+    the phone.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be an object"}, status_code=400)
+    screen = body.get("screen")
+    if screen not in ("on", "off"):
+        return JSONResponse({"error": "screen must be on or off"}, status_code=400)
+    battery = _read_battery()
+    _push_lock_event("charger", {
+        "percent": battery["percent"],
+        "status": battery["status"],
+        "screen": screen,
+    })
+    return Response(status_code=204)
+
+
 @router.post("/lock-power-menu")
 async def lock_power_menu(request: Request):
     """The power key was held. Raise the menu on the lock screen. Console-only.
@@ -11415,7 +12180,9 @@ async def lock_power_action(request: Request):
     # silently does nothing in an emergency is worse than one that is honest.
     return JSONResponse(
         {"ok": False, "action": "emergency", "demo": True,
-         "detail": "No dialer is configured on this device."}
+         "detail": "No dialer is configured on this device.",
+         "message": "This phone can't place calls. Use another phone to "
+                    "reach emergency services."}
     )
 
 
