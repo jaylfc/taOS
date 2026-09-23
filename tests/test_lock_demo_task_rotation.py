@@ -2,41 +2,47 @@
 
 Jay's product ask, from the glass: "it would be nice if the agents' current
 task changed whilst being on the lock screen, maybe a staggered change
-trigger during the 30 second lock screen time out." The screen blanks after
-30s idle, so during any 30s look several islands should visibly move to a new
-task, ONE AT A TIME, staggered by a few seconds -- never all at once.
+trigger during the 30 second lock screen time out."
 
-**Why round-robin, not independent per-agent clocks (a documented departure).**
-The first design tried gave each agent its OWN clock -- its own task cycle,
-its own dwell per state, shifted by a per-agent phase offset (`i * 4.3s`).
-That cannot deliver "never two agents change within 2s of each other": with 5
-agents each cycling 5 states roughly every ~40-47s, that is 20-25 events per
-cycle, and the birthday-paradox math means the best offset placement (found by
-exhaustive/simulated-annealing search over the real 5 named scripts) tops out
-just UNDER 2 seconds of guaranteed separation -- not over it, and not by
-tuning the offset differently. `TestIndependentClocksCannotGuaranteeSpacing`
-below is that proof, kept as a permanent control so nobody re-introduces the
-independent-clock design believing a bigger offset would fix it.
+**Why independent per-agent clocks, not a round-robin (a documented reversal).**
+The first shipped design was a round-robin: agents took turns in list order,
+one state each, which guaranteed a minimum gap between any two changes by
+construction. Jay saw it on the handset and asked for the OPPOSITE of what it
+guarantees: "make the agents activities cycle faster so they look more alive
+over the 30 second period" and "the agent changes shouldnt all be staggered,
+it looks unnatural, some things can coincide." A round-robin cannot deliver
+either of those -- it deliberately spreads every agent's turn out and
+deliberately forbids two from landing together -- so it is gone, along with
+`_demo_rotation_schedule` / `_demo_agent_rotation_state` and the tests built
+on its >=2s spacing guarantee (`TestIndependentClocksCannotGuaranteeSpacing`,
+"two scripted agents never share a next_change_ms").
 
-A round-robin schedule instead makes the guarantee a construction, not a
-statistic: agents take turns in list order, one state each: only the agent
-whose turn it is changes, so the gap between ANY two changes anywhere is
-exactly one turn's dwell (>= 3s for a "done" beat), never a coincidence of two
-independent clocks landing close together. `_demo_rotation_schedule` and
-`_demo_agent_rotation_state` in tinyagentos/routes/auth.py implement this.
+In its place, `_demo_agent_independent_state` gives each agent its OWN clock:
+a stable pace multiplier (0.75-1.35x), a stable phase offset, and a stable
+per-entry dwell jitter (0.8-1.2x), all derived deterministically from
+`zlib.crc32` of the agent's name (and name+index for the jitter) so every
+poll -- and every other agent -- agrees on the same values without any
+stored state. Nothing coordinates between agents any more: two islands' next
+changes can coincide, or land a fraction of a second apart, exactly as two
+independent real workers' status updates could. The base dwells
+(`_DEMO_TASK_DWELL_S = 20.0`, `_DEMO_TASK_DONE_DWELL_S = 5.0`) are tuned, with
+the pace/jitter spread, to keep the whole five-agent ensemble changing
+roughly 8-12 times over any 30s look -- livelier than the original ask, per
+Jay's "more alive" note.
 
 **Hostile cases come first**, per the brief: the flag off, a name with no
 script, and a status carrying a colon are all checked before the happy-path
-rotation and staggering tests.
+and the statistical rate/naturalness tests, all of which use the injectable
+clock (`auth._demo_task_clock` or a `now` argument) rather than real time.
 """
 from __future__ import annotations
 
 import asyncio
 import bisect
 import json
-import math
 import os
 import shutil
+import statistics
 import subprocess
 
 import pytest
@@ -113,18 +119,18 @@ class TestHostileCasesFirst:
 
 
 class TestPerEntryDwell:
-    def test_a_completion_beat_dwells_three_seconds(self):
-        assert auth._demo_task_dwell("✓ Table booked at Dishoom") == 3.0
+    def test_a_completion_beat_dwells_the_short_beat(self):
+        assert auth._demo_task_dwell("✓ Table booked at Dishoom") == auth._DEMO_TASK_DONE_DWELL_S == 5.0
 
-    def test_a_normal_entry_dwells_eleven_seconds(self):
-        assert auth._demo_task_dwell("Booking a table for Friday, 7:30") == 11.0
+    def test_a_normal_entry_dwells_the_full_turn(self):
+        assert auth._demo_task_dwell("Booking a table for Friday, 7:30") == auth._DEMO_TASK_DWELL_S == 20.0
 
     def test_only_a_leading_checkmark_with_a_space_counts(self):
         """A checkmark elsewhere in the text, or with no space after it, is
         not the "done" marker -- otherwise a task that merely MENTIONS a
         checkmark would get the short beat."""
-        assert auth._demo_task_dwell("✓no space") == 11.0
-        assert auth._demo_task_dwell("Approved ✓") == 11.0
+        assert auth._demo_task_dwell("✓no space") == auth._DEMO_TASK_DWELL_S
+        assert auth._demo_task_dwell("Approved ✓") == auth._DEMO_TASK_DWELL_S
 
 
 class TestTheRefreshClamp:
@@ -145,168 +151,238 @@ class TestTheRefreshClamp:
 
 
 # =============================================================================
-# SERVER: the round-robin schedule itself.
+# SERVER: the independent per-agent clock.
 # =============================================================================
 
 
-def _named_rotation() -> list[tuple[str, list[str]]]:
-    names = list(auth._DEMO_TASK_SCRIPTS.keys())
-    return [(n, auth._demo_task_cycle(n, "Working")) for n in names]
+def _named_agents() -> list[str]:
+    return list(auth._DEMO_TASK_SCRIPTS.keys())
 
 
-class TestTheRotationSchedule:
-    def test_every_rotating_agent_gets_exactly_one_turn_per_round(self):
-        rotation = _named_rotation()
-        turns, period = auth._demo_rotation_schedule(rotation)
-        # 5 agents, 5 states apiece -> 5 rounds -> 25 turns.
-        assert len(turns) == 25
-        from collections import Counter
-        per_agent = Counter(name for name, _s, _t, _d in turns)
-        assert set(per_agent.values()) == {5}
+def _agent_timeline(name: str, horizon: float) -> list[float]:
+    """Every change instant for one agent's independent clock across
+    [0, horizon).
 
-    def test_no_two_changes_are_ever_within_two_seconds_of_each_other(self):
-        """THE property the independent-clock design could not deliver.
+    Built from the exact same pieces `_demo_agent_independent_state` composes
+    -- its own cycle, pace, per-entry jitter and phase -- rather than a
+    second, differently-derived formula: this is the timeline that single-
+    instant function implicitly walks, made explicit so the statistical
+    tests below can look at it as a whole.
+    """
+    cycle = auth._demo_task_cycle(name, "Working")
+    pace = auth._demo_task_pace(name)
+    dwells = [
+        auth._demo_task_dwell(status) * pace * auth._demo_task_entry_jitter(name, i)
+        for i, status in enumerate(cycle)
+    ]
+    total = sum(dwells)
+    offset = auth._demo_task_phase(name)
+    acc = 0.0
+    boundaries = []
+    for d in dwells:
+        acc += d
+        boundaries.append(acc % total)
+    base_times = sorted((b - offset) % total for b in boundaries)
+    events: list[float] = []
+    k = 0
+    while k * total < horizon + total:
+        for t in base_times:
+            rt = k * total + t
+            if 0 <= rt < horizon:
+                events.append(rt)
+        k += 1
+    return sorted(events)
 
-        Checked over the WHOLE period, not a sample -- the schedule is finite
-        and repeats exactly, so this is a universal claim, not a statistical
-        one.
-        """
-        rotation = _named_rotation()
-        turns, period = auth._demo_rotation_schedule(rotation)
-        gaps = [dwell for _n, _s, _t, dwell in turns]
-        assert min(gaps) >= 2.0, (
-            "some turn's dwell is under 2s, so the agent taking over from it "
-            "would change less than 2s after the previous change"
-        )
 
-    def test_a_30_second_window_almost_always_shows_several_changes(self):
-        """"About 3-5 changes" from the brief, verified as a DISTRIBUTION
-        over a wide range of start times rather than a per-window absolute:
-        with dwell=11s/3s and 5 five-state scripts the schedule occasionally
-        (~20% of windows, verified by simulation) shows only 2 changes in a
-        30s slice, so "at least 3, always" is not quite true of THESE exact
-        dwell values -- documented in the report as a departure. What IS
-        always true, and is asserted here: never fewer than 2, and the
-        average across many start times lands in the 3-5 range.
-        """
-        rotation = _named_rotation()
-        turns, period = auth._demo_rotation_schedule(rotation)
-        times = sorted(start for _n, _s, start, _d in turns)
-        horizon = period * 40
-        all_times: list[float] = []
-        k = 0
-        while k * period < horizon:
-            for t in times:
-                all_times.append(k * period + t)
-            k += 1
-        all_times.sort()
+def _ensemble_timeline(names: list[str], horizon: float) -> list[tuple[float, str]]:
+    events: list[tuple[float, str]] = []
+    for name in names:
+        events.extend((t, name) for t in _agent_timeline(name, horizon))
+    events.sort()
+    return events
+
+
+class TestHostileCasesForTheIndependentClock:
+    """Determinism and continuity come before the statistical properties --
+    a clock that disagreed with itself, or changed off-schedule, would make
+    every average below meaningless."""
+
+    def test_the_same_now_gives_the_same_answer_across_calls(self):
+        name = "Personal Assistant"
+        first = auth._demo_agent_independent_state(name, "Working", 12345.678)
+        second = auth._demo_agent_independent_state(name, "Working", 12345.678)
+        assert first == second
+
+    def test_the_same_now_agrees_across_a_fresh_import_of_the_pieces(self):
+        """Not randomised per process: pace/phase/jitter come from `crc32`,
+        not from `random` or `hash()` (which is salted per interpreter)."""
+        name = "Accountant"
+        pace_a = auth._demo_task_pace(name)
+        pace_b = auth._demo_task_pace(name)
+        phase_a = auth._demo_task_phase(name)
+        phase_b = auth._demo_task_phase(name)
+        assert pace_a == pace_b
+        assert phase_a == phase_b
+
+    def test_the_status_only_changes_at_a_scheduled_boundary(self):
+        """Continuity: sampling a dense grid of instants, the status must be
+        constant everywhere except at the instants _agent_timeline predicts,
+        and it must actually differ across every one of those."""
+        name = "Sales Manager"
+        events = _agent_timeline(name, 400.0)
+        assert len(events) > 5, "fixture horizon too short to prove anything"
+        # Between two consecutive events, the status must never change.
+        checkpoints = [0.0] + events
+        for a, b in zip(checkpoints, checkpoints[1:]):
+            if b - a < 0.01:
+                continue
+            mid = (a + b) / 2
+            s_a, _ = auth._demo_agent_independent_state(name, "Working", a + 0.005)
+            s_mid, _ = auth._demo_agent_independent_state(name, "Working", mid)
+            assert s_a == s_mid, f"status moved between scheduled boundaries at {mid}"
+        # At every predicted event, the status either side must differ.
+        for e in events[:10]:
+            before, _ = auth._demo_agent_independent_state(name, "Working", e - 0.01)
+            after, _ = auth._demo_agent_independent_state(name, "Working", e + 0.01)
+            assert before != after, f"predicted boundary at {e} was not a real change"
+
+
+class TestEveryAgentHasItsOwnPace:
+    def test_no_two_named_agents_share_a_pace(self):
+        paces = [auth._demo_task_pace(name) for name in _named_agents()]
+        assert len(paces) == len(set(paces)), paces
+
+    def test_every_pace_is_within_the_documented_range(self):
+        for name in _named_agents():
+            pace = auth._demo_task_pace(name)
+            assert 0.75 <= pace < 1.35, (name, pace)
+
+
+class TestTheEnsembleFeelsAlive:
+    """Jay: "make the agents activities cycle faster so they look more alive
+    over the 30 second period." Verified as a distribution over MANY start
+    times, not a single lucky window."""
+
+    def test_a_30_second_window_averages_eight_to_twelve_changes(self):
+        events = _ensemble_timeline(_named_agents(), horizon=20000.0)
+        times = [t for t, _n in events]
         counts = []
-        for s in range(0, int(horizon - 30), 11):
-            lo = bisect.bisect_left(all_times, s)
-            hi = bisect.bisect_left(all_times, s + 30)
+        for s in range(0, 19970, 3):
+            lo = bisect.bisect_left(times, s)
+            hi = bisect.bisect_left(times, s + 30)
             counts.append(hi - lo)
-        assert min(counts) >= 2, "some 30s window saw fewer than 2 changes at all"
-        avg = sum(counts) / len(counts)
-        assert 3.0 <= avg <= 5.0, f"average changes/30s window was {avg}, not in 3-5"
+        avg = statistics.mean(counts)
+        assert 8.0 <= avg <= 12.0, f"average changes/30s window was {avg}"
 
-    def test_the_agent_state_function_agrees_with_the_schedule_walk(self):
-        """`_demo_agent_rotation_state` must report the same status, AND the
-        same time-to-next-change, that a direct walk of the schedule finds
-        at the same instant -- the fast path and the ground truth must not
-        diverge. Note the "next change" for an agent is when its OWN next
-        turn starts, which is generally much later than that turn's own
-        dwell: other agents' turns are interleaved in between, by design."""
-        rotation = _named_rotation()
-        turns, period = auth._demo_rotation_schedule(rotation)
-        for now in (0.0, 1.0, 2.9, 3.0, 10.999, 11.0, 200.0, period - 0.001, period, period * 3 + 40.5):
-            for name, _cycle in rotation:
-                status, remaining = auth._demo_agent_rotation_state(turns, period, name, now)
-                assert remaining > 0
-                # Ground truth: the agent's own turns, walked directly.
-                own = [(s, st, d) for n, s, st, d in turns if n == name]
-                local = now % period
-                expect_status = own[-1][0]
-                expect_next_start = own[0][1]  # wraps to the first turn of the next lap
-                for s, st, _d in own:
-                    if st <= local:
-                        expect_status = s
-                    else:
-                        expect_next_start = st
-                        break
-                expect_remaining = (
-                    (expect_next_start - local) if expect_next_start > local
-                    else (period - local) + expect_next_start
-                )
-                assert status == expect_status, (name, now)
-                assert remaining == pytest.approx(expect_remaining, abs=1e-6), (name, now)
-
-    def test_the_hold_time_spans_a_whole_round_not_just_its_own_dwell(self):
-        """The agent's displayed status holds until its NEXT turn, which is
-        interleaved with every other rotating agent's turns in between --
-        for 5 same-shaped scripts that is roughly one round's worth of time
-        (~40-55s here), not the ~3-11s a single state's own dwell would
-        suggest. Documented explicitly because it is the one place this
-        design's numbers depart furthest from a naive per-state reading of
-        "dwell = 11s"."""
-        rotation = _named_rotation()
-        turns, period = auth._demo_rotation_schedule(rotation)
-        first_name, first_status, first_start, first_dwell = turns[0]
-        status, remaining = auth._demo_agent_rotation_state(
-            turns, period, first_name, first_start
-        )
-        assert status == first_status
-        assert remaining > first_dwell, (
-            "the hold time collapsed to a single turn's own dwell -- the "
-            "round-robin interleaving is no longer happening"
-        )
+    def test_no_30_second_window_sees_fewer_than_four_changes(self):
+        events = _ensemble_timeline(_named_agents(), horizon=20000.0)
+        times = [t for t, _n in events]
+        counts = []
+        for s in range(0, 19970, 3):
+            lo = bisect.bisect_left(times, s)
+            hi = bisect.bisect_left(times, s + 30)
+            counts.append(hi - lo)
+        assert min(counts) >= 4, f"some 30s window saw only {min(counts)} changes"
 
 
-class TestIndependentClocksCannotGuaranteeSpacing:
-    """THE CONTROL for the round-robin design: proof the abandoned approach
-    (each agent an independent clock, phase-shifted) cannot satisfy "never
-    two agents change within 2s", no matter the offset. If a future change
-    reintroduced that design, this is the test that should catch it.
+class TestTheEnsembleLooksNatural:
+    """Jay, after seeing the round-robin: "the agent changes shouldnt all be
+    staggered, it looks unnatural, some things can coincide." Both halves of
+    that are asserted so a regression back to either lock-step (everything
+    coincides) OR a rigid round-robin (nothing ever coincides, every gap
+    identical) goes red.
     """
 
-    @staticmethod
-    def _independent_clock_min_gap(stagger: float) -> float:
-        names = list(auth._DEMO_TASK_SCRIPTS.keys())
-        info = []
-        for i, name in enumerate(names):
-            cycle = auth._demo_task_cycle(name, "Working")
-            dwells = [auth._demo_task_dwell(s) for s in cycle]
-            total = sum(dwells)
-            times = []
-            t = 0.0
-            for d in dwells:
-                t += d
-                times.append(t)
-            info.append((times, total, i * stagger))
-        horizon = 5000.0
-        events = []
-        for times, total, offset in info:
-            k = 0
-            while k * total - offset <= horizon + total:
-                for tt in times:
-                    rt = k * total + tt - offset
-                    if 0 <= rt <= horizon:
-                        events.append(rt)
-                k += 1
-        events.sort()
-        return min(b - a for a, b in zip(events, events[1:])) if len(events) > 1 else 1e9
-
-    def test_the_best_available_offset_still_falls_under_two_seconds(self):
-        """Exhaustive-ish search over the offset step: even the best of them
-        does not clear the 2s bar. This is what made the round-robin design
-        necessary rather than a stylistic preference."""
-        best = max(
-            self._independent_clock_min_gap(step / 10.0)
-            for step in range(1, 400)
+    def test_some_different_agents_change_within_a_second_of_each_other(self):
+        events = _ensemble_timeline(_named_agents(), horizon=20000.0)
+        close = 0
+        for (t1, n1), (t2, n2) in zip(events, events[1:]):
+            if n1 != n2 and (t2 - t1) < 1.0:
+                close += 1
+        assert close > 0, (
+            "no two different agents ever changed within 1s of each other -- "
+            "that is the round-robin's signature, not independent clocks"
         )
-        assert best < 2.0, (
-            "an independent-clock offset was found that guarantees >=2s "
-            "spacing -- the round-robin design is no longer necessary and "
-            "this file's framing should be revisited"
+
+    def test_the_gaps_between_consecutive_changes_are_not_all_equal(self):
+        events = _ensemble_timeline(_named_agents(), horizon=20000.0)
+        times = [t for t, _n in events]
+        gaps = {round(b - a, 3) for a, b in zip(times, times[1:])}
+        assert len(gaps) > 10, (
+            "the gaps between changes collapsed onto a handful of values -- "
+            "that is what a rigid schedule looks like, not organic pacing"
+        )
+
+
+class TestMutationControlsForTheNewInvariants:
+    """Break the code on purpose, per the brief, and confirm the naturalness
+    and rate assertions above actually go red -- not just that they pass on
+    the shipped code, which a vacuous assertion would do too.
+
+    Each mutation is isolated to ONE property: the naturalness mutation
+    (below) keeps the rate assertions passing, and the rate mutation keeps
+    the naturalness assertions passing, so neither control is accidentally
+    proving the other.
+    """
+
+    def test_naturalness_assertions_go_red_under_a_rigid_evenly_spaced_schedule(self, monkeypatch):
+        """Remove per-agent individuality -- constant pace, constant jitter,
+        phases spaced evenly apart -- which is structurally a round-robin
+        again in every way that matters here, even though it does not use
+        `_demo_rotation_schedule`. Verified against BOTH naturalness
+        assertions, computed the same way the real tests compute them.
+        """
+        names = _named_agents()
+        monkeypatch.setattr(auth, "_demo_task_pace", lambda name: 1.0)
+        monkeypatch.setattr(auth, "_demo_task_entry_jitter", lambda name, i: 1.0)
+        monkeypatch.setattr(auth, "_demo_task_phase", lambda name: names.index(name) * 17.0)
+        events = _ensemble_timeline(names, horizon=20000.0)
+        times = [t for t, _n in events]
+        gaps = {round(b - a, 3) for a, b in zip(times, times[1:])}
+        close = sum(
+            1 for (t1, n1), (t2, n2) in zip(events, events[1:])
+            if n1 != n2 and (t2 - t1) < 1.0
+        )
+        assert close == 0, "the mutation should have eliminated all near-coincidences"
+        assert len(gaps) <= 10, "the mutation should have collapsed the gap variety"
+        # And confirm the RATE assertions this mutation was NOT meant to
+        # touch are unaffected -- proof this control isolates naturalness.
+        counts = []
+        for s in range(0, 19970, 3):
+            lo = bisect.bisect_left(times, s)
+            hi = bisect.bisect_left(times, s + 30)
+            counts.append(hi - lo)
+        avg = statistics.mean(counts)
+        assert 8.0 <= avg <= 12.0 and min(counts) >= 4, (
+            "the naturalness mutation also broke the rate -- it is not isolated"
+        )
+
+    def test_rate_assertions_go_red_under_a_much_slower_dwell(self, monkeypatch):
+        """Scale every dwell up 6x -- organic pacing (pace/jitter/phase) is
+        untouched, everything just holds six times longer -- and both rate
+        assertions must fail.
+        """
+        real_dwell = auth._demo_task_dwell
+        monkeypatch.setattr(auth, "_demo_task_dwell", lambda status: real_dwell(status) * 6.0)
+        events = _ensemble_timeline(_named_agents(), horizon=20000.0)
+        times = [t for t, _n in events]
+        counts = []
+        for s in range(0, 19970, 3):
+            lo = bisect.bisect_left(times, s)
+            hi = bisect.bisect_left(times, s + 30)
+            counts.append(hi - lo)
+        avg = statistics.mean(counts)
+        assert not (8.0 <= avg <= 12.0), f"the mutation should have broken the average, got {avg}"
+        assert min(counts) < 4, "the mutation should have broken the floor"
+        # And confirm NATURALNESS is unaffected by this mutation -- proof
+        # this control isolates the rate.
+        gaps = {round(b - a, 3) for a, b in zip(times, times[1:])}
+        close = sum(
+            1 for (t1, n1), (t2, n2) in zip(events, events[1:])
+            if n1 != n2 and (t2 - t1) < 1.0
+        )
+        assert len(gaps) > 10 and close > 0, (
+            "the rate mutation also broke naturalness -- it is not isolated"
         )
 
 
@@ -359,18 +435,18 @@ class TestTheRoute:
         for a in body["agents"]:
             assert "next_change_ms" not in a
 
-    def test_two_scripted_agents_never_share_a_next_change_ms(self, monkeypatch):
-        """A direct, always-true corollary of the round-robin design: at any
-        one instant, no two rotating agents are due to change at the exact
-        same millisecond (which would look like two islands moving at once).
-        """
+    def test_two_scripted_agents_may_share_a_next_change_ms(self, monkeypatch):
+        """The reversal of the round-robin guarantee, made explicit: two
+        agents CAN be due to change at the same time now, and the route must
+        not crash, dedupe, or otherwise treat that as an error state."""
         resp = self._call(
             monkeypatch,
             agents="Personal Assistant:hermes:Reviewing,Accountant:hermes:Reviewing",
         )
         body = json.loads(bytes(resp.body))
         values = [a["next_change_ms"] for a in body["agents"] if "next_change_ms" in a]
-        assert len(values) == len(set(values)), values
+        assert len(values) == 2
+        assert all(isinstance(v, int) and v > 0 for v in values)
 
     def test_the_response_is_authoritative_across_polls(self, monkeypatch):
         """Two calls a few seconds apart must be consistent WITH the

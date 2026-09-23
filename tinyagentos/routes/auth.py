@@ -8962,10 +8962,10 @@ def _avatar_url(name: str) -> str:
 #: TAOS_LOCK_DEMO_AGENTS. Jay: "it would be nice if the agents' current task
 #: changed whilst being on the lock screen" -- an agent with no entry here
 #: just holds its configured status forever; its task cycle is itself alone,
-#: so it never enters the round-robin below and never gets a `next_change_ms`.
+#: so it never gets a `next_change_ms`.
 _DEMO_TASK_SCRIPTS: dict[str, list[str]] = {
     "Personal Assistant": [
-        "✓ Morning brief ready",
+        "✓ Tomorrow's schedule planned",
         "Rescheduling your 3pm with Dana",
         "Booking a table for Friday, 7:30",
         "✓ Table booked at Dishoom",
@@ -8996,11 +8996,12 @@ _DEMO_TASK_SCRIPTS: dict[str, list[str]] = {
     ],
 }
 
-#: How long a normal scripted status holds before its turn ends.
-_DEMO_TASK_DWELL_S = 11.0
+#: How long a normal scripted status holds before its turn ends, before pace
+#: and per-entry jitter scale it (see _demo_agent_independent_state).
+_DEMO_TASK_DWELL_S = 20.0
 #: A completion beat ("✓ ...") reads as just-finished rather than as the
 #: ongoing task, so its turn is a much shorter beat before moving on.
-_DEMO_TASK_DONE_DWELL_S = 3.0
+_DEMO_TASK_DONE_DWELL_S = 5.0
 
 
 def _demo_task_clock() -> float:
@@ -9021,7 +9022,8 @@ def _demo_task_cycle(name: str, configured_status: str) -> list[str]:
 
 
 def _demo_task_dwell(status: str) -> float:
-    """Seconds a status holds once it is this agent's turn."""
+    """The BASE seconds a status holds, before pace and per-entry jitter
+    scale it for a particular agent (see _demo_agent_independent_state)."""
     return (
         _DEMO_TASK_DONE_DWELL_S
         if status.startswith("✓ ")
@@ -9029,71 +9031,84 @@ def _demo_task_dwell(status: str) -> float:
     )
 
 
-#: One entry per turn: (agent name, status shown during the turn, the turn's
-#: start offset within the schedule's period, and its dwell).
-_DemoTurn = tuple[str, str, float, float]
+def _demo_task_pace(name: str) -> float:
+    """A stable per-agent speed multiplier in [0.75, 1.35).
 
-
-def _demo_rotation_schedule(
-    rotating: list[tuple[str, list[str]]],
-) -> tuple[list[_DemoTurn], float]:
-    """The round-robin schedule shared by every rotating demo agent.
-
-    Independent per-agent clocks were the first thing tried here, each with
-    its own phase offset -- and they cannot deliver "never two agents change
-    within 2s of each other": with 5 agents x 5 states cycling every ~40s,
-    the birthday-paradox math means SOME pair lands under 2s apart no matter
-    how the offsets are chosen (verified by exhaustive search: the best
-    achievable minimum gap tops out under 2s). A round-robin fixes this by
-    construction instead of by tuning: agents take turns in list order, one
-    state each, and only the agent whose turn it is changes -- so the gap
-    between ANY two changes, anywhere, is always exactly one turn's dwell
-    (>= _DEMO_TASK_DONE_DWELL_S, comfortably over 2s), never a coincidence of
-    two independent clocks landing close together.
-
-    One "round" gives every rotating agent exactly one turn, in order; the
-    schedule repeats once every agent has looped back to its own first state
-    at the same instant, i.e. after lcm(len(cycle) for each agent) rounds.
+    Derived from a hash of the agent's name rather than drawn per request, so
+    every poll -- and every OTHER agent computing its own state -- agrees on
+    it without any stored state. `crc32` rather than Python's built-in
+    `hash()`: string hashing is salted per PROCESS by default, so the same
+    name would get a different pace after every restart.
     """
-    lengths = [len(cycle) for _, cycle in rotating]
-    rounds = 1
-    for length in lengths:
-        rounds = rounds * length // math.gcd(rounds, length)
-    turns: list[_DemoTurn] = []
-    t = 0.0
-    for round_ in range(rounds):
-        for name, cycle in rotating:
-            status = cycle[round_ % len(cycle)]
-            dwell = _demo_task_dwell(status)
-            turns.append((name, status, t, dwell))
-            t += dwell
-    return turns, t
+    seed = zlib.crc32(name.encode("utf-8", "replace"))
+    return 0.75 + (seed % 1000) / 1000.0 * 0.60
 
 
-def _demo_agent_rotation_state(
-    turns: list[_DemoTurn], period: float, name: str, now: float
-) -> tuple[str, float]:
-    """(current status, seconds until it next changes) for one agent's own
-    turns within the shared schedule `turns` built by _demo_rotation_schedule.
+def _demo_task_phase(name: str) -> float:
+    """A stable per-agent phase offset, in seconds, from a hash of the name.
+
+    Jay, after seeing the previous (round-robin) design on the handset: "the
+    agent changes shouldnt all be staggered, it looks unnatural, some things
+    can coincide." This offset exists so agents do not all start their cycle
+    at the same point, same as before -- but nothing here enforces a MINIMUM
+    separation between agents the way the round-robin did: two agents' next
+    changes can land on the same second, or even the same millisecond, purely
+    by chance, exactly as two independent real workers' status updates could.
+    """
+    seed = zlib.crc32((name + "\x00phase").encode("utf-8", "replace"))
+    return (seed % 10000) / 10000.0 * 97.0
+
+
+def _demo_task_entry_jitter(name: str, index: int) -> float:
+    """A stable per-entry dwell multiplier in [0.8, 1.2).
+
+    Keyed by name AND index so two states at the same position in different
+    scripts do not scale by the same amount, and so a single agent's own
+    states do not all hold for identically-scaled durations -- a script
+    where every dwell is `base * pace` exactly would still look metronomic
+    even with agents desynchronised from each other.
+    """
+    seed = zlib.crc32(f"{name}\x00{index}".encode("utf-8", "replace"))
+    return 0.8 + (seed % 1000) / 1000.0 * 0.40
+
+
+def _demo_agent_independent_state(
+    name: str, configured_status: str, now: float
+) -> tuple[str, float | None]:
+    """(current status, seconds until it next changes) for one demo agent,
+    on its OWN independent clock -- no coordination with any other agent.
 
     Time-based, not poll-counted: recomputed fresh from `now` every call, so
     the server stays authoritative -- a poll landing late or early never
-    desyncs from what the rotation says right now, and a client-side
+    desyncs from what the schedule says right now, and a client-side
     animation can never be reverted by a poll that catches a change mid-air.
+
+    Replaces the round-robin scheduler that guaranteed a minimum gap between
+    ANY two agents' changes: Jay wanted the opposite property (agents may
+    coincide) and a livelier overall pace, both of which a shared turn-taking
+    schedule works against by construction.
     """
-    own = [(status, start, dwell) for turn_name, status, start, dwell in turns
-           if turn_name == name]
-    local = now % period
-    current = own[-1]  # default: still holding from the previous lap's last turn
-    for status, start, dwell in own:
-        if start <= local:
-            current = (status, start, dwell)
-        else:
-            break
-    idx = own.index(current)
-    next_start = own[(idx + 1) % len(own)][1]
-    remaining = (next_start - local) if next_start > local else (period - local) + next_start
-    return current[0], remaining
+    cycle = _demo_task_cycle(name, configured_status)
+    if len(cycle) <= 1:
+        return cycle[0], None
+    pace = _demo_task_pace(name)
+    dwells = [
+        _demo_task_dwell(status) * pace * _demo_task_entry_jitter(name, i)
+        for i, status in enumerate(cycle)
+    ]
+    total = sum(dwells)
+    if total <= 0:
+        return cycle[0], None
+    offset = _demo_task_phase(name)
+    local_t = (now + offset) % total
+    acc = 0.0
+    for status, d in zip(cycle, dwells):
+        if local_t < acc + d:
+            return status, (acc + d) - local_t
+        acc += d
+    # Floating-point edge only: local_t landed exactly on `total`, which is
+    # the same position as 0.
+    return cycle[0], dwells[0]
 
 
 def _demo_refresh_in_ms(next_change_candidates: list[int]) -> int | None:
@@ -9213,29 +9228,23 @@ async def lock_widgets(request: Request):
                 })
 
         # Rotating "current task": each demo agent with a script (see
-        # _DEMO_TASK_SCRIPTS) cycles through it turn by turn in a shared
-        # round-robin, list order, instead of sitting on its configured
-        # status forever. Computed fresh from the clock on every request --
-        # the SERVER is authoritative, so a 15s poll landing while the client
-        # is mid-animation can never revert what the client is showing, and a
-        # late or early poll just sees whatever the rotation says right now
+        # _DEMO_TASK_SCRIPTS) cycles through it on its OWN independent clock
+        # -- its own pace, phase and per-entry jitter (all stable, derived
+        # from its name) -- instead of sitting on its configured status
+        # forever. Computed fresh from the clock on every request -- the
+        # SERVER is authoritative, so a 15s poll landing while the client is
+        # mid-animation can never revert what the client is showing, and a
+        # late or early poll just sees whatever the schedule says right now
         # rather than drifting out of sync with it.
-        rotating = [
-            (a["name"], _demo_task_cycle(a["name"], a["status"]))
-            for a in agents
-            if a.get("demo") and len(_demo_task_cycle(a["name"], a["status"])) > 1
-        ]
-        if rotating:
-            now = _demo_task_clock()
-            turns, period = _demo_rotation_schedule(rotating)
-            rotating_names = {name for name, _ in rotating}
-            for agent in agents:
-                if agent["name"] not in rotating_names:
-                    continue
-                status, remaining = _demo_agent_rotation_state(
-                    turns, period, agent["name"], now
-                )
-                agent["status"] = status
+        now = _demo_task_clock()
+        for agent in agents:
+            if not agent.get("demo"):
+                continue
+            status, remaining = _demo_agent_independent_state(
+                agent["name"], agent["status"], now
+            )
+            agent["status"] = status
+            if remaining is not None:
                 agent["next_change_ms"] = int(round(remaining * 1000))
 
     # Live device agents: physical boards that are plugged in right now.
