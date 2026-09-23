@@ -49,6 +49,11 @@ def test_probe1_first_match_over_window():
     assert mod.first_match([["hello"]], lambda lines: mod.input_echoed(lines, "got:hello")) is None
 
 
+def test_probe3_first_match_over_window():
+    mod = load_probe("probe3_frame_grid_readback.py")
+    assert mod.first_match([[""], ["test"]], lambda lines: any("test" in l for l in lines)) == ["test"]
+
+
 def test_input_probes_send_newline():
     for name in (
         "probe1_socket_enumerate_spawn.py",
@@ -58,3 +63,24 @@ def test_input_probes_send_newline():
         path = PROBE_DIR / name
         source = path.read_text()
         assert 'b"hello\\n"' in source, f"{name} missing b\"hello\\n\""
+
+
+def test_probe4_kill_after_rebind():
+    src = (PROBE_DIR / "probe4_detach_reattach_appid.py").read_text()
+    assert "conduit.kill" in src, "probe4 must use conduit.kill for cleanup"
+    assert src.index("rebind_by_meta") < src.index("conduit.kill")
+
+
+def test_probe3_frame_window_collected():
+    src = (PROBE_DIR / "probe3_frame_grid_readback.py").read_text()
+    assert "list(conduit.iter_frames(" in src
+
+
+def test_probe2_transcript_lists_newline_byte():
+    src = (PROBE_DIR / "probe2_input_bytes_typing.py").read_text()
+    assert "[104, 101, 108, 108, 111, 10]" in src
+
+
+def test_probe4_spawns_long_lived_child():
+    src = (PROBE_DIR / "probe4_detach_reattach_appid.py").read_text()
+    assert '"sleep 30"' in src

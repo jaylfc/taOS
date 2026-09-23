@@ -11,9 +11,11 @@ import httpx
 import yaml
 
 logger = logging.getLogger(__name__)
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi import HTTPException, Depends
 
 
 class _CacheAwareStaticFiles(StaticFiles):
@@ -43,6 +45,7 @@ class _CacheAwareStaticFiles(StaticFiles):
         return response
 
 from tinyagentos.auth import AuthManager
+from tinyagentos.auth_context import current_user, require_owner_or_admin
 from tinyagentos.backend_fallback import BackendFallback
 from tinyagentos.capabilities import CapabilityChecker
 from tinyagentos.cluster.manager import ClusterManager
@@ -1905,9 +1908,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.mount("/static", _CacheAwareStaticFiles(directory=str(static_dir)), name="static")
 
     # Mount workspace for serving generated images and other workspace files
+    # NOTE: The StaticFiles mount is replaced by a custom route below that adds
+    # per-user authorization for paths under /data/workspace/users/<uid>/.
     workspace_dir = data_dir / "workspace"
     workspace_dir.mkdir(parents=True, exist_ok=True)
-    app.mount("/data/workspace", StaticFiles(directory=str(workspace_dir)), name="workspace")
 
     # Desktop SPA assets are served by the desktop route handler (routes/desktop.py)
 
@@ -1917,6 +1921,46 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     # Agent base image prefetch status endpoint
     register_prefetch_endpoint(app)
+
+    # Workspace file serving with per-user authorization
+    # This route replaces the bare StaticFiles mount to enforce ownership checks
+    # for user-scoped paths while keeping legacy shared paths session-gated only.
+    @app.get("/data/workspace/{path:path}")
+    async def serve_workspace_file(request: Request, path: str):
+        """Serve files from the workspace directory with per-user authorization.
+
+        Path structure:
+        - /data/workspace/users/<uid>/images/generated/<file> -> requires ownership or admin
+        - /data/workspace/users/<uid>/music/generated/<file> -> requires ownership or admin
+        - /data/workspace/images/generated/<file> (legacy) -> session gate only
+        - /data/workspace/music/generated/<file> (legacy) -> session gate only
+        - Other paths under /data/workspace/ -> session gate only (existing behavior)
+        """
+        # Resolve the requested path relative to workspace_dir
+        requested_path = (workspace_dir / path).resolve()
+
+        # Path traversal protection: ensure the resolved path is within workspace_dir
+        try:
+            if not requested_path.is_relative_to(workspace_dir.resolve()):
+                raise HTTPException(status_code=404, detail="Not found")
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Not found")
+
+        # Check if this is a user-scoped path: /data/workspace/users/<uid>/...
+        path_parts = path.split("/")
+        if len(path_parts) >= 2 and path_parts[0] == "users":
+            # This is a user-scoped path, require ownership or admin
+            target_user_id = path_parts[1]
+            user = current_user(request)
+            require_owner_or_admin(user, target_user_id)
+
+        # For legacy paths (non-user-scoped), the session gate from AuthMiddleware
+        # already ensures the request is authenticated (401 if not)
+
+        if not requested_path.exists() or not requested_path.is_file():
+            raise HTTPException(status_code=404, detail="Not found")
+
+        return FileResponse(requested_path)
 
     return app
 
