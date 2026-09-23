@@ -2928,8 +2928,12 @@ _LOCK_SCREEN_SCRIPT = r"""
       for (var j = 0; j < agents.length; j++) {
         var agent = agents[j];
         var name = agent.name || "agent";
-        var el = Object.prototype.hasOwnProperty.call(existing, name)
-          ? existing[name] : null;
+        // Look up by the SAME key island() writes to data-agent. Looking up by
+        // name never matched a device island (key `device:<slug>`), so it was
+        // rebuilt, entrance animation and all, on every poll.
+        var key = agent.key || name;
+        var el = Object.prototype.hasOwnProperty.call(existing, key)
+          ? existing[key] : null;
         // A reconfigured agent -- new portrait, different framework -- is the
         // one case where the element itself is wrong rather than merely stale.
         if (el && el.getAttribute("data-identity") !== islandIdentity(agent)) {
@@ -2943,7 +2947,7 @@ _LOCK_SCREEN_SCRIPT = r"""
         }
         // Claimed: a second agent sharing this name gets its own island
         // rather than the two of them fighting over one element.
-        delete existing[name];
+        delete existing[key];
         want.push(el);
       }
       // Whatever the payload no longer lists has genuinely gone away, and

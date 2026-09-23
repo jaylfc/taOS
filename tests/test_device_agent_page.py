@@ -24,7 +24,7 @@ from test_lock_screen_views import _node
 # The REPAINT harness, not the views one: this file is about which nodes
 # survive an append, so it needs a stand-in with a real tree (appendChild,
 # children) rather than one built from a kids list at construction.
-from test_lock_screen_repaint import _DOM, _var
+from test_lock_screen_repaint import _DOM, _var, _paint, _agent, _ids
 
 
 def _run(program: str) -> dict:
@@ -65,6 +65,21 @@ console.log(JSON.stringify({
         assert out["device"] == "device:taosusb"
         assert out["demo"] == "taOSusb"
         assert out["device"] != out["demo"]
+
+
+class TestADeviceIslandSurvivesThePoll:
+    def test_an_unchanged_device_island_is_not_rebuilt(self):
+        """island() writes data-agent = key, so the lookup must use the key.
+
+        It used the display name, which a device island (key `device:<slug>`)
+        never matches: the board's island was thrown away and rebuilt, entrance
+        animation replayed, on every 15 s poll. A same-named demo agent sits
+        beside it to prove the two still get one island each."""
+        tick = [_agent("taOSusb", key="device:taosusb", status="Online · USB"),
+                _agent("taOSusb")]
+        out = _paint([tick, tick])
+        assert out["built"] == 2
+        assert _ids(out["snapshots"][0]) == _ids(out["snapshots"][1])
 
 
 class TestRepliesAreAppendedNotRepainted:
