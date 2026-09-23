@@ -50,6 +50,16 @@ from tinyagentos.routes.auth import _LOCK_SCREEN_SCRIPT as LOCK_SCRIPT
 from test_lock_screen_gestures import _function
 from test_lock_screen_repaint import _DOM, _var
 
+# The demo helpers read the Settings demo-mode switch from the app's data dir.
+# A fresh dir with no switch file is a device that has never flipped it: ON
+# exactly when a demo flag is set, which is what these tests were written for.
+import tempfile as _tempfile
+from pathlib import Path as _Path
+from types import SimpleNamespace as _NS
+
+_DEMO_REQ = _NS(app=_NS(state=_NS(data_dir=_Path(_tempfile.mkdtemp()))))
+
+
 
 # ---------------------------------------------------------------- the server
 
@@ -67,7 +77,7 @@ class TestTheContentIsScriptedAndGated:
         """
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "a,b")
         monkeypatch.delenv("TAOS_LOCK_DEMO_PANELS", raising=False)
-        assert auth._demo_panels_enabled() is False
+        assert auth._demo_panels_enabled(_DEMO_REQ) is False
 
     def test_the_panel_flag_alone_does_not_turn_the_panels_on(self, monkeypatch):
         """And the second flag cannot REPLACE the master one.
@@ -77,14 +87,14 @@ class TestTheContentIsScriptedAndGated:
         """
         monkeypatch.delenv("TAOS_LOCK_DEMO_AGENTS", raising=False)
         monkeypatch.setenv("TAOS_LOCK_DEMO_PANELS", "1")
-        assert auth._demo_panels_enabled() is False
+        assert auth._demo_panels_enabled(_DEMO_REQ) is False
 
     def test_both_flags_together_turn_them_on(self, monkeypatch):
         """The positive control. Without it the two tests above are also what a
         function that returned False unconditionally would produce."""
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "a,b")
         monkeypatch.setenv("TAOS_LOCK_DEMO_PANELS", "1")
-        assert auth._demo_panels_enabled() is True
+        assert auth._demo_panels_enabled(_DEMO_REQ) is True
 
     def test_the_route_is_exempt_from_auth(self):
         """The lock screen fetches this BEFORE sign-in, so it must be exempt.
@@ -318,7 +328,7 @@ class TestTheRoute:
             monkeypatch.delenv("TAOS_LOCK_DEMO_PANELS", raising=False)
         else:
             monkeypatch.setenv("TAOS_LOCK_DEMO_PANELS", panels)
-        return asyncio.run(auth.lock_panels(object()))
+        return asyncio.run(auth.lock_panels(_DEMO_REQ))
 
     def test_a_non_console_request_is_refused(self, monkeypatch):
         """Same rule as every other lock-screen endpoint: this screen is the
@@ -1064,21 +1074,21 @@ class TestPerAgentUsageInTheStatsPanel:
             "TAOS_LOCK_DEMO_AGENTS",
             "Personal Assistant:hermes:Drafting,Accountant:deepseek:Reconciling",
         )
-        assert auth._demo_agent_names() == ["Personal Assistant", "Accountant"]
+        assert auth._demo_agent_names(_DEMO_REQ) == ["Personal Assistant", "Accountant"]
 
     def test_a_repeated_name_is_not_listed_twice(self, monkeypatch):
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Ann:x,Ann:y,Bob:z")
-        assert auth._demo_agent_names() == ["Ann", "Bob"]
+        assert auth._demo_agent_names(_DEMO_REQ) == ["Ann", "Bob"]
 
     def test_no_demo_agents_means_no_usage_rather_than_zeroes(self, monkeypatch):
         """Absent, not zero -- the rule this whole panel is built on. A row of
         0% would be a claim that the agents are idle."""
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "")
-        assert auth._demo_agent_usage() == []
+        assert auth._demo_agent_usage(_DEMO_REQ) == []
 
     def test_every_agent_reports_all_three_readings(self, monkeypatch):
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Ann:x,Bob:y,Cal:z")
-        rows = auth._demo_agent_usage()
+        rows = auth._demo_agent_usage(_DEMO_REQ)
         assert len(rows) == 3
         for row in rows:
             assert row["cpu_percent"] > 0
@@ -1092,9 +1102,9 @@ class TestPerAgentUsageInTheStatsPanel:
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Ann:x")
         clock = [1_700_000_000.0]
         monkeypatch.setattr(auth.time, "time", lambda: clock[0])
-        first = auth._demo_agent_usage()[0]
+        first = auth._demo_agent_usage(_DEMO_REQ)[0]
         clock[0] += 30
-        second = auth._demo_agent_usage()[0]
+        second = auth._demo_agent_usage(_DEMO_REQ)[0]
         assert first["cpu_percent"] != second["cpu_percent"], (first, second)
         assert first["ram_mb"] != second["ram_mb"], (first, second)
 
@@ -1106,7 +1116,7 @@ class TestPerAgentUsageInTheStatsPanel:
         monkeypatch.setattr(auth.time, "time", lambda: clock[0])
         seen = []
         for _ in range(8):
-            seen.append(auth._demo_agent_usage()[0]["storage_mb"])
+            seen.append(auth._demo_agent_usage(_DEMO_REQ)[0]["storage_mb"])
             clock[0] += 600
         assert seen == sorted(seen), seen
         assert seen[-1] > seen[0], seen
@@ -1118,16 +1128,16 @@ class TestPerAgentUsageInTheStatsPanel:
         clock = [1_700_000_000.0]
         monkeypatch.setattr(auth.time, "time", lambda: clock[0])
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Accountant:x")
-        first = auth._demo_agent_usage()[0]
+        first = auth._demo_agent_usage(_DEMO_REQ)[0]
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Accountant:x")
-        again = auth._demo_agent_usage()[0]
+        again = auth._demo_agent_usage(_DEMO_REQ)[0]
         assert first["ram_mb"] == again["ram_mb"]
         assert first["storage_mb"] == again["storage_mb"]
 
     def test_different_agents_get_different_baselines(self, monkeypatch):
         """Otherwise six identical rows, which reads as a rendering bug."""
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Ann:x,Bob:y,Cal:z,Dee:w")
-        rams = [r["ram_mb"] for r in auth._demo_agent_usage()]
+        rams = [r["ram_mb"] for r in auth._demo_agent_usage(_DEMO_REQ)]
         assert len(set(rams)) == len(rams), rams
 
     def test_the_agents_cannot_add_up_to_an_impossible_machine(self, monkeypatch):
@@ -1137,7 +1147,7 @@ class TestPerAgentUsageInTheStatsPanel:
             "TAOS_LOCK_DEMO_AGENTS",
             ",".join("Agent%d:f:s" % i for i in range(12)),
         )
-        total = sum(r["cpu_percent"] for r in auth._demo_agent_usage())
+        total = sum(r["cpu_percent"] for r in auth._demo_agent_usage(_DEMO_REQ))
         assert total <= 82.5, total
 
     def test_the_payload_key_is_absent_when_demo_is_off(self, monkeypatch):
@@ -1145,8 +1155,8 @@ class TestPerAgentUsageInTheStatsPanel:
         answers, and this endpoint draws that distinction for every hardware
         reading already."""
         monkeypatch.delenv("TAOS_LOCK_DEMO_AGENTS", raising=False)
-        assert auth._demo_enabled() is False
-        assert auth._demo_agent_usage() == []
+        assert auth._demo_enabled(_DEMO_REQ) is False
+        assert auth._demo_agent_usage(_DEMO_REQ) == []
 
     def test_the_stats_painter_draws_a_bar_only_for_cpu(self):
         """RAM and storage have no ceiling to draw against, and a bar against
