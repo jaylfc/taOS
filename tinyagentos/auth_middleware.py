@@ -439,6 +439,25 @@ _INVITE_INFO_PREFIX = "/i/"
 _AGENT_MODEL_MODELS = "/v1/models"
 _AGENT_MODEL_CHAT = "/v1/chat/completions"
 
+# In-process LLM gateway (tinyagentos/llm_gateway). NOT exempt: G1 serves only
+# a signed-in session or the local token, both checked by this middleware as
+# for any other route. The one difference is the SHAPE of the 401 it gets: an
+# OpenAI client reads error.message from an object, and the plain
+# {"error": "Authentication required"} string there surfaces as a crash in
+# the client, not as "bad credentials".
+_LLM_GATEWAY_PREFIX = "/api/llm/"
+
+
+def _unauthenticated(path: str, body: dict) -> JSONResponse:
+    if path.startswith(_LLM_GATEWAY_PREFIX):
+        return JSONResponse(
+            {"error": {"message": "missing or invalid credentials",
+                       "type": "invalid_request_error", "param": None,
+                       "code": "invalid_api_key"}},
+            status_code=401,
+        )
+    return JSONResponse(body, status_code=401)
+
 # Local-only shutdown drain: the systemd ExecStop hook (taos-graceful-stop)
 # POSTs this from localhost with no session cookie and no token, so it was
 # getting 401 and the in-app drain never ran. We exempt it ONLY for loopback
@@ -770,9 +789,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             accept = request.headers.get("accept", "")
             if "text/html" in accept:
                 return RedirectResponse("/auth/setup", status_code=303)
-            return JSONResponse(
-                {"error": "onboarding_required", "needs_onboarding": True},
-                status_code=401,
+            return _unauthenticated(
+                path, {"error": "onboarding_required", "needs_onboarding": True},
             )
 
         # Redirect to login for browsers, 401 for API calls
@@ -781,4 +799,4 @@ class AuthMiddleware(BaseHTTPMiddleware):
             next_param = f"?next={path}" if path != "/" else ""
             return RedirectResponse(f"/auth/login{next_param}", status_code=303)
 
-        return JSONResponse({"error": "Authentication required"}, status_code=401)
+        return _unauthenticated(path, {"error": "Authentication required"})
