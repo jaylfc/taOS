@@ -255,13 +255,19 @@ async def test_unknown_model_is_404_model_not_found(client):
 
 @_ASYNC
 @respx.mock
-async def test_stream_true_is_400_until_g3(client):
-    route = respx.post(UPSTREAM_CHAT)
+async def test_stream_true_proxies_verbatim(client):
+    """stream:true proxies SSE chunks verbatim and ends with [DONE]."""
+    body = _sse_chunk("hi") + _sse_done()
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, content=body, headers={"content-type": "text/event-stream"}
+    ))
     resp = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
-    err = _assert_openai_error(resp, 400)
-    assert err["message"] == "streaming lands in G3"
-    assert err["type"] == "invalid_request_error"
-    assert not route.called
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    data = resp.read()
+    text = data.decode("utf-8")
+    assert text.endswith("data: [DONE]\n\n")
+    assert '"content": "hi"' in text
 
 
 @_ASYNC
@@ -702,3 +708,217 @@ async def test_agent_model_v1_surface_is_unchanged(client):
     assert [m["id"] for m in body["data"]] == ["agent-a", "agent-b"]
     assert all(m["owned_by"] == "taos-agent" for m in body["data"])
     assert "taos-default" not in listed.text
+
+
+def _sse_chunk(text: str, finish_reason: str = "stop") -> str:
+    """One SSE data chunk for a streaming chat completion."""
+    chunk = {
+        "id": "chatcmpl-1",
+        "object": "chat.completion.chunk",
+        "choices": [{
+            "index": 0,
+            "delta": {"content": text},
+            "finish_reason": finish_reason,
+        }],
+    }
+    return f"data: {json.dumps(chunk)}\n\n"
+
+
+def _sse_usage_chunk(prompt_tokens: int, completion_tokens: int) -> str:
+    """The final SSE chunk that carries usage only (empty choices)."""
+    return f"data: {json.dumps({'usage': {'prompt_tokens': prompt_tokens, 'completion_tokens': completion_tokens}})}\n\n"
+
+
+def _sse_done() -> str:
+    return "data: [DONE]\n\n"
+
+
+# ---------------------------------------------------------------------------
+# G3: streaming + usage/spend recording
+# ---------------------------------------------------------------------------
+
+@_ASYNC
+@respx.mock
+async def test_stream_true_proxies_chunks_verbatim_and_ends_with_done(client):
+    """stream:true proxies SSE chunks verbatim and ends with [DONE]."""
+    body = _sse_chunk("hel") + _sse_chunk("lo") + _sse_done()
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, content=body, headers={"content-type": "text/event-stream"}
+    ))
+    resp = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] .startswith("text/event-stream")
+    data = resp.read()
+    text = data.decode("utf-8")
+    assert text.endswith("data: [DONE]\n\n")
+    assert '"content": "hel"' in text
+    assert '"content": "lo"' in text
+
+
+@_ASYNC
+@respx.mock
+async def test_stream_true_forwards_tool_call_deltas(client):
+    """SSE chunks with tool_calls deltas pass through verbatim."""
+    body = (
+        _sse_chunk("") + '\n\n'
+        + 'data: {"id": "chatcmpl-1", "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {"role": "assistant", "content": null, "tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\\"city\\": \\"Paris\\"}}}]}, "finish_reason": null}]}\n\n'
+        + _sse_done()
+    )
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, content=body, headers={"content-type": "text/event-stream"}
+    ))
+    resp = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+    assert resp.status_code == 200, resp.text
+    data = resp.read()
+    text = data.decode("utf-8")
+    assert '"tool_calls"' in text
+
+
+@_ASYNC
+@respx.mock
+
+
+@_ASYNC
+@respx.mock
+async def test_streamed_call_with_usage_upstream_records_right_tokens(client, monkeypatch):
+    """A streamed call with a usage-reporting upstream records the right tokens."""
+    trace_calls = []
+    spend_calls = []
+
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append((args, kwargs))
+
+    def fake_record_spend(*args, **kwargs):
+        spend_calls.append((args, kwargs))
+
+    monkeypatch.setattr(
+        "tinyagentos.llm_gateway.forward._record_trace", fake_record_trace
+    )
+    monkeypatch.setattr(
+        "tinyagentos.llm_gateway.forward._record_spend", fake_record_spend
+    )
+
+    body = (
+        _sse_chunk("hi")
+        + _sse_usage_chunk(10, 5)
+        + _sse_done()
+    )
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, content=body, headers={"content-type": "text/event-stream"}
+    ))
+    resp = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+    assert resp.status_code == 200, resp.text
+    assert len(trace_calls) == 1
+    args, _ = trace_calls[0]
+    usage = args[3]
+    assert usage.input_tokens == 10
+    assert usage.output_tokens == 5
+
+
+@_ASYNC
+@respx.mock
+async def test_upstream_no_usage_records_unknown_and_estimated_spend(client, monkeypatch):
+    """An upstream with no usage records UNKNOWN and a positive estimated spend."""
+    trace_calls = []
+    spend_calls = []
+
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append((args, kwargs))
+
+    def fake_record_spend(*args, **kwargs):
+        spend_calls.append((args, kwargs))
+
+    monkeypatch.setattr(
+        "tinyagentos.llm_gateway.forward._record_trace", fake_record_trace
+    )
+    monkeypatch.setattr(
+        "tinyagentos.llm_gateway.forward._record_spend", fake_record_spend
+    )
+
+    body = _sse_chunk("hi") + _sse_done()
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, content=body, headers={"content-type": "text/event-stream"}
+    ))
+    resp = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+    assert resp.status_code == 200, resp.text
+    assert len(trace_calls) == 1
+    args, kwargs = trace_calls[0]
+    usage = args[3]
+    assert usage.source == "unknown"
+    assert usage.input_tokens == 0
+    assert usage.output_tokens == 0
+    assert kwargs.get("estimated") is True
+    assert len(spend_calls) == 1
+    spend_args, _ = spend_calls[0]
+    assert spend_args[2] > 0
+
+
+@_ASYNC
+@respx.mock
+async def test_injected_include_usage_chunk_is_not_forwarded(client):
+    """The injected include_usage chunk is not forwarded to a caller that didn't ask for it."""
+    body = (
+        _sse_chunk("hi")
+        + _sse_usage_chunk(3, 1)
+        + _sse_done()
+    )
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, content=body, headers={"content-type": "text/event-stream"}
+    ))
+    resp = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+    assert resp.status_code == 200, resp.text
+    data = resp.read()
+    text = data.decode("utf-8")
+    assert '"content": "hi"' in text
+    assert "usage" not in text
+
+
+@_ASYNC
+@respx.mock
+async def test_streamed_vs_non_streamed_parity(client, monkeypatch):
+    """Streamed and non-streamed of the same prompt record comparable usage."""
+    trace_calls = []
+    spend_calls = []
+
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append((args, kwargs))
+
+    def fake_record_spend(*args, **kwargs):
+        spend_calls.append((args, kwargs))
+
+    monkeypatch.setattr(
+        "tinyagentos.llm_gateway.forward._record_trace", fake_record_trace
+    )
+    monkeypatch.setattr(
+        "tinyagentos.llm_gateway.forward._record_spend", fake_record_spend
+    )
+
+    usage_body = (
+        _sse_chunk("hi")
+        + _sse_usage_chunk(10, 5)
+        + _sse_done()
+    )
+
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, content=usage_body, headers={"content-type": "text/event-stream"}
+    ))
+    stream_resp = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+    assert stream_resp.status_code == 200, stream_resp.text
+
+    trace_calls.clear()
+    spend_calls.clear()
+
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(200, json={
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }))
+    non_stream_resp = await client.post(BASE + "/chat/completions", json=_chat())
+    assert non_stream_resp.status_code == 200, non_stream_resp.text
+
+    assert len(trace_calls) == 1
+    args, _ = trace_calls[0]
+    usage = args[3]
+    assert usage.input_tokens == 10
+    assert usage.output_tokens == 5
