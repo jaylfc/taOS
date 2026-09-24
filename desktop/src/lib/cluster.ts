@@ -108,6 +108,10 @@ export interface ClusterWorker {
   revoked?: boolean;
   blocked?: boolean;
   live_token?: boolean;
+  /** "device" for a paired taOSusb-style board (BLE pairing); absent or
+   *  "worker" for a regular compute worker. A device never runs jobs, so
+   *  the Cluster UI hides job/capacity controls for it. */
+  kind?: "worker" | "device";
 }
 
 /**
@@ -353,4 +357,28 @@ export function formatRelativeSeconds(hb: number | undefined, nowSec = Date.now(
   if (age < 3600) return `${(age / 60).toFixed(0)}m ago`;
   if (age < 86400) return `${(age / 3600).toFixed(1)}h ago`;
   return `${(age / 86400).toFixed(1)}d ago`;
+}
+
+/**
+ * One device found by a `GET /api/cluster/ble/scan` sweep.
+ * `state` is "paired" once the controller already holds a key for it;
+ * `pairable` is false while it's outside its post-power-up pairing window.
+ */
+export interface BleScanDevice {
+  address: string;
+  name: string;
+  board_id: string;
+  state: "unpaired" | "paired";
+  pairable: boolean;
+  rssi: number;
+}
+
+export type BleSignalLevel = "strong" | "medium" | "weak" | "none";
+
+/** Coarse signal bucket from a BLE RSSI reading (dBm, typically -30 to -100). */
+export function bleSignalLevel(rssi: number | undefined): BleSignalLevel {
+  if (typeof rssi !== "number" || Number.isNaN(rssi)) return "none";
+  if (rssi >= -60) return "strong";
+  if (rssi >= -75) return "medium";
+  return "weak";
 }

@@ -14,3 +14,6 @@
   browser-session placement -- regardless of what it advertises in
   `capabilities`. Existing rows default to `kind="worker"` via a guarded
   migration.
+- Cluster app: **Add device → Bluetooth** lists nearby taOSusb boards, shows
+  the 6-digit pairing code to compare with the board, and pairs on confirm.
+  Paired boards appear as devices with job and capacity controls hidden.
