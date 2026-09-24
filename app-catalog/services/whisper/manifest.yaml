@@ -1,33 +1,30 @@
-id: whisper
-name: Whisper ASR
-type: service
 category: voice
-version: 2024.11.15
-description: "Speech-to-text via OpenAI Whisper — agents can transcribe audio files and streams"
-homepage: https://github.com/openai/whisper
-license: MIT
-
-requires:
-  ram_mb: 2048
-  disk_mb: 5000
-  ports: [9000]
-
-install:
-  method: docker
-  image: onerahmet/openai-whisper-asr-webservice:20241115
-  volumes:
-    - cache:/root/.cache/whisper
-  ports: [9000]
-  env:
-    ASR_MODEL: "base"
-    ASR_ENGINE: "openai_whisper"
-
-lifecycle:
-  health_check: "curl -sf http://localhost:9000/docs"
-
+description: "Speech-to-text via OpenAI Whisper \u2014 agents can transcribe audio\
+  \ files and streams"
 hardware_tiers:
   arm-npu-16gb: degraded
   arm-npu-32gb: degraded
+  cpu-only: degraded
   x86-cuda-12gb: full
   x86-vulkan-8gb: degraded
-  cpu-only: degraded
+homepage: https://github.com/openai/whisper
+id: whisper
+install:
+  env:
+    ASR_ENGINE: openai_whisper
+    ASR_MODEL: base
+  image: onerahmet/openai-whisper-asr-webservice:20241115
+  method: docker
+  ports:
+  - 9000
+  volumes:
+  - cache:/root/.cache/whisper
+license: MIT
+lifecycle:
+  health_check: curl -sf http://localhost:9000/docs
+name: Whisper ASR
+requires:
+  disk_mb: 5000
+  ram_mb: 2048
+type: service
+version: 2024.11.15
