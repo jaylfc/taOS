@@ -5,10 +5,12 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from tinyagentos.auth_context import CurrentUser
+from tinyagentos.device_auth import current_user_or_device
 from tinyagentos.workspace_trash import (
     TrashItemNotFound,
     TrashRestoreConflict,
@@ -38,7 +40,7 @@ _FILES_WRITE_SCOPE = "files_write"
 
 
 async def _authorize_files_actor(
-    request: Request, slug: str, mode: Literal["read", "write"]
+    request: Request, slug: str, mode: Literal["read", "write"], user: CurrentUser | None = None
 ) -> "tuple[str, str] | JSONResponse":
     """Resolve + authorize the actor for a project-files route.
 
@@ -55,30 +57,36 @@ async def _authorize_files_actor(
     """
     ps = request.app.state.project_store
     project = await ps.get_project_by_slug(slug)
+    if user is not None:
+        is_admin = user.is_admin
+        if project is not None:
+            if is_admin or project.get("user_id") == user.user_id:
+                return ("user", user.user_id)
+            if mode == "write":
+                member = await ps.get_member(project["id"], user.user_id)
+                if member and (member.get("is_lead") or member.get("can_edit_canvas")):
+                    return ("user", user.user_id)
+                return JSONResponse({"error": "forbidden"}, status_code=403)
+        return ("user", user.user_id)
+    
     uid = getattr(request.state, "user_id", None)
     if uid:
-        # Session path: project visibility gate. A non-owner non-admin human
-        # collapses into the SAME existence-hiding 404 the agent path uses.
-        # An UNKNOWN slug is deliberately allowed through for session users:
-        # the project files tree is slug-addressed and lazily created, which
-        # test_list_unknown_slug_returns_empty documents as intended. The agent
-        # path below is strict (unknown slug -> 404) because an agent must not
-        # be able to address a project it was never granted.
         is_admin = bool(getattr(request.state, "is_admin", False))
         if project is not None and not is_admin and project.get("user_id") != uid:
             return JSONResponse({"error": "not found"}, status_code=404)
         return ("user", uid)
     
-    # Check if the caller is a device bearer
     device = getattr(request.state, "_device", None)
     if device:
-        # Device bearer path: the device must be paired to the project owner
-        # (the user who created/owns the project). Device bearers don't have
-        # grants; they are simply paired to a specific user and can act on
-        # behalf of that user for device-only routes.
-        if project is not None and project.get("user_id") != device["user_id"]:
+        if project is not None:
+            if project.get("user_id") == device["user_id"]:
+                return ("device_bearer", device["user_id"])
+            if mode == "write":
+                member = await ps.get_member(project["id"], device["user_id"])
+                if member and (member.get("is_lead") or member.get("can_edit_canvas")):
+                    return ("device_bearer", device["user_id"])
+                return JSONResponse({"error": "forbidden"}, status_code=403)
             return JSONResponse({"error": "not found"}, status_code=404)
-        # Device bearer acting as the project owner
         return ("device_bearer", device["user_id"])
     
     auth_header = request.headers.get("Authorization", "")
@@ -363,7 +371,7 @@ async def api_project_purge_trash_item(request: Request, slug: str, item_id: str
 
 @router.delete("/api/projects/{slug}/trash")
 async def api_project_empty_trash(request: Request, slug: str):
-    """Permanently delete every item in a project's trash."""
+    """Permanently delete every item from a project's trash."""
     auth = await _authorize_files_actor(request, slug, "write")
     if isinstance(auth, JSONResponse):
         return auth

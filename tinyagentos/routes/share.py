@@ -26,7 +26,7 @@ async def list_share_destinations(request: Request):
     })
 
     pstore = request.app.state.project_store
-    for project in await pstore.list_for_user(user_id):
+    for project in await pstore.list_writable_for_user(user_id):
         destinations.append({
             "kind": "project_files",
             "id": project["slug"],
@@ -39,10 +39,10 @@ async def list_share_destinations(request: Request):
     user_id_str = str(user_id)
     for ch in await ch_store.list_channels():
         members = ch.get("members") or []
-        if user_id_str not in members and "user" not in members:
+        if user_id_str not in members:
             continue
         for member in members:
-            if member in (user_id_str, "user"):
+            if member == user_id_str:
                 continue
             if member in seen:
                 continue
