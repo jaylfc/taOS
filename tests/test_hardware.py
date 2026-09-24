@@ -418,3 +418,17 @@ class TestDiskTypeDetection:
 
         disk = hardware_mod._detect_disk()
         assert disk.type == "sd"
+
+
+class TestRecommendedFrameworkProperty:
+    def test_low_ram_returns_picoclaw(self):
+        profile = HardwareProfile(ram_mb=4096)
+        assert profile.recommended_framework == "picoclaw"
+
+    def test_snapped_8gb_returns_picoclaw(self):
+        profile = HardwareProfile(ram_mb=7800)
+        assert profile.recommended_framework == "picoclaw"
+
+    def test_high_ram_returns_default(self):
+        profile = HardwareProfile(ram_mb=16384)
+        assert profile.recommended_framework == "hermes"

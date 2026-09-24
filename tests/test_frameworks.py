@@ -7,6 +7,7 @@ from tinyagentos.frameworks import (
     FRAMEWORKS,
     FrameworkManifestError,
     validate_framework_manifest,
+    recommended_framework,
 )
 from tinyagentos.shortcuts.validation import validate_shortcuts
 
@@ -385,3 +386,24 @@ def test_no_unexpected_frameworks():
 
 def test_registry_has_exactly_expected_count():
     assert len(FRAMEWORKS) == len(EXPECTED_FRAMEWORKS)
+
+
+# ---------------------------------------------------------------------------
+# recommended_framework: low-RAM hosts get PicoClaw
+# ---------------------------------------------------------------------------
+
+class TestRecommendedFramework:
+    def test_4gb_returns_picoclaw(self):
+        assert recommended_framework(4096) == "picoclaw"
+
+    def test_7_6gib_snapped_8gb_returns_picoclaw(self):
+        assert recommended_framework(7800) == "picoclaw"
+
+    def test_16gb_returns_default(self):
+        assert recommended_framework(16384) == "hermes"
+
+    def test_8gb_exact_returns_picoclaw(self):
+        assert recommended_framework(8192) == "picoclaw"
+
+    def test_12gb_returns_default(self):
+        assert recommended_framework(12288) == "hermes"
