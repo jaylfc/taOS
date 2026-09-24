@@ -116,6 +116,48 @@ class DockerInstaller(AppInstaller):
         ``config``) is a named volume that must be declared at the top level.
         """
         return bool(source) and not source.startswith(("/", "./", "../", "~"))
+    @staticmethod
+    def _parse_ports(ports):
+        """Parse ports from a manifest.
+        
+        Can handle:
+        - Simple integer lists: [6333, 6334]
+        - Host:container format: ["6333:6333", "6334:6334"]
+        - Dict format: {"http": 3000, "ssh": 2222} (for gitea-lxc)
+        """
+        if isinstance(ports, dict):
+            # For dict format, extract the container ports
+            # For gitea-lxc: {"http": 3000, "ssh": 2222}
+            # We want [3000, 2222]
+            return list(ports.values())
+        
+        if isinstance(ports, list):
+            container_ports = []
+            for port in ports:
+                if isinstance(port, int):
+                    container_ports.append(port)
+                elif isinstance(port, str):
+                    if ":" in port:
+                        # Host:container format, e.g., "6333:6333"
+                        try:
+                            host_port_str, container_port_str = port.split(":", 1)
+                            host_port = int(host_port_str)
+                            container_port = int(container_port_str)
+                            container_ports.append(container_port)
+                        except ValueError:
+                            raise ValueError(f"Invalid port format: {port}. Expected host:container.")
+                    else:
+                        # Just a container port as string, e.g., "6333"
+                        try:
+                            container_ports.append(int(port))
+                        except ValueError:
+                            raise ValueError(f"Invalid port: {port}. Expected integer or host:container.")
+                else:
+                    raise ValueError(f"Invalid port type: {type(port)}. Expected int or str.")
+            return container_ports
+        
+        raise ValueError(f"Invalid ports type: {type(ports)}. Expected list or dict.")
+
 
     def _generate_compose(
         self, app_id: str, install_config: dict
@@ -158,6 +200,14 @@ class DockerInstaller(AppInstaller):
                     for k, v in env.items()
                 }
             service["environment"] = env
+            # Add extra_hosts for host.docker.internal when referenced in env
+            # Linux Docker Engine does not resolve host.docker.internal by default
+            extra_hosts = []
+            for key, value in service["environment"].items():
+                if isinstance(value, str) and "host.docker.internal" in value:
+                    extra_hosts.append("host.docker.internal:host-gateway")
+            if extra_hosts:
+                service["extra_hosts"] = extra_hosts
 
         # Companion services (e.g. postgres for linkwarden)
         companions: list[dict] = install_config.get("companions", [])
@@ -194,16 +244,22 @@ class DockerInstaller(AppInstaller):
                         k: self._substitute_secret_key(v, secret_key) if isinstance(v, str) else v
                         for k, v in comp["env"].items()
                     }
+
+                    # Add extra_hosts for host.docker.internal when referenced in companion env
+                    extra_hosts = []
+                    for key, value in comp_service["environment"].items():
+                        if isinstance(value, str) and "host.docker.internal" in value:
+                            extra_hosts.append("host.docker.internal:host-gateway")
+                    if extra_hosts:
+                        comp_service["extra_hosts"] = extra_hosts
                 companion_services.append(comp_service)
                 for vn in comp_named_volumes:
                     named_volumes[vn] = None
 
         # Collect the container-internal ports from the manifest.
         container_ports: list[int] = []
-        if "ports" in install_config.get("requires", {}):
-            container_ports = [int(p) for p in install_config["requires"]["ports"]]
-        elif "ports" in install_config:
-            container_ports = [int(p) for p in install_config["ports"]]
+        if "ports" in install_config:
+            container_ports = self._parse_ports(install_config["ports"])
 
         allocated_host_port: int | None = None
         if container_ports:
@@ -225,7 +281,6 @@ class DockerInstaller(AppInstaller):
                 f"{hp}:{cport}"
                 for hp, cport in zip(host_ports, container_ports)
             ]
-
         # Build the services dict: app service first, then companions
         all_services: dict[str, dict] = {}
         all_services[app_id] = service

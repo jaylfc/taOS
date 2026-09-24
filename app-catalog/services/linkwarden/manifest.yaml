@@ -1,43 +1,40 @@
-id: linkwarden
-name: Linkwarden
-type: service
 category: productivity
-version: 2.13.0
-description: "Bookmark and link manager — agents save and organize research links with archiving"
-homepage: https://linkwarden.app
-license: AGPL-3.0
-
-requires:
-  ram_mb: 256
-  disk_mb: 500
-  ports: [3000]
-
-install:
-  method: docker
-  image: ghcr.io/linkwarden/linkwarden:2.13.0
-  volumes:
-    - data:/data/data
-  ports: [3000]
-  env:
-    NEXTAUTH_SECRET: "{secret_key}"
-    NEXTAUTH_URL: "http://localhost:3000"
-    DATABASE_URL: "postgresql://linkwarden:{secret_key}@postgres:5432/linkwarden"
-  companions:
-    - name: postgres
-      image: postgres:16-alpine
-      volumes:
-        - pgdata:/var/lib/postgresql/data
-      env:
-        POSTGRES_PASSWORD: "{secret_key}"
-        POSTGRES_USER: "linkwarden"
-        POSTGRES_DB: "linkwarden"
-
-lifecycle:
-  health_check: "curl -sf http://localhost:3000"
-
+description: "Bookmark and link manager \u2014 agents save and organize research links\
+  \ with archiving"
 hardware_tiers:
   arm-npu-16gb: full
   arm-npu-32gb: full
+  cpu-only: full
   x86-cuda-12gb: full
   x86-vulkan-8gb: full
-  cpu-only: full
+homepage: https://linkwarden.app
+id: linkwarden
+install:
+  companions:
+  - env:
+      POSTGRES_DB: linkwarden
+      POSTGRES_PASSWORD: '{secret_key}'
+      POSTGRES_USER: linkwarden
+    image: postgres:16-alpine
+    name: postgres
+    volumes:
+    - pgdata:/var/lib/postgresql/data
+  env:
+    DATABASE_URL: postgresql://linkwarden:{secret_key}@postgres:5432/linkwarden
+    NEXTAUTH_SECRET: '{secret_key}'
+    NEXTAUTH_URL: http://localhost:3000
+  image: ghcr.io/linkwarden/linkwarden:2.13.0
+  method: docker
+  ports:
+  - 3000
+  volumes:
+  - data:/data/data
+license: AGPL-3.0
+lifecycle:
+  health_check: curl -sf http://localhost:3000
+name: Linkwarden
+requires:
+  disk_mb: 500
+  ram_mb: 256
+type: service
+version: 2.13.0
