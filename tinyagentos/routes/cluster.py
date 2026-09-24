@@ -335,6 +335,7 @@ async def list_workers(request: Request):
                 "name": d["name"],
                 "status": d["status"],
                 "tier_id": d.get("tier_id", ""),
+                "kind": d.get("kind", "worker"),
             })
             continue
         # Surface the persistent auth state from the pairing store so the

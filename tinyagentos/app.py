@@ -388,6 +388,17 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     task_router = TaskRouter(cluster_manager, http_client)
     cap_checker = CapabilityChecker(hardware_profile, cluster_manager)
     cluster_manager._capabilities = cap_checker  # wire after creation (circular dep)
+    # taOSusb Bluetooth pairing (S1) -- the controller side of
+    # docs/taosusb-pairing-plan.md. bleak is an optional dependency (see
+    # pyproject.toml's `ble` extra): BlePairingManager only imports it lazily
+    # on first scan/connect, so constructing it here never requires it.
+    from tinyagentos.cluster.ble.pairing import BlePairingManager
+    ble_pairing_manager = BlePairingManager(
+        data_dir=data_dir,
+        cluster_manager=cluster_manager,
+        pairing_store=cluster_pairing_store,
+        bind_port=controller_port,
+    )
     training_manager = TrainingManager(data_dir / "training.db")
     conversion_manager = ConversionManager(data_dir / "conversion.db")
     agent_messages = AgentMessageStore(data_dir / "agent_messages.db")
@@ -1896,6 +1907,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.app_grants = app_grants_store
     app.state.license_acceptances = license_acceptances_store
     app.state.cluster_pairing = cluster_pairing_store
+    app.state.ble_pairing = ble_pairing_manager
     app.state.capability_map = capability_map_store
     app.state.council_roles = council_role_registry
     app.state.council_members = council_member_store
