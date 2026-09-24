@@ -35,6 +35,7 @@ from tinyagentos.auth import (
 from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.middleware.csrf import verify_csrf
 from tinyagentos.routes.onscreen_keyboard import OSK_SCRIPT, osk_assets
+from tinyagentos.taos_agent_runtime import system_agent_framework
 
 logger = logging.getLogger(__name__)
 
@@ -6786,15 +6787,14 @@ async def lock_widgets(request: Request):
 
     # The OS's own agent is pinned to the top and is not one of the configured
     # ones: it is part of the device rather than something the user added. It
-    # carries the product mark rather than a monogram, and the OMP harness badge
-    # like any other agent -- it runs on OMP (oh-my-pi) over ACP, see
-    # tinyagentos/adapters/omp_adapter.py.
+    # carries the product mark rather than a monogram, and the harness badge
+    # reflects the actual runtime adapter the agent goes through.
     # Its "status" says WHERE it is, not that it is busy -- this endpoint runs
     # pre-auth and has no cheap, truthful way to read the agent's activity.
     agents.insert(0, {
         "name": "taOS Agent",
-        "framework": "omp",
-        "framework_icon": _framework_icon("omp"),
+        "framework": system_agent_framework(),
+        "framework_icon": _framework_icon(system_agent_framework()),
         "status": "On device",
         "avatar": "/static/taos-logo.png",
         "system": True,
