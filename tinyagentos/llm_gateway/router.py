@@ -1,4 +1,5 @@
-"""The G1 routes: ``GET /api/llm/v1/models`` and non-streaming ``POST /api/llm/v1/chat/completions``.
+"""The G1 routes: ``GET /api/llm/v1/models``, non-streaming ``POST /api/llm/v1/chat/completions``,
+and streaming ``POST /api/llm/v1/chat/completions``.
 
 Auth and model permission come ONLY from the ``gateway_caller`` dependency
 (see auth.py). Mounted by ``mount`` when ``TAOS_LLM_GATEWAY=1``.
@@ -15,7 +16,7 @@ from tinyagentos.llm_gateway.errors import (
     handle_gateway_error,
     model_not_permitted,
 )
-from tinyagentos.llm_gateway.forward import chat_completion, resolve_api_key
+from tinyagentos.llm_gateway.forward import chat_completion, chat_completion_stream, resolve_api_key
 from tinyagentos.llm_gateway.resolve import TAOS_DEFAULT, model_names, resolve, routing_table
 
 PREFIX = "/api/llm/v1"
@@ -60,8 +61,6 @@ async def _read_body(request: Request) -> dict:
     stream = body.get("stream")
     if stream is not None and not isinstance(stream, bool):
         raise bad_request("'stream' must be a boolean")
-    if stream:
-        raise GatewayError(400, "streaming lands in G3", code="stream_unsupported")
     if body.get("tools") is not None and not isinstance(body["tools"], list):
         raise bad_request("'tools' must be an array")
     return body
@@ -92,4 +91,7 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
             code="backend_not_supported",
         )
     api_key = await resolve_api_key(state, route.api_key_ref)
-    return JSONResponse(await chat_completion(route, body, api_key))
+    principal = caller.caller_id
+    if body.get("stream"):
+        return chat_completion_stream(route, body, api_key, principal, state)
+    return JSONResponse(await chat_completion(route, body, api_key, principal, state))
