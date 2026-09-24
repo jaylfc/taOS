@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import shutil
@@ -9,6 +10,9 @@ import yaml
 
 from tinyagentos.installers.base import AppInstaller, run_cmd
 from tinyagentos.installers.port_allocator import allocate_host_port
+
+
+logger = logging.getLogger(__name__)
 
 
 class DockerInstaller(AppInstaller):
@@ -257,9 +261,35 @@ class DockerInstaller(AppInstaller):
                     named_volumes[vn] = None
 
         # Collect the container-internal ports from the manifest.
+        # Canonical key is "ports" at the top level of install_config.
+        # Legacy key is "requires.ports" — kept for compatibility with
+        # already-installed apps and third-party manifests.
         container_ports: list[int] = []
-        if "ports" in install_config:
-            container_ports = self._parse_ports(install_config["ports"])
+        canonical_ports = install_config.get("ports")
+        legacy_ports = install_config.get("requires", {}).get("ports")
+        if canonical_ports is not None:
+            container_ports = self._parse_ports(canonical_ports)
+            if legacy_ports is not None:
+                # Both present — canonical wins, but warn if they disagree.
+                legacy_parsed = self._parse_ports(legacy_ports)
+                if legacy_parsed != container_ports:
+                    logger.warning(
+                        "App %r: both 'ports' and 'requires.ports' present "
+                        "with different values; 'ports' (canonical) takes precedence. "
+                        "Legacy value: %s, canonical value: %s",
+                        app_id,
+                        legacy_ports,
+                        canonical_ports,
+                    )
+        elif legacy_ports is not None:
+            # Legacy only — use it but emit a single deprecation warning.
+            logger.warning(
+                "App %r: using legacy 'requires.ports' (%s); "
+                "migrate to top-level 'ports' key in the manifest.",
+                app_id,
+                legacy_ports,
+            )
+            container_ports = self._parse_ports(legacy_ports)
 
         allocated_host_port: int | None = None
         if container_ports:
