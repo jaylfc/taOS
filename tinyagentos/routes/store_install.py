@@ -210,7 +210,9 @@ def _get_current_user(request: Request) -> dict | None:
     if auth is None:
         return None
     token = request.cookies.get("taos_session", "")
-    return auth.session_user(token)
+    if not token:
+        return None
+    return auth.session_user(token, user_agent=request.headers.get("user-agent", ""))
 
 
 def _registry_get(registry, app_id: str):

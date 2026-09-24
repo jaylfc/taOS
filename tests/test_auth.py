@@ -250,6 +250,15 @@ async def auth_client(app):
     if relationship_mgr._db is not None:
         await relationship_mgr.close()
     await relationship_mgr.init()
+    # Initialise agent registry and grants stores used by auth routes
+    agent_registry = app.state.agent_registry
+    if agent_registry._db is not None:
+        await agent_registry.close()
+    await agent_registry.init()
+    agent_grants = app.state.agent_grants
+    if agent_grants._db is not None:
+        await agent_grants.close()
+    await agent_grants.init()
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport,
@@ -268,6 +277,8 @@ async def auth_client(app):
     await store.close()
     await app.state.qmd_client.close()
     await app.state.http_client.aclose()
+    await agent_grants.close()
+    await agent_registry.close()
 
 
 class TestCorruptStoreOverTheApi:
@@ -853,6 +864,15 @@ async def no_cookie_client(app):
     if relationship_mgr._db is not None:
         await relationship_mgr.close()
     await relationship_mgr.init()
+    # Initialise agent registry and grants stores used by auth routes
+    agent_registry = app.state.agent_registry
+    if agent_registry._db is not None:
+        await agent_registry.close()
+    await agent_registry.init()
+    agent_grants = app.state.agent_grants
+    if agent_grants._db is not None:
+        await agent_grants.close()
+    await agent_grants.init()
     # Configure auth so the app isn't in onboarding mode
     app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
     transport = ASGITransport(app=app)
@@ -873,6 +893,8 @@ async def no_cookie_client(app):
     await store.close()
     await app.state.qmd_client.close()
     await app.state.http_client.aclose()
+    await agent_grants.close()
+    await agent_registry.close()
 
 
 class TestMiddlewareBearerPath:
@@ -1266,16 +1288,16 @@ class TestSessionClientBinding:
         assert user_id == rec["id"]
 
     def test_session_with_ua_hash_validates_without_ua_param(self, tmp_path):
-        """When caller doesn't supply user_agent, hash check is skipped."""
+        """When caller doesn't supply user_agent and session has a UA hash, validation fails."""
         mgr = AuthManager(tmp_path)
         mgr.setup_user("alice", "Alice", "", "alicepwd1")
         rec = mgr.find_user("alice")
         token = mgr.create_session(
             user_id=rec["id"], user_agent="TestAgent/1.0"
         )
-        # No user_agent param => skip check
+        # User-Agent hash is stored, but no user_agent param supplied -> validation fails
         user_id = mgr.validate_session(token)
-        assert user_id == rec["id"]
+        assert user_id is None
 
 
 class TestAuthStatusUserAgentSymmetry:
@@ -1408,3 +1430,87 @@ class TestNonObjectJsonBody:
             "/auth/users/admin/password", content=body, headers=_JSON_CT, cookies=login.cookies
         )
         assert resp.status_code == 400, f"{body!r} produced {resp.status_code}"
+
+
+# ---------------------------------------------------------------------------
+# RED-FIRST test for the session_user / validate_session user-agent binding fix
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestSessionUserAgentBindingRED:
+    """RED-FIRST: Proves the fix threads User-Agent into every caller.
+
+    Before the fix, a browser login stores a User-Agent hash (routes/auth.py
+    creates sessions with user_agent). After the fix, EVERY caller that omits
+    user_agent (e.g. chat routes, /me, etc.) must thread the request's
+    User-Agent header. This test demonstrates that before the fix, such
+    callers reject logged-in browser users with 401. After the fix, they
+    accept them when the User-Agent matches.
+    """
+
+    @pytest.mark.asyncio
+    async def test_browser_user_agent_binding_fixes_auth_endpoints(self, app, client):
+        """UA-binding guard: login with a User-Agent, call protected endpoints, succeed."""
+        app.state.auth.set_password("testpass")
+
+        login_headers = {"user-agent": "taos-ua-test/1"}
+        resp = await client.post(
+            "/auth/login",
+            data={"password": "testpass"},
+            headers=login_headers,
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert "taos_session" in resp.headers.get("set-cookie", "")
+
+        nodes_resp = await client.get(
+            "/api/browser/nodes",
+            headers=login_headers,
+        )
+        assert nodes_resp.status_code != 401, (
+            f"/api/browser/nodes rejected authenticated session: {nodes_resp.status_code}"
+        )
+
+        status_resp = await client.get(
+            "/auth/status",
+            headers=login_headers,
+        )
+        assert status_resp.status_code == 200
+        assert status_resp.json()["authenticated"] is True
+
+        different_headers = {"user-agent": "different-agent/1"}
+        status_resp_different = await client.get(
+            "/auth/status",
+            headers=different_headers,
+        )
+        assert status_resp_different.status_code == 200
+        assert status_resp_different.json()["authenticated"] is False
+
+        user_id = app.state.auth.find_user("admin")["id"]
+        channel = await app.state.chat_channels.create_channel(
+            "test-ua-binding", "dm", "user", members=[user_id],
+        )
+        msg = await app.state.chat_messages.send_message(
+            channel_id=channel["id"],
+            author_id=user_id,
+            author_type="user",
+            content="test message",
+        )
+
+        edit_resp = await client.patch(
+            f"/api/chat/messages/{msg['id']}",
+            json={"content": "edited"},
+            headers=login_headers,
+        )
+        assert edit_resp.status_code == 200, (
+            f"Edit with matching UA should succeed, got: {edit_resp.status_code}"
+        )
+
+        edit_resp_diff = await client.patch(
+            f"/api/chat/messages/{msg['id']}",
+            json={"content": "edited2"},
+            headers=different_headers,
+        )
+        assert edit_resp_diff.status_code == 401, (
+            f"Edit with different UA should be 401, got: {edit_resp_diff.status_code}"
+        )

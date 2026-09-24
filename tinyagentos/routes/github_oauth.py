@@ -18,7 +18,7 @@ import asyncio
 import logging
 import uuid
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -30,6 +30,7 @@ from tinyagentos.github_oauth import (
     USER_URL,
     client_id,
 )
+from tinyagentos.auth_context import require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ def _identities_store(request: Request):
 # Device flow: start
 # ---------------------------------------------------------------------------
 
-@router.post("/api/github/oauth/device/start")
+@router.post("/api/github/oauth/device/start", dependencies=[Depends(require_admin)])
 async def device_start(request: Request):
     """Begin the device flow. Returns user_code, verification_uri, device_code."""
     http = _http(request)
@@ -103,7 +104,7 @@ async def device_start(request: Request):
 # Device flow: poll (single poll per call; frontend drives the loop)
 # ---------------------------------------------------------------------------
 
-@router.post("/api/github/oauth/device/poll")
+@router.post("/api/github/oauth/device/poll", dependencies=[Depends(require_admin)])
 async def device_poll(request: Request, body: DevicePollBody):
     """Poll the token endpoint once for *device_code*.
 
@@ -189,7 +190,7 @@ async def list_identities(request: Request):
     return await store.list()
 
 
-@router.delete("/api/github/identities/{identity_id}")
+@router.delete("/api/github/identities/{identity_id}", dependencies=[Depends(require_admin)])
 async def delete_identity(request: Request, identity_id: str):
     # Validate the path param is a UUID before touching the store.
     try:
@@ -344,7 +345,7 @@ async def list_app_installations(request: Request):
     return {"installations": result}
 
 
-@router.post("/api/github/app/install")
+@router.post("/api/github/app/install", dependencies=[Depends(require_admin)])
 async def begin_app_installation(request: Request):
     """Redirect the user to GitHub's App installation page.
 
@@ -484,7 +485,7 @@ async def app_installation_callback(
     return RedirectResponse(url="/app/secrets", status_code=302)
 
 
-@router.delete("/api/github/app/installations/{installation_id}")
+@router.delete("/api/github/app/installations/{installation_id}", dependencies=[Depends(require_admin)])
 async def delete_app_installation(request: Request, installation_id: int):
     """Uninstall the GitHub App from the given installation."""
     cfg = _app_config(request)
