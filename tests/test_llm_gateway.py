@@ -403,21 +403,25 @@ async def test_routes_enforce_the_callers_model_scope(client):
 
 @_ASYNC
 @respx.mock
-async def test_taos_default_is_checked_against_the_resolved_model_too(client):
+async def test_taos_default_grants_whatever_it_resolves_to(client):
+    """Alias rule (product decision): a caller allowed taos-default may use
+    whatever it currently resolves to, without the concrete model listed."""
     from tinyagentos.llm_gateway.auth import GatewayCaller, gateway_caller
 
-    route = respx.post(UPSTREAM_CHAT)
+    route = respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(200, json=_completion("qwen3-8b")))
     await _set_default(client, "qwen3-8b")
     app = _app(client)
     app.dependency_overrides[gateway_caller] = lambda: GatewayCaller(
         caller_id="agent:scoped", allowed_models=frozenset({"taos-default"}), kind="test",
     )
     try:
-        resp = await client.post(BASE + "/chat/completions", json=_chat("taos-default"))
+        via_alias = await client.post(BASE + "/chat/completions", json=_chat("taos-default"))
+        direct = await client.post(BASE + "/chat/completions", json=_chat("qwen3-8b"))
     finally:
         app.dependency_overrides.pop(gateway_caller, None)
-    _assert_openai_error(resp, 403, "model_not_permitted")
-    assert not route.called
+    assert via_alias.status_code == 200, via_alias.text
+    _assert_openai_error(direct, 403, "model_not_permitted")
+    assert route.call_count == 1
 
 
 class _State:

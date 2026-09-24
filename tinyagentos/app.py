@@ -1684,6 +1684,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             status_code=503,
         )
 
+    # LLM gateway keys: the default keystore location for mint/revoke callers
+    # (node pairing, agent lifecycle) that pass no data_dir.
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    configure_gateway_keystore(data_dir)
+
     # Auth middleware -- added first so it is innermost. Starlette builds the
     # middleware stack in reverse add order (last added is outermost), so the
     # first-added middleware wraps the route last in the request chain, keeping

@@ -74,8 +74,15 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
     if not caller.may_use(requested):
         raise model_not_permitted(requested)
     state = request.app.state
+    # Resolve ONCE: the route checked below is the route forwarded to, so a
+    # default changed mid-request cannot slip between the check and the call.
     route = await resolve(state, requested)
-    if route.model_name != requested and not caller.may_use(route.model_name):
+    # Alias rule: a caller granted taos-default may use whatever it CURRENTLY
+    # resolves to (only the owner sets the default, so the grant is "whatever
+    # the owner chose"; a board keyed to ["taos-default"] keeps working when
+    # the default changes). Every other resolution is checked on its own.
+    alias_grant = requested == TAOS_DEFAULT and caller.may_use(TAOS_DEFAULT)
+    if route.model_name != requested and not alias_grant and not caller.may_use(route.model_name):
         raise model_not_permitted(route.model_name)
     if route.provider != OPENAI_PROVIDER:
         raise GatewayError(
