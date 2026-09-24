@@ -224,6 +224,7 @@ async def hardware_profile(request: Request):
     profile = request.app.state.hardware_profile
     data = asdict(profile)
     data["profile_id"] = profile.profile_id
+    data["recommended_framework"] = profile.recommended_framework
     return data
 
 
@@ -236,6 +237,7 @@ async def redetect_hardware(request: Request):
     request.app.state.hardware_profile = profile
     data = asdict(profile)
     data["profile_id"] = profile.profile_id
+    data["recommended_framework"] = profile.recommended_framework
     return data
 
 

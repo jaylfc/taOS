@@ -101,6 +101,11 @@ class HardwareProfile:
         ram_gb = _snap_ram_to_canonical_gb(self.ram_mb)
         return f"{arch}-{accel}-{ram_gb}gb"
 
+    @property
+    def recommended_framework(self) -> str:
+        from tinyagentos.frameworks import recommended_framework
+        return recommended_framework(self.ram_mb)
+
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         data = asdict(self)
