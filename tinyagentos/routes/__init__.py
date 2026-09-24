@@ -427,6 +427,13 @@ def register_all_routers(app):
     from tinyagentos.routes.agent_model_api import router as agent_model_api_router
     app.include_router(agent_model_api_router, dependencies=_csrf)
 
+    # In-process LLM gateway (/api/llm/v1), the LiteLLM replacement. Off by
+    # default: not mounted at all unless TAOS_LLM_GATEWAY=1, so off is a 404.
+    from tinyagentos import llm_gateway
+    if llm_gateway.enabled():
+        from tinyagentos.llm_gateway.router import mount as mount_llm_gateway
+        mount_llm_gateway(app, dependencies=_csrf)
+
     from tinyagentos.routes.agent_model_keys import router as agent_model_keys_router
     app.include_router(agent_model_keys_router, dependencies=_csrf)
 

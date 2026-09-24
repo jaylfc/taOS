@@ -1,0 +1,2 @@
+### Added
+- An in-process LLM gateway at `/api/llm/v1` (`chat/completions`, non-streaming, and `models`), the first step to replacing the LiteLLM proxy. It is off unless `TAOS_LLM_GATEWAY=1`, routes model names through the same table as the LiteLLM config, resolves `taos-default` to the current default chat model on every request, and forwards to OpenAI-compatible backends only. It runs beside LiteLLM, which is unchanged.

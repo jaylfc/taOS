@@ -1660,3 +1660,41 @@ replace the earlier shared-token binding: each deploy mints a fresh token,
 eliminating the last-deploy-wins collision where two agents bound to the same
 host token would overwrite each other's identity. The shared host token remains
 valid for admin/system callers but is no longer bound to any agent name.
+
+## In-process LLM gateway (`/api/llm/v1`, session or host local token)
+
+`tinyagentos/llm_gateway/` is the in-controller replacement for the LiteLLM
+proxy. It is mounted only when the controller starts with
+`TAOS_LLM_GATEWAY=1`; otherwise `/api/llm/v1/*` does not exist (404 for a
+signed-in caller). LiteLLM keeps running beside it, unchanged.
+
+- `GET /api/llm/v1/models`: OpenAI list shape. Every chat model name in the
+  routing table, plus the alias `taos-default` first.
+- `POST /api/llm/v1/chat/completions`: non-streaming only (`stream: true` is a
+  400 until streaming lands). The body is forwarded verbatim, `tools` /
+  `tool_choice` / `tool_calls` included; only `model` is rewritten to the
+  backend's own id. Only OpenAI-compatible backends (LiteLLM's `openai/`
+  prefix) are served; any other backend type is a 501 naming the model.
+  Upstream failures and timeouts are a 502; the backend's key and URL never
+  appear in a response or a log line.
+
+It is deliberately NOT bare `/v1`: `/v1/models` and `/v1/chat/completions`
+are Agent-as-a-Model (consent-key auth, see `routes/agent_model_api.py`) and
+are unchanged.
+
+Routing: model names resolve through `litellm_config.build_model_list`, the
+same function `generate_litellm_config` wraps, read per request.
+`taos-default` resolves per request to the taOS agent's model preference
+(desktop settings `("user", "taos_agent")["model"]`, set by
+`PATCH /api/taos-agent/settings`), so changing it needs no restart.
+
+Auth: there is NO middleware exemption. The gateway accepts what the auth
+middleware already accepts as a signed-in session or the host's shared local
+token, and nothing else: a deployer-minted per-agent local token, a registry
+JWT, a device bearer and an Agent-as-a-Model consent key are all 401. The
+middleware's 401 on `/api/llm/*` is OpenAI-shaped
+(`{"error": {"message", "type", "code": "invalid_api_key"}}`) so OpenAI
+clients surface it as bad credentials. The routes take auth and model
+permission ONLY from the `gateway_caller` dependency
+(`tinyagentos/llm_gateway/auth.py`); scoped per-agent gateway keys replace
+its body later, and will need their own middleware exemption then.
