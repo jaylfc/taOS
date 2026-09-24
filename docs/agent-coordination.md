@@ -582,6 +582,10 @@ method+path pairs pass the middleware; any other `/v1` path stays
 session-gated. `POST /v1/chat/completions` returns 501 for a valid key until
 the opencode host-server turn seam lands (decided 2026-06-23, unbuilt).
 
+A third credential class, the LLM gateway key (`sk-taosgw-...`), reaches
+exactly `GET /api/llm/v1/models` and `POST /api/llm/v1/chat/completions`; see
+"In-process LLM gateway" below.
+
 The registry-JWT surface, by scope:
 
 - **project_tasks** (the kanban board): `GET /api/projects/{pid}/tasks`,
@@ -1493,6 +1497,10 @@ Behaviour common to all three:
   `404` here.
 - `503` when the pairing store is unavailable, kept distinct from `404` so a
   missing subsystem is never reported as a missing node.
+- revoke and block (and `DELETE /api/cluster/workers/{name}`) also revoke
+  every LLM gateway key bound to `node:<name>`, so the node loses model access
+  in the same step. The key stays dead after unblock; re-pairing does not
+  resurrect it.
 - revoke and block mark the in-memory worker **offline immediately** so the
   scheduler stops routing tasks to it, rather than waiting out the heartbeat
   timeout. The worker stays REGISTERED and therefore still visible in
@@ -1661,7 +1669,7 @@ eliminating the last-deploy-wins collision where two agents bound to the same
 host token would overwrite each other's identity. The shared host token remains
 valid for admin/system callers but is no longer bound to any agent name.
 
-## In-process LLM gateway (`/api/llm/v1`, session or host local token)
+## In-process LLM gateway (`/api/llm/v1`, scoped gateway keys, session or host local token)
 
 `tinyagentos/llm_gateway/` is the in-controller replacement for the LiteLLM
 proxy. It is mounted only when the controller starts with
@@ -1688,13 +1696,36 @@ same function `generate_litellm_config` wraps, read per request.
 (desktop settings `("user", "taos_agent")["model"]`, set by
 `PATCH /api/taos-agent/settings`), so changing it needs no restart.
 
-Auth: there is NO middleware exemption. The gateway accepts what the auth
-middleware already accepts as a signed-in session or the host's shared local
-token, and nothing else: a deployer-minted per-agent local token, a registry
-JWT, a device bearer and an Agent-as-a-Model consent key are all 401. The
-middleware's 401 on `/api/llm/*` is OpenAI-shaped
-(`{"error": {"message", "type", "code": "invalid_api_key"}}`) so OpenAI
-clients surface it as bad credentials. The routes take auth and model
-permission ONLY from the `gateway_caller` dependency
-(`tinyagentos/llm_gateway/auth.py`); scoped per-agent gateway keys replace
-its body later, and will need their own middleware exemption then.
+Auth: the routes take auth and model permission ONLY from the
+`gateway_caller` dependency (`tinyagentos/llm_gateway/auth.py`). The
+middleware exempts EXACTLY `GET /api/llm/v1/models` and
+`POST /api/llm/v1/chat/completions` (method-sensitive) so a bearer key reaches
+that dependency; every other `/api/llm` path or method stays gated, and its
+401 is OpenAI-shaped (`{"error": {"message", "type", "code": "invalid_api_key"}}`)
+so OpenAI clients surface it as bad credentials. `gateway_caller` accepts:
+
+- a signed-in session, or the host's shared local token: every model;
+- a GATEWAY KEY (`Authorization: Bearer sk-taosgw-...`) bound to one agent id
+  or one node (`node:<id>`), stored only as a SHA-256 hash, compared with
+  `hmac.compare_digest`, optionally expiring. It may use exactly the models it
+  names: an EMPTY list denies every model (LiteLLM read it as allow-all);
+- a legacy per-agent LiteLLM key (`sk-taos-...`, the `agent_keys` table), with
+  its allowlist;
+- the per-install LiteLLM master key, as admin (parity with the LiteLLM hook).
+
+The `taos-default` alias rule: a caller allowed `taos-default` may use
+whatever it CURRENTLY resolves to, without the concrete model in its list.
+Only the owner sets the default, so the grant is "whatever the owner chose",
+and a board keyed to `["taos-default"]` keeps working when the default
+changes. The other direction does not hold: listing the concrete model does
+not grant the alias, and requesting a concrete model directly still needs its
+own entry. `GET /models` for a `["taos-default"]` key lists `taos-default`
+only. The alias is resolved ONCE per request and that one value is both
+checked and forwarded to.
+
+Everything else is 401: a deployer-minted per-agent LOCAL token (that is the
+agent's controller identity, not a model credential), a registry JWT, a device
+bearer and an Agent-as-a-Model consent key. An agent over its LLM budget gets
+the LiteLLM hook's 429 before anything is forwarded. Revoking, blocking or
+deleting a cluster node, and archiving an agent, revoke the keys bound to it
+in the same request.
