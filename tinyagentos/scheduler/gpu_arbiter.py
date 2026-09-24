@@ -216,6 +216,8 @@ class GpuArbiter:
         for worker in self._cluster_manager.get_workers():
             if worker.status not in ("online", "draining"):
                 continue
+            if getattr(worker, "kind", "worker") == "device":
+                continue  # a taOSusb board is never a job/admission candidate
             gpu_info = worker.hardware.get("gpu", {}) if isinstance(worker.hardware, dict) else {}
             gpu_model = gpu_info.get("model", "") or ""
             cc = gpu_info.get("compute_cap", "") or ""
@@ -404,6 +406,8 @@ class GpuArbiter:
         for worker in self._cluster_manager.get_workers():
             if worker.status != "online":
                 continue
+            if getattr(worker, "kind", "worker") == "device":
+                continue  # a taOSusb board is never a job/admission candidate
             if worker.free_vram_mb is None:
                 continue  # non-NVIDIA worker — no VRAM probe
             worker_leases = sum(
