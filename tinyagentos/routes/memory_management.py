@@ -11,12 +11,14 @@ import logging
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+
+from tinyagentos.auth_context import require_admin
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 _SETTINGS_DB = "data/memory-settings.db"
 
