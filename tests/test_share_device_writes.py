@@ -93,7 +93,7 @@ class TestDeviceBearerProjectFiles:
         )
         assert resp.status_code in (403, 404)
 
-    async def test_device_can_upload_when_member_with_write(self, client, app):
+    async def test_device_member_with_write_is_refused_like_a_session(self, client, app):
         owner = "project-owner"
         member = "project-member"
         project = await app.state.project_store.create_project(
@@ -123,9 +123,17 @@ class TestDeviceBearerProjectFiles:
             headers=_bearer(token),
             files={"file": ("hello.txt", b"hello world", "text/plain")},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 403
         body = resp.json()
-        assert body["name"] == "hello.txt"
+
+        # Same member's SESSION upload should also be refused (404 or 403)
+        resp2 = await client.post(
+            "/api/sessions/upload",
+            headers=_bearer(token),
+            files={"file": ("session.txt", b"session content", "text/plain")},
+        )
+        assert resp2.status_code in (403, 404)
+        body2 = resp2.json()
 
 
 @pytest.mark.asyncio
