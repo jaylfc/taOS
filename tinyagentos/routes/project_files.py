@@ -5,12 +5,10 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from tinyagentos.auth_context import CurrentUser
-from tinyagentos.device_auth import current_user_or_device
 from tinyagentos.workspace_trash import (
     TrashItemNotFound,
     TrashRestoreConflict,
@@ -40,7 +38,7 @@ _FILES_WRITE_SCOPE = "files_write"
 
 
 async def _authorize_files_actor(
-    request: Request, slug: str, mode: Literal["read", "write"], user: CurrentUser | None = None
+    request: Request, slug: str, mode: Literal["read", "write"]
 ) -> "tuple[str, str] | JSONResponse":
     """Resolve + authorize the actor for a project-files route.
 
@@ -57,18 +55,6 @@ async def _authorize_files_actor(
     """
     ps = request.app.state.project_store
     project = await ps.get_project_by_slug(slug)
-    if user is not None:
-        is_admin = user.is_admin
-        if project is not None:
-            if is_admin or project.get("user_id") == user.user_id:
-                return ("user", user.user_id)
-            if mode == "write":
-                member = await ps.get_member(project["id"], user.user_id)
-                if member and (member.get("is_lead") or member.get("can_edit_canvas")):
-                    return ("user", user.user_id)
-                return JSONResponse({"error": "forbidden"}, status_code=403)
-        return ("user", user.user_id)
-    
     uid = getattr(request.state, "user_id", None)
     if uid:
         is_admin = bool(getattr(request.state, "is_admin", False))
