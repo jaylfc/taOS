@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # console (see auth.is_console_origin) and throttles per user on top of that.
 # Note /auth/pin (set/clear a PIN) is deliberately absent from this set: those
 # require a live session and must stay gated here.
-EXEMPT_PATHS = {"/auth/login", "/auth/pin-login", "/auth/osk.js", "/auth/pin-panel.js", "/auth/lock-screen.js", "/auth/lock-widgets", "/auth/lock-weather", "/auth/lock-notifications", "/auth/lock-stats", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
+EXEMPT_PATHS = {"/auth/login", "/auth/pin-login", "/auth/osk.js", "/auth/pin-panel.js", "/auth/lock-screen.js", "/auth/lock-widgets", "/auth/lock-weather", "/auth/lock-notifications", "/auth/lock-stats", "/auth/lock-panels", "/auth/lock-events", "/auth/lock-power-menu", "/auth/lock-screen-off", "/auth/lock-screen-on", "/auth/lock-brightness", "/auth/lock-torch", "/auth/lock-volume", "/auth/lock-volume-key", "/auth/lock-radios", "/auth/lock-power-action", "/auth/lock-app", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
 
 # Registry feed endpoints accept EITHER an admin session OR a registry JWT.
 # When a Bearer token is present for these paths the request bypasses the
@@ -439,6 +439,30 @@ _INVITE_INFO_PREFIX = "/i/"
 _AGENT_MODEL_MODELS = "/v1/models"
 _AGENT_MODEL_CHAT = "/v1/chat/completions"
 
+# In-process LLM gateway (tinyagentos/llm_gateway). Exactly two method+path
+# pairs are EXEMPT, like the Agent-as-a-Model pair above: a scoped gateway key
+# (or the host local token, or a signed-in session) IS the credential and the
+# route's ``gateway_caller`` dependency enforces it, answering an OpenAI-shaped
+# 401 otherwise. Every other /api/llm path or method stays gated here.
+_LLM_GATEWAY_MODELS = "/api/llm/v1/models"
+_LLM_GATEWAY_CHAT = "/api/llm/v1/chat/completions"
+# The gated rest of /api/llm/ still gets an OpenAI-shaped 401: an OpenAI
+# client reads error.message from an object, and the plain
+# {"error": "Authentication required"} string there surfaces as a crash in
+# the client, not as "bad credentials".
+_LLM_GATEWAY_PREFIX = "/api/llm/"
+
+
+def _unauthenticated(path: str, body: dict) -> JSONResponse:
+    if path.startswith(_LLM_GATEWAY_PREFIX):
+        return JSONResponse(
+            {"error": {"message": "missing or invalid credentials",
+                       "type": "invalid_request_error", "param": None,
+                       "code": "invalid_api_key"}},
+            status_code=401,
+        )
+    return JSONResponse(body, status_code=401)
+
 # Local-only shutdown drain: the systemd ExecStop hook (taos-graceful-stop)
 # POSTs this from localhost with no session cookie and no token, so it was
 # getting 401 and the in-app drain never ran. We exempt it ONLY for loopback
@@ -565,6 +589,12 @@ def _is_exempt(method: str, path: str) -> bool:
     if method == "GET" and path == _AGENT_MODEL_MODELS:
         return True
     if method == "POST" and path == _AGENT_MODEL_CHAT:
+        return True
+    # LLM gateway -- scoped-key auth lives in the route dependency (see the
+    # constants block above). Exact paths only.
+    if method == "GET" and path == _LLM_GATEWAY_MODELS:
+        return True
+    if method == "POST" and path == _LLM_GATEWAY_CHAT:
         return True
     return False
 
@@ -724,7 +754,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         await check_agent_identity(request)
                         return JSONResponse({"error": "Not Found"}, status_code=404)
                     except HTTPException:
-                        return JSONResponse({"error": "Authentication required"}, status_code=401)
+                        return _unauthenticated(path, {"error": "Authentication required"})
 
         # 3) Device-bearer self-service on carded routes
         # Device-bearer self-service: a scoped device token may pass the auth
@@ -770,9 +800,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             accept = request.headers.get("accept", "")
             if "text/html" in accept:
                 return RedirectResponse("/auth/setup", status_code=303)
-            return JSONResponse(
-                {"error": "onboarding_required", "needs_onboarding": True},
-                status_code=401,
+            return _unauthenticated(
+                path, {"error": "onboarding_required", "needs_onboarding": True},
             )
 
         # Redirect to login for browsers, 401 for API calls
@@ -781,4 +810,4 @@ class AuthMiddleware(BaseHTTPMiddleware):
             next_param = f"?next={path}" if path != "/" else ""
             return RedirectResponse(f"/auth/login{next_param}", status_code=303)
 
-        return JSONResponse({"error": "Authentication required"}, status_code=401)
+        return _unauthenticated(path, {"error": "Authentication required"})

@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: ghcr.io/danny-avila/librechat-dev:latest
+  image: ghcr.io/danny-avila/librechat:0.7.6
   ports: [3080]
   env:
     HOST: "0.0.0.0"

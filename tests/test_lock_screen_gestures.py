@@ -34,17 +34,38 @@ def _balanced(src: str, start: int, opener: str, closer: str) -> str:
 
     Quote-aware, because a brace inside a string literal would otherwise end the
     span early and hand the caller a slice that happens to parse.
+
+    COMMENT-aware for the same reason, and it is not hypothetical: the comment
+    ``// The App Store's own artwork`` inside ``island()`` opened an apostrophe
+    that never closed, so every brace after it was read as string content and
+    ``_function("island")`` quietly returned 12kB -- the whole of island(),
+    reconcileIslands() AND paintActivity(). It still parsed, and every test
+    still passed, because the extra functions were the real ones. A harness
+    that hands back three times what it was asked for is not measuring what it
+    claims to; the next divergence would not be so harmless.
     """
     i = src.index(opener, start)
     depth, quote = 0, ""
     while i < len(src):
         ch = src[i]
+        nxt = src[i + 1] if i + 1 < len(src) else ""
         if quote:
             if ch == "\\":
                 i += 2
                 continue
             if ch == quote:
                 quote = ""
+        elif ch == "/" and nxt == "/":
+            i = src.find("\n", i)
+            if i == -1:
+                break
+            continue
+        elif ch == "/" and nxt == "*":
+            end = src.find("*/", i + 2)
+            if end == -1:
+                break
+            i = end + 2
+            continue
         elif ch in "\"'":
             quote = ch
         elif ch == opener:
@@ -140,7 +161,9 @@ process.stdout.write(JSON.stringify({ unlocked: unlocked }));
 """
 
 
-def _gesture_source(*, with_fix: bool = True, ignore_scroll: bool = False) -> str:
+def _gesture_source(
+    *, with_fix: bool = True, ignore_scroll: bool = False, ignore_dead_feed: bool = False
+) -> str:
     """The real source of the gesture machinery, optionally de-fixed.
 
     `with_fix=False` rebuilds the wiring as it stood before tsk-6bjsvg -- the
@@ -161,6 +184,16 @@ def _gesture_source(*, with_fix: bool = True, ignore_scroll: bool = False) -> st
         )
         room = mutated
     wiring = _unlock_wiring()
+    if ignore_dead_feed:
+        # The plausible wrong answer for Jay's glass bug: keep asking how much
+        # room is left and drop the question of whether the feed can scroll at
+        # all. That is the code as it stood when he reported it.
+        mutated = wiring.replace(" || !feedOverflows()", "")
+        assert mutated != wiring, (
+            "the mutation changed nothing -- the veto no longer asks "
+            "!feedOverflows() the way this mutation assumes, so it proves nothing"
+        )
+        wiring = mutated
     if not with_fix:
         # Drop the 5th argument (the veto) and nothing else.
         guard_end = wiring.rindex("}, function (ev) {")
@@ -169,7 +202,13 @@ def _gesture_source(*, with_fix: bool = True, ignore_scroll: bool = False) -> st
     return "\n".join([_function("feedOverflows"), room, _function("swipe"), wiring])
 
 
-def _drive(scenario: dict, *, with_fix: bool = True, ignore_scroll: bool = False) -> int:
+def _drive(
+    scenario: dict,
+    *,
+    with_fix: bool = True,
+    ignore_scroll: bool = False,
+    ignore_dead_feed: bool = False,
+) -> int:
     """Run one gesture and return how many times unlock was triggered."""
     node = shutil.which("node")
     if node is None:  # pragma: no cover - depends on the runner image
@@ -185,7 +224,11 @@ def _drive(scenario: dict, *, with_fix: bool = True, ignore_scroll: bool = False
         )
     script = _HARNESS.replace(
         "__GESTURE_SOURCE__",
-        _gesture_source(with_fix=with_fix, ignore_scroll=ignore_scroll),
+        _gesture_source(
+            with_fix=with_fix,
+            ignore_scroll=ignore_scroll,
+            ignore_dead_feed=ignore_dead_feed,
+        ),
     )
     done = subprocess.run(
         [node, "-e", script],
@@ -247,15 +290,33 @@ class TestUnlockSwipeOrigin:
         """The positive case, without which a veto could pass by never unlocking."""
         assert _drive(_scenario(startOn="body", endOn="body")) == 1
 
-    def test_a_feed_with_nothing_to_scroll_still_unlocks(self):
-        """A feed that cannot move is not being read.
+    def test_a_feed_with_nothing_to_scroll_does_not_unlock_from_a_card(self):
+        """REVERSED DELIBERATELY. This test used to assert the opposite.
 
-        On a device with one agent and no notifications the feed still covers
-        the middle of the glass. Vetoing there would trade Jay's bug for a dead
-        unlock gesture over most of the screen, on the first screen a new user
-        sees. The cut-edge fade already measures overflow for the same reason.
+        The old rule said a feed that cannot move is not being read, so a drag
+        starting on it should unlock. That was reasoned from a device with one
+        agent and no notifications. MEASURED on the real device instead --
+        540x1200, sway scale 2.0, the six agents the demo phone actually shows
+        -- `#ls-feed` reports scrollHeight 394 and clientHeight 394. The feed is
+        content-sized: it does not overflow, and it never did. So this was not a
+        corner case for a brand-new phone, it was the ORDINARY state of the
+        screen, and every drag that began on an agent island opened the keypad.
+        That is the bug Jay reported from the glass.
+
+        The unlock gesture is not lost: the feed is 394px of a 1200px screen and
+        the rest of the glass still unlocks, which is what
+        `test_a_non_scrolling_feed_does_not_kill_the_gesture_elsewhere` holds to.
         """
-        assert _drive(_scenario(feedScrollHeight=300)) == 1
+        assert _drive(_scenario(feedScrollHeight=300)) == 0
+
+    def test_a_non_scrolling_feed_does_not_kill_the_gesture_elsewhere(self):
+        """The cost of the reversal above, bounded.
+
+        Vetoing a non-scrolling feed is only acceptable while the unlock swipe
+        still works everywhere else. Without this, the fix for Jay's bug could
+        be "nothing unlocks any more" and the suite would not notice.
+        """
+        assert _drive(_scenario(feedScrollHeight=300, startOn="body", endOn="body")) == 1
 
     def test_the_veto_does_not_reach_past_the_resting_screen(self):
         """With a sheet open the unlock swipe was already disarmed; keep it so."""
@@ -308,9 +369,24 @@ class TestUnlockAtTheEndOfTheFeed:
         """
         assert _drive(_scenario(feedScrollTop=599.6)) == 1
 
-    def test_a_feed_with_nothing_to_scroll_is_already_at_its_end(self):
-        """#3102's narrowing, restated in the new terms and still true."""
-        assert _drive(_scenario(feedScrollHeight=300, feedScrollTop=0)) == 1
+    def test_a_feed_with_nothing_to_scroll_is_not_treated_as_at_its_end(self):
+        """The distinction the room measurement ALONE cannot draw.
+
+        A feed scrolled to its end and a feed that never scrolled both report
+        zero room, and they are opposite situations. At the end of a long feed
+        the drag that got there is finished and an upward swipe means unlock
+        (tsk-36i6ed). On a feed that cannot scroll, an upward drag on a card is
+        not the end of anything. Telling them apart needs a second reading --
+        whether the feed overflows at all -- which is why `feedOverflows()` is
+        back in the veto.
+
+        It is back as a DISJUNCT, not the conjunct removed with tsk-36i6ed. That
+        one could not change the answer, because the browser clamps scrollTop to
+        0 on a feed that cannot scroll; this one decides this case by itself and
+        decides no other. `test_the_suite_fails_the_mutation_that_ignores_a_
+        dead_feed` is what holds it to that.
+        """
+        assert _drive(_scenario(feedScrollHeight=300, feedScrollTop=0)) == 0
 
     def test_the_end_of_the_feed_is_judged_from_where_the_touch_LANDED(self):
         """The latch, measured rather than asserted on structure.
@@ -337,6 +413,24 @@ class TestUnlockAtTheEndOfTheFeed:
         # Naming this keeps the control honest: the mutation must break the case
         # that discriminates, not simply break everything.
         assert _drive(_scenario(feedScrollTop=0), ignore_scroll=True) == 0
+
+    def test_the_suite_fails_the_mutation_that_ignores_a_dead_feed(self):
+        """THE MUTATION CONTROL for Jay's glass bug.
+
+        Drop `|| !feedOverflows()` and the veto is back to asking only how much
+        room is left -- the code exactly as it was when Jay reported that
+        swiping an agent island opened the keypad. The non-scrolling case must
+        go RED under it.
+
+        The two assertions after it are the point. A mutation that breaks
+        everything proves nothing: it would show only that the suite notices
+        change, not that these scenarios separate "cannot scroll" from "scrolled
+        to the end". Both of those stay exactly as they are under the mutation,
+        so the one case that moves is the one that discriminates.
+        """
+        assert _drive(_scenario(feedScrollHeight=300), ignore_dead_feed=True) == 1
+        assert _drive(_scenario(feedScrollTop=600), ignore_dead_feed=True) == 1
+        assert _drive(_scenario(feedScrollTop=0), ignore_dead_feed=True) == 0
 
 
 class TestGestureLatching:

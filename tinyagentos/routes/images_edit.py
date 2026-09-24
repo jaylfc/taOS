@@ -29,7 +29,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from tinyagentos.routes.images import _image_url_path, _images_dir
+from tinyagentos.routes.images import _get_user_id, _image_url_path, _images_dir
 
 logger = logging.getLogger(__name__)
 
@@ -162,12 +162,14 @@ def _save_result(
         logger.exception("failed to save edit result")
         raise RuntimeError(f"Could not save result: {exc}") from exc
 
+    user_id = _get_user_id(request)
+
     return {
         "status": "edited",
         "filename": filename,
         "image_ref": filename,
-        "url": _image_url_path(filename),
-        "path": _image_url_path(filename),
+        "url": _image_url_path(filename, user_id),
+        "path": _image_url_path(filename, user_id),
         "backend": backend_type,
         "degraded": degraded,
     }

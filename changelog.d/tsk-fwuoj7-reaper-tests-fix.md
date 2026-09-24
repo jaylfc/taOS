@@ -1,0 +1,2 @@
+### Fixed
+- Fixed vacuous test passes in reaper tests when pytest runs under PID 1 (containers). The `_make_mock_process` helper now defaults `ppid` to a fixed non-1 value (4242) instead of the test runner's parent PID, and the orphan test explicitly sets `ppid=1`. Added `assert proc.wait_called` to the wait-timeout test to prevent vacuous passes.

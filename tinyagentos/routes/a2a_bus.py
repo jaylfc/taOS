@@ -88,8 +88,10 @@ def _credential_may_cross(bus_url: str) -> bool:
     ``http://127.0.0.1.evil.test:7900`` does NOT count as loopback.
     """
     parsed = urlparse(bus_url)
-    if parsed.scheme != "http":
+    if parsed.scheme == "https":
         return True
+    if parsed.scheme != "http":
+        return False
     hostname = (parsed.hostname or "").lower()
     if not hostname:
         return False
@@ -103,6 +105,16 @@ def _credential_may_cross(bus_url: str) -> bool:
         if addr.is_loopback:
             return True
     return bool(os.environ.get("TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL"))
+
+
+def _sanitise_handle(handle: str) -> str:
+    """Strip non-printable characters and cap at 64 characters.
+
+    Shared by the admin and human branches of ``_resolve_send_identity`` so
+    the two paths cannot drift apart: a handle carrying a newline or control
+    character cannot inject into bus records or log lines.
+    """
+    return "".join(c for c in handle if c.isprintable())[:64].strip()
 
 
 async def _authorize_bus_read(request: Request) -> None:
@@ -497,8 +509,7 @@ async def _resolve_send_identity(
       rejected here as 403 (fail closed).
     """
     if getattr(request.state, "is_admin", False):
-        handle = (body_from or "").strip()
-        handle = "".join(c for c in handle if c.isprintable())[:64].strip()
+        handle = _sanitise_handle(body_from or "")
         return _BusIdentity(handle or "@operator")
 
     caller = await check_agent_scope(request, "a2a_send")
@@ -533,7 +544,8 @@ async def _resolve_send_identity(
         # principal-spelling policy for humans is not settled yet (taosmd
         # a2a-bus-auth-transition, open question 1). Forwarding it today would
         # present a credential whose sub cannot match the from it accompanies.
-        return _BusIdentity(f"@{username}")
+        handle = _sanitise_handle(f"@{username}")
+        return _BusIdentity(handle or f"@{human_id}")
 
     raise HTTPException(status_code=403, detail="forbidden")
 
@@ -581,10 +593,12 @@ async def bus_send(request: Request, body: BusSendBody):
         payload["reply_to"] = body.reply_to
 
     headers: dict[str, str] = {}
+    credential_forwarded = False
     if identity.credential:
         bus = _bus_url()
         if _credential_may_cross(bus):
             headers["Authorization"] = f"Bearer {identity.credential}"
+            credential_forwarded = True
         else:
             logger.warning(
                 "A2A bus credential withheld for non-loopback http destination %s",
@@ -603,7 +617,7 @@ async def bus_send(request: Request, body: BusSendBody):
         logger.warning("A2A bus send failed (%s): %s", bus, exc)
         raise HTTPException(status_code=502, detail="a2a bus unavailable")
 
-    return {"ok": True, "from": identity.from_handle, "message": data}
+    return {"ok": True, "from": identity.from_handle, "message": data, "credential_forwarded": credential_forwarded}
 
 
 @router.post("/api/a2a/bus/human-assertion")

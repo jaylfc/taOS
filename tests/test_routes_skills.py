@@ -18,6 +18,44 @@ class TestSkillsRoutes:
             await store.init()
 
     @pytest.mark.asyncio
+    async def test_assign_skill_unknown_id_returns_404_and_writes_no_row(self, client, app):
+        await self._init_real_skills(app)
+
+        agent_id = "test-agent-unknown-skill"
+        resp = await client.post(
+            f"/api/agents/{agent_id}/skills",
+            json={"skill_id": "does-not-exist"},
+        )
+        assert resp.status_code == 404
+        assert resp.json() == {"error": "Skill not found"}
+
+        cursor = await app.state.skills._db.execute(
+            "SELECT * FROM agent_skills WHERE agent_id = ? AND skill_id = ?",
+            (agent_id, "does-not-exist"),
+        )
+        rows = await cursor.fetchall()
+        assert len(rows) == 0
+
+    @pytest.mark.asyncio
+    async def test_assign_skill_known_id_returns_200_and_writes_row(self, client, app):
+        await self._init_real_skills(app)
+
+        agent_id = "test-agent-known-skill"
+        resp = await client.post(
+            f"/api/agents/{agent_id}/skills",
+            json={"skill_id": "memory_search"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+
+        cursor = await app.state.skills._db.execute(
+            "SELECT * FROM agent_skills WHERE agent_id = ? AND skill_id = ?",
+            (agent_id, "memory_search"),
+        )
+        rows = await cursor.fetchall()
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
     async def test_list_skills_returns_collection(self, client, app):
         await self._init_real_skills(app)
 

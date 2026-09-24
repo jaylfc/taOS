@@ -169,6 +169,10 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["tinyagentos*"]
 
+
+[tool.setuptools.package-data]
+# Vendored MIT price table + its licence notice (scripts/update_model_prices.py regenerates the JSON).
+"tinyagentos.llm_usage" = ["data/model_prices.json", "data/NOTICE"]
 [project.scripts]
 tinyagentos = "tinyagentos.app:main"
 tinyagentos-worker = "tinyagentos.worker.__main__:main"

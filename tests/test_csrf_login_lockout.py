@@ -158,6 +158,106 @@ class TestStaleCookieDoesNotBlockSignIn:
         assert resp.status_code != 403, resp.text
 
     @pytest.mark.asyncio
+    async def test_first_run_setup_clears_a_stale_session_cookie(
+        self, unconfigured_app
+    ):
+        """A stale taos_session cookie must be cleared in the response so the
+        browser stops sending it on subsequent requests, but a fresh session
+        cookie minted by the route must SURVIVE the response.  The effective
+        cookie jar is last-write-wins per name+path across all Set-Cookie
+        headers."""
+        def _effective_jar(set_cookie_headers: list[str]) -> dict[str, str]:
+            jar: dict[str, str] = {}
+            for raw in set_cookie_headers:
+                parts = raw.split(";")
+                name_value = parts[0].strip()
+                if "=" not in name_value:
+                    continue
+                name = name_value.split("=", 1)[0].strip()
+                path = "/"
+                for p in parts[1:]:
+                    p = p.strip()
+                    if p.lower().startswith("path="):
+                        path = p[5:].strip()
+                jar[f"{name}:{path}"] = name_value.split("=", 1)[1]
+            return jar
+
+        UA = "taOS-test/1.0"
+        async with _console_client(
+            unconfigured_app, {"taos_session": STALE_SESSION}
+        ) as c:
+            resp = await c.post(
+                "/auth/setup",
+                json={
+                    "username": "tester",
+                    "display_name": "Bring-up Test",
+                    "email": "",
+                    "password": PASSWORD,
+                },
+                headers={"User-Agent": UA},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 200, resp.text
+        set_cookie_headers = resp.headers.get_list("set-cookie")
+        jar = _effective_jar(set_cookie_headers)
+        session_value = jar.get("taos_session:/")
+        assert session_value is not None and session_value != "", (
+            "final taos_session cookie is empty or missing: "
+            f"effective jar={jar!r}, Set-Cookie headers={set_cookie_headers!r}"
+        )
+        from tinyagentos.auth import AuthManager
+        mgr = unconfigured_app.state.auth
+        assert mgr.validate_session(session_value, user_agent=UA) is not None, (
+            "fresh taos_session cookie does not resolve to a live session"
+        )
+
+    @pytest.mark.asyncio
+    async def test_password_login_keeps_its_fresh_session_cookie(
+        self, configured_app
+    ):
+        """POST /auth/login mints a fresh taos_session cookie.  The stale-cookie
+        clear must not delete that fresh cookie.  Assert the final effective jar
+        carries a non-empty taos_session that resolves via validate_session."""
+        def _effective_jar(set_cookie_headers: list[str]) -> dict[str, str]:
+            jar: dict[str, str] = {}
+            for raw in set_cookie_headers:
+                parts = raw.split(";")
+                name_value = parts[0].strip()
+                if "=" not in name_value:
+                    continue
+                name = name_value.split("=", 1)[0].strip()
+                path = "/"
+                for p in parts[1:]:
+                    p = p.strip()
+                    if p.lower().startswith("path="):
+                        path = p[5:].strip()
+                jar[f"{name}:{path}"] = name_value.split("=", 1)[1]
+            return jar
+
+        UA = "taOS-test/1.0"
+        async with _console_client(
+            configured_app, {"taos_session": STALE_SESSION}
+        ) as c:
+            resp = await c.post(
+                "/auth/login",
+                data={"username": "tester", "password": PASSWORD},
+                headers={"User-Agent": UA},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303, resp.text
+        set_cookie_headers = resp.headers.get_list("set-cookie")
+        jar = _effective_jar(set_cookie_headers)
+        session_value = jar.get("taos_session:/")
+        assert session_value is not None and session_value != "", (
+            "final taos_session cookie is empty or missing after login: "
+            f"effective jar={jar!r}, Set-Cookie headers={set_cookie_headers!r}"
+        )
+        mgr = configured_app.state.auth
+        assert mgr.validate_session(session_value, user_agent=UA) is not None, (
+            "fresh taos_session cookie after login does not resolve to a live session"
+        )
+
+    @pytest.mark.asyncio
     async def test_first_boot_wizard_is_not_blocked_by_a_stale_session_cookie(
         self, unconfigured_app
     ):
@@ -300,6 +400,50 @@ class TestCsrfStillGuardsSessionAuthenticatedRoutes:
         ) as c:
             resp = await c.post("/auth/pin", json={"pin": "1234", "password": PASSWORD})
         assert resp.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_live_ua_bound_session_still_requires_csrf_on_logout(
+        self, configured_app
+    ):
+        """A live session bound to a User-Agent must not be cleared as stale
+        when the CSRF check is missing.  verify_csrf must pass the UA through
+        to validate_session, otherwise #3120's hardening misreads it as stale."""
+        UA = "taOS/1.0 (test)"
+        record = configured_app.state.auth.find_user("tester")
+        token = configured_app.state.auth.create_session(
+            user_id=record["id"], long_lived=False, user_agent=UA
+        )
+        import unittest.mock
+        with unittest.mock.patch.object(
+            configured_app.state.auth, "validate_session",
+            wraps=configured_app.state.auth.validate_session,
+        ) as spy:
+            async with _console_client(
+                configured_app,
+                {"taos_session": token},
+            ) as c:
+                resp = await c.post(
+                    "/auth/logout",
+                    headers={"User-Agent": UA},
+                    follow_redirects=False,
+                )
+        assert resp.status_code == 403, (
+            f"live UA-bound session should be 403 without CSRF token, got {resp.status_code}"
+        )
+        set_cookie_headers = resp.headers.get_list("set-cookie")
+        for raw in set_cookie_headers:
+            parts = raw.split(";")
+            name = parts[0].strip().split("=", 1)[0].strip()
+            assert name != "taos_session" or "Max-Age=0" not in raw, (
+                f"live session cookie was cleared: {raw!r}"
+            )
+        assert all(
+            (len(c.args) > 1 and c.args[1] is not None) or c.kwargs.get("user_agent") is not None
+            for c in spy.call_args_list
+        ), (
+            f"Some validate_session calls during this request did not pass user_agent: "
+            f"calls={spy.call_args_list!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_password_change_still_requires_the_token(self, configured_app):

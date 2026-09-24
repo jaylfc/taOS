@@ -159,6 +159,45 @@ class DockerInstaller(AppInstaller):
                 }
             service["environment"] = env
 
+        # Companion services (e.g. postgres for linkwarden)
+        companions: list[dict] = install_config.get("companions", [])
+        companion_services: list[dict] = []
+        companion_names: list[str] = []
+        if companions:
+            companion_needs_secret = any(
+                isinstance(v, str) and "{secret_key}" in v
+                for comp in companions
+                for v in (comp.get("env") or {}).values()
+            )
+            secret_key = (
+                self._get_or_create_secret_key(app_id)
+                if companion_needs_secret
+                else ""
+            )
+
+            for comp in companions:
+                comp_name = comp.get("name", f"companion-{len(companion_services)}")
+                companion_names.append(comp_name)
+                comp_service = {
+                    "image": comp["image"],
+                    "restart": "unless-stopped",
+                }
+                comp_named_volumes: dict[str, None] = {}
+                if "volumes" in comp:
+                    comp_service["volumes"] = comp["volumes"]
+                    for vol in comp["volumes"]:
+                        source = str(vol).split(":", 1)[0]
+                        if self._is_named_volume(source):
+                            comp_named_volumes[source] = None
+                if "env" in comp:
+                    comp_service["environment"] = {
+                        k: self._substitute_secret_key(v, secret_key) if isinstance(v, str) else v
+                        for k, v in comp["env"].items()
+                    }
+                companion_services.append(comp_service)
+                for vn in comp_named_volumes:
+                    named_volumes[vn] = None
+
         # Collect the container-internal ports from the manifest.
         container_ports: list[int] = []
         if "ports" in install_config.get("requires", {}):
@@ -187,9 +226,15 @@ class DockerInstaller(AppInstaller):
                 for hp, cport in zip(host_ports, container_ports)
             ]
 
+        # Build the services dict: app service first, then companions
+        all_services: dict[str, dict] = {}
+        all_services[app_id] = service
+        for i, comp_service in enumerate(companion_services):
+            all_services[companion_names[i]] = comp_service
+
         # No top-level `version:` — it's obsolete in Compose v2 and emits a
         # warning on every command.
-        compose: dict = {"services": {app_id: service}}
+        compose: dict = {"services": all_services}
         if named_volumes:
             compose["volumes"] = named_volumes
         return compose, allocated_host_port

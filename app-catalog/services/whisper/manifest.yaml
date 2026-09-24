@@ -2,7 +2,7 @@ id: whisper
 name: Whisper ASR
 type: service
 category: voice
-version: latest
+version: 2024.11.15
 description: "Speech-to-text via OpenAI Whisper — agents can transcribe audio files and streams"
 homepage: https://github.com/openai/whisper
 license: MIT
@@ -14,7 +14,7 @@ requires:
 
 install:
   method: docker
-  image: onerahmet/openai-whisper-asr-webservice:latest
+  image: onerahmet/openai-whisper-asr-webservice:20241115
   volumes:
     - cache:/root/.cache/whisper
   ports: [9000]

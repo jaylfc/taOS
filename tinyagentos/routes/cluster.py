@@ -628,7 +628,19 @@ async def unregister_worker(request: Request, name: str):
     removed = await cluster.unregister_worker(name)
     if not removed:
         return JSONResponse({"error": "Worker not found"}, status_code=404)
+    _revoke_node_model_keys(request, name)
     return {"status": "removed", "name": name}
+
+
+def _revoke_node_model_keys(request: Request, name: str) -> None:
+    """Cut the node's LLM gateway keys in the same step as the node itself.
+
+    Raises on failure: a node revoke that answered 200 while its model keys
+    stayed live would be a silent half-revocation.
+    """
+    from tinyagentos.llm_gateway.auth import revoke_for_node
+
+    revoke_for_node(name, data_dir=request.app.state.data_dir)
 
 
 @router.post("/api/cluster/workers/{name}/revoke")
@@ -650,6 +662,7 @@ async def revoke_node(request: Request, name: str):
     if state is None:
         return JSONResponse({"error": f"Worker '{name}' not found"}, status_code=404)
     changed = await pairing.revoke(name)
+    _revoke_node_model_keys(request, name)
     # Flag the in-memory worker as offline so the scheduler stops routing tasks
     # to it immediately (rather than waiting for the heartbeat timeout). The
     # worker itself stays in the registry so it remains visible in /api/cluster
@@ -680,6 +693,7 @@ async def block_node(request: Request, name: str):
     if state is None:
         return JSONResponse({"error": f"Worker '{name}' not found"}, status_code=404)
     changed = await pairing.block(name)
+    _revoke_node_model_keys(request, name)
     # Same as revoke: mark in-memory worker offline so no new tasks are routed,
     # but keep it registered so it shows in the UI and can be unblocked.
     cluster = request.app.state.cluster_manager
