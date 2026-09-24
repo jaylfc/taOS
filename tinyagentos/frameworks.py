@@ -8,13 +8,17 @@ from tinyagentos.shortcuts.validation import validate_shortcuts
 DEFAULT_FRAMEWORK = "hermes"
 
 
-def recommended_framework(ram_mb: int) -> str:
-    """Return the recommended agent framework for the given RAM.
+def recommended_framework(ram_mb: int, device_class: str | None = None) -> str:
+    """Return the recommended agent framework for the given RAM and device class.
 
-    Returns "picoclaw" for hosts with <=8 GB RAM (after canonical snapping
-    to the closest bucket, so a board reporting ~7.6 GiB counts as 8 GB),
-    otherwise returns the current default framework.
+    Returns "picoclaw" for:
+    - Hosts with <=8 GB RAM (after canonical snapping to the closest bucket,
+      so a board reporting ~7.6 GiB counts as 8 GB), OR
+    - Mobile device class (taOSmobile handsets), regardless of RAM.
+    Otherwise returns the current default framework.
     """
+    if device_class == "mobile":
+        return "picoclaw"
     if _snap_ram_to_canonical_gb(ram_mb) <= 8:
         return "picoclaw"
     return DEFAULT_FRAMEWORK

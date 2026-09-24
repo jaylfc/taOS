@@ -4,6 +4,9 @@
  * Verifies that when /api/hardware returns recommended_framework="picoclaw",
  * the picker preselects PicoClaw and renders the "Recommended for this device"
  * badge. When the host has >8 GB RAM, no badge is shown.
+ *
+ * Also verifies that the recommendation is never forced: the user can select
+ * a different framework and the deploy request carries THAT framework.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
@@ -156,5 +159,66 @@ describe("DeployWizard — recommended_framework preselect + badge", () => {
     const picoclawBtn = screen.getByText(/PicoClaw/i).closest("button")!;
     expect(picoclawBtn).not.toHaveClass("border-accent");
     expect(screen.queryByText(/Recommended for this device/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("DeployWizard — recommendation is never forced (tsk-owigd3)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("/api/agents") && !u.includes("deploy")) {
+        return { ok: true, headers: { get: () => "application/json" }, json: async () => [] };
+      }
+      if (u.includes("/api/agents/archived")) {
+        return { ok: true, headers: { get: () => "application/json" }, json: async () => [] };
+      }
+      if (u.includes("/api/frameworks")) {
+        return { ok: true, headers: { get: () => "application/json" }, json: async () => MOCK_FRAMEWORKS };
+      }
+      if (u.includes("/api/hardware")) {
+        return { ok: true, headers: { get: () => "application/json" }, json: async () => ({ ram_mb: 7800, recommended_framework: "picoclaw" }) };
+      }
+      if (u.includes("/api/models")) {
+        return { ok: true, headers: { get: () => "application/json" }, json: async () => ({ models: [] }) };
+      }
+      if (u.includes("/api/providers")) {
+        return { ok: true, headers: { get: () => "application/json" }, json: async () => [] };
+      }
+      if (u.includes("/api/cluster/kv-quant-options")) {
+        return { ok: true, headers: { get: () => "application/json" }, json: async () => ({ k: ["fp16"], v: ["fp16"] }) };
+      }
+      return { ok: true, headers: { get: () => "application/json" }, json: async () => ({}) };
+    }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("user can select a different framework after picoclaw is recommended", async () => {
+    render(<AgentsApp windowId="test" />);
+
+    const deployBtn = await screen.findByRole("button", { name: /deploy new agent/i });
+    fireEvent.click(deployBtn);
+
+    const nameInput = await screen.findByPlaceholderText("my-agent");
+    fireEvent.change(nameInput, { target: { value: "my-agent" } });
+
+    const nextBtn = screen.getByRole("button", { name: /next/i });
+    fireEvent.click(nextBtn);
+
+    // Step 2: Framework — PicoClaw is preselected (has border-accent)
+    await waitFor(() => screen.getByText(/PicoClaw/i));
+    const picoclawBtn = screen.getByText(/PicoClaw/i).closest("button")!;
+    expect(picoclawBtn).toHaveClass("border-accent");
+
+    // User clicks OpenClaw instead
+    await waitFor(() => screen.getByText(/OpenClaw/i));
+    const openclawBtn = screen.getByText(/OpenClaw/i).closest("button")!;
+    fireEvent.click(openclawBtn);
+
+    // OpenClaw should now be selected (has border-accent), PicoClaw should not
+    expect(openclawBtn).toHaveClass("border-accent");
+    expect(picoclawBtn).not.toHaveClass("border-accent");
   });
 });

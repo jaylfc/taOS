@@ -389,7 +389,7 @@ def test_registry_has_exactly_expected_count():
 
 
 # ---------------------------------------------------------------------------
-# recommended_framework: low-RAM hosts get PicoClaw
+# recommended_framework: low-RAM hosts get PicoClaw; mobile device class also gets PicoClaw
 # ---------------------------------------------------------------------------
 
 class TestRecommendedFramework:
@@ -407,3 +407,18 @@ class TestRecommendedFramework:
 
     def test_12gb_returns_default(self):
         assert recommended_framework(12288) == "hermes"
+
+    def test_mobile_device_class_returns_picoclaw_even_with_high_ram(self):
+        assert recommended_framework(16384, "mobile") == "picoclaw"
+
+    def test_mobile_device_class_with_low_ram_returns_picoclaw(self):
+        assert recommended_framework(4096, "mobile") == "picoclaw"
+
+    def test_none_device_class_with_high_ram_returns_default(self):
+        assert recommended_framework(16384, None) == "hermes"
+
+    def test_unknown_device_class_with_high_ram_returns_default(self):
+        assert recommended_framework(16384, "desktop") == "hermes"
+
+    def test_unknown_device_class_with_low_ram_returns_picoclaw(self):
+        assert recommended_framework(4096, "desktop") == "picoclaw"
