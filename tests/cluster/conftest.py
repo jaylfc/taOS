@@ -13,15 +13,20 @@ import json
 import pytest
 
 from tinyagentos.cluster.ble import proto
-from tinyagentos.cluster.ble.transport import Advert, Connection, Transport, chunk_size
+from tinyagentos.cluster.ble.transport import Advert, Connection, Transport, chunk_size, match_advert
 
 
 class FakeBoard:
     """An in-process stand-in for a taOSusb board, backed by a real PairResponder."""
 
     def __init__(self, *, board_id: str = "TEST", name: str | None = None,
-                 state: str = "unpaired", pairable: bool = True):
+                 state: str = "unpaired", pairable: bool = True,
+                 advert_uuid: bool = True, advert_mfr: bool = True):
         self.board_id = board_id
+        # What the board puts in its advert: the service UUID, the taOS
+        # manufacturer-data marker, or both (the real board sends both).
+        self.advert_uuid = advert_uuid
+        self.advert_mfr = advert_mfr
         self.name = name or f"taOSusb-{board_id}"
         self.state = state
         self.pairable = pairable
@@ -98,10 +103,18 @@ class FakeTransport(Transport):
         self.connected: list[str] = []
 
     async def scan(self, seconds: float) -> list[Advert]:
-        return [
-            Advert(address=addr, name=b.name, rssi=-50, service_uuids=[proto.SERVICE_UUID])
-            for addr, b in self.boards.items()
-        ]
+        # Through the production filter, so the fake scan cannot accept an
+        # advert the real one would drop.
+        out = []
+        for addr, b in self.boards.items():
+            adv = match_advert(
+                addr, b.name, -50,
+                [proto.SERVICE_UUID] if b.advert_uuid else [],
+                {proto.MFR_ID: proto.advert_mfr_data(b.state == "paired")} if b.advert_mfr else {},
+            )
+            if adv is not None:
+                out.append(adv)
+        return out
 
     async def connect(self, address: str) -> Connection:
         self.connected.append(address)

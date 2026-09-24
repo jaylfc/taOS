@@ -30,6 +30,10 @@ class Advert:
     name: str
     rssi: int | None
     service_uuids: list[str]
+    # From the advert's taOS manufacturer-data marker (proto.parse_advert_mfr):
+    # True/False when the board sent the marker, None when it matched on the
+    # service UUID alone (an older board, or a BlueZ that dropped the mfr data).
+    paired: bool | None = None
 
 
 class Connection(abc.ABC):
@@ -67,7 +71,7 @@ class Transport(abc.ABC):
 
     @abc.abstractmethod
     async def scan(self, seconds: float) -> list[Advert]:
-        """Scan for ``seconds`` and return adverts matching ``proto.SERVICE_UUID``."""
+        """Scan for ``seconds`` and return taOS board adverts (see :func:`match_advert`)."""
 
     @abc.abstractmethod
     async def connect(self, address: str) -> Connection:
@@ -81,6 +85,33 @@ def chunk_size(mtu: int) -> int:
     header -- see proto.fragment()'s docstring.
     """
     return max(1, mtu - 3 - 2)
+
+
+def match_advert(address: str, name: str, rssi: int | None,
+                 service_uuids, manufacturer_data) -> Advert | None:
+    """The advert filter: a taOS board, or None for every other BLE device.
+
+    A board is recognised when EITHER its advert lists ``proto.SERVICE_UUID``
+    OR it carries a valid taOS marker under company id ``proto.MFR_ID``. A
+    128-bit service UUID does not always fit in the 31-byte legacy advert
+    beside the name, so the 6-byte marker is the one a board can always send;
+    the UUID stays accepted for a board that sends only that.
+
+    Only ``proto.parse_advert_mfr`` decides what a marker is -- junk, a
+    truncated marker, or a marker under another company id is not one.
+    """
+    uuids = [str(u).lower() for u in (service_uuids or [])]
+    mfr = manufacturer_data if isinstance(manufacturer_data, dict) else {}
+    marker = proto.parse_advert_mfr(mfr[proto.MFR_ID]) if proto.MFR_ID in mfr else None
+    if proto.SERVICE_UUID not in uuids and marker is None:
+        return None
+    return Advert(
+        address=address,
+        name=name or "",
+        rssi=rssi,
+        service_uuids=uuids,
+        paired=marker["paired"] if marker is not None else None,
+    )
 
 
 class BleakTransport(Transport):
@@ -107,17 +138,15 @@ class BleakTransport(Transport):
             raise BluetoothUnavailable(str(exc)) from exc
         out: list[Advert] = []
         for device, adv in found.values():
-            uuids = [u.lower() for u in (getattr(adv, "service_uuids", None) or [])]
-            if proto.SERVICE_UUID not in uuids:
-                continue
-            out.append(
-                Advert(
-                    address=device.address,
-                    name=getattr(adv, "local_name", None) or getattr(device, "name", None) or "",
-                    rssi=getattr(adv, "rssi", None),
-                    service_uuids=uuids,
-                )
+            matched = match_advert(
+                device.address,
+                getattr(adv, "local_name", None) or getattr(device, "name", None) or "",
+                getattr(adv, "rssi", None),
+                getattr(adv, "service_uuids", None),
+                getattr(adv, "manufacturer_data", None),
             )
+            if matched is not None:
+                out.append(matched)
         return out
 
     async def connect(self, address: str) -> Connection:

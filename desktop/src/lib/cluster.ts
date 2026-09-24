@@ -361,8 +361,10 @@ export function formatRelativeSeconds(hb: number | undefined, nowSec = Date.now(
 
 /**
  * One device found by a `GET /api/cluster/ble/scan` sweep.
- * `state` is "paired" once the controller already holds a key for it;
- * `pairable` is false while it's outside its post-power-up pairing window.
+ * `state` is "paired" once the board has been paired to a controller;
+ * `paired` says the same, read from the board's advert marker when it sends
+ * one (a paired board is listed from its advert alone, never connected to).
+ * `pairable` is false for a paired board or one pausing after failed attempts.
  */
 export interface BleScanDevice {
   address: string;
@@ -370,6 +372,7 @@ export interface BleScanDevice {
   board_id: string;
   state: "unpaired" | "paired";
   pairable: boolean;
+  paired?: boolean;
   rssi: number;
 }
 

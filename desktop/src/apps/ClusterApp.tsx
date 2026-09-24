@@ -1102,7 +1102,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
           name: json.name,
         });
       } else if (res.status === 409) {
-        setPairError("This device isn't in pairing mode. Power-cycle it and try within 5 minutes.");
+        setPairError("This device isn't pairable right now. It may already be paired, or be pausing after failed attempts. Wait a minute and try again.");
       } else if (res.status === 504) {
         setPairError("The device stopped responding.");
       } else if (res.status === 429) {
@@ -1647,14 +1647,16 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
                       {bleScanned && !bleScanning && bleDevices.length === 0 ? (
                         <div className="py-4 text-center">
                           <p className="text-[11px] text-shell-text-tertiary mb-3">
-                            No taOS devices found. Power the device on; it's pairable for 5
-                            minutes after power-up.
+                            No taOS devices found. Power the device on; it stays pairable
+                            until it's paired.
                           </p>
                         </div>
                       ) : bleDevices.length > 0 ? (
                         <div className="space-y-1.5 mb-3 max-h-56 overflow-y-auto" aria-label="Nearby Bluetooth devices">
                           {bleDevices.map((d) => {
-                            const disabled = d.state === "paired" || !d.pairable;
+                            const paired = d.paired === true || d.state === "paired";
+                            const disabled = paired || !d.pairable;
+                            const label = paired ? "Already paired" : "Not pairable";
                             return (
                               <div
                                 key={d.address}
@@ -1669,9 +1671,9 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
                                   variant="outline"
                                   disabled={disabled || pairStarting}
                                   onClick={() => handleBlePairStart(d)}
-                                  aria-label={disabled ? `${d.name} already paired` : `Pair with ${d.name}`}
+                                  aria-label={disabled ? `${d.name}: ${label.toLowerCase()}` : `Pair with ${d.name}`}
                                 >
-                                  {disabled ? "Already paired" : pairStarting ? "Starting..." : "Pair"}
+                                  {disabled ? label : pairStarting ? "Starting..." : "Pair"}
                                 </Button>
                               </div>
                             );

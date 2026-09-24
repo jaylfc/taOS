@@ -212,8 +212,14 @@ class BlePairingManager:
     # -- public API -----------------------------------------------------
 
     async def scan(self, seconds: float) -> list[dict]:
-        """Scan for pairable boards. Connects to each match to read the
-        authoritative ``info`` (the advert name may be truncated)."""
+        """Scan for taOS boards. Each result carries ``paired``.
+
+        A board whose advert marker says it is already paired is listed
+        straight from the advert, WITHOUT connecting: it accepts only its own
+        controller, so there is nothing to read that would change the answer,
+        and the scan should not tie up a board that is busy being someone's.
+        Every other match is connected to once to read the authoritative
+        ``info`` (the advert name may be truncated)."""
         transport = self._get_transport()
         try:
             adverts: list[Advert] = await transport.scan(seconds)
@@ -222,6 +228,19 @@ class BlePairingManager:
 
         out: list[dict] = []
         for adv in adverts:
+            if adv.paired is True:
+                out.append(
+                    {
+                        "address": adv.address,
+                        "name": adv.name,
+                        "board_id": "",
+                        "state": "paired",
+                        "pairable": False,
+                        "paired": True,
+                        "rssi": adv.rssi,
+                    }
+                )
+                continue
             try:
                 conn = await asyncio.wait_for(transport.connect(adv.address), timeout=_CONNECT_TIMEOUT_S)
             except Exception:
@@ -233,13 +252,17 @@ class BlePairingManager:
                 await conn.close()
             if info is None:
                 continue
+            state = info.get("state", "")
             out.append(
                 {
                     "address": adv.address,
                     "name": info.get("name") or adv.name,
                     "board_id": info.get("id", ""),
-                    "state": info.get("state", ""),
+                    "state": state,
                     "pairable": bool(info.get("pairable", False)),
+                    # The info read is the fresher reading; the advert marker
+                    # (when present) only decides whether we connect at all.
+                    "paired": state == "paired",
                     "rssi": adv.rssi,
                 }
             )

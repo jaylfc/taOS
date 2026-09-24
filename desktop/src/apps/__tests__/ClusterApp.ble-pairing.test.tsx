@@ -105,9 +105,35 @@ describe("ClusterApp — Bluetooth pairing", () => {
 
     expect(
       await screen.findByText(
-        "This device isn't in pairing mode. Power-cycle it and try within 5 minutes.",
+        "This device isn't pairable right now. It may already be paired, or be pausing after failed attempts. Wait a minute and try again.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("marks a board already paired from its advert, and a merely unpairable one as not pairable", async () => {
+    globalThis.fetch = vi.fn().mockImplementation((input: string) => {
+      const url = String(input);
+      if (url.startsWith("/api/cluster/workers")) return jsonResponse(WORKERS_RESPONSE);
+      if (url.startsWith("/api/cluster/ble/scan")) {
+        return jsonResponse({
+          devices: [
+            // Listed from its advert marker alone: no info read, so no board_id.
+            { address: "11:11", name: "taOSusb-PRD1", board_id: "", state: "paired", pairable: false, paired: true, rssi: -50 },
+            { address: "22:22", name: "taOSusb-LCK1", board_id: "lck1", state: "unpaired", pairable: false, paired: false, rssi: -50 },
+          ],
+        });
+      }
+      return jsonResponse({}, 404);
+    }) as typeof fetch;
+
+    await openAddDeviceModal();
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    const paired = await screen.findByRole("button", { name: "taOSusb-PRD1: already paired" });
+    expect(paired).toBeDisabled();
+    const locked = screen.getByRole("button", { name: "taOSusb-LCK1: not pairable" });
+    expect(locked).toBeDisabled();
+    expect(locked).toHaveTextContent("Not pairable");
   });
 
   it("completes the happy path: scan, pair/start shows the code, pair/confirm closes the modal", async () => {
