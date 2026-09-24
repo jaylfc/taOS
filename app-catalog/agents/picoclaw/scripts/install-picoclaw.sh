@@ -120,19 +120,10 @@ install -m 0755 "$_src" "$PICOCLAW_BIN" || die "failed to install binary to ${PI
 
 # ---------------------------------------------------------------------------
 # 5a. Lock down: the installed runtime must not be able to replace itself.
-#     Upgrades only come from a pin bump in this install script.
+#     Upgrades only come from a pin bump in this install script and the binary
+#     is marked read-only because v0.3.1 ships no self-update command.
 # ---------------------------------------------------------------------------
 chmod 0555 "$PICOCLAW_BIN" || die "failed to chmod ${PICOCLAW_BIN}"
-
-# Disable upstream auto-update / update switch in the generated config.
-mkdir -p /root/.picoclaw
-cat > /root/.picoclaw/config.json <<'CFG'
-{
-  "custom_allow_patterns": [],
-  "auto_update": false,
-  "update_channel": "none"
-}
-CFG
 
 # ---------------------------------------------------------------------------
 # 6. Verify the installed binary runs.

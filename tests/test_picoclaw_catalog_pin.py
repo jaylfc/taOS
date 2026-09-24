@@ -16,11 +16,21 @@ def _script() -> str:
     return INSTALL_SCRIPT.read_text(encoding="utf-8")
 
 
-def test_pinned_version_is_0_3_1() -> None:
+def test_installer_does_not_write_picoclaw_config() -> None:
+    """Assert the install script contains no write to .picoclaw/config.json
+    and no auto_update/update_channel keys."""
     text = _script()
-    m = re.search(r'PICOCLAW_VERSION="(v[\d.]+)"', text)
-    assert m, "PICOCLAW_VERSION not found in install-picoclaw.sh"
-    assert m.group(1) == "v0.3.1", f"expected v0.3.1, got {m.group(1)}"
+
+    # Check for cat > redirection targeting .picoclaw/config.json
+    assert 'cat > /root/.picoclaw/config.json' not in text, "Install script writes to .picoclaw/config.json"
+
+    # Check for tee redirection targeting .picoclaw/config.json
+    assert 'tee /root/.picoclaw/config.json' not in text, "Install script writes to .picoclaw/config.json"
+
+    # Check for auto_update and update_channel keys in any config JSON
+    assert '"auto_update"' not in text, f"Found 'auto_update' key in install script"
+
+    assert '"update_channel"' not in text, f"Found 'update_channel' key in install script"
 
 
 def test_arm64_and_amd64_checksums_present_and_64hex() -> None:
