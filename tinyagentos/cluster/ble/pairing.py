@@ -11,8 +11,11 @@ Ties together the vendored protocol (``proto.py``), the BLE transport
      node's signing key through the exact same store method the manual
      worker-pairing flow uses (``ClusterPairingStore.register_device_key``,
      see pairing_store.py), registers the node as ``kind="device"``, and
-     sends the board its sealed provision payload. A board error or timeout
-     rolls back both the registration and the minted key.
+     sends the board its sealed provision payload. When the in-process LLM
+     gateway is on, it also mints the node's model key
+     (``llm_gateway.auth.mint_for_node``) and seals ``llm: {base, key}`` in
+     with it. A board error or timeout rolls back the registration, the
+     minted node key AND the model key.
 
 No sealed field built here (``node_key``, an ``llm`` key, ``mesh_preauth``)
 is ever returned to an HTTP caller -- see routes/cluster_ble.py, which reads
@@ -24,6 +27,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import secrets
 import socket
 import time
@@ -58,6 +62,11 @@ _CONNECT_TIMEOUT_S = 10.0
 # proto.Reassembler tracks each direction separately.
 _MID_HELLO = 0
 _MID_PROVISION = 1
+
+# The model a paired board is allowed: the account's chat model, resolved per
+# request by the gateway (llm_gateway/resolve.py TAOS_DEFAULT).
+BOARD_LLM_MODELS = ["taos-default"]
+LLM_PATH = "/api/llm/v1"
 
 
 class BluetoothError(Exception):
@@ -110,6 +119,18 @@ def controller_urls(port: int) -> list[str]:
     return [f"http://{ip}:{port}" for ip in _detect_primary_ipv4()]
 
 
+def _redact(text, secrets_sent: list[str]):
+    """``text`` with every secret sealed to the board cut out, for a reply
+    that goes back to the browser. Non-strings pass through as a short tag."""
+    if not isinstance(text, str):
+        return "malformed reply"
+    for secret in secrets_sent:
+        if secret:
+            # Case-blind: the node key is hex, and "ABCD" is the same key as "abcd".
+            text = re.sub(re.escape(secret), "[redacted]", text, flags=re.IGNORECASE)
+    return text[:200]
+
+
 @dataclass
 class PairSession:
     session_id: str
@@ -134,6 +155,7 @@ class BlePairingManager:
         pairing_store: ClusterPairingStore,
         bind_port: int,
         transport: Transport | None = None,
+        llm_gateway_enabled: bool | None = None,
     ) -> None:
         self._data_dir = Path(data_dir)
         self._cluster = cluster_manager
@@ -146,6 +168,14 @@ class BlePairingManager:
         self._priv: X25519PrivateKey | None = None
         self._sessions: dict[str, PairSession] = {}
         self._lock = asyncio.Lock()
+        # Read once, the same way create_app decides whether to mount
+        # /api/llm/v1: a key for a gateway that is not mounted would be a
+        # credential for nothing.
+        if llm_gateway_enabled is None:
+            from tinyagentos import llm_gateway
+
+            llm_gateway_enabled = llm_gateway.enabled()
+        self._llm_enabled = bool(llm_gateway_enabled)
 
     # -- setup ------------------------------------------------------------
 
@@ -354,6 +384,23 @@ class BlePairingManager:
             await self._close_session(sess)
             raise PairError(500, f"failed to mint node credential: {exc}") from exc
 
+        urls = controller_urls(self._bind_port)
+        llm = None
+        if self._llm_enabled and urls:
+            try:
+                from tinyagentos.llm_gateway.auth import mint_for_node, revoke_for_node
+
+                # A board re-paired under the same name (reset, not revoked)
+                # leaves its old model key behind; one live key per node.
+                revoke_for_node(name, data_dir=self._data_dir)
+                llm_key = mint_for_node(name, BOARD_LLM_MODELS, data_dir=self._data_dir)
+            except Exception as exc:
+                await self._rollback(name, sess)
+                await self._close_session(sess)
+                # type only: never the exception text, which is not ours to vouch for
+                raise PairError(500, f"failed to mint model key: {type(exc).__name__}") from exc
+            llm = {"base": urls[0] + LLM_PATH, "key": llm_key}
+
         worker = WorkerInfo(
             name=name,
             url="",
@@ -368,16 +415,18 @@ class BlePairingManager:
                 raise RuntimeError(reason)
         except Exception as exc:
             await self._rollback(name, sess)
+            await self._close_session(sess)
             raise PairError(500, f"failed to register node: {exc}") from exc
 
         provision = {
             "controller_id": controller_identity(),
-            "controller_urls": controller_urls(self._bind_port),
+            "controller_urls": urls,
             "node_key": key.hex(),
             "wifi": [],
             "mesh_preauth": None,
-            "llm": None,
+            "llm": llm,
         }
+        secrets_sent = [key.hex()] + ([llm["key"]] if llm else [])
         try:
             sealed = sess.initiator.seal_provision(provision)
             await self._write_pair_message(sess.connection, sealed, _MID_PROVISION)
@@ -385,17 +434,19 @@ class BlePairingManager:
             reply = sess.initiator.unseal_reply(reply_raw)
         except (asyncio.TimeoutError, TimeoutError) as exc:
             await self._rollback(name, sess)
-            raise PairError(504, f"board did not respond to provision: {exc}") from exc
+            raise PairError(504, "board did not respond to provision") from exc
         except Exception as exc:
             await self._rollback(name, sess)
-            raise PairError(502, "board_rejected", why=str(exc))
+            raise PairError(502, "board_rejected", why=_redact(str(exc), secrets_sent))
         finally:
             await self._close_session(sess)
 
         if not isinstance(reply, dict) or reply.get("t") != "ok":
             why = reply.get("why") if isinstance(reply, dict) else "malformed reply"
             await self._rollback(name, sess)
-            raise PairError(502, "board_rejected", why=why)
+            # The board's `why` is the board's text: a hostile board could echo
+            # the payload back, so the secrets it was sent are cut out of it.
+            raise PairError(502, "board_rejected", why=_redact(why, secrets_sent))
 
         return {"name": name, "kind": "device", "board_id": sess.board_id}
 
@@ -408,7 +459,8 @@ class BlePairingManager:
             await self._close_session(sess)
 
     async def _rollback(self, name: str, sess: PairSession) -> None:
-        """Undo a partial pair: unregister the node and dead-letter its key.
+        """Undo a partial pair: unregister the node, dead-letter its key, and
+        revoke any model key minted for it (no orphan gateway keys).
 
         Uses `unregister_worker` + `revoke` (the existing revoke path) rather
         than a bespoke delete, so a rolled-back node leaves no live
@@ -423,3 +475,10 @@ class BlePairingManager:
             await self._pairing_store.revoke(name)
         except Exception:
             logger.exception("ble pairing rollback: failed to revoke key for '%s'", name)
+        if self._llm_enabled:
+            try:
+                from tinyagentos.llm_gateway.auth import revoke_for_node
+
+                revoke_for_node(name, data_dir=self._data_dir)
+            except Exception:
+                logger.exception("ble pairing rollback: failed to revoke model keys for '%s'", name)

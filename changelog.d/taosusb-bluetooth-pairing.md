@@ -20,3 +20,9 @@
 - The Bluetooth scan recognises a taOSusb board by its manufacturer-data
   marker as well as its service UUID, and lists a board that is already
   paired straight from its advert, without connecting to it.
+- With the LLM gateway on (`TAOS_LLM_GATEWAY=1`), pairing a board also mints
+  its model key, bound to the node and allowed `taos-default`, and seals
+  `llm: {base, key}` into the provision sent to the board. The key never
+  appears in an HTTP response or a log. It is revoked if the board rejects
+  the provision, and with the node through the existing revoke, block and
+  delete routes. With the gateway off the board gets `llm: null`.
