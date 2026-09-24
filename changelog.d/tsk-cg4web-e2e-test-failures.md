@@ -1,2 +1,0 @@
-### Fixed
-- Playwright e2e tests in `agent-shortcuts.spec.ts` and `taostalk-connect.spec.ts` now fail when the app is broken instead of self-skipping. Removed `.catch(() => {})` on `page.goto` calls and replaced conditional `test.skip()` guards with `await expect(...).toBeVisible()` assertions so missing launchers, Connect buttons, or agent lists produce real failures.
