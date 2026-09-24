@@ -63,7 +63,14 @@ def model_names(table: list[dict]) -> list[str]:
 
 
 def find_route(table: list[dict], name: str) -> Route | None:
-    """First (highest-priority) chat entry for name. No failover in G1."""
+    """First (highest-priority) chat entry for name."""
+    routes = find_routes(table, name)
+    return routes[0] if routes else None
+
+
+def find_routes(table: list[dict], name: str) -> list[Route]:
+    """All chat entries for name, in priority order (highest first)."""
+    routes: list[Route] = []
     for entry in table:
         if entry.get("model_name") != name or not _is_chat(entry):
             continue
@@ -71,15 +78,15 @@ def find_route(table: list[dict], name: str) -> Route | None:
         provider, sep, upstream = str(params.get("model", "")).partition("/")
         if not sep:
             provider, upstream = "", provider
-        return Route(
+        routes.append(Route(
             model_name=name,
             provider=provider,
             upstream_model=upstream,
             api_base=params.get("api_base") or None,
             api_key_ref=params.get("api_key") or None,
             backend_name=str((entry.get("metadata") or {}).get("backend_name", "")),
-        )
-    return None
+        ))
+    return routes
 
 
 async def default_chat_model(state) -> str | None:
