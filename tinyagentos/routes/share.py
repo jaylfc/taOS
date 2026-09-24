@@ -26,7 +26,7 @@ async def list_share_destinations(request: Request):
     })
 
     pstore = request.app.state.project_store
-    for project in await pstore.list_writable_for_user(user_id):
+    for project in await pstore.list_for_user(user_id):
         destinations.append({
             "kind": "project_files",
             "id": project["slug"],

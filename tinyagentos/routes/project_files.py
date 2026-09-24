@@ -67,13 +67,11 @@ async def _authorize_files_actor(
         if project is not None:
             if project.get("user_id") == device["user_id"]:
                 return ("device_bearer", device["user_id"])
+            # Device is never admin; non-owner gets same outcome as session member.
             if mode == "write":
-                member = await ps.get_member(project["id"], device["user_id"])
-                if member and (member.get("is_lead") or member.get("can_edit_canvas")):
-                    return ("device_bearer", device["user_id"])
                 return JSONResponse({"error": "forbidden"}, status_code=403)
             return JSONResponse({"error": "not found"}, status_code=404)
-        return ("device_bearer", device["user_id"])
+        return JSONResponse({"error": "not found"}, status_code=404)
     
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.lower().startswith("bearer "):
