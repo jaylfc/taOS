@@ -7,6 +7,7 @@ Hostile cases first; the happy paths come after.
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 
@@ -14,8 +15,10 @@ import httpx
 import pytest
 import pytest_asyncio
 import respx
+import yaml
 from httpx import ASGITransport, AsyncClient
 
+from taos_test_csrf import csrf_event_hooks
 from tinyagentos.app import create_app
 
 UPSTREAM = "http://llm.test:8080/v1"
@@ -68,29 +71,104 @@ def _completion(model: str, *, usage: bool = True, message: dict | None = None) 
     return body
 
 
-@pytest.fixture
-def app(tmp_data_dir, monkeypatch):
-    """Overrides conftest's ``app``: the gateway flag is read at create_app."""
-    monkeypatch.setenv("TAOS_LLM_GATEWAY", "1")
-    application = create_app(data_dir=tmp_data_dir)
-    application.state.config.backends = [OPENAI_COMPAT, ANTHROPIC, SECRET_BACKED]
-    return application
+# ---------------------------------------------------------------------------
+# One app per MODULE (create_app is the expensive part), reset per test.
+#
+# Everything a test here can mutate is put back by ``_reset`` below, both
+# before and after each test, so the tests stay independent and order-free
+# (checked with --reverse and back-to-back runs). If you add a test that
+# mutates some other piece of app state, reset it there too.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_BACKENDS = [OPENAI_COMPAT, ANTHROPIC, SECRET_BACKED]
+_TAOS_AGENT_PREF = ("user", "taos_agent")
+_ASYNC = pytest.mark.asyncio(loop_scope="module")
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def _stores(client):
-    """desktop_settings holds the default chat model; the agent-model key
-    store backs the /v1 surface this suite proves unchanged. The shared client
-    fixture skips the lifespan that init()s both."""
-    state = client._transport.app.state
-    for store in (state.desktop_settings, state.agent_model_keys):
+def _write_test_config(data_dir) -> None:
+    """The same config conftest's ``tmp_data_dir`` writes."""
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [
+            {"name": "test-backend", "type": "rkllama", "url": "http://localhost:8080", "priority": 1}
+        ],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [
+            {"name": "test-agent", "host": "192.168.1.100", "qmd_index": "test", "color": "#98fb98"}
+        ],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    (data_dir / "config.yaml").write_text(yaml.dump(config))
+    (data_dir / ".setup_complete").touch()
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def gateway_client(tmp_path_factory):
+    """ONE real app (create_app on a module tmp data dir, TAOS_LLM_GATEWAY=1)
+    and ONE signed-in client for the whole module.
+
+    Only the stores these routes touch are initialised: desktop_settings (the
+    taos-default preference), secrets (backend keys), agent_model_keys (the
+    /v1 surface proven unchanged below). The shared conftest ``client``
+    initialises ~40 stores per TEST, which is what made this suite slow.
+    """
+    data_dir = tmp_path_factory.mktemp("llm_gateway")
+    _write_test_config(data_dir)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TAOS_LLM_GATEWAY", "1")
+        app = create_app(data_dir=data_dir)
+    state = app.state
+    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
+    for store in stores:
         if store._db is not None:
             await store.close()
-    await state.desktop_settings.init()
-    await state.agent_model_keys.init()
-    yield
-    await state.desktop_settings.close()
-    await state.agent_model_keys.close()
+        await store.init()
+    state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    uid = state.auth.find_user("admin")["id"]
+    session = state.auth.create_session(user_id=uid, long_lived=True)
+    state._startup_complete = True
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": session},
+        event_hooks=csrf_event_hooks(),
+    ) as c:
+        yield c
+    for store in stores:
+        await store.close()
+    await state.http_client.aclose()
+
+
+async def _reset_state(app) -> None:
+    state = app.state
+    # Routing: the backend list tests read and replace.
+    state.config.backends = copy.deepcopy(_DEFAULT_BACKENDS)
+    # Auth seam overrides installed by the scope tests.
+    app.dependency_overrides.clear()
+    # taos-default: the account default chat model preference.
+    await state.desktop_settings.save_preference(*_TAOS_AGENT_PREF, {})
+    # Backend keys held in the secrets store.
+    await state.secrets.delete(SECRET_BACKED["api_key_secret"])
+    # Agent-as-a-Model consent keys minted by tests.
+    await state.agent_model_keys._db.execute("DELETE FROM agent_model_keys")
+    await state.agent_model_keys._db.commit()
+    # Per-agent local tokens minted by tests (the host token itself is kept).
+    state.auth._local_token_agent_path().unlink(missing_ok=True)
+    # The respx default router: routes and recorded calls.
+    respx.mock.clear()
+    respx.mock.reset()
+
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def client(gateway_client, monkeypatch):
+    """Overrides conftest's per-test ``client`` with the module's, reset
+    before AND after every test."""
+    monkeypatch.setenv("TAOS_LLM_GATEWAY", "1")
+    monkeypatch.delenv(SECRET_BACKED["api_key_secret"], raising=False)
+    app = gateway_client._transport.app
+    await _reset_state(app)
+    yield gateway_client
+    await _reset_state(app)
 
 
 def _app(client):
@@ -128,7 +206,7 @@ def _assert_openai_error(resp, status: int, code: str | None = None) -> dict:
 # Hostile: credentials
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
+@_ASYNC
 @pytest.mark.parametrize("method,path", [("GET", "/models"), ("POST", "/chat/completions")])
 async def test_no_credential_is_401_openai_shaped(client, method, path):
     async with _bare(_app(client)) as c:
@@ -136,7 +214,7 @@ async def test_no_credential_is_401_openai_shaped(client, method, path):
     _assert_openai_error(resp, 401, "invalid_api_key")
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @pytest.mark.parametrize("method,path", [("GET", "/models"), ("POST", "/chat/completions")])
 async def test_invalid_bearer_is_401_openai_shaped(client, method, path):
     async with _bare(_app(client), headers={"Authorization": "Bearer sk-not-a-real-token"}) as c:
@@ -144,14 +222,14 @@ async def test_invalid_bearer_is_401_openai_shaped(client, method, path):
     _assert_openai_error(resp, 401, "invalid_api_key")
 
 
-@pytest.mark.asyncio
+@_ASYNC
 async def test_invalid_session_cookie_is_401(client):
     async with _bare(_app(client), cookies={"taos_session": "forged"}) as c:
         resp = await c.get(BASE + "/models")
     _assert_openai_error(resp, 401, "invalid_api_key")
 
 
-@pytest.mark.asyncio
+@_ASYNC
 async def test_agent_model_consent_key_does_not_open_the_gateway(client):
     """The /v1 Agent-as-a-Model key is a different credential for a different
     surface; it must not authenticate /api/llm/v1."""
@@ -165,7 +243,7 @@ async def test_agent_model_consent_key_does_not_open_the_gateway(client):
 # Hostile: request shape
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_unknown_model_is_404_model_not_found(client):
     route = respx.post(UPSTREAM_CHAT)
@@ -175,7 +253,7 @@ async def test_unknown_model_is_404_model_not_found(client):
     assert not route.called
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_stream_true_is_400_until_g3(client):
     route = respx.post(UPSTREAM_CHAT)
@@ -186,7 +264,7 @@ async def test_stream_true_is_400_until_g3(client):
     assert not route.called
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 @pytest.mark.parametrize("body", [
     {"model": "qwen3-8b"},                                   # no messages
@@ -209,7 +287,7 @@ async def test_malformed_body_is_400(client, body):
     assert not route.called
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_non_json_body_is_400(client):
     route = respx.post(UPSTREAM_CHAT)
@@ -225,7 +303,7 @@ async def test_non_json_body_is_400(client):
 # Hostile: upstream failure
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 @pytest.mark.parametrize("status", [500, 502, 503])
 async def test_upstream_5xx_is_502_without_secrets(client, caplog, status):
@@ -240,7 +318,7 @@ async def test_upstream_5xx_is_502_without_secrets(client, caplog, status):
     assert UPSTREAM_KEY not in caplog.text
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 @pytest.mark.parametrize("exc", [httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError])
 async def test_upstream_timeout_or_unreachable_is_502(client, caplog, exc):
@@ -252,7 +330,7 @@ async def test_upstream_timeout_or_unreachable_is_502(client, caplog, exc):
     assert UPSTREAM_KEY not in caplog.text
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 @pytest.mark.parametrize("status", [401, 403])
 async def test_upstream_rejecting_our_key_is_502_not_the_callers_fault(client, status):
@@ -264,7 +342,7 @@ async def test_upstream_rejecting_our_key_is_502_not_the_callers_fault(client, s
     assert UPSTREAM_KEY not in resp.text
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_upstream_4xx_passes_status_with_key_redacted(client):
     respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
@@ -277,7 +355,7 @@ async def test_upstream_4xx_passes_status_with_key_redacted(client):
     assert UPSTREAM_KEY not in resp.text
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_upstream_200_that_is_not_json_is_502(client):
     respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(200, text="<html>proxy</html>"))
@@ -285,7 +363,7 @@ async def test_upstream_200_that_is_not_json_is_502(client):
     _assert_openai_error(resp, 502, "upstream_error")
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_non_openai_backend_is_501_naming_the_model(client):
     route = respx.post(url__regex=r".*")
@@ -299,7 +377,7 @@ async def test_non_openai_backend_is_501_naming_the_model(client):
 # Auth seam: the routes consult gateway_caller, and only it
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_routes_enforce_the_callers_model_scope(client):
     """If a route stopped calling gateway_caller (or ignored may_use), the
@@ -323,7 +401,7 @@ async def test_routes_enforce_the_callers_model_scope(client):
     assert route.call_count == 1
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_taos_default_is_checked_against_the_resolved_model_too(client):
     from tinyagentos.llm_gateway.auth import GatewayCaller, gateway_caller
@@ -400,7 +478,7 @@ def test_gateway_caller_refuses_a_per_agent_local_token():
     assert exc.value.status == 401
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_per_agent_local_token_is_refused_by_the_real_app(client):
     route = respx.post(UPSTREAM_CHAT)
@@ -425,7 +503,7 @@ def test_scoped_caller_may_use_only_its_models():
 # Happy paths
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_plain_completion(client):
     route = respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(200, json=_completion("qwen3-8b")))
@@ -440,7 +518,7 @@ async def test_plain_completion(client):
     assert UPSTREAM_KEY not in resp.text
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_local_token_caller_is_served(client):
     respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(200, json=_completion("qwen3-8b")))
@@ -454,7 +532,7 @@ async def test_local_token_caller_is_served(client):
     assert respx.calls.last.request.headers["authorization"] == f"Bearer {UPSTREAM_KEY}"
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_request_reaches_upstream_verbatim_with_tools(client):
     tools = [{
@@ -497,7 +575,7 @@ async def test_request_reaches_upstream_verbatim_with_tools(client):
     assert resp.json() == upstream_reply
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_upstream_model_prefix_is_stripped_and_other_fields_kept(client):
     """The table stores ``openai/<id>``; the backend must see ``<id>``."""
@@ -507,7 +585,7 @@ async def test_upstream_model_prefix_is_stripped_and_other_fields_kept(client):
     assert json.loads(route.calls.last.request.content) == _chat("gpt-small", temperature=0)
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_secret_backed_key_is_resolved_from_the_secrets_store(client):
     await _app(client).state.secrets.add("VAULT_LLM_KEY", SECRET_KEY)
@@ -519,7 +597,7 @@ async def test_secret_backed_key_is_resolved_from_the_secrets_store(client):
     assert SECRET_KEY not in resp.text
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_taos_default_follows_the_account_default_without_restart(client):
     route = respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(200, json=_completion("x")))
@@ -535,7 +613,7 @@ async def test_taos_default_follows_the_account_default_without_restart(client):
     assert json.loads(route.calls.last.request.content)["model"] == "gpt-small"
 
 
-@pytest.mark.asyncio
+@_ASYNC
 @respx.mock
 async def test_taos_default_with_no_default_set_is_a_clear_404(client):
     route = respx.post(UPSTREAM_CHAT)
@@ -545,7 +623,7 @@ async def test_taos_default_with_no_default_set_is_a_clear_404(client):
     assert not route.called
 
 
-@pytest.mark.asyncio
+@_ASYNC
 async def test_models_lists_the_routing_table_plus_taos_default(client):
     resp = await client.get(BASE + "/models")
     assert resp.status_code == 200, resp.text
@@ -561,7 +639,7 @@ async def test_models_lists_the_routing_table_plus_taos_default(client):
     assert UPSTREAM_KEY not in resp.text and UPSTREAM not in resp.text
 
 
-@pytest.mark.asyncio
+@_ASYNC
 async def test_models_listing_follows_config_changes_per_request(client):
     app = _app(client)
     app.state.config.backends = [OPENAI_COMPAT]
@@ -569,7 +647,7 @@ async def test_models_listing_follows_config_changes_per_request(client):
     assert "claude-x" not in ids and "qwen3-8b" in ids
 
 
-@pytest.mark.asyncio
+@_ASYNC
 async def test_gateway_reads_the_same_table_as_the_litellm_config(client, monkeypatch):
     """One source: the gateway's routing table IS build_model_list's output,
     the same function generate_litellm_config wraps."""
@@ -600,7 +678,7 @@ async def test_gateway_reads_the_same_table_as_the_litellm_config(client, monkey
 # Agent-as-a-Model (/v1) is untouched with the gateway mounted
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
+@_ASYNC
 async def test_agent_model_v1_surface_is_unchanged(client):
     async with _bare(_app(client)) as c:
         no_key_models = await c.get("/v1/models")
