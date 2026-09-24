@@ -4,6 +4,8 @@ via the guarded _post_init ALTER TABLE -- mirrors
 tests/cluster/test_pairing_store.py's blocked/revoked migration test."""
 from __future__ import annotations
 
+import json
+
 import aiosqlite
 import pytest
 
@@ -79,5 +81,54 @@ async def test_upsert_worker_persists_kind(tmp_path):
         rows = await store.load_all()
         row = next(r for r in rows if r["name"] == "device-1")
         assert row["kind"] == "device"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_upsert_without_kind_stores_worker(tmp_path):
+    """The ClusterManager persistence path sends worker dicts with no
+    "kind". Binding :kind without a default raised ProgrammingError and
+    ordinary workers stopped persisting; they must store as "worker"."""
+    from tinyagentos.cluster.worker_registry_store import WorkerRegistryStore
+    store = WorkerRegistryStore(tmp_path / "cluster_workers.db")
+    await store.init()
+    try:
+        info = {
+            "name": "gpu-box",
+            "url": "http://gpu:9000",
+            "hardware": json.dumps({"gpu": {"model": "RTX 4090"}}),
+            "backends": json.dumps([]),
+            "models": json.dumps(["llama3"]),
+            "available_models": json.dumps([]),
+            "capabilities": json.dumps(["chat", "embed"]),
+            "status": "online",
+            "last_heartbeat": 1234567890.0,
+            "registered_at": 1234567890.0,
+            "load": 0.5,
+            "platform": "linux",
+            "tier_id": "x86-cuda-24gb",
+            "potential_capabilities": json.dumps([]),
+            "kv_cache_quant_support": json.dumps(["fp16"]),
+            "kv_cache_quant_k_support": json.dumps(["fp16"]),
+            "kv_cache_quant_v_support": json.dumps(["fp16"]),
+            "kv_cache_quant_boundary_layer_protect": 0,
+            "worker_url": "http://gpu:6970",
+            "signing_key": b"secret123456789012345678901234567890",
+            "tls_cert_provider": None,
+            "host_lan_ip": "192.168.1.100",
+            "storage_cap_bytes": 100_000_000,
+            "storage_used_bytes": 50_000_000,
+            "bytes_deduped_total": 10_000_000,
+            "worker_lxc_image_version": "ubuntu/24.04/amd64",
+            "degraded": 0,
+            "degraded_reason": None,
+            "free_vram_mb": 16000,
+            "used_vram_mb": 8000,
+        }
+        assert "kind" not in info
+        await store.upsert_worker(info)
+        rows = await store.load_all()
+        assert [r["kind"] for r in rows if r["name"] == info["name"]] == ["worker"]
     finally:
         await store.close()

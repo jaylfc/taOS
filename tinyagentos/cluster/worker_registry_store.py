@@ -166,7 +166,11 @@ class WorkerRegistryStore(BaseStore):
                 used_vram_mb     = excluded.used_vram_mb,
                 kind             = excluded.kind
             """,
-            info,
+            # A caller that predates the device kind (the ClusterManager
+            # persistence path, older snapshots) sends no "kind"; it is an
+            # ordinary worker, the same default the column migration uses.
+            # Binding :kind without it raised and stopped workers persisting.
+            {**info, "kind": info.get("kind") or "worker"},
         )
         await self._db.commit()
 
