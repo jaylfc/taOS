@@ -21,6 +21,16 @@ logger = logging.getLogger(__name__)
 
 TAOS_OPENCODE_PORT = 4188  # local-only port for the taOS agent opencode server
 
+
+def system_agent_framework() -> str:
+    """Return the framework id of the system taOS Agent.
+
+    Derived from the server class the runtime actually launches so the value
+    stays correct if the adapter selection changes.
+    """
+    return OpenCodeServer.__name__.split("Server")[0].lower()
+
+
 # Safe filesystem component for opencode home directories.  Agent ids and
 # LiteLLM model names can contain '/' (openai/gpt-4o) and other characters
 # unsafe for a path; this collapses them to a flat slug.  Must stay in sync

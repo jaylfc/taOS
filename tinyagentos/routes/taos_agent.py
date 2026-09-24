@@ -38,7 +38,7 @@ from pydantic import BaseModel
 from tinyagentos.adapters.opencode_adapter import OpenCodeAdapter, OpenCodeConfig
 from tinyagentos.agent_loop import AgentLoop, LoopAction
 from tinyagentos.opencode_runtime import OpenCodeBinaryNotFoundError
-from tinyagentos.taos_agent_runtime import ensure_taos_opencode_server
+from tinyagentos.taos_agent_runtime import ensure_taos_opencode_server, system_agent_framework
 from tinyagentos.task_utils import _create_supervised_task
 
 logger = logging.getLogger(__name__)
@@ -279,7 +279,7 @@ async def get_config(request: Request):
         "permitted_models": prefs.get("permitted_models", []),
         "persona": prefs.get("persona", ""),
         "key_masked": _mask_key(raw_key),
-        "framework": "opencode",
+        "framework": system_agent_framework(),
         "system": True,
     })
 

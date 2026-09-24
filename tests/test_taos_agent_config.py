@@ -287,7 +287,35 @@ class TestAdminGate:
 # _safe_path_component (taos_agent_runtime)
 # ---------------------------------------------------------------------------
 
-from tinyagentos.taos_agent_runtime import _safe_path_component
+from tinyagentos.taos_agent_runtime import _safe_path_component, system_agent_framework
+
+
+class TestSystemAgentFrameworkAgreement:
+    """The lock screen and the config endpoint must agree on the harness id.
+
+    Red-first: the two hard-coded strings diverged ('omp' vs 'opencode').
+    Both now derive from ``system_agent_framework()`` so they cannot drift.
+    """
+
+    @pytest.mark.asyncio
+    async def test_lock_widgets_and_config_framework_match(self, client, monkeypatch):
+        from tinyagentos.routes import auth as auth_mod
+
+        monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
+
+        widgets_resp = await client.get("/auth/lock-widgets")
+        assert widgets_resp.status_code == 200
+        widgets = widgets_resp.json()
+        taos_agent = next(a for a in widgets["agents"] if a["name"] == "taOS Agent")
+        widgets_framework = taos_agent["framework"]
+
+        config_resp = await client.get("/api/taos-agent/config")
+        assert config_resp.status_code == 200
+        config_framework = config_resp.json()["framework"]
+
+        expected = system_agent_framework()
+        assert widgets_framework == expected, f"{widgets_framework!r} != {expected!r}"
+        assert config_framework == expected, f"{config_framework!r} != {expected!r}"
 
 
 class TestSafePathComponent:
