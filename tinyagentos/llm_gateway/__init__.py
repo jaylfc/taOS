@@ -14,6 +14,7 @@ Modules, smallest first:
   auth     ``gateway_caller``: the ONE auth / model-permission seam (G2 swaps its body)
   resolve  model name -> backend, from the SAME table the LiteLLM config uses
   forward  one POST to an OpenAI-compatible backend, failures mapped to 502
+  anthropic Anthropic Messages API translator for the taOS gateway
   router   the two routes, and ``mount``
 """
 from __future__ import annotations
@@ -26,3 +27,6 @@ FLAG_ENV = "TAOS_LLM_GATEWAY"
 def enabled() -> bool:
     """True only for ``TAOS_LLM_GATEWAY=1``; anything else leaves it unmounted."""
     return os.environ.get(FLAG_ENV) == "1"
+
+# Export Anthropic translator
+from tinyagentos.llm_gateway.anthropic import chat_completion_anthropic, chat_completion_stream_anthropic
