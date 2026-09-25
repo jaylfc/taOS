@@ -250,6 +250,7 @@ Cases that have actually happened here:
 Applied to your own changes:
 
 - **If you add a gate, prove it fails.** A check only ever observed passing is unproven where it counts. Make it go red deliberately once.
+- **A guard test must fail on the defect it names.** A test that monkeypatches the function it guards, asserts only the case that cannot differ, or uses a fixture that never reaches the guarded branch passes whether the product is right or wrong. Declare what it guards with `@pytest.mark.guards("module:function", replace=[(correct_snippet, defective_snippet)])` and `scripts/check_non_discriminating.py` re-runs it against that broken variant; it must fail there.
 - **Verify a review comment against the code before acting on it**, including automated ones. Bot findings are often wrong, and confidently phrased.
 - **Report honestly.** If tests fail, say so and include the output. If you skipped a step, name it. "Done" should mean verified, not attempted.
 

@@ -204,6 +204,10 @@ markers = [
     # it, and every module carrying it is inventoried in
     # tests/test_csrf_bypass_debt.py so the list cannot grow unnoticed.
     "csrf_bypass: run this test with verify_csrf stubbed to a no-op (legacy debt)",
+    # Declares the product function a guard test protects, and the defect it must
+    # fail on. Checked by scripts/check_non_discriminating.py (guard-discrimination
+    # workflow); inert in a normal test run.
+    "guards(target, replace=None, must_kill=None): guard test's protected function; see scripts/check_non_discriminating.py",
     "skip_if_no_embed_backend: skip when no embed backend can serve the test (qmd unreachable and onnxruntime absent)",
 ]
 filterwarnings = [
