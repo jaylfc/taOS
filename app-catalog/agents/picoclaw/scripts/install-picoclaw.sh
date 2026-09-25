@@ -9,19 +9,24 @@
 # container's CPU arch and drops the `picoclaw` binary onto PATH. No runtime
 # (Node/Python) is required.
 #
+# SECURITY: PicoClaw's custom_allow_patterns is NOT an allowlist. The
+# container or unit sandbox remains the security boundary. Patterns only limit
+# named path globs inside the harness; they do not replace the OS-level sandbox.
+#
 # Idempotent: re-running on an already-provisioned container is a no-op.
 #
-# Upstream sources (verified 2026-06-14):
+# Upstream sources (verified 2026-09-24):
 #   Repo:      https://github.com/sipeed/picoclaw            (MIT, Go)
 #   Releases:  https://github.com/sipeed/picoclaw/releases
-#   Checksums: https://github.com/sipeed/picoclaw/releases/download/v0.2.9/picoclaw_0.2.9_checksums.txt
+#   Checksums: https://github.com/sipeed/picoclaw/releases/download/v0.3.1/picoclaw_0.3.1_checksums.txt
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # Pin: release tag + per-arch tarball asset + its SHA256 (from the upstream
-# picoclaw_0.2.9_checksums.txt). Bump all three together to upgrade.
+# picoclaw_0.3.1_checksums.txt). Bump all three together to upgrade.
+# Upgrades only come from a pin bump here.
 # ---------------------------------------------------------------------------
-PICOCLAW_VERSION="v0.2.9"
+PICOCLAW_VERSION="v0.3.1"
 PICOCLAW_BASE_URL="https://github.com/sipeed/picoclaw/releases/download/${PICOCLAW_VERSION}"
 PICOCLAW_BIN="/usr/local/bin/picoclaw"
 
@@ -41,17 +46,17 @@ fi
 
 # ---------------------------------------------------------------------------
 # 2. Map CPU arch -> upstream tarball asset + its pinned SHA256.
-#    Asset names + hashes are copied verbatim from picoclaw_0.2.9_checksums.txt.
+#    Asset names + hashes are copied verbatim from picoclaw_0.3.1_checksums.txt.
 # ---------------------------------------------------------------------------
 _arch="$(uname -m)"
 case "$_arch" in
   aarch64|arm64)
     PICOCLAW_ASSET="picoclaw_Linux_arm64.tar.gz"
-    PICOCLAW_SHA256="a8989b1a409ec995cde454a17222d00eb5b0c9dbda08213e2f82d22526023c9f"
+    PICOCLAW_SHA256="e78ab0de05d000698ff8b32458e71cb3134e52e9eaf540e3323a72e9914de060"
     ;;
   x86_64|amd64)
     PICOCLAW_ASSET="picoclaw_Linux_x86_64.tar.gz"
-    PICOCLAW_SHA256="7e658f320e9d63779f4d1c32ea64bf474d903bc91d41afdc79c8f0572ab936b4"
+    PICOCLAW_SHA256="86f0fe84aa55279352edbe13adfca484a03bcf189e2030b25e34628089069c3f"
     ;;
   riscv64)
     PICOCLAW_ASSET="picoclaw_Linux_riscv64.tar.gz"
@@ -112,6 +117,13 @@ _src="$(find "$_tmp" -type f -name picoclaw -perm -u+x 2>/dev/null | head -1)"
 [ -n "$_src" ] || die "picoclaw binary not found inside ${PICOCLAW_ASSET}"
 
 install -m 0755 "$_src" "$PICOCLAW_BIN" || die "failed to install binary to ${PICOCLAW_BIN}"
+
+# ---------------------------------------------------------------------------
+# 5a. Lock down: the installed runtime must not be able to replace itself.
+#     Upgrades only come from a pin bump in this install script and the binary
+#     is marked read-only because v0.3.1 ships no self-update command.
+# ---------------------------------------------------------------------------
+chmod 0555 "$PICOCLAW_BIN" || die "failed to chmod ${PICOCLAW_BIN}"
 
 # ---------------------------------------------------------------------------
 # 6. Verify the installed binary runs.

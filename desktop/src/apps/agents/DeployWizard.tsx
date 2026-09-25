@@ -419,6 +419,7 @@ export function DeployWizard({
   const [frameworks, setFrameworks] = useState<Framework[]>([]);
   const [selectedFramework, setSelectedFramework] = useState<string>("");
   const [experimentalAcknowledged, setExperimentalAcknowledged] = useState(false);
+  const [recommendedFramework, setRecommendedFramework] = useState<string>("");
 
   // Dev mode — loaded from localStorage on mount, bypasses experimental click-through
   const [devMode, setDevMode] = useState(() => {
@@ -514,12 +515,26 @@ export function DeployWizard({
     if (!open) return;
     (async () => {
       try {
-        const res = await fetch("/api/frameworks", {
-          headers: { Accept: "application/json" },
-        });
-        const ct = res.headers.get("content-type") ?? "";
-        if (res.ok && ct.includes("application/json")) {
-          const data = await res.json();
+        const [hwRes, fwRes] = await Promise.all([
+          fetch("/api/hardware", {
+            headers: { Accept: "application/json" },
+          }),
+          fetch("/api/frameworks", {
+            headers: { Accept: "application/json" },
+          }),
+        ]);
+        let recommendedFramework = "";
+        try {
+          const hwCt = hwRes.headers.get("content-type") ?? "";
+          if (hwRes.ok && hwCt.includes("application/json")) {
+            const hwData = await hwRes.json();
+            recommendedFramework = String(hwData.recommended_framework ?? "");
+            setRecommendedFramework(recommendedFramework);
+          }
+        } catch { /* ignore hardware fetch failure */ }
+        const ct = fwRes.headers.get("content-type") ?? "";
+        if (fwRes.ok && ct.includes("application/json")) {
+          const data = await fwRes.json();
           if (Array.isArray(data) && data.length > 0) {
             // Filter out broken adapters entirely
             const visible = data.filter(
@@ -541,15 +556,27 @@ export function DeployWizard({
             const rank = (id: string) => (id === "hermes" ? 0 : id === "openclaw" ? 1 : 2);
             mapped.sort((a, b) => rank(a.id) - rank(b.id));
             setFrameworks(mapped);
-            // Default-select Hermes (or the first tested/beta framework) so the
-            // wizard opens on a working choice instead of nothing selected.
+            // Default-select the hardware-recommended framework (if present),
+            // otherwise fall back to Hermes / first tested-beta / first non-experimental.
+            const recommended = recommendedFramework
+              ? mapped.find((f) => f.id === recommendedFramework)
+              : undefined;
             setSelectedFramework((cur) => {
               if (cur) return cur;
-              const preferred = mapped.find((f) => f.id === "hermes")
+              const preferred = recommended
+                ?? mapped.find((f) => f.id === "hermes")
                 ?? mapped.find((f) => f.verification_status === "tested" || f.verification_status === "beta")
                 ?? (mapped[0]?.verification_status !== "experimental" ? mapped[0] : undefined);
               return preferred?.id ?? "";
             });
+            // If the hardware-recommended framework is experimental, auto-acknowledge
+            // so the picker can preselect it without blocking the user.
+            if (recommendedFramework) {
+              const rec = mapped.find((f) => f.id === recommendedFramework);
+              if (rec?.verification_status === "experimental") {
+                setExperimentalAcknowledged(true);
+              }
+            }
           }
         }
       } catch { /* leave frameworks empty, wizard will show nothing selectable */ }
@@ -845,6 +872,7 @@ export function DeployWizard({
       setEmoji("");
       setSelectedFramework("");
       setExperimentalAcknowledged(false);
+      setRecommendedFramework("");
       setSelectedModel("");
       setModels([]);
       setModelsLoaded(false);
@@ -1212,12 +1240,17 @@ export function DeployWizard({
                                 Experimental
                               </span>
                             )}
-                            {isTested && (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/20 text-emerald-400 leading-none">
-                                Tested
-                              </span>
-                            )}
-                            {isSelected && (
+                             {isTested && (
+                               <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/20 text-emerald-400 leading-none">
+                                 Tested
+                               </span>
+                             )}
+                             {recommendedFramework === fw.id && (
+                               <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/20 text-emerald-400 leading-none">
+                                 Recommended for this device
+                               </span>
+                             )}
+                             {isSelected && (
                               <Check
                                 size={14}
                                 className="ml-auto shrink-0 text-accent"

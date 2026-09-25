@@ -11,7 +11,7 @@ requires:
 
 install:
   method: script
-  package: "go install github.com/nicepkg/engram@latest"
+  package: "go install github.com/nicepkg/engram@v0.1.0"
 
 hardware_tiers:
   arm-npu-16gb: full

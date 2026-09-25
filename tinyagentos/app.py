@@ -11,9 +11,11 @@ import httpx
 import yaml
 
 logger = logging.getLogger(__name__)
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi import HTTPException, Depends
 
 
 class _CacheAwareStaticFiles(StaticFiles):
@@ -43,6 +45,7 @@ class _CacheAwareStaticFiles(StaticFiles):
         return response
 
 from tinyagentos.auth import AuthManager
+from tinyagentos.auth_context import current_user, require_owner_or_admin
 from tinyagentos.backend_fallback import BackendFallback
 from tinyagentos.capabilities import CapabilityChecker
 from tinyagentos.cluster.manager import ClusterManager
@@ -325,6 +328,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     user_shares_store = UserSharesStore(data_dir / "user_shares.db")
     from tinyagentos.app_grants_store import AppGrantsStore
     app_grants_store = AppGrantsStore(data_dir / "app_grants.db")
+    from tinyagentos.knowledge_fetchers.x import XWatchStore
+    x_watch_store = XWatchStore(data_dir / "x-watches.db")
     from tinyagentos.license_acceptances_store import LicenseAcceptancesStore
     license_acceptances_store = LicenseAcceptancesStore(data_dir / "license_acceptances.db")
     from tinyagentos.agent_model_key_store import AgentModelKeyStore
@@ -383,6 +388,17 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     task_router = TaskRouter(cluster_manager, http_client)
     cap_checker = CapabilityChecker(hardware_profile, cluster_manager)
     cluster_manager._capabilities = cap_checker  # wire after creation (circular dep)
+    # taOSusb Bluetooth pairing (S1) -- the controller side of
+    # docs/taosusb-pairing-plan.md. bleak is an optional dependency (see
+    # pyproject.toml's `ble` extra): BlePairingManager only imports it lazily
+    # on first scan/connect, so constructing it here never requires it.
+    from tinyagentos.cluster.ble.pairing import BlePairingManager
+    ble_pairing_manager = BlePairingManager(
+        data_dir=data_dir,
+        cluster_manager=cluster_manager,
+        pairing_store=cluster_pairing_store,
+        bind_port=controller_port,
+    )
     training_manager = TrainingManager(data_dir / "training.db")
     conversion_manager = ConversionManager(data_dir / "conversion.db")
     agent_messages = AgentMessageStore(data_dir / "agent_messages.db")
@@ -576,6 +592,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await agent_scope_requests_store.init()
         await agent_grants_store.init()
         app.state.agent_grants = agent_grants_store
+        await x_watch_store.init()
+        app.state.x_watch_store = x_watch_store
 
         # First-boot identity for the OS-native agent.  Runs on EVERY start, not
         # only on a fresh install: it is how an install that upgraded into this
@@ -1626,6 +1644,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await qmd_client.close()
         await http_client.aclose()
         await agent_grants_store.close()
+        await x_watch_store.close()
         await app_grants_store.close()
         await license_acceptances_store.close()
         await agent_model_key_store.close()
@@ -1675,6 +1694,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             },
             status_code=503,
         )
+
+    # LLM gateway keys: the default keystore location for mint/revoke callers
+    # (node pairing, agent lifecycle) that pass no data_dir.
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    configure_gateway_keystore(data_dir)
 
     # Auth middleware -- added first so it is innermost. Starlette builds the
     # middleware stack in reverse add order (last added is outermost), so the
@@ -1826,6 +1850,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.typing = None
     app.state.canvas_store = canvas_store
     app.state.desktop_settings = desktop_settings
+    # Which harness runs the system taOS Agent (opencode, or PicoClaw on a
+    # taOSmobile handset). Decided now so the lock screen and the config
+    # endpoint report it from the first request; a PicoClaw key left over
+    # from before a switch back to opencode is revoked here.
+    from tinyagentos.taos_agent_runtime import startup_framework_reconcile
+    startup_framework_reconcile(app.state)
     app.state.device_store = device_store
     app.state.device_pair_requests = device_pair_requests_store
     app.state.apns_sender = apns_sender
@@ -1879,9 +1909,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.password_reset = password_reset_store
     app.state.agent_scope_requests = agent_scope_requests_store
     app.state.agent_grants = agent_grants_store
+    app.state.x_watch_store = x_watch_store
     app.state.app_grants = app_grants_store
     app.state.license_acceptances = license_acceptances_store
     app.state.cluster_pairing = cluster_pairing_store
+    app.state.ble_pairing = ble_pairing_manager
     app.state.capability_map = capability_map_store
     app.state.council_roles = council_role_registry
     app.state.council_members = council_member_store
@@ -1899,9 +1931,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.mount("/static", _CacheAwareStaticFiles(directory=str(static_dir)), name="static")
 
     # Mount workspace for serving generated images and other workspace files
+    # NOTE: The StaticFiles mount is replaced by a custom route below that adds
+    # per-user authorization for paths under /data/workspace/users/<uid>/.
     workspace_dir = data_dir / "workspace"
     workspace_dir.mkdir(parents=True, exist_ok=True)
-    app.mount("/data/workspace", StaticFiles(directory=str(workspace_dir)), name="workspace")
 
     # Desktop SPA assets are served by the desktop route handler (routes/desktop.py)
 
@@ -1911,6 +1944,46 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     # Agent base image prefetch status endpoint
     register_prefetch_endpoint(app)
+
+    # Workspace file serving with per-user authorization
+    # This route replaces the bare StaticFiles mount to enforce ownership checks
+    # for user-scoped paths while keeping legacy shared paths session-gated only.
+    @app.get("/data/workspace/{path:path}")
+    async def serve_workspace_file(request: Request, path: str):
+        """Serve files from the workspace directory with per-user authorization.
+
+        Path structure:
+        - /data/workspace/users/<uid>/images/generated/<file> -> requires ownership or admin
+        - /data/workspace/users/<uid>/music/generated/<file> -> requires ownership or admin
+        - /data/workspace/images/generated/<file> (legacy) -> session gate only
+        - /data/workspace/music/generated/<file> (legacy) -> session gate only
+        - Other paths under /data/workspace/ -> session gate only (existing behavior)
+        """
+        # Resolve the requested path relative to workspace_dir
+        requested_path = (workspace_dir / path).resolve()
+
+        # Path traversal protection: ensure the resolved path is within workspace_dir
+        try:
+            if not requested_path.is_relative_to(workspace_dir.resolve()):
+                raise HTTPException(status_code=404, detail="Not found")
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Not found")
+
+        # Check if this is a user-scoped path: /data/workspace/users/<uid>/...
+        path_parts = path.split("/")
+        if len(path_parts) >= 2 and path_parts[0] == "users":
+            # This is a user-scoped path, require ownership or admin
+            target_user_id = path_parts[1]
+            user = current_user(request)
+            require_owner_or_admin(user, target_user_id)
+
+        # For legacy paths (non-user-scoped), the session gate from AuthMiddleware
+        # already ensures the request is authenticated (401 if not)
+
+        if not requested_path.exists() or not requested_path.is_file():
+            raise HTTPException(status_code=404, detail="Not found")
+
+        return FileResponse(requested_path)
 
     return app
 

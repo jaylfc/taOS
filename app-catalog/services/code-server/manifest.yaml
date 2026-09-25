@@ -1,37 +1,34 @@
-id: code-server
-name: Code Server
-type: service
 category: dev-tool
-version: 4.96.0
-description: "VS Code in the browser — web IDE for development and agent code editing"
-homepage: https://github.com/coder/code-server
-license: MIT
-
-requires:
-  ram_mb: 512
-  disk_mb: 1000
-  ports: [8443]
-
-install:
-  method: docker
-  image: lscr.io/linuxserver/code-server:latest
-  volumes:
-    - config:/config
-    - workspace:/home/coder/workspace
-  ports: [8443]
-  env:
-    PUID: "1000"
-    PGID: "1000"
-    TZ: "Europe/London"
-    DEFAULT_WORKSPACE: "/home/coder/workspace"
-
-lifecycle:
-  health_check: "curl -sf http://localhost:8443/healthz"
-
+description: "VS Code in the browser \u2014 web IDE for development and agent code\
+  \ editing"
 hardware_tiers:
   arm-npu-16gb: full
   arm-npu-32gb: full
-  x86-cuda-12gb: full
-  x86-vulkan-8gb: full
-  x86-vulkan-4gb: degraded
   cpu-only: degraded
+  x86-cuda-12gb: full
+  x86-vulkan-4gb: degraded
+  x86-vulkan-8gb: full
+homepage: https://github.com/coder/code-server
+id: code-server
+install:
+  env:
+    DEFAULT_WORKSPACE: /home/coder/workspace
+    PGID: '1000'
+    PUID: '1000'
+    TZ: Europe/London
+  image: lscr.io/linuxserver/code-server:4.135.0
+  method: docker
+  ports:
+  - 8443
+  volumes:
+  - config:/config
+  - workspace:/home/coder/workspace
+license: MIT
+lifecycle:
+  health_check: curl -sf http://localhost:8443/healthz
+name: Code Server
+requires:
+  disk_mb: 1000
+  ram_mb: 512
+type: service
+version: 4.96.0

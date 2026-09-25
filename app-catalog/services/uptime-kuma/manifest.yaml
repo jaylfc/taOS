@@ -1,30 +1,27 @@
-id: uptime-kuma
-name: Uptime Kuma
-type: service
 category: monitoring
-version: 1.0.0
-description: "Self-hosted uptime monitoring — track agent and service availability with alerts"
-homepage: https://github.com/louislam/uptime-kuma
-license: MIT
-
-requires:
-  ram_mb: 128
-  disk_mb: 200
-  ports: [3001]
-
-install:
-  method: docker
-  image: louislam/uptime-kuma:1
-  volumes:
-    - data:/app/data
-  ports: [3001]
-
-lifecycle:
-  health_check: "curl -sf http://localhost:3001"
-
+description: "Self-hosted uptime monitoring \u2014 track agent and service availability\
+  \ with alerts"
 hardware_tiers:
   arm-npu-16gb: full
   arm-npu-32gb: full
+  cpu-only: full
   x86-cuda-12gb: full
   x86-vulkan-8gb: full
-  cpu-only: full
+homepage: https://github.com/louislam/uptime-kuma
+id: uptime-kuma
+install:
+  image: louislam/uptime-kuma:1.23
+  method: docker
+  ports:
+  - 3001
+  volumes:
+  - data:/app/data
+license: MIT
+lifecycle:
+  health_check: curl -sf http://localhost:3001
+name: Uptime Kuma
+requires:
+  disk_mb: 200
+  ram_mb: 128
+type: service
+version: 1.0.0

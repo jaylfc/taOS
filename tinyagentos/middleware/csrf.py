@@ -98,6 +98,18 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 samesite="strict",
                 path="/",
             )
+        if getattr(request.state, "clear_stale_session", False):
+            already_set = any(
+                line.split(";")[0].strip().split("=", 1)[0].strip() == "taos_session"
+                for line in response.headers.getlist("set-cookie")
+            )
+            if not already_set:
+                response.delete_cookie(
+                    "taos_session",
+                    httponly=True,
+                    samesite="strict",
+                    path="/",
+                )
         return response
 
 
@@ -140,13 +152,30 @@ def verify_csrf(conn: HTTPConnection) -> None:
     if auth_header.lower().startswith("bearer "):
         return
 
-    # Signing in must work while a stale cookie is present. Checked BEFORE the
-    # cookie rule, because the stale cookie is what defeats that rule.
+    # A session cookie that is present but stale is the same as no session for
+    # CSRF purposes: there is no live session to hijack.  Signal the response
+    # middleware to drop it so the browser stops sending it on the next request.
+    session_token = conn.cookies.get("taos_session")
+    if session_token:
+        try:
+            auth_mgr = conn.app.state.auth
+        except (KeyError, AttributeError):
+            auth_mgr = None
+        if auth_mgr is not None and auth_mgr.validate_session(
+            session_token, conn.headers.get("user-agent")
+        ) is None:
+            conn.state.clear_stale_session = True
+            return
+
+    # Signing in must work while a stale cookie is present. Checked AFTER the
+    # session-validation block above so that a stale cookie is cleared there,
+    # but kept here so a VALID cookie on these paths is still exempt (they
+    # establish a credential, so CSRF does not apply).
     if conn.url.path.rstrip("/") in _CREDENTIAL_PATHS:
         return
 
     # No session cookie → not cookie-authenticated → no CSRF risk.
-    if not conn.cookies.get("taos_session"):
+    if not session_token:
         return
 
     cookie_token = conn.cookies.get(_COOKIE_NAME, "")
