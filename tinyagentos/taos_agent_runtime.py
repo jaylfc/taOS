@@ -1,9 +1,20 @@
-"""taOS agent opencode server lifecycle helpers.
+"""The system taOS Agent's harness: which one runs it, and its lifecycle.
 
-Manages the single host opencode server used exclusively by the taOS agent
-chat endpoint.  The server is started lazily on first chat request and kept
-alive for the process lifetime.  The persistent session id is stored on
-app.state so opencode remembers conversation history across requests.
+Two harnesses can run the system taOS Agent:
+
+- opencode (every host by default): a single host ``opencode serve`` used
+  exclusively by the taOS agent chat endpoint, started lazily on the first
+  chat request and kept alive for the process lifetime. The persistent
+  session id is stored on app.state so opencode remembers the conversation.
+- PicoClaw (a taOSmobile handset by default): one ``picoclaw agent`` process
+  per turn, talking to the controller's own LLM gateway with a scoped key
+  (see :mod:`tinyagentos.picoclaw_runtime`).
+
+:func:`decide_framework` is the ONE place the choice is made, from
+``device.class`` / ``taos_agent.framework`` in config.yaml, the detected
+device class and whether the gateway is on. :func:`system_agent_framework`
+reports the EFFECTIVE harness (never just the preference), and the lock
+screen and ``/api/taos-agent/config`` both read it.
 """
 from __future__ import annotations
 
@@ -12,6 +23,7 @@ import hashlib
 import logging
 import re
 import secrets
+from dataclasses import dataclass
 from pathlib import Path
 
 from tinyagentos.litellm_config import get_litellm_master_key
@@ -21,14 +33,111 @@ logger = logging.getLogger(__name__)
 
 TAOS_OPENCODE_PORT = 4188  # local-only port for the taOS agent opencode server
 
+FRAMEWORK_OPENCODE = OpenCodeServer.__name__.split("Server")[0].lower()  # "opencode"
+FRAMEWORK_PICOCLAW = "picoclaw"
+FRAMEWORK_CHOICES = ("auto", FRAMEWORK_OPENCODE, FRAMEWORK_PICOCLAW)
+DEVICE_CLASS_CHOICES = ("auto", "mobile", "desktop")
 
-def system_agent_framework() -> str:
-    """Return the framework id of the system taOS Agent.
+#: The gateway principal the PicoClaw-run taOS Agent's key is bound to.
+PICOCLAW_PRINCIPAL = "agent:taos-agent"
 
-    Derived from the server class the runtime actually launches so the value
-    stays correct if the adapter selection changes.
+REASON_GATEWAY_DISABLED = "picoclaw preferred, gateway disabled, using opencode"
+REASON_NO_BINARY = "picoclaw preferred, picoclaw binary not found, using opencode"
+
+
+@dataclass(frozen=True)
+class FrameworkDecision:
+    framework: str
+    """The harness that actually runs the taOS Agent."""
+    preference: str
+    """What the settings ask for (auto resolved against the device class)."""
+    reason: str
+    device_class: str
+    """The effective device class: "mobile" or "desktop"."""
+
+
+def _setting(value, choices: tuple[str, ...], name: str) -> str:
+    if isinstance(value, str) and value.strip().lower() in choices:
+        return value.strip().lower()
+    if value not in (None, ""):
+        logger.warning(
+            "taos_agent_runtime: %s=%r is not one of %s; treating it as auto",
+            name, value, "|".join(choices),
+        )
+    return "auto"
+
+
+def decide_framework(
+    *,
+    framework_setting,
+    device_class_setting,
+    detected_device_class: str | None,
+    gateway_enabled: bool,
+    picoclaw_available: bool,
+) -> FrameworkDecision:
+    """Pick the system taOS Agent's harness. Pure: no I/O besides a warning.
+
+    ``taos_agent.framework`` "opencode"/"picoclaw" is an operator override;
+    "auto" means picoclaw on a mobile device and opencode everywhere else.
+    ``device.class`` "auto" takes the detected class (hardware.py's kiosk-unit
+    probe). PicoClaw needs the LLM gateway and the binary; without either,
+    opencode runs and the reason says why.
     """
-    return OpenCodeServer.__name__.split("Server")[0].lower()
+    dev = _setting(device_class_setting, DEVICE_CLASS_CHOICES, "device.class")
+    if dev == "auto":
+        device_class = "mobile" if detected_device_class == "mobile" else "desktop"
+    else:
+        device_class = dev
+    fw = _setting(framework_setting, FRAMEWORK_CHOICES, "taos_agent.framework")
+    if fw == "auto":
+        preference = FRAMEWORK_PICOCLAW if device_class == "mobile" else FRAMEWORK_OPENCODE
+        why = f"auto on a {device_class} device"
+    else:
+        preference = fw
+        why = f"operator override taos_agent.framework={fw}"
+    if preference == FRAMEWORK_PICOCLAW:
+        if not gateway_enabled:
+            return FrameworkDecision(FRAMEWORK_OPENCODE, preference, REASON_GATEWAY_DISABLED, device_class)
+        if not picoclaw_available:
+            return FrameworkDecision(FRAMEWORK_OPENCODE, preference, REASON_NO_BINARY, device_class)
+    return FrameworkDecision(preference, preference, why, device_class)
+
+
+def refresh_framework_decision(app_state) -> FrameworkDecision:
+    """Decide from app_state's config, hardware profile and the gateway flag;
+    store it on ``app_state.taos_agent_framework_decision`` and log it."""
+    from tinyagentos import llm_gateway
+    from tinyagentos.picoclaw_runtime import resolve_picoclaw_binary
+
+    config = getattr(app_state, "config", None)
+    profile = getattr(app_state, "hardware_profile", None)
+    decision = decide_framework(
+        framework_setting=(getattr(config, "taos_agent", None) or {}).get("framework"),
+        device_class_setting=(getattr(config, "device", None) or {}).get("class"),
+        detected_device_class=getattr(profile, "device_class", None),
+        gateway_enabled=llm_gateway.enabled(),
+        picoclaw_available=resolve_picoclaw_binary() is not None,
+    )
+    app_state.taos_agent_framework_decision = decision
+    if decision.framework != decision.preference:
+        logger.warning("taOS Agent harness: %s", decision.reason)
+    else:
+        logger.info("taOS Agent harness: %s (%s)", decision.framework, decision.reason)
+    return decision
+
+
+def system_agent_framework(app_state=None) -> str:
+    """Return the framework id of the harness that RUNS the system taOS Agent.
+
+    The effective harness, not the preference: with picoclaw preferred and
+    the gateway off this says "opencode", because opencode is what runs.
+    Without an app state (or before the first decision) it is opencode, the
+    harness every host ran before PicoClaw existed.
+    """
+    decision = getattr(app_state, "taos_agent_framework_decision", None) if app_state is not None else None
+    if isinstance(decision, FrameworkDecision):
+        return decision.framework
+    return FRAMEWORK_OPENCODE
 
 
 # Safe filesystem component for opencode home directories.  Agent ids and
@@ -265,3 +374,142 @@ async def stop_taos_opencode_server(app_state) -> None:
     app_state.taos_opencode_sessions = {}
     app_state.taos_opencode_born_degraded = {}
     app_state.taos_opencode_session_id = None
+
+# ---------------------------------------------------------------------------
+# PicoClaw lifecycle
+# ---------------------------------------------------------------------------
+
+
+def _picoclaw_lock(app_state) -> asyncio.Lock:
+    lock = getattr(app_state, "taos_picoclaw_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        app_state.taos_picoclaw_lock = lock
+    return lock
+
+
+async def _picoclaw_models(app_state) -> list[str]:
+    """The taOS Agent's own model choice: its model + permitted_models."""
+    prefs: dict = {}
+    store = getattr(app_state, "desktop_settings", None)
+    if store is not None:
+        try:
+            prefs = await store.get_preference("user", "taos_agent") or {}
+        except Exception:
+            logger.debug("taos_agent_runtime: could not read taos_agent prefs", exc_info=True)
+    models: list[str] = []
+    for m in [prefs.get("model"), *(prefs.get("permitted_models") or [])]:
+        if isinstance(m, str) and m and m not in models:
+            models.append(m)
+    return models
+
+
+def retire_picoclaw(app_state) -> int:
+    """Revoke the PicoClaw key and delete the config that held it.
+
+    Idempotent and synchronous (safe at startup). The workspace, where
+    PicoClaw keeps its sessions and memory, is kept. Returns how many keys
+    were live.
+    """
+    from tinyagentos.llm_gateway.auth import revoke_keys_for
+    from tinyagentos.picoclaw_runtime import home_for
+
+    data_dir = getattr(app_state, "data_dir", None)
+    revoked = 0
+    if data_dir is not None:
+        try:
+            revoked = revoke_keys_for(PICOCLAW_PRINCIPAL, data_dir=data_dir)
+        except Exception:
+            logger.exception("taos_agent_runtime: revoking the picoclaw key failed")
+        try:
+            (home_for(data_dir) / "config.json").unlink()
+        except FileNotFoundError:
+            pass
+    app_state.taos_picoclaw_harness = None
+    app_state.taos_picoclaw_scope = None
+    if revoked:
+        logger.info("taos_agent_runtime: picoclaw retired, %d key(s) revoked", revoked)
+    return revoked
+
+
+async def _provision_picoclaw_locked(app_state, models: list[str]):
+    from tinyagentos.llm_gateway.auth import mint_gateway_key, revoke_keys_for
+    from tinyagentos.picoclaw_runtime import (
+        DEFAULT_MODEL,
+        PicoClawBinaryNotFoundError,
+        PicoClawHarness,
+        home_for,
+        resolve_picoclaw_binary,
+    )
+
+    binary = resolve_picoclaw_binary()
+    if binary is None:
+        raise PicoClawBinaryNotFoundError("picoclaw binary not found")
+    data_dir = app_state.data_dir
+    allow = sorted(set(models) | {DEFAULT_MODEL})
+    # One live key at a time: the old one dies before the new one is minted.
+    revoke_keys_for(PICOCLAW_PRINCIPAL, data_dir=data_dir)
+    key = mint_gateway_key(
+        bound_to=PICOCLAW_PRINCIPAL, kind="agent", allowed_models=allow, data_dir=data_dir,
+    )
+    config = getattr(app_state, "config", None)
+    port = int((getattr(config, "server", None) or {}).get("port", 6969))
+    harness = PicoClawHarness(
+        home=home_for(data_dir),
+        api_base=f"http://127.0.0.1:{port}/api/llm/v1",
+        key=key,
+        models=[m for m in models if m != DEFAULT_MODEL],
+        binary=binary,
+    )
+    harness.write_config()
+    app_state.taos_picoclaw_harness = harness
+    app_state.taos_picoclaw_scope = tuple(allow)
+    return harness
+
+
+async def provision_picoclaw(app_state):
+    """(Re)mint the key and rewrite PicoClaw's config for the current model set."""
+    async with _picoclaw_lock(app_state):
+        return await _provision_picoclaw_locked(app_state, await _picoclaw_models(app_state))
+
+
+async def ensure_taos_picoclaw_harness(app_state):
+    """The provisioned PicoClaw harness; re-provisioned if the agent's model
+    set changed since the key was minted, or the config went missing."""
+    from tinyagentos.picoclaw_runtime import DEFAULT_MODEL
+
+    async with _picoclaw_lock(app_state):
+        models = await _picoclaw_models(app_state)
+        harness = getattr(app_state, "taos_picoclaw_harness", None)
+        scope = tuple(sorted(set(models) | {DEFAULT_MODEL}))
+        if (
+            harness is not None
+            and getattr(app_state, "taos_picoclaw_scope", None) == scope
+            and harness.config_path.exists()
+        ):
+            return harness
+        return await _provision_picoclaw_locked(app_state, models)
+
+
+async def apply_framework(app_state) -> FrameworkDecision:
+    """Re-decide and make the running harness match: the agent restarts, the
+    controller does not. Leaving PicoClaw revokes its key; entering it stops
+    opencode and provisions PicoClaw (a fresh key, a fresh config)."""
+    decision = refresh_framework_decision(app_state)
+    if decision.framework == FRAMEWORK_PICOCLAW:
+        await stop_taos_opencode_server(app_state)
+        await provision_picoclaw(app_state)
+    else:
+        async with _picoclaw_lock(app_state):
+            retire_picoclaw(app_state)
+    return decision
+
+
+def startup_framework_reconcile(app_state) -> FrameworkDecision:
+    """At startup: decide, and if PicoClaw is not the harness, make sure no
+    PicoClaw key survived (an operator may have switched by editing
+    config.yaml and restarting)."""
+    decision = refresh_framework_decision(app_state)
+    if decision.framework != FRAMEWORK_PICOCLAW:
+        retire_picoclaw(app_state)
+    return decision

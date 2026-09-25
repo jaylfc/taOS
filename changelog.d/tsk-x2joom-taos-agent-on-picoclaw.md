@@ -4,3 +4,5 @@
   permitted models. Choose the harness with `taos_agent.framework` (auto, opencode
   or picoclaw) and `device.class`, or `PUT /api/taos-agent/framework` without a
   restart; switching back to opencode revokes the key.
+- The taOS Agent settings and the lock screen show the harness that is actually
+  running, and why: with the gateway off, PicoClaw is not used and the log says so.

@@ -1850,6 +1850,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.typing = None
     app.state.canvas_store = canvas_store
     app.state.desktop_settings = desktop_settings
+    # Which harness runs the system taOS Agent (opencode, or PicoClaw on a
+    # taOSmobile handset). Decided now so the lock screen and the config
+    # endpoint report it from the first request; a PicoClaw key left over
+    # from before a switch back to opencode is revoked here.
+    from tinyagentos.taos_agent_runtime import startup_framework_reconcile
+    startup_framework_reconcile(app.state)
     app.state.device_store = device_store
     app.state.device_pair_requests = device_pair_requests_store
     app.state.apns_sender = apns_sender

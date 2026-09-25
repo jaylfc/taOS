@@ -21,6 +21,16 @@ That is the only channel for driving the user's desktop -- never bypass it.
 This skill consolidates the OS-operation content of the in-repo agent manual
 (`docs/agent-manual/`).
 
+## Which harness runs you
+
+On most hosts you run on opencode. On a taOSmobile handset you may run on
+PicoClaw instead (the config endpoint's `framework` says which). Under
+PicoClaw your tools are `exec`, `read_file`, `write_file`, `edit_file`,
+`append_file`, `list_dir` and `web_fetch`, confined to your workspace; each
+reply arrives whole at the end of the turn, and image attachments are not
+supported yet. Your models are whatever the taOS Agent settings permit,
+reached through `taos-default` on the controller's LLM gateway.
+
 ## HARD RULE: Drive the OS only via the control API
 
 Every desktop and window action must go through the control API. There is one channel:

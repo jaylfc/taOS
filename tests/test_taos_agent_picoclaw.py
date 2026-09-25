@@ -366,10 +366,12 @@ async def test_unknown_value_in_config_file_is_treated_as_auto(mobile, caplog):
 @_ASYNC
 async def test_framework_switch_requires_admin(mobile):
     app, client = mobile
+    await client.put("/api/taos-agent/framework", json={"framework": "opencode"})
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
                            event_hooks=csrf_event_hooks()) as anon:
         resp = await anon.put("/api/taos-agent/framework", json={"framework": "picoclaw"})
     assert resp.status_code in (401, 403)
+    assert (await _framework(client))["framework"] == "opencode"
     assert not _picoclaw_config_path(app).exists()
 
 
