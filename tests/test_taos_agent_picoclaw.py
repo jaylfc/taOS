@@ -74,6 +74,13 @@ with open(os.path.join(os.path.dirname(cfg_path), "fake-invocations.jsonl"), "a"
 if args[:1] != ["agent"] or "-m" not in args:
     print("unsupported invocation", file=sys.stderr); sys.exit(2)
 text = args[args.index("-m") + 1]
+if text.startswith("RUN: "):
+    # Stands in for PicoClaw's exec tool: run a shell command in the
+    # workspace (the cwd) with the environment PicoClaw was given.
+    import subprocess
+    r = subprocess.run(text[5:], shell=True, capture_output=True, text=True, timeout=60)
+    print("\U0001F99E rc=%d out=%s err=%s" % (r.returncode, r.stdout.strip(), r.stderr.strip()))
+    sys.exit(0)
 cfg = json.load(open(cfg_path))
 d = cfg["agents"]["defaults"]
 entry = next(m for m in cfg["model_list"] if m["model_name"] == d["model_name"])
@@ -222,6 +229,14 @@ def _key_from_config(app) -> str:
     keys = {k for m in cfg["model_list"] for k in m["api_keys"]}
     assert len(keys) == 1, keys
     return keys.pop()
+
+
+def _workspace(app) -> Path:
+    return _picoclaw_config_path(app).parent / "workspace"
+
+
+def _local_token(app) -> str:
+    return app.state.auth.get_local_token()
 
 
 def _live_keys(app) -> int:
@@ -433,6 +448,11 @@ async def test_key_never_in_a_response_or_a_log(mobile, monkeypatch, caplog):
         texts.append((await client.get("/auth/lock-widgets")).text)
         chat_text, _ = await _chat(client)
         texts.append(chat_text)
+        # The agent itself trying to read or echo its credential gets nothing.
+        for probe in ("RUN: cat .taos_credential", "RUN: bin/taos GET api/taos-agent/config",
+                      "RUN: env"):
+            probe_text, _ = await _chat(client, probe)
+            texts.append(probe_text)
         from tinyagentos.cluster import model_resolver
         from tinyagentos.cluster.model_resolver import ModelLocation
         monkeypatch.setattr(model_resolver, "resolve_model_location",
@@ -444,7 +464,9 @@ async def test_key_never_in_a_response_or_a_log(mobile, monkeypatch, caplog):
         resp = await client.put("/api/taos-agent/framework", json={"framework": "opencode"})
         texts.append(resp.text)
     assert key.startswith("sk-taosgw-")
-    for secret in (key, new_key):
+    agents_md = (_workspace(app) / "AGENTS.md").read_text()
+    for secret in (key, new_key, _local_token(app)):
+        assert secret not in agents_md
         for t in texts:
             assert secret not in t
         assert secret not in caplog.text
@@ -465,8 +487,10 @@ async def test_switching_back_to_opencode_revokes_the_key(mobile):
     assert resp.json()["framework"] == "opencode"
     after = await _models_with(app, key)
     assert after.status_code == 401, after.text
-    # The dead key does not linger on disk either.
+    # The dead key does not linger on disk either, nor the taOS credential.
     assert not _picoclaw_config_path(app).exists()
+    assert not (_workspace(app) / ".taos_credential").exists()
+    assert not (_workspace(app) / "bin" / "taos").exists()
 
 
 @_ASYNC
@@ -493,10 +517,12 @@ async def test_a_restart_into_opencode_revokes_a_leftover_key(mobile):
     key = _key_from_config(app)
     from tinyagentos.taos_agent_runtime import startup_framework_reconcile
 
+    assert (_workspace(app) / ".taos_credential").exists()
     app.state.config.taos_agent = {"framework": "opencode"}
     startup_framework_reconcile(app.state)
     assert (await _models_with(app, key)).status_code == 401
     assert not _picoclaw_config_path(app).exists()
+    assert not (_workspace(app) / ".taos_credential").exists()
 
 
 @_ASYNC
@@ -589,6 +615,49 @@ async def test_missing_picoclaw_binary_falls_back_to_opencode(mobile, monkeypatc
     assert _live_keys(app) == 0
 
 
+@_ASYNC
+async def test_taos_helper_and_credential_are_provisioned_in_the_workspace(mobile):
+    app, client = mobile
+    resp = await client.put("/api/taos-agent/framework", json={"framework": "picoclaw"})
+    assert resp.json()["framework"] == "picoclaw"
+    ws = _workspace(app)
+    helper = ws / "bin" / "taos"
+    cred = ws / ".taos_credential"
+    assert helper.is_file() and os.access(helper, os.X_OK)
+    assert stat.S_IMODE(cred.stat().st_mode) == 0o600
+    assert cred.resolve().is_relative_to(ws.resolve())
+    # Exactly the credential opencode reaches taOS with: the host local token.
+    assert cred.read_text().strip() == _local_token(app)
+    # Never on the helper's command line or in its source.
+    assert _local_token(app) not in helper.read_text()
+
+
+@_ASYNC
+async def test_agents_md_describes_every_tool_through_bin_taos(mobile):
+    import re
+    app, client = mobile
+    await client.put("/api/taos-agent/framework", json={"framework": "picoclaw"})
+    with respx.mock(assert_all_called=False) as router:
+        router.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(200, json=_completion("ok")))
+        await _chat(client)
+    md = (_workspace(app) / "AGENTS.md").read_text()
+    assert "bin/taos POST api/desktop/command" in md
+    for tool in ("open_app", "arrange_windows", "read_layout", "notes_add_entry",
+                 "notes_list_shared_docs", "todo_add_item", "create_project", "memory_search"):
+        assert tool in md, tool
+    # PicoClaw's exec guard refuses an absolute path: no "/api/" after bin/taos.
+    assert not re.search(r"bin/taos \w+ /api/", md)
+
+
+@_ASYNC
+async def test_the_helper_refuses_a_path_outside_the_api(mobile):
+    app, client = mobile
+    await client.put("/api/taos-agent/framework", json={"framework": "picoclaw"})
+    _, frames = await _chat(client, "RUN: bin/taos GET http://evil.example/x")
+    reply = "".join(f.get("delta", "") for f in frames)
+    assert "rc=2" in reply, frames
+
+
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
@@ -647,4 +716,24 @@ async def test_persona_reaches_picoclaw(mobile):
             return_value=httpx.Response(200, json=_completion("ok")))
         await _chat(client)
     sent = json.loads(route.calls.last.request.content)
-    assert sent["messages"][0]["content"].strip() == "You are Pip, terse."
+    system = sent["messages"][0]["content"]
+    assert system.startswith("You are Pip, terse.")
+    # The persona replaces the manual, not the way to reach taOS.
+    assert "bin/taos" in system
+
+
+@_ASYNC
+async def test_a_picoclaw_turn_reaches_taos_through_bin_taos(mobile):
+    """PicoClaw's exec tool runs bin/taos; the call reaches the real app as
+    the device owner, the same access opencode has with the local token."""
+    app, client = mobile
+    await client.put("/api/taos-agent/framework", json={"framework": "picoclaw"})
+    cmd = ("RUN: bin/taos POST api/desktop/command "
+           "'{\"kind\":\"open-app\",\"payload\":{\"app\":\"notes\"}}'")
+    _, frames = await _chat(client, cmd)
+    reply = "".join(f.get("delta", "") for f in frames)
+    assert "rc=0" in reply, frames
+    assert '"delivered"' in reply, frames
+    _, frames = await _chat(client, "RUN: bin/taos GET api/taos-agent/status")
+    reply = "".join(f.get("delta", "") for f in frames)
+    assert "rc=0" in reply and '"state"' in reply, frames
