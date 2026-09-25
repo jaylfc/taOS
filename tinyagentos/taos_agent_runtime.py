@@ -509,7 +509,16 @@ def startup_framework_reconcile(app_state) -> FrameworkDecision:
     """At startup: decide, and if PicoClaw is not the harness, make sure no
     PicoClaw key survived (an operator may have switched by editing
     config.yaml and restarting)."""
+    from tinyagentos.litellm_keystore import default_keystore_path
+
     decision = refresh_framework_decision(app_state)
-    if decision.framework != FRAMEWORK_PICOCLAW:
+    data_dir = getattr(app_state, "data_dir", None)
+    # No keystore means no key was ever minted: do not create one just to
+    # look (a host that never ran PicoClaw sees no change at all).
+    if (
+        decision.framework != FRAMEWORK_PICOCLAW
+        and data_dir is not None
+        and default_keystore_path(data_dir).exists()
+    ):
         retire_picoclaw(app_state)
     return decision
