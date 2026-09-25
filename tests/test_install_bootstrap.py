@@ -222,6 +222,36 @@ def test_requires_python_admits_3_11_and_3_14():
     assert "3.10" not in spec, "requires-python must not admit 3.10"
 
 
+def _python_versions_to_probe() -> list[str]:
+    """Every minor from 3.8 to 3.16 at .0, .7 (3.14.7 is the CI leg) and a late patch."""
+    return [f"3.{minor}.{patch}" for minor in range(8, 17) for patch in (0, 7, 99)]
+
+
+def test_uv_lock_requires_python_matches_pyproject():
+    """uv.lock's recorded requires-python must admit exactly what pyproject admits.
+
+    `uv sync` refuses to install when the running interpreter falls outside the
+    LOCKED bound, even if pyproject.toml admits it. Widening pyproject without
+    regenerating the lock left the 3.14 CI leg dying with "not compatible with
+    the locked Python requirement: `>=3.11, <3.14`" before any test ran.
+    """
+    with open(REPO_ROOT / "pyproject.toml", "rb") as fh:
+        project_spec = packaging.specifiers.SpecifierSet(
+            tomllib.load(fh)["project"]["requires-python"]
+        )
+    with open(REPO_ROOT / "uv.lock", "rb") as fh:
+        lock_spec = packaging.specifiers.SpecifierSet(tomllib.load(fh)["requires-python"])
+    mismatched = [
+        f"{v}: pyproject={v in project_spec} uv.lock={v in lock_spec}"
+        for v in _python_versions_to_probe()
+        if (v in project_spec) != (v in lock_spec)
+    ]
+    assert not mismatched, (
+        f"uv.lock requires-python {str(lock_spec)!r} disagrees with pyproject "
+        f"{str(project_spec)!r}; run `uv lock`:\n  " + "\n  ".join(mismatched)
+    )
+
+
 def _write_mock_python(tmp: Path, name: str, version: int) -> Path:
     """Write a mock python executable that prints `version` and exits 0."""
     exe = tmp / name
