@@ -15,6 +15,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.app import create_app
+from taos_test_csrf import csrf_event_hooks
 
 
 def _bearer(token: str) -> dict:
@@ -126,13 +127,20 @@ class TestDeviceBearerProjectFiles:
         assert resp.status_code == 403
         body = resp.json()
 
-        # Same member's SESSION upload should also be refused (404 or 403)
-        resp2 = await client.post(
-            "/api/sessions/upload",
-            headers=_bearer(token),
-            files={"file": ("session.txt", b"session content", "text/plain")},
-        )
-        assert resp2.status_code in (403, 404)
+        # Same member's SESSION upload should also be refused (404 — existence-hiding)
+        member_token = app.state.auth.create_session(user_id=member, long_lived=True)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            cookies={"taos_session": member_token},
+            event_hooks=csrf_event_hooks(),
+        ) as session_client:
+            resp2 = await session_client.post(
+                "/api/projects/shared/files/upload",
+                files={"file": ("session.txt", b"session content", "text/plain")},
+            )
+        assert resp2.status_code == 404
         body2 = resp2.json()
 
 
