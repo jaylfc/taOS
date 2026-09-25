@@ -682,7 +682,7 @@ drops each pattern from a copy of the real `.gitignore` and asserts the guard fa
 - Branch naming: `feat/<slug>` or `fix/<slug>`
 - Conventional commits (see table above)
 - No AI tool attribution in commits
-- Python 3.11+ floor (pyproject.toml: `>=3.11,<3.14`). `match`/`case` and `X | None` union syntax
+- Python 3.11+ floor (pyproject.toml: `>=3.11,<3.15`). `match`/`case` and `X | None` union syntax
   are available. Most modules use `from __future__ import annotations`.
 - Code style: match surrounding code, one concern per module
 - Use `uv` for dependency management and test running: `uv sync --extra dev`, `uv run pytest`
@@ -811,7 +811,7 @@ controls which hardware profiles see the app as recommended.
 - **Secrets have a dedicated store.** `tinyagentos/secrets.py` (routes in
   `tinyagentos/routes/secrets.py`, attached as `app.state.secrets`) is the credential store. Store
   credentials there - never in config or in code.
-- **CONTRIBUTING.md** says Python 3.10+, but `pyproject.toml` requires `>=3.11,<3.14`.
+- **CONTRIBUTING.md** says Python 3.10+, but `pyproject.toml` requires `>=3.11,<3.15`.
   Python 3.11 is the effective floor.
 - **Routes do not import stores directly.** They access them via `request.app.state`.
   This is a common mistake - check existing routes for the pattern.
