@@ -157,6 +157,9 @@ async def _reset_state(app) -> None:
     # The respx default router: routes and recorded calls.
     respx.mock.clear()
     respx.mock.reset()
+    # Failover cooldowns must not leak between tests.
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+    _clear_cooldowns()
 
 
 @pytest_asyncio.fixture(loop_scope="module")
@@ -922,3 +925,152 @@ async def test_streamed_vs_non_streamed_parity(client, monkeypatch):
     usage = args[3]
     assert usage.input_tokens == 10
     assert usage.output_tokens == 5
+
+
+# ---------------------------------------------------------------------------
+# Failover: retry/failover across backends serving the same model
+# ---------------------------------------------------------------------------
+
+BACKUP_OPENAI = {
+    "name": "backup-llama",
+    "type": "openai-compatible",
+    "url": "http://backup.test:8080/v1",
+    "models": [{"id": "qwen3-8b"}],
+    "api_key": "sk-backup",
+    "priority": 2,
+}
+BACKUP_CHAT = "http://backup.test:8080/v1/chat/completions"
+
+
+def _enable_failover(client) -> None:
+    app = _app(client)
+    app.state.config.backends = [OPENAI_COMPAT, BACKUP_OPENAI]
+
+
+@_ASYNC
+@respx.mock
+async def test_first_backend_connect_error_second_answers_200(client):
+    _enable_failover(client)
+    primary = respx.post(UPSTREAM_CHAT).mock(side_effect=httpx.ConnectError("primary down"))
+    backup = respx.post(BACKUP_CHAT).mock(return_value=httpx.Response(200, json=_completion("qwen3-8b")))
+    resp = await client.post(BASE + "/chat/completions", json=_chat())
+    assert resp.status_code == 200, resp.text
+    assert primary.call_count == 1
+    assert backup.call_count == 1
+
+
+@_ASYNC
+@respx.mock
+async def test_first_backend_503_goes_to_second(client):
+    _enable_failover(client)
+    primary = respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(503, json={"error": {"message": "unavailable"}}))
+    backup = respx.post(BACKUP_CHAT).mock(return_value=httpx.Response(200, json=_completion("qwen3-8b")))
+    resp = await client.post(BASE + "/chat/completions", json=_chat())
+    assert resp.status_code == 200, resp.text
+    assert primary.call_count == 1
+    assert backup.call_count == 1
+
+
+@_ASYNC
+@respx.mock
+async def test_first_backend_400_returned_as_is_no_second_call(client):
+    _enable_failover(client)
+    primary = respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(400, json={
+        "error": {"message": "bad request", "type": "invalid_request_error", "code": "bad_request"}
+    }))
+    resp = await client.post(BASE + "/chat/completions", json=_chat())
+    err = _assert_openai_error(resp, 400, "bad_request")
+    assert primary.call_count == 1
+    assert respx.post(BACKUP_CHAT).call_count == 0
+
+
+@_ASYNC
+@respx.mock
+async def test_all_backends_down_one_clear_502_within_deadline(client):
+    _enable_failover(client)
+    primary = respx.post(UPSTREAM_CHAT).mock(side_effect=httpx.ConnectError("primary down"))
+    backup = respx.post(BACKUP_CHAT).mock(side_effect=httpx.ConnectError("backup down"))
+    resp = await client.post(BASE + "/chat/completions", json=_chat())
+    _assert_openai_error(resp, 502, "upstream_error")
+    assert primary.call_count == 1
+    assert backup.call_count == 1
+
+
+@_ASYNC
+@respx.mock
+async def test_streamed_call_failed_mid_stream_is_not_retried(client, monkeypatch):
+    _enable_failover(client)
+    backup = respx.post(BACKUP_CHAT).mock(return_value=httpx.Response(200, json=_completion("qwen3-8b")))
+
+    original_send = httpx.AsyncClient.send
+
+    async def mock_send(self, request, **kwargs):
+        if str(request.url) == UPSTREAM_CHAT:
+            resp = httpx.Response(200, headers={"content-type": "text/event-stream"})
+            async def failing_aiter_raw(chunk_size=None):
+                yield b"data: {\"choices\": [{\"delta\": {\"content\": \"hi\"}}]}\n\n"
+                raise httpx.ReadError("stream broken")
+            resp.aiter_raw = lambda chunk_size=None: failing_aiter_raw(chunk_size)
+            return resp
+        return await original_send(self, request, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", mock_send)
+    with pytest.raises(httpx.ReadError):
+        await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+    assert backup.call_count == 0
+
+
+@_ASYNC
+@respx.mock
+async def test_cooldown_means_second_request_goes_straight_to_healthy_backend(client):
+    _enable_failover(client)
+    primary = respx.post(UPSTREAM_CHAT).mock(side_effect=httpx.ConnectError("primary down"))
+    backup = respx.post(BACKUP_CHAT).mock(return_value=httpx.Response(200, json=_completion("qwen3-8b")))
+
+    resp1 = await client.post(BASE + "/chat/completions", json=_chat())
+    assert resp1.status_code == 200, resp1.text
+
+    resp2 = await client.post(BASE + "/chat/completions", json=_chat())
+    assert resp2.status_code == 200, resp2.text
+
+    assert primary.call_count == 1
+    assert backup.call_count == 2
+
+
+@_ASYNC
+@respx.mock
+async def test_single_backend_recovers_within_cooldown(client):
+    app = _app(client)
+    app.state.config.backends = [OPENAI_COMPAT]
+    route = respx.post(UPSTREAM_CHAT).mock(side_effect=[
+        httpx.Response(503, json={"error": {"message": "unavailable"}}),
+        httpx.Response(200, json=_completion("qwen3-8b")),
+    ])
+
+    resp1 = await client.post(BASE + "/chat/completions", json=_chat())
+    assert resp1.status_code == 502, resp1.text
+
+    resp2 = await client.post(BASE + "/chat/completions", json=_chat())
+    assert resp2.status_code == 200, resp2.text
+    assert route.call_count == 2
+
+
+@_ASYNC
+@respx.mock
+async def test_single_backend_stream_recovers_within_cooldown(client):
+    app = _app(client)
+    app.state.config.backends = [OPENAI_COMPAT]
+    route = respx.post(UPSTREAM_CHAT).mock(side_effect=[
+        httpx.ConnectError("primary down"),
+        httpx.Response(200, content=_sse_chunk("hi") + _sse_done(), headers={"content-type": "text/event-stream"}),
+    ])
+
+    with pytest.raises(RuntimeError):
+        await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+
+    resp2 = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+    assert resp2.status_code == 200, resp2.text
+    data = resp2.read()
+    text = data.decode("utf-8")
+    assert '"content": "hi"' in text
+    assert route.call_count == 2

@@ -14,10 +14,12 @@ from tinyagentos.llm_gateway.errors import (
     GatewayError,
     bad_request,
     handle_gateway_error,
+    model_not_found,
     model_not_permitted,
 )
 from tinyagentos.llm_gateway.forward import chat_completion, chat_completion_stream, resolve_api_key
-from tinyagentos.llm_gateway.resolve import TAOS_DEFAULT, model_names, resolve, routing_table
+from tinyagentos.llm_gateway.resolve import TAOS_DEFAULT, find_routes, model_names, routing_table
+import tinyagentos.llm_gateway.resolve as resolve_mod
 
 PREFIX = "/api/llm/v1"
 OPENAI_PROVIDER = "openai"
@@ -73,13 +75,19 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
     if not caller.may_use(requested):
         raise model_not_permitted(requested)
     state = request.app.state
-    # Resolve ONCE: the route checked below is the route forwarded to, so a
-    # default changed mid-request cannot slip between the check and the call.
-    route = await resolve(state, requested)
-    # Alias rule: a caller granted taos-default may use whatever it CURRENTLY
-    # resolves to (only the owner sets the default, so the grant is "whatever
-    # the owner chose"; a board keyed to ["taos-default"] keeps working when
-    # the default changes). Every other resolution is checked on its own.
+    name = requested
+    if requested == TAOS_DEFAULT:
+        name = await resolve_mod.default_chat_model(state)
+        if name is None:
+            raise model_not_found(
+                "taos-default has nothing behind it: no default chat model is set. "
+                "Pick one in the taOS agent settings."
+            )
+    routes = find_routes(routing_table(state), name)
+    if not routes:
+        suffix = f" (taos-default points at it)" if name != requested else ""
+        raise model_not_found(f"model {name!r} not found{suffix}")
+    route = routes[0]
     alias_grant = requested == TAOS_DEFAULT and caller.may_use(TAOS_DEFAULT)
     if route.model_name != requested and not alias_grant and not caller.may_use(route.model_name):
         raise model_not_permitted(route.model_name)
@@ -93,5 +101,5 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
     api_key = await resolve_api_key(state, route.api_key_ref)
     principal = caller.caller_id
     if body.get("stream"):
-        return chat_completion_stream(route, body, api_key, principal, state)
-    return JSONResponse(await chat_completion(route, body, api_key, principal, state))
+        return chat_completion_stream(routes, body, api_key, principal, state)
+    return JSONResponse(await chat_completion(routes, body, api_key, principal, state))
