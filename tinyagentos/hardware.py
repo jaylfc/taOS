@@ -84,6 +84,9 @@ class HardwareProfile:
     # what the VM has); these only contextualize it so users are not confused.
     wsl: bool = False
     mem_note: str = ""
+    # Device class: "mobile" for taOSmobile handsets, None otherwise.
+    # Set from config key "device.class: mobile" or detected via kiosk unit presence.
+    device_class: str | None = None
 
     @property
     def profile_id(self) -> str:
@@ -104,7 +107,7 @@ class HardwareProfile:
     @property
     def recommended_framework(self) -> str:
         from tinyagentos.frameworks import recommended_framework
-        return recommended_framework(self.ram_mb)
+        return recommended_framework(self.ram_mb, self.device_class)
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,6 +128,7 @@ class HardwareProfile:
             os=OsInfo(**data.get("os", {})),
             wsl=data.get("wsl", False),
             mem_note=data.get("mem_note", ""),
+            device_class=data.get("device_class"),
         )
 
 
@@ -630,6 +634,28 @@ def _detect_os() -> OsInfo:
     return OsInfo(distro=distro, version=version, kernel=kernel)
 
 
+def _detect_device_class() -> str | None:
+    """Detect if this is a taOSmobile handset.
+
+    A taOSmobile handset is identified by the presence of the taos-kiosk.service
+    systemd unit (which only exists on devices provisioned as taOS handsets).
+    This mirrors the capability probe used by /api/system/session-mode.
+    """
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["systemctl", "cat", "taos-kiosk.service"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return "mobile"
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+    return None
+
+
 def detect_hardware() -> HardwareProfile:
     """Detect all hardware and return a profile."""
     ram_mb = _detect_ram()
@@ -643,6 +669,7 @@ def detect_hardware() -> HardwareProfile:
             "memory= in C:\\Users\\<you>\\.wslconfig then run "
             "'wsl --shutdown'."
         )
+    device_class = _detect_device_class()
     return HardwareProfile(
         cpu=_detect_cpu(),
         ram_mb=ram_mb,
@@ -652,6 +679,7 @@ def detect_hardware() -> HardwareProfile:
         os=_detect_os(),
         wsl=wsl,
         mem_note=mem_note,
+        device_class=device_class,
     )
 
 
