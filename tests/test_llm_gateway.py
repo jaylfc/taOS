@@ -309,6 +309,121 @@ async def test_non_json_body_is_400(client):
 
 
 # ---------------------------------------------------------------------------
+# Ollama/rkllama routing through /v1 (phase 2)
+# ---------------------------------------------------------------------------
+
+OLLAMA_BACKEND = {
+    "name": "local-ollama",
+    "type": "ollama",
+    "url": "http://ollama.test:11434",
+    "model": "llama3",
+    "priority": 1,
+}
+OLLAMA_CHAT = "http://ollama.test:11434/v1/chat/completions"
+
+
+@_ASYNC
+@respx.mock
+async def test_ollama_model_proxies_through_v1_with_unprefixed_model(client):
+    """An ollama-provider model gets 200 through the gateway, and the upstream
+    receives a request at /v1/chat/completions with the un-prefixed model name."""
+    app = _app(client)
+    app.state.config.backends = [OLLAMA_BACKEND]
+    route = respx.post(OLLAMA_CHAT).mock(return_value=httpx.Response(200, json=_completion("llama3")))
+    resp = await client.post(BASE + "/chat/completions", json=_chat("default"))
+    assert resp.status_code == 200, resp.text
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["model"] == "llama3"
+    assert "messages" in sent
+
+
+@_ASYNC
+@respx.mock
+async def test_ollama_model_proxies_tools_verbatim(client):
+    """The request body is forwarded verbatim (tools included) for ollama backends."""
+    app = _app(client)
+    app.state.config.backends = [OLLAMA_BACKEND]
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Weather for a city",
+            "parameters": {"type": "object", "properties": {"city": {"type": "string"}},
+                           "required": ["city"]},
+        },
+    }]
+    sent = {
+        "model": "default",
+        "messages": [{"role": "user", "content": "weather in Paris?"}],
+        "tools": tools,
+        "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+        "temperature": 0.2,
+        "max_tokens": 64,
+        "stream": False,
+        "x_vendor_field": {"kept": [1, 2, 3]},
+    }
+    expected = dict(sent)
+    expected["model"] = "llama3"
+    route = respx.post(OLLAMA_CHAT).mock(return_value=httpx.Response(200, json=_completion("llama3")))
+    resp = await client.post(BASE + "/chat/completions", json=sent)
+    assert resp.status_code == 200, resp.text
+    assert json.loads(route.calls.last.request.content) == expected
+
+
+@_ASYNC
+@respx.mock
+async def test_ollama_streaming_records_usage_from_include_usage_chunk(client, monkeypatch):
+    """Streaming through an ollama backend records usage from the include_usage chunk."""
+    trace_calls = []
+    spend_calls = []
+
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append((args, kwargs))
+
+    def fake_record_spend(*args, **kwargs):
+        spend_calls.append((args, kwargs))
+
+    monkeypatch.setattr(
+        "tinyagentos.llm_gateway.forward._record_trace", fake_record_trace
+    )
+    monkeypatch.setattr(
+        "tinyagentos.llm_gateway.forward._record_spend", fake_record_spend
+    )
+
+    app = _app(client)
+    app.state.config.backends = [OLLAMA_BACKEND]
+    body = (
+        _sse_chunk("hi")
+        + _sse_usage_chunk(10, 5)
+        + _sse_done()
+    )
+    respx.post(OLLAMA_CHAT).mock(return_value=httpx.Response(
+        200, content=body, headers={"content-type": "text/event-stream"}
+    ))
+    resp = await client.post(BASE + "/chat/completions", json=_chat("default", stream=True))
+    assert resp.status_code == 200, resp.text
+    assert len(trace_calls) == 1
+    args, _ = trace_calls[0]
+    usage = args[3]
+    assert usage.input_tokens == 10
+    assert usage.output_tokens == 5
+
+
+@_ASYNC
+@respx.mock
+async def test_ollama_backend_without_v1_returns_501_naming_backend(client):
+    """An ollama backend whose /v1 is 404 gives a clear 501 naming the backend."""
+    app = _app(client)
+    app.state.config.backends = [OLLAMA_BACKEND]
+    respx.post(url__regex=r"http://ollama\.test:11434/.*").mock(return_value=httpx.Response(
+        404, json={"error": {"message": "not found"}}
+    ))
+    resp = await client.post(BASE + "/chat/completions", json=_chat("default"))
+    err = _assert_openai_error(resp, 501, "backend_not_supported")
+    assert "local-ollama" in err["message"]
+
+
+# ---------------------------------------------------------------------------
 # Hostile: upstream failure
 # ---------------------------------------------------------------------------
 

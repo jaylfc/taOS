@@ -37,6 +37,14 @@ TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 # Upstream 4xx that describe the caller's request; passed through (redacted).
 # Anything else (401/403/404: taOS's own key or config is wrong) is a 502.
 _CALLER_4XX = {400, 409, 413, 422, 429}
+_OLLAMA_PROVIDERS = ("ollama", "ollama_chat")
+
+
+def _build_url(route: Route) -> str:
+    base = (route.api_base or DEFAULT_OPENAI_BASE).rstrip("/")
+    if route.provider in _OLLAMA_PROVIDERS:
+        return f"{base}/v1/chat/completions"
+    return f"{base}/chat/completions"
 
 _MAX_ATTEMPTS = 10
 _DEADLINE_SECONDS = 60.0
@@ -141,7 +149,7 @@ async def _chat_completion_one(
     state: Any,
 ) -> dict:
     """Single non-streaming attempt against one backend."""
-    url = f"{(route.api_base or DEFAULT_OPENAI_BASE).rstrip('/')}/chat/completions"
+    url = _build_url(route)
     payload = dict(body)
     payload["model"] = route.upstream_model
     headers = {"content-type": "application/json"}
@@ -159,6 +167,16 @@ async def _chat_completion_one(
     status = resp.status_code
     if status in _CALLER_4XX:
         raise _caller_error(resp, route, api_key)
+    if status == 404 and route.provider in _OLLAMA_PROVIDERS:
+        # TODO: phase-2 note -- hailo-ollama may not expose /v1; surface as 501
+        # instead of 502 so the caller knows the backend type is unsupported.
+        raise GatewayError(
+            501,
+            f"model {route.model_name!r} is served by a {route.backend_name!r} backend "
+            f"that does not expose the required /v1 endpoint; "
+            "this backend is not yet supported by the taOS gateway",
+            code="backend_not_supported",
+        )
     if not 200 <= status < 300:
         raise upstream_error(f"{what} failed (HTTP {status})")
     try:
@@ -193,7 +211,7 @@ def _event_stream_for_route(
     state: Any,
 ) -> AsyncGenerator[bytes, None]:
     """Single streaming attempt against one backend."""
-    url = f"{(route.api_base or DEFAULT_OPENAI_BASE).rstrip('/')}/chat/completions"
+    url = _build_url(route)
     payload = dict(body)
     payload["model"] = route.upstream_model
 
@@ -224,6 +242,17 @@ def _event_stream_for_route(
                 raise upstream_error("the backend timed out") from None
             except httpx.HTTPError:
                 raise upstream_error("the backend could not be reached") from None
+            if upstream_resp.status_code == 404 and route.provider in _OLLAMA_PROVIDERS:
+                await upstream_resp.aclose()
+                # TODO: phase-2 note -- hailo-ollama may not expose /v1; surface as 501
+                # instead of 502 so the caller knows the backend type is unsupported.
+                raise GatewayError(
+                    501,
+                    f"model {route.model_name!r} is served by a {route.backend_name!r} backend "
+                    f"that does not expose the required /v1 endpoint; "
+                    "this backend is not yet supported by the taOS gateway",
+                    code="backend_not_supported",
+                )
             try:
                 async for raw in upstream_resp.aiter_raw():
                     if not raw:
