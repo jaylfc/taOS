@@ -89,7 +89,7 @@ from tinyagentos.routes.desktop import SPA_DIR
 
 
 # ---------------------------------------------------------------------------
-# CSRF in tests -- ON by default, opted OUT explicitly.
+# CSRF in tests — ON by default, opted OUT explicitly.
 #
 # This used to be inverted: an autouse fixture no-op'd `verify_csrf` for every
 # test file whose path did not contain the substring "test_csrf".  Measured on
@@ -101,7 +101,7 @@ from tinyagentos.routes.desktop import SPA_DIR
 # the real caller has, so the test cannot observe the check the real caller
 # must satisfy.  It is what hid #2081 (the CSRF login lockout).  A first repro
 # written as an ordinary test returned 303 and PASSED, and the tell was that
-# the CONTROL passed identically -- the shape you get when the input never
+# the CONTROL passed identically — the shape you get when the input never
 # reaches the system under test.
 #
 # Two properties of the replacement matter:
@@ -128,7 +128,7 @@ from starlette.requests import HTTPConnection as _HTTPConnection
 CSRF_BYPASS_MARKER = "csrf_bypass"
 
 # ---------------------------------------------------------------------------
-# skip_if_no_embed_backend -- an opt-in skip for a test that CANNOT run without
+# skip_if_no_embed_backend — an opt-in skip for a test that CANNOT run without
 # an embedding backend.
 #
 #     @pytest.mark.skip_if_no_embed_backend
@@ -144,7 +144,7 @@ CSRF_BYPASS_MARKER = "csrf_bypass"
 # way to turn a red green without fixing it, so before adding one, check what
 # the test actually calls: a test driving an `AsyncMock(spec=httpx.AsyncClient)`,
 # a hand-built `_snapshot`, or a patched `_run_setup` never reaches a backend
-# and does not need the marker -- marking it only deletes it from every CI row.
+# and does not need the marker — marking it only deletes it from every CI row.
 # ---------------------------------------------------------------------------
 
 EMBED_BACKEND_MARKER = "skip_if_no_embed_backend"
@@ -156,7 +156,7 @@ def _qmd_reachable(timeout: float = 0.25) -> bool:
 
     A reachability probe, not an environment-variable read.  The previous
     version of this check asked whether `TAOSMD_URL` was set to a non-default
-    value -- a variable no module under `tinyagentos/` reads -- so it answered
+    value — a variable no module under `tinyagentos/` reads — so it answered
     "no backend" on a box running qmd on the configured default, and "backend"
     for a URL pointing at a host that does not exist.  Both answers are the
     opposite of the capability the marker is asking about.
@@ -185,7 +185,7 @@ def _is_embed_backend_available() -> bool:
 
     Either backend suffices: a reachable qmd service, or the ONNX runtime.
     The package to probe is `onnxruntime` (what executes a model), NOT `onnx`
-    (the model-format library) -- taOS depends on the former and not the
+    (the model-format library) — taOS depends on the former and not the
     latter, so probing `onnx` reports "no backend" on every developer box and
     every CI row.
 
@@ -242,8 +242,8 @@ def _bypass_csrf_in_tests(request):
     The patch must be in place BEFORE the app is built: `register_all_routers`
     does ``from ... import verify_csrf`` and freezes the resulting object into
     ``Depends(...)`` at ``include_router`` time, so patching the module
-    attribute after ``create_app`` changes nothing.  Wrapping the whole test --
-    as this fixture does -- is what makes it take effect.
+    attribute after ``create_app`` changes nothing.  Wrapping the whole test —
+    as this fixture does — is what makes it take effect.
     """
     if request.node.get_closest_marker(CSRF_BYPASS_MARKER) is None:
         yield
@@ -344,7 +344,7 @@ def pair_and_register_worker():
 
 
 # macOS + Python 3.14: after the interpreter loads ObjC-backed extension
-# modules (psutil, zeroconf, Pillow, lxml ...), forking a child process with
+# modules (psutil, zeroconf, Pillow, lxml …), forking a child process with
 # subprocess violates macOS's "unsafe after ObjC runtime init" restriction and
 # produces SIGSEGV in git/bash children (exit code -11).  Setting this env var
 # tells the ObjC runtime to skip the fork-safety check in child processes.
@@ -360,7 +360,7 @@ def _patch_aiosqlite_daemon_threads():
     When aiosqlite connections are not explicitly closed before the asyncio
     event loop shuts down, their background worker threads remain blocked on
     SimpleQueue.get().  Because the thread is NOT a daemon, Python's
-    interpreter shutdown joins it -- waiting forever for a thread that will
+    interpreter shutdown joins it — waiting forever for a thread that will
     never receive the stop sentinel.  This causes pytest to hang for tens of
     minutes after printing the test summary.
 
@@ -371,7 +371,7 @@ def _patch_aiosqlite_daemon_threads():
 
     Fix (two layers):
     1. Mark the worker thread daemon=True so interpreter shutdown kills it
-       instead of joining it -- avoids the indefinite block.
+       instead of joining it — avoids the indefinite block.
     2. Guard call_soon_threadsafe with an is_closed() pre-check so the
        worker does not crash if it receives a future tied to a dead loop.
 
@@ -554,7 +554,7 @@ def pytest_configure(config):
     `npm run build`. Two tests need actual files on disk to exercise
     desktop routes (test_root_redirects_to_desktop checks the body
     contains "taOS"; the sw.js header test reads the file). Building
-    the real bundle in every CI matrix job added ~3-5 min x 3 -- the
+    the real bundle in every CI matrix job added ~3-5 min × 3 — the
     SPA build itself stays covered by the lint job. Stubs are only
     created when the file is missing so a real local build is left
     untouched."""
@@ -677,10 +677,22 @@ async def client(app, tmp_data_dir):
     if project_store._db is not None:
         await project_store.close()
     await project_store.init()
+    project_invites = app.state.project_invites
+    if project_invites._db is not None:
+        await project_invites.close()
+    await project_invites.init()
     board_audit = app.state.board_audit
     if board_audit._db is not None:
         await board_audit.close()
     await board_audit.init()
+    receipt_store = app.state.receipt_store
+    if receipt_store._db is not None:
+        await receipt_store.close()
+    await receipt_store.init()
+    task_strikes = app.state.task_strikes
+    if task_strikes._db is not None:
+        await task_strikes.close()
+    await task_strikes.init()
     project_task_store = app.state.project_task_store
     if project_task_store._db is not None:
         await project_task_store.close()
@@ -689,6 +701,18 @@ async def client(app, tmp_data_dir):
     if project_element_store._db is not None:
         await project_element_store.close()
     await project_element_store.init()
+    project_notes_store = app.state.project_notes_store
+    if project_notes_store._db is not None:
+        await project_notes_store.close()
+    await project_notes_store.init()
+    project_lists_store = app.state.project_lists_store
+    if project_lists_store._db is not None:
+        await project_lists_store.close()
+    await project_lists_store.init()
+    project_list_entries_store = app.state.project_list_entries_store
+    if project_list_entries_store._db is not None:
+        await project_list_entries_store.close()
+    await project_list_entries_store.init()
     routine_store = app.state.routine_store
     if routine_store._db is not None:
         await routine_store.close()
@@ -786,12 +810,12 @@ async def client(app, tmp_data_dir):
     )
     await _browser_cookie_store.init()
     app.state.browser_cookie_store = _browser_cookie_store
-    # Lifespan-owned objects set to None by create_app() -- tests that bypass
+    # Lifespan-owned objects set to None by create_app() — tests that bypass
     # the lifespan need these initialised so routes don't fail on NoneType.
     from tinyagentos.routes.desktop_browser.copilot_ws import CopilotTicketStore, CopilotHub
     app.state.copilot_ticket_store = CopilotTicketStore()
     app.state.copilot_hub = CopilotHub()
-    # Auth middleware requires a configured user -- set up a test admin so all
+    # Auth middleware requires a configured user — set up a test admin so all
     # routes respond normally instead of returning 401 needs_onboarding.
     app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
     _record = app.state.auth.find_user("admin")
@@ -1031,7 +1055,6 @@ async def client_with_qmd(app_with_qmd):
     await channel_store.close()
     await scheduler.close()
     await secrets_store.close()
-    await broker_store.close()
     await notif_store.close()
     await store.close()
     await project_element_store.close()
