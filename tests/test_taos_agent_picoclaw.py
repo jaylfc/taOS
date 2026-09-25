@@ -133,7 +133,7 @@ async def _build_app(tmp_path_factory, name: str, *, mobile: bool):
         mp.setenv("PATH", f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
         app = create_app(data_dir=data_dir)
     state = app.state
-    for store in (state.desktop_settings, state.secrets):
+    for store in (state.desktop_settings, state.secrets, state.agent_registry, state.agent_grants, state.skills):
         if store._db is not None:
             await store.close()
         await store.init()
@@ -626,8 +626,13 @@ async def test_taos_helper_and_credential_are_provisioned_in_the_workspace(mobil
     assert helper.is_file() and os.access(helper, os.X_OK)
     assert stat.S_IMODE(cred.stat().st_mode) == 0o600
     assert cred.resolve().is_relative_to(ws.resolve())
-    # Exactly the credential opencode reaches taOS with: the host local token.
-    assert cred.read_text().strip() == _local_token(app)
+    # The credential is now a scoped registry JWT for the native taOS agent,
+    # NOT the host's admin local token.  This limits the agent to exactly the
+    # endpoints the taOS Agent manual uses (desktop control, skill-exec, files,
+    # projects, notes, todo, decisions, canvas, observatory).
+    credential = cred.read_text().strip()
+    assert credential != _local_token(app), "Credential must not be the admin local token"
+    assert credential.count(".") == 2, "Credential must be a JWT (three parts)"
     # Never on the helper's command line or in its source.
     assert _local_token(app) not in helper.read_text()
 
@@ -739,15 +744,114 @@ async def test_persona_reaches_picoclaw(mobile):
 @_ASYNC
 async def test_a_picoclaw_turn_reaches_taos_through_bin_taos(mobile):
     """PicoClaw's exec tool runs bin/taos; the call reaches the real app as
-    the device owner, the same access opencode has with the local token."""
+    the device owner, using the native agent's scoped credential (not the admin
+    local token). The credential covers exactly the endpoints the taOS Agent
+    manual uses: desktop control, skill-exec, files, projects, notes, todo,
+    decisions, canvas, observatory."""
     app, client = mobile
     await client.put("/api/taos-agent/framework", json={"framework": "picoclaw"})
-    cmd = ("RUN: bin/taos POST api/desktop/command "
-           "'{\"kind\":\"open-app\",\"payload\":{\"app\":\"notes\"}}'")
+    # JSON body must be shell-quoted so it arrives as a single argv to bin/taos
+    cmd = 'RUN: bin/taos POST api/desktop/command \'{"kind":"open-app","payload":{"app":"notes"}}\''
     _, frames = await _chat(client, cmd)
     reply = "".join(f.get("delta", "") for f in frames)
     assert "rc=0" in reply, frames
     assert '"delivered"' in reply, frames
+    # taos-agent/status is an admin endpoint; the scoped credential must NOT
+    # have access. It should return 401/403.
     _, frames = await _chat(client, "RUN: bin/taos GET api/taos-agent/status")
     reply = "".join(f.get("delta", "") for f in frames)
-    assert "rc=0" in reply and '"state"' in reply, frames
+    assert "rc=1" in reply and "Authentication required" in reply, frames
+
+
+# RED tests for tsk-kchf6o: system agent scoped credential
+@_ASYNC
+async def test_system_agent_credential_is_not_admin_local_token(mobile):
+    """The system agent's credential must NOT be the host's admin local token."""
+    app, client = mobile
+    await client.put("/api/taos-agent/framework", json={"framework": "picoclaw"})
+    ws = _workspace(app)
+    cred_file = ws / ".taos_credential"
+    assert cred_file.exists(), "Credential file should exist"
+    credential = cred_file.read_text().strip()
+    admin_token = app.state.auth.get_local_token()
+    assert credential != admin_token, "System agent credential must not equal admin local token"
+    assert len(credential) > 0, "Credential must not be empty"
+
+
+@_ASYNC
+async def test_system_agent_credential_allows_manual_endpoints(mobile):
+    """With the scoped credential, each manual endpoint should succeed."""
+    app, client = mobile
+    await client.put("/api/taos-agent/framework", json={"framework": "picoclaw"})
+    ws = _workspace(app)
+    cred_file = ws / ".taos_credential"
+    credential = cred_file.read_text().strip()
+
+    headers = {"Authorization": f"Bearer {credential}", "Content-Type": "application/json"}
+
+    # Test desktop control endpoint
+    resp = await client.post(
+        "/api/desktop/command",
+        json={"kind": "open-app", "payload": {"app": "notes"}},
+        headers=headers,
+    )
+    # May return 200 with delivered=0 (no desktop connected) - but NOT 401/403
+    assert resp.status_code in (200, 409), f"desktop/command failed: {resp.status_code} {resp.text}"
+
+    # Test skill-exec endpoint (memory_search)
+    resp = await client.post(
+        "/api/skill-exec/memory_search/call",
+        json={"agent_name": "taos-agent", "args": {"query": "test"}},
+        headers=headers,
+    )
+    assert resp.status_code == 200, f"skill-exec/memory_search failed: {resp.status_code} {resp.text}"
+
+
+@_ASYNC
+async def test_system_agent_credential_denies_admin_endpoints(mobile):
+    """With the scoped credential, admin-only endpoints must return 403."""
+    app, client = mobile
+    await client.put("/api/taos-agent/framework", json={"framework": "picoclaw"})
+    ws = _workspace(app)
+    cred_file = ws / ".taos_credential"
+    credential = cred_file.read_text().strip()
+
+    # Create a client WITHOUT the admin session cookie to test the credential in isolation
+    from httpx import AsyncClient, ASGITransport
+    anon_client = AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        event_hooks=csrf_event_hooks(),
+    )
+
+    headers = {"Authorization": f"Bearer {credential}", "Content-Type": "application/json"}
+
+    # Test settings endpoint (admin only) - should return 401/403 without admin session
+    resp = await anon_client.get("/api/config", headers=headers)
+    assert resp.status_code in (401, 403), f"Settings endpoint should return 401/403, got {resp.status_code}: {resp.text}"
+
+    # Test user management endpoint (admin only) - should return 401/403/404
+    resp = await anon_client.get("/api/auth/users", headers=headers)
+    # The key assertion is that it does NOT return 200
+    assert resp.status_code != 200, f"Admin endpoint should not return 200, got {resp.status_code}: {resp.text}"
+
+    await anon_client.aclose()
+
+
+@_ASYNC
+async def test_picoclaw_workspace_has_no_admin_token(mobile):
+    """The PicoClaw workspace must not contain .auth_local_token or its value."""
+    app, client = mobile
+    await client.put("/api/taos-agent/framework", json={"framework": "picoclaw"})
+    ws = _workspace(app)
+
+    # No .auth_local_token file
+    auth_local_token_file = ws / ".auth_local_token"
+    assert not auth_local_token_file.exists(), "Workspace must not contain .auth_local_token file"
+
+    # No copy of the admin token value anywhere in workspace
+    admin_token = app.state.auth.get_local_token()
+    for file_path in ws.rglob("*"):
+        if file_path.is_file():
+            content = file_path.read_text(errors="ignore")
+            assert admin_token not in content, f"Admin token found in {file_path}"

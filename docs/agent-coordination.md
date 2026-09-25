@@ -1592,6 +1592,19 @@ session. When you change the allowlist in `tinyagentos/auth_middleware.py`,
 record the change here so the agent-facing surface stays reviewable in one
 place.
 
+The allowlist is the union of:
+
+- Registry feeds (`/api/registry/feeds/*`, scope `registry_feeds_read`).
+- A2A bus read (`/api/a2a/bus/channels`, `/api/a2a/bus/messages`, `/api/a2a/bus/stream`, scope `a2a_receive`).
+- A2A bus write (`/api/a2a/bus/send`, scope `a2a_send`).
+- A2A GPU read (`/api/a2a/gpu/check`, scope `a2a_receive`).
+- A2A GPU write (`/api/a2a/gpu/{claim,release,request,renew}`, scope `a2a_send`).
+- Observatory (`/api/observatory/*`, scope `observatory_control`).
+- Container requests (`/api/containers/requests`, `/api/container-requests`, `/api/containers/requests/{id}/provision`, `/api/containers/requests/{id}/destroy`, `/api/agents/containers/quota`).
+- Agent self-serve (`/api/agents/me/models` GET, `/api/agents/me/model` POST).
+- **Desktop control (system taOS Agent only)**: `POST /api/desktop/command`, `POST /api/desktop/screenshot`, `POST /api/desktop/layout` (native agent's registry JWT sets `user_id` to the owner, so desktop commands are delivered to the owner's desktop).
+- **Skill-exec (system taOS Agent only)**: `POST /api/skill-exec/{skill_id}/call`, `GET /api/skill-exec/tools` (native agent's registry JWT with `SYSTEM_AGENT_API_SCOPES`).
+
 Task checklist items (`/api/projects/{project_id}/tasks/{task_id}/checklist-items`)
 
 Route module `tinyagentos/routes/projects.py`.
@@ -1771,16 +1784,27 @@ which PicoClaw loads as its system prompt. The reply is the text after the
 last lobster (U+1F99E). A controller start into opencode revokes any
 leftover PicoClaw key.
 
-taOS access parity: opencode runs unconfined as the service user and reaches
-the taOS API (desktop control, skill-exec tools, notes, project files) with
-curl and the host local token. PicoClaw is confined to its workspace, so the
-same credential is copied to `workspace/.taos_credential` (0600) and
+taOS access parity: The built-in taOS Agent (both opencode and PicoClaw
+harnesses) reaches the taOS API with a **scoped registry JWT** minted for the
+native agent identity (canonical_id `taos-agent-...`, origin `taos-native`).
+This credential is limited to exactly the endpoints the taOS Agent manual uses:
+desktop control (`/api/desktop/*`), skill-exec (`/api/skill-exec/*`), project
+files, notes, todo, decisions, canvas, and observatory. Admin-only endpoints
+(user management, secrets, settings) return 403. The credential is rotated on
+agent restart (framework switch, model change) and never logged.
+
+PicoClaw receives the credential via `workspace/.taos_credential` (0600) and
 `workspace/bin/taos` (0700) calls `http://127.0.0.1:<server.port>` with it:
-`bin/taos METHOD api/PATH [JSON]` or `bin/taos UPLOAD api/PATH FILE`. The
-path has no leading slash because PicoClaw's exec guard refuses a command
-naming an absolute path. The helper reads the credential from the file
-(never argv) and redacts it from what it prints. The agent's own identity
-token (`.taos_agent_token`) is a2a-only and covers none of these endpoints,
-so it is not narrower-but-sufficient. `AGENTS.md` appends a section mapping
-every manual tool to a `bin/taos` call. Leaving PicoClaw, or any controller
-start into opencode, deletes the credential copy and the helper.
+`bin/taos METHOD api/PATH [JSON]` or `bin/taos UPLOAD api/PATH FILE`. The path
+has no leading slash because PicoClaw's exec guard refuses a command naming an
+absolute path. The helper reads the credential from the file (never argv) and
+redacts it from what it prints.
+
+opencode receives the credential via the `TAOS_API_CREDENTIAL` environment
+variable (and `TAOS_API_BASE_URL` for the controller URL). The opencode server
+process inherits these from the controller at startup.
+
+The agent's own A2A identity token (`.taos_agent_token`) is a2a-only
+(scope `a2a_send` + `a2a_receive`) and covers none of the above endpoints.
+Leaving PicoClaw, or any controller start into opencode, revokes the old
+credential and mints a fresh one.
