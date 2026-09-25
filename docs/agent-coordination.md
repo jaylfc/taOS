@@ -1729,3 +1729,58 @@ bearer and an Agent-as-a-Model consent key. An agent over its LLM budget gets
 the LiteLLM hook's 429 before anything is forwarded. Revoking, blocking or
 deleting a cluster node, and archiving an agent, revoke the keys bound to it
 in the same request.
+
+## The system taOS Agent's harness (opencode, or PicoClaw on a handset)
+
+The built-in taOS Agent runs on opencode (a host `opencode serve`) on every
+host, except a taOSmobile handset, where it runs on PicoClaw (the catalog's
+pinned 0.3.1 binary). `taos_agent_runtime.decide_framework` is the one place
+the choice is made, from two config.yaml keys:
+
+- `device.class`: `auto` (default; `hardware._detect_device_class`, which
+  reads the `taos-kiosk.service` unit), `mobile` or `desktop`;
+- `taos_agent.framework`: `auto` (default; picoclaw on mobile, opencode
+  elsewhere), `opencode` or `picoclaw` (operator overrides).
+
+PicoClaw needs the LLM gateway (`TAOS_LLM_GATEWAY=1`) and a `picoclaw` binary
+(`TAOS_PICOCLAW_BIN`, PATH, `/usr/local/bin`, `/usr/bin`). Without either,
+opencode runs and the reason is logged, e.g. exactly
+`picoclaw preferred, gateway disabled, using opencode`. An unknown config
+value is ignored (treated as `auto`) with a warning.
+
+- `GET /api/taos-agent/config` and the lock screen (`/auth/lock-widgets`)
+  report `framework` = the harness that RUNS the agent (never the
+  preference), plus `framework_preference`, `framework_reason` and
+  `device_class`.
+- `PUT /api/taos-agent/framework` (admin) `{framework?, device_class?}`:
+  unknown values are a 400. Persists to config.yaml and restarts the AGENT,
+  not the controller: leaving PicoClaw revokes its key and deletes its
+  config; entering it stops opencode and mints a fresh key.
+
+PicoClaw's gateway key is bound to `agent:taos-agent`, allowlist = the
+agent's `model` + `permitted_models` + `taos-default`. Changing either
+(`PATCH /api/taos-agent/settings`, `PUT /api/taos-agent/permitted-models`)
+revokes it and mints a new one. The key is written only to
+`<data_dir>/taos-agent-picoclaw/config.json` (0600, directory 0700), never to
+a log, a response, argv or the environment. Every `model_list` entry points
+at `http://127.0.0.1:<server.port>/api/llm/v1`; the default is `taos-default`.
+Each chat turn is one `picoclaw agent --no-color -m <text> -s taos:taos-agent`
+in `<home>/workspace` (`restrict_to_workspace: true`), with a minimal
+environment; the manual or the persona is written to `workspace/AGENTS.md`,
+which PicoClaw loads as its system prompt. The reply is the text after the
+last lobster (U+1F99E). A controller start into opencode revokes any
+leftover PicoClaw key.
+
+taOS access parity: opencode runs unconfined as the service user and reaches
+the taOS API (desktop control, skill-exec tools, notes, project files) with
+curl and the host local token. PicoClaw is confined to its workspace, so the
+same credential is copied to `workspace/.taos_credential` (0600) and
+`workspace/bin/taos` (0700) calls `http://127.0.0.1:<server.port>` with it:
+`bin/taos METHOD api/PATH [JSON]` or `bin/taos UPLOAD api/PATH FILE`. The
+path has no leading slash because PicoClaw's exec guard refuses a command
+naming an absolute path. The helper reads the credential from the file
+(never argv) and redacts it from what it prints. The agent's own identity
+token (`.taos_agent_token`) is a2a-only and covers none of these endpoints,
+so it is not narrower-but-sufficient. `AGENTS.md` appends a section mapping
+every manual tool to a `bin/taos` call. Leaving PicoClaw, or any controller
+start into opencode, deletes the credential copy and the helper.

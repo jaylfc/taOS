@@ -6793,8 +6793,8 @@ async def lock_widgets(request: Request):
     # pre-auth and has no cheap, truthful way to read the agent's activity.
     agents.insert(0, {
         "name": "taOS Agent",
-        "framework": system_agent_framework(),
-        "framework_icon": _framework_icon(system_agent_framework()),
+        "framework": system_agent_framework(request.app.state),
+        "framework_icon": _framework_icon(system_agent_framework(request.app.state)),
         "status": "On device",
         "avatar": "/static/taos-logo.png",
         "system": True,
