@@ -658,6 +658,20 @@ async def test_the_helper_refuses_a_path_outside_the_api(mobile):
     assert "rc=2" in reply, frames
 
 
+@_ASYNC
+async def test_the_helper_refuses_a_path_that_climbs_out_of_the_api(mobile):
+    """A plain prefix check is not a boundary: "api/../auth/status" starts with
+    api/ and names something else. Dot segments, raw or percent-encoded, are
+    refused before anything is sent."""
+    app, client = mobile
+    await client.put("/api/taos-agent/framework", json={"framework": "picoclaw"})
+    for path in ("api/../auth/status", "api/./../auth/status", "api/%2e%2e/auth/status",
+                 "api/%2E%2E/auth/status", "api/notes/.."):
+        _, frames = await _chat(client, "RUN: bin/taos GET " + path)
+        reply = "".join(f.get("delta", "") for f in frames)
+        assert "rc=2" in reply, (path, frames)
+
+
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------

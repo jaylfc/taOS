@@ -114,6 +114,12 @@ def main(argv):
     if len(argv) < 2 or not argv[1].startswith("/api/"):
         print(USAGE, file=sys.stderr)
         return 2
+    # A "/api/" prefix is only a boundary if the path cannot climb out of it:
+    # "api/../auth/..." starts with /api/ and names something else.
+    segments = argv[1].split("?", 1)[0].split("/")
+    if any(seg in (".", "..") for seg in segments) or "%2e" in argv[1].lower():
+        print(USAGE, file=sys.stderr)
+        return 2
     method, path = argv[0].upper(), argv[1]
     try:
         with open(CRED) as fh:
