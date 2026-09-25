@@ -1158,16 +1158,19 @@ class TestReadinessPollCrashDetection:
 
         monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
 
-        p = mod.LLMProxy(port=14021, data_dir=tmp_path)
+        p = mod.LLMProxy(port=14021, controller_port=14022, data_dir=tmp_path)
 
         with caplog.at_level(logging.ERROR, logger="tinyagentos.llm_proxy"):
             start_time = time.monotonic()
-            result = await asyncio.wait_for(p.start(backends=[]), timeout=5)
-            elapsed = time.monotonic() - start_time
+            try:
+                result = await asyncio.wait_for(p.start(backends=[]), timeout=5)
+                elapsed = time.monotonic() - start_time
+            finally:
+                p.stop()
 
-        assert result is False
-        assert elapsed < 2, f"expected failure in <2 s, took {elapsed:.1f}s"
-        assert "ERROR: proxy startup failure" in caplog.text
+            assert result is False
+            assert elapsed < 2, f"expected failure in <2 s, took {elapsed:.1f}s"
+            assert "ERROR: proxy startup failure" in caplog.text
 
 
 class TestConfigDirPermissions:
