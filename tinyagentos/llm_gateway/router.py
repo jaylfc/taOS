@@ -18,6 +18,7 @@ import tinyagentos.llm_gateway.resolve as resolve_mod
 
 PREFIX = "/api/llm/v1"
 OPENAI_PROVIDER = "openai"
+OLLAMA_PROVIDERS = ("ollama", "ollama_chat")
 
 router = APIRouter(prefix=PREFIX)
 
@@ -102,7 +103,7 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
         return JSONResponse(await chat_completion_anthropic(routes, body, api_key, principal, state))
     
     # Default to OpenAI-compatible handler
-    if route.provider != OPENAI_PROVIDER:
+    if route.provider != OPENAI_PROVIDER and route.provider not in OLLAMA_PROVIDERS:
         raise GatewayError(
             501,
             f"model {route.model_name!r} is served by a {route.provider or 'unknown'!r} backend; "
@@ -113,5 +114,5 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
     api_key = await resolve_api_key(state, route.api_key_ref)
     principal = caller.caller_id
     if body.get("stream"):
-        return chat_completion_stream(routes, body, api_key, principal, state)
+        return await chat_completion_stream(routes, body, api_key, principal, state)
     return JSONResponse(await chat_completion(routes, body, api_key, principal, state))
