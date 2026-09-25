@@ -569,6 +569,11 @@ def _capable_workers(
     for w in cluster.get_workers():
         if w.status != "online":
             continue
+        # A device node (kind="device", a taOSusb board) is never a job
+        # candidate regardless of what it lists in capabilities -- see
+        # cluster/manager.py get_workers_for_capability's docstring.
+        if getattr(w, "kind", "worker") == "device":
+            continue
         if "browser" not in (getattr(w, "capabilities", None) or []):
             continue
         hw = w.hardware if isinstance(w.hardware, dict) else {}

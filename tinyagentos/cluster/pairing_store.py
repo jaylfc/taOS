@@ -59,6 +59,17 @@ def _now() -> float:
     return time.time()
 
 
+def _mint_signing_key() -> bytes:
+    """The one place a fresh 32-byte node signing key is generated.
+
+    ``confirm()`` (announce/confirm/claim worker pairing) and
+    ``manual_authorize()`` (free-tier "Add worker") both call this instead
+    of their own ``secrets.token_bytes(32)`` so there is exactly one
+    generator to audit.
+    """
+    return secrets.token_bytes(32)
+
+
 class ClusterPairingStore(BaseStore):
     """SQLite-backed store for worker pairing state."""
 
@@ -154,7 +165,7 @@ class ClusterPairingStore(BaseStore):
         if not hmac.compare_digest(code_hash, row["pending_code_hash"] or ""):
             await self._increment_attempts(name)
             return False
-        key = secrets.token_bytes(32)
+        key = _mint_signing_key()
         ts = _now()
         await self._db.execute(
             """
@@ -228,7 +239,7 @@ class ClusterPairingStore(BaseStore):
         if self._db is None:
             raise RuntimeError("ClusterPairingStore not initialised")
         code_hash = hashlib.sha256(code.encode()).hexdigest()
-        key = secrets.token_bytes(32)
+        key = _mint_signing_key()
         await self._db.execute(
             """
             INSERT INTO cluster_manual_pairings
@@ -288,7 +299,19 @@ class ClusterPairingStore(BaseStore):
             await self._db.commit()
             return None
         # Persist the key under the worker name so its signed requests authenticate.
-        # Clear blocked/revoked: a successful claim restores the node's auth.
+        await self._persist_new_key(name, key)
+        return key, url
+
+    async def _persist_new_key(self, name: str, key: bytes) -> None:
+        """Write a freshly minted signing key into cluster_pairings for
+        `name`, clearing blocked/revoked (a successful (re)pair restores the
+        node's auth). Shared by manual_claim (worker free-tier pairing) and
+        register_device_key (taOSusb BLE pairing, cluster/ble/pairing.py) --
+        the single place a node's key is written to the pairing table, so
+        there is no second minting implementation to keep in sync.
+        """
+        if self._db is None:
+            raise RuntimeError("ClusterPairingStore not initialised")
         await self._db.execute(
             """
             INSERT INTO cluster_pairings (name, signing_key, created_ts, confirmed)
@@ -301,7 +324,17 @@ class ClusterPairingStore(BaseStore):
             (name, key, _now()),
         )
         await self._db.commit()
-        return key, url
+
+    async def register_device_key(self, name: str) -> bytes:
+        """Mint and persist a fresh signing key for a BLE-paired taOSusb
+        device node (cluster/ble/pairing.py's confirm()). The BLE handshake's
+        own 6-digit code is the human confirmation step here -- there is no
+        separate announce/authorize dance the way worker pairing has -- but
+        the key generation and storage reuse exactly what manual_claim uses
+        for a worker, via _persist_new_key."""
+        key = _mint_signing_key()
+        await self._persist_new_key(name, key)
+        return key
 
     async def get_signing_key(self, name: str) -> bytes | None:
         """Return the worker's current signing key, or None if not paired,

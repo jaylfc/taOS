@@ -35,6 +35,7 @@ from tinyagentos.auth import (
 from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.middleware.csrf import verify_csrf
 from tinyagentos.routes.onscreen_keyboard import OSK_SCRIPT, osk_assets
+from tinyagentos.taos_agent_runtime import system_agent_framework
 
 logger = logging.getLogger(__name__)
 
@@ -6352,7 +6353,9 @@ def _require_admin(request: Request) -> tuple[bool, JSONResponse | None]:
     token = request.cookies.get("taos_session", "")
     if not token:
         return False, JSONResponse({"error": "forbidden"}, status_code=403)
-    user = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    user = auth_mgr.session_user(token, user_agent=user_agent)
     if not user or not user.get("is_admin"):
         return False, JSONResponse({"error": "forbidden"}, status_code=403)
     return True, None
@@ -6364,7 +6367,9 @@ def _require_self(request: Request, username: str) -> tuple[bool, JSONResponse |
     token = request.cookies.get("taos_session", "")
     if not token:
         return False, JSONResponse({"error": "forbidden"}, status_code=403)
-    user = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    user = auth_mgr.session_user(token, user_agent=user_agent)
     if not user or user.get("username") != username:
         return False, JSONResponse({"error": "forbidden"}, status_code=403)
     return True, None
@@ -6782,15 +6787,14 @@ async def lock_widgets(request: Request):
 
     # The OS's own agent is pinned to the top and is not one of the configured
     # ones: it is part of the device rather than something the user added. It
-    # carries the product mark rather than a monogram, and the OMP harness badge
-    # like any other agent -- it runs on OMP (oh-my-pi) over ACP, see
-    # tinyagentos/adapters/omp_adapter.py.
+    # carries the product mark rather than a monogram, and the harness badge
+    # reflects the actual runtime adapter the agent goes through.
     # Its "status" says WHERE it is, not that it is busy -- this endpoint runs
     # pre-auth and has no cheap, truthful way to read the agent's activity.
     agents.insert(0, {
         "name": "taOS Agent",
-        "framework": "omp",
-        "framework_icon": _framework_icon("omp"),
+        "framework": system_agent_framework(request.app.state),
+        "framework_icon": _framework_icon(system_agent_framework(request.app.state)),
         "status": "On device",
         "avatar": "/static/taos-logo.png",
         "system": True,
@@ -9445,10 +9449,12 @@ async def auth_status(request: Request):
     # so consulting them here would raise and turn this endpoint into a 500 --
     # exactly the answer the store_error field exists to replace.
     if configured and authenticated and store_error is None:
-        user = auth_mgr.get_user(token=token)
+        user = auth_mgr.get_user(token=token, user_agent=_ua)
         # Check if session user is pending
         if token:
-            session_user = auth_mgr.session_user(token)
+            # Get user_agent from request headers for session validation
+            user_agent = request.headers.get("user-agent", "")
+            session_user = auth_mgr.session_user(token, user_agent=user_agent)
             if session_user and session_user.get("pending"):
                 needs_onboarding = True
 
@@ -9485,7 +9491,7 @@ async def auth_me(request: Request):
         token, user_agent=request.headers.get("user-agent", "")
     ) is None:
         return JSONResponse({"error": "not authenticated"}, status_code=401)
-    user = auth_mgr.get_user(token=token)
+    user = auth_mgr.get_user(token=token, user_agent=request.headers.get("user-agent", ""))
     if user is None:
         return JSONResponse({"error": "no user configured"}, status_code=404)
     return JSONResponse({"user": user})
@@ -9520,7 +9526,9 @@ async def add_user(request: Request):
         return JSONResponse({"error": "username is required"}, status_code=400)
     auth_mgr = request.app.state.auth
     token = request.cookies.get("taos_session", "")
-    caller = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    caller = auth_mgr.session_user(token, user_agent=user_agent)
     caller_username = caller["username"] if caller else ""
     try:
         code = auth_mgr.add_user_invite(username, caller_username)
@@ -9537,7 +9545,9 @@ async def admin_reset_password(username: str, request: Request):
         return err
     auth_mgr = request.app.state.auth
     token = request.cookies.get("taos_session", "")
-    caller = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    caller = auth_mgr.session_user(token, user_agent=user_agent)
     caller_username = caller["username"] if caller else ""
     try:
         code = auth_mgr.admin_reset_password(username, caller_username)
@@ -9554,7 +9564,9 @@ async def delete_user(username: str, request: Request):
         return err
     auth_mgr = request.app.state.auth
     token = request.cookies.get("taos_session", "")
-    caller = auth_mgr.session_user(token)
+    # Get user_agent from request headers for session validation
+    user_agent = request.headers.get("user-agent", "")
+    caller = auth_mgr.session_user(token, user_agent=user_agent)
     caller_username = caller["username"] if caller else ""
     try:
         auth_mgr.delete_user(username, caller_username)

@@ -1,28 +1,26 @@
-id: librechat
-name: LibreChat
-type: service
 category: ai-app
-version: 0.7.6
-description: "All-in-one open-source ChatGPT alternative — multi-user accounts, plugins, agents, multi-modal, RAG. Connects to any OpenAI-compatible API."
-homepage: https://github.com/danny-avila/LibreChat
-license: MIT
-
-requires:
-  ram_mb: 1024
-  disk_mb: 4000
-  ports: [3080]
-
-install:
-  method: docker
-  image: ghcr.io/danny-avila/librechat:0.7.6
-  ports: [3080]
-  env:
-    HOST: "0.0.0.0"
-
+description: "All-in-one open-source ChatGPT alternative \u2014 multi-user accounts,\
+  \ plugins, agents, multi-modal, RAG. Connects to any OpenAI-compatible API."
 hardware_tiers:
+  apple-silicon: full
   arm-npu-16gb: full
   arm-npu-32gb: full
+  cpu-only: full
   x86-cuda-12gb: full
   x86-vulkan-8gb: full
-  cpu-only: full
-  apple-silicon: full
+homepage: https://github.com/danny-avila/LibreChat
+id: librechat
+install:
+  env:
+    HOST: 0.0.0.0
+  image: ghcr.io/danny-avila/librechat:0.7.6
+  method: docker
+  ports:
+  - 3080
+license: MIT
+name: LibreChat
+requires:
+  disk_mb: 4000
+  ram_mb: 1024
+type: service
+version: 0.7.6

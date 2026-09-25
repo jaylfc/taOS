@@ -293,7 +293,7 @@ async def rewind_read_cursor_view(channel_id: str, request: Request):
             session_user = None
             token = request.cookies.get("taos_session") or ""
             if token:
-                session_user = auth.session_user(token)
+                session_user = auth.session_user(token, user_agent=request.headers.get("user-agent", ""))
 
             if session_user is None:
                 return JSONResponse({"error": "not authenticated"}, status_code=401)

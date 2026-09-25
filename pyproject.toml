@@ -146,6 +146,13 @@ proxy = [
 # dependency or fresh installs abort. torrent_downloader guards the import and
 # falls back to a direct download when it is absent.
 torrent = ["libtorrent>=2.0.9"]
+# taOSusb Bluetooth pairing (S1): the controller's BLE central talks to a
+# board's GATT peripheral via bleak. Not every controller install has (or
+# needs) a Bluetooth adapter, so this stays optional -- tinyagentos/cluster/
+# ble/transport.py imports bleak lazily and the scan/pair routes answer 503
+# bluetooth_unavailable when it (or an adapter) is missing, instead of every
+# install failing to boot without it.
+ble = ["bleak>=0.22.0"]
 e2e = [
     "pytest>=9.1.1",
     "pytest-playwright>=0.5.0",

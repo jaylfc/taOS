@@ -1127,10 +1127,19 @@ class ClusterManager:
     def get_workers_for_capability(self, capability: str) -> list[WorkerInfo]:
         """Get online workers that support a capability, sorted by priority (lowest load first).
 
-        Draining workers are excluded (taOS #890)."""
+        Draining workers are excluded (taOS #890). A ``kind="device"`` node
+        (a taOSusb board paired over Bluetooth) is excluded unconditionally,
+        never by whatever it happens to list in ``capabilities`` -- a
+        capability flag alone reads as fine until someone adds a new job
+        type that a device's capability list was never checked against (see
+        docs/taosusb-pairing-plan.md). This is the model mesh's candidate
+        pool (``TaskRouter.route_request`` -> chat/embed/image-generation),
+        so the guard here is the one that matters most."""
         eligible = [
             w for w in self._workers.values()
-            if w.status in ("online", "update-available") and capability in w.capabilities
+            if w.status in ("online", "update-available")
+            and capability in w.capabilities
+            and getattr(w, "kind", "worker") != "device"
         ]
         return sorted(eligible, key=lambda w: w.load)
 
@@ -1271,6 +1280,7 @@ class ClusterManager:
             "free_vram_mb": worker.free_vram_mb,
             "used_vram_mb": worker.used_vram_mb,
             "resources": json.dumps(worker.resources or []),
+            "kind": worker.kind or "worker",
         }
         await self._registry_store.upsert_worker(info)
 
@@ -1332,6 +1342,7 @@ class ClusterManager:
                     free_vram_mb=row.get("free_vram_mb"),
                     used_vram_mb=row.get("used_vram_mb"),
                     resources=json.loads(row.get("resources", "[]")),
+                    kind=row.get("kind") or "worker",
                 )
                 self._workers[name] = worker
                 self._ever_seen.add(name)
