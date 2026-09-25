@@ -68,7 +68,10 @@ function makeNode(tag) {
     _text: "",
     addEventListener: function () {},
     focus: function () {},
-    setAttribute: function (k, v) { this._attrs[k] = String(v); },
+    setAttribute: function (k, v) {
+      this._attrs[k] = String(v);
+      if (k === "id") ID_INDEX[String(v)] = this;
+    },
     getAttribute: function (k) {
       return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null;
     },
@@ -133,6 +136,14 @@ function makeNode(tag) {
       this._text = String(v);
     }
   });
+  // parentNode, the name the SHIPPED code uses. The stand-in stored the link
+  // as `parent` only, so `el.parentNode` was undefined in here: paintDecisions'
+  // "step out of the alerts panel" never ran, and the re-attach guard
+  // (`el.parentNode !== notifsEl`) was true unconditionally. Both read as
+  // working. An alias rather than a second field, or the two names drift.
+  Object.defineProperty(el, "parentNode", {
+    get: function () { return this.parent; }
+  });
   Object.defineProperty(el, "firstChild", {
     get: function () { return this.children.length ? this.children[0] : null; }
   });
@@ -152,9 +163,20 @@ function makeNode(tag) {
   return el;
 }
 
+//: Nodes that have been given an id, so document.getElementById can answer.
+//: paintNotifications looks up `ls-decisions` -- the pending-decision list that
+//: rides at the top of the alerts panel -- and a document without the method at
+//: all is a TypeError that reads, from here, as the painter being broken.
+//: Nothing in THIS file ever sets that id, so the lookup correctly returns null
+//: and the notification stacks are painted exactly as they were before.
+var ID_INDEX = {};
+
 var document = {
   createElement: makeNode,
   createElementNS: function (_ns, tag) { return makeNode(tag); },
+  getElementById: function (id) {
+    return Object.prototype.hasOwnProperty.call(ID_INDEX, id) ? ID_INDEX[id] : null;
+  },
   activeElement: null
 };
 var CSS = null;

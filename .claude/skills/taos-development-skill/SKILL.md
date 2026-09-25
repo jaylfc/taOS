@@ -132,6 +132,17 @@ uv run pytest tests/test_<changed_module>.py tests/<related>/ -v
 uv run pytest tests/ --ignore=tests/e2e -n auto
 ```
 
+### Vendored LLM price table (`tinyagentos/llm_usage/data/`)
+
+`model_prices.json` is GENERATED: a subset of LiteLLM's MIT-licensed
+`model_prices_and_context_window.json`, pinned to the upstream commit recorded in its `_source` key.
+Never hand-edit it and never fetch prices at runtime. Refresh it with
+`python scripts/update_model_prices.py [<sha>]`, keep `data/NOTICE` beside it (the MIT licence
+requires it), and ship both through `[tool.setuptools.package-data]` in `pyproject.toml`. After a
+refresh, run `tests/test_llm_usage.py`: its frozen parity results use synthetic entries, so a data
+refresh cannot break them, but the lookup tests will tell you if a model key taOS relies on moved.
+An unknown price must stay `usd=None`, never `0.0`: the budget code only charges `cost > 0`.
+
 ### Dependency-audit ignore hygiene
 
 `security/pip-audit-ignore.toml` suppresses advisories that have no released

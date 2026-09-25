@@ -657,10 +657,10 @@ async def patch_registry_entry(
             role=body.role,
             capabilities=body.capabilities,
         )
-    except aiosqlite.IntegrityError:
-        # Renaming this entry's handle onto one another active agent owns.
+    except ValueError as exc:
+        # handle collision raised by the store's transition guard.
         return JSONResponse(
-            {"error": "handle is already owned by another active agent"},
+            {"error": str(exc)},
             status_code=409,
         )
     if updated is None:
@@ -704,8 +704,17 @@ async def revoke_registry_entry(
     if not user.is_admin and user.user_id != record["user_id"]:
         logger.info("registry revoke 404-not-owner for %s by %s", canonical_id, user.user_id)
         return JSONResponse({"error": "not found or already revoked"}, status_code=404)
+    
+    # If already revoked, return the record as a 200 to make DELETE idempotent
+    if record.get("status") == "revoked":
+        return {"status": "revoked", "canonical_id": canonical_id, "revoked_at": record.get("revoked_at")}
+    
     before_status = record.get("status") or "active"
-    revoked = await store.revoke(canonical_id)
+    try:
+        revoked = await store.revoke(canonical_id)
+    except (ValueError, KeyError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    
     await _audit_governance(
         request,
         action="revoke",

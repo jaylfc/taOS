@@ -88,7 +88,7 @@ export function MusicStudioApp({ windowId: _windowId }: { windowId: string }) {
       if (res.ok && data.filename) {
         const track: ComposedTrack = {
           id: data.filename as string,
-          url: (data.path as string) ?? `/data/workspace/music/generated/${data.filename}`,
+          url: data.path as string,
           prompt: styledPrompt,
           duration: (data.duration as number) ?? 10,
         };

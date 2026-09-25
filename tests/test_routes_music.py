@@ -1,5 +1,6 @@
 import base64
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -15,6 +16,24 @@ def music_app(tmp_data_dir):
     app = create_app(data_dir=tmp_data_dir)
     app.state.data_dir = str(tmp_data_dir)
     return app
+
+
+def _get_admin_user_id(app):
+    """Get the admin user ID from the auth store."""
+    rec = app.state.auth.find_user("admin")
+    return rec["id"] if rec else ""
+
+
+def _get_user_music_dir(app, user_id: str):
+    """Get the user-specific music directory."""
+    data_dir = Path(app.state.config_path).parent
+    return data_dir / "workspace" / "users" / user_id / "music" / "generated"
+
+
+def _get_legacy_music_dir(app):
+    """Get the legacy shared music directory."""
+    data_dir = Path(app.state.config_path).parent
+    return data_dir / "workspace" / "music" / "generated"
 
 
 @pytest_asyncio.fixture
@@ -81,7 +100,8 @@ class TestMusicCompose:
         assert data["duration"] == 8
         assert data["filename"].endswith(".wav")
 
-        music_dir = music_app.state.config_path.parent / "workspace" / "music" / "generated"
+        admin_id = _get_admin_user_id(music_app)
+        music_dir = _get_user_music_dir(music_app, admin_id)
         saved = list(music_dir.glob("*.wav"))
         assert len(saved) == 1
         assert saved[0].read_bytes() == b"fake-wav-data"

@@ -19,6 +19,13 @@ class WorkerInfo:
     models: list[str] = field(default_factory=list)     # Currently loaded models
     available_models: list[dict] = field(default_factory=list)  # Models this worker CAN load (from local manifest)
     capabilities: list[str] = field(default_factory=list)  # embed, chat, rerank, image-gen, tts, etc
+    # "worker" (a job-running cluster worker) or "device" (a taOSusb board
+    # paired over Bluetooth -- see cluster/ble/pairing.py). A device is
+    # never a placement candidate for any job type, the model mesh
+    # included: see ClusterManager.get_workers_for_capability() and
+    # browser_sessions._capable_workers(), which both filter on this field
+    # rather than trusting `capabilities` to stay empty of job capabilities.
+    kind: str = "worker"
     status: str = "online"            # online | offline | busy
     last_heartbeat: float = 0
     registered_at: float = 0

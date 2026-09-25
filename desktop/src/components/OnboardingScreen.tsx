@@ -73,7 +73,7 @@ export function OnboardingScreen({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data?.error ?? `Setup failed (${res.status})`);
+        setError(data?.error ?? data?.detail ?? `Setup failed (${res.status})`);
         setLoading(false);
         return;
       }

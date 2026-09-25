@@ -6,18 +6,17 @@ All routes live under /api/x/. The router reads these from
 ``request.app.state``:
 
 - ``http_client``  -- shared httpx.AsyncClient (for future cookie-auth calls)
-
-The XWatchStore is instantiated lazily from app state or a module-level
-singleton, depending on how the main app wires it up.
+- ``x_watch_store`` -- XWatchStore instance (required)
 """
 
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.knowledge_fetchers.x import (
     XWatchStore,
     fetch_tweet_ytdlp,
@@ -30,20 +29,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Module-level watch store used when not overridden by app.state
-_watch_store: XWatchStore | None = None
-
 
 def _get_watch_store(request: Request) -> XWatchStore:
-    """Return XWatchStore from app state or fall back to module singleton."""
-    global _watch_store
     store: XWatchStore | None = getattr(request.app.state, "x_watch_store", None)
-    if store is not None:
-        return store
-    if _watch_store is None:
-        _watch_store = XWatchStore()
-        _watch_store.init()
-    return _watch_store
+    if store is None:
+        raise RuntimeError("x_watch_store is not configured on app.state")
+    return store
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +130,7 @@ async def auth_status(request: Request):
 # ---------------------------------------------------------------------------
 
 @router.post("/api/x/watch")
-async def create_watch(request: Request, body: CreateWatchRequest):
+async def create_watch(request: Request, body: CreateWatchRequest, user: CurrentUser = Depends(current_user)):
     """Create a new author watch.
 
     Body:
@@ -147,11 +138,12 @@ async def create_watch(request: Request, body: CreateWatchRequest):
         filters   -- optional filter dict
         frequency -- check interval in seconds (default 1800)
 
-    Returns 409 if a watch for this handle already exists.
+    Returns 409 if a watch for this handle already exists for the user.
     """
     store = _get_watch_store(request)
     try:
-        watch = store.create_watch(
+        watch = await store.create_watch(
+            user_id=user.user_id,
             handle=body.handle,
             filters=body.filters,
             frequency=body.frequency,
@@ -165,15 +157,15 @@ async def create_watch(request: Request, body: CreateWatchRequest):
 
 
 @router.get("/api/x/watches")
-async def list_watches(request: Request):
-    """Return all author watches.
+async def list_watches(request: Request, user: CurrentUser = Depends(current_user)):
+    """Return author watches for the authenticated user.
 
     Returns:
         {watches: list[dict]}
     """
     store = _get_watch_store(request)
     try:
-        watches = store.list_watches()
+        watches = await store.list_watches(user.user_id)
     except Exception as exc:
         logger.exception("list_watches failed: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -181,7 +173,7 @@ async def list_watches(request: Request):
 
 
 @router.put("/api/x/watch/{handle}")
-async def update_watch(request: Request, handle: str, body: UpdateWatchRequest):
+async def update_watch(request: Request, handle: str, body: UpdateWatchRequest, user: CurrentUser = Depends(current_user)):
     """Update an existing author watch.
 
     Path params:
@@ -192,7 +184,7 @@ async def update_watch(request: Request, handle: str, body: UpdateWatchRequest):
         frequency -- new check interval in seconds
         enabled   -- true/false
 
-    Returns 404 if the handle is not found.
+    Returns 404 if the handle is not found for the user.
     """
     store = _get_watch_store(request)
     updates: dict = {}
@@ -204,7 +196,7 @@ async def update_watch(request: Request, handle: str, body: UpdateWatchRequest):
         updates["enabled"] = int(body.enabled)
 
     try:
-        watch = store.update_watch(handle, updates)
+        watch = await store.update_watch(handle, user.user_id, updates)
     except Exception as exc:
         logger.exception("update_watch failed for %s: %s", handle, exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -215,17 +207,17 @@ async def update_watch(request: Request, handle: str, body: UpdateWatchRequest):
 
 
 @router.delete("/api/x/watch/{handle}")
-async def delete_watch(request: Request, handle: str):
+async def delete_watch(request: Request, handle: str, user: CurrentUser = Depends(current_user)):
     """Delete an author watch.
 
     Path params:
         handle  -- X handle (with or without leading @)
 
-    Returns 404 if the handle is not found.
+    Returns 404 if the handle is not found for the user.
     """
     store = _get_watch_store(request)
     try:
-        deleted = store.delete_watch(handle)
+        deleted = await store.delete_watch(handle, user.user_id)
     except Exception as exc:
         logger.exception("delete_watch failed for %s: %s", handle, exc)
         return JSONResponse({"error": str(exc)}, status_code=500)

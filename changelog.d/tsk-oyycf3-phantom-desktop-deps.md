@@ -1,0 +1,2 @@
+### Fixed
+- Declared `dompurify`, `@codemirror/commands`, and `@codemirror/language` as explicit dependencies in `desktop/package.json` (they were previously only available via transitive dependencies/overrides). Added a vitest guard test (`desktop/src/__tests__/deps.test.ts`) that verifies every bare specifier imported under `desktop/src/` appears in `dependencies` or `devDependencies`.
