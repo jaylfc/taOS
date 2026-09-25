@@ -12,7 +12,15 @@ module owns the three things that make that process the taOS Agent:
   agent's scoped gateway key. The default model is ``taos-default``, which the
   gateway resolves to the model picked in the taOS Agent settings;
 - its PROMPT: the taOS Agent manual (or the persona override) written to
-  ``workspace/AGENTS.md``, which PicoClaw loads into its system prompt.
+  ``workspace/AGENTS.md``, which PicoClaw loads into its system prompt, with a
+  section that tells it to reach taOS through ``bin/taos``;
+- its taOS ACCESS: ``workspace/bin/taos``, a helper that calls the
+  controller's HTTP API on loopback with the credential in
+  ``workspace/.taos_credential`` (0600). opencode runs unconfined as the
+  service user and reaches the same API with the host local token; PicoClaw is
+  confined to its workspace, so the same credential is copied in, no more.
+  The helper reads it from the file (never argv, so it is not in ``ps``) and
+  never prints it.
 
 Measured against the real 0.3.1 binary: ``PICOCLAW_CONFIG`` selects the config
 file; the model call is a non-streaming POST to ``<api_base>/chat/completions``
@@ -39,6 +47,8 @@ from tinyagentos.atomic_io import atomic_write_text
 logger = logging.getLogger(__name__)
 
 HOME_DIRNAME = "taos-agent-picoclaw"
+CREDENTIAL_FILENAME = ".taos_credential"
+HELPER_RELPATH = "bin/taos"
 DEFAULT_MODEL = "taos-default"
 LOBSTER = "\U0001F99E"
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -76,6 +86,128 @@ _TOOLS = {
     "spi": {"enabled": False},
     "serial": {"enabled": False},
 }
+
+
+_HELPER = '''#!{python}
+"""taos: call the taOS API on this device as the taOS Agent.
+
+    taos METHOD api/PATH [JSON_BODY | -]     (- reads the JSON body from stdin)
+    taos UPLOAD api/PATH LOCAL_FILE          (multipart form field "file")
+
+PATH has no leading slash: PicoClaw's exec guard refuses a command that
+names an absolute path outside the workspace ("/api/..." reads as one).
+
+Prints the response body; exits non-zero when the call failed. The
+credential is read from a file beside bin/, never from the command line,
+and never printed.
+"""
+import http.client, json, os, sys, urllib.error, urllib.request, uuid
+
+BASE = {base!r}
+CRED = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), {cred!r})
+USAGE = "usage: taos METHOD api/PATH [JSON_BODY|-]  |  taos UPLOAD api/PATH LOCAL_FILE"
+
+
+def main(argv):
+    if len(argv) >= 2 and argv[1].startswith("api/"):
+        argv = [argv[0], "/" + argv[1]] + argv[2:]
+    if len(argv) < 2 or not argv[1].startswith("/api/"):
+        print(USAGE, file=sys.stderr)
+        return 2
+    method, path = argv[0].upper(), argv[1]
+    try:
+        with open(CRED) as fh:
+            token = fh.read().strip()
+    except OSError:
+        print("taos: no credential here (is the taOS Agent running on PicoClaw?)", file=sys.stderr)
+        return 2
+    headers = {{"Authorization": "Bearer " + token}}
+    data = None
+    if method == "UPLOAD":
+        if len(argv) < 3:
+            print(USAGE, file=sys.stderr)
+            return 2
+        boundary = uuid.uuid4().hex
+        name = os.path.basename(argv[2]).replace('"', "")
+        with open(argv[2], "rb") as fh:
+            payload = fh.read()
+        data = (("--%s\\r\\nContent-Disposition: form-data; name=\\"file\\"; filename=\\"%s\\"\\r\\n"
+                 "Content-Type: application/octet-stream\\r\\n\\r\\n") % (boundary, name)).encode() \\
+            + payload + ("\\r\\n--%s--\\r\\n" % boundary).encode()
+        headers["Content-Type"] = "multipart/form-data; boundary=" + boundary
+        method = "POST"
+    elif len(argv) > 2:
+        body = sys.stdin.read() if argv[2] == "-" else argv[2]
+        try:
+            json.loads(body)
+        except ValueError:
+            print("taos: the body must be JSON", file=sys.stderr)
+            return 2
+        data = body.encode()
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            code, out = resp.status, resp.read()
+    except urllib.error.HTTPError as exc:
+        code, out = exc.code, exc.read()
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+        print("taos: cannot reach taOS: %s" % getattr(exc, "reason", exc), file=sys.stderr)
+        return 1
+    text = out.decode("utf-8", "replace").replace(token, "[redacted]")
+    sys.stdout.write(text if text.endswith("\\n") or not text else text + "\\n")
+    if code >= 400:
+        print("taos: HTTP %d" % code, file=sys.stderr)
+        return 1
+    return 0
+
+
+sys.exit(main(sys.argv[1:]))
+'''
+
+TOOLS_SECTION = """
+---
+
+# Reaching taOS from PicoClaw
+
+You run on PicoClaw, confined to your workspace. Every taOS tool named in this
+manual is an HTTP call to taOS on this device, made with `bin/taos` through
+your `exec` tool (run it from your workspace):
+
+    bin/taos METHOD api/PATH [JSON_BODY]
+    bin/taos UPLOAD api/PATH LOCAL_FILE
+
+Write the path WITHOUT a leading slash (`api/...`): your exec tool refuses a
+command naming an absolute path. It prints the response body and exits
+non-zero on failure. It acts as the
+device owner; its credential is handled for you. Never look for it, print it,
+copy it or pass it to anything.
+
+Desktop (always through the control API):
+
+- open_app: `bin/taos POST api/desktop/command '{"kind":"open-app","payload":{"app":"projects"}}'`
+  (add `"props":{...}` to the payload to deep-link)
+- arrange_windows: `bin/taos POST api/desktop/command '{"kind":"window","payload":{"action":"arrange","preset":"tile-2"}}'`
+- any window action (open, close, focus, minimize, restore, maximize, move,
+  resize, snap): `bin/taos POST api/desktop/command '{"kind":"window","payload":{"action":"focus","appId":"notes"}}'`
+- read_layout: `bin/taos POST api/desktop/layout '{}'`
+- screenshot: `bin/taos POST api/desktop/screenshot '{}'`
+
+Every other tool (create_project, add_task, canvas_add_image, export_storybook,
+describe_image_capabilities, generate_image as image_generation,
+notes_list_shared_docs, notes_add_entry, todo_list_lists, todo_add_item,
+todo_set_done, memory_search, list_projects, list_tasks, notify_user,
+request_decision) is one call, with that tool's arguments in "args":
+
+    bin/taos POST api/skill-exec/<tool>/call '{"agent_name":"taos-agent","args":{...}}'
+
+e.g. `bin/taos POST api/skill-exec/notes_add_entry/call '{"agent_name":"taos-agent","args":{"doc_id":"<id>","text":"milk"}}'`
+
+Project files: `bin/taos GET api/projects/<slug>/files?path=<subdir>`,
+`bin/taos GET api/projects/<slug>/files/<path>`,
+`bin/taos POST api/projects/<slug>/mkdir '{"path":"<subdir>"}'`,
+`bin/taos UPLOAD api/projects/<slug>/files/upload?path=<subdir> <local file>`.
+"""
 
 
 class PicoClawBinaryNotFoundError(RuntimeError):
@@ -140,6 +272,10 @@ class PicoClawHarness:
     models: list[str]
     binary: str = "picoclaw"
     turn_timeout: float = 300.0
+    credential: str | None = field(default=None, repr=False)
+    """The credential ``bin/taos`` uses: the same one opencode reaches taOS with."""
+    controller_base: str = ""
+    """e.g. ``http://127.0.0.1:6969``: where ``bin/taos`` sends its calls."""
 
     @property
     def config_path(self) -> Path:
@@ -148,6 +284,14 @@ class PicoClawHarness:
     @property
     def workspace(self) -> Path:
         return self.home / "workspace"
+
+    @property
+    def credential_path(self) -> Path:
+        return self.workspace / CREDENTIAL_FILENAME
+
+    @property
+    def helper_path(self) -> Path:
+        return self.workspace / HELPER_RELPATH
 
     def render_config(self) -> dict:
         names = [DEFAULT_MODEL] + [m for m in self.models if m != DEFAULT_MODEL]
@@ -178,14 +322,29 @@ class PicoClawHarness:
         os.chmod(self.home, 0o700)
         self.workspace.mkdir(parents=True, exist_ok=True)
         atomic_write_text(self.config_path, json.dumps(self.render_config(), indent=1), mode=0o600)
+        if self.credential:
+            self.write_taos_access()
         logger.info("picoclaw_runtime: wrote config for %d model(s) at %s",
                     len(self.models) + 1, self.config_path)
 
+    def write_taos_access(self) -> None:
+        """``bin/taos`` (0700) and the credential it reads (0600)."""
+        import sys
+
+        self.helper_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(self.credential_path, self.credential or "", mode=0o600)
+        atomic_write_text(
+            self.helper_path,
+            _HELPER.format(python=sys.executable, base=self.controller_base, cred=CREDENTIAL_FILENAME),
+            mode=0o700,
+        )
+
     def write_system_prompt(self, text: str | None) -> None:
-        """PicoClaw reads ``workspace/AGENTS.md`` into its system prompt."""
+        """PicoClaw reads ``workspace/AGENTS.md`` into its system prompt: the
+        manual or persona, then how to reach taOS through ``bin/taos``."""
         self.workspace.mkdir(parents=True, exist_ok=True)
         target = self.workspace / "AGENTS.md"
-        body = (text or "").strip() + "\n"
+        body = (text or "").strip() + "\n" + TOOLS_SECTION
         try:
             if target.read_text(encoding="utf-8") == body:
                 return
@@ -193,15 +352,11 @@ class PicoClawHarness:
             pass
         atomic_write_text(target, body, mode=0o600)
 
-    def scrub(self) -> None:
-        """Delete the key-bearing config; the workspace (history) is kept."""
-        try:
-            self.config_path.unlink()
-        except FileNotFoundError:
-            pass
-
     def redact(self, text: str) -> str:
-        return text.replace(self.key, "[redacted]") if self.key else text
+        for secret in (self.key, self.credential):
+            if secret:
+                text = text.replace(secret, "[redacted]")
+        return text
 
     def _env(self) -> dict[str, str]:
         """A minimal environment: the controller's own env (tokens, flags,
@@ -255,3 +410,16 @@ class PicoClawHarness:
             tail = [ln for ln in _ANSI.sub("", stderr + "\n" + stdout).splitlines() if ln.strip()]
             detail = tail[-1].strip()[:300] if tail else ""
         return TurnResult(returncode=proc.returncode or 0, reply=reply, detail=detail)
+
+
+def scrub_home(data_dir: str | Path) -> None:
+    """Delete every secret PicoClaw's home holds (the key-bearing config and
+    the credential copy, with the helper that reads it). The rest of the
+    workspace, PicoClaw's sessions and memory, is kept."""
+    home = home_for(data_dir)
+    for path in (home / "config.json", home / "workspace" / CREDENTIAL_FILENAME,
+                 home / "workspace" / HELPER_RELPATH):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass

@@ -26,9 +26,10 @@ This skill consolidates the OS-operation content of the in-repo agent manual
 On most hosts you run on opencode. On a taOSmobile handset you may run on
 PicoClaw instead (the config endpoint's `framework` says which). Under
 PicoClaw your tools are `exec`, `read_file`, `write_file`, `edit_file`,
-`append_file`, `list_dir` and `web_fetch`, confined to your workspace; each
-reply arrives whole at the end of the turn, and image attachments are not
-supported yet. Your models are whatever the taOS Agent settings permit,
+`append_file`, `list_dir` and `web_fetch`, confined to your workspace, and
+you reach the control API below through `bin/taos METHOD api/PATH [JSON]`
+from `exec` (no leading slash on the path); each reply arrives whole at the
+end of the turn, and image attachments are not supported yet. Your models are whatever the taOS Agent settings permit,
 reached through `taos-default` on the controller's LLM gateway.
 
 ## HARD RULE: Drive the OS only via the control API

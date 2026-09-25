@@ -404,27 +404,27 @@ async def _picoclaw_models(app_state) -> list[str]:
     return models
 
 
-def retire_picoclaw(app_state) -> int:
-    """Revoke the PicoClaw key and delete the config that held it.
+def retire_picoclaw(app_state, *, revoke: bool = True) -> int:
+    """Revoke the PicoClaw key and delete the secrets its home held: the
+    config with the key, and the copy of the taOS credential ``bin/taos``
+    reads.
 
     Idempotent and synchronous (safe at startup). The workspace, where
     PicoClaw keeps its sessions and memory, is kept. Returns how many keys
     were live.
     """
     from tinyagentos.llm_gateway.auth import revoke_keys_for
-    from tinyagentos.picoclaw_runtime import home_for
+    from tinyagentos.picoclaw_runtime import scrub_home
 
     data_dir = getattr(app_state, "data_dir", None)
     revoked = 0
     if data_dir is not None:
-        try:
-            revoked = revoke_keys_for(PICOCLAW_PRINCIPAL, data_dir=data_dir)
-        except Exception:
-            logger.exception("taos_agent_runtime: revoking the picoclaw key failed")
-        try:
-            (home_for(data_dir) / "config.json").unlink()
-        except FileNotFoundError:
-            pass
+        if revoke:
+            try:
+                revoked = revoke_keys_for(PICOCLAW_PRINCIPAL, data_dir=data_dir)
+            except Exception:
+                logger.exception("taos_agent_runtime: revoking the picoclaw key failed")
+        scrub_home(data_dir)
     app_state.taos_picoclaw_harness = None
     app_state.taos_picoclaw_scope = None
     if revoked:
@@ -454,12 +454,21 @@ async def _provision_picoclaw_locked(app_state, models: list[str]):
     )
     config = getattr(app_state, "config", None)
     port = int((getattr(config, "server", None) or {}).get("port", 6969))
+    # Parity with opencode, which runs as the service user and reaches the
+    # taOS API with the host local token: PicoClaw gets that same credential,
+    # copied into its workspace for bin/taos. (The agent's own identity token,
+    # .taos_agent_token, is scoped to a2a only and covers none of the desktop,
+    # notes or project endpoints the manual names.)
+    auth = getattr(app_state, "auth", None)
+    credential = auth.get_local_token() if auth is not None else None
     harness = PicoClawHarness(
         home=home_for(data_dir),
         api_base=f"http://127.0.0.1:{port}/api/llm/v1",
         key=key,
         models=[m for m in models if m != DEFAULT_MODEL],
         binary=binary,
+        credential=credential,
+        controller_base=f"http://127.0.0.1:{port}",
     )
     harness.write_config()
     app_state.taos_picoclaw_harness = harness
@@ -513,12 +522,9 @@ def startup_framework_reconcile(app_state) -> FrameworkDecision:
 
     decision = refresh_framework_decision(app_state)
     data_dir = getattr(app_state, "data_dir", None)
-    # No keystore means no key was ever minted: do not create one just to
-    # look (a host that never ran PicoClaw sees no change at all).
-    if (
-        decision.framework != FRAMEWORK_PICOCLAW
-        and data_dir is not None
-        and default_keystore_path(data_dir).exists()
-    ):
-        retire_picoclaw(app_state)
+    if decision.framework != FRAMEWORK_PICOCLAW and data_dir is not None:
+        # No keystore means no key was ever minted: do not create one just
+        # to look (a host that never ran PicoClaw sees no change at all). The
+        # credential copy and config are deleted either way.
+        retire_picoclaw(app_state, revoke=default_keystore_path(data_dir).exists())
     return decision

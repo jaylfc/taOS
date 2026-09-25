@@ -1770,3 +1770,17 @@ environment; the manual or the persona is written to `workspace/AGENTS.md`,
 which PicoClaw loads as its system prompt. The reply is the text after the
 last lobster (U+1F99E). A controller start into opencode revokes any
 leftover PicoClaw key.
+
+taOS access parity: opencode runs unconfined as the service user and reaches
+the taOS API (desktop control, skill-exec tools, notes, project files) with
+curl and the host local token. PicoClaw is confined to its workspace, so the
+same credential is copied to `workspace/.taos_credential` (0600) and
+`workspace/bin/taos` (0700) calls `http://127.0.0.1:<server.port>` with it:
+`bin/taos METHOD api/PATH [JSON]` or `bin/taos UPLOAD api/PATH FILE`. The
+path has no leading slash because PicoClaw's exec guard refuses a command
+naming an absolute path. The helper reads the credential from the file
+(never argv) and redacts it from what it prints. The agent's own identity
+token (`.taos_agent_token`) is a2a-only and covers none of these endpoints,
+so it is not narrower-but-sufficient. `AGENTS.md` appends a section mapping
+every manual tool to a `bin/taos` call. Leaving PicoClaw, or any controller
+start into opencode, deletes the credential copy and the helper.
