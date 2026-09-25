@@ -22,7 +22,7 @@ from typing import Any, Awaitable
 
 import httpx
 
-from tinyagentos.llm_gateway.errors import GatewayError, upstream_error
+from tinyagentos.llm_gateway.errors import GatewayError, model_not_found, upstream_error
 from tinyagentos.llm_gateway.resolve import Route
 from tinyagentos.llm_usage.pricing import Cost, cost_of, find_price, price_usage
 from tinyagentos.llm_usage.usage import UNKNOWN, OpenAIStreamUsage, Usage, ensure_stream_usage, from_openai
@@ -37,12 +37,40 @@ TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 # Upstream 4xx that describe the caller's request; passed through (redacted).
 # Anything else (401/403/404: taOS's own key or config is wrong) is a 502.
 _CALLER_4XX = {400, 409, 413, 422, 429}
-_OLLAMA_PROVIDERS = ("ollama", "ollama_chat")
+OLLAMA_PROVIDERS = ("ollama", "ollama_chat")
+
+
+def _ollama_404_error(route: Route, resp: httpx.Response) -> GatewayError:
+    try:
+        body = resp.json()
+    except Exception:
+        body = None
+    err_text = ""
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, str):
+            err_text = err
+        elif isinstance(err, dict):
+            err_text = err.get("message", "")
+    err_lower = err_text.lower()
+    model = route.upstream_model or route.model_name
+    if model and model.lower() in err_lower and "not found" in err_lower:
+        return model_not_found(
+            f"model {route.model_name!r} was not found on the backend; "
+            f"pull it first (e.g. `ollama pull {model}`)"
+        )
+    return GatewayError(
+        501,
+        f"model {route.model_name!r} is served by {route.backend_name!r} backend "
+        f"that does not expose the required /v1 endpoint; "
+        "this backend is not yet supported by the taOS gateway",
+        code="backend_not_supported",
+    )
 
 
 def _build_url(route: Route) -> str:
     base = (route.api_base or DEFAULT_OPENAI_BASE).rstrip("/")
-    if route.provider in _OLLAMA_PROVIDERS:
+    if route.provider in OLLAMA_PROVIDERS:
         return f"{base}/v1/chat/completions"
     return f"{base}/chat/completions"
 
@@ -167,16 +195,8 @@ async def _chat_completion_one(
     status = resp.status_code
     if status in _CALLER_4XX:
         raise _caller_error(resp, route, api_key)
-    if status == 404 and route.provider in _OLLAMA_PROVIDERS:
-        # TODO: phase-2 note -- hailo-ollama may not expose /v1; surface as 501
-        # instead of 502 so the caller knows the backend type is unsupported.
-        raise GatewayError(
-            501,
-            f"model {route.model_name!r} is served by a {route.backend_name!r} backend "
-            f"that does not expose the required /v1 endpoint; "
-            "this backend is not yet supported by the taOS gateway",
-            code="backend_not_supported",
-        )
+    if status == 404 and route.provider in OLLAMA_PROVIDERS:
+        raise _ollama_404_error(route, resp)
     if not 200 <= status < 300:
         raise upstream_error(f"{what} failed (HTTP {status})")
     try:
@@ -242,17 +262,13 @@ def _event_stream_for_route(
                 raise upstream_error("the backend timed out") from None
             except httpx.HTTPError:
                 raise upstream_error("the backend could not be reached") from None
-            if upstream_resp.status_code == 404 and route.provider in _OLLAMA_PROVIDERS:
+            if upstream_resp.status_code == 404 and route.provider in OLLAMA_PROVIDERS:
+                try:
+                    err_body = await upstream_resp.aread()
+                except Exception:
+                    err_body = b""
                 await upstream_resp.aclose()
-                # TODO: phase-2 note -- hailo-ollama may not expose /v1; surface as 501
-                # instead of 502 so the caller knows the backend type is unsupported.
-                raise GatewayError(
-                    501,
-                    f"model {route.model_name!r} is served by a {route.backend_name!r} backend "
-                    f"that does not expose the required /v1 endpoint; "
-                    "this backend is not yet supported by the taOS gateway",
-                    code="backend_not_supported",
-                )
+                raise _ollama_404_error(route, httpx.Response(404, content=err_body))
             try:
                 async for raw in upstream_resp.aiter_raw():
                     if not raw:
@@ -435,7 +451,7 @@ async def chat_completion(routes: list[Route], body: dict, api_key: str | None, 
     return await _call_with_retry(routes, lambda route: _chat_completion_one(route, body, api_key, principal, state))
 
 
-def chat_completion_stream(
+async def chat_completion_stream(
     routes: list[Route],
     body: dict,
     api_key: str | None,
@@ -447,7 +463,19 @@ def chat_completion_stream(
     Retries only before any byte has been sent to the caller. Once the first
     chunk is yielded the stream is not retried, to avoid duplicating output.
     """
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import JSONResponse, StreamingResponse
 
     gen = _stream_with_retry(routes, lambda route: _event_stream_for_route(route, body, api_key, principal, state))
-    return StreamingResponse(gen, media_type="text/event-stream", headers={"cache-control": "no-cache"})
+    try:
+        first = await gen.__anext__()
+    except StopAsyncIteration:
+        return StreamingResponse((), media_type="text/event-stream", headers={"cache-control": "no-cache"})
+    except GatewayError as exc:
+        return exc.response()
+
+    async def _full():
+        yield first
+        async for chunk in gen:
+            yield chunk
+
+    return StreamingResponse(_full(), media_type="text/event-stream", headers={"cache-control": "no-cache"})

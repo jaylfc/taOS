@@ -102,5 +102,5 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
     api_key = await resolve_api_key(state, route.api_key_ref)
     principal = caller.caller_id
     if body.get("stream"):
-        return chat_completion_stream(routes, body, api_key, principal, state)
+        return await chat_completion_stream(routes, body, api_key, principal, state)
     return JSONResponse(await chat_completion(routes, body, api_key, principal, state))

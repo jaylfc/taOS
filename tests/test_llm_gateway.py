@@ -423,6 +423,34 @@ async def test_ollama_backend_without_v1_returns_501_naming_backend(client):
     assert "local-ollama" in err["message"]
 
 
+@_ASYNC
+@respx.mock
+async def test_ollama_model_not_pulled_is_model_not_found_not_501(client):
+    """An ollama 404 whose body says the model is missing becomes 404 model_not_found."""
+    app = _app(client)
+    app.state.config.backends = [OLLAMA_BACKEND]
+    respx.post(OLLAMA_CHAT).mock(return_value=httpx.Response(
+        404, json={"error": {"message": "model 'llama3' not found, try pulling it first"}}
+    ))
+    resp = await client.post(BASE + "/chat/completions", json=_chat("default"))
+    err = _assert_openai_error(resp, 404, "model_not_found")
+    assert "default" in err["message"]
+
+
+@_ASYNC
+@respx.mock
+async def test_ollama_stream_model_not_pulled_is_model_not_found_not_501(client):
+    """Streaming through ollama with a missing model returns 404 model_not_found."""
+    app = _app(client)
+    app.state.config.backends = [OLLAMA_BACKEND]
+    respx.post(OLLAMA_CHAT).mock(return_value=httpx.Response(
+        404, json={"error": {"message": "model 'llama3' not found, try pulling it first"}}
+    ))
+    resp = await client.post(BASE + "/chat/completions", json=_chat("default", stream=True))
+    err = _assert_openai_error(resp, 404, "model_not_found")
+    assert "default" in err["message"]
+
+
 # ---------------------------------------------------------------------------
 # Hostile: upstream failure
 # ---------------------------------------------------------------------------
@@ -1180,8 +1208,8 @@ async def test_single_backend_stream_recovers_within_cooldown(client):
         httpx.Response(200, content=_sse_chunk("hi") + _sse_done(), headers={"content-type": "text/event-stream"}),
     ])
 
-    with pytest.raises(RuntimeError):
-        await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+    resp1 = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+    assert resp1.status_code == 502, resp1.text
 
     resp2 = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
     assert resp2.status_code == 200, resp2.text
