@@ -26,13 +26,13 @@
 
 **Proposed Mapping:** `platform="reticulum"` should map LXMF destinations onto the same per-device registration and `MessageRouter` seam as Meshtastic, creating a unified security model.
 
-**Implementation:** The `assign_channel("reticulum", <lxmf_destination_hash>, <agent_name>)` call in `tinyagentos/channel_hub/router.py:15` (`assign_channel`) uses the LXMF destination hash as the `bot_id`. This hash is a truncated 128-bit hash over the name-hash + identity, not the SHA-256 of the public key, and becomes the channel identifier in the `MessageRouter._channel_assignments` map alongside Meshtastic node IDs.
+**Proposed implementation:** The `assign_channel("reticulum", <lxmf_destination_hash>, <agent_name>)` call in `tinyagentos/channel_hub/router.py:15` (`assign_channel`) would use the LXMF destination hash as the `bot_id`. This hash is a truncated 128-bit hash over the name-hash + identity, not the SHA-256 of the public key, and becomes the channel identifier in the `MessageRouter._channel_assignments` map alongside Meshtastic node IDs.
 
 **What is NOT shared:** 
-- Meshtastic uses AES-256-CTR with device-specific PSK — source: https://meshtastic.org/docs/overview/encryption/
+- Meshtastic uses AES-256-CTR with a per-channel pre-shared key (PSK) shared by every member of the channel; any holder can read channel traffic — source: meshtastic/firmware SECURITY.md
 - Reticulum/LXMF uses asymmetric encryption with LXMF destination's public key for message encryption
-- Meshtastic does not channel-hop; the frequency slot is derived from the channel name hash — source: https://meshtastic.org/docs/overview/radio-settings/
-- Meshtastic device keys are stored in the Heltec's EEPROM; LXMF identity keys are stored in the Secrets app, or TBD — decide at build time
+- Meshtastic does not channel-hop; under DEFAULT slot selection, the frequency slot is derived from the channel name hash — an explicit slot overrides this — source: https://meshtastic.org/docs/overview/radio-settings/
+- Meshtastic device keys are stored in the Heltec's EEPROM; LXMF private keys live in SecretsStore (encrypted at rest) — define backup/recovery before this is used as the build plan
 - The radio frequency parameters (SF, bandwidth, channel) are platform-specific: Meshtastic uses its own channel scheduling, Reticulum uses fixed frequency slots
 
 This creates ONE security model at the `MessageRouter` level but preserves the cryptographic differences between the two transport protocols.
