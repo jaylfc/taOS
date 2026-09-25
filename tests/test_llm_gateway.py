@@ -1035,3 +1035,42 @@ async def test_cooldown_means_second_request_goes_straight_to_healthy_backend(cl
 
     assert primary.call_count == 1
     assert backup.call_count == 2
+
+
+@_ASYNC
+@respx.mock
+async def test_single_backend_recovers_within_cooldown(client):
+    app = _app(client)
+    app.state.config.backends = [OPENAI_COMPAT]
+    route = respx.post(UPSTREAM_CHAT).mock(side_effect=[
+        httpx.Response(503, json={"error": {"message": "unavailable"}}),
+        httpx.Response(200, json=_completion("qwen3-8b")),
+    ])
+
+    resp1 = await client.post(BASE + "/chat/completions", json=_chat())
+    assert resp1.status_code == 502, resp1.text
+
+    resp2 = await client.post(BASE + "/chat/completions", json=_chat())
+    assert resp2.status_code == 200, resp2.text
+    assert route.call_count == 2
+
+
+@_ASYNC
+@respx.mock
+async def test_single_backend_stream_recovers_within_cooldown(client):
+    app = _app(client)
+    app.state.config.backends = [OPENAI_COMPAT]
+    route = respx.post(UPSTREAM_CHAT).mock(side_effect=[
+        httpx.ConnectError("primary down"),
+        httpx.Response(200, content=_sse_chunk("hi") + _sse_done(), headers={"content-type": "text/event-stream"}),
+    ])
+
+    with pytest.raises(RuntimeError):
+        await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+
+    resp2 = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+    assert resp2.status_code == 200, resp2.text
+    data = resp2.read()
+    text = data.decode("utf-8")
+    assert '"content": "hi"' in text
+    assert route.call_count == 2

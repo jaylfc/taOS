@@ -285,14 +285,16 @@ async def _call_with_retry(
     deadline = time.monotonic() + _DEADLINE_SECONDS
     last_exc: GatewayError | None = None
 
-    for attempt, route in enumerate(routes):
+    healthy = [r for r in routes if not _is_in_cooldown(r.backend_name)]
+    cooled = [r for r in routes if _is_in_cooldown(r.backend_name)]
+    ordered = healthy + cooled
+
+    for attempt, route in enumerate(ordered):
         if attempt >= _MAX_ATTEMPTS:
             break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        if _is_in_cooldown(route.backend_name):
-            continue
         try:
             return await call_one(route)
         except GatewayError as exc:
@@ -316,14 +318,16 @@ async def _stream_with_retry(
     deadline = time.monotonic() + _DEADLINE_SECONDS
     last_exc: GatewayError | None = None
 
-    for attempt, route in enumerate(routes):
+    healthy = [r for r in routes if not _is_in_cooldown(r.backend_name)]
+    cooled = [r for r in routes if _is_in_cooldown(r.backend_name)]
+    ordered = healthy + cooled
+
+    for attempt, route in enumerate(ordered):
         if attempt >= _MAX_ATTEMPTS:
             break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        if _is_in_cooldown(route.backend_name):
-            continue
 
         first_byte_sent = False
         try:
