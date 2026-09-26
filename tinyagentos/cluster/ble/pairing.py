@@ -5,8 +5,9 @@ Ties together the vendored protocol (``proto.py``), the BLE transport
 
   1. ``scan()`` finds pairable boards over BLE and reads their ``info``
      characteristic for the authoritative name/board id/state.
-  2. ``start()`` connects, runs the ``PairInitiator`` handshake, and returns
-     the 6-digit code for a human to compare against the board.
+  2. ``start()`` connects, runs the ``PairInitiator`` handshake (hello,
+     then the commit/reveal nonce exchange of proto v2), and returns the
+     6-digit code for a human to compare against the board.
   3. ``confirm()`` -- only once a human has confirmed the code -- mints the
      node's signing key through the exact same store method the manual
      worker-pairing flow uses (``ClusterPairingStore.register_device_key``,
@@ -62,6 +63,7 @@ _CONNECT_TIMEOUT_S = 10.0
 # proto.Reassembler tracks each direction separately.
 _MID_HELLO = 0
 _MID_PROVISION = 1
+_MID_NONCE = 2
 
 # The model a paired board is allowed: the account's chat model, resolved per
 # request by the gateway (llm_gateway/resolve.py TAOS_DEFAULT).
@@ -331,9 +333,15 @@ class BlePairingManager:
             hello = initiator.start_hello()
             reassembler = proto.Reassembler()
             try:
+                # Commit/reveal (proto v2): the board commits to its nonce in
+                # its hello reply, and reveals it only after ours is sent, so
+                # a man in the middle cannot grind the code to match.
                 await self._write_pair_message(conn, hello, _MID_HELLO)
                 reply_raw = await self._read_pair_message(conn, reassembler, _HELLO_TIMEOUT_S)
-                code = initiator.on_hello_reply(board_id, reply_raw)
+                nonce_msg = initiator.on_hello_commit(board_id, reply_raw)
+                await self._write_pair_message(conn, nonce_msg, _MID_NONCE)
+                reveal_raw = await self._read_pair_message(conn, reassembler, _HELLO_TIMEOUT_S)
+                code = initiator.on_reveal(reveal_raw)
             except PairError:
                 raise
             except (asyncio.TimeoutError, TimeoutError) as exc:

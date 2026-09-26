@@ -17,7 +17,10 @@ import tinyagentos.cluster.ble.proto as proto
 # docstring). Update this only by re-running:
 #   cp <taosusb>/files/taosble/proto.py tinyagentos/cluster/ble/proto.py
 # and recomputing the hash below from that fresh copy.
-EXPECTED_SHA256 = "ee997a1cd774fd2dca3771fc072f3af07987a6ff7981b5835fc692af0426918a"
+# 2026-09: protocol v2 (commit/reveal nonces, release audit H1) was written
+# here first; taosusb's files/taosble/proto.py must be re-copied FROM this
+# file so the two stay byte-identical.
+EXPECTED_SHA256 = "ce802c42fcd66c521c3dc0c39578b72f68037d4d57da73e231e5cd7847363e66"
 
 
 def test_proto_is_byte_identical_to_vendored_source():
@@ -36,6 +39,6 @@ def test_proto_exposes_the_expected_protocol_surface():
         "SERVICE_UUID", "CHAR_INFO_UUID", "CHAR_PAIR_UUID", "CHAR_LINK_UUID",
         "fragment", "Reassembler", "PairInitiator", "PairResponder",
         "x25519_keypair", "key_from_raw", "raw_from_key",
-        "validate_provision", "info_frame",
+        "validate_provision", "info_frame", "commitment",
     ):
         assert hasattr(proto, name), f"proto.py is missing {name!r}"

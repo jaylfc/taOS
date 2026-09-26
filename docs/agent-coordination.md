@@ -1196,6 +1196,38 @@ Route module `tinyagentos/routes/device_pair_requests.py`:
 Approval or denial of a pair request is surfaced to the user through the Decisions app;
 agents must not grant pairing directly.
 
+## taOSusb Bluetooth pairing: commit/reveal (protocol v2)
+
+`tinyagentos/cluster/ble/proto.py` is shared byte-identical with the taOSusb
+board daemon (`files/taosble/proto.py`); `tests/cluster/test_ble_proto.py` pins
+its hash. The `pair` handshake is now protocol v2 (`PROTO_VERSION = 2`):
+
+1. Controller sends `hello` with its static and ephemeral public keys and
+   `"v": 2`, but **no nonce**.
+2. Board replies `hello` with its keys and `commit = commitment(board_id,
+   cpub, c_epub, bpub, b_epub, b_n)`. The board nonce `b_n` stays secret.
+3. Controller sends `{"t": "nonce", "n": c_n}`.
+4. Board replies `{"t": "reveal", "n": b_n}`. The controller refuses a
+   `b_n` that does not match the commitment. Only then do both sides derive
+   the transcript, the 6-digit code and the session key.
+
+Why: in v1 both nonces travelled in the plain hellos, so a man in the middle
+could pick its board nonce after seeing the controller's and grind it (about
+10^6 hashes, under a second) until both screens showed the same code.
+
+Rules that keep it sound:
+
+- The board accepts exactly **one** nonce per hello. A second nonce after the
+  reveal is refused, because `b_n` is public by then.
+- A new hello discards any pending commitment and starts over.
+- The version is in the advert byte, in both hellos, and in the transcript
+  and HKDF labels (`taos-ble-v2`, `taos-ble-pair-v2`). A v1 peer and a v2
+  peer refuse each other with a version error instead of deriving mismatched
+  codes.
+- The taOSusb board must re-copy `proto.py` from this repo. Its daemon needs
+  no other change, since it forwards every `pair` message to
+  `PairResponder.handle_message`.
+
 ## OS change-event stream (`GET /api/os/events`, session-only)
 
 Route module `tinyagentos/routes/os_events.py`. A Server-Sent Events stream of

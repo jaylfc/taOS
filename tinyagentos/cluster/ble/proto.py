@@ -8,12 +8,21 @@ by both sides. Only the standard library and `cryptography` are allowed as depen
 Wire protocol (see docs/taosusb-pairing-plan.md "Design" and the S1 spec for the exact grammar):
   * `info` (read): UTF-8 JSON describing the board - see info_frame().
   * `pair` (write+notify): fragmented messages (see fragment()/Reassembler), each a UTF-8 JSON
-    object. Handshake: plaintext "hello" x2, then "sealed" (ChaCha20-Poly1305, AAD b"pair") for
-    everything after the session key exists. PairResponder is the board side, PairInitiator the
-    controller side.
+    object. Handshake (protocol v2, commit/reveal):
+      1. controller -> board  {"t":"hello","v":2,"cpub","epub"}          (no nonce yet)
+      2. board -> controller  {"t":"hello","v":2,"bpub","epub","commit"}
+         commit = commitment(board_id, cpub, c_epub, bpub, b_epub, b_n)  (b_n stays secret)
+      3. controller -> board  {"t":"nonce","n": c_n}
+      4. board -> controller  {"t":"reveal","n": b_n}; the controller checks it against commit
+    Both sides then derive the transcript, the 6-digit code and the session key, and everything
+    after is "sealed" (ChaCha20-Poly1305, AAD b"pair"). The commitment is what stops a man in
+    the middle from choosing its board nonce AFTER seeing the controller's and grinding it until
+    both screens show the same code (v1 sent both nonces in the plain hellos, so it could).
+    PairResponder is the board side, PairInitiator the controller side.
   * `link` (write+notify): defined but not implemented in S1 - see LinkResponder.
 """
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -62,7 +71,9 @@ LOCKOUT_MAX_S = 900.0
 # unassigned/test use; taOS has no company id of its own.
 MFR_ID = 0xFFFF
 MFR_MAGIC = b"taOS"
-PROTO_VERSION = 1
+# v2 (2026-09): commit/reveal nonces in the pair handshake. A v1 peer and a v2 peer refuse each
+# other: the version is in the advert, in both hellos, and in the transcript/HKDF labels.
+PROTO_VERSION = 2
 STATE_PAIRED = 0x01
 
 
@@ -200,7 +211,19 @@ def transcript(board_id, cpub, c_epub, c_n, bpub, b_epub, b_n):
                          ("bpub", bpub, 32), ("b_epub", b_epub, 32), ("b_n", b_n, 16)):
         if len(val) != n:
             raise ValueError("bad %s length" % name)
-    return hashlib.sha256(b"taos-ble-v1" + board_id.encode("ascii") + cpub + c_epub + c_n +
+    return hashlib.sha256(b"taos-ble-v2" + board_id.encode("ascii") + cpub + c_epub + c_n +
+                          bpub + b_epub + b_n).digest()
+
+
+def commitment(board_id, cpub, c_epub, bpub, b_epub, b_n):
+    """The board's commitment to its nonce, sent BEFORE it learns the controller's nonce. It
+    binds both sides' public keys too, so a commitment made for one session cannot be replayed
+    into another with different keys."""
+    for name, val, n in (("cpub", cpub, 32), ("c_epub", c_epub, 32), ("bpub", bpub, 32),
+                         ("b_epub", b_epub, 32), ("b_n", b_n, 16)):
+        if len(val) != n:
+            raise ValueError("bad %s length" % name)
+    return hashlib.sha256(b"taos-ble-v2-commit" + board_id.encode("ascii") + cpub + c_epub +
                           bpub + b_epub + b_n).digest()
 
 
@@ -220,7 +243,7 @@ def _reject_weak(secret):
 def derive_session_key(eph_priv, eph_peer_pub, static_priv, static_peer_pub, T):
     ikm = (_reject_weak(eph_priv.exchange(eph_peer_pub)) +
            _reject_weak(static_priv.exchange(static_peer_pub)))
-    return HKDF(algorithm=hashes.SHA256(), length=32, salt=T, info=b"taos-ble-pair-v1").derive(ikm)
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=T, info=b"taos-ble-pair-v2").derive(ikm)
 
 
 # ---- sealed messages --------------------------------------------------------------------------
@@ -359,6 +382,7 @@ class PairResponder:
         self.locked_until = 0.0
         self.lockout_s = LOCKOUT_S
         self._session = None
+        self._pending = None      # between the hello and the controller's nonce (commit/reveal)
         self.provisioned = None   # set on a successful provision (see validate_provision's fields)
 
     def window_open(self):
@@ -390,31 +414,57 @@ class PairResponder:
         t = msg.get("t")
         if t == "hello":
             return self._on_hello(msg)
+        if t == "nonce":
+            return self._on_nonce(msg)
         if t == "sealed":
             return self._on_sealed(msg)
         return _err("unknown type")
 
     def _on_hello(self, msg):
+        if msg.get("v") != PROTO_VERSION:
+            return _err("unsupported protocol version (board speaks v%d)" % PROTO_VERSION)
         try:
             cpub = unb64(msg["cpub"], 32)
             c_epub = unb64(msg["epub"], 32)
-            c_n = unb64(msg["n"], 16)
+            X25519PublicKey.from_public_bytes(cpub)
+            X25519PublicKey.from_public_bytes(c_epub)
         except (KeyError, ValueError, TypeError):
             return _err("bad hello")
         b_epriv, b_epub = x25519_keypair()
         b_n = os.urandom(16)
         bpub_bytes, b_epub_bytes = pub_bytes(self.static_pub), pub_bytes(b_epub)
+        commit = commitment(self.board_id, cpub, c_epub, bpub_bytes, b_epub_bytes, b_n)
+        # A second hello mid-session resets the session (new keys, new nonce, new commitment);
+        # the failed-provision budget is per WINDOW, not per session, so it is deliberately NOT
+        # reset here. Until the controller's nonce arrives there is no code and no key.
+        self._session = None
+        self._pending = {"cpub": cpub, "c_epub": c_epub, "b_epriv": b_epriv,
+                         "b_epub": b_epub_bytes, "b_n": b_n}
+        return json.dumps({"t": "hello", "v": PROTO_VERSION, "bpub": b64(bpub_bytes),
+                           "epub": b64(b_epub_bytes), "commit": b64(commit)}).encode("utf-8")
+
+    def _on_nonce(self, msg):
+        # Exactly one nonce per hello. Once b_n is revealed it is public, so accepting a second
+        # nonce would let a man in the middle choose c_n after seeing b_n - the very grind the
+        # commitment exists to stop.
+        p = self._pending
+        if p is None:
+            return _err("no hello")
+        self._pending = None
         try:
-            T = transcript(self.board_id, cpub, c_epub, c_n, bpub_bytes, b_epub_bytes, b_n)
-            key = derive_session_key(b_epriv, X25519PublicKey.from_public_bytes(c_epub),
-                                      self.static_priv, X25519PublicKey.from_public_bytes(cpub), T)
+            c_n = unb64(msg["n"], 16)
+        except (KeyError, ValueError, TypeError):
+            return _err("bad nonce")
+        try:
+            T = transcript(self.board_id, p["cpub"], p["c_epub"], c_n,
+                           pub_bytes(self.static_pub), p["b_epub"], p["b_n"])
+            key = derive_session_key(p["b_epriv"], X25519PublicKey.from_public_bytes(p["c_epub"]),
+                                      self.static_priv, X25519PublicKey.from_public_bytes(p["cpub"]), T)
         except ValueError:
             return _err("bad hello")
-        # A second hello mid-session resets the session (new keys, new code); the failed-provision
-        # budget is per WINDOW, not per session, so it is deliberately NOT reset here.
-        self._session = {"T": T, "code": derive_code(T), "key": key, "cpub": cpub, "seen_nonces": set()}
-        return json.dumps({"t": "hello", "bpub": b64(bpub_bytes), "epub": b64(b_epub_bytes),
-                           "n": b64(b_n)}).encode("utf-8")
+        self._session = {"T": T, "code": derive_code(T), "key": key, "cpub": p["cpub"],
+                         "seen_nonces": set()}
+        return json.dumps({"t": "reveal", "n": b64(p["b_n"])}).encode("utf-8")
 
     def _on_sealed(self, msg):
         if self._session is None:
@@ -474,24 +524,55 @@ class PairInitiator:
     def start_hello(self):
         c_epriv, c_epub = x25519_keypair()
         c_n = os.urandom(16)
+        self._session = None
         self._pending = {"epriv": c_epriv, "epub": c_epub, "n": c_n}
-        return json.dumps({"t": "hello", "cpub": b64(pub_bytes(self.static_pub)),
-                           "epub": b64(pub_bytes(c_epub)), "n": b64(c_n)}).encode("utf-8")
+        # No nonce here: it is only sent once the board has committed to its own.
+        return json.dumps({"t": "hello", "v": PROTO_VERSION, "cpub": b64(pub_bytes(self.static_pub)),
+                           "epub": b64(pub_bytes(c_epub))}).encode("utf-8")
 
-    def on_hello_reply(self, board_id, raw):
-        """Parse the board's hello reply, derive the session, return the 6-digit code to show."""
+    def on_hello_commit(self, board_id, raw):
+        """Parse the board's hello (its keys and its nonce COMMITMENT) and return the nonce
+        message to send next. The code only exists after on_reveal()."""
         msg = json.loads(raw.decode("utf-8"))
+        if msg.get("t") == "error":
+            raise ValueError("board refused the hello: %s" % msg.get("why"))
         if msg.get("t") != "hello":
             raise ValueError("expected hello, got %r" % msg.get("t"))
-        bpub = unb64(msg["bpub"], 32)
-        b_epub = unb64(msg["epub"], 32)
-        b_n = unb64(msg["n"], 16)
+        if msg.get("v") != PROTO_VERSION:
+            raise ValueError("board speaks pairing protocol v%s, controller speaks v%d"
+                             % (msg.get("v", 1), PROTO_VERSION))
         p = self._pending
-        T = transcript(board_id, pub_bytes(self.static_pub), pub_bytes(p["epub"]), p["n"],
-                       bpub, b_epub, b_n)
-        key = derive_session_key(p["epriv"], X25519PublicKey.from_public_bytes(b_epub),
-                                  self.static_priv, X25519PublicKey.from_public_bytes(bpub), T)
-        self._session = {"T": T, "code": derive_code(T), "key": key, "bpub": bpub, "seen_nonces": set()}
+        if p is None or "commit" in p:
+            raise ValueError("no hello in flight")
+        p["board_id"] = board_id
+        p["bpub"] = unb64(msg["bpub"], 32)
+        p["b_epub"] = unb64(msg["epub"], 32)
+        p["commit"] = unb64(msg["commit"], 32)
+        return json.dumps({"t": "nonce", "n": b64(p["n"])}).encode("utf-8")
+
+    def on_reveal(self, raw):
+        """Check the board's revealed nonce against its commitment, derive the session, and
+        return the 6-digit code to show. A nonce that does not match the commitment is refused."""
+        msg = json.loads(raw.decode("utf-8"))
+        if msg.get("t") == "error":
+            raise ValueError("board refused the nonce: %s" % msg.get("why"))
+        if msg.get("t") != "reveal":
+            raise ValueError("expected reveal, got %r" % msg.get("t"))
+        p = self._pending
+        if p is None or "commit" not in p:
+            raise ValueError("no commitment in flight")
+        self._pending = None   # one reveal per hello, match or not
+        b_n = unb64(msg["n"], 16)
+        cpub = pub_bytes(self.static_pub)
+        c_epub = pub_bytes(p["epub"])
+        expect = commitment(p["board_id"], cpub, c_epub, p["bpub"], p["b_epub"], b_n)
+        if not hmac.compare_digest(expect, p["commit"]):
+            raise ValueError("board nonce does not match its commitment")
+        T = transcript(p["board_id"], cpub, c_epub, p["n"], p["bpub"], p["b_epub"], b_n)
+        key = derive_session_key(p["epriv"], X25519PublicKey.from_public_bytes(p["b_epub"]),
+                                  self.static_priv, X25519PublicKey.from_public_bytes(p["bpub"]), T)
+        self._session = {"T": T, "code": derive_code(T), "key": key, "bpub": p["bpub"],
+                         "seen_nonces": set()}
         return self._session["code"]
 
     def seal_provision(self, provision):
