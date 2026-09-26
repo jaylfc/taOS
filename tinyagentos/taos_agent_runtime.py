@@ -317,8 +317,50 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
             litellm_key = get_litellm_master_key(getattr(app_state, "data_dir", None))
         app_state.taos_opencode_key = litellm_key
 
+        # Get the native agent's scoped credential (rotated token) for taOS API access.
+        # This replaces the admin local token that was previously used.
+        from tinyagentos.native_agent_identity import (
+            ensure_native_agent_identity,
+            rotate_native_agent_token,
+            token_path,
+        )
+        auth = getattr(app_state, "auth", None)
+        signing_key_pem = getattr(app_state, "agent_registry_keypair", (None, None))[0]
+        primary_user = auth.get_primary_user() if auth is not None else None
+        user_id = primary_user["id"] if primary_user else None
+        taos_api_credential: str | None = None
+        if user_id and signing_key_pem:
+            from tinyagentos.agent_registry_store import AgentRegistryStore
+            from tinyagentos.agent_grants_store import AgentGrantsStore
+            registry_store = getattr(app_state, "agent_registry", None)
+            grants_store = getattr(app_state, "agent_grants", None)
+            if registry_store and grants_store:
+                await ensure_native_agent_identity(
+                    registry=registry_store,
+                    grants=grants_store,
+                    data_dir=data_dir,
+                    signing_key_pem=signing_key_pem,
+                    user_id=user_id,
+                )
+                # Rotate the token so the opencode agent gets a fresh credential.
+                new_token = await rotate_native_agent_token(
+                    registry=registry_store,
+                    data_dir=data_dir,
+                    signing_key_pem=signing_key_pem,
+                )
+                taos_api_credential = new_token
+            else:
+                # Fallback: read existing token if rotation not possible.
+                token_file = token_path(data_dir)
+                if token_file.exists():
+                    taos_api_credential = token_file.read_text().strip()
+
         safe_model = _safe_path_component(model)
         home = str(data_dir / f"taos-agent-opencode-{safe_model}") if data_dir else f"taos-agent-opencode-{safe_model}"
+
+        config = getattr(app_state, "config", None)
+        taos_port = int((getattr(config, "server", None) or {}).get("port", 6969))
+        taos_api_base_url = f"http://127.0.0.1:{taos_port}"
 
         cfg = OpenCodeServerConfig(
             home=home,
@@ -327,6 +369,8 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
             litellm_base_url=f"http://127.0.0.1:{llm_proxy.port if llm_proxy is not None else 7834}/v1",
             litellm_key=litellm_key,
             model_ids=permitted_models,
+            taos_api_base_url=taos_api_base_url,
+            taos_api_credential=taos_api_credential,
         )
         server = OpenCodeServer(cfg)
         servers[model] = server
@@ -441,6 +485,11 @@ async def _provision_picoclaw_locked(app_state, models: list[str]):
         home_for,
         resolve_picoclaw_binary,
     )
+    from tinyagentos.native_agent_identity import (
+        ensure_native_agent_identity,
+        rotate_native_agent_token,
+        token_path,
+    )
 
     binary = resolve_picoclaw_binary()
     if binary is None:
@@ -454,13 +503,46 @@ async def _provision_picoclaw_locked(app_state, models: list[str]):
     )
     config = getattr(app_state, "config", None)
     port = int((getattr(config, "server", None) or {}).get("port", 6969))
-    # Parity with opencode, which runs as the service user and reaches the
-    # taOS API with the host local token: PicoClaw gets that same credential,
-    # copied into its workspace for bin/taos. (The agent's own identity token,
-    # .taos_agent_token, is scoped to a2a only and covers none of the desktop,
-    # notes or project endpoints the manual names.)
+
+    # Ensure the native agent identity exists and has the required API scopes.
+    # Then rotate its token so the PicoClaw workspace gets a fresh credential.
     auth = getattr(app_state, "auth", None)
-    credential = auth.get_local_token() if auth is not None else None
+    signing_key_pem = getattr(app_state, "agent_registry_keypair", (None, None))[0]
+    primary_user = auth.get_primary_user() if auth is not None else None
+    user_id = primary_user["id"] if primary_user else None
+    if user_id and signing_key_pem:
+        # Ensure the native agent identity exists with all required scopes.
+        from tinyagentos.agent_registry_store import AgentRegistryStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        registry_store = getattr(app_state, "agent_registry", None)
+        grants_store = getattr(app_state, "agent_grants", None)
+        if registry_store and grants_store:
+            await ensure_native_agent_identity(
+                registry=registry_store,
+                grants=grants_store,
+                data_dir=data_dir,
+                signing_key_pem=signing_key_pem,
+                user_id=user_id,
+            )
+            # Rotate the token so the agent gets a fresh credential on each provision.
+            new_token = await rotate_native_agent_token(
+                registry=registry_store,
+                data_dir=data_dir,
+                signing_key_pem=signing_key_pem,
+            )
+            credential = new_token
+        else:
+            # Fallback: read existing token if rotation not possible.
+            credential = None
+            token_file = token_path(data_dir)
+            if token_file.exists():
+                credential = token_file.read_text().strip()
+    else:
+        credential = None
+        token_file = token_path(data_dir)
+        if token_file.exists():
+            credential = token_file.read_text().strip()
+
     harness = PicoClawHarness(
         home=home_for(data_dir),
         api_base=f"http://127.0.0.1:{port}/api/llm/v1",

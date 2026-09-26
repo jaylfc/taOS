@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import HTMLResponse, RedirectResponse
 
-from tinyagentos.agent_token_auth import check_agent_identity
+from tinyagentos.agent_token_auth import check_agent_identity, _get_keypair, _get_store
 from tinyagentos.auth import AuthStoreCorruptError
 from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
 from tinyagentos.rate_limit import MovingWindowLimiter
@@ -92,6 +92,8 @@ _AGENT_CONTAINER_QUOTA_ROUTE = ("GET", re.compile(r"^/api/agents/containers/quot
 # authenticate any other route (no skeleton key).
 # Agent self-serve routes: /api/agents/me/models (GET) and /api/agents/me/model (POST)
 # accept a LiteLLM/Bearer key for agent self-service.
+# Desktop control endpoints (command, screenshot, layout) for the system taOS Agent.
+# Skill-exec endpoints for the system taOS Agent (scope system_agent_exec).
 _AGENT_TOKEN_PATHS = (
     _REGISTRY_FEED_PATHS
     | _A2A_BUS_READ_PATHS
@@ -100,7 +102,13 @@ _AGENT_TOKEN_PATHS = (
     | _A2A_GPU_WRITE_PATHS
     | _OBSERVATORY_PATHS
     | _CONTAINER_REQUEST_PATHS
-    | frozenset({"/api/agents/me/models", "/api/agents/me/model"})
+    | frozenset({
+        "/api/agents/me/models",
+        "/api/agents/me/model",
+        "/api/desktop/command",
+        "/api/desktop/screenshot",
+        "/api/desktop/layout",
+    })
 )
 
 # Project kanban routes an agent may reach with its own registry JWT (scope
@@ -378,6 +386,19 @@ def _is_agent_container_quota_path(method: str, path: str) -> bool:
     """True only for GET /api/agents/containers/quota."""
     m, rx = _AGENT_CONTAINER_QUOTA_ROUTE
     return m == method and rx.match(path)
+
+
+# Skill-exec routes for the system taOS Agent (scope system_agent_exec).
+# These are dynamic paths: /api/skill-exec/{skill_id}/call and /api/skill-exec/tools.
+_AGENT_SKILL_EXEC_ROUTES = (
+    ("GET", re.compile(r"^/api/skill-exec/tools$")),
+    ("POST", re.compile(r"^/api/skill-exec/[^/]+/call$")),
+)
+
+
+def _is_agent_skill_exec_path(method: str, path: str) -> bool:
+    """True only for the skill-exec routes a system_agent_exec token may reach."""
+    return any(m == method and rx.match(path) for m, rx in _AGENT_SKILL_EXEC_ROUTES)
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
 #   1. The browser can install and cache the shell for offline / PWA use.
 #   2. After a backend restart the cached shell loads immediately without
@@ -737,9 +758,36 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     or _is_agent_scope_request_path(request.method, path)
                     or _is_container_request_action_path(request.method, path)
                     or _is_agent_container_quota_path(request.method, path)
+                    or _is_agent_skill_exec_path(request.method, path)
                 )
 
                 if is_allowlisted:
+                    # For desktop endpoints and skill-exec, if this is the native
+                    # agent's token, set user_id to the native agent's user_id
+                    # (the owner) so desktop control works. For other agents,
+                    # user_id remains None (they cannot drive the desktop).
+                    if path in ("/api/desktop/command", "/api/desktop/screenshot", "/api/desktop/layout") or _is_agent_skill_exec_path(request.method, path):
+                        # Verify the token and check if it's the native agent.
+                        # We do a lightweight verification here; the route will
+                        # do the full scope check.
+                        try:
+                            from tinyagentos.agent_token_auth import verify_registry_token
+                            from tinyagentos.native_agent_identity import NATIVE_AGENT_ORIGIN
+                            _private_pem, public_pem = _get_keypair(request)
+                            payload = verify_registry_token(presented, public_pem)
+                            canonical_id = payload.get("sub", "")
+                            if canonical_id:
+                                registry = _get_store(request)
+                                record = await registry.get(canonical_id)
+                                if record and record.get("origin") == NATIVE_AGENT_ORIGIN and record.get("status") == "active":
+                                    request.state.user_id = record.get("user_id")
+                                    request.state.is_admin = False
+                                    request.state.via = "registry_jwt_native_agent"
+                                    return await call_next(request)
+                        except Exception:
+                            # Not the native agent or verification failed; fall through
+                            pass
+                    # Default for other agents: no user_id
                     request.state.user_id = None
                     request.state.is_admin = False
                     request.state.via = "registry_jwt_candidate"

@@ -23,6 +23,7 @@ from tinyagentos.native_agent_identity import (
     NATIVE_AGENT_HANDLE_PREFIX,
     NATIVE_AGENT_ORIGIN,
     NATIVE_AGENT_SCOPES,
+    SYSTEM_AGENT_API_SCOPES,
     ensure_native_agent_identity,
     native_agent_handle,
     token_path,
@@ -73,19 +74,26 @@ class TestNativeAgentIdentity:
         assert rec["canonical_id"].startswith("taos-agent-")
 
         scopes = {g["scope"] for g in await grants.list_grants(rec["canonical_id"])}
-        assert scopes == set(NATIVE_AGENT_SCOPES)
+        expected_scopes = set(NATIVE_AGENT_SCOPES) | set(SYSTEM_AGENT_API_SCOPES)
+        assert scopes == expected_scopes
 
     async def test_scopes_are_conservative(self, tmp_path):
         """A first-boot mint that quietly granted file or task access would be a
         silent privilege grant. Bus participation only; anything more goes
-        through the user-mediated scope-request flow."""
+        through the user-mediated scope-request flow.
+
+        The system agent additionally gets API scopes for the endpoints the
+        taOS Agent manual uses (desktop control, skill-exec, files, projects,
+        notes, todo, decisions, canvas, observatory).
+        """
         stores = await _stores(tmp_path)
         _, grants, _, _ = stores
         rec = await _ensure(stores)
+        expected_scopes = set(NATIVE_AGENT_SCOPES) | set(SYSTEM_AGENT_API_SCOPES)
         scopes = {g["scope"] for g in await grants.list_grants(rec["canonical_id"])}
-        assert scopes == {"a2a_send", "a2a_receive"}
-        for forbidden in ("files_write", "files_read", "tools_execute",
-                          "memory_write", "project_tasks", "observatory_control"):
+        assert scopes == expected_scopes
+        # Admin-only scopes must NOT be granted
+        for forbidden in ("users_manage", "secrets_manage", "settings_manage"):
             assert forbidden not in scopes
 
     async def test_is_idempotent_across_restarts(self, tmp_path):
@@ -247,8 +255,9 @@ class TestNativeAgentIdentity:
 
         await _ensure(stores)
 
+        expected_scopes = set(NATIVE_AGENT_SCOPES) | set(SYSTEM_AGENT_API_SCOPES) | {"files_read"}
         scopes = {g["scope"] for g in await grants.list_grants(rec["canonical_id"])}
-        assert scopes == {"a2a_send", "a2a_receive", "files_read"}
+        assert scopes == expected_scopes
 
 
 @pytest.mark.asyncio
@@ -330,7 +339,8 @@ class TestSetupMintsTheIdentity:
         owner = app.state.auth.find_user("admin")
         assert rec["user_id"] == owner["id"]
         scopes = {g["scope"] for g in await app.state.agent_grants.list_grants(rec["canonical_id"])}
-        assert scopes == set(NATIVE_AGENT_SCOPES)
+        expected_scopes = set(NATIVE_AGENT_SCOPES) | set(SYSTEM_AGENT_API_SCOPES)
+        assert scopes == expected_scopes
 
     async def test_form_setup_path_mints_the_identity(self, setup_client):
         app = setup_client._app

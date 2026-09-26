@@ -1,0 +1,2 @@
+### Fixed
+- System taOS Agent now uses a scoped registry JWT instead of the host's admin local token for API access. The credential is limited to exactly the endpoints the taOS Agent manual uses (desktop control, skill-exec, files, projects, notes, todo, decisions, canvas, observatory), with admin-only endpoints (user management, secrets, settings) returning 403. The credential is rotated on agent restart and never logged. Applies to both PicoClaw (via `.taos_credential`) and opencode (via `TAOS_API_CREDENTIAL` env var).
