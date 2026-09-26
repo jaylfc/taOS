@@ -250,6 +250,7 @@ Cases that have actually happened here:
 Applied to your own changes:
 
 - **If you add a gate, prove it fails.** A check only ever observed passing is unproven where it counts. Make it go red deliberately once.
+- **A guard test must fail on the defect it names.** A test that monkeypatches the function it guards, asserts only the case that cannot differ, or uses a fixture that never reaches the guarded branch passes whether the product is right or wrong. Declare what it guards with `@pytest.mark.guards("module:function", replace=[(correct_snippet, defective_snippet)])` and `scripts/check_non_discriminating.py` re-runs it against that broken variant; it must fail there. The gate proves only the DECLARED edit, not the defect you meant: a `replace` that raises on entry, or default mode's `return-none` (no `replace`/`must_kill`), is killed by any test that merely calls the function. So a reviewer must check that the `replace` pair reproduces the real defect, and a default-mode OK proves only that the test reaches the function.
 - **Verify a review comment against the code before acting on it**, including automated ones. Bot findings are often wrong, and confidently phrased.
 - **Report honestly.** If tests fail, say so and include the output. If you skipped a step, name it. "Done" should mean verified, not attempted.
 
@@ -264,7 +265,8 @@ Applied to your own changes:
 ## Documentation gate
 
 A gate blocks PRs that change feature code without a matching doc update, unless
-a commit in the PR carries a non-empty `Docs-Reviewed: <why>` trailer. The gate
+the commit that makes the change carries a non-empty `Docs-Reviewed: <why>`
+trailer (the trailer is scoped to its own commit, see below). The gate
 is configured in `docs/doc-gate.toml`; rules are data, no code changes needed to
 add new ones.
 
@@ -308,8 +310,32 @@ Docs-Reviewed: no user-facing change, internal refactor only
 ```
 
 The trailer must have non-empty text after the colon; a bare `Docs-Reviewed:`
-does not count. When CI detects the trailer it logs which commit used it and who
-authored it, then passes all rules for that PR.
+does not count. When CI detects the trailer it logs which commit used it, who
+authored it, and which files that commit touched.
+
+**A trailer covers only the commit that carries it.** The gate attributes every
+non-merge commit in the PR the files it touched (a rename counts under both
+names; a merge commit's own diff is skipped and its parents are gated as
+ordinary commits). A rule tripped by a file is waived only when every commit in
+the PR that touched that file carries a covering trailer. So:
+
+- a trailer on an unrelated or empty ("retrigger CI") commit waives nothing;
+- code pushed after the trailer commit is still gated, even to the same file;
+- a doc edit or changelog fragment still satisfies a rule from any commit in
+  the PR (satisfaction is PR-wide, only the waiver is per-commit).
+
+By default a trailer waives every rule its commit trips. To waive only some,
+name them in a leading bracket:
+
+```text
+Docs-Reviewed: [routes] no API surface change, handler body only
+```
+
+Rule names are the `name` fields in `docs/doc-gate.toml`; a name that matches no
+rule waives nothing, and the reason after the bracket is still required. This
+is the shape to use on a squash-merged or single-commit PR that legitimately
+needs one rule waived but must still carry its changelog fragment: an unscoped
+trailer on a single commit waives everything that commit trips, as before.
 
 Run `scripts/install-git-hooks.sh` once to enable local hooks (`.githooks/pre-commit`
 and `.githooks/commit-msg`) so the gate runs before you push instead of after you

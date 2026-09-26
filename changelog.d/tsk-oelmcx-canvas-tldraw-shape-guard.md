@@ -1,0 +1,1 @@
+- Canvas: saving a legacy tldraw drawing element can no longer drop or rewrite its original `tldraw_shape` data. The server keeps the stored copy on every update, counts it toward the payload size limit, and deleted elements stay recoverable.

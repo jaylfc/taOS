@@ -1,0 +1,49 @@
+name: Guard discrimination gate
+
+# A guard test must FAIL against the defect it names. Tests that declare
+# `@pytest.mark.guards("module:function", replace=[(old, new)])` are re-run
+# against a deliberately broken variant of the function they guard (compiled
+# from its own source and swapped in via __code__); a test that still passes
+# cannot see that defect and is reported NON-DISCRIMINATING (exit 1). A guard
+# the gate could not check (baseline red, bad declaration) exits 2.
+#
+# Only declared guards are executed, so runtime scales with the number of
+# declarations, not the suite: one pytest process per file that has any,
+# one baseline run plus one run per required variant each. Measured at
+# introduction: 2 guards in 1 file, about 1 minute including app fixtures.
+# The job is capped at 15 minutes.
+#
+# NOT a required check at introduction: branch protection decides that, and
+# it has not been changed. See scripts/check_non_discriminating.py.
+
+on:
+  pull_request:
+    branches: [master, dev]
+    paths:
+      - "tests/**"
+      - "tinyagentos/**"
+      - "scripts/check_non_discriminating.py"
+      - ".github/workflows/guard-discrimination-gate.yml"
+
+jobs:
+  guard-discrimination:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Provision Python via uv
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+
+      - name: Check declared guard tests discriminate
+        run: uv run --no-sync python scripts/check_non_discriminating.py

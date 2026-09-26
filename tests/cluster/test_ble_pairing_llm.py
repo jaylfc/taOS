@@ -183,12 +183,18 @@ async def test_minted_key_reaches_the_board_sealed_and_is_live(tmp_path, store, 
 
 @pytest.mark.asyncio
 async def test_repair_leaves_exactly_one_live_key(tmp_path, store):
-    """A board reset (not revoked) and paired again under the same name must
-    not leave its first model key live beside the new one."""
+    """A board reset and paired again under the same name must not leave its
+    first model key live beside the new one. Re-pairing a device name needs
+    the admin to revoke the node first (a live name is refused with 409, see
+    test_ble_pairing_name_collision.py); the store-level revoke used here
+    does not touch the gateway, so the old model key is still live until
+    confirm() retires it."""
     first = FakeBoard(board_id="RE01", name="taOSusb-RE01")
     mgr = _mgr(tmp_path, store, {"a": first})
     await mgr.confirm((await mgr.start("a"))["session"])
     old = first.responder.provisioned["llm"]["key"]
+    assert await store.revoke("taOSusb-RE01")
+    assert _live(tmp_path, old) is not None
 
     second = FakeBoard(board_id="RE01", name="taOSusb-RE01")
     mgr2 = _mgr(tmp_path, store, {"a": second})

@@ -639,7 +639,10 @@ The registry-JWT surface, by scope:
   author is taken from the verified token, never from the request body.
 - **canvas_read**: `GET .../canvas/elements`, `.../canvas/watch-projection`,
   `.../canvas/snapshot.png|.tldr`, `.../canvas/stream`. **canvas_write**: `POST .../canvas/elements`,
-  `PATCH|DELETE .../canvas/elements/{id}`.
+  `PATCH|DELETE .../canvas/elements/{id}`. A `PATCH` payload replaces the element's
+  payload, except that a `user_shape`'s stored `tldraw_shape` is always kept verbatim
+  (omitting or changing it has no effect, and it counts toward the 64 KiB cap). `DELETE`
+  is a soft delete; the row stays recoverable.
 - **files_read**: `GET /api/projects/{slug}/files` (list), `.../files/watch`,
   `GET .../files/{path}` (download), `.../trash`, `.../stats`. **files_write**:
   `POST .../files/upload` (multipart), `POST .../mkdir`, `DELETE .../files/{path}`,
@@ -903,12 +906,23 @@ a session.
 
 ## Share destinations (device bearer)
 
-`GET /api/share/destinations` lets a paired device DISCOVER share targets. It is
+`GET /api/share/destinations` lets a paired device DISCOVER share destinations. It is
 discovery-only: the response enumerates destinations, but the device scoped
-token itself cannot write to the ingest endpoints behind them (library ingest,
-chat messages, and project-files uploads all require their own session or agent
-auth). Sharing a payload happens through the device share flow, not by the
-device calling those endpoints directly.
+token itself can now WRITE to the ingest endpoints behind them (library ingest,
+chat messages, and project-files uploads all accept device bearer writes with
+per-destination authorization). Sharing a payload happens through the device
+share flow, not by the device calling those endpoints directly.
+
+**New device-bearer write routes.** Device bearers can now write to the three
+endpoints discovered via `GET /api/share/destinations`:
+
+- `POST /api/library/ingest` → into that user's library only
+- `POST /api/projects/{slug}/files/upload` → the user must have WRITE access to that project
+- `POST /api/chat/messages` → the user must be a MEMBER of `channel_id`; the author is the device's user and must not be settable from the request body.
+
+Each route authorizes the device bearer against the SPECIFIC destination, following
+the precedent the decisions routes use for a device caller (read how
+`POST /api/decisions/{id}/answer` resolves and authorises the device's user).
 
 **Auth model.** `require_device` only: the caller sends
 `Authorization: Bearer <scoped_token>` (issued at `POST /api/devices/register`).
@@ -1204,6 +1218,38 @@ Route module `tinyagentos/routes/device_pair_requests.py`:
 Approval or denial of a pair request is surfaced to the user through the Decisions app;
 agents must not grant pairing directly.
 
+## taOSusb Bluetooth pairing: commit/reveal (protocol v2)
+
+`tinyagentos/cluster/ble/proto.py` is shared byte-identical with the taOSusb
+board daemon (`files/taosble/proto.py`); `tests/cluster/test_ble_proto.py` pins
+its hash. The `pair` handshake is now protocol v2 (`PROTO_VERSION = 2`):
+
+1. Controller sends `hello` with its static and ephemeral public keys and
+   `"v": 2`, but **no nonce**.
+2. Board replies `hello` with its keys and `commit = commitment(board_id,
+   cpub, c_epub, bpub, b_epub, b_n)`. The board nonce `b_n` stays secret.
+3. Controller sends `{"t": "nonce", "n": c_n}`.
+4. Board replies `{"t": "reveal", "n": b_n}`. The controller refuses a
+   `b_n` that does not match the commitment. Only then do both sides derive
+   the transcript, the 6-digit code and the session key.
+
+Why: in v1 both nonces travelled in the plain hellos, so a man in the middle
+could pick its board nonce after seeing the controller's and grind it (about
+10^6 hashes, under a second) until both screens showed the same code.
+
+Rules that keep it sound:
+
+- The board accepts exactly **one** nonce per hello. A second nonce after the
+  reveal is refused, because `b_n` is public by then.
+- A new hello discards any pending commitment and starts over.
+- The version is in the advert byte, in both hellos, and in the transcript
+  and HKDF labels (`taos-ble-v2`, `taos-ble-pair-v2`). A v1 peer and a v2
+  peer refuse each other with a version error instead of deriving mismatched
+  codes.
+- The taOSusb board must re-copy `proto.py` from this repo. Its daemon needs
+  no other change, since it forwards every `pair` message to
+  `PairResponder.handle_message`.
+
 ## OS change-event stream (`GET /api/os/events`, session-only)
 
 Route module `tinyagentos/routes/os_events.py`. A Server-Sent Events stream of
@@ -1497,6 +1543,18 @@ routes documented above.
 - `POST /api/cluster/workers/{name}/unblock` -- clears the blocked flag only.
   **The old signing key stays dead**, so the node still has to re-pair for a
   fresh one. Unblock is permission to return, not restoration of access.
+
+Bluetooth (taOSusb) devices and node names:
+
+- `POST /api/cluster/ble/pair/confirm` answers `409` when the board's advertised
+  name belongs to a registered worker, or to a device that is still live or
+  blocked. **Revoke is the only way to free a device name** for a reset board
+  to pair again; a worker's name is never reusable over Bluetooth. A refused or
+  rolled-back pairing never touches the other node's key, block or revoke state.
+- A node paired as a device stays `kind="device"`. `POST /api/cluster/workers`
+  (register) and `POST /api/cluster/heartbeat` signed with the device's own key
+  cannot change it, even after `DELETE /api/cluster/workers/{name}`, because the
+  kind is stored with the key at pairing. A device is never a job candidate.
 
 Behaviour common to all three:
 

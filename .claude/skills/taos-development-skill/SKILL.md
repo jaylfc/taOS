@@ -216,6 +216,22 @@ canonical hook, and a second module-level `def pytest_configure` is last-wins
 rebinding rather than additive registration, so the earlier body never runs and
 its next edit is a silent no-op in CI.
 
+- **`@pytest.mark.guards("module:function", replace=[(correct, defective)])`
+  declares what a guard test protects.** It is inert in a normal run.
+  `scripts/check_non_discriminating.py` (workflow
+  `guard-discrimination-gate.yml`, not a required check) re-runs every declared
+  test against the broken variant, compiled from the function's own source and
+  swapped in via `__code__`; a test that still passes is NON-DISCRIMINATING
+  (exit 1). `must_kill=[ids]` names generated mutants instead (list them with
+  `--list-mutants module:function`); with neither, one generated mutant must
+  kill it. A test that monkeypatches the function it guards can never pass
+  this. Ad-hoc mode (`--guard NODEID --target ... --replace OLD NEW --root DIR`)
+  checks an undecorated test in any repo.
+  **It proves the DECLARED edit, not the card's defect:** a `replace` that
+  raises on entry, or default mode's `return-none`, is killed by any test that
+  merely calls the function. Review the `replace` pair against the real
+  defect; a default-mode OK only proves the test reaches the function. A kill
+  counts only if an unmutated control rerun still passes (else ERROR).
 - **`@pytest.mark.skip_if_no_embed_backend` skips a test that cannot run without
   an embedding backend** — a reachable qmd service, or an installed
   `onnxruntime`. There is no opt-out marker and no `-o` switch: not applying it
@@ -623,8 +639,13 @@ If your PR trips a rule and there is genuinely nothing to document, add a traile
 ```
 Docs-Reviewed: no user-facing change, internal refactor only
 ```
-The trailer passes **every** rule for that PR, so it is an escape hatch, not a shortcut:
-the gate prints `doc-gate: trailer override used in <sha> by <author>: <why>` in its CI
+The trailer covers **only the commit that carries it**: it waives the rules tripped by the
+files that commit touched, and nothing else. A trailer on an unrelated or empty commit
+waives nothing, and code pushed in a later commit is gated on its own (a doc edit or
+changelog fragment in any commit still satisfies a rule PR-wide). `Docs-Reviewed: [routes]
+<why>` narrows the waiver to the named rules, which is how a squash-merged single commit
+waives one rule and still owes its fragment. The gate prints
+`doc-gate: trailer override used in <sha> by <author>: <why> [covers: <files>]` in its CI
 log for each commit that carries one, and that line is reviewable. A reviewer may ask for
 a real doc instead.
 

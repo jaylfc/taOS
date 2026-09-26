@@ -1217,3 +1217,110 @@ async def test_single_backend_stream_recovers_within_cooldown(client):
     text = data.decode("utf-8")
     assert '"content": "hi"' in text
     assert route.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Failover credentials: each backend gets ONLY its own key (M4), and the
+# streaming path maps an upstream non-2xx like the non-streaming one (L1).
+# ---------------------------------------------------------------------------
+
+BACKUP_KEY = "sk-backup-OWN-KEY-5d0e"
+BACKUP_OWN_KEY = {**BACKUP_OPENAI, "api_key": BACKUP_KEY}
+KEYLESS_BACKUP = {k: v for k, v in BACKUP_OPENAI.items() if k != "api_key"}
+
+
+def _auth_of(route) -> str | None:
+    return route.calls.last.request.headers.get("authorization")
+
+
+@_ASYNC
+@respx.mock
+@pytest.mark.parametrize("stream", [False, True])
+async def test_failover_sends_each_backend_its_own_key(client, stream):
+    _app(client).state.config.backends = [OPENAI_COMPAT, BACKUP_OWN_KEY]
+    primary = respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(503, json={"error": {"message": "unavailable"}}))
+    ok = (httpx.Response(200, content=_sse_chunk("hi") + _sse_done(), headers={"content-type": "text/event-stream"})
+          if stream else httpx.Response(200, json=_completion("qwen3-8b")))
+    backup = respx.post(BACKUP_CHAT).mock(return_value=ok)
+    resp = await client.post(BASE + "/chat/completions", json=_chat(stream=stream))
+    assert resp.status_code == 200, resp.text
+    assert _auth_of(primary) == f"Bearer {UPSTREAM_KEY}"
+    assert backup.call_count == 1
+    assert _auth_of(backup) == f"Bearer {BACKUP_KEY}"
+    assert UPSTREAM_KEY not in str(backup.calls.last.request.headers)
+
+
+@_ASYNC
+@respx.mock
+@pytest.mark.parametrize("stream", [False, True])
+async def test_failover_to_a_keyless_backend_sends_no_key(client, stream):
+    _app(client).state.config.backends = [OPENAI_COMPAT, KEYLESS_BACKUP]
+    respx.post(UPSTREAM_CHAT).mock(side_effect=httpx.ConnectError("primary down"))
+    ok = (httpx.Response(200, content=_sse_chunk("hi") + _sse_done(), headers={"content-type": "text/event-stream"})
+          if stream else httpx.Response(200, json=_completion("qwen3-8b")))
+    backup = respx.post(BACKUP_CHAT).mock(return_value=ok)
+    resp = await client.post(BASE + "/chat/completions", json=_chat(stream=stream))
+    assert resp.status_code == 200, resp.text
+    assert backup.call_count == 1
+    assert _auth_of(backup) is None
+
+
+@_ASYNC
+@respx.mock
+@pytest.mark.parametrize("status", [401, 403])
+async def test_stream_upstream_rejecting_our_key_is_redacted_502(client, status):
+    _app(client).state.config.backends = [OPENAI_COMPAT]
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        status,
+        content=f'{{"error": {{"message": "Incorrect API key provided: {UPSTREAM_KEY}"}}}}\n\nat {UPSTREAM}\n\n',
+        headers={"content-type": "application/json"},
+    ))
+    resp = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+    _assert_openai_error(resp, 502, "upstream_error")
+    assert UPSTREAM_KEY not in resp.text
+    assert UPSTREAM not in resp.text
+
+
+@_ASYNC
+@respx.mock
+async def test_stream_upstream_4xx_passes_status_with_key_redacted(client):
+    _app(client).state.config.backends = [OPENAI_COMPAT, BACKUP_OWN_KEY]
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        400, json={"error": {"message": f"context too long for key {UPSTREAM_KEY}",
+                             "type": "invalid_request_error", "code": "context_length_exceeded"}},
+    ))
+    backup = respx.post(BACKUP_CHAT).mock(return_value=httpx.Response(200, json=_completion("qwen3-8b")))
+    resp = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+    err = _assert_openai_error(resp, 400, "context_length_exceeded")
+    assert "context too long" in err["message"]
+    assert UPSTREAM_KEY not in resp.text
+    assert backup.call_count == 0
+
+
+@_ASYNC
+@respx.mock
+async def test_stream_upstream_503_fails_over_to_second(client):
+    _app(client).state.config.backends = [OPENAI_COMPAT, BACKUP_OWN_KEY]
+    primary = respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        503, json={"error": {"message": f"unavailable {UPSTREAM_KEY}"}}))
+    backup = respx.post(BACKUP_CHAT).mock(return_value=httpx.Response(
+        200, content=_sse_chunk("from-backup") + _sse_done(), headers={"content-type": "text/event-stream"}))
+    resp = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+    assert resp.status_code == 200, resp.text
+    text = resp.read().decode("utf-8")
+    assert "from-backup" in text
+    assert UPSTREAM_KEY not in text
+    assert primary.call_count == 1
+    assert backup.call_count == 1
+
+
+@_ASYNC
+@respx.mock
+async def test_failover_skips_a_backend_the_gateway_cannot_speak_to(client):
+    anthropic_same_model = {**ANTHROPIC, "models": [{"id": "qwen3-8b"}], "priority": 2}
+    _app(client).state.config.backends = [OPENAI_COMPAT, anthropic_same_model]
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(503, json={"error": {"message": "unavailable"}}))
+    other = respx.route(host="api.anthropic.com").mock(return_value=httpx.Response(200, json=_completion("qwen3-8b")))
+    resp = await client.post(BASE + "/chat/completions", json=_chat())
+    _assert_openai_error(resp, 502, "upstream_error")
+    assert other.call_count == 0

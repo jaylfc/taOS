@@ -1960,20 +1960,23 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         - Other paths under /data/workspace/ -> session gate only (existing behavior)
         """
         # Resolve the requested path relative to workspace_dir
-        requested_path = (workspace_dir / path).resolve()
-
-        # Path traversal protection: ensure the resolved path is within workspace_dir
+        workspace_root = workspace_dir.resolve()
         try:
-            if not requested_path.is_relative_to(workspace_dir.resolve()):
-                raise HTTPException(status_code=404, detail="Not found")
-        except ValueError:
+            requested_path = (workspace_dir / path).resolve()
+            # Path traversal protection: the resolved path must stay inside
+            # the workspace. ``relative_to`` raises ValueError otherwise.
+            rel_parts = requested_path.relative_to(workspace_root).parts
+        except (ValueError, OSError):
             raise HTTPException(status_code=404, detail="Not found")
 
-        # Check if this is a user-scoped path: /data/workspace/users/<uid>/...
-        path_parts = path.split("/")
-        if len(path_parts) >= 2 and path_parts[0] == "users":
+        # Owner decision comes from the RESOLVED path, never the raw one.
+        # Starlette percent-decodes the path parameter, so a raw-path check is
+        # bypassed by dot segments: ``%2e/users/<uid>/...`` or
+        # ``images/%2e%2e/users/<uid>/...`` resolve into users/<uid>/ while
+        # their first raw segment is not ``users`` (tsk-shj7wq).
+        if len(rel_parts) >= 2 and rel_parts[0] == "users":
             # This is a user-scoped path, require ownership or admin
-            target_user_id = path_parts[1]
+            target_user_id = rel_parts[1]
             user = current_user(request)
             require_owner_or_admin(user, target_user_id)
 

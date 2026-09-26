@@ -1,7 +1,7 @@
 id: pixart-sigma-512
 name: PixArt-Σ 512
 type: model
-version: 1.0
+version: "1.0"
 capabilities:
 - image-generation
 description: Efficient DiT model — OpenRAIL++ licensed, strong prompt adherence, 0.6B

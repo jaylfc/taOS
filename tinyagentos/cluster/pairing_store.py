@@ -36,7 +36,11 @@ CREATE TABLE IF NOT EXISTS cluster_pairings (
     created_ts          REAL,
     confirmed_ts        REAL,
     blocked             INTEGER NOT NULL DEFAULT 0,
-    revoked             INTEGER NOT NULL DEFAULT 0
+    revoked             INTEGER NOT NULL DEFAULT 0,
+    -- 'device' for a taOSusb board paired over BLE, 'worker' otherwise.
+    -- Bound to the key at issuance: a device's own signed requests can never
+    -- promote it to a worker (routes/cluster.py register_worker).
+    kind                TEXT NOT NULL DEFAULT 'worker'
 );
 
 -- Manual (free-tier) pairing: the admin authorises a {url, code} pair in the
@@ -70,6 +74,10 @@ def _mint_signing_key() -> bytes:
     return secrets.token_bytes(32)
 
 
+class NodeNameTaken(Exception):
+    """A BLE device pairing asked for a node name another node already holds."""
+
+
 class ClusterPairingStore(BaseStore):
     """SQLite-backed store for worker pairing state."""
 
@@ -100,6 +108,10 @@ class ClusterPairingStore(BaseStore):
         if "revoked" not in cols:
             await self._db.execute(
                 "ALTER TABLE cluster_pairings ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0"
+            )
+        if "kind" not in cols:
+            await self._db.execute(
+                "ALTER TABLE cluster_pairings ADD COLUMN kind TEXT NOT NULL DEFAULT 'worker'"
             )
         await self._db.commit()
 
@@ -305,10 +317,10 @@ class ClusterPairingStore(BaseStore):
     async def _persist_new_key(self, name: str, key: bytes) -> None:
         """Write a freshly minted signing key into cluster_pairings for
         `name`, clearing blocked/revoked (a successful (re)pair restores the
-        node's auth). Shared by manual_claim (worker free-tier pairing) and
-        register_device_key (taOSusb BLE pairing, cluster/ble/pairing.py) --
-        the single place a node's key is written to the pairing table, so
-        there is no second minting implementation to keep in sync.
+        node's auth). Used by manual_claim (worker free-tier pairing), which
+        is gated by an admin-authorised code and refuses a blocked name first.
+        BLE device pairing does NOT use this: register_device_key never
+        overwrites another node's row.
         """
         if self._db is None:
             raise RuntimeError("ClusterPairingStore not initialised")
@@ -325,16 +337,67 @@ class ClusterPairingStore(BaseStore):
         )
         await self._db.commit()
 
-    async def register_device_key(self, name: str) -> bytes:
+    async def register_device_key(self, name: str, *, known_device: bool = False) -> bytes:
         """Mint and persist a fresh signing key for a BLE-paired taOSusb
-        device node (cluster/ble/pairing.py's confirm()). The BLE handshake's
-        own 6-digit code is the human confirmation step here -- there is no
-        separate announce/authorize dance the way worker pairing has -- but
-        the key generation and storage reuse exactly what manual_claim uses
-        for a worker, via _persist_new_key."""
+        device node (cluster/ble/pairing.py's confirm()), recording
+        kind='device' with it.
+
+        The name comes from the board's own advert, so it is untrusted: it
+        may only take a name nobody holds, or re-pair a DEVICE name an admin
+        has revoked (a reset board). Anything else -- a worker's name, a live
+        device's name, a blocked name -- raises NodeNameTaken and leaves the
+        existing row (key, blocked, revoked) untouched. The check and the
+        write are one statement, so two concurrent pairings cannot both win.
+
+        ``known_device`` lets the caller vouch that the registry already
+        lists this name as kind='device' (a row written before this column
+        existed defaults to 'worker').
+        """
+        if self._db is None:
+            raise RuntimeError("ClusterPairingStore not initialised")
         key = _mint_signing_key()
-        await self._persist_new_key(name, key)
+        cur = await self._db.execute(
+            """
+            INSERT INTO cluster_pairings (name, signing_key, created_ts, confirmed, kind)
+            VALUES (?, ?, ?, 0, 'device')
+            ON CONFLICT(name) DO UPDATE SET
+                signing_key = excluded.signing_key,
+                created_ts  = excluded.created_ts,
+                revoked     = 0,
+                kind        = 'device'
+            WHERE (cluster_pairings.kind = 'device' OR ?)
+              AND cluster_pairings.revoked = 1
+              AND cluster_pairings.blocked = 0
+            """,
+            (name, key, _now(), 1 if known_device else 0),
+        )
+        await self._db.commit()
+        if cur.rowcount != 1:
+            raise NodeNameTaken(name)
         return key
+
+    async def get_kind(self, name: str) -> str | None:
+        """The kind recorded with the node's key ('device' or 'worker'), or
+        None when the name has no pairing row."""
+        if self._db is None:
+            raise RuntimeError("ClusterPairingStore not initialised")
+        row = await self._fetch_row(name)
+        if row is None:
+            return None
+        return row["kind"] or "worker"
+
+    async def revoke_if_key(self, name: str, key: bytes) -> bool:
+        """Revoke `name` only while its stored key is still `key` -- a rollback
+        undoes what its own pairing wrote and never someone else's key."""
+        if self._db is None:
+            raise RuntimeError("ClusterPairingStore not initialised")
+        cur = await self._db.execute(
+            "UPDATE cluster_pairings SET revoked = 1 "
+            "WHERE name = ? AND signing_key = ? AND revoked = 0",
+            (name, key),
+        )
+        await self._db.commit()
+        return cur.rowcount > 0
 
     async def get_signing_key(self, name: str) -> bytes | None:
         """Return the worker's current signing key, or None if not paired,
