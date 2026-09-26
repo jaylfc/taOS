@@ -155,6 +155,33 @@ jobs:
       - name: Compile all tinyagentos modules
         run: uv run --no-sync python -m compileall -q tinyagentos
 
+  # Import smoke for Python 3.14, which requires-python admits (<3.15) but the
+  # full sharded suite does not run. Advisory, NOT a required context: it is
+  # not wired into the `gate` job, so a 3.14-only import break shows red here
+  # without blocking merge or needing a branch-protection change.
+  py314-import-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Provision Python 3.14 via uv
+        run: uv python install 3.14
+
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.14
+
+      - name: Verify app and routes import under 3.14
+        run: uv run --no-sync python -c "import pkgutil, importlib, tinyagentos.app, tinyagentos.routes as r; mods=[importlib.import_module(n) for _, n, _ in pkgutil.walk_packages(r.__path__, 'tinyagentos.routes.')]; print('3.14 import ok:', len(mods), 'route modules')"
+
+      - name: Compile all tinyagentos modules
+        run: uv run --no-sync python -m compileall -q tinyagentos
+
   # Aggregate gate. Reports the exact check names branch protection requires
   # ("test (3.11)", "test (3.12)", "test (3.13)") so the required-context list
   # does not have to change when the shard count does. An explicit `name:` is
