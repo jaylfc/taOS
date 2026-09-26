@@ -227,6 +227,11 @@ its next edit is a silent no-op in CI.
   kill it. A test that monkeypatches the function it guards can never pass
   this. Ad-hoc mode (`--guard NODEID --target ... --replace OLD NEW --root DIR`)
   checks an undecorated test in any repo.
+  **It proves the DECLARED edit, not the card's defect:** a `replace` that
+  raises on entry, or default mode's `return-none`, is killed by any test that
+  merely calls the function. Review the `replace` pair against the real
+  defect; a default-mode OK only proves the test reaches the function. A kill
+  counts only if an unmutated control rerun still passes (else ERROR).
 - **`@pytest.mark.skip_if_no_embed_backend` skips a test that cannot run without
   an embedding backend** — a reachable qmd service, or an installed
   `onnxruntime`. There is no opt-out marker and no `-o` switch: not applying it
