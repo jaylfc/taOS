@@ -1046,6 +1046,10 @@ async def add_agent_to_project(
     additive default a reduced list reports success while the dropped scope
     stays live.
 
+    ``expires_at`` is written onto every grant this call adds: a
+    timezone-aware ISO timestamp for a time-boxed grant (the consent approve
+    path passes ``now + duration_secs``), or ``None`` for an unbounded grant.
+
     Returns ``{"canonical_id": ..., "project_id": ..., "granted_scopes": ...}``
     plus, when reconciling, ``revoked_scopes`` and ``active_scopes`` (read back
     from the store, so the response cannot claim a revocation that did not

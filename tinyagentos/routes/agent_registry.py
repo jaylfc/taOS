@@ -560,9 +560,11 @@ async def list_active_grants(request: Request, canonical_id: Optional[str] = Non
 
     @taOSmd polls this on interval to keep its local cache current.
     Grants are active if expires_at IS NULL or expires_at > now. A consent
-    approval that carried ``duration_secs`` writes a real expires_at, so
-    expired grants are filtered out of this list; a grant with no duration
-    stays unbounded.
+    approval that carried ``duration_secs`` writes a real expires_at; a grant
+    with no duration stays unbounded. The unfiltered feed and every
+    feed-token caller get active grants only. An admin ``?canonical_id=``
+    query is not filtered: it returns that agent's rows from ``list_grants``,
+    expired ones included.
 
     Optional ``?canonical_id=`` filter narrows to a single agent.
     """
