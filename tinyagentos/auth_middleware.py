@@ -228,10 +228,12 @@ _AGENT_CANVAS_ROUTES = (
     ("POST", re.compile(rf"^/api/projects/{_SEG}/canvas/elements$")),
     ("PATCH", re.compile(rf"^/api/projects/{_SEG}/canvas/elements/{_SEG}$")),
     ("DELETE", re.compile(rf"^/api/projects/{_SEG}/canvas/elements/{_SEG}$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/elements/{_SEG}/original$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/snapshot\.png$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/snapshot\.tldr$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/stream$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/watch-projection$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/legacy$")),
 )
 
 # Decisions route an agent may reach with its own registry JWT (scope

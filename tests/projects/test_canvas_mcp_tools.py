@@ -208,3 +208,63 @@ async def test_canvas_get_snapshot_png_writes_file(env):
     res = await ct.canvas_get_snapshot_png(ctx, project_id=p["id"])
     assert "file_path" in res
     assert Path(res["file_path"]).exists()
+
+
+@pytest.mark.asyncio
+async def test_canvas_get_original_element_returns_tldraw_shape(env):
+    p, ctx, ps, grant = env
+    await grant()
+    await ps._db.execute(
+        "UPDATE project_members SET can_read_canvas = 1 "
+        "WHERE project_id = ? AND member_id = ?",
+        (p["id"], "agent-1"),
+    )
+    await ps._db.commit()
+    shape_payload = {
+        "tldraw_shape": {"type": "draw", "props": {"color": "blue"}},
+        "excalidraw_element": {"id": "ex-1"},
+    }
+    el = await ctx.canvas_store.add_element(
+        project_id=p["id"], author_kind="user", author_id="u",
+        element={"kind": "user_shape", "x": 5, "y": 10, "w": 100, "h": 50, "payload": shape_payload},
+    )
+    await ctx.canvas_store.delete_element(
+        project_id=p["id"], element_id=el["id"],
+        author_kind="user", author_id="u",
+    )
+    res = await ct.canvas_get_original_element(
+        ctx, project_id=p["id"], agent_id="agent-1", element_id=el["id"]
+    )
+    assert res["tldraw_shape"] == shape_payload["tldraw_shape"]
+    assert res["excalidraw_element"] == shape_payload["excalidraw_element"]
+    assert res["payload"] == shape_payload
+    assert res["deleted_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_canvas_list_legacy_elements_returns_tldraw_rows(env):
+    p, ctx, ps, grant = env
+    await grant()
+    await ps._db.execute(
+        "UPDATE project_members SET can_read_canvas = 1 "
+        "WHERE project_id = ? AND member_id = ?",
+        (p["id"], "agent-1"),
+    )
+    await ps._db.commit()
+    shape_payload = {"tldraw_shape": {"type": "draw", "props": {}}}
+    el = await ctx.canvas_store.add_element(
+        project_id=p["id"], author_kind="user", author_id="u",
+        element={"kind": "user_shape", "x": 1, "y": 2, "w": 30, "h": 40, "payload": shape_payload},
+    )
+    await ctx.canvas_store.delete_element(
+        project_id=p["id"], element_id=el["id"],
+        author_kind="user", author_id="u",
+    )
+    res = await ct.canvas_list_legacy_elements(
+        ctx, project_id=p["id"], agent_id="agent-1", include_deleted=True
+    )
+    assert "elements" in res
+    ids = [r["element_id"] for r in res["elements"]]
+    assert el["id"] in ids
+    row = next(r for r in res["elements"] if r["element_id"] == el["id"])
+    assert row["type"] == "draw"

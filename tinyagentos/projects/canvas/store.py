@@ -133,6 +133,55 @@ class ProjectCanvasStore(ProjectsDBStore):
                 return None
             return _row_to_element(row, cur.description)
 
+    async def get_element_any(
+        self, element_id: str, *, project_id: str
+    ) -> dict | None:
+        sql = (
+            "SELECT * FROM project_canvas_elements "
+            "WHERE id = ? AND project_id = ?"
+        )
+        args = (element_id, project_id)
+        async with self._read(sql, args) as cur:
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            return _row_to_element(row, cur.description)
+
+    async def list_legacy(
+        self, project_id: str, include_deleted: bool = False
+    ) -> list[dict]:
+        sql = (
+            "SELECT id, project_id, kind, author_kind, author_id, "
+            "x, y, w, h, rotation, z_index, payload, created_at, updated_at, deleted_at, element_id "
+            "FROM project_canvas_elements "
+            "WHERE project_id = ? AND json_extract(payload, '$.tldraw_shape') IS NOT NULL"
+        )
+        args: list = [project_id]
+        if not include_deleted:
+            sql += " AND deleted_at IS NULL"
+        sql += " ORDER BY z_index ASC, created_at ASC"
+        async with self._read(sql, args) as cur:
+            rows = await cur.fetchall()
+            desc = cur.description
+        results = []
+        for row in rows:
+            el = _row_to_element(row, desc)
+            payload = el.get("payload") or {}
+            tldraw_shape = payload.get("tldraw_shape")
+            if not isinstance(tldraw_shape, dict):
+                continue
+            results.append({
+                "element_id": el["id"],
+                "kind": el["kind"],
+                "deleted_at": el.get("deleted_at"),
+                "type": tldraw_shape.get("type"),
+                "x": el["x"],
+                "y": el["y"],
+                "w": el["w"],
+                "h": el["h"],
+            })
+        return results
+
     async def add_element(
         self,
         *,

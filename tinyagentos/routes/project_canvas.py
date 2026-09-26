@@ -354,6 +354,48 @@ async def get_canvas_tldr(project_id: str, request: Request):
     )
 
 
+@router.get("/api/projects/{project_id}/canvas/elements/{element_id}/original")
+async def get_canvas_element_original(project_id: str, element_id: str, request: Request):
+    auth = await _authorize_canvas_actor(request, project_id, "read")
+    if isinstance(auth, JSONResponse):
+        return auth
+    cs = request.app.state.project_canvas_store
+    el = await cs.get_element_any(element_id, project_id=project_id)
+    if el is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    payload = el.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "element_id": el["id"],
+        "kind": el["kind"],
+        "deleted_at": el.get("deleted_at"),
+        "x": el["x"],
+        "y": el["y"],
+        "w": el["w"],
+        "h": el["h"],
+        "rotation": el.get("rotation", 0),
+        "z_index": el.get("z_index", 0),
+        "author_kind": el.get("author_kind"),
+        "author_id": el.get("author_id"),
+        "tldraw_shape": payload.get("tldraw_shape"),
+        "excalidraw_element": payload.get("excalidraw_element"),
+        "payload": payload,
+    }
+
+
+@router.get("/api/projects/{project_id}/canvas/legacy")
+async def get_canvas_legacy_elements(
+    project_id: str, request: Request, include_deleted: bool = False,
+):
+    auth = await _authorize_canvas_actor(request, project_id, "read")
+    if isinstance(auth, JSONResponse):
+        return auth
+    cs = request.app.state.project_canvas_store
+    elements = await cs.list_legacy(project_id, include_deleted=include_deleted)
+    return {"elements": elements}
+
+
 @router.patch("/api/projects/{project_id}/canvas/permissions/{agent_id}")
 async def set_canvas_permission(
     project_id: str, agent_id: str, payload: PermissionIn, request: Request,

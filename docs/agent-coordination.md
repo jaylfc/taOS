@@ -638,8 +638,39 @@ The registry-JWT surface, by scope:
   than a 403, so it cannot confirm that another project exists. The note's
   author is taken from the verified token, never from the request body.
 - **canvas_read**: `GET .../canvas/elements`, `.../canvas/watch-projection`,
-  `.../canvas/snapshot.png|.tldr`, `.../canvas/stream`. **canvas_write**: `POST .../canvas/elements`,
+  `.../canvas/snapshot.png|.tldr`, `.../canvas/stream`, `.../canvas/elements/{id}/original`,
+  `.../canvas/legacy?include_deleted=1`. **canvas_write**: `POST .../canvas/elements`,
   `PATCH|DELETE .../canvas/elements/{id}`.
+
+### Recovering a user's drawing
+
+When a user accidentally deletes a canvas element, the row is soft-deleted
+(`deleted_at` is set) and disappears from the normal listing. Two agent-callable
+surfaces let the user or an agent recover the data by hand:
+
+1. **Single element recovery**: call `GET /api/projects/{project_id}/canvas/elements/{element_id}/original`
+   with a `canvas_read` token. The placeholder label the UI shows on a deleted
+   element carries the `element_id`; call this endpoint for that id. The response
+   returns the element's original `payload` verbatim, plus the extracted
+   `tldraw_shape` and `excalidraw_element` blobs (or `null` when absent), so the
+   user can re-create the shape from the raw data.
+
+2. **Whole-board recovery**: call `GET /api/projects/{project_id}/canvas/legacy?include_deleted=1`
+   with a `canvas_read` token. This returns every row whose payload holds a
+   `tldraw_shape`, including soft-deleted ones, so an agent can enumerate what
+   needs recovering and call the per-element original endpoint for each.
+
+3. **File-based recovery**: the whole-board export stays `GET .../canvas/snapshot.tldr`,
+   which writes a `.tldr` file the user can open in stock tldraw. The `taosctl`
+   verbs `canvas-original <project_id> <element_id>`,
+   `canvas-legacy <project_id> [--include-deleted]`, and
+   `canvas-export-tldr <project_id> [-o FILE]` expose the same three operations
+   from the CLI.
+
+All three endpoints return an existence-hiding 404 when the token is bound to a
+different project, and 403 when the agent lacks the `canvas_read` scope or the
+`can_read_canvas` member flag.
+
 - **files_read**: `GET /api/projects/{slug}/files` (list), `.../files/watch`,
   `GET .../files/{path}` (download), `.../trash`, `.../stats`. **files_write**:
   `POST .../files/upload` (multipart), `POST .../mkdir`, `DELETE .../files/{path}`,
