@@ -271,7 +271,9 @@ class TestStaleCookieDoesNotBlockSignIn:
         loopback) and writes no taos_session cookie of its own, so the only
         thing that can emit a taos_session Set-Cookie here is the clear.
         """
-        resp = await stale_console.post("/auth/lock-screen-off")
+        resp = await stale_console.post(
+            "/auth/lock-screen-off", headers={"X-taOS-Console": "1"}
+        )
         assert resp.status_code == 200, resp.text
         session_cookies = [
             raw
