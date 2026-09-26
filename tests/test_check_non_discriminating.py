@@ -107,8 +107,9 @@ async def test_strong_check_scope_rejects_missing_scope():
 '''
 
 
-def _project(tmp_path: Path, tests: str = TESTS, product: str = PRODUCT) -> Path:
-    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+def _project(tmp_path: Path, tests: str = TESTS, product: str = PRODUCT,
+             ini: str = "") -> Path:
+    (tmp_path / "pytest.ini").write_text("[pytest]\n" + ini)
     (tmp_path / "nd_product.py").write_text("import asyncio\n" + product)
     tdir = tmp_path / "tests"
     tdir.mkdir()
@@ -219,6 +220,97 @@ def test_bad_declaration_is_an_error(tmp_path, decorator, why):
     assert proc.returncode == 2, proc.stdout + proc.stderr
     (r,) = _verdicts(proc).values()
     assert r["verdict"] == "ERROR" and why in r["reason"], r
+
+
+UNRELATED = PRODUCT + '''
+
+def unrelated(x):
+    if x > 0:
+        return "pos"
+    return "neg"
+'''
+
+
+def test_kill_by_a_test_that_fails_any_rerun_is_an_error_not_ok(tmp_path):
+    """Leaked state fails every rerun: the 'kill' says nothing about the mutant.
+
+    The test leaks a module-level counter, so its second in-process run fails
+    whatever code is swapped in. Without an unmutated control run after the
+    kill, the gate read that as return-true=killed and said OK.
+    """
+    tests = textwrap.dedent('''
+        import pytest
+        from nd_product import unrelated
+
+        _runs = {"n": 0}
+
+        @pytest.mark.guards("nd_product:unrelated")
+        def test_second_run_fails():
+            _runs["n"] += 1
+            assert _runs["n"] == 1
+            assert unrelated(1) == "pos"
+    ''')
+    proc = _gate(_project(tmp_path, tests=tests, product=UNRELATED))
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "ERROR", r
+    assert "control run" in r["reason"], r
+
+
+def test_stable_test_still_passes_its_control_run(tmp_path):
+    tests = textwrap.dedent('''
+        import pytest
+        from nd_product import unrelated
+
+        @pytest.mark.guards("nd_product:unrelated")
+        def test_negative_is_neg():
+            assert unrelated(-1) == "neg"
+    ''')
+    proc = _gate(_project(tmp_path, tests=tests, product=UNRELATED))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "OK" and r["control"] == "passed", r
+
+
+def test_repo_per_test_timeout_does_not_kill_the_checker(tmp_path):
+    """pytest-timeout's thread method os._exit()s the child mid-guard.
+
+    The profiled baseline is slower than a plain run, so a repo-wide
+    per-test timeout could kill the child before it wrote any result.
+    The driver bounds the child itself; the per-test timeout must be off.
+    """
+    tests = textwrap.dedent('''
+        import time
+        import pytest
+        from nd_product import can_read
+
+        @pytest.mark.guards("nd_product:can_read")
+        def test_slow_cannot_read():
+            time.sleep(1.5)
+            assert can_read("mallory", "alice") is False
+    ''')
+    root = _project(tmp_path, tests=tests, ini="timeout = 1\ntimeout_method = thread\n")
+    proc = _gate(root)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "OK", r
+
+
+def test_child_death_mid_guard_names_the_guard(tmp_path):
+    tests = textwrap.dedent('''
+        import os
+        import pytest
+        from nd_product import can_read
+
+        @pytest.mark.guards("nd_product:can_read")
+        def test_dies_cannot_read():
+            os._exit(3)
+    ''')
+    proc = _gate(_project(tmp_path, tests=tests))
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["nodeid"].endswith("::test_dies_cannot_read"), r
+    assert r["verdict"] == "ERROR" and "died while checking this guard" in r["reason"], r
 
 
 def test_failing_baseline_is_an_error(tmp_path):

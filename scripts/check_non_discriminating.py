@@ -362,7 +362,7 @@ def _count_calls(item, code: types.CodeType) -> tuple[str, int]:
 def _check_item(item, guard: dict) -> dict:
     result = {
         "nodeid": item.nodeid, "target": guard.get("target"), "verdict": "ERROR",
-        "reason": "", "baseline": None, "calls": None, "mutants": {},
+        "reason": "", "baseline": None, "calls": None, "mutants": {}, "control": None,
     }
     try:
         func = resolve_target(guard.get("target") or "")
@@ -407,6 +407,20 @@ def _check_item(item, guard: dict) -> dict:
         if not required and outcome == "failed":
             break  # default mode: one kill proves the test looks at the function
 
+    # Control run: a kill is only evidence if the UNMUTATED test still passes
+    # when re-run in this same process. A test that leaks state (a module
+    # counter, a registry that refuses re-registration) fails every rerun,
+    # whatever code is swapped in, and would read as a kill.
+    if "killed" in result["mutants"].values():
+        result["control"] = _run_once(item)
+        if result["control"] != "passed":
+            result["reason"] = (
+                f"control run (unmutated, re-run in process) {result['control']}: the "
+                "test is not stable across in-process reruns, so its kills are not "
+                "evidence; make it independent of state left by an earlier run"
+            )
+            return result
+
     survived = [m for m, v in result["mutants"].items() if v == "survived"]
     if required:
         bad = survived
@@ -441,10 +455,22 @@ def pytest_runtest_protocol(item, nextitem):
     guard = _guard_spec(item, spec)
     if guard is None:
         return None
-    result = _check_item(item, guard)
-    with open(spec["out"], "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(result) + "\n")
+    # Placeholder first: if the child dies mid-guard (os._exit, a crash), the
+    # driver still names the guard instead of guessing at collection.
+    _append(spec["out"], {
+        "nodeid": item.nodeid, "target": guard.get("target"), "verdict": "ERROR",
+        "reason": "child pytest died while checking this guard", "placeholder": True,
+    })
+    _append(spec["out"], _check_item(item, guard))
+    # The JSONL is the only result channel: the item is not logged, so the
+    # child itself reports "no tests ran".
     return True
+
+
+def _append(path: str, record: dict) -> None:
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
+        fh.flush()
 
 
 # ── driver half (the CLI) ────────────────────────────────────────────────────
@@ -495,8 +521,11 @@ def _run_child(root: Path, args: list[str], override: dict | None, python: str,
     env["PYTHONPATH"] = os.pathsep.join(
         [str(SCRIPTS_DIR), str(root)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])
     )
+    # -p no:timeout: a repo-wide per-test timeout (pytest-timeout's thread
+    # method os._exit()s the process) would kill the slower profiled baseline
+    # before any result is written. The child is bounded by `timeout` below.
     cmd = [python, "-m", "pytest", "-p", PLUGIN_NAME, "-p", "no:cacheprovider",
-           "-q", "--no-header", *args]
+           "-p", "no:timeout", "-q", "--no-header", *args]
     try:
         proc = subprocess.run(cmd, cwd=root, env=env, capture_output=True, text=True, check=False,
                               timeout=timeout)
@@ -564,7 +593,14 @@ def main(argv: list[str] | None = None) -> int:
 
     results: list[dict] = []
     for args, override, expected in runs:
-        got, log = _run_child(root, args, override, ns.python, ns.timeout)
+        records, log = _run_child(root, args, override, ns.python, ns.timeout)
+        latest: dict[str, dict] = {}
+        for rec in records:  # the real result follows (and replaces) its placeholder
+            latest[rec["nodeid"]] = rec
+        got = list(latest.values())
+        for rec in got:
+            if rec.pop("placeholder", False):
+                rec["reason"] += "\n" + _tail(log)
         results.extend(got)
         ran = {r["nodeid"].split("::")[-1].split("[")[0] for r in got}
         for name in sorted(expected - ran):
@@ -589,6 +625,8 @@ def main(argv: list[str] | None = None) -> int:
                 print("    mutants: " + ", ".join(f"{k}={v}" for k, v in r["mutants"].items()))
             if r.get("calls") is not None:
                 print(f"    guarded function calls in baseline run: {r['calls']}")
+            if r.get("control"):
+                print(f"    control run (unmutated, after a kill): {r['control']}")
             if r["reason"]:
                 print(f"    {r['reason']}")
         if ns.undeclared:
