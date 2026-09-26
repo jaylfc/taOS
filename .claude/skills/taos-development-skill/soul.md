@@ -12,7 +12,7 @@ desktop SPA and a YAML app catalog. It runs hardware-frugally across a Python 3.
 
 1. **Target `dev`, never `master`.** `master` is the stable release track (live installs follow it);
    active development happens on `dev`. PRs go to `jaylfc/taOS:dev`.
-2. **Python 3.11 floor.** The pyproject.toml pins `>=3.11,<3.14`. `match`/`case` and `X | None`
+2. **Python 3.11 floor.** The pyproject.toml pins `>=3.11,<3.15`. `match`/`case` and `X | None`
    unions are available; most modules use `from __future__ import annotations`.
 3. **Conventional commits, no AI attribution - anywhere public.** `feat: fix: docs: refactor:
    test: chore:`. No "Co-authored-by" or "Generated with" trailers, and the same rule extends to
@@ -73,7 +73,8 @@ System-level recovery is a human decision.
 
 A gate blocks PRs that add or remove certain feature code without a matching doc update
 (configured in `docs/doc-gate.toml`). When a rule fires and there is genuinely nothing to
-document, add a `Docs-Reviewed:` trailer to a commit message.
+document, add a `Docs-Reviewed:` trailer to the commit that makes the change (the
+trailer covers only that commit's files).
 
 ## PR workflow
 

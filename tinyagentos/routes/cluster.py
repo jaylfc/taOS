@@ -401,10 +401,21 @@ async def register_worker(request: Request, body: WorkerRegister):
     # Populate signing_key from pairing store so ticket-signing consumers work.
     pairing_store = getattr(request.app.state, "cluster_pairing", None)
     signing_key = b""
+    # The kind is never the caller's to choose. A node whose key was issued
+    # to a device (a taOSusb board paired over BLE), or that the registry
+    # already lists as a device, stays kind="device" however it registers:
+    # the board holds its own node_key, and a self-promotion to "worker"
+    # would put it past every placement guard (chat, embed, browser).
+    kind = "worker"
+    existing = cluster.get_worker(body.name)
+    if existing is not None and getattr(existing, "kind", "worker") == "device":
+        kind = "device"
     if pairing_store is not None:
         key = await pairing_store.get_signing_key(body.name)
         if key is not None:
             signing_key = key
+        if await pairing_store.get_kind(body.name) == "device":
+            kind = "device"
     hw = body.hardware or {}
     # Treat null ram_mb as missing so downstream arithmetic never sees None.
     # Preserve explicit 0 (e.g. ram_mb=0 is valid).
@@ -433,6 +444,7 @@ async def register_worker(request: Request, body: WorkerRegister):
         bytes_deduped_total=body.bytes_deduped_total,
         worker_lxc_image_version=body.worker_lxc_image_version,
         signing_key=signing_key,
+        kind=kind,
     )
     ok, reason = await cluster.register_worker(info, generation=body.generation)
     if not ok:

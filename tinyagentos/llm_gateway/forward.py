@@ -169,14 +169,31 @@ async def _record_trace(
         logger.warning("llm_gateway: trace record failed", exc_info=True)
 
 
+def _status_error(resp: httpx.Response, route: Route, api_key: str | None) -> GatewayError | None:
+    """The error for a non-2xx upstream answer, or None for a 2xx.
+
+    Shared by the streaming and non-streaming paths so both fail over (5xx,
+    401/403/404: a 502) and redact the same way. The upstream body is never
+    relayed as-is: only a caller-4xx message survives, with the key redacted.
+    """
+    status = resp.status_code
+    if status in _CALLER_4XX:
+        return _caller_error(resp, route, api_key)
+    if status == 404 and route.provider in OLLAMA_PROVIDERS:
+        return _ollama_404_error(route, resp)
+    if not 200 <= status < 300:
+        return upstream_error(f"the backend for model {route.model_name!r} failed (HTTP {status})")
+    return None
+
+
 async def _chat_completion_one(
     route: Route,
     body: dict,
-    api_key: str | None,
     principal: str,
     state: Any,
 ) -> dict:
-    """Single non-streaming attempt against one backend."""
+    """Single non-streaming attempt against one backend, with ITS OWN key."""
+    api_key = await resolve_api_key(state, route.api_key_ref)
     url = _build_url(route)
     payload = dict(body)
     payload["model"] = route.upstream_model
@@ -192,13 +209,9 @@ async def _chat_completion_one(
     except httpx.HTTPError as exc:
         raise upstream_error(f"{what} could not be reached") from None
 
-    status = resp.status_code
-    if status in _CALLER_4XX:
-        raise _caller_error(resp, route, api_key)
-    if status == 404 and route.provider in OLLAMA_PROVIDERS:
-        raise _ollama_404_error(route, resp)
-    if not 200 <= status < 300:
-        raise upstream_error(f"{what} failed (HTTP {status})")
+    err = _status_error(resp, route, api_key)
+    if err is not None:
+        raise err
     try:
         data = resp.json()
     except ValueError:
@@ -226,11 +239,10 @@ async def _chat_completion_one(
 def _event_stream_for_route(
     route: Route,
     body: dict,
-    api_key: str | None,
     principal: str,
     state: Any,
 ) -> AsyncGenerator[bytes, None]:
-    """Single streaming attempt against one backend."""
+    """Single streaming attempt against one backend, with ITS OWN key."""
     url = _build_url(route)
     payload = dict(body)
     payload["model"] = route.upstream_model
@@ -244,13 +256,13 @@ def _event_stream_for_route(
         payload = dict(ensure_stream_usage(body))
         payload["model"] = route.upstream_model
 
-    headers = {"content-type": "application/json"}
-    if api_key:
-        headers["authorization"] = f"Bearer {api_key}"
-
     request_text = json.dumps(body)
 
     async def _gen():
+        api_key = await resolve_api_key(state, route.api_key_ref)
+        headers = {"content-type": "application/json"}
+        if api_key:
+            headers["authorization"] = f"Bearer {api_key}"
         usage_tracker = OpenAIStreamUsage()
         completion_text: list[str] = []
         _buf = b""
@@ -262,13 +274,19 @@ def _event_stream_for_route(
                 raise upstream_error("the backend timed out") from None
             except httpx.HTTPError:
                 raise upstream_error("the backend could not be reached") from None
-            if upstream_resp.status_code == 404 and route.provider in OLLAMA_PROVIDERS:
+            if not 200 <= upstream_resp.status_code < 300:
+                # Map it exactly like the non-streaming path, BEFORE any byte
+                # is yielded, so a 5xx fails over and nothing unredacted leaks.
                 try:
                     err_body = await upstream_resp.aread()
-                except Exception:
+                except Exception:  # noqa: BLE001 - the status alone decides
                     err_body = b""
-                await upstream_resp.aclose()
-                raise _ollama_404_error(route, httpx.Response(404, content=err_body))
+                finally:
+                    await upstream_resp.aclose()
+                err = _status_error(
+                    httpx.Response(upstream_resp.status_code, content=err_body), route, api_key,
+                )
+                raise err if err is not None else upstream_error("the backend failed")
             try:
                 async for raw in upstream_resp.aiter_raw():
                     if not raw:
@@ -441,20 +459,20 @@ def _caller_error(resp: httpx.Response, route: Route, api_key: str | None) -> Ga
     return GatewayError(status, _redact(message, api_key, route.api_base), type=type_, code=code)
 
 
-async def chat_completion(routes: list[Route], body: dict, api_key: str | None, principal: str, state: Any) -> dict:
+async def chat_completion(routes: list[Route], body: dict, principal: str, state: Any) -> dict:
     """One non-streaming POST with retry/failover across backends.
 
     Tries each candidate in order on connect error, timeout, or upstream 5xx.
     4xx errors are returned as-is. A backend that fails goes into a short
-    cooldown so the next request does not pay the timeout again.
+    cooldown so the next request does not pay the timeout again. Each
+    attempt resolves and sends only that backend's own key.
     """
-    return await _call_with_retry(routes, lambda route: _chat_completion_one(route, body, api_key, principal, state))
+    return await _call_with_retry(routes, lambda route: _chat_completion_one(route, body, principal, state))
 
 
 async def chat_completion_stream(
     routes: list[Route],
     body: dict,
-    api_key: str | None,
     principal: str,
     state: Any,
 ) -> Any:
@@ -465,7 +483,7 @@ async def chat_completion_stream(
     """
     from fastapi.responses import JSONResponse, StreamingResponse
 
-    gen = _stream_with_retry(routes, lambda route: _event_stream_for_route(route, body, api_key, principal, state))
+    gen = _stream_with_retry(routes, lambda route: _event_stream_for_route(route, body, principal, state))
     try:
         first = await gen.__anext__()
     except StopAsyncIteration:

@@ -17,7 +17,7 @@ from tinyagentos.llm_gateway.errors import (
     model_not_found,
     model_not_permitted,
 )
-from tinyagentos.llm_gateway.forward import chat_completion, chat_completion_stream, resolve_api_key
+from tinyagentos.llm_gateway.forward import chat_completion, chat_completion_stream
 from tinyagentos.llm_gateway.resolve import TAOS_DEFAULT, find_routes, model_names, routing_table
 import tinyagentos.llm_gateway.resolve as resolve_mod
 
@@ -31,6 +31,10 @@ router = APIRouter(prefix=PREFIX)
 def mount(app, dependencies=None) -> None:
     app.include_router(router, dependencies=dependencies or [])
     app.add_exception_handler(GatewayError, handle_gateway_error)
+
+
+def _forwardable(route) -> bool:
+    return route.provider == OPENAI_PROVIDER or route.provider in OLLAMA_PROVIDERS
 
 
 def _model_entry(name: str) -> dict:
@@ -92,15 +96,17 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
     alias_grant = requested == TAOS_DEFAULT and caller.may_use(TAOS_DEFAULT)
     if route.model_name != requested and not alias_grant and not caller.may_use(route.model_name):
         raise model_not_permitted(route.model_name)
-    if route.provider != OPENAI_PROVIDER and route.provider not in OLLAMA_PROVIDERS:
+    if not _forwardable(route):
         raise GatewayError(
             501,
             f"model {route.model_name!r} is served by a {route.provider or 'unknown'!r} backend; "
             "the taOS gateway only forwards to OpenAI-compatible backends so far",
             code="backend_not_supported",
         )
-    api_key = await resolve_api_key(state, route.api_key_ref)
+    # Failover only ever reaches backends the gateway can speak to; each one
+    # is sent ONLY its own key, resolved per attempt in forward.py.
+    routes = [r for r in routes if _forwardable(r)]
     principal = caller.caller_id
     if body.get("stream"):
-        return await chat_completion_stream(routes, body, api_key, principal, state)
-    return JSONResponse(await chat_completion(routes, body, api_key, principal, state))
+        return await chat_completion_stream(routes, body, principal, state)
+    return JSONResponse(await chat_completion(routes, body, principal, state))

@@ -39,12 +39,25 @@ from test_lock_screen_gestures import _function
 from test_lock_screen_repaint import _DOM, _var
 
 
+class _SignedIn:
+    """An auth manager whose session check says yes: stop-agents needs one."""
+
+    def validate_session_for_request(self, _request):
+        return "owner"
+
+
 class _Req:
     """Enough of a Request for the handlers under test."""
 
-    def __init__(self, body=None):
+    def __init__(self, body=None, signed_in=False):
         self._body = body or {}
         self.app = type("App", (), {"state": type("S", (), {})()})()
+        # What the page and the compositor scripts send on every lock-* POST
+        # (routes.auth.LOCK_CONSOLE_HEADER). Without it the gate refuses the
+        # request as a possible cross-origin no-cors fetch.
+        self.headers = {"X-taOS-Console": "1"}
+        if signed_in:
+            self.app.state.auth = _SignedIn()
 
     async def json(self):
         return self._body
@@ -156,7 +169,8 @@ class TestTheActionIsAClosedSet:
 
     def test_stop_agents_without_an_orchestrator_is_a_503(self, monkeypatch):
         monkeypatch.setattr(auth, "_request_is_console", lambda _r: True)
-        resp = _call(auth.lock_power_action(_Req({"action": "stop-agents"})))
+        resp = _call(auth.lock_power_action(
+            _Req({"action": "stop-agents"}, signed_in=True)))
         assert resp.status_code == 503
 
     def test_stop_agents_drains_the_same_way_the_shutdown_hook_does(self, monkeypatch):
@@ -171,7 +185,7 @@ class TestTheActionIsAClosedSet:
                 return {"drained": 3}
 
         monkeypatch.setattr(auth, "_request_is_console", lambda _r: True)
-        req = _Req({"action": "stop-agents"})
+        req = _Req({"action": "stop-agents"}, signed_in=True)
         req.app.state.orchestrator = Orch()
         got = _body(_call(auth.lock_power_action(req)))
         assert got["ok"] is True
