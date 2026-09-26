@@ -6,10 +6,12 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 
+from tinyagentos.auth_context import CurrentUser
 from tinyagentos.chat.reactions import maybe_trigger_semantic
+from tinyagentos.device_auth import current_user_or_device
 
 router = APIRouter()
 
@@ -307,9 +309,31 @@ async def chat_ws(websocket: WebSocket):
 
 
 @router.post("/api/chat/messages")
-async def post_message(request: Request):
+async def post_message(request: Request, user: CurrentUser = Depends(current_user_or_device)):
     """Send a message via HTTP (used by agents and the agent-bridge)."""
     body = await request.json()
+
+    # Device bearer authorization: for device bearers, the author is the device's user
+    # and must not be settable from the request body (client contract).
+    # Also, the device bearer must be a member of the channel.
+    is_device = getattr(request.state, "_device", None) is not None
+    if is_device:
+        body["author_id"] = user.user_id
+        body["author_type"] = "user"
+
+        channel_id = body["channel_id"]
+        ch_store = request.app.state.chat_channels
+        channel = await ch_store.get_channel(channel_id)
+        if not channel:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Channel not found")
+
+        members = channel.get("members") or []
+        user_id_str = str(user.user_id)
+        if user_id_str not in members:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Not a member of this channel")
+    
     msg_store = request.app.state.chat_messages
     ch_store = request.app.state.chat_channels
     hub = request.app.state.chat_hub

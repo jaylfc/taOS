@@ -72,6 +72,32 @@ def _row_to_element(row, description) -> dict:
     return e
 
 
+# Append-only tldraw_shape guard (Excalidraw migration). A user_shape row's
+# "tldraw_shape" blob is the only lossless copy of a drawing made on the old
+# tldraw board. No payload update may drop or rewrite it: whatever the client
+# sends, the stored blob is carried forward verbatim. Other kinds (and
+# user_shape rows that never held a blob) keep the wholesale-replace contract.
+_GUARDED_PAYLOAD_KEY = "tldraw_shape"
+_GUARDED_KIND = "user_shape"
+
+
+def guard_payload_update(existing: dict | None, new_payload: dict) -> dict:
+    """Return the payload to store when *existing* is patched with *new_payload*.
+
+    *existing* is the current element row (as returned by get_element) or
+    None. When it is a user_shape whose payload holds a tldraw_shape, that
+    value wins over anything in *new_payload* (absent or different).
+    """
+    if not existing or existing.get("kind") != _GUARDED_KIND:
+        return new_payload
+    old_payload = existing.get("payload")
+    if not isinstance(old_payload, dict) or _GUARDED_PAYLOAD_KEY not in old_payload:
+        return new_payload
+    merged = dict(new_payload)
+    merged[_GUARDED_PAYLOAD_KEY] = old_payload[_GUARDED_PAYLOAD_KEY]
+    return merged
+
+
 class ProjectCanvasStore(ProjectsDBStore):
     SCHEMA = CANVAS_SCHEMA
 
@@ -275,9 +301,10 @@ class ProjectCanvasStore(ProjectsDBStore):
             if col in patch:
                 sets.append(f"{col} = ?")
                 params.append(patch[col])
-        if "payload" in patch:
+        has_payload = "payload" in patch
+        if has_payload:
             sets.append("payload = ?")
-            params.append(json.dumps(patch["payload"]))
+            params.append(None)  # filled in under the transaction below
         if not sets:
             existing = await self.get_element(element_id, project_id=project_id)
             if existing is None:
@@ -287,6 +314,23 @@ class ProjectCanvasStore(ProjectsDBStore):
         params.append(element_id)
         params.append(project_id)
         async with self._tx():
+            if has_payload:
+                # Read the stored row inside the same transaction as the write
+                # so a concurrent update cannot slip a different tldraw_shape
+                # between the read and the UPDATE.
+                async with self._db.execute(
+                    "SELECT * FROM project_canvas_elements "
+                    "WHERE id = ? AND project_id = ?",
+                    (element_id, project_id),
+                ) as cur:
+                    row = await cur.fetchone()
+                    existing = (
+                        _row_to_element(row, cur.description) if row is not None else None
+                    )
+                payload_idx = sets.index("payload = ?")
+                params[payload_idx] = json.dumps(
+                    guard_payload_update(existing, patch["payload"])
+                )
             await self._db.execute(
                 f"UPDATE project_canvas_elements SET {', '.join(sets)} "
                 f"WHERE id = ? AND project_id = ? AND deleted_at IS NULL",
@@ -310,6 +354,10 @@ class ProjectCanvasStore(ProjectsDBStore):
         author_id: str,
     ) -> None:
         await self._check_edit_permission(project_id, author_kind, author_id)
+        # Deletes are SOFT and must stay soft: the row (and its payload) remains
+        # readable through get_element for the recovery path. Never add a hard
+        # DELETE / purge of rows whose payload holds "tldraw_shape" - that blob
+        # is the only lossless copy of a legacy tldraw drawing.
         now = time.time()
         async with self._tx():
             cur = await self._db.execute(
