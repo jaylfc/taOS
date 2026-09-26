@@ -1,0 +1,3 @@
+### Added
+- Canvas: legacy `user_shape` rows (tldraw snapshots) now convert at read time into Excalidraw elements through a pure TypeScript converter with no tldraw import; geo, text, sticky note, freehand draw/highlight (tldraw 4.5 delta-encoded paths), line, arrow and frame convert, and every unconvertible or malformed shape (image, video, bookmark, embed, group, unknown, missing blob) becomes a visible dashed placeholder labelled with the original element id so nothing is silently lost
+- Canvas: every Excalidraw skeleton now carries `customData` with the taOS element id, kind and author; `user_shape` rows written by the Excalidraw board (`payload.excalidraw_element`) pass through untouched

@@ -1,0 +1,198 @@
+{
+ "source": "Orange Pi 5 Plus dev box, projects.db project_canvas_elements rows whose payload carries tldraw_shape, dumped 2026-09-26 by the lead (read-only)",
+ "rows": [
+  {
+   "id": "ZxWbVSW_lvxoSInnOPp6x",
+   "project_id": "prj-utbsh7",
+   "kind": "user_shape",
+   "x": -114.921875,
+   "y": -706.52734375,
+   "w": 200.0,
+   "h": 200.0,
+   "plen": 533,
+   "payload": {
+    "tldraw_shape": {
+     "x": -114.921875,
+     "y": -706.52734375,
+     "rotation": 0,
+     "isLocked": false,
+     "opacity": 1,
+     "meta": {},
+     "id": "shape:ZxWbVSW_lvxoSInnOPp6x",
+     "type": "geo",
+     "props": {
+      "w": 200,
+      "h": 200,
+      "geo": "rectangle",
+      "dash": "draw",
+      "growY": 0,
+      "url": "",
+      "scale": 1,
+      "color": "grey",
+      "labelColor": "black",
+      "fill": "none",
+      "size": "s",
+      "font": "draw",
+      "align": "middle",
+      "verticalAlign": "middle",
+      "richText": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph"
+        }
+       ]
+      }
+     },
+     "parentId": "page:page",
+     "index": "a14sEUlG",
+     "typeName": "shape"
+    }
+   }
+  },
+  {
+   "id": "cve-te2iqp",
+   "project_id": "prj-utbsh7",
+   "kind": "user_shape",
+   "x": 100.0,
+   "y": 260.0,
+   "w": 120.0,
+   "h": 120.0,
+   "plen": 33,
+   "payload": {
+    "tldraw_shape": {
+     "type": "geo"
+    }
+   }
+  },
+  {
+   "id": "sdtyZGQhEYvi3R14AWdVs",
+   "project_id": "prj-utbsh7",
+   "kind": "user_shape",
+   "x": 462.625,
+   "y": 342.10546875,
+   "w": 100.0,
+   "h": 100.0,
+   "plen": 459,
+   "payload": {
+    "tldraw_shape": {
+     "x": 462.625,
+     "y": 342.10546875,
+     "rotation": 0,
+     "isLocked": false,
+     "opacity": 1,
+     "meta": {},
+     "id": "shape:sdtyZGQhEYvi3R14AWdVs",
+     "type": "draw",
+     "props": {
+      "segments": [
+       {
+        "type": "free",
+        "path": "AAAAAAAAAAAAAAA/"
+       }
+      ],
+      "color": "black",
+      "fill": "none",
+      "dash": "draw",
+      "size": "m",
+      "isComplete": false,
+      "isClosed": false,
+      "isPen": false,
+      "scale": 1,
+      "scaleX": 1,
+      "scaleY": 1
+     },
+     "parentId": "page:page",
+     "index": "a2kqP5pV",
+     "typeName": "shape"
+    }
+   }
+  },
+  {
+   "id": "6Cg6HmDJYkxBB6oe_cpXA",
+   "project_id": "prj-utbsh7",
+   "kind": "user_shape",
+   "x": 535.0668479031849,
+   "y": 203.44128933292833,
+   "w": 100.0,
+   "h": 100.0,
+   "plen": 475,
+   "payload": {
+    "tldraw_shape": {
+     "x": 535.0668479031849,
+     "y": 203.44128933292833,
+     "rotation": 0,
+     "isLocked": false,
+     "opacity": 1,
+     "meta": {},
+     "id": "shape:6Cg6HmDJYkxBB6oe_cpXA",
+     "type": "draw",
+     "props": {
+      "segments": [
+       {
+        "type": "free",
+        "path": "AAAAAAAAAAAAAAA/"
+       }
+      ],
+      "color": "black",
+      "fill": "none",
+      "dash": "draw",
+      "size": "m",
+      "isComplete": false,
+      "isClosed": false,
+      "isPen": false,
+      "scale": 1,
+      "scaleX": 1,
+      "scaleY": 1
+     },
+     "parentId": "page:page",
+     "index": "a23JZ5cV",
+     "typeName": "shape"
+    }
+   }
+  },
+  {
+   "id": "6f7SHVnRknQEUh31Y_tWo",
+   "project_id": "prj-utbsh7",
+   "kind": "user_shape",
+   "x": 1382.2177341098181,
+   "y": -302.8396367715236,
+   "w": 100.0,
+   "h": 100.0,
+   "plen": 476,
+   "payload": {
+    "tldraw_shape": {
+     "x": 1382.2177341098181,
+     "y": -302.8396367715236,
+     "rotation": 0,
+     "isLocked": false,
+     "opacity": 1,
+     "meta": {},
+     "id": "shape:6f7SHVnRknQEUh31Y_tWo",
+     "type": "draw",
+     "props": {
+      "segments": [
+       {
+        "type": "free",
+        "path": "AAAAAAAAAAAAAAA/"
+       }
+      ],
+      "color": "black",
+      "fill": "none",
+      "dash": "draw",
+      "size": "m",
+      "isComplete": false,
+      "isClosed": false,
+      "isPen": false,
+      "scale": 1,
+      "scaleX": 1,
+      "scaleY": 1
+     },
+     "parentId": "page:page",
+     "index": "a19Ww29V",
+     "typeName": "shape"
+    }
+   }
+  }
+ ]
+}

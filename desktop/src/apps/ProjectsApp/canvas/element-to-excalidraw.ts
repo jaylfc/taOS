@@ -1,4 +1,5 @@
 import { CanvasElement } from "./canvas-api";
+import { legacyShapeToSkeleton, type LegacyContext } from "./tldraw-to-excalidraw";
 
 // Engine-neutral mapping from a backend CanvasElement to an Excalidraw skeleton
 // element (the input shape `convertToExcalidrawElements` accepts). CanvasElement
@@ -18,8 +19,13 @@ import { CanvasElement } from "./canvas-api";
 export interface SkeletonLabel {
   text: string;
   fontSize?: number;
+  fontFamily?: number;
   strokeColor?: string;
+  textAlign?: "left" | "center" | "right";
+  verticalAlign?: "top" | "middle" | "bottom";
 }
+
+export type SkeletonCustomData = Record<string, unknown>;
 
 export interface BaseSkeleton {
   id: string;
@@ -28,30 +34,79 @@ export interface BaseSkeleton {
   width: number;
   height: number;
   angle?: number;
+  opacity?: number;
+  customData?: SkeletonCustomData;
 }
 
+// Shared stroke/fill styling; each variant only carries what Excalidraw
+// honours for that element type.
+export interface StrokeStyleFields {
+  strokeColor?: string;
+  strokeWidth?: number;
+  strokeStyle?: "solid" | "dashed" | "dotted";
+  roughness?: number;
+}
+
+export type SkeletonArrowhead =
+  | "arrow"
+  | "bar"
+  | "dot"
+  | "circle"
+  | "circle_outline"
+  | "triangle"
+  | "triangle_outline"
+  | "diamond"
+  | "diamond_outline"
+  | null;
+
 export type ExcalidrawSkeleton =
-  | (BaseSkeleton & {
-      type: "rectangle" | "ellipse" | "diamond";
-      backgroundColor?: string;
-      strokeColor?: string;
-      label?: SkeletonLabel;
-    })
+  | (BaseSkeleton &
+      StrokeStyleFields & {
+        type: "rectangle" | "ellipse" | "diamond";
+        backgroundColor?: string;
+        fillStyle?: "hachure" | "cross-hatch" | "solid" | "zigzag";
+        roundness?: { type: number } | null;
+        label?: SkeletonLabel;
+      })
   | (BaseSkeleton & {
       type: "text";
       text: string;
       fontSize?: number;
+      fontFamily?: number;
+      textAlign?: "left" | "center" | "right";
       strokeColor?: string;
     })
   | (BaseSkeleton & {
       type: "image";
       fileId: string;
     })
+  | (BaseSkeleton &
+      StrokeStyleFields & {
+        type: "arrow" | "line";
+        // Points relative to (x, y); omitted for a bound mindmap edge, which
+        // Excalidraw routes between its two endpoints itself.
+        points?: [number, number][];
+        backgroundColor?: string;
+        fillStyle?: "hachure" | "cross-hatch" | "solid" | "zigzag";
+        roundness?: { type: number } | null;
+        startArrowhead?: SkeletonArrowhead;
+        endArrowhead?: SkeletonArrowhead;
+        label?: SkeletonLabel;
+        start?: { id: string };
+        end?: { id: string };
+      })
   | (BaseSkeleton & {
-      type: "arrow" | "line";
+      type: "freedraw";
+      points: [number, number][];
+      pressures: number[];
+      simulatePressure: boolean;
       strokeColor?: string;
-      start?: { id: string };
-      end?: { id: string };
+      strokeWidth?: number;
+    })
+  | (BaseSkeleton & {
+      type: "frame";
+      name: string | null;
+      children: string[];
     });
 
 function num(v: unknown, fallback: number): number {
@@ -91,7 +146,42 @@ function noteBackground(color: string): string {
   return NOTE_BG[color.toLowerCase()] ?? NOTE_BG_DEFAULT;
 }
 
-export function elementToSkeleton(el: CanvasElement): ExcalidrawSkeleton {
+// Identity every skeleton carries back to its row, so the interactive board
+// (and anything reading the scene) can map an Excalidraw element to the taOS
+// element it came from without a side table.
+function taosCustomData(el: CanvasElement): SkeletonCustomData {
+  return {
+    taos_id: el.id,
+    taos_kind: el.kind,
+    taos_author_id: el.author_id,
+    taos_author_kind: el.author_kind,
+  };
+}
+
+function withCustomData(s: ExcalidrawSkeleton, el: CanvasElement): ExcalidrawSkeleton {
+  // Row identity wins over whatever a stored element claims about itself; a
+  // converter-set flag such as taos_placeholder is kept.
+  return { ...s, customData: { ...(s.customData ?? {}), ...taosCustomData(el) } };
+}
+
+// A user_shape row written by the Excalidraw board stores the element itself.
+// It is used as-is (an Excalidraw element is a superset of its skeleton) with
+// the id and geometry pinned to the row so a stale or hand-edited blob cannot
+// move the element away from where the row says it is.
+function nativeUserShape(el: CanvasElement, native: Record<string, unknown>): ExcalidrawSkeleton {
+  const out = { ...native, id: el.id } as unknown as ExcalidrawSkeleton;
+  if (!Number.isFinite(out.x)) out.x = num(el.x, 0);
+  if (!Number.isFinite(out.y)) out.y = num(el.y, 0);
+  if (!Number.isFinite(out.width)) out.width = num(el.w, 100);
+  if (!Number.isFinite(out.height)) out.height = num(el.h, 100);
+  return out;
+}
+
+export function elementToSkeleton(el: CanvasElement, ctx?: LegacyContext): ExcalidrawSkeleton {
+  return withCustomData(elementToSkeletonInner(el, ctx), el);
+}
+
+function elementToSkeletonInner(el: CanvasElement, ctx?: LegacyContext): ExcalidrawSkeleton {
   const base: BaseSkeleton = {
     id: el.id,
     x: num(el.x, 0),
@@ -143,8 +233,18 @@ export function elementToSkeleton(el: CanvasElement): ExcalidrawSkeleton {
         ...(to ? { end: { id: to } } : {}),
       };
     }
+    case "user_shape": {
+      // New rows drawn in Excalidraw carry the element itself; legacy rows
+      // carry the tldraw snapshot and are converted at read time. A row with
+      // neither still renders (as a placeholder), never nothing.
+      const native = p.excalidraw_element;
+      if (native && typeof native === "object" && !Array.isArray(native)) {
+        return nativeUserShape(el, native as Record<string, unknown>);
+      }
+      return legacyShapeToSkeleton(el, ctx);
+    }
     default:
-      // user_shape and any unknown kind render as a generic rectangle.
+      // Any unknown kind renders as a generic rectangle.
       return { ...base, type: "rectangle" };
   }
 }
@@ -152,9 +252,12 @@ export function elementToSkeleton(el: CanvasElement): ExcalidrawSkeleton {
 // Render order: skip soft-deleted elements, lowest z_index first so higher
 // z_index sits on top (Excalidraw draws in array order).
 export function elementsToSkeletons(elements: CanvasElement[]): ExcalidrawSkeleton[] {
-  return elements
-    .filter((el) => el.deleted_at == null)
+  const live = elements.filter((el) => el.deleted_at == null);
+  // Legacy tldraw frame/group children store parent-relative coordinates; the
+  // full live set lets the converter resolve the parent origin.
+  const ctx: LegacyContext = { rows: live };
+  return live
     .slice()
     .sort((a, b) => num(a.z_index, 0) - num(b.z_index, 0))
-    .map(elementToSkeleton);
+    .map((el) => elementToSkeleton(el, ctx));
 }

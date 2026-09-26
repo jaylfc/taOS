@@ -86,7 +86,7 @@ export function ExcalidrawBoard({ elements, theme = "light" }: ExcalidrawBoardPr
         const ready = diagrams[el.id];
         if (ready && ready.length > 0) return ready;
       }
-      return convertToExcalidrawElements([elementToSkeleton(el)] as unknown as SkeletonInput);
+      return convertToExcalidrawElements([elementToSkeleton(el, { rows: elements })] as unknown as SkeletonInput);
     });
   }, [elements, diagrams]);
 
