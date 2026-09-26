@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { build, defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
@@ -20,6 +20,54 @@ function spaVersionPlugin() {
         path.join(outDir, "version.json"),
         JSON.stringify({ version }) + "\n",
       );
+    },
+  };
+}
+
+/** One build id for the whole build, shared by the SPA and the worker. */
+const TAOS_VERSION = readBackendVersion();
+
+/** Builds src/sw.ts as a self-contained CLASSIC worker into the output dir.
+ *
+ *  sw-register.ts registers "/sw.js" at the ROOT without `{ type: "module" }`:
+ *  WebKit has no module service workers, and a worker under /desktop/ could
+ *  never control /chat-pwa. A classic script cannot contain `import`/`export`,
+ *  and a relative chunk import would resolve against /sw.js at the root (the
+ *  chunks live under /desktop/assets/) and 404. So the worker cannot be an
+ *  entry of the SPA build, where Rollup splits the code it shares with the app
+ *  (server-notifications) into an external ES chunk. It gets its own IIFE
+ *  build with every dependency inlined, written after the SPA build has
+ *  emptied and filled the output dir. src/__tests__/sw-bundle.test.ts guards
+ *  the emitted file. */
+function serviceWorkerPlugin() {
+  let outDir = "";
+  return {
+    name: "taos-sw-classic",
+    apply: "build" as const,
+    configResolved(config: import("vite").ResolvedConfig) {
+      outDir = path.resolve(config.root, config.build.outDir);
+    },
+    async closeBundle() {
+      await build({
+        configFile: false,
+        root: __dirname,
+        logLevel: "warn",
+        define: { __TAOS_VERSION__: JSON.stringify(TAOS_VERSION) },
+        resolve: { alias: { "@": path.resolve(__dirname, "src") } },
+        build: {
+          target: "es2022",
+          outDir,
+          emptyOutDir: false,
+          copyPublicDir: false,
+          minify: true,
+          lib: {
+            entry: path.resolve(__dirname, "src/sw.ts"),
+            formats: ["iife"],
+            name: "taosServiceWorker",
+            fileName: () => "sw.js",
+          },
+        },
+      });
     },
   };
 }
@@ -62,9 +110,9 @@ export default defineConfig({
     ],
   },
   define: {
-    __TAOS_VERSION__: JSON.stringify(readBackendVersion()),
+    __TAOS_VERSION__: JSON.stringify(TAOS_VERSION),
   },
-  plugins: [react(), tailwindcss(), spaVersionPlugin()],
+  plugins: [react(), tailwindcss(), spaVersionPlugin(), serviceWorkerPlugin()],
   base: "/desktop/",
   resolve: {
     alias: { "@": path.resolve(__dirname, "src") },
@@ -83,11 +131,11 @@ export default defineConfig({
         main: path.resolve(__dirname, "index.html"),
         chat: path.resolve(__dirname, "chat.html"),
         app: path.resolve(__dirname, "app.html"),
-        sw: path.resolve(__dirname, "src/sw.ts"),
+        // src/sw.ts is NOT an input here: serviceWorkerPlugin builds it as a
+        // separate classic IIFE (see the comment on that plugin).
       },
       output: {
-        entryFileNames: (chunkInfo) =>
-          chunkInfo.name === "sw" ? "sw.js" : "assets/[name]-[hash].js",
+        entryFileNames: "assets/[name]-[hash].js",
         // Split heavy third-party libraries into their own chunks so the
         // shared `main` bundle stays lean and each app's lazy chunk only
         // pulls in the vendor code it actually uses. The buckets are
