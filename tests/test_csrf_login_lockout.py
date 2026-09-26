@@ -258,6 +258,37 @@ class TestStaleCookieDoesNotBlockSignIn:
         )
 
     @pytest.mark.asyncio
+    async def test_stale_session_cookie_is_cleared_when_no_route_mints_one(
+        self, stale_console
+    ):
+        """The positive direction of the stale-cookie clear (#3138).
+
+        `CSRFMiddleware.dispatch` only deletes taos_session when the route did
+        NOT set one itself (`already_set` is False). Every sign-in and setup
+        route mints a fresh cookie, so posting to them never reaches the clear.
+        `POST /auth/lock-screen-off` is on the session gate's exempt list, sits
+        under the router-wide `verify_csrf`, is console-only (this client is
+        loopback) and writes no taos_session cookie of its own, so the only
+        thing that can emit a taos_session Set-Cookie here is the clear.
+        """
+        resp = await stale_console.post("/auth/lock-screen-off")
+        assert resp.status_code == 200, resp.text
+        session_cookies = [
+            raw
+            for raw in resp.headers.get_list("set-cookie")
+            if raw.split(";")[0].strip().split("=", 1)[0].strip() == "taos_session"
+        ]
+        assert len(session_cookies) == 1, (
+            "stale taos_session cookie was not cleared: "
+            f"Set-Cookie headers={resp.headers.get_list('set-cookie')!r}"
+        )
+        cleared = session_cookies[0]
+        assert "Max-Age=0" in cleared, f"not an expiring Set-Cookie: {cleared!r}"
+        assert cleared.split(";")[0].strip() in ('taos_session=""', "taos_session="), (
+            f"clearing Set-Cookie still carries a value: {cleared!r}"
+        )
+
+    @pytest.mark.asyncio
     async def test_first_boot_wizard_is_not_blocked_by_a_stale_session_cookie(
         self, unconfigured_app
     ):

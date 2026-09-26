@@ -592,14 +592,14 @@ class AuthManager:
                 return u
         return None
 
-    def get_user(self, token: str | None = None) -> dict | None:
+    def get_user(self, token: str | None = None, user_agent: str | None = None) -> dict | None:
         """Return public profile.
 
         When *token* is given, return the user who owns that session.
         Otherwise fall back to the first user (back-compat).
         """
         if token:
-            user_id = self.validate_session(token)
+            user_id = self.validate_session(token, user_agent=user_agent)
             if user_id:
                 record = self._find_user_by_id(user_id)
                 if record:
@@ -936,7 +936,7 @@ class AuthManager:
 
     @_serialized
     def change_password(self, username: str, current_password: str, new_password: str) -> bool:
-        """Self-change, requires current password."""
+        """Self-change, requires current password. Revokes all other sessions."""
         if not new_password or len(new_password) < 8:
             return False
         data = self._read_users()
@@ -949,6 +949,7 @@ class AuthManager:
                 users[i] = u
                 data["users"] = users
                 self._write_users(data)
+                self.revoke_user_sessions(u.get("id", ""))
                 return True
         return False
 
@@ -1043,9 +1044,14 @@ class AuthManager:
                 pass
             return None
         # Client-binding check: only when the session was created with a
-        # user_agent_hash AND the caller supplies a user_agent for comparison.
+        # user_agent_hash.  When the header is omitted the caller cannot prove
+        # it is the same browser that created the session, so a stored hash
+        # MUST reject -- a missing User-Agent with a stored hash is a mismatch,
+        # not a free pass.
         stored_ua = entry.get("user_agent_hash")
-        if stored_ua and user_agent:
+        if stored_ua:
+            if not user_agent:
+                return None
             if not secrets.compare_digest(
                 stored_ua, hashlib.sha256(user_agent.encode()).hexdigest()
             ):
@@ -1069,9 +1075,9 @@ class AuthManager:
             self._sessions.pop(token, None)
         return len(to_revoke)
 
-    def session_user(self, token: str) -> dict | None:
+    def session_user(self, token: str, user_agent: str | None = None) -> dict | None:
         """Return public profile of the user owning this session."""
-        user_id = self.validate_session(token)
+        user_id = self.validate_session(token, user_agent=user_agent)
         if user_id is None:
             return None
         if user_id:
@@ -1080,6 +1086,22 @@ class AuthManager:
                 return self._public_user(record)
         # Legacy or no user_id — return first user
         return self.get_user()
+
+    def session_user_for_request(self, request: Request) -> dict | None:
+        """Return public profile of the user owning this session, reading user-agent from request."""
+        user_agent = request.headers.get("user-agent", "")
+        token = request.cookies.get("taos_session", "")
+        if not token:
+            return None
+        return self.session_user(token, user_agent=user_agent)
+
+    def validate_session_for_request(self, request: Request) -> str | None:
+        """Return user_id if the session is valid, reading user-agent from request."""
+        user_agent = request.headers.get("user-agent", "")
+        token = request.cookies.get("taos_session", "")
+        if not token:
+            return None
+        return self.validate_session(token, user_agent=user_agent)
 
     def cleanup_sessions(self) -> None:
         now = time.time()
@@ -1244,10 +1266,7 @@ def get_current_user(request: Request) -> dict[str, Any]:
     user dict needed for capability checks.
     """
     auth_mgr = request.app.state.auth
-    token = request.cookies.get("taos_session", "")
-    if not token:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    user = auth_mgr.session_user(token)
+    user = auth_mgr.session_user_for_request(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     return user

@@ -248,7 +248,7 @@ export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
             const data = await res.json();
             if (data.filename || data.id) {
               const id = (data.filename as string) ?? (data.id as string);
-              const url = (data.path as string) ?? `/data/workspace/images/generated/${id}`;
+              const url = data.path as string;
               const img: GeneratedImage = { id, url, prompt: styledPrompt };
               setMagicResults((prev) => [img, ...prev]);
               placeOnCanvas(img);

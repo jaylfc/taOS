@@ -1,52 +1,41 @@
-id: gitea-lxc
-name: Gitea (LXC)
-type: service
-category: dev-tool
-version: 1.22.0
 backend: lxc
-description: "Self-hosted Git server — auto-creates accounts for deployed agents"
+category: dev-tool
+description: "Self-hosted Git server \u2014 auto-creates accounts for deployed agents"
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  cpu-only: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
 homepage: https://gitea.io
-license: MIT
-
-requires:
-  ram_mb: 512
-  disk_mb: 2000
-  ports: [3000, 2222]
-  inputs:
-    - name: admin_password
-      label: "Admin password"
-      type: password
-      required: true
-      description: "Password for the initial Gitea admin account"
-
+id: gitea-lxc
 install:
-  method: lxc
-  image: images:debian/bookworm
-  gitea_version: "1.22.6"
-  memory_limit: "512MiB"
   cpu_limit: 1
+  gitea_version: 1.22.6
+  image: images:debian/bookworm
+  memory_limit: 512MiB
+  method: lxc
   ports:
     http: 3000
     ssh: 2222
   service_name: gitea
   state_paths:
-    - /etc/gitea/
-    - /home/git/
-  # Proxy routing fields (read by the service-proxy layer):
-  #   ui_port  – container-internal port the UI listens on. The installer's
-  #               proxy device forwards host_port → 127.0.0.1:<ui_port>.
-  #   ui_path  – path prefix the app serves its UI at (default "/").
-  #   icon     – optional icon path or URL for desktop/P8 use.
-  #   display_name – optional override for the UI display name.
+  - /etc/gitea/
+  - /home/git/
+  ui_path: /
   ui_port: 3000
-  ui_path: "/"
-
+license: MIT
 lifecycle:
-  health_check: "curl -sf http://localhost:3000/api/healthz"
-
-hardware_tiers:
-  arm-npu-16gb: full
-  arm-npu-32gb: full
-  x86-cuda-12gb: full
-  x86-vulkan-8gb: full
-  cpu-only: full
+  health_check: curl -sf http://localhost:3000/api/healthz
+name: Gitea (LXC)
+requires:
+  disk_mb: 2000
+  inputs:
+  - description: Password for the initial Gitea admin account
+    label: Admin password
+    name: admin_password
+    required: true
+    type: password
+  ram_mb: 512
+type: service
+version: 1.22.0

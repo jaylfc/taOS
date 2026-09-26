@@ -5,7 +5,8 @@ PATCH /api/taos-agent/settings                 → accepts {model: str}, persist
 GET  /api/taos-agent/config                    → {model, permitted_models, persona, key_masked, framework, system}
 PUT  /api/taos-agent/permitted-models          → validate + persist permitted_models; re-scope the agent key
 PUT  /api/taos-agent/persona                   → persist persona (system-prompt override)
-POST /api/taos-agent/chat                      → streams chat completion via opencode (NDJSON)
+PUT  /api/taos-agent/framework                 → set taos_agent.framework / device.class; restarts the agent
+POST /api/taos-agent/chat                      → streams a turn via opencode or PicoClaw (NDJSON)
 GET  /api/taos-agent/status                    → scoped agent-loop status (state, turn, queue, subagents)
 POST /api/taos-agent/attachments/upload        → accepts a file, returns a persistent attachment record
 GET  /api/taos-agent/attachments/files/{name}  → serve a stored attachment
@@ -36,9 +37,21 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel
 
 from tinyagentos.adapters.opencode_adapter import OpenCodeAdapter, OpenCodeConfig
+from tinyagentos.adapters.picoclaw_cli_adapter import PicoClawCliAdapter, PicoClawCliConfig
 from tinyagentos.agent_loop import AgentLoop, LoopAction
 from tinyagentos.opencode_runtime import OpenCodeBinaryNotFoundError
-from tinyagentos.taos_agent_runtime import ensure_taos_opencode_server
+from tinyagentos.picoclaw_runtime import PicoClawBinaryNotFoundError
+from tinyagentos.taos_agent_runtime import (
+    DEVICE_CLASS_CHOICES,
+    FRAMEWORK_CHOICES,
+    FRAMEWORK_PICOCLAW,
+    FrameworkDecision,
+    apply_framework,
+    ensure_taos_opencode_server,
+    ensure_taos_picoclaw_harness,
+    provision_picoclaw,
+    system_agent_framework,
+)
 from tinyagentos.task_utils import _create_supervised_task
 
 logger = logging.getLogger(__name__)
@@ -122,6 +135,36 @@ class PermittedModelsUpdate(BaseModel):
 
 class PersonaUpdate(BaseModel):
     persona: str
+
+
+class FrameworkUpdate(BaseModel):
+    framework: str | None = None
+    """taos_agent.framework: "auto" | "opencode" | "picoclaw"."""
+    device_class: str | None = None
+    """device.class: "auto" | "mobile" | "desktop"."""
+
+
+def _framework_view(state) -> dict:
+    decision = getattr(state, "taos_agent_framework_decision", None)
+    return {
+        "framework": system_agent_framework(state),
+        "framework_preference": decision.preference if isinstance(decision, FrameworkDecision) else None,
+        "framework_reason": decision.reason if isinstance(decision, FrameworkDecision) else None,
+        "device_class": decision.device_class if isinstance(decision, FrameworkDecision) else None,
+    }
+
+
+async def _reprovision_picoclaw_if_active(state) -> bool:
+    """The PicoClaw key is scoped to the agent's models: when they change,
+    mint a new key (the old one is revoked) and rewrite PicoClaw's config."""
+    if system_agent_framework(state) != FRAMEWORK_PICOCLAW:
+        return False
+    try:
+        await provision_picoclaw(state)
+        return True
+    except Exception:
+        logger.exception("taos-agent: re-minting the picoclaw key failed")
+        return False
 
 
 class ChatRequest(BaseModel):
@@ -263,6 +306,7 @@ async def patch_settings(request: Request, body: SettingsPatch):
     prefs = await store.get_preference("user", _PREF_NAMESPACE)
     prefs["model"] = body.model
     await store.save_preference("user", _PREF_NAMESPACE, prefs)
+    await _reprovision_picoclaw_if_active(request.app.state)
     return JSONResponse({"model": body.model})
 
 
@@ -272,16 +316,74 @@ async def get_config(request: Request):
     store = request.app.state.desktop_settings
     prefs = await store.get_preference("user", _PREF_NAMESPACE)
 
-    raw_key: str | None = getattr(request.app.state, "taos_opencode_key", None)
+    state = request.app.state
+    raw_key: str | None = getattr(state, "taos_opencode_key", None)
+    if system_agent_framework(state) == FRAMEWORK_PICOCLAW:
+        harness = getattr(state, "taos_picoclaw_harness", None)
+        raw_key = harness.key if harness is not None else None
 
     return JSONResponse({
         "model": prefs.get("model", None),
         "permitted_models": prefs.get("permitted_models", []),
         "persona": prefs.get("persona", ""),
         "key_masked": _mask_key(raw_key),
-        "framework": "opencode",
+        **_framework_view(state),
         "system": True,
     })
+
+
+@router.put("/api/taos-agent/framework")
+async def put_framework(request: Request, body: FrameworkUpdate):
+    """Choose the harness that runs the system taOS Agent.
+
+    Persists ``taos_agent.framework`` and/or ``device.class`` to config.yaml
+    and restarts the AGENT (not the controller): switching away from PicoClaw
+    revokes its gateway key; switching to it stops opencode and mints a fresh
+    key. The response reports the EFFECTIVE harness, which is opencode when
+    PicoClaw is preferred but cannot run (gateway off, binary missing).
+    """
+    from tinyagentos.routes.auth import _require_admin
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
+
+    updates: dict[str, tuple[str, str]] = {}
+    for field_name, value, choices, section, key in (
+        ("framework", body.framework, FRAMEWORK_CHOICES, "taos_agent", "framework"),
+        ("device_class", body.device_class, DEVICE_CLASS_CHOICES, "device", "class"),
+    ):
+        if value is None:
+            continue
+        norm = value.strip().lower() if isinstance(value, str) else ""
+        if norm not in choices:
+            return JSONResponse(
+                {"error": f"{field_name} must be one of {', '.join(choices)}"},
+                status_code=400,
+            )
+        updates[section] = (key, norm)
+    if not updates:
+        return JSONResponse({"error": "nothing to change"}, status_code=400)
+
+    state = request.app.state
+    config = state.config
+    for section, (key, value) in updates.items():
+        current = dict(getattr(config, section, None) or {})
+        current[key] = value
+        setattr(config, section, current)
+    if config.config_path is not None:
+        from tinyagentos.config import save_config_locked
+        await save_config_locked(config, config.config_path)
+
+    try:
+        await apply_framework(state)
+    except Exception:
+        logger.exception("taos-agent: applying the harness choice failed")
+        return JSONResponse(
+            {"error": "the harness choice was saved but the agent failed to restart; see the log",
+             **_framework_view(state)},
+            status_code=500,
+        )
+    return JSONResponse(_framework_view(state))
 
 
 @router.put("/api/taos-agent/permitted-models")
@@ -332,6 +434,10 @@ async def put_permitted_models(request: Request, body: PermittedModelsUpdate):
     prefs["permitted_models"] = permitted
     await store.save_preference("user", _PREF_NAMESPACE, prefs)
 
+    # PicoClaw: a gateway key cannot be re-scoped in place; re-mint it.
+    if await _reprovision_picoclaw_if_active(request.app.state):
+        return JSONResponse({"permitted_models": permitted, "key_rescoped": True})
+
     # Re-scope the agent's own LiteLLM key.
     proxy = getattr(request.app.state, "llm_proxy", None)
     key: str | None = getattr(request.app.state, "taos_opencode_key", None)
@@ -362,7 +468,8 @@ async def put_persona(request: Request, body: PersonaUpdate):
 
 @router.post("/api/taos-agent/chat")
 async def chat(request: Request, body: ChatRequest):
-    """Stream a chat completion through a host opencode server.
+    """Stream a chat turn through the harness that runs the taOS Agent: a host
+    opencode server, or (on a taOSmobile handset) one PicoClaw turn.
 
     Returns NDJSON where each line is a JSON object with a ``delta`` string
     field, followed by a final ``{"done": true}`` line.  The frontend reads
@@ -378,9 +485,35 @@ async def chat(request: Request, body: ChatRequest):
             status_code=400,
         )
 
+    app_state = request.app.state
+    # Use persona override if set, else fall back to the built-in manual.
+    persona: str = prefs.get("persona", "").strip()
+    system_prompt = persona if persona else (SYSTEM_PROMPT or None)
+
+    use_picoclaw = system_agent_framework(app_state) == FRAMEWORK_PICOCLAW
+    if use_picoclaw:
+        try:
+            harness = await ensure_taos_picoclaw_harness(app_state)
+        except PicoClawBinaryNotFoundError:
+            logger.error("taos-agent: picoclaw binary not found")
+            return JSONResponse(
+                {"error": "picoclaw is not installed on this device. Install it (the "
+                          "app-catalog picoclaw installer puts it at /usr/local/bin/picoclaw) "
+                          "or switch the taOS Agent to opencode."},
+                status_code=503,
+            )
+        except Exception as exc:
+            logger.exception("taos-agent: picoclaw could not be provisioned")
+            return JSONResponse(
+                {"error": f"taOS agent runtime (picoclaw) failed to start: {type(exc).__name__}"},
+                status_code=503,
+            )
+    else:
+        harness = None
+
     llm_proxy = getattr(request.app.state, "llm_proxy", None)
     proxy_running = llm_proxy is not None and llm_proxy.is_running()
-    if not proxy_running:
+    if not use_picoclaw and not proxy_running:
         return JSONResponse(
             {"error": "LiteLLM proxy is not running. Check that at least one provider is configured."},
             status_code=503,
@@ -388,7 +521,7 @@ async def chat(request: Request, body: ChatRequest):
 
     # Ensure the host opencode server is running.
     try:
-        server = await ensure_taos_opencode_server(request.app.state, model)
+        server = None if use_picoclaw else await ensure_taos_opencode_server(request.app.state, model)
     except OpenCodeBinaryNotFoundError as exc:
         # The binary genuinely isn't reachable (not on PATH, not at the
         # installer's default location) — a clear install instruction, not a
@@ -414,12 +547,6 @@ async def chat(request: Request, body: ChatRequest):
             status_code=503,
         )
 
-    app_state = request.app.state
-
-    # Use persona override if set, else fall back to the built-in manual.
-    persona: str = prefs.get("persona", "").strip()
-    system_prompt = persona if persona else (SYSTEM_PROMPT or None)
-
     queue: asyncio.Queue = asyncio.Queue()
 
     def sink(reply: dict) -> None:
@@ -436,15 +563,18 @@ async def chat(request: Request, body: ChatRequest):
             # final done frame.
             pass
 
-    cfg = OpenCodeConfig(
-        base_url=server.base_url,
-        server_password=app_state.taos_opencode_password,
-        model_provider_id="litellm",
-        model_id=model,
-        system=system_prompt,
-    )
-    adapter = OpenCodeAdapter(cfg, sink)
-    adapter.session_id = getattr(app_state, "taos_opencode_session_id", None)
+    if use_picoclaw:
+        adapter = PicoClawCliAdapter(PicoClawCliConfig(harness=harness, system=system_prompt), sink)
+    else:
+        cfg = OpenCodeConfig(
+            base_url=server.base_url,
+            server_password=app_state.taos_opencode_password,
+            model_provider_id="litellm",
+            model_id=model,
+            system=system_prompt,
+        )
+        adapter = OpenCodeAdapter(cfg, sink)
+        adapter.session_id = getattr(app_state, "taos_opencode_session_id", None)
 
     text = body.messages[-1].get("content", "") if body.messages else ""
 
@@ -513,11 +643,12 @@ async def chat(request: Request, body: ChatRequest):
     async def _drive() -> None:
         try:
             await adapter.ensure_session()
-            app_state.taos_opencode_session_id = adapter.session_id
-            # Keep the per-agent session cache in sync (agent-as-a-model path).
-            sess = getattr(app_state, "taos_opencode_sessions", None)
-            if sess is not None:
-                sess[model] = adapter.session_id
+            if not use_picoclaw:
+                app_state.taos_opencode_session_id = adapter.session_id
+                # Keep the per-agent session cache in sync (agent-as-a-model path).
+                sess = getattr(app_state, "taos_opencode_sessions", None)
+                if sess is not None:
+                    sess[model] = adapter.session_id
             await adapter.prompt(text, trace_id=trace_id, attachments=attachments)
             await adapter.close()
         except Exception as exc:

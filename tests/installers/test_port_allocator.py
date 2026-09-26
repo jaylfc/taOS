@@ -105,6 +105,34 @@ class TestDockerComposeMultiPort:
         assert first + 1 not in host_side
         assert len(set(host_side)) == 2
 
+    def test_canonical_ports_wins_over_conflicting_legacy(self, tmp_path):
+        """When both 'ports' and 'requires.ports' are present, canonical wins."""
+        installer = DockerInstaller.__new__(DockerInstaller)
+        installer.apps_dir = tmp_path
+        compose, _ = installer._generate_compose(
+            "canonical-wins-app",
+            {
+                "image": "example/image:latest",
+                "ports": [8080, 9090],  # canonical
+                "requires": {"ports": [7070, 6060]},  # legacy, different
+            },
+        )
+        mappings = compose["services"]["canonical-wins-app"]["ports"]
+        container_side = [int(m.split(":")[1]) for m in mappings]
+        assert container_side == [8080, 9090]  # canonical value used
+
+    def test_legacy_ports_alone_still_yields_mappings(self, tmp_path):
+        """Legacy 'requires.ports' alone still produces correct port mappings."""
+        installer = DockerInstaller.__new__(DockerInstaller)
+        installer.apps_dir = tmp_path
+        compose, _ = installer._generate_compose(
+            "legacy-only-app",
+            {"image": "example/image:latest", "requires": {"ports": [8080, 9090]}},
+        )
+        mappings = compose["services"]["legacy-only-app"]["ports"]
+        container_side = [int(m.split(":")[1]) for m in mappings]
+        assert container_side == [8080, 9090]
+
 
 class TestLxcUsesCentralizedAllocator:
     """LXCInstaller must route through the centralized allocator, not a standalone scanner."""

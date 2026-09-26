@@ -132,6 +132,17 @@ uv run pytest tests/test_<changed_module>.py tests/<related>/ -v
 uv run pytest tests/ --ignore=tests/e2e -n auto
 ```
 
+### Vendored LLM price table (`tinyagentos/llm_usage/data/`)
+
+`model_prices.json` is GENERATED: a subset of LiteLLM's MIT-licensed
+`model_prices_and_context_window.json`, pinned to the upstream commit recorded in its `_source` key.
+Never hand-edit it and never fetch prices at runtime. Refresh it with
+`python scripts/update_model_prices.py [<sha>]`, keep `data/NOTICE` beside it (the MIT licence
+requires it), and ship both through `[tool.setuptools.package-data]` in `pyproject.toml`. After a
+refresh, run `tests/test_llm_usage.py`: its frozen parity results use synthetic entries, so a data
+refresh cannot break them, but the lookup tests will tell you if a model key taOS relies on moved.
+An unknown price must stay `usd=None`, never `0.0`: the budget code only charges `cost > 0`.
+
 ### Dependency-audit ignore hygiene
 
 `security/pip-audit-ignore.toml` suppresses advisories that have no released
@@ -671,7 +682,7 @@ drops each pattern from a copy of the real `.gitignore` and asserts the guard fa
 - Branch naming: `feat/<slug>` or `fix/<slug>`
 - Conventional commits (see table above)
 - No AI tool attribution in commits
-- Python 3.11+ floor (pyproject.toml: `>=3.11,<3.14`). `match`/`case` and `X | None` union syntax
+- Python 3.11+ floor (pyproject.toml: `>=3.11,<3.15`). `match`/`case` and `X | None` union syntax
   are available. Most modules use `from __future__ import annotations`.
 - Code style: match surrounding code, one concern per module
 - Use `uv` for dependency management and test running: `uv sync --extra dev`, `uv run pytest`
@@ -800,7 +811,7 @@ controls which hardware profiles see the app as recommended.
 - **Secrets have a dedicated store.** `tinyagentos/secrets.py` (routes in
   `tinyagentos/routes/secrets.py`, attached as `app.state.secrets`) is the credential store. Store
   credentials there - never in config or in code.
-- **CONTRIBUTING.md** says Python 3.10+, but `pyproject.toml` requires `>=3.11,<3.14`.
+- **CONTRIBUTING.md** says Python 3.10+, but `pyproject.toml` requires `>=3.11,<3.15`.
   Python 3.11 is the effective floor.
 - **Routes do not import stores directly.** They access them via `request.app.state`.
   This is a common mistake - check existing routes for the pattern.

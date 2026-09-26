@@ -1,0 +1,2 @@
+### Fixed
+- Docker installer now falls back to legacy `requires.ports` when the canonical top-level `ports` key is absent, preserving port mappings for already-installed and third-party manifests. A deprecation warning is logged naming the app id. If both keys are present and disagree, the canonical key wins with a warning.
