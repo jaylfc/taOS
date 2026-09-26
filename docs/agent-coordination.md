@@ -1490,6 +1490,18 @@ routes documented above.
   **The old signing key stays dead**, so the node still has to re-pair for a
   fresh one. Unblock is permission to return, not restoration of access.
 
+Bluetooth (taOSusb) devices and node names:
+
+- `POST /api/cluster/ble/pair/confirm` answers `409` when the board's advertised
+  name belongs to a registered worker, or to a device that is still live or
+  blocked. **Revoke is the only way to free a device name** for a reset board
+  to pair again; a worker's name is never reusable over Bluetooth. A refused or
+  rolled-back pairing never touches the other node's key, block or revoke state.
+- A node paired as a device stays `kind="device"`. `POST /api/cluster/workers`
+  (register) and `POST /api/cluster/heartbeat` signed with the device's own key
+  cannot change it, even after `DELETE /api/cluster/workers/{name}`, because the
+  kind is stored with the key at pairing. A device is never a job candidate.
+
 Behaviour common to all three:
 
 - `404` when the node is absent from the PAIRING store, meaning it was never

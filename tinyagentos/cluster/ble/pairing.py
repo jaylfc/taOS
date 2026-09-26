@@ -8,10 +8,12 @@ Ties together the vendored protocol (``proto.py``), the BLE transport
   2. ``start()`` connects, runs the ``PairInitiator`` handshake, and returns
      the 6-digit code for a human to compare against the board.
   3. ``confirm()`` -- only once a human has confirmed the code -- mints the
-     node's signing key through the exact same store method the manual
-     worker-pairing flow uses (``ClusterPairingStore.register_device_key``,
-     see pairing_store.py), registers the node as ``kind="device"``, and
-     sends the board its sealed provision payload. When the in-process LLM
+     node's signing key (``ClusterPairingStore.register_device_key``, which
+     shares the key generator the worker-pairing flow uses and records
+     kind='device' with the key), registers the node as ``kind="device"``,
+     and sends the board its sealed provision payload. The board's
+     advertised name must not collide with another node: a worker's name,
+     or a device name that has not been revoked, is refused with 409. When the in-process LLM
      gateway is on, it also mints the node's model key
      (``llm_gateway.auth.mint_for_node``) and seals ``llm: {base, key}`` in
      with it. A board error or timeout rolls back the registration, the
@@ -46,7 +48,7 @@ from tinyagentos.cluster.ble.transport import (
     chunk_size,
 )
 from tinyagentos.cluster.manager import ClusterManager
-from tinyagentos.cluster.pairing_store import ClusterPairingStore
+from tinyagentos.cluster.pairing_store import ClusterPairingStore, NodeNameTaken
 from tinyagentos.cluster.worker_protocol import WorkerInfo
 
 logger = logging.getLogger(__name__)
@@ -378,8 +380,22 @@ class BlePairingManager:
         # node's identity -- reuse it as the registry name rather than
         # re-deriving one, so it matches what the board itself displays.
         name = sess.board_name or f"taOSusb-{sess.board_id}"
+        # That name is the board's claim, not ours: it may not collide with
+        # any other node. A registered worker's name is refused outright; a
+        # device name is only reusable once an admin has revoked it (a reset
+        # board), which register_device_key enforces atomically together
+        # with the pairing table's own record.
+        existing = self._cluster.get_worker(name)
+        if existing is not None and getattr(existing, "kind", "worker") != "device":
+            await self._close_session(sess)
+            raise PairError(409, f"a node named '{name}' already exists")
         try:
-            key = await self._pairing_store.register_device_key(name)
+            key = await self._pairing_store.register_device_key(
+                name, known_device=existing is not None
+            )
+        except NodeNameTaken as exc:
+            await self._close_session(sess)
+            raise PairError(409, f"a node named '{name}' already exists") from exc
         except Exception as exc:
             await self._close_session(sess)
             raise PairError(500, f"failed to mint node credential: {exc}") from exc
@@ -395,7 +411,7 @@ class BlePairingManager:
                 revoke_for_node(name, data_dir=self._data_dir)
                 llm_key = mint_for_node(name, BOARD_LLM_MODELS, data_dir=self._data_dir)
             except Exception as exc:
-                await self._rollback(name, sess)
+                await self._rollback(name, key, sess)
                 await self._close_session(sess)
                 # type only: never the exception text, which is not ours to vouch for
                 raise PairError(500, f"failed to mint model key: {type(exc).__name__}") from exc
@@ -414,7 +430,7 @@ class BlePairingManager:
             if not ok:
                 raise RuntimeError(reason)
         except Exception as exc:
-            await self._rollback(name, sess)
+            await self._rollback(name, key, sess)
             await self._close_session(sess)
             raise PairError(500, f"failed to register node: {exc}") from exc
 
@@ -433,17 +449,17 @@ class BlePairingManager:
             reply_raw = await self._read_pair_message(sess.connection, sess.reassembler, _PROVISION_TIMEOUT_S)
             reply = sess.initiator.unseal_reply(reply_raw)
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            await self._rollback(name, sess)
+            await self._rollback(name, key, sess)
             raise PairError(504, "board did not respond to provision") from exc
         except Exception as exc:
-            await self._rollback(name, sess)
+            await self._rollback(name, key, sess)
             raise PairError(502, "board_rejected", why=_redact(str(exc), secrets_sent))
         finally:
             await self._close_session(sess)
 
         if not isinstance(reply, dict) or reply.get("t") != "ok":
             why = reply.get("why") if isinstance(reply, dict) else "malformed reply"
-            await self._rollback(name, sess)
+            await self._rollback(name, key, sess)
             # The board's `why` is the board's text: a hostile board could echo
             # the payload back, so the secrets it was sent are cut out of it.
             raise PairError(502, "board_rejected", why=_redact(why, secrets_sent))
@@ -458,21 +474,25 @@ class BlePairingManager:
         if sess is not None:
             await self._close_session(sess)
 
-    async def _rollback(self, name: str, sess: PairSession) -> None:
+    async def _rollback(self, name: str, key: bytes, sess: PairSession) -> None:
         """Undo a partial pair: unregister the node, dead-letter its key, and
         revoke any model key minted for it (no orphan gateway keys).
 
-        Uses `unregister_worker` + `revoke` (the existing revoke path) rather
-        than a bespoke delete, so a rolled-back node leaves no live
-        credential and no `get_workers()` entry -- the same state a never-
-        registered node would be in.
+        Only what THIS pairing wrote is undone: the registry entry is removed
+        only while it still carries this pairing's key, and the pairing row
+        is revoked only while it still holds that key (revoke_if_key), so a
+        failed provision can never unregister or revoke some other node.
+        confirm() refuses a name collision before anything is minted, so the
+        name here is one this pairing claimed.
         """
         try:
-            await self._cluster.unregister_worker(name)
+            current = self._cluster.get_worker(name)
+            if current is not None and bytes(current.signing_key or b"") == key:
+                await self._cluster.unregister_worker(name)
         except Exception:
             logger.exception("ble pairing rollback: failed to unregister '%s'", name)
         try:
-            await self._pairing_store.revoke(name)
+            await self._pairing_store.revoke_if_key(name, key)
         except Exception:
             logger.exception("ble pairing rollback: failed to revoke key for '%s'", name)
         if self._llm_enabled:
