@@ -76,3 +76,33 @@ def test_projects_archive_hits_correct_endpoint(monkeypatch):
     rc = _run(monkeypatch, ["projects", "archive", "p1"], fake)
     assert rc == 0
     assert ("POST", "/api/projects/p1/archive") in fake.calls
+
+
+def test_projects_canvas_original_hits_correct_endpoint(monkeypatch):
+    fake = _FakeClient()
+    rc = _run(monkeypatch, ["projects", "canvas-original", "p1", "el-1"], fake)
+    assert rc == 0
+    assert ("GET", "/api/projects/p1/canvas/elements/el-1/original") in fake.calls
+
+
+def test_projects_canvas_legacy_defaults_to_not_include_deleted(monkeypatch):
+    fake = _FakeClient()
+    rc = _run(monkeypatch, ["projects", "canvas-legacy", "p1"], fake)
+    assert rc == 0
+    assert ("GET", "/api/projects/p1/canvas/legacy") in fake.calls
+    assert fake.calls[-1][1] == "/api/projects/p1/canvas/legacy"
+
+
+def test_projects_canvas_legacy_include_deleted_flag(monkeypatch):
+    fake = _FakeClient()
+    rc = _run(monkeypatch, ["projects", "canvas-legacy", "p1", "--include-deleted"], fake)
+    assert rc == 0
+    assert ("GET", "/api/projects/p1/canvas/legacy") in fake.calls
+    assert fake.calls[-1][1] == "/api/projects/p1/canvas/legacy"
+
+
+def test_projects_canvas_export_tldr_hits_endpoint(monkeypatch):
+    fake = _FakeClient()
+    rc = _run(monkeypatch, ["projects", "canvas-export-tldr", "p1"], fake)
+    assert rc == 0
+    assert ("GET", "/api/projects/p1/canvas/snapshot.tldr") in fake.calls

@@ -407,6 +407,8 @@ async def build_connection_bundle(
     if has_canvas_read:
         apis["canvas_elements"] = f"/api/projects/{pid}/canvas/elements"
         apis["canvas_snapshot"] = f"/api/projects/{pid}/canvas/snapshot.png"
+        apis["canvas_original"] = f"/api/projects/{pid}/canvas/elements/{{eid}}/original"
+        apis["canvas_legacy"] = f"/api/projects/{pid}/canvas/legacy"
     if has_canvas_write:
         apis["canvas_element"] = f"/api/projects/{pid}/canvas/elements/{{eid}}"
     # Files routes key on the project SLUG (not the id) in the path.
