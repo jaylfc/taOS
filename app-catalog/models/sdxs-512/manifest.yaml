@@ -1,7 +1,7 @@
 id: sdxs-512
 name: SDXS 512 (1-step)
 type: model
-version: 0.9
+version: "0.9"
 license: OpenRAIL++
 capabilities:
 - image-generation
