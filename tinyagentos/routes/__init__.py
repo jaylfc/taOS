@@ -66,6 +66,11 @@ def register_all_routers(app):
     from tinyagentos.routes.settings import router as settings_router
     app.include_router(settings_router, dependencies=_csrf)
 
+    # Settings -> Lock screen. NOT on the settings router: that one is admin-
+    # only, and every signed-in user owns their own unlock method.
+    from tinyagentos.routes.lock_settings import router as lock_settings_router
+    app.include_router(lock_settings_router, dependencies=_csrf)
+
     from tinyagentos.routes.share import router as share_router
     app.include_router(share_router, dependencies=_csrf)
 

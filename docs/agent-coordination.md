@@ -202,6 +202,18 @@ escalating. When adding a route that reads a JSON body, use the `_json_object()`
 helper rather than parsing inline - it follows the module's existing
 `(value, error_response)` convention.
 
+**`POST /auth/swipe-unlock` mints a session with no credential, so it is
+fenced five ways.** It answers 200 only when the request is the device's own
+console (loopback AND no forwarding header), it is not a simple request (it
+carries `X-taOS-Console` or `Content-Type: application/json`, the gate every
+`/auth/lock-*` POST shares), the browser reports no cross-origin caller, the install has exactly one account, and that account
+chose "swipe" in Settings -> Lock screen (which costs its password, via
+`PUT /api/settings/lock`). Anything else is a 403 with no session; console
+refusals count against the same per-user throttle as `/auth/pin-login`
+(429 + `Retry-After`). An owner whose method is "password" or "swipe" also
+gets a 404 from `/auth/pin-login` even with a correct PIN. Do not drive either
+route from an agent: they exist for the kiosk's own screen.
+
 ## Gate on fresh CI, not stale rollups
 
 - Open the PR against `dev` and let the required checks run: the Python test
