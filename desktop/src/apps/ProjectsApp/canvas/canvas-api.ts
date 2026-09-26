@@ -116,4 +116,15 @@ export const canvasApi = {
   snapshotPngUrl(projectId: string): string {
     return `/api/projects/${projectId}/canvas/snapshot.png`;
   },
+
+  // Manual-recovery downloads. The .tldr opens in stock tldraw; the raw JSON is
+  // every element row (soft-deleted ones included and flagged) with the
+  // untouched payloads, so no drawing data is ever out of the user's reach.
+  snapshotTldrUrl(projectId: string): string {
+    return `/api/projects/${encodeURIComponent(projectId)}/canvas/snapshot.tldr`;
+  },
+
+  elementsJsonUrl(projectId: string): string {
+    return `/api/projects/${encodeURIComponent(projectId)}/canvas/elements?include_deleted=true`;
+  },
 };

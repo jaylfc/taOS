@@ -1,0 +1,2 @@
+- Projects canvas: a new "Backup" button (bottom right of the board) offers two recovery downloads, a `.tldr` file that opens in stock tldraw and a raw `.json` of every canvas element row. The button sits outside the drawing engine, so it keeps working through the Excalidraw migration.
+- `GET /api/projects/{id}/canvas/elements?include_deleted=true` returns soft-deleted rows as well, each flagged with `deleted: true|false`, keeps every payload (legacy `tldraw_shape` blobs included) untouched, and is served as a file attachment. The default listing is unchanged.
