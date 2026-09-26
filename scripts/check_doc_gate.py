@@ -4,6 +4,19 @@
 Blocks commits/PRs that change feature code without a matching doc update,
 unless the change carries an explicit "Docs-Reviewed: <why>" trailer.
 
+The trailer is scoped to the commit that carries it (tsk-2in3dj). In a
+`--base` range every non-merge commit is attributed the paths it touched
+(renames contribute both names; a merge commit's own diff is skipped, its
+parents are gated as ordinary commits), and a rule tripped by a path is
+waived only when EVERY commit in the range that touched that path carries a
+trailer covering the rule. A trailer on an unrelated or empty commit waives
+nothing; a path pushed after the trailer commit is still gated. Satisfaction
+by a doc edit stays PR-wide: a fragment or doc in any commit of the range
+satisfies the rule. An unscoped trailer covers every rule its commit trips;
+`Docs-Reviewed: [rule, rule] <why>` narrows it to the named rules, which is
+the only way a squash-shaped single commit can waive one rule and still be
+held to the others (a name that matches no rule waives nothing).
+
 Two layers:
   invariants  -- deterministic sanity checks (Layer A). Currently: every
                  scripts/, tinyagentos/, docs/, desktop/ path mentioned in the
@@ -412,11 +425,66 @@ def _path_diff_is_uses_pin_only(diff_output: str) -> bool:
     return True
 
 
+def _trailer_scope(line: str, trailer: str) -> tuple[set[str] | None, str] | None:
+    """Parse one commit-message line as a trailer.
+
+    Returns None when the line is not a usable trailer (wrong prefix, or no
+    non-empty reason after the prefix / after the scope). Otherwise returns
+    `(rule_names, why)` where `rule_names` is the set named in a leading
+    `[a, b]` scope, or None for an unscoped trailer that covers every rule
+    its commit trips. An empty scope `[]` and a scope with no reason after
+    it are both rejected, so a trailer cannot be narrowed into vouching for
+    nothing while still reading as an override in the log.
+    """
+    stripped = line.strip()
+    if not stripped.startswith(trailer):
+        return None
+    rest = stripped[len(trailer):].strip()
+    if not rest:
+        return None
+    if rest.startswith("["):
+        close = rest.find("]")
+        if close < 0:
+            return None, rest
+        names = {n.strip() for n in rest[1:close].split(",") if n.strip()}
+        why = rest[close + 1:].strip()
+        if not names or not why:
+            return None
+        return names, why
+    return None, rest
+
+
+def _commit_waivers(
+    commit_messages: list[str], trailer: str
+) -> list[set[str] | None | bool]:
+    """For each commit message: False when it carries no usable trailer,
+    None for an unscoped trailer, or the set of rule names it is scoped to."""
+    waivers: list[set[str] | None | bool] = []
+    for message in commit_messages:
+        scope: set[str] | None | bool = False
+        for line in message.splitlines():
+            parsed = _trailer_scope(line, trailer)
+            if parsed is not None:
+                scope = parsed[0]
+                break
+        waivers.append(scope)
+    return waivers
+
+
+def _waiver_covers(scope: set[str] | None | bool, rule_name: str) -> bool:
+    if scope is False:
+        return False
+    if scope is None:
+        return True
+    return rule_name in scope
+
+
 def evaluate_rules(
     changed_status: list[tuple[str, str]],
     commit_messages: list[str],
     config: dict,
     pin_only_paths: set[str] | None = None,
+    commit_paths: list[set[str]] | None = None,
 ) -> list[str]:
     """Layer B: run every configured rule against a changeset.
 
@@ -434,20 +502,36 @@ def evaluate_rules(
     pin_only_paths: paths whose modification changes only `uses:` action pins
     (a dependency-bot version bump); these are not structural and so never
     trigger a rule. Computed by _collect_pin_only_paths from the live diff.
+    commit_paths: parallel to commit_messages, the set of paths each commit
+    touched (both names of a rename; empty for a merge or an empty commit).
+    With it, a trailer waives a rule for a path only when every commit that
+    touched the path carries a trailer covering that rule; a path touched by
+    no attributed commit is never covered (fail closed). None means the
+    caller has no per-commit attribution (a single staged change, or a
+    legacy caller): every trailer then covers every path, which is the
+    single-commit meaning the commit-msg hook relies on.
     """
     trailer = get_trailer(config)
     rules = config.get("rules", [])
 
     if pin_only_paths is None:
         pin_only_paths = set()
+    if commit_paths is not None and len(commit_paths) != len(commit_messages):
+        raise ValueError(
+            f"commit_paths has {len(commit_paths)} entries for "
+            f"{len(commit_messages)} commit messages"
+        )
 
     all_paths = [path for status, path in changed_status if status in ("A", "M")]
+    waivers = _commit_waivers(commit_messages, trailer)
 
-    trailer_present = any(
-        line.strip().startswith(trailer) and line.strip()[len(trailer):].strip()
-        for message in commit_messages
-        for line in message.splitlines()
-    )
+    def covered(path: str, rule_name: str) -> bool:
+        if commit_paths is None:
+            return any(_waiver_covers(w, rule_name) for w in waivers)
+        touching = [w for w, paths in zip(waivers, commit_paths) if path in paths]
+        if not touching:
+            return False
+        return all(_waiver_covers(w, rule_name) for w in touching)
 
     failures: list[str] = []
     for rule in rules:
@@ -464,17 +548,22 @@ def evaluate_rules(
             and path not in pin_only_paths
         ]
 
-        triggered = any(_match_any(p, when_changed) for p in rule_structural_paths)
-        if not triggered:
+        triggering = [p for p in rule_structural_paths if _match_any(p, when_changed)]
+        if not triggering:
             continue
 
         doc_edited = any(_match_any(p, require_doc) for p in all_paths)
-        if doc_edited or trailer_present:
+        if doc_edited:
+            continue
+
+        uncovered = sorted({p for p in triggering if not covered(p, name)})
+        if not uncovered:
             continue
 
         failures.append(
-            f"{name} -- {hint} (edit one of: {', '.join(require_doc)}, "
-            f"or add a 'Docs-Reviewed: <why>' trailer)"
+            f"{name} -- {hint} (triggered by: {', '.join(uncovered)}; "
+            f"edit one of: {', '.join(require_doc)}, "
+            f"or add a 'Docs-Reviewed: <why>' trailer to the commit that changes them)"
         )
     return failures
 
@@ -515,14 +604,26 @@ def _git_commit_messages(base_ref: str) -> list[str]:
     return [m for m in out.split("\x00") if m.strip()]
 
 
-def _git_commits_with_messages(base_ref: str) -> list[tuple[str, str, str]]:
-    """Return (hash, author_name, message_body) for each commit in the range."""
-    # %x1e terminates each commit record and %x1f separates the three fields
-    # inside it. A record terminator distinct from the field separator is what
-    # makes this parseable: with one separator for both, the flat split cannot
-    # tell a new commit's hash from the previous commit's body.
-    out = _run_git(["log", f"{base_ref}..HEAD", "--format=%H%x1f%an%x1f%B%x1e"], ref=base_ref)
-    commits: list[tuple[str, str, str]] = []
+def _git_commit_attribution(base_ref: str) -> list[tuple[str, str, str, set[str]]]:
+    """Return (hash, author_name, message_body, touched_paths) for each commit
+    in `base_ref..HEAD`, from ONE `git log` call.
+
+    Record layout: %x1e opens each record, %x1f separates hash / author / body
+    and closes the body; -z then terminates the commit with NUL and lists the
+    commit's paths NUL-terminated (`--name-only`). `--no-renames` makes a
+    rename contribute BOTH its old and new name, so attribution never depends
+    on whether the net diff detected the rename. A merge commit lists no
+    paths (git log's default `--diff-merges=off`), so its own diff is skipped
+    and only its parents' commits are attributed, which is what an
+    update-branch merge needs. The legacy three-field layout (no trailing
+    %x1f, no paths) still parses, with an empty path set.
+    """
+    out = _run_git(
+        ["-c", "core.quotePath=false", "log", f"{base_ref}..HEAD",
+         "--format=%x1e%H%x1f%an%x1f%B%x1f", "--name-only", "-z", "--no-renames"],
+        ref=base_ref,
+    )
+    commits: list[tuple[str, str, str, set[str]]] = []
     for record in out.split("\x1e"):
         if not record.strip():
             continue
@@ -530,8 +631,17 @@ def _git_commits_with_messages(base_ref: str) -> list[tuple[str, str, str]]:
         if len(fields) < 3:
             continue
         commit_hash, author, body = fields[0], fields[1], fields[2]
-        commits.append((commit_hash.strip(), author, body))
+        paths: set[str] = set()
+        if len(fields) >= 4:
+            tail = fields[3].lstrip("\x00\n")
+            paths = {p for p in tail.split("\x00") if p}
+        commits.append((commit_hash.strip(), author, body, paths))
     return commits
+
+
+def _git_commits_with_messages(base_ref: str) -> list[tuple[str, str, str]]:
+    """Return (hash, author_name, message_body) for each commit in the range."""
+    return [(h, a, b) for h, a, b, _paths in _git_commit_attribution(base_ref)]
 
 
 def _collect_pin_only_paths(
@@ -566,16 +676,26 @@ def _collect_pin_only_paths(
     return pin_only
 
 
-def _log_trailer_usage(commits: list[tuple[str, str, str]], trailer: str) -> None:
-    """Print a log line for each commit that carries a non-empty trailer."""
-    for commit_hash, author, message in commits:
+def _log_trailer_usage(commits: list[tuple], trailer: str) -> None:
+    """Print a log line for each commit that carries a non-empty trailer.
+    Accepts (hash, author, message[, paths]) records; with paths present the
+    line also says which files the trailer vouches for, so a trailer on a
+    commit that touches nothing is visibly inert in the CI log."""
+    for commit in commits:
+        commit_hash, author, message = commit[0], commit[1], commit[2]
+        paths = commit[3] if len(commit) > 3 else None
         for line in message.splitlines():
-            stripped = line.strip()
-            if stripped.startswith(trailer) and stripped[len(trailer):].strip():
-                short_hash = commit_hash[:8]
-                why = stripped[len(trailer):].strip()
-                print(f"doc-gate: trailer override used in {short_hash} by {author}: {why}")
-                break
+            parsed = _trailer_scope(line, trailer)
+            if parsed is None:
+                continue
+            short_hash = commit_hash[:8]
+            why = line.strip()[len(trailer):].strip()
+            msg = f"doc-gate: trailer override used in {short_hash} by {author}: {why}"
+            if paths is not None:
+                covers = ", ".join(sorted(paths)) if paths else "no files (inert)"
+                msg += f" [covers: {covers}]"
+            print(msg)
+            break
 
 
 def get_trailer(config: dict) -> str:
@@ -629,10 +749,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.staged:
             changed = _git_changed_staged()
             commit_messages: list[str] = []
+            commit_paths: list[set[str]] | None = None
         else:
             changed = _git_changed_base(args.base)
-            commits_meta = _git_commits_with_messages(args.base)
-            commit_messages = [msg for _hash, _author, msg in commits_meta]
+            commits_meta = _git_commit_attribution(args.base)
+            commit_messages = [msg for _hash, _author, msg, _paths in commits_meta]
+            commit_paths = [paths for _hash, _author, _msg, paths in commits_meta]
             _log_trailer_usage(commits_meta, get_trailer(config))
     except GitCommandError as e:
         print(f"doc-gate: git error: {e}", file=sys.stderr)
@@ -645,7 +767,10 @@ def main(argv: list[str] | None = None) -> int:
     # any identity is still red.
     pin_only_paths = _collect_pin_only_paths(changed, args.base)
 
-    failures = evaluate_rules(changed, commit_messages, config, pin_only_paths=pin_only_paths)
+    failures = evaluate_rules(
+        changed, commit_messages, config,
+        pin_only_paths=pin_only_paths, commit_paths=commit_paths,
+    )
     return _report(failures)
 
 
