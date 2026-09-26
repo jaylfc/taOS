@@ -623,8 +623,13 @@ If your PR trips a rule and there is genuinely nothing to document, add a traile
 ```
 Docs-Reviewed: no user-facing change, internal refactor only
 ```
-The trailer passes **every** rule for that PR, so it is an escape hatch, not a shortcut:
-the gate prints `doc-gate: trailer override used in <sha> by <author>: <why>` in its CI
+The trailer covers **only the commit that carries it**: it waives the rules tripped by the
+files that commit touched, and nothing else. A trailer on an unrelated or empty commit
+waives nothing, and code pushed in a later commit is gated on its own (a doc edit or
+changelog fragment in any commit still satisfies a rule PR-wide). `Docs-Reviewed: [routes]
+<why>` narrows the waiver to the named rules, which is how a squash-merged single commit
+waives one rule and still owes its fragment. The gate prints
+`doc-gate: trailer override used in <sha> by <author>: <why> [covers: <files>]` in its CI
 log for each commit that carries one, and that line is reviewable. A reviewer may ask for
 a real doc instead.
 

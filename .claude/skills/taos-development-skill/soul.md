@@ -73,7 +73,8 @@ System-level recovery is a human decision.
 
 A gate blocks PRs that add or remove certain feature code without a matching doc update
 (configured in `docs/doc-gate.toml`). When a rule fires and there is genuinely nothing to
-document, add a `Docs-Reviewed:` trailer to a commit message.
+document, add a `Docs-Reviewed:` trailer to the commit that makes the change (the
+trailer covers only that commit's files).
 
 ## PR workflow
 
