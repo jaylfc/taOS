@@ -639,7 +639,10 @@ The registry-JWT surface, by scope:
   author is taken from the verified token, never from the request body.
 - **canvas_read**: `GET .../canvas/elements`, `.../canvas/watch-projection`,
   `.../canvas/snapshot.png|.tldr`, `.../canvas/stream`. **canvas_write**: `POST .../canvas/elements`,
-  `PATCH|DELETE .../canvas/elements/{id}`.
+  `PATCH|DELETE .../canvas/elements/{id}`. A `PATCH` payload replaces the element's
+  payload, except that a `user_shape`'s stored `tldraw_shape` is always kept verbatim
+  (omitting or changing it has no effect, and it counts toward the 64 KiB cap). `DELETE`
+  is a soft delete; the row stays recoverable.
 - **files_read**: `GET /api/projects/{slug}/files` (list), `.../files/watch`,
   `GET .../files/{path}` (download), `.../trash`, `.../stats`. **files_write**:
   `POST .../files/upload` (multipart), `POST .../mkdir`, `DELETE .../files/{path}`,
