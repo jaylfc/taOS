@@ -5400,7 +5400,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       fetch("/auth/swipe-unlock", {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-taOS-Console": "1" },
         body: "{}"
       }).then(function (r) {
         swipeBusy = false;
@@ -9321,7 +9321,9 @@ async def swipe_unlock(request: Request):
     failure is a 403 with no session:
 
     * the request is the device's own console (``is_console_origin``: loopback
-      and NO forwarding header -- behind a proxy every LAN request is loopback);
+      and NO forwarding header -- behind a proxy every LAN request is loopback)
+      AND is not a simple request (``_lock_post_refusal``, the gate on every
+      /auth/lock-* POST: X-taOS-Console or Content-Type: application/json);
     * the browser does not report a cross-origin caller;
     * the install has exactly one account (``lock_screen_user``) -- on a shared
       device a swipe cannot know whose session to open;
@@ -9336,10 +9338,14 @@ async def swipe_unlock(request: Request):
     """
     auth_mgr = request.app.state.auth
     refused = JSONResponse({"error": "swipe unlock is not available"}, status_code=403)
-    # Off-console callers are refused BEFORE the throttle is touched: a LAN
-    # client must not be able to push the owner's PIN into a lockout.
-    if not _request_is_console(request):
-        return refused
+    # Off-console callers, and simple (form / no-cors) requests, are refused
+    # BEFORE the throttle is touched: neither a LAN client nor a web page in a
+    # browser on this device may push the owner's PIN into a lockout. The
+    # simple-request gate is the one every /auth/lock-* POST uses; see
+    # LOCK_CONSOLE_HEADER.
+    lock_refusal = _lock_post_refusal(request)
+    if lock_refusal is not None:
+        return lock_refusal
     if not _same_origin_or_absent(request):
         return refused
 

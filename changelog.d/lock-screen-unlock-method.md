@@ -5,6 +5,7 @@
   install, with or without a PIN.
   Swipe opens taOS through the new `POST /auth/swipe-unlock`, which is honoured
   only from the device's own console (no forwarding headers, no cross-origin
-  caller), only on a single-account install, only for an owner who chose Swipe,
+  caller, and, like every lock-screen POST, never from a simple form or no-cors
+  request: it needs `X-taOS-Console` or a JSON body), only on a single-account install, only for an owner who chose Swipe,
   and under the same throttle as PIN sign-in. Picking Password now really
   turns PIN entry off: a PIN that still exists is refused.

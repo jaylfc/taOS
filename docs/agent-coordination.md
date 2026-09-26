@@ -203,9 +203,10 @@ helper rather than parsing inline - it follows the module's existing
 `(value, error_response)` convention.
 
 **`POST /auth/swipe-unlock` mints a session with no credential, so it is
-fenced four ways.** It answers 200 only when the request is the device's own
-console (loopback AND no forwarding header), the browser reports no
-cross-origin caller, the install has exactly one account, and that account
+fenced five ways.** It answers 200 only when the request is the device's own
+console (loopback AND no forwarding header), it is not a simple request (it
+carries `X-taOS-Console` or `Content-Type: application/json`, the gate every
+`/auth/lock-*` POST shares), the browser reports no cross-origin caller, the install has exactly one account, and that account
 chose "swipe" in Settings -> Lock screen (which costs its password, via
 `PUT /api/settings/lock`). Anything else is a 403 with no session; console
 refusals count against the same per-user throttle as `/auth/pin-login`

@@ -43,17 +43,31 @@ def app(tmp_path, monkeypatch):
     return application
 
 
-def _client(app, host):
+def _client(app, host, console_header=True):
+    """A client at *host*. By default it sends X-taOS-Console, as the lock
+    screen does, so a refusal test below measures the one condition it names
+    and not the simple-request gate (#3204) -- which has its own tests, driven
+    through ``bare_console``."""
+    headers = {"User-Agent": UA}
+    if console_header:
+        headers["X-taOS-Console"] = "1"
     transport = ASGITransport(app=app, client=(host, 51234))
     return AsyncClient(
-        transport=transport, base_url="http://localhost:6969",
-        headers={"User-Agent": UA},
+        transport=transport, base_url="http://localhost:6969", headers=headers,
     )
 
 
 @pytest_asyncio.fixture()
 async def console(app):
     async with _client(app, "127.0.0.1") as c:
+        yield c
+
+
+@pytest_asyncio.fixture()
+async def bare_console(app):
+    """Loopback with no X-taOS-Console: what a web page in a browser on the
+    device can send with a form or a no-cors fetch."""
+    async with _client(app, "127.0.0.1", console_header=False) as c:
         yield c
 
 
@@ -205,6 +219,92 @@ class TestSwipeUnlockRefuses:
             await lan.post("/auth/swipe-unlock")
         r = await console.post("/auth/swipe-unlock")
         assert r.status_code == 200
+
+
+class TestSwipeUnlockRefusesSimpleRequests:
+    """#3204 (M5): like every /auth/lock-* POST, swipe-unlock is pre-auth, so
+    loopback alone cannot be the gate -- a page open in a browser on the device
+    is loopback too. A simple request (a form, or a no-cors fetch, which can
+    set neither a custom header nor Content-Type: application/json) is refused
+    with every other condition true; with the header, the route's own rules
+    decide."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kwargs", [
+        {},
+        {"content": b"{}", "headers": {"Content-Type": "text/plain"}},
+        {"content": b"{}", "headers": {"Content-Type": "text/plain;charset=UTF-8"}},
+        {"data": {"x": "1"}},
+        {"files": {"f": ("a.txt", b"x")}},
+        {"content": b"{}", "headers": {"X-taOS-Console": "  "}},
+    ], ids=["no-body", "text-plain", "text-plain-charset", "form",
+            "multipart", "blank-header"])
+    async def test_a_simple_request_is_refused(self, app, bare_console, kwargs):
+        _force_method(app, "owner", "swipe")
+        r = await bare_console.post("/auth/swipe-unlock", **kwargs)
+        assert r.status_code == 403, r.text
+        assert "taos_session" not in r.cookies
+        assert r.json()["error"] == "console header required"
+
+    @pytest.mark.asyncio
+    async def test_simple_refusals_do_not_touch_the_throttle(self, app, bare_console, console):
+        """Sent while the method is NOT swipe, where a request that got past the
+        gate would count as a failed attempt: a page in a local browser must not
+        be able to push the owner into a lockout."""
+        _force_method(app, "owner", "password")
+        for _ in range(20):
+            await bare_console.post("/auth/swipe-unlock", content=b"{}",
+                                    headers={"Content-Type": "text/plain"})
+        _force_method(app, "owner", "swipe")
+        r = await console.post("/auth/swipe-unlock")
+        assert r.status_code == 200
+        assert r.cookies.get("taos_session")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kwargs", [
+        {"headers": {"X-taOS-Console": "1"}},
+        {"json": {}},
+    ], ids=["console-header", "application-json"])
+    async def test_a_non_simple_request_reaches_the_route_rules(self, app, bare_console, kwargs):
+        # swipe chosen: opens.
+        _force_method(app, "owner", "swipe")
+        r = await bare_console.post("/auth/swipe-unlock", **kwargs)
+        assert r.status_code == 200, r.text
+        assert r.cookies.get("taos_session")
+        bare_console.cookies.clear()
+        # swipe NOT chosen: the header gets it past M5 and no further.
+        _force_method(app, "owner", "password")
+        r = await bare_console.post("/auth/swipe-unlock", **kwargs)
+        assert r.status_code == 403
+        assert r.json()["error"] == "swipe unlock is not available"
+        assert "taos_session" not in r.cookies
+
+    @pytest.mark.asyncio
+    async def test_the_header_does_not_open_it_from_the_lan(self, app):
+        _force_method(app, "owner", "swipe")
+        async with _client(app, "192.168.1.10") as lan_with_header:
+            r = await lan_with_header.post("/auth/swipe-unlock", json={})
+        assert r.status_code == 403
+        assert "taos_session" not in r.cookies
+
+    @pytest.mark.asyncio
+    async def test_the_header_does_not_excuse_a_cross_origin_page(self, app, console):
+        _force_method(app, "owner", "swipe")
+        r = await console.post("/auth/swipe-unlock", json={},
+                               headers={"Sec-Fetch-Site": "cross-site"})
+        assert r.status_code == 403
+        assert "taos_session" not in r.cookies
+
+    def test_the_page_sends_the_header_on_swipe_unlock(self):
+        import re
+
+        from tinyagentos.routes import auth as auth_routes
+
+        js = open(auth_routes.__file__, encoding="utf-8").read()
+        calls = re.findall(r'fetch\("/auth/swipe-unlock",\s*\{(.*?)\}\)', js, flags=re.S)
+        assert len(calls) == 1, calls
+        assert 'method: "POST"' in calls[0]
+        assert '"X-taOS-Console": "1"' in calls[0]
 
 
 # --------------------------------------------------------------------------- #
