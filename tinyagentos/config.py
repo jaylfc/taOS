@@ -85,6 +85,14 @@ class AppConfig:
     # (httpx.AsyncClient(proxy=...) per-request). Empty = direct connection.
     # Nothing else in taOS reads this field or changes its egress behaviour.
     lora_ingest_proxy_url: str = ""
+    # The device this controller runs on. ``class`` is "auto" (read from
+    # hardware._detect_device_class: the taos-kiosk unit marks a taOSmobile
+    # handset), or an operator override: "mobile" / "desktop".
+    device: dict = field(default_factory=lambda: {"class": "auto"})
+    # The system taOS Agent. ``framework`` is "auto" (picoclaw on a mobile
+    # device, opencode elsewhere), or an operator override: "opencode" /
+    # "picoclaw". See taos_agent_runtime.decide_framework.
+    taos_agent: dict = field(default_factory=lambda: {"framework": "auto"})
     config_path: Path | None = None
 
     def to_dict(self) -> dict:
@@ -113,6 +121,10 @@ class AppConfig:
             d["github_app_id"] = self.github_app_id
         if self.lora_ingest_proxy_url:
             d["lora_ingest_proxy_url"] = self.lora_ingest_proxy_url
+        if (self.device or {}).get("class", "auto") != "auto":
+            d["device"] = self.device
+        if (self.taos_agent or {}).get("framework", "auto") != "auto":
+            d["taos_agent"] = self.taos_agent
         return d
 
 # rkllama's taOS default port moved from the upstream 8080 to 7833. Installs
@@ -230,6 +242,11 @@ def load_config(path: Path) -> AppConfig:
         taosmd_restart_cmd=str(data.get("taosmd_restart_cmd", "") or ""),
         github_app_id=str(data.get("github_app_id", "") or ""),
         lora_ingest_proxy_url=str(data.get("lora_ingest_proxy_url", "") or ""),
+        device=dict(data["device"]) if isinstance(data.get("device"), dict) else {"class": "auto"},
+        taos_agent=(
+            dict(data["taos_agent"]) if isinstance(data.get("taos_agent"), dict)
+            else {"framework": "auto"}
+        ),
         config_path=path,
         wallhaven_api_key=wallhaven_api_key,
     )

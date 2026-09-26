@@ -1245,3 +1245,378 @@ class TestEndToEndPinOnlyWorkflowBump:
         rc = dg.main(["--config", str(cfg), "diff-gate", "--base", "HEAD~1"])
         assert rc == dg.EXIT_VIOLATION
         assert "contributor-skill" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# tsk-2in3dj: a Docs-Reviewed trailer is scoped to the commit that carries it.
+#
+# Before the fix `evaluate_rules` computed one PR-wide `trailer_present` over
+# every commit message in the range and applied it to every rule, so a trailer
+# on an unrelated (even empty) commit waived EVERY rule for EVERY file pushed
+# later (#2561 shipped a rebuilt contacts table and new handshake routes with
+# no changelog fragment behind a "retrigger CI" trailer).
+# ---------------------------------------------------------------------------
+
+SCOPED_TRAILER_CONFIG_TOML = (
+    '[gate]\ntrailer = "Docs-Reviewed:"\n\n'
+    '[[rules]]\n'
+    'name = "routes"\n'
+    'on_modify = true\n'
+    'when_changed = ["tinyagentos/routes/*.py"]\n'
+    'require_doc = ["docs/agent-coordination.md"]\n'
+    'hint = "an API route module was added, removed, or modified"\n\n'
+    '[[rules]]\n'
+    'name = "user-visible-changelog"\n'
+    'on_modify = true\n'
+    'when_changed = ["tinyagentos/**", "desktop/src/**"]\n'
+    'require_doc = ["CHANGELOG.md", "changelog.d/*.md"]\n'
+    'hint = "user-visible behaviour changed"\n\n'
+    '[[rules]]\n'
+    'name = "contributor-skill"\n'
+    'on_modify = true\n'
+    'when_changed = [".github/workflows/*.yml"]\n'
+    'require_doc = ["docs/*.md"]\n'
+    'hint = "CI changed"\n'
+)
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout
+
+
+def _commit_files(repo: Path, message: str, files: dict[str, str]) -> str:
+    """Write `files`, stage exactly those paths and commit with `message`.
+    An empty `files` makes an empty commit (a "retrigger CI" shape)."""
+    for rel, content in files.items():
+        full = repo / rel
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(content, encoding="utf-8")
+        _git(repo, "add", rel)
+    _git(repo, "commit", "--allow-empty", "-m", message)
+    return _git(repo, "rev-parse", "HEAD").strip()
+
+
+class TestTrailerScopedToItsCommit:
+    """End-to-end over a real temp git repo through `main()` (no git mocking):
+    the fixture range the card demands, where the trailer commit is an
+    ANCESTOR of the commit that trips a rule."""
+
+    def _setup(self, tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main")
+        _git(repo, "config", "user.email", "dev@example.com")
+        _git(repo, "config", "user.name", "dev")
+        _git(repo, "config", "commit.gpgsign", "false")
+        cfg = repo / "docs" / "doc-gate.toml"
+        cfg.parent.mkdir()
+        cfg.write_text(SCOPED_TRAILER_CONFIG_TOML)
+        _commit_files(repo, "initial", {
+            "tinyagentos/routes/foo.py": "# foo\n",
+            "tinyagentos/routes/old.py": "# old\n",
+            "NOTES.md": "# notes\n",
+            ".github/workflows/ci.yml": (
+                "name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
+                "    steps:\n      - uses: actions/checkout@v4\n"
+            ),
+        })
+        _git(repo, "branch", "base")
+        _git(repo, "checkout", "-q", "-b", "pr")
+        monkeypatch.setattr(dg, "REPO_ROOT", repo)
+        return repo, cfg
+
+    def _gate(self, cfg: Path, base: str = "base") -> int:
+        return dg.main(["--config", str(cfg), "diff-gate", "--base", base])
+
+    def test_ancestor_trailer_does_not_waive_a_later_commit(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """THE #2561 shape: commit 1 carries the trailer and touches only file
+        A (NOTES.md); commit 2 touches gated file B with no fragment and no
+        doc. The gate must exit 1 naming user-visible-changelog AND B."""
+        repo, cfg = self._setup(tmp_path, monkeypatch)
+        _commit_files(repo, "notes\n\nDocs-Reviewed: retrigger CI; no API surface changes\n",
+                      {"NOTES.md": "# notes\nmore\n"})
+        _commit_files(repo, "rebuild contacts", {"tinyagentos/routes/foo.py": "# foo v2\n"})
+        rc = self._gate(cfg)
+        out = capsys.readouterr().out
+        assert rc == dg.EXIT_VIOLATION, out
+        assert "DOC-GATE FAIL: user-visible-changelog" in out
+        assert "DOC-GATE FAIL: routes" in out
+        assert "tinyagentos/routes/foo.py" in out
+
+    def test_empty_retrigger_commit_with_trailer_waives_nothing(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        repo, cfg = self._setup(tmp_path, monkeypatch)
+        _commit_files(repo, "rebuild contacts", {"tinyagentos/routes/foo.py": "# foo v2\n"})
+        _commit_files(repo, "retrigger\n\nDocs-Reviewed: retrigger CI\n", {})
+        rc = self._gate(cfg)
+        out = capsys.readouterr().out
+        assert rc == dg.EXIT_VIOLATION, out
+        assert "DOC-GATE FAIL: user-visible-changelog" in out
+
+    def test_trailer_on_the_commit_that_touches_b_still_waives(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """Control: the same two commits, trailer on the one touching B."""
+        repo, cfg = self._setup(tmp_path, monkeypatch)
+        _commit_files(repo, "notes", {"NOTES.md": "# notes\nmore\n"})
+        _commit_files(repo, "rebuild contacts\n\nDocs-Reviewed: internal only\n",
+                      {"tinyagentos/routes/foo.py": "# foo v2\n"})
+        rc = self._gate(cfg)
+        out = capsys.readouterr().out
+        assert rc == dg.EXIT_OK, out
+        assert "trailer override used in" in out
+
+    def test_doc_edit_anywhere_in_range_still_satisfies(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """Satisfaction stays PR-wide: a fragment and a doc in ANOTHER commit
+        satisfy the rules the route commit trips (no trailer at all)."""
+        repo, cfg = self._setup(tmp_path, monkeypatch)
+        _commit_files(repo, "rebuild contacts", {"tinyagentos/routes/foo.py": "# foo v2\n"})
+        _commit_files(repo, "docs", {
+            "changelog.d/1-foo.md": "- foo\n",
+            "docs/agent-coordination.md": "# coord\n",
+        })
+        rc = self._gate(cfg)
+        assert rc == dg.EXIT_OK, capsys.readouterr().out
+
+    def test_later_untrailed_commit_to_the_same_file_is_gated(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """A trailer waives B only for ITS commit; a later plain commit that
+        touches B again is still gated."""
+        repo, cfg = self._setup(tmp_path, monkeypatch)
+        _commit_files(repo, "first\n\nDocs-Reviewed: internal only\n",
+                      {"tinyagentos/routes/foo.py": "# foo v2\n"})
+        _commit_files(repo, "second", {"tinyagentos/routes/foo.py": "# foo v3\n"})
+        rc = self._gate(cfg)
+        out = capsys.readouterr().out
+        assert rc == dg.EXIT_VIOLATION, out
+        assert "tinyagentos/routes/foo.py" in out
+
+    def test_squash_single_commit_scoped_trailer_waives_only_named_rule(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """Squash shape: ONE commit carries everything. A trailer whose stated
+        scope names `routes` waives that rule only; the fragment rule the
+        same commit trips is still enforced."""
+        repo, cfg = self._setup(tmp_path, monkeypatch)
+        _commit_files(repo, "squash\n\nDocs-Reviewed: [routes] no API surface change\n",
+                      {"tinyagentos/routes/foo.py": "# foo v2\n"})
+        rc = self._gate(cfg)
+        out = capsys.readouterr().out
+        assert rc == dg.EXIT_VIOLATION, out
+        assert "DOC-GATE FAIL: user-visible-changelog" in out
+        assert "DOC-GATE FAIL: routes" not in out
+
+    def test_squash_single_commit_unscoped_trailer_waives_its_files(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """An unscoped trailer keeps today's single-commit meaning: every rule
+        tripped by the files of THAT commit is waived."""
+        repo, cfg = self._setup(tmp_path, monkeypatch)
+        _commit_files(repo, "squash\n\nDocs-Reviewed: no API surface change\n",
+                      {"tinyagentos/routes/foo.py": "# foo v2\n"})
+        rc = self._gate(cfg)
+        assert rc == dg.EXIT_OK, capsys.readouterr().out
+
+    def test_scoped_trailer_naming_unknown_rule_waives_nothing(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        repo, cfg = self._setup(tmp_path, monkeypatch)
+        _commit_files(repo, "squash\n\nDocs-Reviewed: [no-such-rule] whatever\n",
+                      {"tinyagentos/routes/foo.py": "# foo v2\n"})
+        rc = self._gate(cfg)
+        out = capsys.readouterr().out
+        assert rc == dg.EXIT_VIOLATION, out
+        assert "DOC-GATE FAIL: user-visible-changelog" in out
+        assert "DOC-GATE FAIL: routes" in out
+
+    def test_rename_in_trailer_commit_is_covered_under_new_name(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        repo, cfg = self._setup(tmp_path, monkeypatch)
+        _git(repo, "mv", "tinyagentos/routes/old.py", "tinyagentos/routes/new.py")
+        _git(repo, "commit", "-q", "-m", "rename\n\nDocs-Reviewed: pure rename\n")
+        rc = self._gate(cfg)
+        assert rc == dg.EXIT_OK, capsys.readouterr().out
+
+    def test_rename_in_untrailed_commit_is_gated_under_new_name(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        repo, cfg = self._setup(tmp_path, monkeypatch)
+        _commit_files(repo, "notes\n\nDocs-Reviewed: unrelated\n", {"NOTES.md": "x\n"})
+        _git(repo, "mv", "tinyagentos/routes/old.py", "tinyagentos/routes/new.py")
+        _git(repo, "commit", "-q", "-m", "rename")
+        rc = self._gate(cfg)
+        out = capsys.readouterr().out
+        assert rc == dg.EXIT_VIOLATION, out
+        assert "tinyagentos/routes/new.py" in out
+
+    def test_update_branch_merge_commit_is_skipped_but_parents_gated(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """base advances with a route change of its own; the PR merges base in
+        (update-branch). The merge's own diff is not gated (base's change is
+        not the PR's), while the PR's own commits still are."""
+        repo, cfg = self._setup(tmp_path, monkeypatch)
+        _commit_files(repo, "pr work\n\nDocs-Reviewed: internal only\n",
+                      {"tinyagentos/routes/foo.py": "# foo v2\n"})
+        _git(repo, "checkout", "-q", "base")
+        _commit_files(repo, "base moves", {"tinyagentos/routes/bar.py": "# bar\n"})
+        _git(repo, "checkout", "-q", "pr")
+        _git(repo, "merge", "-q", "--no-edit", "base")
+        rc = self._gate(cfg)
+        assert rc == dg.EXIT_OK, capsys.readouterr().out
+        # And the same merge does not launder an untrailed PR commit.
+        _commit_files(repo, "more pr work", {"tinyagentos/routes/foo.py": "# foo v3\n"})
+        rc = self._gate(cfg)
+        out = capsys.readouterr().out
+        assert rc == dg.EXIT_VIOLATION, out
+        assert "tinyagentos/routes/foo.py" in out
+        assert "tinyagentos/routes/bar.py" not in out
+
+    def test_pin_only_workflow_bump_stays_green_without_trailer(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        repo, cfg = self._setup(tmp_path, monkeypatch)
+        wf = repo / ".github" / "workflows" / "ci.yml"
+        _commit_files(repo, "bump", {
+            ".github/workflows/ci.yml": wf.read_text().replace("checkout@v4", "checkout@v5"),
+        })
+        rc = self._gate(cfg)
+        assert rc == dg.EXIT_OK, capsys.readouterr().out
+
+    def test_staged_mode_still_red_without_commits(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        repo, cfg = self._setup(tmp_path, monkeypatch)
+        (repo / "tinyagentos" / "routes" / "foo.py").write_text("# foo v2\n")
+        _git(repo, "add", "tinyagentos/routes/foo.py")
+        rc = dg.main(["--config", str(cfg), "diff-gate", "--staged"])
+        out = capsys.readouterr().out
+        assert rc == dg.EXIT_VIOLATION, out
+        assert "tinyagentos/routes/foo.py" in out
+
+
+class TestEvaluateRulesCommitPaths:
+    """Unit level: `commit_paths` attributes each message to the files its
+    commit touched; None keeps the legacy every-trailer-covers-everything
+    meaning for callers with no per-commit information."""
+
+    CONFIG = {
+        "gate": {"trailer": "Docs-Reviewed:"},
+        "rules": [
+            {
+                "name": "routes",
+                "on_modify": True,
+                "when_changed": ["tinyagentos/routes/*.py"],
+                "require_doc": ["docs/agent-coordination.md"],
+                "hint": "route changed",
+            },
+            {
+                "name": "user-visible-changelog",
+                "on_modify": True,
+                "when_changed": ["tinyagentos/**"],
+                "require_doc": ["changelog.d/*.md"],
+                "hint": "user-visible behaviour changed",
+            },
+        ],
+    }
+
+    def test_trailer_on_other_commit_does_not_cover(self):
+        changed = [("M", "NOTES.md"), ("M", "tinyagentos/routes/foo.py")]
+        messages = ["notes\n\nDocs-Reviewed: unrelated\n", "route"]
+        paths = [{"NOTES.md"}, {"tinyagentos/routes/foo.py"}]
+        failures = dg.evaluate_rules(changed, messages, self.CONFIG, commit_paths=paths)
+        assert _failure_names(failures) == ["routes", "user-visible-changelog"]
+        assert all("tinyagentos/routes/foo.py" in f for f in failures)
+
+    def test_trailer_on_touching_commit_covers(self):
+        changed = [("M", "NOTES.md"), ("M", "tinyagentos/routes/foo.py")]
+        messages = ["notes", "route\n\nDocs-Reviewed: internal\n"]
+        paths = [{"NOTES.md"}, {"tinyagentos/routes/foo.py"}]
+        assert dg.evaluate_rules(changed, messages, self.CONFIG, commit_paths=paths) == []
+
+    def test_path_touched_by_no_attributed_commit_is_not_covered(self):
+        """A net-diff path no non-merge commit touched (an evil merge) cannot
+        be vouched for by any trailer: fail closed."""
+        changed = [("M", "tinyagentos/routes/foo.py")]
+        messages = ["merge\n\nDocs-Reviewed: resolved conflicts\n"]
+        failures = dg.evaluate_rules(changed, messages, self.CONFIG, commit_paths=[set()])
+        assert _failure_names(failures) == ["routes", "user-visible-changelog"]
+
+    def test_none_commit_paths_keeps_legacy_pr_wide_meaning(self):
+        changed = [("M", "NOTES.md"), ("M", "tinyagentos/routes/foo.py")]
+        messages = ["notes\n\nDocs-Reviewed: unrelated\n", "route"]
+        assert dg.evaluate_rules(changed, messages, self.CONFIG) == []
+
+    def test_scoped_trailer_waives_only_named_rules(self):
+        changed = [("M", "tinyagentos/routes/foo.py")]
+        messages = ["route\n\nDocs-Reviewed: [routes] no surface change\n"]
+        failures = dg.evaluate_rules(
+            changed, messages, self.CONFIG, commit_paths=[{"tinyagentos/routes/foo.py"}]
+        )
+        assert _failure_names(failures) == ["user-visible-changelog"]
+        both = ["route\n\nDocs-Reviewed: [routes, user-visible-changelog] both\n"]
+        assert dg.evaluate_rules(
+            changed, both, self.CONFIG, commit_paths=[{"tinyagentos/routes/foo.py"}]
+        ) == []
+
+    def test_scoped_trailer_without_reason_is_not_a_trailer(self):
+        changed = [("M", "tinyagentos/routes/foo.py")]
+        messages = ["route\n\nDocs-Reviewed: [routes]\n"]
+        failures = dg.evaluate_rules(
+            changed, messages, self.CONFIG, commit_paths=[{"tinyagentos/routes/foo.py"}]
+        )
+        assert _failure_names(failures) == ["routes", "user-visible-changelog"]
+
+    def test_commit_paths_length_mismatch_is_an_error(self):
+        with pytest.raises(ValueError):
+            dg.evaluate_rules([], ["a", "b"], self.CONFIG, commit_paths=[set()])
+
+    def test_parse_trailer_scope(self):
+        assert dg._trailer_scope("Docs-Reviewed: why", "Docs-Reviewed:") == (None, "why")
+        assert dg._trailer_scope("Docs-Reviewed: [routes] why", "Docs-Reviewed:") == (
+            {"routes"}, "why")
+        assert dg._trailer_scope(
+            "Docs-Reviewed: [routes,agent-api , apps] why", "Docs-Reviewed:"
+        ) == ({"routes", "agent-api", "apps"}, "why")
+        assert dg._trailer_scope("Docs-Reviewed:", "Docs-Reviewed:") is None
+        assert dg._trailer_scope("Docs-Reviewed: [routes]", "Docs-Reviewed:") is None
+        assert dg._trailer_scope("Docs-Reviewed: []  why", "Docs-Reviewed:") is None
+        assert dg._trailer_scope("unrelated line", "Docs-Reviewed:") is None
+
+
+class TestCommitAttributionParsing:
+    """The single `git log` call now also carries each commit's touched paths
+    (`--name-only -z --no-renames`), so a rename contributes BOTH names and a
+    merge commit contributes none."""
+
+    LOG_OUTPUT = (
+        "\x1eaaa1\x1fdev\x1fMerge branch 'base' into pr\n\x1f\x00"
+        "\x1ebbb2\x1fdev\x1fc2\n\x1f\x00\ntinyagentos/routes/old.py\x00tinyagentos/routes/new.py\x00"
+        "\x1eccc3\x1fdev\x1fc1\n\nDocs-Reviewed: only b\n\x1f\x00\nb\x00"
+    )
+
+    def _parse(self, monkeypatch):
+        monkeypatch.setattr(dg, "_run_git", lambda args, ref=None: self.LOG_OUTPUT)
+        return dg._git_commit_attribution("base")
+
+    def test_paths_per_commit(self, monkeypatch):
+        commits = self._parse(monkeypatch)
+        assert [c[0] for c in commits] == ["aaa1", "bbb2", "ccc3"]
+        assert commits[0][3] == set()
+        assert commits[1][3] == {"tinyagentos/routes/old.py", "tinyagentos/routes/new.py"}
+        assert commits[2][3] == {"b"}
+        assert "Docs-Reviewed: only b" in commits[2][2]
+
+    def test_commits_with_messages_wrapper_drops_paths(self, monkeypatch):
+        commits = self._parse(monkeypatch)
+        monkeypatch.setattr(dg, "_run_git", lambda args, ref=None: self.LOG_OUTPUT)
+        assert dg._git_commits_with_messages("base") == [c[:3] for c in commits]

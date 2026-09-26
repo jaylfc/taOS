@@ -1,28 +1,25 @@
-id: excalidraw
-name: Excalidraw
-type: service
 category: productivity
-version: 0.17.0
-description: "Collaborative whiteboard — agents can generate and share diagrams and sketches"
-homepage: https://excalidraw.com
-license: MIT
-
-requires:
-  ram_mb: 128
-  disk_mb: 200
-  ports: [3000]
-
-install:
-  method: docker
-  image: excalidraw/excalidraw:0.17.0
-  ports: [3000]
-
-lifecycle:
-  health_check: "curl -sf http://localhost:3000"
-
+description: "Collaborative whiteboard \u2014 agents can generate and share diagrams\
+  \ and sketches"
 hardware_tiers:
   arm-npu-16gb: full
   arm-npu-32gb: full
+  cpu-only: full
   x86-cuda-12gb: full
   x86-vulkan-8gb: full
-  cpu-only: full
+homepage: https://excalidraw.com
+id: excalidraw
+install:
+  image: excalidraw/excalidraw:0.17.0
+  method: docker
+  ports:
+  - 3000
+license: MIT
+lifecycle:
+  health_check: curl -sf http://localhost:3000
+name: Excalidraw
+requires:
+  disk_mb: 200
+  ram_mb: 128
+type: service
+version: 0.17.0

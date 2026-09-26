@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS cluster_workers (
     degraded            INTEGER NOT NULL DEFAULT 0,
     degraded_reason     TEXT,
     free_vram_mb        INTEGER,
-    used_vram_mb        INTEGER
+    used_vram_mb        INTEGER,
+    kind                TEXT NOT NULL DEFAULT 'worker'
 );
 
 -- Controller generation table for split-brain protection (Fix 2).
@@ -83,6 +84,25 @@ class WorkerRegistryStore(BaseStore):
             )
             await self._db.commit()
 
+    async def _post_init(self) -> None:
+        """Retrofit `kind` onto a database created before taOSusb BLE pairing
+        (S1). Guarded ALTER so existing rows gain the column with a safe
+        default ('worker') without a destructive migration -- mirrors
+        pairing_store.py's blocked/revoked retrofit."""
+        if self._db is None:
+            return
+        cols = {
+            row[1]
+            for row in await (
+                await self._db.execute("PRAGMA table_info(cluster_workers)")
+            ).fetchall()
+        }
+        if "kind" not in cols:
+            await self._db.execute(
+                "ALTER TABLE cluster_workers ADD COLUMN kind TEXT NOT NULL DEFAULT 'worker'"
+            )
+            await self._db.commit()
+
     # ------------------------------------------------------------------
     # Worker CRUD
     # ------------------------------------------------------------------
@@ -102,7 +122,7 @@ class WorkerRegistryStore(BaseStore):
                 worker_url, signing_key, tls_cert_provider,
                 host_lan_ip, storage_cap_bytes, storage_used_bytes,
                 bytes_deduped_total, worker_lxc_image_version,
-                degraded, degraded_reason, free_vram_mb, used_vram_mb
+                degraded, degraded_reason, free_vram_mb, used_vram_mb, kind
             ) VALUES (
                 :name, :url, :hardware, :backends, :models, :available_models,
                 :capabilities, :status, :last_heartbeat, :registered_at, :load,
@@ -112,7 +132,7 @@ class WorkerRegistryStore(BaseStore):
                 :worker_url, :signing_key, :tls_cert_provider,
                 :host_lan_ip, :storage_cap_bytes, :storage_used_bytes,
                 :bytes_deduped_total, :worker_lxc_image_version,
-                :degraded, :degraded_reason, :free_vram_mb, :used_vram_mb
+                :degraded, :degraded_reason, :free_vram_mb, :used_vram_mb, :kind
             )
             ON CONFLICT(name) DO UPDATE SET
                 url              = excluded.url,
@@ -143,9 +163,14 @@ class WorkerRegistryStore(BaseStore):
                 degraded         = excluded.degraded,
                 degraded_reason  = excluded.degraded_reason,
                 free_vram_mb     = excluded.free_vram_mb,
-                used_vram_mb     = excluded.used_vram_mb
+                used_vram_mb     = excluded.used_vram_mb,
+                kind             = excluded.kind
             """,
-            info,
+            # A caller that predates the device kind (the ClusterManager
+            # persistence path, older snapshots) sends no "kind"; it is an
+            # ordinary worker, the same default the column migration uses.
+            # Binding :kind without it raised and stopped workers persisting.
+            {**info, "kind": info.get("kind") or "worker"},
         )
         await self._db.commit()
 

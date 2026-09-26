@@ -1,0 +1,2 @@
+### Fixed
+- `test_waiver_text_only_in_all_skip_branch` now correctly scans the `other_failure` branch body by collecting lines up to the closing `}` instead of using broken indentation logic that stopped at the first body line.

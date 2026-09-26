@@ -35,6 +35,7 @@ from tinyagentos.auth import (
 from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.middleware.csrf import verify_csrf
 from tinyagentos.routes.onscreen_keyboard import OSK_SCRIPT, osk_assets
+from tinyagentos.taos_agent_runtime import system_agent_framework
 
 logger = logging.getLogger(__name__)
 
@@ -3760,7 +3761,7 @@ _LOCK_SCREEN_SCRIPT = r"""
         fetch("/auth/lock-torch", {
           method: "POST",
           credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-taOS-Console": "1" },
           body: JSON.stringify({ on: want })
         }).then(function (r) { return r.ok ? r.json() : null; })
           // What the LED took, not what was asked -- the level is clamped well
@@ -3788,7 +3789,7 @@ _LOCK_SCREEN_SCRIPT = r"""
         fetch("/auth/lock-app", {
           method: "POST",
           credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-taOS-Console": "1" },
           body: JSON.stringify({ app: "camera" })
         })
           .then(function (r) { return r.json().catch(function () { return {}; }); })
@@ -3966,7 +3967,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       fetch("/auth/lock-volume", {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-taOS-Console": "1" },
         body: JSON.stringify({ percent: volPct })
       }).then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) { if (d) paintVolume(d); })
@@ -4408,7 +4409,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       fetch("/auth/lock-radios", {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-taOS-Console": "1" },
         body: JSON.stringify({ radio: key, on: on })
       }).then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
@@ -4469,7 +4470,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       fetch("/auth/lock-brightness", {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-taOS-Console": "1" },
         body: JSON.stringify({ percent: want })
       }).then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
@@ -4548,7 +4549,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       fetch("/auth/lock-power-action", {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-taOS-Console": "1" },
         body: JSON.stringify({ action: verb })
       }).then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (d) {
@@ -4614,8 +4615,9 @@ _LOCK_SCREEN_SCRIPT = r"""
     // stopping all of them was the one place the rule was not applied.
     //
     // The verb is GATED, NOT REMOVED: _POWER_ACTIONS still carries it and
-    // /auth/lock-power-action still answers it once a session exists. The gate
-    // belongs in the page, which is where the locked screen is.
+    // /auth/lock-power-action still answers it -- but ONLY with a valid
+    // session: without one the server refuses it with a 401, so this sheet is
+    // the UX of a rule the server enforces, not the rule itself.
     //
     // Power off and restart stay pre-auth on their own argument: holding the
     // hardware key already took the phone down from this state, so the menu
@@ -6584,6 +6586,44 @@ def _request_is_console(request: Request) -> bool:
     )
 
 
+#: The header the device's own lock screen sends on every /auth/lock-* POST.
+#:
+#: Those routes are exempt from the session gate (they must work before anyone
+#: signs in), so without this the only check was "the caller is loopback" --
+#: and a web page open in a browser on the same machine IS loopback. It could
+#: fire ``fetch(url, {mode: "no-cors", body: '{"action": "poweroff"}'})`` with
+#: no preflight, and ``request.json()`` parses the body whatever its
+#: Content-Type says. A no-cors fetch and an HTML form can only send "simple"
+#: requests: they can set neither a custom header nor ``Content-Type:
+#: application/json``. Requiring one of the two shuts the browser out and costs
+#: the real callers nothing -- the page sends both, the handset scripts
+#: taos-kiosk-power-hold and taos-kiosk-screen send this header, and
+#: taos-kiosk-volume already posts JSON.
+LOCK_CONSOLE_HEADER = "X-taOS-Console"
+
+
+def _lock_post_refusal(request: Request) -> JSONResponse | None:
+    """The gate on every /auth/lock-* POST, or None when the request may pass.
+
+    Loopback AND non-simple. See LOCK_CONSOLE_HEADER for why loopback alone is
+    not enough. This is not authentication -- any local process can still send
+    the header -- it removes the cross-origin browser, the one caller that can
+    reach loopback without being on the device's side.
+    """
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    if request.headers.get(LOCK_CONSOLE_HEADER, "").strip():
+        return None
+    media_type = request.headers.get("content-type", "").split(";", 1)[0]
+    if media_type.strip().lower() == "application/json":
+        return None
+    return JSONResponse(
+        {"error": "console header required",
+         "detail": "send %s or Content-Type: application/json" % LOCK_CONSOLE_HEADER},
+        status_code=403,
+    )
+
+
 #: PIN attempts are throttled separately from passwords, keyed by user id.
 #: Sharing ``_login_limiter`` would let PIN failures lock a user out of the
 #: password path -- and since every console request arrives from the same
@@ -6786,15 +6826,14 @@ async def lock_widgets(request: Request):
 
     # The OS's own agent is pinned to the top and is not one of the configured
     # ones: it is part of the device rather than something the user added. It
-    # carries the product mark rather than a monogram, and the OMP harness badge
-    # like any other agent -- it runs on OMP (oh-my-pi) over ACP, see
-    # tinyagentos/adapters/omp_adapter.py.
+    # carries the product mark rather than a monogram, and the harness badge
+    # reflects the actual runtime adapter the agent goes through.
     # Its "status" says WHERE it is, not that it is busy -- this endpoint runs
     # pre-auth and has no cheap, truthful way to read the agent's activity.
     agents.insert(0, {
         "name": "taOS Agent",
-        "framework": "omp",
-        "framework_icon": _framework_icon("omp"),
+        "framework": system_agent_framework(request.app.state),
+        "framework_icon": _framework_icon(system_agent_framework(request.app.state)),
         "status": "On device",
         "avatar": "/static/taos-logo.png",
         "system": True,
@@ -8578,8 +8617,9 @@ async def set_lock_radios(request: Request):
     That is correct for a switch a PERSON flicks -- every phone allows it -- and
     it is exactly why the verb list is closed and nothing automated writes it.
     """
-    if not _request_is_console(request):
-        return JSONResponse({"error": "console only"}, status_code=403)
+    refusal = _lock_post_refusal(request)
+    if refusal is not None:
+        return refusal
     try:
         body = await request.json()
     except Exception:
@@ -8613,8 +8653,9 @@ async def lock_volume_key(request: Request):
     has been spent, and splitting that across a route and a page would give two
     places a different idea of whether the slider is showing.
     """
-    if not _request_is_console(request):
-        return JSONResponse({"error": "console only"}, status_code=403)
+    refusal = _lock_post_refusal(request)
+    if refusal is not None:
+        return refusal
     try:
         body = await request.json()
     except Exception:
@@ -8701,8 +8742,9 @@ async def lock_volume(request: Request):
 @router.post("/lock-volume")
 async def set_lock_volume(request: Request):
     """Set the output volume. Console-only. Returns the READ-BACK."""
-    if not _request_is_console(request):
-        return JSONResponse({"error": "console only"}, status_code=403)
+    refusal = _lock_post_refusal(request)
+    if refusal is not None:
+        return refusal
     try:
         body = await request.json()
     except Exception:
@@ -8790,8 +8832,9 @@ async def set_lock_torch(request: Request):
     Returns the READ-BACK, for the same reason brightness does: what the LED
     took is the only honest answer.
     """
-    if not _request_is_console(request):
-        return JSONResponse({"error": "console only"}, status_code=403)
+    refusal = _lock_post_refusal(request)
+    if refusal is not None:
+        return refusal
     try:
         body = await request.json()
     except Exception:
@@ -8834,8 +8877,9 @@ async def set_lock_brightness(request: Request):
     one setting where that is plainly right: someone holding an unreadably dim
     phone has to be able to fix it without first reading the PIN prompt.
     """
-    if not _request_is_console(request):
-        return JSONResponse({"error": "console only"}, status_code=403)
+    refusal = _lock_post_refusal(request)
+    if refusal is not None:
+        return refusal
     try:
         body = await request.json()
     except Exception:
@@ -8872,8 +8916,9 @@ async def lock_screen_off(request: Request):
     route to a dark screen that goes through that script rather than only the
     power key.
     """
-    if not _request_is_console(request):
-        return JSONResponse({"error": "console only"}, status_code=403)
+    refusal = _lock_post_refusal(request)
+    if refusal is not None:
+        return refusal
     return JSONResponse({"ok": True, "delivered": _push_lock_event("screen-off")})
 
 
@@ -8886,8 +8931,9 @@ async def lock_screen_on(request: Request):
     the last frame painted before it blanked. That frame is deliberately black,
     and this is what takes it away again.
     """
-    if not _request_is_console(request):
-        return JSONResponse({"error": "console only"}, status_code=403)
+    refusal = _lock_post_refusal(request)
+    if refusal is not None:
+        return refusal
     return JSONResponse({"ok": True, "delivered": _push_lock_event("screen-on")})
 
 
@@ -8900,8 +8946,9 @@ async def lock_power_menu(request: Request):
     short press shut the phone down outright -- so the long press has to reach
     the page from outside it.
     """
-    if not _request_is_console(request):
-        return JSONResponse({"error": "console only"}, status_code=403)
+    refusal = _lock_post_refusal(request)
+    if refusal is not None:
+        return refusal
     delivered = _push_lock_event("power-menu")
     return JSONResponse({"ok": True, "delivered": delivered})
 
@@ -8933,8 +8980,9 @@ async def lock_power_action(request: Request):
     confirm step lives in the page, because it is a question about intent and
     the answer never needs to leave the device.
     """
-    if not _request_is_console(request):
-        return JSONResponse({"error": "console only"}, status_code=403)
+    refusal = _lock_post_refusal(request)
+    if refusal is not None:
+        return refusal
     try:
         body = await request.json()
     except Exception:
@@ -8956,6 +9004,17 @@ async def lock_power_action(request: Request):
         return JSONResponse({"ok": True, "action": action})
 
     if action == "stop-agents":
+        # The one verb that needs a signed-in user. Power off and restart stay
+        # pre-auth because the hardware key already does both from a locked
+        # screen; nothing on a locked phone can drain every agent, so this must
+        # not either. The page routes it through the passcode sheet, and the
+        # server enforces the same rule rather than trusting the page to.
+        # (A valid session also brings the router-wide CSRF check with it.)
+        auth_mgr = getattr(request.app.state, "auth", None)
+        if auth_mgr is None or auth_mgr.validate_session_for_request(request) is None:
+            return JSONResponse(
+                {"error": "sign in to stop all agents"}, status_code=401
+            )
         orchestrator = getattr(request.app.state, "orchestrator", None)
         if orchestrator is None:
             return JSONResponse({"error": "orchestrator unavailable"}, status_code=503)
@@ -9051,8 +9110,9 @@ async def lock_app(request: Request):
     picks a NAME from a closed map; the verb that reaches root is never anything
     the page said.
     """
-    if not _request_is_console(request):
-        return JSONResponse({"error": "console only"}, status_code=403)
+    refusal = _lock_post_refusal(request)
+    if refusal is not None:
+        return refusal
     try:
         body = await request.json()
     except Exception:

@@ -341,6 +341,8 @@ Two details of the agent path are load-bearing, so do not "tidy" either one:
   `http://` bus drops the credential to avoid sending it in cleartext across
   the LAN. Operators with a remote `http://` bus can restore forwarding by
   setting `TAOS_A2A_BUS_ALLOW_INSECURE_CREDENTIAL`.
+  The send response includes `credential_forwarded: bool` so the caller can
+  tell whether the proxy actually forwarded its credential.
 
 Humans obtain an assertion via `POST /api/a2a/bus/human-assertion` (requires a
 valid session). For a human principal the controller derives the sender from the
@@ -579,6 +581,10 @@ no key, no resolution, OpenAI-shaped 401 otherwise. Only those two exact
 method+path pairs pass the middleware; any other `/v1` path stays
 session-gated. `POST /v1/chat/completions` returns 501 for a valid key until
 the opencode host-server turn seam lands (decided 2026-06-23, unbuilt).
+
+A third credential class, the LLM gateway key (`sk-taosgw-...`), reaches
+exactly `GET /api/llm/v1/models` and `POST /api/llm/v1/chat/completions`; see
+"In-process LLM gateway" below.
 
 The registry-JWT surface, by scope:
 
@@ -1201,6 +1207,38 @@ Route module `tinyagentos/routes/device_pair_requests.py`:
 Approval or denial of a pair request is surfaced to the user through the Decisions app;
 agents must not grant pairing directly.
 
+## taOSusb Bluetooth pairing: commit/reveal (protocol v2)
+
+`tinyagentos/cluster/ble/proto.py` is shared byte-identical with the taOSusb
+board daemon (`files/taosble/proto.py`); `tests/cluster/test_ble_proto.py` pins
+its hash. The `pair` handshake is now protocol v2 (`PROTO_VERSION = 2`):
+
+1. Controller sends `hello` with its static and ephemeral public keys and
+   `"v": 2`, but **no nonce**.
+2. Board replies `hello` with its keys and `commit = commitment(board_id,
+   cpub, c_epub, bpub, b_epub, b_n)`. The board nonce `b_n` stays secret.
+3. Controller sends `{"t": "nonce", "n": c_n}`.
+4. Board replies `{"t": "reveal", "n": b_n}`. The controller refuses a
+   `b_n` that does not match the commitment. Only then do both sides derive
+   the transcript, the 6-digit code and the session key.
+
+Why: in v1 both nonces travelled in the plain hellos, so a man in the middle
+could pick its board nonce after seeing the controller's and grind it (about
+10^6 hashes, under a second) until both screens showed the same code.
+
+Rules that keep it sound:
+
+- The board accepts exactly **one** nonce per hello. A second nonce after the
+  reveal is refused, because `b_n` is public by then.
+- A new hello discards any pending commitment and starts over.
+- The version is in the advert byte, in both hellos, and in the transcript
+  and HKDF labels (`taos-ble-v2`, `taos-ble-pair-v2`). A v1 peer and a v2
+  peer refuse each other with a version error instead of deriving mismatched
+  codes.
+- The taOSusb board must re-copy `proto.py` from this repo. Its daemon needs
+  no other change, since it forwards every `pair` message to
+  `PairResponder.handle_message`.
+
 ## OS change-event stream (`GET /api/os/events`, session-only)
 
 Route module `tinyagentos/routes/os_events.py`. A Server-Sent Events stream of
@@ -1495,6 +1533,18 @@ routes documented above.
   **The old signing key stays dead**, so the node still has to re-pair for a
   fresh one. Unblock is permission to return, not restoration of access.
 
+Bluetooth (taOSusb) devices and node names:
+
+- `POST /api/cluster/ble/pair/confirm` answers `409` when the board's advertised
+  name belongs to a registered worker, or to a device that is still live or
+  blocked. **Revoke is the only way to free a device name** for a reset board
+  to pair again; a worker's name is never reusable over Bluetooth. A refused or
+  rolled-back pairing never touches the other node's key, block or revoke state.
+- A node paired as a device stays `kind="device"`. `POST /api/cluster/workers`
+  (register) and `POST /api/cluster/heartbeat` signed with the device's own key
+  cannot change it, even after `DELETE /api/cluster/workers/{name}`, because the
+  kind is stored with the key at pairing. A device is never a job candidate.
+
 Behaviour common to all three:
 
 - `404` when the node is absent from the PAIRING store, meaning it was never
@@ -1502,6 +1552,10 @@ Behaviour common to all three:
   `404` here.
 - `503` when the pairing store is unavailable, kept distinct from `404` so a
   missing subsystem is never reported as a missing node.
+- revoke and block (and `DELETE /api/cluster/workers/{name}`) also revoke
+  every LLM gateway key bound to `node:<name>`, so the node loses model access
+  in the same step. The key stays dead after unblock; re-pairing does not
+  resurrect it.
 - revoke and block mark the in-memory worker **offline immediately** so the
   scheduler stops routing tasks to it, rather than waiting out the heartbeat
   timeout. The worker stays REGISTERED and therefore still visible in
@@ -1669,3 +1723,119 @@ replace the earlier shared-token binding: each deploy mints a fresh token,
 eliminating the last-deploy-wins collision where two agents bound to the same
 host token would overwrite each other's identity. The shared host token remains
 valid for admin/system callers but is no longer bound to any agent name.
+
+## In-process LLM gateway (`/api/llm/v1`, scoped gateway keys, session or host local token)
+
+`tinyagentos/llm_gateway/` is the in-controller replacement for the LiteLLM
+proxy. It is mounted only when the controller starts with
+`TAOS_LLM_GATEWAY=1`; otherwise `/api/llm/v1/*` does not exist (404 for a
+signed-in caller). LiteLLM keeps running beside it, unchanged.
+
+- `GET /api/llm/v1/models`: OpenAI list shape. Every chat model name in the
+  routing table, plus the alias `taos-default` first.
+- `POST /api/llm/v1/chat/completions`: non-streaming only (`stream: true` is a
+  400 until streaming lands). The body is forwarded verbatim, `tools` /
+  `tool_choice` / `tool_calls` included; only `model` is rewritten to the
+  backend's own id. Only OpenAI-compatible backends (LiteLLM's `openai/`
+  prefix) are served; any other backend type is a 501 naming the model.
+  Upstream failures and timeouts are a 502; the backend's key and URL never
+  appear in a response or a log line.
+
+It is deliberately NOT bare `/v1`: `/v1/models` and `/v1/chat/completions`
+are Agent-as-a-Model (consent-key auth, see `routes/agent_model_api.py`) and
+are unchanged.
+
+Routing: model names resolve through `litellm_config.build_model_list`, the
+same function `generate_litellm_config` wraps, read per request.
+`taos-default` resolves per request to the taOS agent's model preference
+(desktop settings `("user", "taos_agent")["model"]`, set by
+`PATCH /api/taos-agent/settings`), so changing it needs no restart.
+
+Auth: the routes take auth and model permission ONLY from the
+`gateway_caller` dependency (`tinyagentos/llm_gateway/auth.py`). The
+middleware exempts EXACTLY `GET /api/llm/v1/models` and
+`POST /api/llm/v1/chat/completions` (method-sensitive) so a bearer key reaches
+that dependency; every other `/api/llm` path or method stays gated, and its
+401 is OpenAI-shaped (`{"error": {"message", "type", "code": "invalid_api_key"}}`)
+so OpenAI clients surface it as bad credentials. `gateway_caller` accepts:
+
+- a signed-in session, or the host's shared local token: every model;
+- a GATEWAY KEY (`Authorization: Bearer sk-taosgw-...`) bound to one agent id
+  or one node (`node:<id>`), stored only as a SHA-256 hash, compared with
+  `hmac.compare_digest`, optionally expiring. It may use exactly the models it
+  names: an EMPTY list denies every model (LiteLLM read it as allow-all);
+- a legacy per-agent LiteLLM key (`sk-taos-...`, the `agent_keys` table), with
+  its allowlist;
+- the per-install LiteLLM master key, as admin (parity with the LiteLLM hook).
+
+The `taos-default` alias rule: a caller allowed `taos-default` may use
+whatever it CURRENTLY resolves to, without the concrete model in its list.
+Only the owner sets the default, so the grant is "whatever the owner chose",
+and a board keyed to `["taos-default"]` keeps working when the default
+changes. The other direction does not hold: listing the concrete model does
+not grant the alias, and requesting a concrete model directly still needs its
+own entry. `GET /models` for a `["taos-default"]` key lists `taos-default`
+only. The alias is resolved ONCE per request and that one value is both
+checked and forwarded to.
+
+Everything else is 401: a deployer-minted per-agent LOCAL token (that is the
+agent's controller identity, not a model credential), a registry JWT, a device
+bearer and an Agent-as-a-Model consent key. An agent over its LLM budget gets
+the LiteLLM hook's 429 before anything is forwarded. Revoking, blocking or
+deleting a cluster node, and archiving an agent, revoke the keys bound to it
+in the same request.
+
+## The system taOS Agent's harness (opencode, or PicoClaw on a handset)
+
+The built-in taOS Agent runs on opencode (a host `opencode serve`) on every
+host, except a taOSmobile handset, where it runs on PicoClaw (the catalog's
+pinned 0.3.1 binary). `taos_agent_runtime.decide_framework` is the one place
+the choice is made, from two config.yaml keys:
+
+- `device.class`: `auto` (default; `hardware._detect_device_class`, which
+  reads the `taos-kiosk.service` unit), `mobile` or `desktop`;
+- `taos_agent.framework`: `auto` (default; picoclaw on mobile, opencode
+  elsewhere), `opencode` or `picoclaw` (operator overrides).
+
+PicoClaw needs the LLM gateway (`TAOS_LLM_GATEWAY=1`) and a `picoclaw` binary
+(`TAOS_PICOCLAW_BIN`, PATH, `/usr/local/bin`, `/usr/bin`). Without either,
+opencode runs and the reason is logged, e.g. exactly
+`picoclaw preferred, gateway disabled, using opencode`. An unknown config
+value is ignored (treated as `auto`) with a warning.
+
+- `GET /api/taos-agent/config` and the lock screen (`/auth/lock-widgets`)
+  report `framework` = the harness that RUNS the agent (never the
+  preference), plus `framework_preference`, `framework_reason` and
+  `device_class`.
+- `PUT /api/taos-agent/framework` (admin) `{framework?, device_class?}`:
+  unknown values are a 400. Persists to config.yaml and restarts the AGENT,
+  not the controller: leaving PicoClaw revokes its key and deletes its
+  config; entering it stops opencode and mints a fresh key.
+
+PicoClaw's gateway key is bound to `agent:taos-agent`, allowlist = the
+agent's `model` + `permitted_models` + `taos-default`. Changing either
+(`PATCH /api/taos-agent/settings`, `PUT /api/taos-agent/permitted-models`)
+revokes it and mints a new one. The key is written only to
+`<data_dir>/taos-agent-picoclaw/config.json` (0600, directory 0700), never to
+a log, a response, argv or the environment. Every `model_list` entry points
+at `http://127.0.0.1:<server.port>/api/llm/v1`; the default is `taos-default`.
+Each chat turn is one `picoclaw agent --no-color -m <text> -s taos:taos-agent`
+in `<home>/workspace` (`restrict_to_workspace: true`), with a minimal
+environment; the manual or the persona is written to `workspace/AGENTS.md`,
+which PicoClaw loads as its system prompt. The reply is the text after the
+last lobster (U+1F99E). A controller start into opencode revokes any
+leftover PicoClaw key.
+
+taOS access parity: opencode runs unconfined as the service user and reaches
+the taOS API (desktop control, skill-exec tools, notes, project files) with
+curl and the host local token. PicoClaw is confined to its workspace, so the
+same credential is copied to `workspace/.taos_credential` (0600) and
+`workspace/bin/taos` (0700) calls `http://127.0.0.1:<server.port>` with it:
+`bin/taos METHOD api/PATH [JSON]` or `bin/taos UPLOAD api/PATH FILE`. The
+path has no leading slash because PicoClaw's exec guard refuses a command
+naming an absolute path. The helper reads the credential from the file
+(never argv) and redacts it from what it prints. The agent's own identity
+token (`.taos_agent_token`) is a2a-only and covers none of these endpoints,
+so it is not narrower-but-sufficient. `AGENTS.md` appends a section mapping
+every manual tool to a `bin/taos` call. Leaving PicoClaw, or any controller
+start into opencode, deletes the credential copy and the helper.

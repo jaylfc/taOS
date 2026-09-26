@@ -1,26 +1,24 @@
-id: jan
-name: Jan
-type: service
 category: ai-app
-version: 0.5.14
-description: "Jan as a server — local-first ChatGPT alternative with built-in inference engine. Self-hosted, runs against any OpenAI-compatible API."
-homepage: https://github.com/janhq/jan
-license: AGPL-3.0
-
-requires:
-  ram_mb: 2048
-  disk_mb: 4000
-  ports: [1337]
-
-install:
-  method: docker
-  image: ghcr.io/janhq/jan-server:0.5.14
-  ports: [1337]
-
+description: "Jan as a server \u2014 local-first ChatGPT alternative with built-in\
+  \ inference engine. Self-hosted, runs against any OpenAI-compatible API."
 hardware_tiers:
+  apple-silicon: full
   arm-npu-16gb: full
   arm-npu-32gb: full
+  cpu-only: full
   x86-cuda-12gb: full
   x86-vulkan-8gb: full
-  cpu-only: full
-  apple-silicon: full
+homepage: https://github.com/janhq/jan
+id: jan
+install:
+  image: ghcr.io/janhq/jan-server:0.5.14
+  method: docker
+  ports:
+  - 1337
+license: AGPL-3.0
+name: Jan
+requires:
+  disk_mb: 4000
+  ram_mb: 2048
+type: service
+version: 0.5.14
