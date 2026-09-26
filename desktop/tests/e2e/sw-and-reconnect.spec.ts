@@ -50,8 +50,18 @@ for (const pwa of PWA_PATHS) {
     test(`registers SW and precaches the shell (${pwa.url})`, async ({ page }) => {
       await page.goto(pwa.url);
       await waitForSWReady(page);
-      const cacheNames = await page.evaluate(() => caches.keys());
-      expect(cacheNames.some((n) => n.startsWith("taos-static-"))).toBe(true);
+      // Polled, not read once: on WebKit reg.active can be visible to the page
+      // a moment before the worker's cache writes are (CI: caches.keys() was
+      // [] at the first read, filled on a retry).
+      await expect
+        .poll(() => page.evaluate(() => caches.keys()), { timeout: 15_000 })
+        .toContainEqual(expect.stringMatching(/^taos-static-/));
+      // And the shell for this path is actually in it.
+      await expect
+        .poll(() => page.evaluate(async (u) => Boolean(await caches.match(u)), pwa.url), {
+          timeout: 15_000,
+        })
+        .toBe(true);
     });
 
     test(`shows BackendBanner when /api/health is unreachable (${pwa.url})`, async ({ page, context }) => {
