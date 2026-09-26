@@ -357,7 +357,16 @@ class ClusterManager:
             return (False, "stale_generation")
         self._ever_seen.add(info.name)
 
-        prev_status = self._workers[info.name].status if info.name in self._workers else None
+        prev = self._workers.get(info.name)
+        prev_status = prev.status if prev is not None else None
+        # A device never becomes a worker by re-registering: the stored
+        # kind="device" wins over whatever the new registration carries, so
+        # the device exclusions in get_workers_for_capability and
+        # browser_sessions._capable_workers keep holding (last line of
+        # defence behind routes/cluster.py register_worker).
+        if prev is not None and getattr(prev, "kind", "worker") == "device" and info.kind != "device":
+            logger.warning("Registration for device '%s' asked for kind=%r; kept kind=device", info.name, info.kind)
+            info.kind = "device"
 
         info.registered_at = time.time()
         info.last_heartbeat = time.time()
