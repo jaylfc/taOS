@@ -637,7 +637,8 @@ The registry-JWT surface, by scope:
   project binding, and a token bound to a DIFFERENT project gets a 404 rather
   than a 403, so it cannot confirm that another project exists. The note's
   author is taken from the verified token, never from the request body.
-- **canvas_read**: `GET .../canvas/elements`, `.../canvas/watch-projection`,
+- **canvas_read**: `GET .../canvas/elements` (`?include_deleted=true` is the raw
+  JSON backup: soft-deleted rows too, flagged `deleted`), `.../canvas/watch-projection`,
   `.../canvas/snapshot.png|.tldr`, `.../canvas/stream`. **canvas_write**: `POST .../canvas/elements`,
   `PATCH|DELETE .../canvas/elements/{id}`.
 - **files_read**: `GET /api/projects/{slug}/files` (list), `.../files/watch`,

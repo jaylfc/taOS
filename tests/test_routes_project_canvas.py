@@ -341,6 +341,71 @@ async def test_delete_element_not_found_returns_204(client):
 
 
 # ---------------------------------------------------------------------------
+# Raw JSON backup (include_deleted): manual recovery must never lose a row
+# ---------------------------------------------------------------------------
+
+
+_TLDRAW_BLOB = {
+    "tldraw_shape": {
+        "id": "shape:abc", "type": "draw", "typeName": "shape",
+        "props": {"segments": [{"type": "free", "points": [{"x": 0, "y": 0, "z": 0.5}]}],
+                  "color": "blue", "size": "m"},
+        "meta": {"nested": {"deep": [1, 2, {"k": None}]}},
+    },
+}
+
+
+async def _create_user_shape(client) -> dict:
+    body = {"kind": "user_shape", "x": 1, "y": 2, "w": 30, "h": 40, "payload": _TLDRAW_BLOB}
+    resp = await client.post("/api/projects/proj-1/canvas/elements", json=body)
+    assert resp.status_code == 201, resp.text
+    return resp.json()["element"]
+
+
+@pytest.mark.asyncio
+async def test_backup_listing_includes_soft_deleted_rows_flagged(client):
+    live = await _create_note(client)
+    gone = await _create_user_shape(client)
+    await client.delete(f"/api/projects/proj-1/canvas/elements/{gone['id']}")
+
+    resp = await client.get("/api/projects/proj-1/canvas/elements?include_deleted=true")
+    assert resp.status_code == 200, resp.text
+    by_id = {e["id"]: e for e in resp.json()["elements"]}
+    assert set(by_id) == {live["id"], gone["id"]}
+    assert by_id[live["id"]]["deleted"] is False
+    assert by_id[live["id"]]["deleted_at"] is None
+    assert by_id[gone["id"]]["deleted"] is True
+    assert by_id[gone["id"]]["deleted_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_backup_listing_keeps_tldraw_shape_payload_untouched(client):
+    gone = await _create_user_shape(client)
+    await client.delete(f"/api/projects/proj-1/canvas/elements/{gone['id']}")
+    data = (await client.get(
+        "/api/projects/proj-1/canvas/elements?include_deleted=true"
+    )).json()
+    (row,) = [e for e in data["elements"] if e["id"] == gone["id"]]
+    assert row["payload"] == _TLDRAW_BLOB
+
+
+@pytest.mark.asyncio
+async def test_backup_listing_is_an_attachment(client):
+    resp = await client.get("/api/projects/proj-1/canvas/elements?include_deleted=true")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.headers["content-disposition"] == 'attachment; filename="proj-1-canvas.json"'
+
+
+@pytest.mark.asyncio
+async def test_default_listing_still_hides_deleted_rows(client):
+    gone = await _create_note(client)
+    await client.delete(f"/api/projects/proj-1/canvas/elements/{gone['id']}")
+    data = (await client.get("/api/projects/proj-1/canvas/elements")).json()
+    assert gone["id"] not in [e["id"] for e in data["elements"]]
+
+
+# ---------------------------------------------------------------------------
 # Snapshot PNG
 # ---------------------------------------------------------------------------
 

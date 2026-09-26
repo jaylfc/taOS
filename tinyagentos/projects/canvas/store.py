@@ -193,6 +193,8 @@ class ProjectCanvasStore(ProjectsDBStore):
         self,
         project_id: str,
         element_id: "str | None" = None,
+        *,
+        include_deleted: bool = False,
     ) -> list[dict]:
         """Canvas items for a project, optionally scoped to one element.
 
@@ -200,11 +202,14 @@ class ProjectCanvasStore(ProjectsDBStore):
         ``None`` returns every (non-deleted) item, ``"none"`` returns only
         untagged items (``element_id IS NULL``), and any other string returns
         items tagged with that element id.
+
+        ``include_deleted`` is the manual-recovery path (the canvas raw JSON
+        backup): soft-deleted rows are returned too, and every row carries a
+        boolean ``deleted`` flag so a restore can tell them apart.
         """
-        sql = (
-            "SELECT * FROM project_canvas_elements "
-            "WHERE project_id = ? AND deleted_at IS NULL"
-        )
+        sql = "SELECT * FROM project_canvas_elements WHERE project_id = ?"
+        if not include_deleted:
+            sql += " AND deleted_at IS NULL"
         params: list = [project_id]
         if element_id == "none":
             sql += " AND element_id IS NULL"
@@ -215,7 +220,11 @@ class ProjectCanvasStore(ProjectsDBStore):
         async with self._read(sql, params) as cur:
             rows = await cur.fetchall()
             desc = cur.description
-        return [_row_to_element(r, desc) for r in rows]
+        elements = [_row_to_element(r, desc) for r in rows]
+        if include_deleted:
+            for e in elements:
+                e["deleted"] = e.get("deleted_at") is not None
+        return elements
 
     async def _check_edit_permission(
         self, project_id: str, author_kind: str, author_id: str
