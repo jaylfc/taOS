@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, Response
 from pydantic import BaseModel, Field
 
-from tinyagentos.projects.canvas.store import CanvasPermissionError
+from tinyagentos.projects.canvas.store import CanvasPermissionError, guard_payload_update
 from tinyagentos.projects.canvas.unfurl import fetch_link_metadata
 from tinyagentos.projects.canvas.render import render_snapshot_png
 from tinyagentos.projects.canvas.watch_projection import build_watch_projection
@@ -272,7 +272,11 @@ async def update_canvas_element(
     patch = {k: v for k, v in payload.model_dump().items() if v is not None}
     _clamp_element_geometry(patch)
     if "payload" in patch:
-        _check_payload_size(patch["payload"])
+        # Size-check the payload that will actually be stored: the store carries
+        # a legacy user_shape's tldraw_shape forward, so that blob counts
+        # against the cap too.
+        existing = await cs.get_element(element_id, project_id=project_id)
+        _check_payload_size(guard_payload_update(existing, patch["payload"]))
     try:
         updated = await cs.update_element(
             project_id=project_id, element_id=element_id, patch=patch,
