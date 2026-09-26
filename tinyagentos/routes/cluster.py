@@ -641,6 +641,10 @@ async def unregister_worker(request: Request, name: str):
     removed = await cluster.unregister_worker(name)
     if not removed:
         return JSONResponse({"error": "Worker not found"}, status_code=404)
+    # Revoke the pairing key so the deleted node cannot authenticate with its old key.
+    pairing = getattr(request.app.state, "cluster_pairing", None)
+    if pairing is not None:
+        await pairing.revoke(name)
     _revoke_node_model_keys(request, name)
     return {"status": "removed", "name": name}
 
