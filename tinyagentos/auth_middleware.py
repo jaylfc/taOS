@@ -259,6 +259,9 @@ _DEVICE_BEARER_PATHS = (
     ("GET", re.compile(r"^/api/decisions/[^/]+$")),
     ("GET", re.compile(r"^/api/decisions/[^/]+/history$")),
     ("POST", re.compile(r"^/api/decisions/[^/]+/answer$")),
+    ("POST", re.compile(r"^/api/library/ingest$")),
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/files/upload$")),
+    ("POST", re.compile(r"^/api/chat/messages$")),
 )
 
 
@@ -777,6 +780,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.user_id = None
             request.state.is_admin = False
             request.state.via = "device_bearer_candidate"
+            device = None
+            try:
+                device = await request.app.state.device_store.get_by_token(auth_header[7:].strip())
+            except Exception:
+                pass
+            if device is not None:
+                request.state._device = device
             return await call_next(request)
 
         # 4) Session cookie

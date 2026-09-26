@@ -57,17 +57,22 @@ async def _authorize_files_actor(
     project = await ps.get_project_by_slug(slug)
     uid = getattr(request.state, "user_id", None)
     if uid:
-        # Session path: project visibility gate. A non-owner non-admin human
-        # collapses into the SAME existence-hiding 404 the agent path uses.
-        # An UNKNOWN slug is deliberately allowed through for session users:
-        # the project files tree is slug-addressed and lazily created, which
-        # test_list_unknown_slug_returns_empty documents as intended. The agent
-        # path below is strict (unknown slug -> 404) because an agent must not
-        # be able to address a project it was never granted.
         is_admin = bool(getattr(request.state, "is_admin", False))
         if project is not None and not is_admin and project.get("user_id") != uid:
             return JSONResponse({"error": "not found"}, status_code=404)
         return ("user", uid)
+    
+    device = getattr(request.state, "_device", None)
+    if device:
+        if project is not None:
+            if project.get("user_id") == device["user_id"]:
+                return ("device_bearer", device["user_id"])
+            # Device is never admin; non-owner gets same outcome as session member.
+            if mode == "write":
+                return JSONResponse({"error": "forbidden"}, status_code=403)
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse({"error": "not found"}, status_code=404)
+    
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.lower().startswith("bearer "):
         # Middleware normally 401s unauthenticated requests before the route
@@ -350,7 +355,7 @@ async def api_project_purge_trash_item(request: Request, slug: str, item_id: str
 
 @router.delete("/api/projects/{slug}/trash")
 async def api_project_empty_trash(request: Request, slug: str):
-    """Permanently delete every item in a project's trash."""
+    """Permanently delete every item from a project's trash."""
     auth = await _authorize_files_actor(request, slug, "write")
     if isinstance(auth, JSONResponse):
         return auth
