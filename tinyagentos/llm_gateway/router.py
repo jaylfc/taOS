@@ -1,9 +1,3 @@
-"""The G1 routes: ``GET /api/llm/v1/models``, non-streaming ``POST /api/llm/v1/chat/completions``,
-and streaming ``POST /api/llm/v1/chat/completions``.
-
-Auth and model permission come ONLY from the ``gateway_caller`` dependency
-(see auth.py). Mounted by ``mount`` when ``TAOS_LLM_GATEWAY=1``.
-"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
@@ -18,6 +12,7 @@ from tinyagentos.llm_gateway.errors import (
     model_not_permitted,
 )
 from tinyagentos.llm_gateway.forward import chat_completion, chat_completion_stream, resolve_api_key
+from tinyagentos.llm_gateway.anthropic import chat_completion_anthropic
 from tinyagentos.llm_gateway.resolve import TAOS_DEFAULT, find_routes, model_names, routing_table
 import tinyagentos.llm_gateway.resolve as resolve_mod
 
@@ -92,6 +87,22 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
     alias_grant = requested == TAOS_DEFAULT and caller.may_use(TAOS_DEFAULT)
     if route.model_name != requested and not alias_grant and not caller.may_use(route.model_name):
         raise model_not_permitted(route.model_name)
+    
+    # Route through appropriate handler based on provider
+    if route.provider == "anthropic":
+        api_key = await resolve_api_key(state, route.api_key_ref)
+        principal = caller.caller_id
+        if body.get("stream"):
+            from fastapi.responses import StreamingResponse
+            from tinyagentos.llm_gateway.anthropic import chat_completion_stream_anthropic
+            return StreamingResponse(
+                chat_completion_stream_anthropic(routes, body, api_key, principal, state),
+                media_type="text/event-stream",
+                headers={"cache-control": "no-cache"}
+            )
+        return JSONResponse(await chat_completion_anthropic(routes, body, api_key, principal, state))
+    
+    # Default to OpenAI-compatible handler
     if route.provider != OPENAI_PROVIDER and route.provider not in OLLAMA_PROVIDERS:
         raise GatewayError(
             501,
@@ -99,6 +110,7 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
             "the taOS gateway only forwards to OpenAI-compatible backends so far",
             code="backend_not_supported",
         )
+    
     api_key = await resolve_api_key(state, route.api_key_ref)
     principal = caller.caller_id
     if body.get("stream"):
