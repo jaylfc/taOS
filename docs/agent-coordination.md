@@ -679,6 +679,14 @@ doc-gate only fires on files ADDED or DELETED, not edits to an existing file,
 so it will NOT catch allowlist drift here on its own; keep this list in sync by
 hand.
 
+Time-boxed grants: a consent request may carry `duration_secs`, a positive
+integer number of seconds up to ten years. On approval each grant it writes
+gets `expires_at = approval time + duration_secs`, and every auth path treats
+the grant as gone once that passes. Omit the field for an unbounded grant.
+A bool, string, float, zero, negative or over-ten-years value is refused with
+**422** at request time. The rule is: a grant with no duration is unbounded,
+and a bound that is set is never silently dropped or lengthened.
+
 Multi-project identities (taOS #1862): one agent identity (the registry JWT) may
 belong to several projects at once. The grants table keys a grant on
 `(canonical_id, scope, project_id)`, so the same scope can be held for multiple

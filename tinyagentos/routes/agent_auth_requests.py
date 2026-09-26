@@ -28,7 +28,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictInt
 
 from aiosqlite import IntegrityError
 from tinyagentos.agent_registry_store import agent_slug_or_fallback, mint_registry_token
@@ -104,13 +104,26 @@ VALID_SCOPES = frozenset({
 # Request bodies
 # ---------------------------------------------------------------------------
 
+# Upper bound on a requested grant duration: ten years. The create route is
+# unauthenticated, so the agent chooses duration_secs; anything larger is
+# refused at request time (422) rather than stored and then overflowing
+# datetime arithmetic when the request is approved.
+MAX_GRANT_DURATION_SECS = 10 * 365 * 24 * 3600
+
+
 class CreateAuthRequest(BaseModel):
     identity_claim: str
     framework: str
     requested_scopes: list[str] = []
     requested_skills: Optional[list[str]] = None
     reason: str = ""
-    duration_secs: Optional[int] = None
+    # Strict int: JSON true/false and "3600" are refused instead of being
+    # coerced (true used to become a 1-second grant). A bound, when given,
+    # must be a positive number of seconds up to MAX_GRANT_DURATION_SECS;
+    # omit it (None) for an unbounded grant.
+    duration_secs: Optional[StrictInt] = Field(
+        default=None, gt=0, le=MAX_GRANT_DURATION_SECS
+    )
     project_id: Optional[str] = None
     kind: str = "scope_request"
     requested_name: Optional[str] = None
@@ -635,14 +648,20 @@ async def approve_auth_request(
                 locks.pop(request_id, None)
 
 
-def _expires_at_from_duration(duration_secs) -> str | None:
+def _expires_at_from_duration(duration_secs: object) -> str | None:
     """Map a scope request's ``duration_secs`` to a grant expiry timestamp.
 
     A positive integer yields ``now + duration_secs`` as a timezone-aware ISO
-    string; anything else (None, zero, negative, or a non-int) means the grant
-    is unbounded and returns None."""
-    if isinstance(duration_secs, int) and duration_secs > 0:
-        return (datetime.now(timezone.utc) + timedelta(seconds=duration_secs)).isoformat()
+    string; anything else (None, zero, negative, a bool, or a non-int) means
+    the grant is unbounded and returns None.
+
+    The create route refuses durations above ``MAX_GRANT_DURATION_SECS``, but a
+    row stored before that check existed can still carry one. Such a value is
+    clamped to the cap: that only shortens the agent's own requested access,
+    never drops the bound, and keeps approval from overflowing into a 500."""
+    if type(duration_secs) is int and duration_secs > 0:
+        secs = min(duration_secs, MAX_GRANT_DURATION_SECS)
+        return (datetime.now(timezone.utc) + timedelta(seconds=secs)).isoformat()
     return None
 
 

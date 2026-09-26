@@ -19,7 +19,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from tinyagentos.routes import agent_auth_requests
 from tinyagentos.routes.agent_auth_requests import _expires_at_from_duration
+
+# The documented cap on a requested grant duration: ten years. Pinned here
+# rather than imported so a missing or changed product constant fails one
+# test instead of erroring the whole module at collection.
+MAX_GRANT_DURATION_SECS = 10 * 365 * 24 * 3600
 
 
 def _parse(iso: str) -> datetime:
@@ -128,9 +134,15 @@ class TestApprovePathWiresExpiry:
         assert expiry is None, "grant must stay unbounded when duration_secs is absent"
 
 
-class TestDeferredPathWiresExpiry:
-    """The add_agent_to_project reuse arm must also receive expires_at from
-    duration_secs, but that path has no route-level test."""
+class TestReusePathWiresExpiry:
+    """The handle-reuse arm: approving a project-scoped request whose identity
+    claim matches an existing active agent goes through add_agent_to_project,
+    which must also receive expires_at from duration_secs.
+
+    This is NOT the ``defer_binding=True`` path (that returns before
+    add_agent_to_project and writes through the direct add_grant covered by
+    TestApprovePathWiresExpiry), and it does not cover a later assign-agent
+    binding of a deferred grant."""
 
     async def _approve_via_reuse(self, client, monkeypatch, tmp_path, duration_secs):
         from tinyagentos.agent_registry_store import (
@@ -202,3 +214,94 @@ class TestDeferredPathWiresExpiry:
             "add_agent_to_project must receive None expires_at when duration_secs is absent"
         )
 
+
+
+class _RecordingAuthStore:
+    """Minimal auth-requests store that records create() kwargs, so a create
+    route test can tell whether an invalid duration reached the store."""
+
+    def __init__(self):
+        self.created = []
+
+    async def count_pending_for(self, identity_claim, framework):
+        return 0
+
+    async def create(self, **kwargs):
+        self.created.append(kwargs)
+        return {
+            "id": "req-1",
+            "identity_claim": kwargs["identity_claim"],
+            "requested_scopes": kwargs["requested_scopes"],
+        }
+
+
+class TestCreateRejectsInvalidDuration:
+    """The create route is unauthenticated, so the agent picks duration_secs.
+    A value that cannot be a real bound must be refused at request time with
+    422 and never stored: an oversized one used to be accepted here and then
+    500 the approve route (OverflowError), and a JSON ``true`` was coerced to a
+    1-second grant."""
+
+    async def _create(self, client, monkeypatch, duration):
+        store = _RecordingAuthStore()
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", store)
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            json={
+                "identity_claim": "@expiry-agent",
+                "framework": "openclaw",
+                "requested_scopes": ["registry_feeds_read"],
+                "duration_secs": duration,
+            },
+        )
+        return resp, store
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "duration",
+        [10**12, MAX_GRANT_DURATION_SECS + 1, True, False, 3600.5, "3600", 0, -60],
+    )
+    async def test_invalid_duration_is_422_and_not_stored(
+        self, client, monkeypatch, duration
+    ):
+        resp, store = await self._create(client, monkeypatch, duration)
+        assert resp.status_code == 422, resp.text
+        assert store.created == [], "an invalid duration must never reach the store"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("duration", [None, 1, 3600, MAX_GRANT_DURATION_SECS])
+    async def test_valid_duration_is_accepted(self, client, monkeypatch, duration):
+        resp, store = await self._create(client, monkeypatch, duration)
+        assert resp.status_code == 200, resp.text
+        assert store.created[0]["duration_secs"] == duration
+
+
+class TestApproveSurvivesOversizedStoredDuration:
+    """A pending row stored before request-time validation existed can still
+    carry an oversized duration. Approving it must not 500: the bound is
+    clamped to the maximum, which only ever shortens the requested access and
+    never drops the bound."""
+
+    def test_product_cap_is_ten_years(self):
+        assert agent_auth_requests.MAX_GRANT_DURATION_SECS == MAX_GRANT_DURATION_SECS
+
+    def test_helper_clamps_instead_of_overflowing(self):
+        expires = _expires_at_from_duration(10**12)
+        assert expires is not None, "an oversized bound must be clamped, not dropped"
+        delta = _parse(expires) - datetime.now(timezone.utc)
+        cap = timedelta(seconds=MAX_GRANT_DURATION_SECS)
+        assert cap - timedelta(minutes=1) < delta <= cap
+
+    def test_helper_treats_bool_as_unbounded(self):
+        assert _expires_at_from_duration(True) is None
+
+    @pytest.mark.asyncio
+    async def test_approve_route_with_oversized_stored_duration(
+        self, client, monkeypatch, tmp_path
+    ):
+        expiry = await TestApprovePathWiresExpiry()._approve(
+            client, monkeypatch, tmp_path, 10**12
+        )
+        assert expiry is not None
+        delta = _parse(expiry) - datetime.now(timezone.utc)
+        assert delta <= timedelta(seconds=MAX_GRANT_DURATION_SECS)

@@ -559,8 +559,10 @@ async def list_active_grants(request: Request, canonical_id: Optional[str] = Non
     grant -- the token itself carries no exp claim.
 
     @taOSmd polls this on interval to keep its local cache current.
-    Grants are active if expires_at IS NULL or expires_at > now (Phase 1: all
-    grants are non-expiring, so the full list is always returned).
+    Grants are active if expires_at IS NULL or expires_at > now. A consent
+    approval that carried ``duration_secs`` writes a real expires_at, so
+    expired grants are filtered out of this list; a grant with no duration
+    stays unbounded.
 
     Optional ``?canonical_id=`` filter narrows to a single agent.
     """
