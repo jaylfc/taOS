@@ -2406,8 +2406,11 @@ controller cannot push a job to it. A manual benchmark run is therefore
   retries a run that died with the worker mid-suite, and it expires after
   fifteen minutes so a stale click is never resurrected.
 - Results land on `POST /api/workers/{id}/benchmark/results`. That endpoint is
-  append-only (a re-run adds rows; it never rewrites the first-join baseline)
-  and clears the queue entry for the worker once rows are recorded.
+  append-only (a re-run adds rows; it never rewrites the first-join baseline),
+  and it clears the queue entry **only when the report names it**: the runner
+  echoes the entry's `requested_at` back as `request_id` (`--request-id`), and
+  the controller clears on a match. Clearing by worker id alone would swallow a
+  click made while an earlier run was still working.
 - `GET /api/workers/{id}/benchmark` exposes the queue state as `pending`, which
   the Cluster app uses to say "waiting for the worker's next heartbeat".
 

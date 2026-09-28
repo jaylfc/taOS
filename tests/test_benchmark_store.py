@@ -166,11 +166,15 @@ async def test_queued_run_upserts_expires_and_clears(tmp_path: Path):
         pending = await store.get_pending_request("w", now=2100.0)
         assert pending == {"worker_id": "w", "requested_at": 2000.0, "force": True}
 
-        # Past its TTL the request is dropped, not delivered late.
+        # Past its TTL the request is not delivered late ...
         assert await store.get_pending_request("w", now=2000.0 + REQUEST_TTL_SECONDS + 1) is None
-        assert await store.get_pending_request("w", now=2100.0) is None
+        # ... and the expiry is a pure read: the inert row stays put (read with
+        # an earlier clock it is still there), so a GET never mutates and a
+        # fresh queue write simply replaces it.
+        assert (await store.get_pending_request("w", now=2100.0))["requested_at"] == 2000.0
 
         await store.request_run(worker_id="w", requested_at=3000.0)
+        assert (await store.get_pending_request("w", now=3100.0))["requested_at"] == 3000.0
         assert await store.clear_pending_request("w") is True
         assert await store.clear_pending_request("w") is False
     finally:

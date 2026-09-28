@@ -53,6 +53,11 @@ describe("WorkerBenchmarksSection", () => {
     expect(screen.getByText("42.50 tok/s")).toBeInTheDocument();
     expect(screen.getByText(/first run/)).toBeInTheDocument();
     expect(screen.getByText(/1 recorded measurement/)).toBeInTheDocument();
+    // Regression (#3240 review): an escape sequence written directly in JSX
+    // text renders literally, so the capability separator must come from a JS
+    // expression.
+    expect(screen.queryByText(/\\u00b7/)).not.toBeInTheDocument();
+    expect(screen.getByText(/\u00b7 llm-chat/)).toBeInTheDocument();
   });
 
   it("says so when the worker has no results yet", async () => {

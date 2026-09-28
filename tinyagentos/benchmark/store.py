@@ -190,14 +190,16 @@ class BenchmarkStore:
     ) -> Optional[dict]:
         """The queued manual run for a worker, or None.
 
-        None means "nothing queued for this worker" -- including the case
-        where a queued run has passed its TTL (the expired row is dropped)
-        and the case where the store has not been initialised, so a caller
-        on a hot path (the heartbeat) can read this without a guard.
+        A pure read: None means "nothing queued for this worker" -- including
+        the case where a queued run has passed its TTL (the expired row is left
+        in place; it is inert, replaced by the next :meth:`request_run` and
+        removed by :meth:`clear_pending_request`) and the case where the store
+        has not been initialised, so a caller on a hot path (the heartbeat) can
+        read this without a guard.
 
-        This is a *read*: the row survives delivery so an interrupted run
-        is retried on the next heartbeat, and it is cleared by
-        :meth:`clear_pending_request` once results arrive.
+        The row deliberately survives delivery: it is cleared only when the run
+        it names reports back, so an interrupted run is retried on the next
+        heartbeat.
         """
         if self._db is None:
             return None
@@ -214,7 +216,6 @@ class BenchmarkStore:
             "force": bool(row["force"]),
         }
         if (time.time() if now is None else now) - request["requested_at"] > ttl:
-            await self.clear_pending_request(worker_id)
             return None
         return request
 

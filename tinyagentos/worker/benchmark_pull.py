@@ -77,8 +77,13 @@ class BenchmarkRequestRunner:
     def attempts(self) -> int:
         return self._attempts
 
-    def argv(self) -> list[str]:
-        """The runner command. Manual runs are never first-join runs."""
+    def argv(self, request_id: float) -> list[str]:
+        """The runner command. Manual runs are never first-join runs.
+
+        ``--request-id`` echoes the queue entry's ``requested_at`` back in the
+        report, so the controller clears exactly the run this invocation served
+        (a click that arrived meanwhile keeps its place in the queue).
+        """
         return [
             self.python_executable,
             "-m",
@@ -87,21 +92,43 @@ class BenchmarkRequestRunner:
             self.controller_url,
             "--worker-name",
             self.worker_name,
+            "--request-id",
+            str(request_id),
         ]
+
+    @staticmethod
+    def request_id_of(request: Optional[dict]) -> Optional[float]:
+        """The queued run's timestamp, or None when the delivery is unusable.
+
+        The controller always sends a float. Anything else means a malformed or
+        hostile heartbeat response, and starting a run for it would burn the
+        worker while corrupting the attempt bookkeeping (a float is what marks
+        which request the attempts belong to).
+        """
+        if not request:
+            return None
+        requested_at = request.get("requested_at")
+        if isinstance(requested_at, bool) or not isinstance(requested_at, (int, float)):
+            return None
+        return float(requested_at)
 
     def should_start(self, request: Optional[dict]) -> bool:
         """True when this delivery should start a run.
 
-        False for: no request, malformed request, a run already in flight, a
+        False for: no request, malformed request (no worker id, or a
+        ``requested_at`` that is not a number), a run already in flight, a
         re-delivery inside the post-run grace window (its results are probably
         still in flight), or the attempt budget for this ``requested_at``
         already spent.
         """
         if not request or not request.get("worker_id"):
             return False
+        requested_at = self.request_id_of(request)
+        if requested_at is None:
+            return False
         if self.running:
             return False
-        if request.get("requested_at") == self._requested_at:
+        if requested_at == self._requested_at:
             if self._attempts >= self.max_attempts:
                 return False
             if (
@@ -121,6 +148,11 @@ class BenchmarkRequestRunner:
             self._exited_at = None
             return False
 
+        requested_at = self.request_id_of(request)
+        if not request.get("worker_id") or requested_at is None:
+            logger.warning("benchmark pickup: ignoring malformed request %r", request)
+            return False
+
         if self._process is not None and self._process.returncode is not None:
             # The run ended; its results POST may still be in flight.
             if self._exited_at is None:
@@ -129,14 +161,13 @@ class BenchmarkRequestRunner:
         if not self.should_start(request):
             return False
 
-        requested_at = request.get("requested_at")
         if requested_at == self._requested_at:
             self._attempts += 1
         else:
             self._requested_at = requested_at
             self._attempts = 1
 
-        argv = self.argv()
+        argv = self.argv(requested_at)
         try:
             self._process = await self._spawn_process(argv)
         except Exception:  # noqa: BLE001 -- the heartbeat loop must survive this

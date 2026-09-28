@@ -16,6 +16,7 @@ with the first-attach hook.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json as _json
@@ -52,6 +53,7 @@ def _report(
     value: float = 42.0,
     measured_at: float = 1_700_000_000.0,
     metric: str = "tokens_per_sec",
+    request_id: float | None = None,
 ) -> dict:
     return {
         "worker_id": worker_id,
@@ -59,6 +61,7 @@ def _report(
         "platform": "linux-aarch64",
         "suite_name": "short",
         "first_join": first_join,
+        "request_id": request_id,
         "results": [
             {
                 "task_id": "chat-small",
@@ -259,8 +262,51 @@ async def test_queued_run_is_delivered_on_heartbeat_and_cleared_by_results(
 
     results = await client.post(
         f"/api/workers/{WORKER}/benchmark/results",
-        json=_report(first_join=False, value=61.0, measured_at=1_700_000_500.0),
+        json=_report(
+            first_join=False,
+            value=61.0,
+            measured_at=1_700_000_500.0,
+            request_id=queued["requested_at"],
+        ),
     )
     assert results.status_code == 200
     assert (await heartbeat())["benchmark_request"] is None
     assert await bench_store.get_pending_request(WORKER) is None
+
+
+@pytest.mark.asyncio
+async def test_a_click_made_mid_run_survives_the_in_flight_runs_report(
+    bench_store, client, app, pair_and_register_worker
+):
+    """Two clicks in quick succession must produce two runs.
+
+    The worker ignores a re-delivery while a run is in flight, so the second
+    click stays queued until the first run reports. That report names the FIRST
+    request, so it must clear that one only -- clearing by worker id would
+    silently swallow the second click.
+    """
+    await pair_and_register_worker(
+        client, app, {"name": WORKER, "url": "http://10.0.0.9:9000", "platform": "linux"}
+    )
+
+    first = (await client.post(f"/api/workers/{WORKER}/benchmark", json={})).json()
+    await asyncio.sleep(0.01)
+    second = (
+        await client.post(f"/api/workers/{WORKER}/benchmark", json={"force": True})
+    ).json()
+    assert second["requested_at"] > first["requested_at"]
+
+    report = await client.post(
+        f"/api/workers/{WORKER}/benchmark/results",
+        json=_report(
+            value=48.0,
+            measured_at=1_700_000_600.0,
+            request_id=first["requested_at"],
+        ),
+    )
+    assert report.status_code == 200
+    assert report.json()["recorded"] == 1
+
+    pending = await bench_store.get_pending_request(WORKER)
+    assert pending is not None
+    assert pending["requested_at"] == second["requested_at"]

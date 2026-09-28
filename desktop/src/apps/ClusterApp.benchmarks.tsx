@@ -199,7 +199,7 @@ export function WorkerBenchmarksSection({ workerName }: { workerName: string }) 
                 <div className="min-w-0">
                   <p className="text-[11px] text-shell-text">
                     {row.metric}
-                    <span className="text-shell-text-tertiary"> \u00b7 {row.capability}</span>
+                    <span className="text-shell-text-tertiary">{" \u00b7 "}{row.capability}</span>
                   </p>
                   <p className="text-[10px] text-shell-text-tertiary font-mono break-all">
                     {row.model}

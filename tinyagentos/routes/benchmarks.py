@@ -59,6 +59,13 @@ class BenchmarkReport(BaseModel):
     platform: str | None = None
     suite_name: str | None = None
     first_join: bool = False
+    # ``requested_at`` of the queued manual run this report is serving, echoed
+    # back by the runner (``--request-id``). It is what lets the controller
+    # clear exactly the run that produced these rows: a click that arrived
+    # while this run was in flight must survive, not be swept away by results
+    # that predate it. Absent for the first-attach run, which serves no queue
+    # entry.
+    request_id: float | None = None
     results: list[BenchmarkResult]
 
 
@@ -124,11 +131,16 @@ async def post_benchmark_results(worker_id: str, report: BenchmarkReport, reques
         except Exception:
             logger.exception("failed to record benchmark result")
 
-    # Only a run that actually recorded something satisfies the queue entry;
-    # a 500 from the store must not silently drop the user's request.
-    if recorded:
+    # Only a run that actually recorded something, and that names the queued
+    # run it was serving, may clear the queue entry. Matching on the request id
+    # (not on "some results arrived") is what keeps a click made mid-run alive:
+    # the in-flight run's report carries the OLDER id, so it leaves the newer
+    # queued run alone.
+    if recorded and report.request_id is not None:
         try:
-            await store.clear_pending_request(worker_id)
+            pending = await store.get_pending_request(worker_id)
+            if pending is not None and pending["requested_at"] == report.request_id:
+                await store.clear_pending_request(worker_id)
         except Exception:
             logger.exception("failed to clear queued benchmark run for %s", worker_id)
 
@@ -174,17 +186,8 @@ async def trigger_worker_benchmark(
 
     force = bool(body.force) if body is not None else False
 
-    pending = await store.get_pending_request(worker_id)
-    if pending is not None and not force:
-        return JSONResponse(
-            {
-                "error": f"A benchmark run is already queued for worker '{worker_id}'",
-                "pending": pending,
-                "hint": 'POST {"force": true} to replace the queued run.',
-            },
-            status_code=409,
-        )
-
+    # Offline is the more actionable answer, so it wins: telling a user "already
+    # queued" about a worker that cannot run anything would read as "busy".
     status = getattr(worker, "status", None)
     if status != "online":
         return JSONResponse(
@@ -193,6 +196,17 @@ async def trigger_worker_benchmark(
                     f"Worker '{worker_id}' is not online (status={status}) — "
                     "a benchmark needs the worker up"
                 )
+            },
+            status_code=409,
+        )
+
+    pending = await store.get_pending_request(worker_id)
+    if pending is not None and not force:
+        return JSONResponse(
+            {
+                "error": f"A benchmark run is already queued for worker '{worker_id}'",
+                "pending": pending,
+                "hint": 'POST {"force": true} to replace the queued run.',
             },
             status_code=409,
         )

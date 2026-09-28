@@ -126,12 +126,15 @@ Tracked in #223.
 For headless worker hosts, queue a re-run via:
 
 ```bash
-curl -X POST http://<controller>:6969/api/workers/<worker-name>/benchmark
+# The endpoint is admin-only: present a signed-in session (browser/SPA) or the
+# controller's host local token (TAOS_LOCAL_TOKEN).
+curl -X POST http://<controller>:6969/api/workers/<worker-name>/benchmark \
+  -H "Authorization: Bearer $TAOS_LOCAL_TOKEN"
 ```
 
-The endpoint is admin-only and returns `202 {"status": "queued", ...}`
-immediately. The worker learns about the run from its next heartbeat (about
-five seconds later), starts the suite in the background, and posts the results
-back — which clears the queue entry. A rebuild without `{"force": true}` while a
-run is already queued answers `409`; pass `-d '{"force": true}'` to replace the
-queued run.
+The endpoint returns `202 {"status": "queued", ...}` immediately. The worker
+learns about the run from its next heartbeat (about five seconds later), starts
+the suite in the background, and posts the results back — echoing the queue
+entry's id so the controller clears exactly that run. A request without
+`{"force": true}` while a run is already queued answers `409`; pass
+`-d '{"force": true}'` to replace the queued run.

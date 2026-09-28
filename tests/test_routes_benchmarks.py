@@ -45,6 +45,7 @@ def _report_payload(**overrides):
         "platform": overrides.get("platform", "linux"),
         "suite_name": overrides.get("suite_name", "default"),
         "first_join": overrides.get("first_join", False),
+        "request_id": overrides.get("request_id", None),
         "results": overrides.get("results", [
             {
                 "task_id": "task-1",
@@ -299,24 +300,66 @@ async def test_get_worker_benchmarks_reports_the_queued_run(client, app):
 
 
 @pytest.mark.asyncio
-async def test_post_results_clears_the_queued_run(client, app):
-    """Results landing is what tells the controller the click was served."""
-    store = _make_store(clear_pending_request=True)
+async def test_post_results_clears_the_matching_queued_run(client, app):
+    """Results carrying the queued run's id are what tells the controller the
+    click was served."""
+    store = _make_store(
+        get_pending_request={"worker_id": "w1", "requested_at": 1700000000.0, "force": False},
+        clear_pending_request=True,
+    )
     app.state.benchmark_store = store
 
-    r = await client.post("/api/workers/w1/benchmark/results", json=_report_payload(worker_id="w1"))
+    r = await client.post(
+        "/api/workers/w1/benchmark/results",
+        json=_report_payload(worker_id="w1", request_id=1700000000.0),
+    )
     assert r.status_code == 200
     store.clear_pending_request.assert_awaited_with("w1")
 
 
 @pytest.mark.asyncio
-async def test_post_results_without_recorded_rows_keeps_the_queue(client, app):
-    """An empty report must not consume the queued run."""
-    store = _make_store()
+async def test_post_results_leaves_a_newer_queued_run_alone(client, app):
+    """An in-flight run's report carries the OLDER id, so it must not sweep away
+    a run queued while it was working."""
+    store = _make_store(
+        get_pending_request={"worker_id": "w1", "requested_at": 1700000900.0, "force": True},
+    )
     app.state.benchmark_store = store
 
     r = await client.post(
-        "/api/workers/w1/benchmark/results", json=_report_payload(worker_id="w1", results=[])
+        "/api/workers/w1/benchmark/results",
+        json=_report_payload(worker_id="w1", request_id=1700000000.0),
+    )
+    assert r.status_code == 200
+    assert r.json()["recorded"] == 1
+    store.clear_pending_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_results_without_a_request_id_keeps_the_queue(client, app):
+    """The first-attach run (and a hand-run CLI) serves no queue entry, so it
+    clears nothing."""
+    store = _make_store(
+        get_pending_request={"worker_id": "w1", "requested_at": 1700000900.0, "force": False},
+    )
+    app.state.benchmark_store = store
+
+    r = await client.post("/api/workers/w1/benchmark/results", json=_report_payload(worker_id="w1"))
+    assert r.status_code == 200
+    store.clear_pending_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_results_without_recorded_rows_keeps_the_queue(client, app):
+    """An empty report must not consume the queued run."""
+    store = _make_store(
+        get_pending_request={"worker_id": "w1", "requested_at": 1700000000.0, "force": False},
+    )
+    app.state.benchmark_store = store
+
+    r = await client.post(
+        "/api/workers/w1/benchmark/results",
+        json=_report_payload(worker_id="w1", request_id=1700000000.0, results=[]),
     )
     assert r.status_code == 200
     store.clear_pending_request.assert_not_awaited()

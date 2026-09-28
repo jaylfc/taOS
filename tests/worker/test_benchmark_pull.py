@@ -58,6 +58,8 @@ async def test_starts_the_runner_subprocess_with_the_controller_url():
             "http://controller:6969",
             "--worker-name",
             "pi4",
+            "--request-id",
+            str(REQUEST["requested_at"]),
         ]
     ]
     # Manual runs are never first-join runs.
@@ -107,7 +109,14 @@ async def test_no_request_and_malformed_request_are_noops():
     assert await runner.handle(None) is False
     assert await runner.handle({}) is False
     assert await runner.handle({"requested_at": 1.0}) is False
+    # A heartbeat response with a worker id but no usable requested_at must not
+    # start a run (it would corrupt the attempt bookkeeping too).
+    assert await runner.handle({"worker_id": "pi4"}) is False
+    assert await runner.handle({"worker_id": "pi4", "requested_at": "soon"}) is False
+    assert await runner.handle({"worker_id": "pi4", "requested_at": None}) is False
+    assert await runner.handle({"worker_id": "pi4", "requested_at": True}) is False
     assert spawned == []
+    assert runner.attempts == 0
 
 
 @pytest.mark.asyncio
@@ -186,4 +195,6 @@ async def test_agent_starts_a_run_from_the_heartbeat_delivery(tmp_path):
 
     agent._last_heartbeat_request = REQUEST
     assert await agent._maybe_start_requested_benchmark() is True
-    assert spawned[0][-1] == "pi4"
+    assert "pi4" in spawned[0]
+    # The queue entry's id is echoed so the controller clears exactly this run.
+    assert spawned[0][-1] == str(REQUEST["requested_at"])
