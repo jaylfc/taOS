@@ -16,10 +16,13 @@ Each proven pair below:
   - the CONTROL stamps provenance via the internal path and asserts the grant
     still lands, so deleting the handler cannot fake the red.
 """
+import time
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.agent_registry_store import mint_registry_token
+from tinyagentos.projects.ids import new_id
 
 # Local literal (not imported from decisions.py) so the red-first proof runs on
 # the unfixed tree too, where the constant does not yet exist.  Must match
@@ -344,3 +347,58 @@ async def test_server_raised_device_pairing_still_mints_on_approval(client, app)
     assert decided["status"] == "accepted"
     devices = await app.state.device_store.list_for_user(decision["user_id"])
     assert len(devices) == 1
+
+
+@pytest.mark.asyncio
+async def test_backfill_provenance_stamps_pre_cutoff_and_is_idempotent(tmp_path):
+    """Pre-cutoff gate decisions with no server provenance must be stamped
+    exactly once.  A second run must change zero rows."""
+    import json as _json
+
+    from tinyagentos.decisions.decision_store import DecisionStore, GATE_GRANT_KINDS
+
+    store = DecisionStore(tmp_path / "decisions.db")
+    await store.init()
+
+    upgrade_at = time.time()
+    old_ts = upgrade_at - 100.0
+    did = "dec-pre-cutoff-" + new_id("dec")[4:]
+
+    meta = {"kind": "execution_gate", "agent_name": "agent-a", "action_class": "test-exec", "tool": "test"}
+    await store._db.execute(
+        "INSERT INTO decisions (id, from_agent, project_id, user_id, question, type, options, context, priority, status, created_at, metadata) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            did,
+            "agent-a",
+            "prj-1",
+            "u1",
+            "pre-cutoff gate",
+            "approve_deny",
+            "[]",
+            "",
+            "normal",
+            "pending",
+            old_ts,
+            _json.dumps(meta),
+        ),
+    )
+    await store._db.commit()
+
+    await store._db.execute("DELETE FROM gate_provenance_backfill WHERE key = ?", ("server_raised",))
+    await store._db.commit()
+
+    stamped_first = await store.backfill_provenance()
+    assert stamped_first == 1
+
+    row = await (await store._db.execute("SELECT metadata FROM decisions WHERE id = ?", (did,))).fetchone()
+    meta_after = _json.loads(row[0])
+    assert meta_after.get("_server_raised") is True
+
+    stamped_second = await store.backfill_provenance()
+    assert stamped_second == 0
+
+    row2 = await (await store._db.execute("SELECT metadata FROM decisions WHERE id = ?", (did,))).fetchone()
+    meta_final = _json.loads(row2[0])
+    assert meta_final.get("_server_raised") is True
+    assert meta_final == meta_after

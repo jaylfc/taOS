@@ -146,9 +146,15 @@ class DecisionStore(BaseStore):
         # rows whose `created_at` strictly predates it.  A row created through
         # the public route after deploy has `created_at` >= that instant and is
         # never stamped; the marker makes the whole thing run exactly once.
-        # The marker table may not exist yet (first run after this deploy).
-        # Check with a guarded PRAGMA, mirroring the metadata-column check above,
-        # rather than SELECT-ing a table that is not there yet.
+        await self.backfill_provenance()
+
+    async def backfill_provenance(self) -> int:
+        """Stamp `_server_raised = True` on pre-cutoff gate decisions.
+
+        Returns the number of rows that were updated.  The marker row is
+        persisted on first successful run so a second boot is a guaranteed
+        no-op even if new pending gate decisions exist.
+        """
         tables = {
             row[0]
             for row in await (
@@ -165,42 +171,44 @@ class DecisionStore(BaseStore):
                     ("server_raised",),
                 )
             ).fetchone()
-        if marker is None:
-            upgrade_at = time.time()
-            rows = await (
-                await self._db.execute(
-                    "SELECT id, metadata, created_at FROM decisions "
-                    "WHERE status = 'pending' AND created_at < ?",
-                    (upgrade_at,),
-                )
-            ).fetchall()
-            to_stamp = []
-            for decision_id, metadata_json, _created_at in rows:
-                try:
-                    meta = json.loads(metadata_json) if metadata_json else {}
-                except (TypeError, json.JSONDecodeError):
-                    continue
-                if not isinstance(meta, dict):
-                    continue
-                if meta.get(SERVER_RAISED_KEY) is True:
-                    continue
-                if meta.get("kind") not in GATE_GRANT_KINDS:
-                    continue
-                meta[SERVER_RAISED_KEY] = True
-                to_stamp.append((json.dumps(meta), decision_id))
-            if to_stamp:
-                await self._db.executemany(
-                    "UPDATE decisions SET metadata = ? WHERE id = ?", to_stamp
-                )
+        if marker is not None:
+            return 0
+        upgrade_at = time.time()
+        rows = await (
             await self._db.execute(
-                "CREATE TABLE IF NOT EXISTS gate_provenance_backfill "
-                "(key TEXT PRIMARY KEY, upgraded_at REAL NOT NULL)"
+                "SELECT id, metadata, created_at FROM decisions "
+                "WHERE created_at < ?",
+                (upgrade_at,),
             )
-            await self._db.execute(
-                "INSERT INTO gate_provenance_backfill (key, upgraded_at) VALUES (?, ?)",
-                ("server_raised", upgrade_at),
+        ).fetchall()
+        to_stamp = []
+        for decision_id, metadata_json, _created_at in rows:
+            try:
+                meta = json.loads(metadata_json) if metadata_json else {}
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(meta, dict):
+                continue
+            if meta.get(SERVER_RAISED_KEY) is True:
+                continue
+            if meta.get("kind") not in GATE_GRANT_KINDS:
+                continue
+            meta[SERVER_RAISED_KEY] = True
+            to_stamp.append((json.dumps(meta), decision_id))
+        if to_stamp:
+            await self._db.executemany(
+                "UPDATE decisions SET metadata = ? WHERE id = ?", to_stamp
             )
-            await self._db.commit()
+        await self._db.execute(
+            "CREATE TABLE IF NOT EXISTS gate_provenance_backfill "
+            "(key TEXT PRIMARY KEY, upgraded_at REAL NOT NULL)"
+        )
+        await self._db.execute(
+            "INSERT INTO gate_provenance_backfill (key, upgraded_at) VALUES (?, ?)",
+            ("server_raised", upgrade_at),
+        )
+        await self._db.commit()
+        return len(to_stamp)
 
     async def create(
         self,
