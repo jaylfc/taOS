@@ -198,18 +198,20 @@ async def trigger_worker_benchmark(
             status_code=409,
         )
 
-    pending = await store.get_pending_request(worker_id)
-    if pending is not None and not force:
+    # The "already queued" guard lives inside the write (one conditional
+    # upsert), so two concurrent clicks cannot both see an empty queue and
+    # both think they queued the run. None means the write was refused.
+    queued = await store.request_run(worker_id=worker_id, force=force)
+    if queued is None:
         return JSONResponse(
             {
                 "error": f"A benchmark run is already queued for worker '{worker_id}'",
-                "pending": pending,
+                "pending": await store.get_pending_request(worker_id),
                 "hint": 'POST {"force": true} to replace the queued run.',
             },
             status_code=409,
         )
 
-    queued = await store.request_run(worker_id=worker_id, force=force)
     logger.info(
         "queued manual benchmark run for worker %s (force=%s)", worker_id, force
     )

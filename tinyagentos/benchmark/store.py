@@ -159,26 +159,39 @@ class BenchmarkStore:
         worker_id: str,
         force: bool = False,
         requested_at: Optional[float] = None,
-    ) -> dict:
-        """Queue a manual benchmark run for a worker (replacing any queued one).
+        ttl: float = REQUEST_TTL_SECONDS,
+    ) -> Optional[dict]:
+        """Queue a manual benchmark run for a worker.
 
-        One request per worker: a second call overwrites the first, so the
-        worker never runs a backlog of stale clicks. Callers enforce the
-        "already queued" guard by reading :meth:`get_pending_request` first.
+        Returns the queued request, or ``None`` when a live request is already
+        queued and ``force`` was not set. One request per worker: a plain repeat
+        click is refused rather than stacking a backlog of stale clicks, while
+        ``force`` replaces whatever is queued.
+
+        The "already queued" decision is made *inside* the write: a read
+        followed by a write would let two concurrent callers both see an empty
+        queue and both queue a run, silently dropping one. An expired row does
+        not count as queued, so a stale click is replaced -- exactly what a read
+        would have said.
         """
         assert self._db is not None, "BenchmarkStore.init() not called"
         ts = time.time() if requested_at is None else float(requested_at)
-        await self._db.execute(
+        cursor = await self._db.execute(
             """
             INSERT INTO benchmark_requests (worker_id, requested_at, force)
             VALUES (?, ?, ?)
             ON CONFLICT(worker_id) DO UPDATE SET
                 requested_at = excluded.requested_at,
                 force = excluded.force
+            WHERE ? = 1 OR benchmark_requests.requested_at <= ?
             """,
-            (worker_id, ts, 1 if force else 0),
+            (worker_id, ts, 1 if force else 0, 1 if force else 0, ts - ttl),
         )
         await self._db.commit()
+        # A refused upsert (live non-force request) changes nothing, so
+        # rowcount is 0 and the caller answers 409.
+        if not cursor.rowcount:
+            return None
         return {"worker_id": worker_id, "requested_at": ts, "force": bool(force)}
 
     async def get_pending_request(

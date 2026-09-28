@@ -160,9 +160,15 @@ async def test_queued_run_upserts_expires_and_clears(tmp_path: Path):
             "force": False,
         }
 
-        # One row per worker: a second click replaces the queued run rather
-        # than stacking a backlog of runs.
-        await store.request_run(worker_id="w", force=True, requested_at=2000.0)
+        # A plain repeat click is refused by the write itself (one conditional
+        # upsert) and leaves the queued run untouched -- two concurrent clicks
+        # cannot both believe they queued the run.
+        assert await store.request_run(worker_id="w", requested_at=1100.0) is None
+        assert (await store.get_pending_request("w", now=1200.0))["requested_at"] == 1000.0
+
+        # One row per worker: a forced second click replaces the queued run
+        # rather than stacking a backlog of runs.
+        assert await store.request_run(worker_id="w", force=True, requested_at=2000.0)
         pending = await store.get_pending_request("w", now=2100.0)
         assert pending == {"worker_id": "w", "requested_at": 2000.0, "force": True}
 

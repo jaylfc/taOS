@@ -2398,8 +2398,10 @@ controller cannot push a job to it. A manual benchmark run is therefore
   `{"force": bool}`) queues a run for one worker and answers `202` with
   `{"status": "queued", "worker_id", "requested_at", "force"}`. It answers
   `404` for a worker the controller does not know, and `409` when the worker is
-  not online or a run is already queued -- `force: true` replaces the queued run
-  rather than stacking a second one behind it.
+  not online or a run is already queued -- the "already queued" decision is made
+  inside the single queue write (one conditional upsert), so two concurrent
+  clicks cannot both queue a run; `force: true` replaces the queued run rather
+  than stacking a second one behind it.
 - `POST /api/cluster/heartbeat` echoes the queued run back as
   `"benchmark_request": {"worker_id", "requested_at", "force"} | null`. The
   request keeps being delivered until the worker reports results, which is what
