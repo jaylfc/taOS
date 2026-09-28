@@ -5,9 +5,18 @@ Workers call these endpoints to:
 - Post results from manual reruns (first_join=False)
 
 The UI and scheduler cost model read:
-- GET /api/workers/{id}/benchmark — per-worker history
+- GET /api/workers/{id}/benchmark — per-worker history + queued run
 - GET /api/benchmarks/capability/{cap} — cross-worker leaderboard
-- POST /api/workers/{id}/benchmark — trigger a manual run (Phase 2)
+
+The UI writes one thing:
+- POST /api/workers/{id}/benchmark — queue a manual run
+
+Queueing rather than pushing is deliberate: the worker agent is a poller
+(register + heartbeat) with no inbound HTTP surface, so the queued run is
+handed to the worker in its next heartbeat response
+(``tinyagentos/routes/cluster.py``) and the worker starts
+``python -m tinyagentos.benchmark.runner``. Results come back through the
+results endpoint below, which also clears the queue entry.
 """
 from __future__ import annotations
 
@@ -15,13 +24,19 @@ import logging
 import time
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+from tinyagentos.auth_context import require_admin
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Queueing a run occupies a worker, so it is an admin action (same gate as
+# the worker update/deploy endpoints in routes/cluster.py).
+_ADMIN = [Depends(require_admin)]
 
 
 class BenchmarkResult(BaseModel):
@@ -47,6 +62,12 @@ class BenchmarkReport(BaseModel):
     results: list[BenchmarkResult]
 
 
+class BenchmarkTrigger(BaseModel):
+    """Body for a manual run. ``force`` replaces an already-queued run."""
+
+    force: bool = False
+
+
 def _store(request: Request):
     return getattr(request.app.state, "benchmark_store", None)
 
@@ -59,6 +80,11 @@ async def post_benchmark_results(worker_id: str, report: BenchmarkReport, reques
     has already posted a first_join=True record, subsequent first_join
     posts are coerced to first_join=False (i.e. treated as manual reruns)
     so the history stays clean.
+
+    Recording is append-only: every post adds rows, so a re-run never
+    overwrites the first-join baseline or an earlier run. Once results have
+    landed, any queued manual run for this worker is cleared — that is how
+    the worker tells the controller its click was served.
     """
     store = _store(request)
     if store is None:
@@ -98,6 +124,14 @@ async def post_benchmark_results(worker_id: str, report: BenchmarkReport, reques
         except Exception:
             logger.exception("failed to record benchmark result")
 
+    # Only a run that actually recorded something satisfies the queue entry;
+    # a 500 from the store must not silently drop the user's request.
+    if recorded:
+        try:
+            await store.clear_pending_request(worker_id)
+        except Exception:
+            logger.exception("failed to clear queued benchmark run for %s", worker_id)
+
     return {
         "worker_id": worker_id,
         "recorded": recorded,
@@ -105,9 +139,90 @@ async def post_benchmark_results(worker_id: str, report: BenchmarkReport, reques
     }
 
 
+@router.post("/api/workers/{worker_id}/benchmark", dependencies=_ADMIN)
+async def trigger_worker_benchmark(
+    worker_id: str,
+    request: Request,
+    body: BenchmarkTrigger | None = None,
+):
+    """Queue a manual benchmark run on one worker.
+
+    Returns 202 with the queued request; the worker starts the suite on its
+    next heartbeat (≈5s) and posts results to the results endpoint, which
+    clears the queue entry. Nothing re-runs automatically afterwards.
+
+    - 404 when the controller does not know the worker
+    - 409 when the worker is not online, or when a run is already queued
+      (pass ``{"force": true}`` to replace the queued run)
+    """
+    store = _store(request)
+    if store is None:
+        return JSONResponse(
+            {"error": "benchmark store not initialised"}, status_code=503
+        )
+
+    cluster = getattr(request.app.state, "cluster_manager", None)
+    if cluster is None:
+        return JSONResponse(
+            {"error": "cluster manager not initialised"}, status_code=503
+        )
+    worker = cluster.get_worker(worker_id)
+    if worker is None:
+        return JSONResponse(
+            {"error": f"Worker '{worker_id}' not found"}, status_code=404
+        )
+
+    force = bool(body.force) if body is not None else False
+
+    pending = await store.get_pending_request(worker_id)
+    if pending is not None and not force:
+        return JSONResponse(
+            {
+                "error": f"A benchmark run is already queued for worker '{worker_id}'",
+                "pending": pending,
+                "hint": 'POST {"force": true} to replace the queued run.',
+            },
+            status_code=409,
+        )
+
+    status = getattr(worker, "status", None)
+    if status != "online":
+        return JSONResponse(
+            {
+                "error": (
+                    f"Worker '{worker_id}' is not online (status={status}) — "
+                    "a benchmark needs the worker up"
+                )
+            },
+            status_code=409,
+        )
+
+    queued = await store.request_run(worker_id=worker_id, force=force)
+    logger.info(
+        "queued manual benchmark run for worker %s (force=%s)", worker_id, force
+    )
+    return JSONResponse(
+        {
+            "status": "queued",
+            **queued,
+            "worker_name": getattr(worker, "name", worker_id),
+            "message": (
+                "Queued. The worker starts the suite on its next heartbeat and "
+                "posts results back to the controller."
+            ),
+        },
+        status_code=202,
+    )
+
+
 @router.get("/api/workers/{worker_id}/benchmark")
 async def get_worker_benchmarks(worker_id: str, request: Request, limit: int = 100):
-    """Per-worker benchmark history, newest first."""
+    """Per-worker benchmark history, newest first.
+
+    ``latest`` is the newest row per (capability, model) — what the worker
+    scores today; ``history`` is every recorded run; ``pending`` is the
+    queued manual run, if one is waiting for the worker's next heartbeat.
+    """
     store = _store(request)
     if store is None:
         return JSONResponse(
@@ -119,6 +234,7 @@ async def get_worker_benchmarks(worker_id: str, request: Request, limit: int = 1
         "worker_id": worker_id,
         "latest": latest,
         "history": history,
+        "pending": await store.get_pending_request(worker_id),
     }
 
 

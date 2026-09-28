@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tinyagentos.benchmark.store import BenchmarkStore
+from tinyagentos.benchmark.store import BenchmarkStore, REQUEST_TTL_SECONDS
 
 
 @pytest.mark.asyncio
@@ -142,3 +142,43 @@ async def test_leaderboard_ranks_workers(tmp_path: Path):
         assert leaderboard[0]["value"] == 200.0
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_queued_run_upserts_expires_and_clears(tmp_path: Path):
+    """The queued manual run is one row per worker with a finite lifetime."""
+    store = BenchmarkStore(tmp_path / "bench.db")
+    await store.init()
+    try:
+        # Nothing queued
+        assert await store.get_pending_request("w") is None
+
+        await store.request_run(worker_id="w", requested_at=1000.0)
+        assert await store.get_pending_request("w", now=1100.0) == {
+            "worker_id": "w",
+            "requested_at": 1000.0,
+            "force": False,
+        }
+
+        # One row per worker: a second click replaces the queued run rather
+        # than stacking a backlog of runs.
+        await store.request_run(worker_id="w", force=True, requested_at=2000.0)
+        pending = await store.get_pending_request("w", now=2100.0)
+        assert pending == {"worker_id": "w", "requested_at": 2000.0, "force": True}
+
+        # Past its TTL the request is dropped, not delivered late.
+        assert await store.get_pending_request("w", now=2000.0 + REQUEST_TTL_SECONDS + 1) is None
+        assert await store.get_pending_request("w", now=2100.0) is None
+
+        await store.request_run(worker_id="w", requested_at=3000.0)
+        assert await store.clear_pending_request("w") is True
+        assert await store.clear_pending_request("w") is False
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_pending_request_before_init_is_none_not_an_error(tmp_path: Path):
+    """The heartbeat reads this on a hot path; an uninitialised store must not raise."""
+    store = BenchmarkStore(tmp_path / "bench.db")
+    assert await store.get_pending_request("w") is None

@@ -4,16 +4,34 @@ One row per (worker_id, capability, model, metric, measured_at). The
 scheduler reads the most recent row per (worker_id, capability) for its
 cost-model decisions; the UI reads history by (worker_id) for trend
 charts and by (capability) for cross-worker leaderboards.
+
+The results table is append-only: a re-run inserts new rows and never
+updates or deletes an earlier measurement, so the first-join baseline and
+every later run stay comparable.
+
+A second table, ``benchmark_requests``, holds the *queued manual run* for
+a worker (at most one per worker). The controller cannot push work to a
+worker agent -- the agent is a poller -- so a "Re-run benchmarks" click
+writes a row here and the request is handed to the worker in its next
+heartbeat response. See :func:`get_pending_request`.
 """
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Optional
 
 import aiosqlite
 
 from tinyagentos.db_migrations import apply_wal_pragmas_async
+
+# How long a queued manual run stays valid. Past this the request is
+# dropped rather than resurrecting a click the user made a quarter of an hour
+# ago (or before a worker that has been offline the whole time came back).
+# The worker picks a queued run up on its next heartbeat (~5s), so the TTL only
+# has to cover a heartbeat hiccup or a worker restart, not a long absence.
+REQUEST_TTL_SECONDS = 900.0
 
 
 CREATE_SQL = """
@@ -34,6 +52,11 @@ CREATE TABLE IF NOT EXISTS benchmarks (
     suite_name      TEXT,
     first_join      INTEGER DEFAULT 0,
     measured_at     REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS benchmark_requests (
+    worker_id       TEXT PRIMARY KEY,
+    requested_at    REAL NOT NULL,
+    force           INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_bench_worker ON benchmarks(worker_id);
 CREATE INDEX IF NOT EXISTS idx_bench_cap ON benchmarks(capability);
@@ -123,6 +146,86 @@ class BenchmarkStore:
         )
         row = await cursor.fetchone()
         return row is not None
+
+    # ── queued manual runs ─────────────────────────────────────────────────
+    #
+    # The worker agent polls (register + heartbeat); there is no worker-side
+    # HTTP surface the controller can POST to, so a manual re-run is queued
+    # here and delivered in the worker's next heartbeat response.
+
+    async def request_run(
+        self,
+        *,
+        worker_id: str,
+        force: bool = False,
+        requested_at: Optional[float] = None,
+    ) -> dict:
+        """Queue a manual benchmark run for a worker (replacing any queued one).
+
+        One request per worker: a second call overwrites the first, so the
+        worker never runs a backlog of stale clicks. Callers enforce the
+        "already queued" guard by reading :meth:`get_pending_request` first.
+        """
+        assert self._db is not None, "BenchmarkStore.init() not called"
+        ts = time.time() if requested_at is None else float(requested_at)
+        await self._db.execute(
+            """
+            INSERT INTO benchmark_requests (worker_id, requested_at, force)
+            VALUES (?, ?, ?)
+            ON CONFLICT(worker_id) DO UPDATE SET
+                requested_at = excluded.requested_at,
+                force = excluded.force
+            """,
+            (worker_id, ts, 1 if force else 0),
+        )
+        await self._db.commit()
+        return {"worker_id": worker_id, "requested_at": ts, "force": bool(force)}
+
+    async def get_pending_request(
+        self,
+        worker_id: str,
+        *,
+        now: Optional[float] = None,
+        ttl: float = REQUEST_TTL_SECONDS,
+    ) -> Optional[dict]:
+        """The queued manual run for a worker, or None.
+
+        None means "nothing queued for this worker" -- including the case
+        where a queued run has passed its TTL (the expired row is dropped)
+        and the case where the store has not been initialised, so a caller
+        on a hot path (the heartbeat) can read this without a guard.
+
+        This is a *read*: the row survives delivery so an interrupted run
+        is retried on the next heartbeat, and it is cleared by
+        :meth:`clear_pending_request` once results arrive.
+        """
+        if self._db is None:
+            return None
+        cursor = await self._db.execute(
+            "SELECT worker_id, requested_at, force FROM benchmark_requests WHERE worker_id = ?",
+            (worker_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        request = {
+            "worker_id": row["worker_id"],
+            "requested_at": float(row["requested_at"]),
+            "force": bool(row["force"]),
+        }
+        if (time.time() if now is None else now) - request["requested_at"] > ttl:
+            await self.clear_pending_request(worker_id)
+            return None
+        return request
+
+    async def clear_pending_request(self, worker_id: str) -> bool:
+        """Drop the queued manual run for a worker. True if one was queued."""
+        assert self._db is not None, "BenchmarkStore.init() not called"
+        cursor = await self._db.execute(
+            "DELETE FROM benchmark_requests WHERE worker_id = ?", (worker_id,)
+        )
+        await self._db.commit()
+        return bool(cursor.rowcount)
 
     async def latest_by_worker(self, worker_id: str) -> list[dict]:
         """Most recent row per (capability, model) for a given worker."""
