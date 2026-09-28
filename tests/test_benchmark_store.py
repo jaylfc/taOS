@@ -177,6 +177,15 @@ async def test_queued_run_upserts_expires_and_clears(tmp_path: Path):
         assert (await store.get_pending_request("w", now=3100.0))["requested_at"] == 3000.0
         assert await store.clear_pending_request("w") is True
         assert await store.clear_pending_request("w") is False
+
+        # A conditional clear names the run it served. Clearing an id that is no
+        # longer queued (an in-flight run reporting after a newer click replaced
+        # its row) must drop nothing -- the newer run survives.
+        await store.request_run(worker_id="w", requested_at=4000.0)
+        assert await store.clear_pending_request("w", requested_at=3999.0) is False
+        assert (await store.get_pending_request("w", now=4100.0))["requested_at"] == 4000.0
+        assert await store.clear_pending_request("w", requested_at=4000.0) is True
+        assert await store.get_pending_request("w", now=4100.0) is None
     finally:
         await store.close()
 

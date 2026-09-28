@@ -132,15 +132,13 @@ async def post_benchmark_results(worker_id: str, report: BenchmarkReport, reques
             logger.exception("failed to record benchmark result")
 
     # Only a run that actually recorded something, and that names the queued
-    # run it was serving, may clear the queue entry. Matching on the request id
-    # (not on "some results arrived") is what keeps a click made mid-run alive:
-    # the in-flight run's report carries the OLDER id, so it leaves the newer
-    # queued run alone.
+    # run it was serving, may clear the queue entry. The id match happens inside
+    # the DELETE, so a run queued while this report was in flight cannot be
+    # removed by it (read-then-delete would have that race): the in-flight
+    # report carries the OLDER id and matches nothing.
     if recorded and report.request_id is not None:
         try:
-            pending = await store.get_pending_request(worker_id)
-            if pending is not None and pending["requested_at"] == report.request_id:
-                await store.clear_pending_request(worker_id)
+            await store.clear_pending_request(worker_id, requested_at=report.request_id)
         except Exception:
             logger.exception("failed to clear queued benchmark run for %s", worker_id)
 

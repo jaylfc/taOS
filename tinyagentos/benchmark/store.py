@@ -219,12 +219,27 @@ class BenchmarkStore:
             return None
         return request
 
-    async def clear_pending_request(self, worker_id: str) -> bool:
-        """Drop the queued manual run for a worker. True if one was queued."""
+    async def clear_pending_request(
+        self, worker_id: str, *, requested_at: Optional[float] = None
+    ) -> bool:
+        """Drop the queued manual run for a worker. True if a row was dropped.
+
+        With ``requested_at`` the deletion is conditional on the id matching,
+        and matching happens *inside the statement*. That matters: a report that
+        served an earlier run can land just as a newer click replaces the row,
+        and a read-then-delete would remove the newer run before the worker ever
+        sees it. One conditional DELETE cannot.
+        """
         assert self._db is not None, "BenchmarkStore.init() not called"
-        cursor = await self._db.execute(
-            "DELETE FROM benchmark_requests WHERE worker_id = ?", (worker_id,)
-        )
+        if requested_at is None:
+            cursor = await self._db.execute(
+                "DELETE FROM benchmark_requests WHERE worker_id = ?", (worker_id,)
+            )
+        else:
+            cursor = await self._db.execute(
+                "DELETE FROM benchmark_requests WHERE worker_id = ? AND requested_at = ?",
+                (worker_id, float(requested_at)),
+            )
         await self._db.commit()
         return bool(cursor.rowcount)
 
