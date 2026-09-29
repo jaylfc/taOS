@@ -51,7 +51,7 @@ from tinyagentos.routes.desktop_browser.profile import (
     ensure_default_profiles,
     get_profile_or_404,
 )
-from tinyagentos.routes.desktop_browser.rewriter import rewrite_html
+from tinyagentos.routes.desktop_browser.rewriter import rewrite_css, rewrite_html
 from tinyagentos.routes.desktop_browser.ssrf import (
     SsrfBlockedError,
     guarded_async_client,
@@ -388,25 +388,15 @@ async def proxy_get(
 
     content_type = response.headers.get("content-type", "")
 
-    if len(response.content) > _MAX_RESPONSE_BYTES:
-        _logger.info(
-            "browser proxy response too large: bytes=%d limit=%d",
-            len(response.content), _MAX_RESPONSE_BYTES,
-        )
-        return JSONResponse(
-            {"error": "response too large"}, status_code=502,
-        )
+    proxy_prefix = (
+        f"/api/desktop/browser/proxy?profile_id={quote(profile_id, safe='')}"
+        f"&url="
+    )
+
+    def _proxy_url(absolute: str) -> str:
+        return f"{proxy_prefix}{quote(absolute, safe='')}"
 
     if "text/html" in content_type:
-        # Rewrite + inject for HTML
-        proxy_prefix = (
-            f"/api/desktop/browser/proxy?profile_id={quote(profile_id, safe='')}"
-            f"&url="
-        )
-
-        def _proxy_url(absolute: str) -> str:
-            return f"{proxy_prefix}{quote(absolute, safe='')}"
-
         charset = _detect_charset(content_type, response.content)
         rewritten = rewrite_html(
             response.content, base_url=str(response.url), proxy=_proxy_url,
@@ -475,11 +465,53 @@ async def proxy_get(
             _shell_origin(request),
             upgrade_insecure=_request_scheme(request) == "https",
         )
+
+        if len(injected) > _MAX_RESPONSE_BYTES:
+            _logger.info(
+                "browser proxy rewritten response too large: bytes=%d limit=%d",
+                len(injected), _MAX_RESPONSE_BYTES,
+            )
+            return JSONResponse(
+                {"error": "response too large"}, status_code=502,
+            )
+
         return Response(
             content=injected,
             status_code=response.status_code,
             headers=out_headers,
             media_type="text/html; charset=utf-8",
+        )
+
+    if "text/css" in content_type:
+        charset = _detect_charset(content_type, response.content)
+        rewritten = rewrite_css(
+            response.content, base_url=str(response.url), proxy=_proxy_url,
+            charset=charset,
+        )
+
+        if len(rewritten) > _MAX_RESPONSE_BYTES:
+            _logger.info(
+                "browser proxy rewritten css too large: bytes=%d limit=%d",
+                len(rewritten), _MAX_RESPONSE_BYTES,
+            )
+            return JSONResponse(
+                {"error": "response too large"}, status_code=502,
+            )
+
+        return Response(
+            content=rewritten,
+            status_code=response.status_code,
+            headers=out_headers,
+            media_type="text/css; charset=utf-8",
+        )
+
+    if len(response.content) > _MAX_RESPONSE_BYTES:
+        _logger.info(
+            "browser proxy response too large: bytes=%d limit=%d",
+            len(response.content), _MAX_RESPONSE_BYTES,
+        )
+        return JSONResponse(
+            {"error": "response too large"}, status_code=502,
         )
 
     # Non-HTML — pass through bytes verbatim

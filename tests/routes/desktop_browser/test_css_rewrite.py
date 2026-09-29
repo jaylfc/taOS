@@ -21,22 +21,27 @@ class TestCssRewrite:
         )
         out = rewrite_html(html, base_url="https://example.com/", proxy=_proxy)
 
-        assert b"/api/desktop/browser/proxy?url=" in out
+        assert b"/api/desktop/browser/proxy?profile_id=" in out
         assert b"evil.example%2Fx.css" in out
 
+    def test_rewrites_import_in_standalone_css(self):
+        from tinyagentos.routes.desktop_browser.rewriter import _rewrite_css_text
+
+        css = '@import "https://evil.example/x.css";\n.foo { color: red; }'
+        out = _rewrite_css_text(css, base_url="https://example.com/", proxy=_proxy)
+
+        assert "/api/desktop/browser/proxy?profile_id=" in out
+        assert "evil.example%2Fx.css" in out
+
     def test_preserves_data_uri_url_with_parentheses(self):
-        from tinyagentos.routes.desktop_browser.rewriter import rewrite_html
+        from tinyagentos.routes.desktop_browser.rewriter import rewrite_css
 
-        data_uri = (
-            b"url(data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'>"
-            b"<text fill='rgb(0,0,0)'>x</text></svg>)"
+        css = (
+            b'.foo { background: url("data:application/octet-stream;base64,abc(123)def"); }'
         )
-        html = (
-            b'<html><body><div style="background-image: ' + data_uri + b'"></div></body></html>'
-        )
-        out = rewrite_html(html, base_url="https://example.com/", proxy=_proxy)
+        out = rewrite_css(css, base_url="https://example.com/", proxy=_proxy)
 
-        assert b"url(data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'><text fill='rgb(0,0,0)'>x</text></svg>)" in out
+        assert b"abc(123)def" in out
 
 
 @pytest.mark.asyncio

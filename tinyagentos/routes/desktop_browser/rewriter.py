@@ -28,23 +28,16 @@ Worker intercepts them client-side.
 """
 from __future__ import annotations
 
-import re
 from typing import Callable
 from urllib.parse import urljoin
 
+import tinycss2
 from lxml import html as lxml_html
 
 
 # Schemes we never rewrite — these aren't HTTP fetches the proxy can serve.
 _SKIP_PREFIXES = (
     "data:", "javascript:", "mailto:", "tel:", "blob:", "about:", "#",
-)
-
-
-# CSS url() rewriter — captures url(), url(""), url('').
-_CSS_URL_RE = re.compile(
-    r"""url\(\s*(['"]?)([^)'"]+)\1\s*\)""",
-    re.IGNORECASE,
 )
 
 
@@ -221,13 +214,111 @@ def _rewrite_srcset(
 def _rewrite_css_text(
     text: str, *, base_url: str, proxy: Callable[[str], str],
 ) -> str:
-    def replace(match: re.Match) -> str:
-        quote = match.group(1)
-        url = match.group(2).strip()
-        new_url = _rewrite_one(url, base_url=base_url, proxy=proxy)
-        return f"url({quote}{new_url}{quote})"
+    # Inline style attributes are declaration lists; <style> contents are
+    # full stylesheets. Try the cheaper declaration-list parser first and
+    # fall back to the full stylesheet parser only when the input is not
+    # a valid declaration list.
+    parsed = tinycss2.parse_declaration_list(
+        text, skip_whitespace=True, skip_comments=True,
+    )
+    if parsed and all(
+        getattr(t, "type", "") not in ("error", "at-rule") for t in parsed
+    ):
+        return _rewrite_parsed_declarations(parsed, base_url=base_url, proxy=proxy)
 
-    return _CSS_URL_RE.sub(replace, text)
+    stylesheet, _ = tinycss2.parse_stylesheet_bytes(
+        text.encode("utf-8"),
+        skip_whitespace=True,
+        skip_comments=True,
+    )
+    return _rewrite_parsed_stylesheet(stylesheet, text, base_url=base_url, proxy=proxy)
+
+
+def _rewrite_parsed_declarations(
+    declarations, *, base_url: str, proxy: Callable[[str], str],
+) -> str:
+    changed = False
+
+    def _rewrite_component_value(token):
+        nonlocal changed
+        if token.type == "url":
+            new_url = _rewrite_one(token.value, base_url=base_url, proxy=proxy)
+            if new_url != token.value:
+                token.value = new_url
+                token.representation = f"url({new_url})"
+                changed = True
+        elif token.type == "string":
+            new_url = _rewrite_one(token.value, base_url=base_url, proxy=proxy)
+            if new_url != token.value:
+                token.value = new_url
+                token.representation = repr(new_url)
+                changed = True
+        elif token.type == "function" and token.lower_name == "url":
+            for inner in token.arguments:
+                _rewrite_component_value(inner)
+
+    for decl in declarations:
+        if decl.type != "declaration":
+            continue
+        for token in decl.value:
+            _rewrite_component_value(token)
+
+    if not changed:
+        return tinycss2.serialize(declarations)
+
+    return tinycss2.serialize(declarations)
+
+
+def _rewrite_parsed_stylesheet(
+    stylesheet, original_text: str, *, base_url: str, proxy: Callable[[str], str],
+) -> str:
+    changed = False
+
+    def _rewrite_component_value(token):
+        nonlocal changed
+        if token.type == "url":
+            new_url = _rewrite_one(token.value, base_url=base_url, proxy=proxy)
+            if new_url != token.value:
+                token.value = new_url
+                token.representation = f"url({new_url})"
+                changed = True
+        elif token.type == "string":
+            new_url = _rewrite_one(token.value, base_url=base_url, proxy=proxy)
+            if new_url != token.value:
+                token.value = new_url
+                token.representation = repr(new_url)
+                changed = True
+        elif token.type == "function" and token.lower_name == "url":
+            for inner in token.arguments:
+                _rewrite_component_value(inner)
+
+    def _process_prelude(tokens):
+        nonlocal changed
+        for token in tokens:
+            if token.type == "url":
+                new_url = _rewrite_one(token.value, base_url=base_url, proxy=proxy)
+                if new_url != token.value:
+                    token.value = new_url
+                    token.representation = f"url({new_url})"
+                    changed = True
+            elif token.type == "string":
+                new_url = _rewrite_one(token.value, base_url=base_url, proxy=proxy)
+                if new_url != token.value:
+                    token.value = new_url
+                    token.representation = repr(new_url)
+                    changed = True
+
+    for rule in stylesheet:
+        if rule.type == "at-rule" and rule.lower_at_keyword == "import":
+            _process_prelude(rule.prelude)
+        elif rule.type == "qualified-rule":
+            for token in rule.content:
+                _rewrite_component_value(token)
+
+    if not changed:
+        return original_text
+
+    return tinycss2.serialize(stylesheet)
 
 
 def _rewrite_inline_styles(
@@ -235,7 +326,9 @@ def _rewrite_inline_styles(
 ) -> None:
     for el in tree.iter():
         style = el.get("style")
-        if not style or "url(" not in style.lower():
+        if not style or not any(
+            marker in style.lower() for marker in ("url(", "@import")
+        ):
             continue
         el.set("style", _rewrite_css_text(style, base_url=base_url, proxy=proxy))
 
@@ -244,11 +337,28 @@ def _rewrite_style_tags(
     tree, *, base_url: str, proxy: Callable[[str], str],
 ) -> None:
     for style_el in tree.iter("style"):
-        if style_el.text is None or "url(" not in style_el.text.lower():
+        text = style_el.text
+        if text is None or not any(
+            marker in text.lower() for marker in ("url(", "@import")
+        ):
             continue
         style_el.text = _rewrite_css_text(
-            style_el.text, base_url=base_url, proxy=proxy
+            text, base_url=base_url, proxy=proxy
         )
+
+
+def rewrite_css(
+    css_bytes: bytes,
+    *,
+    base_url: str,
+    proxy: Callable[[str], str],
+    charset: str = "utf-8",
+) -> bytes:
+    if not css_bytes:
+        return b""
+    text = css_bytes.decode(charset or "utf-8")
+    rewritten = _rewrite_css_text(text, base_url=base_url, proxy=proxy)
+    return rewritten.encode(charset or "utf-8")
 
 
 def _rewrite_meta_refresh(
