@@ -108,23 +108,31 @@ _LAUNCHING: set = set()
 _LAUNCH_LOCK = threading.Lock()
 
 
-def launch(app: str) -> dict:
-    """Open a taOS app as its own window on its own workspace, or switch to
-    it. One launch per app at a time: a double tap must not open two."""
-    raw = swaymsg("-t", "get_tree", "-r").stdout
-    if raw and app_is_open(json.loads(raw), app):
-        swaymsg("workspace", app_workspace(app))
-        return {"ok": True, "already": True}
+def claim(app: str) -> bool:
+    """Take the one launch slot for *app*; False when a launch is already
+    under way (a double tap must not open two). Fast: no sway calls."""
     with _LAUNCH_LOCK:
         if app in _LAUNCHING:
-            return {"ok": True, "already": True}
+            return False
         _LAUNCHING.add(app)
+        return True
+
+
+def launch(app: str) -> None:
+    """Open a taOS app as its own window on its own workspace, or switch to
+    it. Runs AFTER /launch has answered (see Handler._launch), holding the
+    slot claim() took, which it releases a few seconds after it is done."""
     try:
+        raw = swaymsg("-t", "get_tree", "-r").stdout
+        if raw and app_is_open(json.loads(raw), app):
+            swaymsg("workspace", app_workspace(app))
+            return
         swaymsg("workspace", app_workspace(app))
-        res = swaymsg("exec", "chromium --user-data-dir=%s --ozone-platform=wayland "
-                      "--no-first-run --no-default-browser-check --disable-pinch "
-                      "--disable-features=TranslateUI '--app=%s'" % (KIOSK_PROFILE, APP_URL % app))
-        return {"ok": res.returncode == 0}
+        swaymsg("exec", "chromium --user-data-dir=%s --ozone-platform=wayland "
+                "--no-first-run --no-default-browser-check --disable-pinch "
+                "--disable-features=TranslateUI '--app=%s'" % (KIOSK_PROFILE, APP_URL % app))
+    except (subprocess.SubprocessError, OSError, ValueError) as exc:
+        print("taos-shelld: launch %s failed: %s" % (app, exc), file=sys.stderr)
     finally:
         threading.Timer(3.0, lambda: _LAUNCHING.discard(app)).start()
 
@@ -263,8 +271,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "bad request"}, 400)
         if not isinstance(app, str) or not _APP_RE.match(app):
             return self._json({"error": "bad app"}, 400)
-        out = launch(app)
-        return self._json(out, 200 if out.get("ok") else 502)
+        # ANSWER FIRST, then touch sway. The desktop waits 1.5 s for this
+        # reply and then opens the app in-page; a launch is up to three
+        # swaymsg calls with 5 s timeouts each, so a slow compositor answered
+        # late and the app opened twice -- in-page AND as a window. "ok" means
+        # "the shell has taken this launch"; the window follows.
+        if not claim(app):
+            return self._json({"ok": True, "already": True})
+        self._json({"ok": True})
+        threading.Thread(target=launch, args=(app,), daemon=True).start()
 
     def do_GET(self):
         if self.path == "/":
