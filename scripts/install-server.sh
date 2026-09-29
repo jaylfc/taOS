@@ -825,11 +825,10 @@ COW_EFFECTIVE_MODE="n/a"
 # worker containers. On macOS, the Apple Containerization framework
 # (bundled with macOS 26) is used instead — no install needed here.
 # On Linux, if no runtime is found, we install Incus via the system
-# package manager on Debian/Ubuntu/Fedora. On Arch/Alpine we log a
-# manual-install notice and continue — those distros have it in the
-# repos but the AUR/apk setup varies too much to auto-invoke here.
-# A failed Incus install is non-fatal: taOS still starts; cluster and
-# worker-container features are simply unavailable until one is added.
+    # package manager on Debian/Ubuntu/Fedora/Arch/Alpine. For Arch, Incus is
+    # in the official "extra" repo; for Alpine, it's in edge/community.
+    # A failed Incus install is non-fatal: taOS still starts; cluster and
+    # worker-container features are simply unavailable until one is added.
 
 ensure_container_runtime() {
     if [[ "$os_name" == "Darwin" ]]; then
@@ -983,14 +982,49 @@ ensure_container_runtime() {
             && installed=1 \
             || warn "dnf install incus failed — continuing without container support"
     elif command -v pacman >/dev/null 2>&1; then
-        warn "container runtime: Arch detected — install Incus manually with:"
-        warn "  sudo pacman -S incus"
-        warn "  (or install Docker/Podman if you prefer)"
-        warn "  worker containers will be unavailable until a runtime is installed"
+        # Pacman is from Arch Linux's official repos (in the "extra" repo, not AUR)
+        # Try to check if incus is available first
+        if command -v pacman >/dev/null 2>&1 && pacman -Si incus >/dev/null 2>&1; then
+            log "incus available in Arch's official repos — installing from extra"
+            if sudo pacman -S --noconfirm --needed incus; then
+                installed=1
+                log "container runtime: incus installed via pacman from official repos"
+            else
+                warn "pacman install incus failed — continuing without container support"
+            fi
+        else
+            warn "container runtime: Arch detected but incus not available in official repos — install Incus manually with:"
+            warn "  sudo pacman -S incus"
+            warn "  (or install Docker/Podman if you prefer)"
+            warn "  worker containers will be unavailable until a runtime is installed"
+        fi
     elif command -v apk >/dev/null 2>&1; then
-        warn "container runtime: Alpine detected — install Incus manually with:"
-        warn "  sudo apk add incus"
-        warn "  worker containers will be unavailable until a runtime is installed"
+        # apk search to probe for incus before attempting install (Alpine edge has it)
+        if command -v apk >/dev/null 2>&1 && apk search -x incus incus-client incus-openrc >/dev/null 2>&1; then
+            log "incus available in Alpine's edge/community repos — installing"
+            # Install incus and incus-client
+            if sudo apk add --no-cache incus incus-client; then
+                # Check if we should also install incus-openrc when the host is OpenRC
+                # OpenRC detection: rc-update exists and is executable
+                if command -v rc-update >/dev/null 2>&1 && [ -x "$(command -v rc-update)" ]; then
+                    log "host uses OpenRC — installing incus-openrc service package"
+                    if sudo apk add --no-cache incus-openrc; then
+                        log "container runtime: incus and incus-openrc installed via apk"
+                    else
+                        warn "apk install incus-openrc failed — continuing with just incus binaries"
+                    fi
+                else
+                    log "container runtime: incus and incus-client installed via apk"
+                fi
+                installed=1
+            else
+                warn "apk install incus/incus-client failed — continuing without container support"
+            fi
+        else
+            warn "container runtime: Alpine detected but incus not in edge/community repos — install Incus manually with:"
+            warn "  sudo apk add incus"
+            warn "  worker containers will be unavailable until a runtime is installed"
+        fi
     else
         warn "container runtime: unrecognised package manager — install Incus or Docker manually"
         warn "  worker containers will be unavailable until a runtime is installed"
@@ -1005,18 +1039,38 @@ ensure_container_runtime() {
     fi
 
     if (( installed )) && command -v incus >/dev/null 2>&1; then
-        log "initialising Incus with default storage + network"
-        # Try explicit CoW pool first - if the user set TAOS_COW_POOL or the
-        # filesystem is btrfs/zfs, this creates the pool before incus init.
-        # Falls back gracefully to incus admin init --auto when:
-        #  - the fs isn't CoW and the user didn't force a driver
-        #  - the explicit pool creation fails
-        _incus_storage_init "$COW_FS_TYPE"
-        if sudo incus admin init --auto >/dev/null 2>&1; then
-            log "container runtime: incus initialised"
+        # Check what init system is present and start incusd appropriately
+        # Prefer systemctl if present and incus service unit exists
+        if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files --all | grep -q "^incus\|^incus@"; then
+            log "systemd present — enabling incus service"
+            if sudo systemctl enable --now incus.service >/dev/null 2>&1; then
+                log "container runtime: incus service started via systemctl"
+            else
+                warn "systemctl enable --now incus.service failed — continuing without container support"
+                unset installed
+            fi
+        # Otherwise check for OpenRC
+        elif command -v rc-update >/dev/null 2>&1 && [ -x "$(command -v rc-update)" ]; then
+            log "OpenRC present — adding incus to default runlevel"
+            if sudo rc-update add incus default >/dev/null 2>&1; then
+                log "container runtime: incus service added via rc-update"
+                # Start incus manually since it's a daemon
+                if sudo incus admin init --auto >/dev/null 2>&1; then
+                    log "container runtime: incus initialised"
+                else
+                    warn "incus admin init --auto failed — you may need to configure storage manually"
+                    warn "  see: https://linuxcontainers.org/incus/docs/main/howto/initialize/"
+                fi
+            else
+                warn "rc-update add incus default failed — continuing without container support"
+                unset installed
+            fi
+        # Package installed but NO unit for the running init (measured Alpine+systemd case)
         else
-            warn "incus admin init --auto failed — you may need to configure storage manually"
-            warn "  see: https://linuxcontainers.org/incus/docs/main/howto/initialize/"
+            warn "container runtime: incus package installed but no init system service unit found"
+            warn "  incusd may not be running; worker containers will be unavailable"
+            unset installed
+            warn "  install incus-openrc manually if using Alpine with systemd"
         fi
     fi
 }
