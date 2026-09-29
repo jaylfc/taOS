@@ -1,0 +1,27 @@
+#!/bin/sh
+# The nav bar's three buttons. Runs in the sway session as taos (waybar's
+# on-click), so it has SWAYSOCK and WAYLAND_DISPLAY already.
+#   back     Alt+Left to the focused window: chromium's back; a native app
+#            that binds nothing to it simply ignores it.
+#   home     the taOS desktop, workspace 1.
+#   recents  the switcher: its own workspace, started on first use.
+set -eu
+case "${1:-}" in
+back)
+    exec wtype -M alt -k Left -m alt
+    ;;
+home)
+    exec swaymsg -q workspace 1
+    ;;
+recents)
+    swaymsg -q workspace recents
+    # One switcher window, reused: started only if the workspace is empty.
+    if ! swaymsg -t get_tree -r | grep -q '"app_id": *"chrome-shell.taos__'; then
+        swaymsg -q exec -- /usr/local/bin/taos-app-launch-user shell http://shell.taos:6973/
+    fi
+    ;;
+*)
+    echo "usage: taos-shell back|home|recents" >&2
+    exit 2
+    ;;
+esac
