@@ -81,7 +81,7 @@ for helper in taos-kiosk-idle taos-kiosk-power taos-kiosk-screen \
               taos-kiosk-dt2w taos-kiosk-dt2w-run taos-kiosk-power-hold \
               taos-kiosk-volume taos-sensord taos-kiosk-charger taos-kiosk-charge-play \
               taos-kiosk-live \
-              taos-power-apply; do
+              taos-power-apply taos-session-mode; do
     install -m 755 "$HERE/bin/$helper" "/usr/local/bin/$helper"
     echo "installed /usr/local/bin/$helper"
 done
@@ -135,6 +135,25 @@ id taos | grep -q '(audio)' && echo "PASS: taos is in the audio group" || {
 loginctl enable-linger taos >/dev/null 2>&1 || true
 su taos -s /bin/sh -c     'XDG_RUNTIME_DIR=/run/user/999 systemctl --user enable pipewire.socket pipewire.service wireplumber.service'     >/dev/null 2>&1 || true
 echo "enabled pipewire + wireplumber for the kiosk session"
+
+# 3c-bis. Switching between the taOS kiosk and Plasma Mobile.
+#
+# The controller's session-mode API (tinyagentos/routes/system.py) switches
+# with ONE `systemctl start` of taos-kiosk.service or plasma-mobile.service
+# (the two Conflict). It runs as the unprivileged `taos`, so a polkit rule
+# scoped to exactly those two units authorises it -- not sudo. taOS.desktop is
+# the way back from Plasma Mobile: a launcher entry that runs
+# taos-session-mode kiosk. These lived in taOS's packaging/postmarketos,
+# which nothing installed; Jay ruled 2026-09-29 that taOSmobile owns the
+# device layer, so they are installed from here.
+install -d -m 755 /etc/polkit-1/rules.d
+install -m 644 "$HERE/etc/50-taos-session.rules" /etc/polkit-1/rules.d/50-taos-session.rules
+install -d -m 755 /usr/share/applications
+install -m 644 "$HERE/etc/taOS.desktop" /usr/share/applications/taOS.desktop
+grep -q 'Exec=/usr/local/bin/taos-session-mode kiosk' /usr/share/applications/taOS.desktop \
+    && [ -x /usr/local/bin/taos-session-mode ] \
+    && echo "PASS: session switch installed (polkit rule, launcher, helper)" \
+    || { echo "FAIL: session switch incomplete"; exit 1; }
 
 # 3d. Chromium's own prompts stay out of the kiosk.
 #
