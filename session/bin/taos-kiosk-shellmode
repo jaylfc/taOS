@@ -23,7 +23,9 @@ import os
 import subprocess
 import sys
 
-KIOSK_APP_ID = "chrome-127.0.0.1__"   # the kiosk's app_id, measured
+KIOSK_APP_ID = "chrome-127.0.0.1__-Default"   # the kiosk's app_id, measured
+# EXACT, not a prefix: a taOS app opened in the kiosk's profile is
+# chrome-127.0.0.1__app.html-Default and must never be forced fullscreen.
 LOCK_TITLE = "Sign in"
 
 
@@ -35,8 +37,21 @@ def wanted_fullscreen(title):
     return (title or "").startswith(LOCK_TITLE)
 
 
+#: taOS apps opened in the kiosk's profile (taos-shelld /launch). The kiosk's
+#: chromium runs --kiosk, and a window it opens inherits that and asks for
+#: fullscreen (measured: Chat came up fs=1), which covers the nav bar. These
+#: are never fullscreen. Taking fullscreen OFF from outside is safe; putting
+#: it ON from outside is what raised chromium's exit-full-screen bubble.
+APP_WINDOW_PREFIX = "chrome-127.0.0.1__app.html"
+
+
 def apply(con):
-    if not (con.get("app_id") or "").startswith(KIOSK_APP_ID):
+    app_id = con.get("app_id") or ""
+    if app_id.startswith(APP_WINDOW_PREFIX):
+        if con.get("fullscreen_mode"):
+            swaymsg("[con_id=%d] fullscreen disable" % con["id"])
+        return
+    if app_id != KIOSK_APP_ID:
         return
     want = wanted_fullscreen(con.get("name"))
     have = bool(con.get("fullscreen_mode"))

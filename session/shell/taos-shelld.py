@@ -11,6 +11,9 @@ Serves the switcher page and three calls, on LOOPBACK only:
   GET  /windows    the open app windows: con_id, app_id, title, workspace
   POST /focus      {"con_id": N}  switch to that window
   POST /close      {"con_id": N}  close it
+  POST /launch     {"app": "messages"}  open a taOS app as its own window
+                   (from the taOS desktop, cross-origin: CORS for exactly
+                   DESKTOP_ORIGIN), or switch to it if it is already open
 
 Runs in the sway session as taos (exec_always), so it has SWAYSOCK and
 needs no privilege: every action is a swaymsg the session owner could type.
@@ -22,6 +25,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import threading
 import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,10 +34,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("TAOS_SHELLD_PORT", "6973"))
 ORIGIN = os.environ.get("TAOS_SHELLD_ORIGIN", "http://shell.taos:%d" % PORT)
+#: The taOS desktop, which asks for apps to be opened. Its kiosk Chromium
+#: profile is where app windows are opened too: the same profile means the
+#: same sign-in, so an app never opens signed out (measured on the handset:
+#: an --app URL handed to the running kiosk chromium opened its own window,
+#: app_id chrome-127.0.0.1__app.html-Default, on the current workspace).
+DESKTOP_ORIGIN = os.environ.get("TAOS_SHELLD_DESKTOP_ORIGIN", "http://127.0.0.1:6969")
+KIOSK_PROFILE = os.environ.get("TAOS_SHELLD_KIOSK_PROFILE", "/var/lib/taos-kiosk/chrome")
+APP_URL = DESKTOP_ORIGIN + "/app.html?app=%s"
+_APP_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 
 #: Windows that are not "apps" to switch between: the kiosk (taOS home and
-#: the lock screen, reached with the home button) and this switcher.
-HIDDEN_APP_IDS = ("chrome-127.0.0.1__", "chrome-shell.taos__")
+#: the lock screen, reached with the home button) and this switcher. EXACT
+#: ids: a taOS app opened in the kiosk's profile is
+#: chrome-127.0.0.1__app.html-Default and IS an app.
+HIDDEN_APP_IDS = ("chrome-127.0.0.1__-Default",)
+HIDDEN_PREFIXES = ("chrome-shell.taos__",)
 
 
 def swaymsg(*args) -> subprocess.CompletedProcess:
@@ -51,6 +68,9 @@ def _walk(node, workspace=None):
 def label_for(app_id: str, title: str) -> str:
     """A readable name: taOS apps carry it in their hostname alias
     (chrome-camera.taos__-Default -> Camera); others use the window title."""
+    if app_id.startswith("chrome-127.0.0.1__app.html"):
+        # A taOS app in the kiosk's profile: the page title is the app name.
+        return title or "taOS app"
     if app_id.startswith("chrome-") and ".taos__" in app_id:
         return app_id[len("chrome-"):app_id.index(".taos__")].replace("-", " ").title()
     return title or app_id or "App"
@@ -60,7 +80,7 @@ def list_windows(tree: dict) -> list[dict]:
     out = []
     for con, ws in _walk(tree):
         app_id = con.get("app_id") or (con.get("window_properties") or {}).get("class") or ""
-        if any(app_id.startswith(h) for h in HIDDEN_APP_IDS):
+        if app_id in HIDDEN_APP_IDS or any(app_id.startswith(h) for h in HIDDEN_PREFIXES):
             continue
         if ws == "__i3_scratch":
             continue
@@ -73,6 +93,40 @@ def list_windows(tree: dict) -> list[dict]:
             "focused": bool(con.get("focused")),
         })
     return out
+
+
+def app_workspace(app: str) -> str:
+    return "app-" + app
+
+
+def app_is_open(tree: dict, app: str) -> bool:
+    ws = app_workspace(app)
+    return any(w == ws for _, w in _walk(tree))
+
+
+_LAUNCHING: set = set()
+_LAUNCH_LOCK = threading.Lock()
+
+
+def launch(app: str) -> dict:
+    """Open a taOS app as its own window on its own workspace, or switch to
+    it. One launch per app at a time: a double tap must not open two."""
+    raw = swaymsg("-t", "get_tree", "-r").stdout
+    if raw and app_is_open(json.loads(raw), app):
+        swaymsg("workspace", app_workspace(app))
+        return {"ok": True, "already": True}
+    with _LAUNCH_LOCK:
+        if app in _LAUNCHING:
+            return {"ok": True, "already": True}
+        _LAUNCHING.add(app)
+    try:
+        swaymsg("workspace", app_workspace(app))
+        res = swaymsg("exec", "chromium --user-data-dir=%s --ozone-platform=wayland "
+                      "--no-first-run --no-default-browser-check --disable-pinch "
+                      "--disable-features=TranslateUI '--app=%s'" % (KIOSK_PROFILE, APP_URL % app))
+        return {"ok": res.returncode == 0}
+    finally:
+        threading.Timer(3.0, lambda: _LAUNCHING.discard(app)).start()
 
 
 def current_windows() -> list[dict]:
@@ -192,11 +246,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self._cors()
         self.end_headers()
         self.wfile.write(body)
 
     def _json(self, obj, status: int = 200):
         self._send(json.dumps(obj).encode(), "application/json", status)
+
+    def _launch(self):
+        if not self._post_allowed((ORIGIN, DESKTOP_ORIGIN)):
+            return self._json({"error": "forbidden"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            app = json.loads(self.rfile.read(min(n, 1024)) or b"{}")["app"]
+        except (ValueError, KeyError, TypeError):
+            return self._json({"error": "bad request"}, 400)
+        if not isinstance(app, str) or not _APP_RE.match(app):
+            return self._json({"error": "bad app"}, 400)
+        out = launch(app)
+        return self._json(out, 200 if out.get("ok") else 502)
 
     def do_GET(self):
         if self.path == "/":
@@ -205,16 +273,38 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(current_windows())
         return self._json({"error": "not found"}, 404)
 
-    def _post_allowed(self) -> bool:
+    def _post_allowed(self, origins) -> bool:
         if self.headers.get("X-taOS-Shell") != "1":
             return False
         origin = self.headers.get("Origin")
-        return origin in (None, ORIGIN)
+        return origin is None or origin in origins
+
+    def _cors(self):
+        if self.headers.get("Origin") == DESKTOP_ORIGIN:
+            self.send_header("Access-Control-Allow-Origin", DESKTOP_ORIGIN)
+            self.send_header("Vary", "Origin")
+
+    def do_OPTIONS(self):
+        # Preflight for the desktop's cross-origin POST /launch, and ONLY that.
+        if self.path == "/launch" and self.headers.get("Origin") == DESKTOP_ORIGIN:
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", DESKTOP_ORIGIN)
+            self.send_header("Access-Control-Allow-Methods", "POST")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-taOS-Shell")
+            self.send_header("Access-Control-Max-Age", "600")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(403)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_POST(self):
+        if self.path == "/launch":
+            return self._launch()
         if self.path not in ("/focus", "/close"):
             return self._json({"error": "not found"}, 404)
-        if not self._post_allowed():
+        if not self._post_allowed((ORIGIN,)):
             return self._json({"error": "forbidden"}, 403)
         try:
             n = int(self.headers.get("Content-Length") or 0)
