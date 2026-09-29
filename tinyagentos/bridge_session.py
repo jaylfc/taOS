@@ -261,9 +261,17 @@ class BridgeSessionRegistry:
 
     async def _handle_reply(self, slug: str, body: dict) -> None:
         kind = body.get("kind", "")
+        # Preserve distinction between missing trace_id (should warn) vs present but unmatched
+        was_missing = "trace_id" not in body
         trace_id = body.get("trace_id") or _new_id()
         msg_id = body.get("id") or _new_id()
         content = body.get("content") or ""
+        
+        if was_missing:
+            logger.warning(
+                "bridge_session: %s reply without trace_id from agent %s - generated trace_id=%s",
+                kind, slug, trace_id
+            )
 
         # Forks (e.g. openclaw) that don't thread channel_id through the reply
         # payload still send trace_id == originating message id, so we can
