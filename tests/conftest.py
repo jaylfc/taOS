@@ -94,9 +94,9 @@ from tinyagentos.routes.desktop import SPA_DIR
 # A previous generation of tests set a dead env name (one the app does not
 # read), so create_app() fell back to PROJECT_DIR / "data" and those tests
 # wrote stray databases and config files into the repo's live data folder.
-# This autouse session fixture snapshots the mtime of every file under
-# PROJECT_DIR/data at session start and fails teardown if any file was
-# created or modified during the run.
+# This autouse function-scoped fixture snapshots the mtime of every file under
+# PROJECT_DIR/data before each test and fails teardown if any file was
+# created or modified during that test.
 # ---------------------------------------------------------------------------
 
 def _collect_data_mtimes() -> dict[str, float]:
@@ -113,8 +113,8 @@ def _collect_data_mtimes() -> dict[str, float]:
     return snapshot
 
 
-@pytest.fixture(autouse=True, scope="session")
-def _guard_data_dir_mutation():
+@pytest.fixture(autouse=True, scope="function")
+def _guard_data_dir_mutation(request):
     before = _collect_data_mtimes()
     yield
     after = _collect_data_mtimes()
@@ -127,7 +127,7 @@ def _guard_data_dir_mutation():
             mutated.append(f"{path} (deleted)")
     if mutated:
         raise RuntimeError(
-            "PROJECT_DIR/data was mutated during the test session. The following "
+            f"PROJECT_DIR/data was mutated during test {request.nodeid}. The following "
             f"files were created or modified: {', '.join(sorted(mutated))}. "
             "Tests must not write into the repo's data directory."
         )

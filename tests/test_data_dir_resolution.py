@@ -72,11 +72,25 @@ class TestCreateAppDataDir:
 
     def test_falls_back_to_project_data_when_nothing_set(self, monkeypatch, tmp_path):
         monkeypatch.delenv("TAOS_DATA_DIR", raising=False)
-        default = PROJECT_DIR / "data"
-        _make_minimal_config(default / "config.yaml")
-        (default / ".setup_complete").touch()
-        app = create_app()
-        assert Path(app.state.data_dir).resolve() == default.resolve()
+        # PROJECT_DIR should point to a temporary directory, not the real one
+        # Create a temporary PROJECT_DIR in tmp_path
+        test_project_dir = tmp_path / "PROJECT_DIR"
+        test_project_dir.mkdir()
+        test_data_dir = test_project_dir / "data"
+        test_data_dir.mkdir()
+        
+        # Mock the PROJECT_DIR in tinyagentos.app to point to our test directory
+        original_project_dir = PROJECT_DIR
+        import tinyagentos.app
+        tinyagentos.app.PROJECT_DIR = test_project_dir
+        
+        try:
+            _make_minimal_config(test_data_dir / "config.yaml")
+            (test_data_dir / ".setup_complete").touch()
+            app = create_app()
+            assert Path(app.state.data_dir).resolve() == test_data_dir.resolve()
+        finally:
+            tinyagentos.app.PROJECT_DIR = original_project_dir
 
 
 # ---------------------------------------------------------------------------
