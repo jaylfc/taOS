@@ -53,8 +53,7 @@ def configured_app(tmp_path, monkeypatch):
     """An app with one existing account that has both a password and a PIN."""
     from tinyagentos.app import create_app
 
-    monkeypatch.setenv("TINYAGENTOS_DATA_DIR", str(tmp_path))
-    app = create_app()
+    app = create_app(data_dir=tmp_path)
     mgr = AuthManager(tmp_path)
     mgr.setup_user("tester", "Bring-up Test", "", PASSWORD)
     mgr.set_pin("tester", PIN)
@@ -67,8 +66,7 @@ def unconfigured_app(tmp_path, monkeypatch):
     """An app with NO account yet — the first-run setup surface."""
     from tinyagentos.app import create_app
 
-    monkeypatch.setenv("TINYAGENTOS_DATA_DIR", str(tmp_path))
-    app = create_app()
+    app = create_app(data_dir=tmp_path)
     app.state.auth = AuthManager(tmp_path)
     return app
 

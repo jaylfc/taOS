@@ -84,8 +84,53 @@ def pytest_sessionfinish(session, exitstatus):
         raise RuntimeError("\n".join(lines))
 
 
-from tinyagentos.app import create_app
+from tinyagentos.app import create_app, PROJECT_DIR
 from tinyagentos.routes.desktop import SPA_DIR
+
+
+# ---------------------------------------------------------------------------
+# Data-dir mutation guard.
+#
+# A previous generation of tests set a dead env name (one the app does not
+# read), so create_app() fell back to PROJECT_DIR / "data" and those tests
+# wrote stray databases and config files into the repo's live data folder.
+# This autouse session fixture snapshots the mtime of every file under
+# PROJECT_DIR/data at session start and fails teardown if any file was
+# created or modified during the run.
+# ---------------------------------------------------------------------------
+
+def _collect_data_mtimes() -> dict[str, float]:
+    data_dir = PROJECT_DIR / "data"
+    snapshot: dict[str, float] = {}
+    if not data_dir.is_dir():
+        return snapshot
+    for path in data_dir.rglob("*"):
+        if path.is_file():
+            try:
+                snapshot[str(path)] = path.stat().st_mtime
+            except OSError:
+                pass
+    return snapshot
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _guard_data_dir_mutation():
+    before = _collect_data_mtimes()
+    yield
+    after = _collect_data_mtimes()
+    mutated = []
+    for path, mtime in after.items():
+        if path not in before or mtime != before[path]:
+            mutated.append(path)
+    for path in before:
+        if path not in after:
+            mutated.append(f"{path} (deleted)")
+    if mutated:
+        raise RuntimeError(
+            "PROJECT_DIR/data was mutated during the test session. The following "
+            f"files were created or modified: {', '.join(sorted(mutated))}. "
+            "Tests must not write into the repo's data directory."
+        )
 
 
 # ---------------------------------------------------------------------------

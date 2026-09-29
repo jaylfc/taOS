@@ -76,12 +76,7 @@ def _built_app(tmp_path_factory):
     from tinyagentos.app import create_app
 
     data = tmp_path_factory.mktemp("lockdata")
-    mp = pytest.MonkeyPatch()
-    mp.setenv("TINYAGENTOS_DATA_DIR", str(data))
-    try:
-        app = create_app()
-    finally:
-        mp.undo()
+    app = create_app(data_dir=data)
     mgr = AuthManager(data)
     mgr.setup_user("owner", "Owner", "", "correct horse battery staple")
     app.state.auth = mgr
