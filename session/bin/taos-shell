@@ -14,18 +14,39 @@ home)
     exec swaymsg -q workspace 1
     ;;
 recents)
+    SHELL_WIN='[app_id="^chrome-shell\.taos__"]'
+    # Already open anywhere: focus it (that also switches to its workspace).
+    # One switcher, ever: a second press used to launch a second window
+    # before the first had appeared, and sway tiled the two -- Jay saw the
+    # switcher "vertically doubled".
+    if swaymsg -q "$SHELL_WIN focus" 2>/dev/null; then
+        exit 0
+    fi
+    RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    LOCK="$RUN/taos-shell-recents.lock"
+    # A launch is already under way (lock younger than 10 s): leave it be.
+    if ! mkdir "$LOCK" 2>/dev/null; then
+        if [ -n "$(find "$LOCK" -maxdepth 0 -mmin -0.17 2>/dev/null)" ]; then
+            exit 0
+        fi
+        rmdir "$LOCK" 2>/dev/null; mkdir "$LOCK" 2>/dev/null || exit 0
+    fi
+    trap 'rmdir "$LOCK" 2>/dev/null' EXIT
     swaymsg -q workspace recents
-    # One switcher window, reused: started only if the workspace is empty.
     # The switcher is its own chromium --app window (its own profile, so its
     # own app_id via the shell.taos alias), started by sway so it lives in the
     # session. NOT --kiosk: kiosk windows go compositor-fullscreen and would
     # cover the bar.
-    if ! swaymsg -t get_tree -r | grep -q '"app_id": *"chrome-shell.taos__'; then
-        swaymsg -q exec -- chromium --app=http://shell.taos:6973/ \
-            --ozone-platform=wayland --no-first-run --no-default-browser-check \
-            --disable-features=TranslateUI --disable-pinch \
-            --user-data-dir="$HOME/.config/chromium-app-shell"
-    fi
+    swaymsg -q exec -- chromium --app=http://shell.taos:6973/ \
+        --ozone-platform=wayland --no-first-run --no-default-browser-check \
+        --disable-features=TranslateUI --disable-pinch \
+        --user-data-dir="$HOME/.config/chromium-app-shell"
+    # Hold the lock until the window exists, so a second press focuses it.
+    i=0
+    while [ "$i" -lt 40 ]; do
+        swaymsg -q "$SHELL_WIN focus" 2>/dev/null && break
+        sleep 0.25; i=$((i + 1))
+    done
     ;;
 *)
     echo "usage: taos-shell back|home|recents" >&2
