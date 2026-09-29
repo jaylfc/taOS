@@ -16,8 +16,15 @@ home)
 recents)
     swaymsg -q workspace recents
     # One switcher window, reused: started only if the workspace is empty.
+    # The switcher is its own chromium --app window (its own profile, so its
+    # own app_id via the shell.taos alias), started by sway so it lives in the
+    # session. NOT --kiosk: kiosk windows go compositor-fullscreen and would
+    # cover the bar.
     if ! swaymsg -t get_tree -r | grep -q '"app_id": *"chrome-shell.taos__'; then
-        swaymsg -q exec -- /usr/local/bin/taos-app-launch-user shell http://shell.taos:6973/
+        swaymsg -q exec -- chromium --app=http://shell.taos:6973/ \
+            --ozone-platform=wayland --no-first-run --no-default-browser-check \
+            --disable-features=TranslateUI --disable-pinch \
+            --user-data-dir="$HOME/.config/chromium-app-shell"
     fi
     ;;
 *)

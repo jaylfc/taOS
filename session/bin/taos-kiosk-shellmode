@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Keep the lock screen fullscreen, and the signed-in desktop out of it.
+
+Jay (2026-09-29): the nav bar is hidden on the lock screen and shown once
+signed in ("a"). The bar is a layer-shell surface that reserves its strip; a
+FULLSCREEN window covers it and ignores that strip. Both the lock screen and
+the desktop are the same kiosk window (workspace 1), so its fullscreen state
+is what shows or hides the bar there:
+
+    title "Sign in ..."  (the lock screen)   -> fullscreen: bar covered
+    anything else        (the desktop)       -> not fullscreen: bar shown,
+                                                 page sized above it
+
+Measured on the handset before writing this: chromium --kiosk accepted
+`fullscreen disable` and did not re-request it.
+
+Event-driven (sway's window events), plus a scan at start so the state is
+right after a restart. Runs in the session as taos (exec_always), so it has
+SWAYSOCK; a reload replaces the previous copy by pid.
+"""
+import json
+import os
+import subprocess
+import sys
+
+KIOSK_APP_ID = "chrome-127.0.0.1__"   # the kiosk's app_id, measured
+LOCK_TITLE = "Sign in"
+
+
+def swaymsg(*args):
+    return subprocess.run(["swaymsg", *args], capture_output=True, text=True)
+
+
+def wanted_fullscreen(title):
+    return (title or "").startswith(LOCK_TITLE)
+
+
+def apply(con):
+    if not (con.get("app_id") or "").startswith(KIOSK_APP_ID):
+        return
+    want = wanted_fullscreen(con.get("name"))
+    have = bool(con.get("fullscreen_mode"))
+    if want != have:
+        swaymsg("[con_id=%d] fullscreen %s" % (con["id"], "enable" if want else "disable"))
+
+
+def walk(node):
+    if node.get("app_id"):
+        yield node
+    for child in node.get("nodes", []) + node.get("floating_nodes", []):
+        yield from walk(child)
+
+
+def scan():
+    out = swaymsg("-t", "get_tree", "-r").stdout
+    if out:
+        for con in walk(json.loads(out)):
+            apply(con)
+
+
+def replace_previous():
+    run = os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid()
+    pidfile = os.path.join(run, "taos-kiosk-shellmode.pid")
+    try:
+        old = int(open(pidfile).read().strip())
+        if old != os.getpid() and b"taos-kiosk-shellmode" in open(
+                "/proc/%d/cmdline" % old, "rb").read():
+            os.kill(old, 15)
+    except (OSError, ValueError):
+        pass
+    with open(pidfile, "w") as f:
+        f.write(str(os.getpid()))
+
+
+def main():
+    replace_previous()
+    scan()
+    proc = subprocess.Popen(
+        ["swaymsg", "-t", "subscribe", "-m", "-r", '["window"]'],
+        stdout=subprocess.PIPE, text=True)
+    for line in proc.stdout:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("change") in ("new", "title", "focus", "fullscreen_mode"):
+            apply(event.get("container") or {})
+    return proc.wait()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

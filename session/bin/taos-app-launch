@@ -9,7 +9,8 @@
 # the session even under setsid -- measured, twice. A transient unit is owned
 # by systemd, so it outlives whoever asked for it.
 #
-# ⚠ --kiosk, AND NOT A COMPOSITOR FULLSCREEN ON TOP OF IT. Jay: "i loaded the
+# HISTORY (superseded 2026-09-29 by the nav bar, see the NOT --kiosk note below):
+# --kiosk, AND NOT A COMPOSITOR FULLSCREEN ON TOP OF IT. Jay: "i loaded the
 # camera and got a chrome exit full screen dialog". That is chromium's
 # exclusive-access bubble, and it fires when something ELSE puts the window
 # fullscreen -- a sway `for_window ... fullscreen enable` rule I had added.
@@ -23,6 +24,10 @@
 # it either. Switching to the app's own workspace first means the app opens
 # ALONE and fills the output, which is what a phone does, and it gives the
 # task switcher its unit of work for free: one workspace, one app.
+#
+# NOT --kiosk (2026-09-29): a kiosk window goes compositor-fullscreen, which
+# covers the nav bar and ignores its reserved strip. A plain --app window on
+# its own workspace fills everything above the bar (measured: 540x1156).
 #
 # ⚠ THE APP ID. chromium on wayland derives app_id from the URL's HOST and
 # DROPS THE PORT, so every app served from 127.0.0.1 would collide on
@@ -77,7 +82,6 @@ exec systemd-run \
   --setenv=XDG_SESSION_TYPE=wayland \
   --setenv=SWAYSOCK="$SWAYSOCK" \
   /usr/bin/chromium \
-    --kiosk \
     --app="$URL" \
     --ozone-platform=wayland \
     --no-first-run \
