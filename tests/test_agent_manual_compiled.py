@@ -64,3 +64,13 @@ def test_must_have_substrings():
         assert substring in content, (
             f"Required substring missing from compiled manual: {substring!r}"
         )
+
+
+def test_manual_keeps_secret_and_open_app_rules():
+    content = COMMITTED_OUTPUT.read_text(encoding="utf-8")
+    assert "Never show or ask for passwords" in content, (
+        "Secret rule was trimmed from 01-rules.md"
+    )
+    assert "Open the app before you act in it" in content, (
+        "open_app usage hint was trimmed from 09-os-control.md"
+    )

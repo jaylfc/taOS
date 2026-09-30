@@ -152,12 +152,30 @@ operator, not from any database. Store it in TWO locations that survive a machin
 migration, both `chmod 600`, outside any git tree, and make one authenticated call
 to verify it before considering onboarding finished. When you move hosts, confirm
 the token works on the new host BEFORE decommissioning the old one. Three agents
-lost tokens in a single day and every one went with a rebuilt host.
+lost tokens in a single day and every one went with a rebuilt host. Every mint
+response now returns that rule alongside the token (the `storage_guidance` field
+on register / mint-internal / auth-request-poll / rotate responses), for the same
+reason the rule matters: the seconds after the handover are the only chance the
+holder gets.
 
-Losing it is not merely inconvenient: recovery mints a NEW identity with no
-grants, while the old identity keeps its own unless you revoke them (below) or
-revoke the identity itself. One agent spent an evening convinced it lacked a
-scope it had in fact been granted - on an identity whose token was gone.
+**Losing it no longer mints a new identity.** `POST
+/api/agents/registry/{canonical_id}/rotate-tokens` rotates the credential ON the
+same canonical identity: it moves the identity's `token_min_iat` cutoff past
+every token already issued and returns one fresh token, minted AT that cutoff, in
+the same call. The superseded token is then rejected with `401 token superseded`
+and the replacement works immediately; the `canonical_id` never changes and the
+identity keeps its grants, so recovery stops scattering grants across orphan
+identities. The replacement carries the identity's `sub` / `user_id` /
+`framework` but not the superseded token's `project_id` claim; that claim has
+been advisory since #1862 (grants, not the claim, decide project-scoped
+authority) and rotation does not touch them, so the replacement's reach is
+unchanged. Owner or admin may rotate any identity they own, and an agent may
+rotate its OWN identity with its own live registry JWT (the route is on the
+middleware allowlist) -- which is the "rotate my credential" action an agent needs
+when it suspects its token is stale or leaked, with no human in the loop. Before
+this the only recovery was "mint a NEW identity": the old row kept its grants
+while the replacement started empty, and one agent spent an evening convinced it
+lacked a scope it had in fact been granted - on an identity whose token was gone.
 
 **Scope grants are revocable, per scope and per project.** `agent_grants_store`
 gained `revoke_grant(canonical_id, scope, project_id=...)` and
@@ -732,7 +750,8 @@ gets `expires_at = approval time + duration_secs`, and every auth path treats
 the grant as gone once that passes. Omit the field for an unbounded grant.
 A bool, string, float, zero, negative or over-ten-years value is refused with
 **422** at request time. The rule is: a grant with no duration is unbounded,
-and a bound that is set is never silently dropped or lengthened.
+and a bound that is set is never silently dropped or lengthened. To explicitly
+renew or extend an existing bound, set `renew: true` on the approve body.
 
 Deferred binding (`defer_binding=True`) mints the token and grants UNBOUND
 (project_id=None) with the same `expires_at` from `duration_secs`. When the
@@ -740,6 +759,10 @@ agent is later bound to a project via `POST /api/projects/{id}/members/assign-ag
 the project-bound grant **inherits that `expires_at`**. If the deferred grant
 has expired, the binding is refused. When both a deferred grant with expiry and
 a request with expiry exist, the earlier bound is kept (never lengthened).
+An expired row is never silently widened to unbounded: if the existing grant
+is already expired and the caller supplies no `expires_at`, the expired row is
+preserved as-is. If the caller supplies a new bounded `expires_at`, that fresh
+bound replaces the dead one.
 
 Multi-project identities (taOS #1862): one agent identity (the registry JWT) may
 belong to several projects at once. The grants table keys a grant on
@@ -1027,11 +1050,16 @@ that SAME canonical_id instead:
   counted by the route first, so a burst of concurrent self-requests cannot
   slip past it and flood the approver's queue.
 - `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/approve`
-  `{granted_scopes, project_id?}`: owner/admin only. The admin may narrow but
+  `{granted_scopes, project_id?, renew?}`: owner/admin only. The admin may narrow but
   never widen the requested scopes; each granted scope is added via
   `add_grant(canonical_id, scope, project_id)` (idempotent on the
   `(canonical_id, scope, project_id)` UNIQUE key, so re-approving is a no-op). No
-  new identity is created.
+  new identity is created. `renew` defaults to false: when the scope already
+  carries an `expires_at`, the earlier of the existing and any new bound is kept
+  (never silently dropped or lengthened). Set `renew: true` to explicitly extend
+  or replace the bound. The scope request's own `duration_secs` (if present) is
+  also wired through as `expires_at`. An expired existing grant is replaced by a
+  fresh bounded re-approval, or kept as-is if the re-approval is unbounded.
 - `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/deny`:
   owner/admin only.
 - `GET /api/agents/registry/{canonical_id}/scope-requests` (optional
@@ -1097,7 +1125,9 @@ All owner-gated registry routes are existence-hiding (#2106): an authenticated
 caller who is not the owner gets the same 404 body as a nonexistent
 `canonical_id`, on the scope-request create/read/approve/deny routes above and
 on registry PATCH, DELETE (revoke), rotate-tokens, and
-`PUT /api/agents/{id}/org`.
+`PUT /api/agents/{id}/org`. `rotate-tokens` additionally authorizes the agent
+itself when it presents its OWN live registry JWT (a self-rotation), so a request
+carrying a valid token for a DIFFERENT identity is still the same 404.
 Agents must not treat a 404 from these routes as proof an id does not exist,
 and must not expect a 403 to distinguish "exists, not yours". Admin-only
 lifecycle routes (approve/reject/suspend/reactivate) still 403 non-admins
@@ -1628,6 +1658,53 @@ where `revoked=0 OR blocked=1`, so a blocked device counts against
 `_MAX_DEVICES_PER_USER` until it is unblocked, at which point the row falls out
 and the slot frees. Deliberate: a blocked device is a retained safety valve the
 owner can still see and act on.
+
+## Cluster capability + placement map (`GET /api/cluster/map`, admin-only)
+
+Route module `tinyagentos/routes/cluster_map.py`. **Admin session only**: the
+auth middleware answers `401` to a cookie-less caller (this path is not in the
+middleware's exempt list) and `_require_admin` answers `403` to a signed-in
+non-admin, so no agent scope reaches it. Read-only by construction — it owns no
+state and reads the cluster manager's existing getters (`get_workers()` plus the
+GPU arbiter's `get_leases()`), the same state routing and scheduling consult, so
+it adds no second inventory to keep in sync. The nuance: those are two separate,
+non-atomic reads assembled per request, so the map can reflect slightly
+different state than a routing decision taken a moment later — it is a
+snapshot, not a lock.
+
+- `nodes` -- one entry per REGISTERED node, offline rows included (a node that
+  stopped heartbeating is exactly what the view exists for). Each carries
+  `health` (heartbeat freshness, using the same 60 s / 300 s thresholds the
+  desktop computes), `tier_id`, hardware, VRAM (`free_mb` / `used_mb` /
+  `total_mb`, `null` when the node reports no probe — never coerced to 0),
+  `backends`, `placement` rows and any active GPU `leases`.
+- `placement` -- one row per model: `state` is `loaded` (resident now) or
+  `installed` (declared on the node, not resident). Derived from each worker's
+  `backends[].available_models` (`status` `loaded` / otherwise), which survives
+  a stopped backend, so a node with everything installed and nothing running
+  reports installed-only rows instead of vanishing from the map. A backend with
+  no `available_models` (no manifest, or one that does not cover its software)
+  falls back to its `models` catalog against the `loaded_models` residency set;
+  the absence of a `loaded_models` key is no residency signal, so nothing reads
+  `loaded`. Note the corollary: the non-ollama backends (llama.cpp / vLLM /
+  sd-cpp) publish no in-memory probe — their `loaded_models` is empty by design
+  — so a model they are actively serving still reads `installed`, following the
+  worker's own `available_models[].status`.
+- `capabilities` -- the union of capabilities across the mesh, each split into
+  mutually exclusive buckets: `active_nodes` (serving now), `installed_nodes`
+  (present but not serving) and `potential_nodes` (hardware could run it,
+  nothing installed yet). A node that serves a capability is reported as
+  active and never also as installed or merely capable; the finer detail (a
+  node serving one model while another for the same capability sits installed)
+  lives in that node's own `placement` rows. A `loaded` placement row counts
+  as active. **Only nodes still heartbeating (health `online` or `stale`) count
+  as active**: the manager retains an offline worker with its last-reported
+  capabilities and loaded models, and those are not reachable capacity, so an
+  offline node's retained capabilities land in `installed_nodes` instead.
+  Capability strings are reported as the workers and catalog manifests write
+  them (`chat`, `image-generation`, `llm-chat`, ...); the endpoint does not
+  invent a normalised vocabulary.
+
 ## Controller generation echo (split-brain protection)
 
 Route module `tinyagentos/routes/cluster.py`, manager logic in
@@ -1719,6 +1796,7 @@ The allowlist is the union of:
 - Observatory (`/api/observatory/*`, scope `observatory_control`).
 - Container requests (`/api/containers/requests`, `/api/container-requests`, `/api/containers/requests/{id}/provision`, `/api/containers/requests/{id}/destroy`, `/api/agents/containers/quota`).
 - Agent self-serve (`/api/agents/me/models` GET, `/api/agents/me/model` POST).
+- **Credential rotation** (`POST /api/agents/registry/{id}/rotate-tokens`) -- identity-only, no scope grant: the route requires the JWT's `sub` to equal the path `canonical_id`, so an agent can rotate its own token and nobody else's. Returns the replacement token and the `storage_guidance` string; the superseded token is rejected by the identity's `token_min_iat` cutoff.
 - **Desktop control (system taOS Agent only)**: `POST /api/desktop/command`, `POST /api/desktop/screenshot`, `POST /api/desktop/layout` (native agent's registry JWT sets `user_id` to the owner, so desktop commands are delivered to the owner's desktop).
 - **Skill-exec (system taOS Agent only)**: `POST /api/skill-exec/{skill_id}/call`, `GET /api/skill-exec/tools` (native agent's registry JWT with `SYSTEM_AGENT_API_SCOPES`).
 

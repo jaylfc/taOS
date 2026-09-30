@@ -305,3 +305,141 @@ class TestApproveSurvivesOversizedStoredDuration:
         assert expiry is not None
         delta = _parse(expiry) - datetime.now(timezone.utc)
         assert delta <= timedelta(seconds=MAX_GRANT_DURATION_SECS)
+
+
+class TestAdditivePathsPreserveExpiry:
+    """Additive paths (scope-request approve, consent reuse) must never silently
+    drop or lengthen an existing bounded grant."""
+
+    @pytest.mark.asyncio
+    async def test_scope_request_approve_preserves_existing_expiry(
+        self, client, monkeypatch, tmp_path
+    ):
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.agent_scope_requests_store import AgentScopeRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+
+        registry = AgentRegistryStore(tmp_path / "reg.db")
+        await registry.init()
+        grants = AgentGrantsStore(tmp_path / "grants.db")
+        await grants.init()
+        scope_store = AgentScopeRequestsStore(tmp_path / "scope.db")
+        await scope_store.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys")
+
+        cid = await registry.register(
+            framework="openclaw",
+            display_name="@expiry-agent",
+            user_id="admin",
+            origin="taos-deployed",
+            handle="expiry-agent",
+            allow_reserved=True,
+        )
+        canonical_id = cid["canonical_id"]
+
+        await grants.add_grant(
+            canonical_id, "a2a_receive",
+            expires_at="2030-01-01T00:00:00+00:00",
+        )
+
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(
+            client._transport.app.state, "agent_scope_requests", scope_store
+        )
+        monkeypatch.setattr(
+            client._transport.app.state, "agent_registry_keypair", (priv, pub)
+        )
+
+        rec = await scope_store.create(
+            canonical_id=canonical_id,
+            requested_scopes=["a2a_receive"],
+        )
+        resp = await client.post(
+            f"/api/agents/registry/{canonical_id}/scope-requests/{rec['id']}/approve",
+            json={"granted_scopes": ["a2a_receive"]},
+        )
+        assert resp.status_code == 200, resp.text
+
+        agent_grants = await grants.list_grants(canonical_id)
+        scoped = [g for g in agent_grants if g["scope"] == "a2a_receive"]
+        assert len(scoped) == 1
+        assert scoped[0]["expires_at"] == "2030-01-01T00:00:00+00:00"
+
+        await registry.close()
+        await grants.close()
+        await scope_store.close()
+
+    @pytest.mark.asyncio
+    async def test_consent_reuse_arm_preserves_existing_project_grant_expiry(
+        self, client, monkeypatch, tmp_path
+    ):
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+
+        registry = AgentRegistryStore(tmp_path / "reg.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants.db")
+        await grants.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys")
+
+        existing = await registry.register(
+            framework="openclaw",
+            display_name="@expiry-agent",
+            user_id="test",
+            origin="external-selfjoin",
+            handle="expiry-agent",
+            allow_reserved=True,
+        )
+        await registry.set_status(existing["canonical_id"], "active", actor="test")
+        canonical_id = existing["canonical_id"]
+
+        await grants.add_grant(
+            canonical_id, "project_tasks",
+            project_id="proj-1",
+            expires_at="2030-01-01T00:00:00+00:00",
+        )
+
+        rec = await auth_store.create(
+            identity_claim="@expiry-agent",
+            framework="openclaw",
+            requested_scopes=["project_tasks"],
+            requested_skills=None,
+            reason="",
+            duration_secs=None,
+            project_id="proj-1",
+        )
+
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(
+            client._transport.app.state, "agent_registry_keypair", (priv, pub)
+        )
+
+        resp = await client.post(
+            f"/api/agents/auth-requests/{rec['id']}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": "proj-1"},
+        )
+        assert resp.status_code == 200, resp.text
+
+        agent_grants = await grants.list_grants(canonical_id)
+        project_grants = [
+            g for g in agent_grants
+            if g["scope"] == "project_tasks" and g["project_id"] == "proj-1"
+        ]
+        assert len(project_grants) == 1
+        assert project_grants[0]["expires_at"] == "2030-01-01T00:00:00+00:00"
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()

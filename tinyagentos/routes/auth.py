@@ -11957,15 +11957,11 @@ async def lock_events(request: Request):
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
 
-    queue: asyncio.Queue = asyncio.Queue(maxsize=8)
-    _LOCK_EVENT_WAITERS.add(queue)
-    # Snapshotted here, in the same synchronous step that registers the queue,
-    # so a screen event landing afterwards reaches this client through the
-    # queue and is never lost or reordered behind a stale snapshot.
-    initial_state = _LOCK_SCREEN_STATE
-
     async def stream():
         try:
+            queue: asyncio.Queue = asyncio.Queue(maxsize=8)
+            _LOCK_EVENT_WAITERS.add(queue)
+            initial_state = _LOCK_SCREEN_STATE
             # An immediate byte, so the browser's EventSource resolves its
             # connection rather than sitting in CONNECTING until the first real
             # event -- which could be hours.

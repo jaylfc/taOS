@@ -26,6 +26,7 @@ from tinyagentos.native_agent_identity import (
     SYSTEM_AGENT_API_SCOPES,
     ensure_native_agent_identity,
     native_agent_handle,
+    rotate_native_agent_token,
     token_path,
 )
 
@@ -258,6 +259,57 @@ class TestNativeAgentIdentity:
         expected_scopes = set(NATIVE_AGENT_SCOPES) | set(SYSTEM_AGENT_API_SCOPES) | {"files_read"}
         scopes = {g["scope"] for g in await grants.list_grants(rec["canonical_id"])}
         assert scopes == expected_scopes
+
+
+@pytest.mark.asyncio
+class TestRotateNativeAgentToken:
+    """``rotate_native_agent_token`` is the credential-rotation path the OS
+    agent's runtime calls (``taos_agent_runtime.py``), not an offline helper --
+    the same-second supersession the HTTP rotate route pins must hold here too.
+    """
+
+    async def test_rotation_in_the_same_second_supersedes_the_previous_token(
+        self, tmp_path, monkeypatch
+    ):
+        """Two rotations inside ONE second must not share a cutoff.
+
+        The cutoff used to be ``now``, so a token minted in the second of its
+        own rotation carried ``iat == cutoff`` and was NOT rejected -- the
+        cutoff check refuses only a STRICTLY older ``iat`` -- leaving the
+        credential the rotation believed it had killed still live. Freezing
+        ``time.time`` makes that same-second case deterministic instead of a
+        race the test would only hit sometimes.
+        """
+        frozen = 1_800_000_000
+        monkeypatch.setattr("time.time", lambda: frozen)
+        stores = await _stores(tmp_path)
+        registry, _, data_dir, keypair = stores
+        rec = await _ensure(stores)
+        cid = rec["canonical_id"]
+        first = token_path(data_dir).read_text()
+        # The first token really was minted in the frozen second, so the two
+        # rotations below are the same-second case and not a lucky gap.
+        assert verify_registry_token(first, keypair[1])["iat"] == frozen
+
+        second = await rotate_native_agent_token(
+            registry=registry, data_dir=data_dir, signing_key_pem=keypair[0]
+        )
+        third = await rotate_native_agent_token(
+            registry=registry, data_dir=data_dir, signing_key_pem=keypair[0]
+        )
+
+        assert second and third and second != third
+        # Same identity, one row: rotation never forks the agent.
+        assert len(await registry.list_all()) == 1
+        cutoff = (await registry.get(cid))["token_min_iat"]
+        # Each rotation advanced the cutoff STRICTLY past the token it killed,
+        # even though all three tokens came out of the same second.
+        assert cutoff > frozen + 1
+        assert verify_registry_token(first, keypair[1])["iat"] < cutoff
+        assert verify_registry_token(second, keypair[1])["iat"] < cutoff
+        assert verify_registry_token(third, keypair[1])["iat"] >= cutoff
+        # And the file holds the newest credential, not an earlier one.
+        assert token_path(data_dir).read_text() == third
 
 
 @pytest.mark.asyncio

@@ -8,7 +8,12 @@ import {
 } from "lucide-react";
 import { Button, Card, CardContent, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import type { ClusterWorker, ClusterDevice, WorkerStatus, BleScanDevice } from "@/lib/cluster";
+import type { ClusterWorker, ClusterDevice, WorkerStatus, BleScanDevice, ClusterMap } from "@/lib/cluster";
+import {
+  CapabilityMapList,
+  CapabilityMapDetail,
+  PlacementOverview,
+} from "./ClusterApp.capabilityMap";
 import {
   workerStatus,
   workerHardwareSummary,
@@ -23,7 +28,7 @@ import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
 import { copyText } from "@/lib/clipboard";
 
 type SortKey = "name" | "status" | "last_seen";
-type Tab = "nodes" | "devices";
+type Tab = "nodes" | "map" | "devices";
 
 const STATUS_ORDER: Record<WorkerStatus, number> = {
   online: 0,
@@ -845,6 +850,11 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [loading, setLoading] = useState(true);
   const [devicesLoading, setDevicesLoading] = useState(false);
+  // #897: read-only capability map + live placement aggregate.
+  const [clusterMap, setClusterMap] = useState<ClusterMap | null>(null);
+  const [selectedCapability, setSelectedCapability] = useState<string | null>(null);
+  const [mapLoading, setMapLoading] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -854,6 +864,10 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   } | null>(null);
   // True after user explicitly hits "back"; suppresses auto-select on refresh.
   const userNavigatedBack = useRef(false);
+  // Monotonic id for the map fetch: tab activation, focus refresh and the
+  // manual refresh button can overlap, and an older response must not
+  // overwrite a newer map (or a newer error) with stale data.
+  const mapRequestId = useRef(0);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -907,16 +921,55 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     setDevicesLoading(false);
   }, []);
 
+  const fetchMap = useCallback(async () => {
+    const requestId = ++mapRequestId.current;
+    setMapLoading(true);
+    try {
+      const res = await fetch("/api/cluster/map", { headers: { Accept: "application/json" } });
+      if (requestId !== mapRequestId.current) return; // superseded by a newer request
+      if (!res.ok) {
+        // Surface the failure instead of rendering it as "no capabilities":
+        // an empty map and a rejected request look identical otherwise.
+        setMapError(
+          res.status === 403
+            ? "Admin session required to view the cluster map."
+            : `Could not load the capability map (${res.status}).`,
+        );
+        return;
+      }
+      const json = (await res.json()) as ClusterMap;
+      if (requestId !== mapRequestId.current) return;
+      if (json && Array.isArray(json.nodes) && Array.isArray(json.capabilities)) {
+        setClusterMap(json);
+        setMapError(null);
+        setSelectedCapability((cur: string | null) =>
+          cur && json.capabilities.some((c) => c.capability === cur) ? cur : null,
+        );
+      } else {
+        // A 200 with an unusable body is a failure, not an empty cluster —
+        // otherwise a stale error would stay on screen next to a "success".
+        setMapError("Unexpected capability map response.");
+      }
+    } catch {
+      if (requestId !== mapRequestId.current) return;
+      setMapError("Could not load the capability map.");
+    } finally {
+      if (requestId === mapRequestId.current) setMapLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (activeTab === "devices") {
       fetchDevices();
+    } else if (activeTab === "map") {
+      fetchMap();
     } else {
       fetchWorkers();
     }
-  }, [activeTab, fetchDevices, fetchWorkers]);
+  }, [activeTab, fetchDevices, fetchMap, fetchWorkers]);
 
   useRefreshOnFocus(
-    activeTab === "devices" ? fetchDevices : fetchWorkers,
+    activeTab === "devices" ? fetchDevices : activeTab === "map" ? fetchMap : fetchWorkers,
     1000,
   );
 
@@ -1334,6 +1387,22 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
             <button
               type="button"
               onClick={() => {
+                setActiveTab("map");
+                setSelected(null);
+                setSelectedDevice(null);
+              }}
+              className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                activeTab === "map"
+                  ? "bg-accent text-white"
+                  : "text-shell-text-tertiary hover:text-shell-text hover:bg-white/[0.06]"
+              }`}
+              aria-label="Show capability map"
+            >
+              Map
+            </button>
+            <button
+              type="button"
+              onClick={() => {
                 setActiveTab("devices");
                 setSelected(null);
                 setSelectedDevice(null);
@@ -1356,6 +1425,14 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
           {activeTab === "devices" && (
             <span className="text-xs text-shell-text-tertiary truncate">
               {devices.length} device{devices.length === 1 ? "" : "s"}
+            </span>
+          )}
+          {activeTab === "map" && (
+            <span className="text-xs text-shell-text-tertiary truncate">
+              {clusterMap?.capabilities.length ?? 0}{" "}
+              {(clusterMap?.capabilities.length ?? 0) === 1 ? "capability" : "capabilities"} across{" "}
+              {clusterMap?.nodes.length ?? 0} node
+              {(clusterMap?.nodes.length ?? 0) === 1 ? "" : "s"}
             </span>
           )}
         </div>
@@ -1393,8 +1470,16 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
           <Button
             variant="ghost"
             size="icon"
-            onClick={activeTab === "devices" ? fetchDevices : fetchWorkers}
-            aria-label={activeTab === "devices" ? "Refresh device list" : "Refresh worker list"}
+            onClick={
+              activeTab === "devices" ? fetchDevices : activeTab === "map" ? fetchMap : fetchWorkers
+            }
+            aria-label={
+              activeTab === "devices"
+                ? "Refresh device list"
+                : activeTab === "map"
+                  ? "Refresh capability map"
+                  : "Refresh worker list"
+            }
           >
             <RefreshCw size={14} />
           </Button>
@@ -1404,13 +1489,32 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
       {/* Master-detail */}
       <div className="flex-1 min-h-0 overflow-hidden">
         <MobileSplitView
-          listTitle={activeTab === "devices" ? "Cluster devices" : "Cluster"}
-          detailTitle={activeTab === "devices" ? selectedDevice ?? "" : selectedWorker?.name ?? ""}
+          listTitle={
+            activeTab === "devices"
+              ? "Cluster devices"
+              : activeTab === "map"
+                ? "Capabilities"
+                : "Cluster"
+          }
+          detailTitle={
+            activeTab === "devices"
+              ? selectedDevice ?? ""
+              : activeTab === "map"
+                ? selectedCapability ?? "Placement"
+                : selectedWorker?.name ?? ""
+          }
           listWidth={288}
-          selectedId={activeTab === "devices" ? selectedDevice : selected}
+          selectedId={
+            activeTab === "devices"
+              ? selectedDevice
+              : activeTab === "map"
+                ? selectedCapability
+                : selected
+          }
           onBack={() => {
             userNavigatedBack.current = true;
             if (activeTab === "devices") setSelectedDevice(null);
+            else if (activeTab === "map") setSelectedCapability(null);
             else setSelected(null);
           }}
           list={
@@ -1443,6 +1547,19 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
                       />
                     ))
                 )}
+              </div>
+            ) : activeTab === "map" ? (
+              <div className="p-3 space-y-2" aria-label="Cluster capability map">
+                <CapabilityMapList
+                  map={clusterMap}
+                  selected={selectedCapability}
+                  onSelect={(capability) => {
+                    userNavigatedBack.current = false;
+                    setSelectedCapability(capability);
+                  }}
+                  loading={mapLoading}
+                  error={mapError}
+                />
               </div>
             ) : (
               <div className="p-3 space-y-2" aria-label="Cluster worker list">
@@ -1500,6 +1617,12 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
                 <div className="flex items-center justify-center h-full text-shell-text-tertiary text-sm">
                   {devicesLoading ? "Loading..." : "No device selected"}
                 </div>
+              )
+            ) : activeTab === "map" ? (
+              selectedCapability ? (
+                <CapabilityMapDetail map={clusterMap} capability={selectedCapability} />
+              ) : (
+                <PlacementOverview map={clusterMap} />
               )
             ) : selectedWorker ? (
               <WorkerDetail

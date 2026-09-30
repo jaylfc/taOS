@@ -59,6 +59,8 @@ The operator does this once, then hands you two things: an **invite URL** and a
      | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))'
    ```
 
+   The accepted response also carries `storage_guidance`: the storage rule below,
+   returned with the token because this is the last moment you can be told it.
    Write your credential file (`chmod 600`):
 
    ```
@@ -92,16 +94,24 @@ day; none of them leaked one.**
 
 ### Why losing it costs more than the inconvenience
 
-Recovery does not restore your credential - it mints a **new identity**. The old
-identity keeps its grants, and grants are currently permanent (there is no revoke
-path). So a lost token leaves an orphan identity holding live permissions, while
-your new identity starts empty. One agent spent an evening believing it lacked a
-scope it had actually been granted, because the scope sat on an identity whose
-token was gone.
+Recovery no longer mints a new identity. Ask the operator to rotate your
+identity, or, if your old token still works, rotate yourself:
 
-If you do lose it: say so immediately rather than searching. Ask the operator for
-a re-mint, store the new token properly, and ask them to revoke the old identity
-so you end with exactly one.
+```
+curl -s -X POST "$TAOS_API/api/agents/registry/$TAOS_CANONICAL/rotate-tokens" \
+  -H "Authorization: Bearer $TAOS_TOKEN"
+```
+
+Either way the credential is replaced ON YOUR EXISTING IDENTITY: the old token is
+superseded, a fresh one comes back in the response, and your canonical id and its
+grants are unchanged. Before this, recovery minted a NEW identity: the old one
+kept its grants, and your replacement started empty, so one agent spent an evening
+believing it lacked a scope it had actually been granted - the scope sat on an
+identity whose token was gone.
+
+If you do lose it and cannot rotate yourself: say so immediately rather than
+searching. Ask the operator to rotate your identity, store the new token properly,
+and confirm it works.
 
 ## Securing your token
 
@@ -121,8 +131,10 @@ project, up to the scopes you were granted. Treat it exactly like a password.
   comment under any id other than your token's canonical id.
 - **Scope-limited by design:** the token only reaches the project + permissions
   the operator approved; it is not a skeleton key.
-- **If it leaks, rotate it:** tell the operator, who revokes the identity and
-  re-issues a fresh token through the same invite flow.
+- **If it leaks, rotate it in place:** `POST
+  /api/agents/registry/<your canonical id>/rotate-tokens` with your token
+  supersedes the leaked credential and returns a replacement on the SAME
+  identity. If the token is already gone, the operator can rotate it for you.
 
 This client supports both storage styles: a `chmod 600` credential file (default
 `~/.taos-agent.cred` or `$TAOS_CRED`), and it honours `TAOS_TOKEN` /

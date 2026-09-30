@@ -1778,6 +1778,52 @@ class TestDeferBindingApproval:
         await auth_store.close()
         await grants.close()
 
+    @pytest.mark.asyncio
+    async def test_renew_true_through_add_agent_to_project_lengthens_deferred_grant(
+        self, tmp_path
+    ):
+        """renew=True must override a deferred grant's earlier bound: the caller's
+        expires_at wins even when it is later than the deferred one."""
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.routes.agent_auth_requests import add_agent_to_project
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        grants = AgentGrantsStore(tmp_path / "grants-renew.db")
+        await grants.init()
+        try:
+            await grants.add_grant(
+                "agent-r", "project_tasks",
+                project_id=None,
+                expires_at="2030-01-01T08:00:00+00:00",
+            )
+
+            mock_state = SimpleNamespace(
+                agent_grants=grants,
+                relationships=SimpleNamespace(set_permission=AsyncMock()),
+                project_store=None,
+            )
+            request = SimpleNamespace(app=SimpleNamespace(state=mock_state))
+
+            await add_agent_to_project(
+                request,
+                canonical_id="agent-r",
+                project_id="proj-1",
+                granted_scopes=["project_tasks"],
+                decided_by="test",
+                expires_at="2030-01-01T10:00:00+00:00",
+                renew=True,
+            )
+
+            proj_grants = [
+                g for g in await grants.list_grants("agent-r")
+                if g["scope"] == "project_tasks" and g["project_id"] == "proj-1"
+            ]
+            assert len(proj_grants) == 1
+            assert proj_grants[0]["expires_at"] == "2030-01-01T10:00:00+00:00"
+        finally:
+            await grants.close()
+
 
 class TestConsentApproveHandleCollisionGuard:
     """The consent-approve collision guard must NOT be blind to internal handles.
