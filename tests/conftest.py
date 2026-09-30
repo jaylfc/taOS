@@ -99,18 +99,23 @@ from tinyagentos.routes.desktop import SPA_DIR
 # created or modified during that test.
 # ---------------------------------------------------------------------------
 
-def _collect_data_mtimes() -> dict[str, float]:
+def _collect_data_mtimes() -> dict[str, tuple[float, int]]:
     data_dir = PROJECT_DIR / "data"
-    snapshot: dict[str, float] = {}
+    snapshot: dict[str, tuple[float, int]] = {}
     if not data_dir.is_dir():
         return snapshot
     for path in data_dir.rglob("*"):
         if path.is_file():
             try:
-                snapshot[str(path)] = path.stat().st_mtime
+                st = path.stat()
+                snapshot[str(path)] = (st.st_mtime_ns, st.st_size)
             except OSError:
                 pass
     return snapshot
+
+
+_XDIST = bool(os.environ.get("PYTEST_XDIST_WORKER"))
+_DATA_MUTATIONS: list[str] = []
 
 
 @pytest.fixture(autouse=True, scope="function")
@@ -119,16 +124,28 @@ def _guard_data_dir_mutation(request):
     yield
     after = _collect_data_mtimes()
     mutated = []
-    for path, mtime in after.items():
-        if path not in before or mtime != before[path]:
+    for path, mt in after.items():
+        if path not in before or mt != before[path]:
             mutated.append(path)
     for path in before:
         if path not in after:
             mutated.append(f"{path} (deleted)")
     if mutated:
+        if _XDIST:
+            _DATA_MUTATIONS.extend(mutated)
+        else:
+            raise RuntimeError(
+                f"PROJECT_DIR/data was mutated during test {request.node.nodeid}. The following "
+                f"files were created or modified: {', '.join(sorted(mutated))}. "
+                "Tests must not write into the repo's data directory."
+            )
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if _XDIST and _DATA_MUTATIONS:
         raise RuntimeError(
-            f"PROJECT_DIR/data was mutated during test {request.nodeid}. The following "
-            f"files were created or modified: {', '.join(sorted(mutated))}. "
+            "PROJECT_DIR/data was mutated during the xdist session. The following "
+            f"files were created or modified: {', '.join(sorted(set(_DATA_MUTATIONS)))}. "
             "Tests must not write into the repo's data directory."
         )
 

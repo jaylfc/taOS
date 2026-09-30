@@ -1,5 +1,5 @@
 ### Fixed
 
-- Stop four test modules from writing into the repo's live `data/` folder by passing `data_dir=tmp_path` to `create_app()` instead of setting the dead `TINYAGENTOS_DATA_DIR` environment variable (which the application never reads).
-- Add a permanent guard test that fails CI if any file under `tests/` or `tinyagentos/` still references `TINYAGENTOS_DATA_DIR`.
-- Add an autouse session fixture in `tests/conftest.py` that snapshots `PROJECT_DIR/data` mtimes at session start and fails teardown if any file is created or modified during the run.
+- Fix the per-test `data/` mutation guard in `tests/conftest.py`: use `request.node.nodeid` instead of the non-existent `request.nodeid`, snapshot `(st_mtime_ns, st_size)` instead of just `st_mtime`, and make the guard xdist-aware by deferring reports to session end when `PYTEST_XDIST_WORKER` is set.
+- Move confirmed offenders to `tmp_path`: `tests/test_contacts_peer.py::TestPeerEnvelope::test_build_envelope_structure` sets `TAOS_DATA_DIR` before calling `build_envelope`, and three `tests/test_deployer.py::TestBackgroundDeploy` tests redirect `taosmd.agents` to a temp `AgentRegistry`.
+- Use `monkeypatch.setattr` in `tests/test_data_dir_resolution.py` instead of hand-assigning `PROJECT_DIR` on the module.

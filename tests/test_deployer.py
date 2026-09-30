@@ -1109,7 +1109,9 @@ class TestOpenClawSpliceDeploy:
 
 class TestBackgroundDeploy:
     @pytest.mark.asyncio
-    async def test_deploy_endpoint_returns_immediately(self, client):
+    async def test_deploy_endpoint_returns_immediately(self, client, monkeypatch, tmp_path):
+        import taosmd.agents as tm_agents
+        monkeypatch.setattr(tm_agents, "_default_registry", tm_agents.AgentRegistry(tmp_path))
         resp = await client.post("/api/agents/deploy", json={
             "name": "bg-test",
             "framework": "none",
@@ -1121,7 +1123,9 @@ class TestBackgroundDeploy:
         assert data["name"] == "bg-test"
 
     @pytest.mark.asyncio
-    async def test_deploy_status_endpoint(self, client):
+    async def test_deploy_status_endpoint(self, client, monkeypatch, tmp_path):
+        import taosmd.agents as tm_agents
+        monkeypatch.setattr(tm_agents, "_default_registry", tm_agents.AgentRegistry(tmp_path))
         await client.post("/api/agents/deploy", json={
             "name": "status-test",
             "framework": "none",
@@ -1137,7 +1141,9 @@ class TestBackgroundDeploy:
         assert resp.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_deploy_failure_emits_notification(self, client, app):
+    async def test_deploy_failure_emits_notification(self, client, app, monkeypatch, tmp_path):
+        import taosmd.agents as tm_agents
+        monkeypatch.setattr(tm_agents, "_default_registry", tm_agents.AgentRegistry(tmp_path))
         """When background deploy fails, a notification must be pushed so the
         tray surfaces the error rather than leaving the user stuck on 'deploying'."""
         import asyncio

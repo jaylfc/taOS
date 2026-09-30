@@ -80,17 +80,13 @@ class TestCreateAppDataDir:
         test_data_dir.mkdir()
         
         # Mock the PROJECT_DIR in tinyagentos.app to point to our test directory
-        original_project_dir = PROJECT_DIR
         import tinyagentos.app
-        tinyagentos.app.PROJECT_DIR = test_project_dir
-        
-        try:
-            _make_minimal_config(test_data_dir / "config.yaml")
-            (test_data_dir / ".setup_complete").touch()
-            app = create_app()
-            assert Path(app.state.data_dir).resolve() == test_data_dir.resolve()
-        finally:
-            tinyagentos.app.PROJECT_DIR = original_project_dir
+        monkeypatch.setattr(tinyagentos.app, "PROJECT_DIR", test_project_dir)
+
+        _make_minimal_config(test_data_dir / "config.yaml")
+        (test_data_dir / ".setup_complete").touch()
+        app = create_app()
+        assert Path(app.state.data_dir).resolve() == test_data_dir.resolve()
 
 
 # ---------------------------------------------------------------------------
