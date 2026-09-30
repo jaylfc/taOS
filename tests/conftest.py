@@ -57,7 +57,7 @@ def pytest_runtest_logstart(nodeid, location):
     _LITELLM_LEAK_CURRENT_TEST = nodeid
 
 
-def pytest_sessionfinish(session, exitstatus):
+def _litellm_leak_sessionfinish(session, exitstatus):
     my_pid = os.getpid()
     leaked = []
     try:
@@ -99,9 +99,9 @@ from tinyagentos.routes.desktop import SPA_DIR
 # created or modified during that test.
 # ---------------------------------------------------------------------------
 
-def _collect_data_mtimes() -> dict[str, tuple[float, int]]:
+def _collect_data_mtimes() -> dict[str, tuple[int, int]]:
     data_dir = PROJECT_DIR / "data"
-    snapshot: dict[str, tuple[float, int]] = {}
+    snapshot: dict[str, tuple[int, int]] = {}
     if not data_dir.is_dir():
         return snapshot
     for path in data_dir.rglob("*"):
@@ -141,13 +141,20 @@ def _guard_data_dir_mutation(request):
             )
 
 
-def pytest_sessionfinish(session, exitstatus):
+def _data_dir_sessionfinish(session, exitstatus):
     if _XDIST and _DATA_MUTATIONS:
         raise RuntimeError(
             "PROJECT_DIR/data was mutated during the xdist session. The following "
             f"files were created or modified: {', '.join(sorted(set(_DATA_MUTATIONS)))}. "
             "Tests must not write into the repo's data directory."
         )
+
+
+def pytest_sessionfinish(session, exitstatus):
+    # Run both guards. Do not return early after the first so that the litellm
+    # leak is always reported even if the data-dir guard also fails.
+    _litellm_leak_sessionfinish(session, exitstatus)
+    _data_dir_sessionfinish(session, exitstatus)
 
 
 # ---------------------------------------------------------------------------
