@@ -6,8 +6,8 @@
 
 You have two stores running in parallel:
 
-- **Framework memory** — fast, local store in the container. Dies on redeploy. Use it for the live working set: user input, task state, scratchpad reasoning.
-- **taOSmd** — durable, cross-agent store that survives redeploy. Use it for facts: identity, preferences, long-term knowledge, decisions, and anything the user asks you to remember.
+- **Framework memory** — fast, local, lives in the container. Dies on redeploy. Use it for the live working set: what the user said this turn, in-progress task state, scratchpad reasoning.
+- **taOSmd** — durable, cross-agent, semantic, survives redeploy. Use it for facts that must outlast this session: identity, preferences, long-term knowledge, decisions, and anything the user asks you to remember.
 
 ## When to write where
 
