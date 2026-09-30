@@ -295,10 +295,11 @@ class LLMProxy:
             )
             return False
 
-        # Single source of truth for the extras (matches the updater); fall
-        # back to the literal if the import is unavailable for any reason.
+# Single source of truth for the extras (matches the updater); fall
+# back to the literal if the import is unavailable for any reason.
         try:
-            from tinyagentos.routes.settings import UPDATE_EXTRAS
+            from tinyagentos.routes.settings import _compute_update_extras
+            UPDATE_EXTRAS = _compute_update_extras()
         except Exception:
             UPDATE_EXTRAS = ("proxy",)
 

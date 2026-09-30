@@ -57,7 +57,7 @@ def test_find_uv_not_found_returns_none(monkeypatch):
 async def test_install_uses_uv_sync_frozen(monkeypatch):
     """uv found -> runs `uv sync --frozen --extra proxy` with cwd + HOME=project_dir."""
     # Mock hardware._detect_device_class to return None (non-handset)
-    monkeypatch.setattr('tinyagentos.hardware._detect_device_class', lambda: None)
+    monkeypatch.setattr('tinyagentos.routes.settings._detect_device_class', lambda: None)
     
     # Recompute UPDATE_EXTRAS to use the mocked device class
     settings_mod.UPDATE_EXTRAS = settings_mod._compute_update_extras()
@@ -89,7 +89,7 @@ async def test_install_uses_uv_sync_frozen(monkeypatch):
 async def test_install_falls_back_to_pip(monkeypatch):
     """uv absent -> runs `pip install -e .[proxy]` (legacy path)."""
     # Mock hardware._detect_device_class to return None (non-handset)
-    monkeypatch.setattr('tinyagentos.hardware._detect_device_class', lambda: None)
+    monkeypatch.setattr('tinyagentos.routes.settings._detect_device_class', lambda: None)
     
     # Recompute UPDATE_EXTRAS to use the mocked device class
     settings_mod.UPDATE_EXTRAS = settings_mod._compute_update_extras()
@@ -123,7 +123,7 @@ async def test_install_falls_back_to_pip(monkeypatch):
 async def test_install_uses_venv_pip_when_present(monkeypatch):
     """uv absent + .venv present -> uses the venv pip binary."""
     # Mock hardware._detect_device_class to return None (non-handset)
-    monkeypatch.setattr('tinyagentos.hardware._detect_device_class', lambda: None)
+    monkeypatch.setattr('tinyagentos.routes.settings._detect_device_class', lambda: None)
     
     # Recompute UPDATE_EXTRAS to use the mocked device class
     settings_mod.UPDATE_EXTRAS = settings_mod._compute_update_extras()

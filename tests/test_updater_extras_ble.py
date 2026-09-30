@@ -34,7 +34,7 @@ async def test_installer_extras_selection_handset(monkeypatch):
 async def test_installer_extras_selection_non_handset(monkeypatch):
     """Test that the updater installs .[proxy] on a non-handset host."""
     # Patch the _detect_device_class function in the settings module directly
-    monkeypatch.setattr('tinyagentos.hardware._detect_device_class', lambda: None)
+    monkeypatch.setattr('tinyagentos.routes.settings._detect_device_class', lambda: None)
 
     # Test the uv sync command path
     monkeypatch.setattr('tinyagentos.routes.settings._find_uv', lambda pd: "/opt/uv")
@@ -60,7 +60,7 @@ async def test_installer_extras_selection_non_handset(monkeypatch):
 async def test_installer_extras_selection_taos_extras_ble_override(monkeypatch):
     """Test that TAOS_EXTRAS_BLE=1 forces ble inclusion even on non-handset."""
     # Patch the _detect_device_class function in the settings module directly
-    monkeypatch.setattr('tinyagentos.hardware._detect_device_class', lambda: None)
+    monkeypatch.setattr('tinyagentos.routes.settings._detect_device_class', lambda: None)
 
     # Set TAOS_EXTRAS_BLE=1 in environment
     monkeypatch.setenv("TAOS_EXTRAS_BLE", "1")
@@ -89,7 +89,7 @@ async def test_installer_extras_selection_taos_extras_ble_override(monkeypatch):
 async def test_installer_extras_selection_taos_extras_ble_exclude(monkeypatch):
     """Test that TAOS_EXTRAS_BLE=0 forces ble exclusion even on handset."""
     # Patch the _detect_device_class function in the settings module directly
-    monkeypatch.setattr('tinyagentos.hardware._detect_device_class', lambda: "mobile")
+    monkeypatch.setattr('tinyagentos.routes.settings._detect_device_class', lambda: "mobile")
 
     # Set TAOS_EXTRAS_BLE=0 in environment
     monkeypatch.setenv("TAOS_EXTRAS_BLE", "0")

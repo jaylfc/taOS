@@ -1,7 +1,8 @@
 taos_controller_extras() {
     local is_handset=0
-    # Simple mock: treat as handset (should be overridden)
-    is_handset=1
+    if command -v systemctl >/dev/null 2>&1 && systemctl cat taos-kiosk.service >/dev/null 2>&1; then
+        is_handset=1
+    fi
 
     local extras="proxy"
     case "${TAOS_EXTRAS_BLE:-}" in
