@@ -2060,6 +2060,212 @@ def _recover_password_cli(argv) -> int:
     return 0
 
 
+def _probe_port(host: str, port: int, timeout: float = 0.5) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _build_onboarding_paths(data_dir: Path) -> list[Path]:
+    return [
+        data_dir / ".auth_user.json",
+        data_dir / ".auth_password",
+        data_dir / ".auth_sessions",
+        data_dir / "agent_registry.db",
+        data_dir / "auth_requests.db",
+        data_dir / "password_resets.db",
+        data_dir / "agent_scope_requests.db",
+        data_dir / "agent_grants.db",
+        data_dir / "user_shares.db",
+        data_dir / "app_grants.db",
+        data_dir / "license_acceptances.db",
+        data_dir / "agent_model_keys.db",
+    ]
+
+
+def _build_all_paths(data_dir: Path) -> tuple[list[Path], list[Path]]:
+    keep_names = {
+        "config.yaml",
+        "hardware.json",
+        "installed.json",
+        "installed_apps.db",
+    }
+    keep_paths = [data_dir / name for name in keep_names]
+    models_dir = data_dir / "models"
+    backups_dir = data_dir / "backups"
+    if models_dir.exists() and models_dir.is_dir():
+        keep_paths.append(models_dir)
+    keep_paths.append(backups_dir)
+    delete_paths = [p for p in data_dir.iterdir() if p not in keep_paths]
+    return delete_paths, keep_paths
+
+
+def _backup_paths(paths: list[Path], backup_root: Path) -> Path:
+    import datetime
+    import shutil
+
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest = backup_root / f"reset-{ts}"
+    dest.mkdir(parents=True, exist_ok=True)
+    for p in paths:
+        if not p.exists():
+            continue
+        target = dest / p.name
+        if p.is_dir():
+            shutil.copytree(p, target)
+        else:
+            shutil.copy2(p, target)
+    return dest
+
+
+def _reset_cli(argv) -> int:
+    """``taos reset`` -- wipe onboarding or all mutable state.
+
+    Modes:
+      --onboarding  clear identity + onboarding state only
+      --all         clear all mutable state except downloaded models and installed apps
+    """
+    import argparse
+    import os
+    import sys
+
+    from tinyagentos.auth import AuthManager
+
+    parser = argparse.ArgumentParser(
+        prog="taos reset",
+        description="Reset taOS state to re-run onboarding or start fresh.",
+    )
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--onboarding",
+        action="store_true",
+        help="Clear identity and onboarding state only.",
+    )
+    mode.add_argument(
+        "--all",
+        action="store_true",
+        help="Clear all mutable state (keeps downloaded models and installed apps).",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip confirmation prompt.",
+    )
+    parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip the automatic backup of removed files.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Run even if the controller appears to be up.",
+    )
+    parser.add_argument(
+        "--data-dir",
+        help="Data directory (default: TAOS_DATA_DIR env, else <project>/data).",
+    )
+    ns = parser.parse_args(argv)
+
+    override = ns.data_dir or os.environ.get("TAOS_DATA_DIR")
+    data_dir = resolve_data_dir(Path(override) if override else None)
+
+    config_path = data_dir / "config.yaml"
+    if config_path.exists():
+        import yaml
+
+        try:
+            config = yaml.safe_load(config_path.read_text()) or {}
+            port = int(config.get("server", {}).get("port", 6969))
+        except Exception:
+            port = 6969
+    else:
+        port = 6969
+
+    if not ns.force and _probe_port("127.0.0.1", port):
+        print(
+            f"taOS controller appears to be running on port {port}.\n"
+            "Stop it first (e.g. systemctl stop tinyagentos) or pass --force to override.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if ns.onboarding:
+        paths = _build_onboarding_paths(data_dir)
+    else:
+        paths, keep = _build_all_paths(data_dir)
+
+    existing = [p for p in paths if p.exists()]
+    if not existing:
+        print("Nothing to reset.", file=sys.stderr)
+        return 0
+
+    print("The following paths will be removed:")
+    for p in existing:
+        print(f"  {p}")
+    if ns.all:
+        print("\nThe following paths will be KEPT:")
+        for p in keep:
+            print(f"  {p}")
+
+    if not ns.yes:
+        try:
+            answer = input("Proceed? [y/N] ").strip().lower()
+        except EOFError:
+            print("\nAborted (no input).", file=sys.stderr)
+            return 1
+        if answer != "y":
+            print("Aborted.", file=sys.stderr)
+            return 1
+
+    backup_root = data_dir / "backups"
+    backup_path = None
+    if not ns.no_backup:
+        try:
+            backup_path = _backup_paths(existing, backup_root)
+            print(f"Backup saved to {backup_path}")
+        except Exception as exc:
+            print(f"Backup failed: {exc}", file=sys.stderr)
+            return 1
+
+    for p in existing:
+        try:
+            if p.is_dir():
+                import shutil
+
+                shutil.rmtree(p)
+            else:
+                p.unlink()
+        except Exception as exc:
+            print(f"Failed to remove {p}: {exc}", file=sys.stderr)
+            return 1
+
+    if ns.onboarding:
+        desktop_db = data_dir / "desktop.db"
+        if desktop_db.exists():
+            try:
+                import asyncio
+
+                async def _clear_setup():
+                    store = DesktopSettingsStore(desktop_db)
+                    await store.init()
+                    await store.delete_preference("user", "setup")
+
+                asyncio.run(_clear_setup())
+            except Exception as exc:
+                print(f"Failed to clear setup preference: {exc}", file=sys.stderr)
+                return 1
+
+    store = AuthManager(data_dir)
+    print(f"Reset complete in {data_dir}.")
+    print(f"is_configured={store.is_configured()}, needs_onboarding={store.needs_onboarding()}")
+    return 0
+
+
 def main():
     import sys
     # `taos rollback [ref]` -- undo the last update (restore branch + version) and
@@ -2075,6 +2281,11 @@ def main():
     # the auth store directly (no running server needed).
     if len(sys.argv) > 1 and sys.argv[1] == "recover-password":
         raise SystemExit(_recover_password_cli(sys.argv[2:]))
+
+    # `taos reset --onboarding|--all [--yes] [--no-backup] [--force] [--data-dir]`
+    # -- wipe onboarding state or all mutable state so onboarding can be re-run.
+    if len(sys.argv) > 1 and sys.argv[1] == "reset":
+        raise SystemExit(_reset_cli(sys.argv[2:]))
 
     import uvicorn
     config = load_config(PROJECT_DIR / "data" / "config.yaml")

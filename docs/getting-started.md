@@ -441,10 +441,27 @@ cp -r ~/tinyagentos/data /your/backup/location/tinyagentos-data-$(date +%Y%m%d)
 taOS resolves the data directory in the following order:
 
 1. `TAOS_DATA_DIR` environment variable
-2. `--data-dir` flag (for the `taos recover-password` CLI)
+2. `--data-dir` flag (for the `taos recover-password` and `taos reset` CLIs)
 3. `<install-dir>/data` default
 
 If both the `TAOS_DATA_DIR` environment variable and an explicit `--data-dir` are set to different paths, taOS refuses to start and prints a clear conflict message. This prevents the server from silently writing state to one directory while a CLI tool reads from another.
+
+### CLI Commands
+
+taOS ships with two offline CLI commands that run without a server:
+
+```bash
+# Reset a local account password when locked out of the web login
+taos recover-password --username <user> --password <new-password>
+
+# Re-run onboarding from scratch (clears identity, auth, and setup state)
+taos reset --onboarding --yes
+
+# Wipe all mutable state except downloaded models and installed apps
+taos reset --all --yes
+```
+
+`taos reset --onboarding` removes the account files, auth requests, agent grants, and the setup checklist dismissal so the next page load shows the onboarding wizard again. A timestamped backup is saved under `data/backups/` by default; pass `--no-backup` to skip it. Downloaded model files and the installed-apps registry are left untouched.
 
 ---
 

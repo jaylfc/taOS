@@ -113,3 +113,13 @@ class DesktopSettingsStore(BaseStore):
         """
         safe_key = f"pref:{namespace}"
         await self._set(user_id, safe_key, value)
+
+    async def delete_preference(self, user_id: str, namespace: str) -> None:
+        """Remove a namespaced preference blob."""
+        safe_key = f"pref:{namespace}"
+        assert self._db is not None
+        await self._db.execute(
+            "DELETE FROM desktop_settings WHERE user_id = ? AND key = ?",
+            (user_id, safe_key),
+        )
+        await self._db.commit()
