@@ -132,6 +132,7 @@ CODERABBIT_FILES_SELECTED_RE = re.compile(
 EXIT_OK = 0
 EXIT_STUB = 1
 EXIT_ERROR = 2
+EXIT_FORK_UNREVIEWED = 3
 
 # A human-placed label that explicitly waives the bot-review gate for a PR
 # whose only CodeRabbit output is a rate-limit stub or auto-generated
@@ -141,6 +142,7 @@ EXIT_ERROR = 2
 # `gate-integrity-allow` for the gate-integrity guard. Read from the API at
 # run time, never from a stale event payload.
 DEFAULT_ALLOW_LABEL = "bot-review-allow"
+LEAD_REVIEWED_LABEL = "lead-reviewed"
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -161,6 +163,7 @@ CHECK_RUN_NAMES = frozenset({CHECK_RUN_NAME, "bot-review-gate"})
 VERDICT_TO_CONCLUSION = {
     EXIT_OK: "success",
     EXIT_STUB: "failure",
+    EXIT_FORK_UNREVIEWED: "failure",
 }
 
 
@@ -500,6 +503,67 @@ def collect_pr_labels(
     }
 
 
+def collect_pr_reviews(
+    owner: str, repo: str, pr_number: int, token: str | None = None,
+) -> list[dict] | None:
+    """Fetch all reviews on a PR via the GitHub REST API.
+
+    Returns None on infrastructure failure, [] if no reviews exist.
+    """
+    token = token or _get_token()
+    base = f"{API}/repos/{owner}/{repo}/pulls/{pr_number}"
+    data = _api_get(f"{base}/reviews", token)
+    if data is None:
+        return None
+    return [r for r in data if isinstance(r, dict)]
+
+
+def get_collaborator_permission(
+    owner: str, repo: str, login: str, token: str | None = None,
+) -> str | None:
+    """Fetch a collaborator's permission level via the GitHub REST API.
+
+    Returns the permission string ("admin", "write", "read", "none") on
+    success, None on infrastructure failure.
+    """
+    token = token or _get_token()
+    url = f"{API}/repos/{owner}/{repo}/collaborators/{login}/permission"
+    data = _api_get(url, token)
+    if data is None:
+        return None
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        return data[0].get("permission", "").lower()
+    if isinstance(data, dict):
+        return data.get("permission", "").lower()
+    return ""
+
+
+def is_fork_pr(
+    owner: str, repo: str, pr_number: int, token: str | None = None,
+) -> bool | None:
+    """Return True if the PR is a fork PR, False if it is an in-repo PR,
+    None on infrastructure failure.
+
+    A null head.repo (deleted fork) counts as a fork.
+    """
+    token = token or _get_token()
+    data = _api_get(f"{API}/repos/{owner}/{repo}/pulls/{pr_number}", token)
+    if data is None:
+        return None
+    pr = data[0] if isinstance(data, list) and data else {}
+    if not isinstance(pr, dict):
+        return None
+    head = pr.get("head") or {}
+    base = pr.get("base") or {}
+    head_repo = head.get("repo")
+    if head_repo is None:
+        return True
+    head_full = head_repo.get("full_name", "")
+    base_repo = base.get("repo") or {}
+    base_full = base_repo.get("full_name", "")
+    return head_full != base_full
+
+
 def classify(items: list[CRItem]) -> tuple[int, str]:
     """Classify CR items and determine the exit code + message.
 
@@ -556,6 +620,7 @@ def check_bot_review(
     owner: str, repo: str, pr_number: int,
     allow_label: str = DEFAULT_ALLOW_LABEL,
     token: str | None = None,
+    _is_fork: bool | None = None,
 ) -> tuple[int, str]:
     """Check a PR's CodeRabbit output for stubs.
 
@@ -576,7 +641,64 @@ def check_bot_review(
     trigger was accepted with no review produced -- neither is a defect in
     the PR). It does NOT cover EXIT_ERROR (cannot fetch CR items), which
     must stay fail-closed on a genuine cannot-see.
+
+    Fork PRs receive no automated review. For a fork PR the CodeRabbit
+    classification is irrelevant: the verdict is EXIT_OK only when a
+    maintainer has approved (APPROVED review by a collaborator with admin
+    or write permission) or the `lead-reviewed` label is present. Otherwise
+    the verdict is EXIT_FORK_UNREVIEWED (3). The `bot-review-allow` label
+    does NOT waive the fork verdict: it waives stub-shaped bot output, and
+    a fork PR has no bot output to be stubbed.
     """
+    if _is_fork is None:
+        fork_result = is_fork_pr(owner, repo, pr_number, token)
+        if fork_result is None:
+            return EXIT_ERROR, (
+                f"error: could not determine if PR #{pr_number} is a fork "
+                f"(exit {EXIT_ERROR})"
+            )
+        _is_fork = fork_result
+
+    if _is_fork:
+        labels = collect_pr_labels(owner, repo, pr_number, token)
+        if labels is not None and LEAD_REVIEWED_LABEL in labels:
+            return EXIT_OK, (
+                f"bot-review-gate: fork PR -- lead review present "
+                f"(lead-reviewed label) (exit {EXIT_OK})"
+            )
+
+        reviews = collect_pr_reviews(owner, repo, pr_number, token)
+        if reviews is None:
+            return EXIT_ERROR, (
+                f"error: could not fetch reviews for fork PR #{pr_number} "
+                f"(exit {EXIT_ERROR})"
+            )
+        for review in reviews:
+            state = (review.get("state") or "").upper()
+            if state != "APPROVED":
+                continue
+            user = review.get("user") or {}
+            login = user.get("login")
+            if not login:
+                continue
+            perm = get_collaborator_permission(owner, repo, login, token)
+            if perm is None:
+                return EXIT_ERROR, (
+                    f"error: could not fetch permission for {login} on "
+                    f"{owner}/{repo} (exit {EXIT_ERROR})"
+                )
+            if perm in ("admin", "write"):
+                return EXIT_OK, (
+                    f"bot-review-gate: fork PR -- lead review present "
+                    f"({login} has {perm} permission) (exit {EXIT_OK})"
+                )
+
+        return EXIT_FORK_UNREVIEWED, (
+            f"FAIL: fork PR requires lead review "
+            f"(no maintainer approval, no lead-reviewed label) "
+            f"(exit {EXIT_FORK_UNREVIEWED})"
+        )
+
     items = collect_coderabbit_items(owner, repo, pr_number, token)
     if items is None:
         return EXIT_ERROR, (
