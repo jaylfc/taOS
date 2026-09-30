@@ -1642,6 +1642,14 @@ registrations and heartbeats.
   `WorkerInfo.resources` and uses it for lease allowlist validation
   instead of the legacy backend-name grammar. Workers that omit the
   field fall back to the grammar; a warning is logged once per mismatch.
+- The worker advertises `gpu-cuda-0` only with affirmative CUDA/ROCm
+  evidence (`GpuInfo.cuda` / `GpuInfo.rocm` from the hardware probe) and a
+  live backend, not merely because a GPU-capable backend is running:
+  Ollama, vLLM, exo and mlx all serve in CPU mode, and `detect_backends()`
+  also emits manifest-synthetic `status: "stopped"` entries for declared
+  software that is not answering. A backend probe alone would publish a
+  CUDA class -- and the `<worker>:gpu-cuda-0` lease id derived from it --
+  for a host that cannot run a CUDA task.
 - `POST /api/cluster/workers` (register) and `POST /api/cluster/heartbeat`
   both **echo the controller's current generation** in their response
   (`"generation"` key alongside the existing `status` field), so a worker

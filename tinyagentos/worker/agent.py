@@ -87,6 +87,95 @@ def _is_repair_rejection(resp) -> bool:
         return False
 
 
+# Backend types that mean "this host serves inference through a GPU-class
+# runtime". Mirrors ``gpu_backend_types`` in tinyagentos/scheduler/discovery.py.
+# A live backend is necessary but *not* sufficient to advertise a CUDA class
+# (see ``_collect_resources``).
+_GPU_BACKEND_TYPES = {"vllm", "ollama", "exo", "mlx"}
+
+
+def _has_cuda_class_evidence(hardware: dict | None) -> bool:
+    """Return True when the hardware probe found a usable CUDA/ROCm device.
+
+    ``hardware`` is the ``asdict()`` form of a ``HardwareProfile``.  The flags
+    are the ones ``hardware.py::_detect_gpu`` sets:
+
+    * ``cuda`` -- ``/proc/driver/nvidia`` exists (NVIDIA kernel module loaded)
+      or ``nvidia-smi`` is on ``PATH``; both mean a CUDA runtime is usable.
+    * ``rocm`` -- an AMD card with ``/opt/rocm`` present.
+
+    On a Linux host with no accelerator ``_detect_gpu`` returns
+    ``GpuInfo(type="none", cuda=False, rocm=False)``; a Vulkan-only integrated
+    GPU (Mali / Intel / AMD without ROCm) also leaves both flags False, so it
+    is not CUDA-class evidence either.  An NVIDIA card seen on the PCI bus
+    without a loaded driver reports ``type="nvidia"`` but ``cuda=False`` -- the
+    device exists, the runtime does not, so it is not evidence either.
+    """
+    if not isinstance(hardware, dict):
+        return False
+    gpu = hardware.get("gpu")
+    if not isinstance(gpu, dict):
+        return False
+    return bool(gpu.get("cuda") or gpu.get("rocm"))
+
+
+def _is_live_backend(backend: dict) -> bool:
+    """Return True for a backend that is actually serving right now.
+
+    ``WorkerAgent.detect_backends()`` returns two shapes: probed backends that
+    answered a health check (``status: "ok"``) and manifest-synthetic entries
+    for declared-but-stopped software (``status: "stopped"``, ``url: None``) so
+    the controller still sees total capacity.  Only the first kind is evidence
+    that anything is serving.  A backend dict without a ``status`` key (the
+    type-only shape used by callers and tests) is treated as live, matching the
+    pre-existing contract.
+
+    ``"ok"`` is an allow-list on purpose: this gate decides whether the worker
+    claims an accelerator to the controller, so an unrecognised future probe
+    status falls out rather than in.  Adding a new *serving* status is then a
+    deliberate act, not a silent widening of what the worker advertises.
+    """
+    return backend.get("status", "ok") == "ok"
+
+
+def _collect_resources(backends: list[dict], hardware: dict | None) -> list[str]:
+    """Return the resource classes this worker advertises to the controller.
+
+    ``cpu-inference`` is always advertised.  The accelerator classes are
+    evidence-gated:
+
+    * ``npu-rk3588`` -- a **live** ``rkllama`` backend.
+    * ``gpu-cuda-0``  -- a **live** GPU-capable backend **and** a detected
+      CUDA/ROCm device.
+
+    Either half alone is not evidence.  The backend probe is not evidence of a
+    CUDA device: vLLM, Ollama, exo and mlx all serve on hosts with no
+    NVIDIA/ROCm hardware (or with a driver the probe could not see), and
+    ``detect_backends()`` also emits manifest-synthetic ``status: "stopped"``
+    entries for declared software that is not answering.  Advertising
+    ``gpu-cuda-0`` there sends the controller -- and every A2A lease caller,
+    whose default resource id is ``<worker>:gpu-cuda-0``
+    (``routes/a2a_gpu_lease.py``) -- to a machine that cannot run a CUDA task.
+    ``scheduler/discovery.py`` maps a non-CUDA/ROCm GPU to the generic ``gpu``
+    platform signature while still naming the resource ``gpu-cuda-N``, so the
+    backend-only rule made the worker claim a CUDA *class* the scheduler had
+    already classified as generic.  (The reverse side of that naming mismatch
+    -- the scheduler calling a Metal/ROCm GPU ``gpu-cuda-N`` -- is tracked
+    separately and is not changed here.)
+
+    Args:
+        backends: live backend probe results, each carrying a ``type``.
+        hardware: ``asdict(detect_hardware())`` for the host, or None.
+    """
+    live = [b for b in backends if _is_live_backend(b)]
+    resources = ["cpu-inference"]
+    if any(b["type"] == "rkllama" for b in live):
+        resources.append("npu-rk3588")
+    if any(b["type"] in _GPU_BACKEND_TYPES for b in live) and _has_cuda_class_evidence(hardware):
+        resources.append("gpu-cuda-0")
+    return resources
+
+
 class WorkerAgent:
     def __init__(
         self,
@@ -517,14 +606,11 @@ class WorkerAgent:
             return False
 
         hw = detect_hardware()
+        hw_dict = asdict(hw)
         backends = await self.detect_backends()
         caps = sorted(set(self.detect_capabilities(backends)) | set(self.extra_capabilities))
         kv_quant = self.detect_kv_quant_support(backends)
-        resources = ["cpu-inference"]
-        if any(b["type"] == "rkllama" for b in backends):
-            resources.append("npu-rk3588")
-        if any(b["type"] in {"vllm", "ollama", "exo", "mlx"} for b in backends):
-            resources.append("gpu-cuda-0")
+        resources = _collect_resources(backends, hw_dict)
 
         # Use pinned advertise_url if provided; otherwise infer from backends or LAN IP.
         # TAOS_ADVERTISE_IP is set by the worker-LXC installer: inside the LXC the
@@ -548,7 +634,7 @@ class WorkerAgent:
             "name": self.name,
             "url": worker_url,
             "host_lan_ip": adv_ip or _detect_lan_ip(self.controller_url),
-            "hardware": asdict(hw),
+            "hardware": hw_dict,
             "backends": backends,
             "capabilities": caps,
             "platform": platform.system().lower(),
@@ -659,12 +745,9 @@ class WorkerAgent:
             load = psutil.cpu_percent() / 100.0
             backends = await self.detect_backends()
             caps = sorted(set(self.detect_capabilities(backends)) | set(self.extra_capabilities))
+            live_hardware = asdict(detect_hardware())
             kv_quant = self.detect_kv_quant_support(backends)
-            resources = ["cpu-inference"]
-            if any(b["type"] == "rkllama" for b in backends):
-                resources.append("npu-rk3588")
-            if any(b["type"] in {"vllm", "ollama", "exo", "mlx"} for b in backends):
-                resources.append("gpu-cuda-0")
+            resources = _collect_resources(backends, live_hardware)
             snap = capacity_snapshot()
             vram_sample = gpu_vram_snapshot()
             vram_sampled_age_ms = None
@@ -688,7 +771,6 @@ class WorkerAgent:
                 or (backends[0]["url"] if backends else self.get_worker_url())
             )
             live_host_lan_ip = adv_ip or _detect_lan_ip(self.controller_url)
-            live_hardware = asdict(detect_hardware())
             path = "/api/cluster/heartbeat"
             payload = {
                 "name": self.name,
