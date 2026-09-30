@@ -6,12 +6,19 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 
+from tinyagentos.auth_context import CurrentUser
 from tinyagentos.chat.reactions import maybe_trigger_semantic
+from tinyagentos.device_auth import current_user_or_device
 
 router = APIRouter()
+
+
+def _resolve_chat_data_dir() -> Path:
+    from tinyagentos.app import resolve_data_dir
+    return resolve_data_dir()
 
 
 _SLASH_GROUP_GUARD_ERROR = (
@@ -302,9 +309,31 @@ async def chat_ws(websocket: WebSocket):
 
 
 @router.post("/api/chat/messages")
-async def post_message(request: Request):
+async def post_message(request: Request, user: CurrentUser = Depends(current_user_or_device)):
     """Send a message via HTTP (used by agents and the agent-bridge)."""
     body = await request.json()
+
+    # Device bearer authorization: for device bearers, the author is the device's user
+    # and must not be settable from the request body (client contract).
+    # Also, the device bearer must be a member of the channel.
+    is_device = getattr(request.state, "_device", None) is not None
+    if is_device:
+        body["author_id"] = user.user_id
+        body["author_type"] = "user"
+
+        channel_id = body["channel_id"]
+        ch_store = request.app.state.chat_channels
+        channel = await ch_store.get_channel(channel_id)
+        if not channel:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Channel not found")
+
+        members = channel.get("members") or []
+        user_id_str = str(user.user_id)
+        if user_id_str not in members:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Not a member of this channel")
+    
     msg_store = request.app.state.chat_messages
     ch_store = request.app.state.chat_channels
     hub = request.app.state.chat_hub
@@ -344,8 +373,7 @@ async def post_message(request: Request):
         return JSONResponse({"error": "attachments must be a list"}, status_code=400)
     if len(attachments) > 10:
         return JSONResponse({"error": "max 10 attachments per message"}, status_code=400)
-    data_dir = Path(getattr(request.app.state, "data_dir",
-                            Path(os.environ.get("TAOS_DATA_DIR", "./data"))))
+    data_dir = Path(getattr(request.app.state, "data_dir", _resolve_chat_data_dir()))
     chat_files = data_dir / "chat-files"
     for att in attachments:
         if not isinstance(att, dict):
@@ -545,7 +573,7 @@ async def pin_message_endpoint(message_id: str, request: Request):
     if auth is not None:
         token = request.cookies.get("taos_session") or ""
         if token:
-            session_user = auth.session_user(token)
+            session_user = auth.session_user(token, user_agent=request.headers.get("user-agent", ""))
     pinned_by = f"user:{session_user['id']}" if session_user else "user:unknown"
     try:
         await msg_store.pin_message(msg["channel_id"], message_id, pinned_by=pinned_by)
@@ -599,7 +627,8 @@ async def edit_message_endpoint(message_id: str, request: Request):
     session_user = None
     if auth is not None:
         token = request.cookies.get("taos_session") or ""
-        session_user = auth.session_user(token)
+        if token:
+            session_user = auth.session_user(token, user_agent=request.headers.get("user-agent", ""))
     caller_id = session_user["id"] if session_user else None
     if msg["author_id"] != caller_id:
         return JSONResponse({"error": "not the author"}, status_code=403)
@@ -648,7 +677,8 @@ async def delete_message_endpoint(message_id: str, request: Request):
     session_user = None
     if auth is not None:
         token = request.cookies.get("taos_session") or ""
-        session_user = auth.session_user(token)
+        if token:
+            session_user = auth.session_user(token, user_agent=request.headers.get("user-agent", ""))
     caller_id = session_user["id"] if session_user else None
     if msg["author_id"] != caller_id:
         return JSONResponse({"error": "not the author"}, status_code=403)
@@ -698,7 +728,8 @@ async def rewind_read_cursor_endpoint(channel_id: str, request: Request):
     session_user = None
     if auth is not None:
         token = request.cookies.get("taos_session") or ""
-        session_user = auth.session_user(token)
+        if token:
+            session_user = auth.session_user(token, user_agent=request.headers.get("user-agent", ""))
     if session_user is None:
         return JSONResponse({"error": "not authenticated"}, status_code=401)
     await ch_store.rewind_read_cursor(

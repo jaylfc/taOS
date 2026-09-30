@@ -289,6 +289,169 @@ class TestStreamInputValidation:
 
 
 @pytest.mark.asyncio
+class TestHeartbeatIdleUpstream:
+    async def test_idle_upstream_stream_emits_ping_within_interval(self, agent_app, client):
+        """An idle upstream (never yields a line) must still emit a ping
+        comment so intermediaries do not reap the connection."""
+        import asyncio
+        from unittest.mock import patch, MagicMock, AsyncMock
+        from starlette.requests import Request
+
+        _, token = await _mint_agent(agent_app, scopes=("a2a_receive",))
+
+        upstream_done = asyncio.Event()
+
+        async def _blocking_aiter_lines():
+            await upstream_done.wait()
+            yield
+
+        upstream_resp = MagicMock()
+        upstream_resp.aiter_lines = MagicMock(return_value=_blocking_aiter_lines())
+        upstream_ctx = AsyncMock()
+        upstream_ctx.__aenter__ = AsyncMock(return_value=upstream_resp)
+        upstream_ctx.__aexit__ = AsyncMock(return_value=False)
+        client_ctx = AsyncMock()
+        client_ctx.stream = MagicMock(return_value=upstream_ctx)
+        client_ctx.__aenter__ = AsyncMock(return_value=client_ctx)
+        client_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/a2a/bus/stream",
+            "root_path": "",
+            "scheme": "http",
+            "http_version": "1.1",
+            "headers": [(b"authorization", f"Bearer {token}".encode())],
+            "query_string": b"channel=general",
+            "server": ("test", 80),
+            "client": ("127.0.0.1", 12345),
+        }
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        request = Request(scope, receive=receive)
+        request.state.is_admin = True
+
+        with patch(
+            "tinyagentos.routes.a2a_bus.httpx.AsyncClient",
+            return_value=client_ctx,
+        ), patch(
+            "tinyagentos.routes.a2a_bus._STREAM_HEARTBEAT_SEC",
+            0.05,
+        ), patch(
+            "tinyagentos.routes.a2a_bus._stream_sleep",
+            lambda secs: asyncio.sleep(min(secs, 0.05)),
+        ):
+            from tinyagentos.routes.a2a_bus import bus_stream
+
+            resp = await bus_stream(request, channel="general")
+            body_parts = []
+            async for chunk in resp.body_iterator:
+                body_parts.append(chunk)
+                body = "".join(
+                    p.decode("utf-8") if isinstance(p, bytes) else p for p in body_parts
+                )
+                if ": ping" in body:
+                    break
+
+        assert ": ping" in body
+
+    async def test_line_arriving_during_heartbeat_is_not_lost(self, agent_app, client):
+        """Upstream yields line A, then stalls past one heartbeat interval,
+        then yields line B. The proxied stream must contain A, a ping, then
+        B in order with nothing dropped."""
+        import asyncio
+        from unittest.mock import patch, MagicMock, AsyncMock
+        from starlette.requests import Request
+
+        _, token = await _mint_agent(agent_app, scopes=("a2a_receive",))
+
+        line_b_ready = asyncio.Event()
+
+        async def _stall_aiter_lines():
+            yield "event: message"
+            yield 'data: {"id":"m1","ts":1,"from":"a","body":"A"}'
+            yield ""
+            await line_b_ready.wait()
+            yield "event: message"
+            yield 'data: {"id":"m2","ts":2,"from":"b","body":"B"}'
+            yield ""
+
+        upstream_resp = MagicMock()
+        upstream_resp.aiter_lines = MagicMock(return_value=_stall_aiter_lines())
+        upstream_ctx = AsyncMock()
+        upstream_ctx.__aenter__ = AsyncMock(return_value=upstream_resp)
+        upstream_ctx.__aexit__ = AsyncMock(return_value=False)
+        client_ctx = AsyncMock()
+        client_ctx.stream = MagicMock(return_value=upstream_ctx)
+        client_ctx.__aenter__ = AsyncMock(return_value=client_ctx)
+        client_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/a2a/bus/stream",
+            "root_path": "",
+            "scheme": "http",
+            "http_version": "1.1",
+            "headers": [(b"authorization", f"Bearer {token}".encode())],
+            "query_string": b"channel=general",
+            "server": ("test", 80),
+            "client": ("127.0.0.1", 12345),
+        }
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        request = Request(scope, receive=receive)
+        request.state.is_admin = True
+
+        with patch(
+            "tinyagentos.routes.a2a_bus.httpx.AsyncClient",
+            return_value=client_ctx,
+        ), patch(
+            "tinyagentos.routes.a2a_bus._STREAM_HEARTBEAT_SEC",
+            0.05,
+        ), patch(
+            "tinyagentos.routes.a2a_bus._stream_sleep",
+            lambda secs: asyncio.sleep(min(secs, 0.05)),
+        ):
+            from tinyagentos.routes.a2a_bus import bus_stream
+
+            resp = await bus_stream(request, channel="general")
+
+            async def collect():
+                body_parts = []
+                async for chunk in resp.body_iterator:
+                    body_parts.append(chunk)
+                    body = "".join(
+                        p.decode("utf-8") if isinstance(p, bytes) else p
+                        for p in body_parts
+                    )
+                    if ": ping" in body and "B" in body:
+                        break
+                return "".join(
+                    p.decode("utf-8") if isinstance(p, bytes) else p
+                    for p in body_parts
+                )
+
+            collect_task = asyncio.create_task(collect())
+            await asyncio.sleep(0.2)
+            line_b_ready.set()
+            body = await asyncio.wait_for(collect_task, timeout=2.0)
+
+        body_str = body if isinstance(body, str) else body.decode()
+        pos_a = body_str.index("A")
+        pos_ping = body_str.index(": ping")
+        pos_b = body_str.index("B")
+        assert pos_a < pos_ping < pos_b
+        assert "m1" in body_str
+        assert "m2" in body_str
+
+
+@pytest.mark.asyncio
 class TestMessagesSincePassthrough:
     async def test_messages_forwards_since(self, agent_app, client):
         payload = {"messages": [{"id": "m1", "ts": 1, "from": "a", "body": "hi"}]}

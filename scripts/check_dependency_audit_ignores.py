@@ -164,7 +164,13 @@ def main(argv: list[str] | None = None) -> int:
     if findings is None:
         print(f"error: pip-audit result unreadable — {raw[:300]}", file=sys.stderr)
         return 2
+
+    reported_ids = {f["id"] for f in findings}
     unlisted = [f for f in findings if f["id"] not in ignore_ids]
+    stale = [entry for entry in ignore_list if entry["id"] not in reported_ids]
+    if stale:
+        for entry in stale:
+            print(f"STALE: {entry['package']} {entry['id']} — no longer reported by pip-audit, remove from ignore list")
     if unlisted:
         for f in unlisted:
             print(f"UNLISTED: {f['package']} {f['id']}")
@@ -178,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
             print("OK: no findings")
 
     print()
-    if droppable or unlisted:
+    if droppable or unlisted or stale:
         print("FAIL: ignore list is stale or incomplete")
         return 1
     print("OK: ignore list is current")

@@ -64,6 +64,15 @@ def _make_mock_config(github_app_id: str = "123456") -> MagicMock:
     return cfg
 
 
+def _auth_middleware(app, admin=True):
+    """Attach a tiny http middleware that stamps admin session state on request.state."""
+    @app.middleware("http")
+    async def _stamp(request, call_next):
+        request.state.is_admin = admin
+        request.state.via = "session" if admin else ""
+        return await call_next(request)
+
+
 @pytest_asyncio.fixture
 async def store(tmp_path):
     s = GitHubIdentitiesStore(tmp_path / "github_identities.db")
@@ -72,9 +81,10 @@ async def store(tmp_path):
     await s.close()
 
 
-def _build_app(store, *, post_effects=(), get_effects=()):
+def _build_app(store, *, post_effects=(), get_effects=(), admin=True):
     app = FastAPI()
     app.include_router(github_oauth_router)
+    _auth_middleware(app, admin=admin)
     http = MagicMock()
     http.post = AsyncMock(side_effect=list(post_effects)) if post_effects else AsyncMock()
     http.get = AsyncMock(side_effect=list(get_effects)) if get_effects else AsyncMock()
@@ -128,6 +138,14 @@ async def test_device_start_bad_response_returns_502(client_factory):
     c = await client_factory(post_effects=[gh])
     resp = await c.post("/api/github/oauth/device/start")
     assert resp.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_device_start_non_admin_refused(client_factory):
+    """A non-admin session must be refused 403 on the gated device/start route."""
+    c = await client_factory(post_effects=[], admin=False)
+    resp = await c.post("/api/github/oauth/device/start")
+    assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -271,10 +289,12 @@ def _build_app_for_app_tests(
     post_effects=(),
     get_effects=(),
     delete_effects=(),
+    admin=True,
 ):
     """Build a FastAPI app with App-specific state for installation tests."""
     app = FastAPI()
     app.include_router(github_oauth_router)
+    _auth_middleware(app, admin=admin)
     http = MagicMock()
     http.post = AsyncMock(side_effect=list(post_effects)) if post_effects else AsyncMock()
     http.get = AsyncMock(side_effect=list(get_effects)) if get_effects else AsyncMock()

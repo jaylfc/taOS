@@ -4,15 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tinyagentos"
-version = "1.0.0-beta.53"
+version = "1.0.0-beta.54"
 description = "Self-hosted AI agent memory system for low-power hardware"
 license = { file = "LICENSE" }
-# Upper-capped at <3.14 because litellm (the proxy extra, the agent/model proxy
-# runtime) supports only >=3.10,<3.14. A fresh distro that defaults python3 to
-# 3.14 would otherwise build the venv on 3.14 and abort with "No matching
-# distribution found for litellm". The installer also steers the venv to a
-# supported interpreter; this cap makes the constraint explicit to pip and uv.
-requires-python = ">=3.11,<3.14"
+# Upper-capped at <3.15 because the proxy extra's litellm (pinned
+# >=1.94.2,<1.95 below; uv.lock resolves 1.94.3) declares requires-python
+# >=3.10,<3.15 on PyPI (verified 2026-09-25 against litellm 1.94.3).
+# A fresh distro that defaults python3 to 3.14 would otherwise build the
+# venv on 3.14 and abort with "No matching distribution found for litellm".
+# The installer also steers the venv to a supported interpreter; this cap
+# makes the constraint explicit to pip and uv.
+requires-python = ">=3.11,<3.15"
 dependencies = [
     # Cap below 0.137: fastapi 0.137.0 regressed include_router so that a
     # mounted APIRouter contributes none of its routes to the app, leaving
@@ -78,6 +80,7 @@ dependencies = [
     # relicence or CVE reached users without tripping any gate. Declared here so
     # it goes through the lockfile like everything else.
     "yt-dlp>=2025.1.15",
+    "pypdf>=6.17",
 ]
 
 [project.optional-dependencies]
@@ -145,6 +148,13 @@ proxy = [
 # dependency or fresh installs abort. torrent_downloader guards the import and
 # falls back to a direct download when it is absent.
 torrent = ["libtorrent>=2.0.9"]
+# taOSusb Bluetooth pairing (S1): the controller's BLE central talks to a
+# board's GATT peripheral via bleak. Not every controller install has (or
+# needs) a Bluetooth adapter, so this stays optional -- tinyagentos/cluster/
+# ble/transport.py imports bleak lazily and the scan/pair routes answer 503
+# bluetooth_unavailable when it (or an adapter) is missing, instead of every
+# install failing to boot without it.
+ble = ["bleak>=0.22.0"]
 e2e = [
     "pytest>=9.1.1",
     "pytest-playwright>=0.5.0",
@@ -168,6 +178,10 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["tinyagentos*"]
 
+
+[tool.setuptools.package-data]
+# Vendored MIT price table + its licence notice (scripts/update_model_prices.py regenerates the JSON).
+"tinyagentos.llm_usage" = ["data/model_prices.json", "data/NOTICE"]
 [project.scripts]
 tinyagentos = "tinyagentos.app:main"
 tinyagentos-worker = "tinyagentos.worker.__main__:main"
@@ -192,6 +206,10 @@ markers = [
     # it, and every module carrying it is inventoried in
     # tests/test_csrf_bypass_debt.py so the list cannot grow unnoticed.
     "csrf_bypass: run this test with verify_csrf stubbed to a no-op (legacy debt)",
+    # Declares the product function a guard test protects, and the defect it must
+    # fail on. Checked by scripts/check_non_discriminating.py (guard-discrimination
+    # workflow); inert in a normal test run.
+    "guards(target, replace=None, must_kill=None): guard test's protected function; see scripts/check_non_discriminating.py",
     "skip_if_no_embed_backend: skip when no embed backend can serve the test (qmd unreachable and onnxruntime absent)",
 ]
 filterwarnings = [

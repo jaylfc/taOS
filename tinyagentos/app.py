@@ -11,9 +11,11 @@ import httpx
 import yaml
 
 logger = logging.getLogger(__name__)
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi import HTTPException, Depends
 
 
 class _CacheAwareStaticFiles(StaticFiles):
@@ -43,6 +45,7 @@ class _CacheAwareStaticFiles(StaticFiles):
         return response
 
 from tinyagentos.auth import AuthManager
+from tinyagentos.auth_context import current_user, require_owner_or_admin
 from tinyagentos.backend_fallback import BackendFallback
 from tinyagentos.capabilities import CapabilityChecker
 from tinyagentos.cluster.manager import ClusterManager
@@ -118,6 +121,36 @@ from tinyagentos.frameworks import FRAMEWORKS, FrameworkManifestError, validate_
 
 PROJECT_DIR = Path(__file__).parent.parent
 
+
+def resolve_data_dir(data_dir: Path | None = None) -> Path:
+    """Resolve the taOS data directory.
+
+    Precedence:
+      1. ``data_dir`` argument (what the caller configured)
+      2. ``TAOS_DATA_DIR`` environment variable
+      3. ``<project>/data`` default
+
+    Raises ``RuntimeError`` when both the explicit argument and the environment
+    variable are set to different paths, so the operator notices a misconfiguration
+    instead of the server silently writing to one directory and reading from another.
+    """
+    env_data_dir = os.environ.get("TAOS_DATA_DIR")
+    if env_data_dir and data_dir is not None:
+        env_path = Path(env_data_dir).resolve()
+        data_path = Path(data_dir).resolve()
+        if env_path != data_path:
+            raise RuntimeError(
+                f"Refusing to start: TAOS_DATA_DIR={env_data_dir} conflicts with "
+                f"configured data_dir={data_dir}. Unset one or make them match."
+            )
+        return env_path
+    if env_data_dir:
+        return Path(env_data_dir)
+    if data_dir is not None:
+        return Path(data_dir)
+    return PROJECT_DIR / "data"
+
+
 # Paths that must remain accessible before startup completes (health checks,
 # static assets, auth endpoints).  Everything else gets 503 until the lifespan
 # finishes its init sequence.
@@ -170,7 +203,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.registry import AppRegistry
     from tinyagentos.hardware import get_hardware_profile
 
-    data_dir = data_dir or PROJECT_DIR / "data"
+    data_dir = resolve_data_dir(data_dir)
     config_path = data_dir / "config.yaml"
     # Copy example config on first run
     if not config_path.exists():
@@ -295,6 +328,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     user_shares_store = UserSharesStore(data_dir / "user_shares.db")
     from tinyagentos.app_grants_store import AppGrantsStore
     app_grants_store = AppGrantsStore(data_dir / "app_grants.db")
+    from tinyagentos.knowledge_fetchers.x import XWatchStore
+    x_watch_store = XWatchStore(data_dir / "x-watches.db")
     from tinyagentos.license_acceptances_store import LicenseAcceptancesStore
     license_acceptances_store = LicenseAcceptancesStore(data_dir / "license_acceptances.db")
     from tinyagentos.agent_model_key_store import AgentModelKeyStore
@@ -353,6 +388,17 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     task_router = TaskRouter(cluster_manager, http_client)
     cap_checker = CapabilityChecker(hardware_profile, cluster_manager)
     cluster_manager._capabilities = cap_checker  # wire after creation (circular dep)
+    # taOSusb Bluetooth pairing (S1) -- the controller side of
+    # docs/taosusb-pairing-plan.md. bleak is an optional dependency (see
+    # pyproject.toml's `ble` extra): BlePairingManager only imports it lazily
+    # on first scan/connect, so constructing it here never requires it.
+    from tinyagentos.cluster.ble.pairing import BlePairingManager
+    ble_pairing_manager = BlePairingManager(
+        data_dir=data_dir,
+        cluster_manager=cluster_manager,
+        pairing_store=cluster_pairing_store,
+        bind_port=controller_port,
+    )
     training_manager = TrainingManager(data_dir / "training.db")
     conversion_manager = ConversionManager(data_dir / "conversion.db")
     agent_messages = AgentMessageStore(data_dir / "agent_messages.db")
@@ -546,6 +592,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await agent_scope_requests_store.init()
         await agent_grants_store.init()
         app.state.agent_grants = agent_grants_store
+        await x_watch_store.init()
+        app.state.x_watch_store = x_watch_store
 
         # First-boot identity for the OS-native agent.  Runs on EVERY start, not
         # only on a fresh install: it is how an install that upgraded into this
@@ -1151,12 +1199,21 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # can call it after each write.
         app.state.trace_registry.set_emitter(_otel_emitter)
         # Phase 4: reasoning judge — fire on lifecycle session_end.
-        from tinyagentos.litellm_config import get_litellm_master_key
+        from tinyagentos import llm_gateway as _llm_gateway
         from tinyagentos.otel.judge import ReasoningJudge
-        _judge = ReasoningJudge(
-            litellm_base_url=f"http://localhost:{app.state.llm_proxy.port}/v1",
-            litellm_api_key=get_litellm_master_key(data_dir),
-        )
+        if _llm_gateway.enabled():
+            # The gateway on this controller, as the host (local token = the
+            # admin kind). The LiteLLM master key no longer opens it.
+            _judge = ReasoningJudge(
+                litellm_base_url=f"http://127.0.0.1:{controller_port}/api/llm/v1",
+                litellm_api_key=app.state.auth.get_local_token() or "",
+            )
+        else:
+            from tinyagentos.litellm_config import get_litellm_master_key
+            _judge = ReasoningJudge(
+                litellm_base_url=f"http://localhost:{app.state.llm_proxy.port}/v1",
+                litellm_api_key=get_litellm_master_key(data_dir),
+            )
         app.state.trace_registry.set_judge(_judge)
 
         # Bridge session registry — per-agent queue + accumulator for openclaw.
@@ -1433,6 +1490,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # All startup init complete — allow requests through.
         from tinyagentos.agent_budget_store import AgentBudgetStore, default_budget_path
         app.state.agent_budget_store = AgentBudgetStore(default_budget_path(data_dir))
+
+        # LiteLLM -> gateway cutover: point each agent's LLM proxy device at
+        # the gateway agent listener (flag on) or back at LiteLLM (flag off).
+        # A no-op unless __main__ recorded the listener port on app.state.
+        from tinyagentos.llm_gateway.cutover import run_startup_reconcile
+        _create_supervised_task(run_startup_reconcile(app.state), app.state._background_tasks)
+
         app.state._startup_complete = True
         logger.info("startup complete — accepting requests")
 
@@ -1596,6 +1660,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await qmd_client.close()
         await http_client.aclose()
         await agent_grants_store.close()
+        await x_watch_store.close()
         await app_grants_store.close()
         await license_acceptances_store.close()
         await agent_model_key_store.close()
@@ -1645,6 +1710,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             },
             status_code=503,
         )
+
+    # LLM gateway keys: the default keystore location for mint/revoke callers
+    # (node pairing, agent lifecycle) that pass no data_dir.
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    configure_gateway_keystore(data_dir)
 
     # Auth middleware -- added first so it is innermost. Starlette builds the
     # middleware stack in reverse add order (last added is outermost), so the
@@ -1796,6 +1866,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.typing = None
     app.state.canvas_store = canvas_store
     app.state.desktop_settings = desktop_settings
+    # Which harness runs the system taOS Agent (opencode, or PicoClaw on a
+    # taOSmobile handset). Decided now so the lock screen and the config
+    # endpoint report it from the first request; a PicoClaw key left over
+    # from before a switch back to opencode is revoked here.
+    from tinyagentos.taos_agent_runtime import startup_framework_reconcile
+    startup_framework_reconcile(app.state)
     app.state.device_store = device_store
     app.state.device_pair_requests = device_pair_requests_store
     app.state.apns_sender = apns_sender
@@ -1849,9 +1925,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.password_reset = password_reset_store
     app.state.agent_scope_requests = agent_scope_requests_store
     app.state.agent_grants = agent_grants_store
+    app.state.x_watch_store = x_watch_store
     app.state.app_grants = app_grants_store
     app.state.license_acceptances = license_acceptances_store
     app.state.cluster_pairing = cluster_pairing_store
+    app.state.ble_pairing = ble_pairing_manager
     app.state.capability_map = capability_map_store
     app.state.council_roles = council_role_registry
     app.state.council_members = council_member_store
@@ -1869,9 +1947,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.mount("/static", _CacheAwareStaticFiles(directory=str(static_dir)), name="static")
 
     # Mount workspace for serving generated images and other workspace files
+    # NOTE: The StaticFiles mount is replaced by a custom route below that adds
+    # per-user authorization for paths under /data/workspace/users/<uid>/.
     workspace_dir = data_dir / "workspace"
     workspace_dir.mkdir(parents=True, exist_ok=True)
-    app.mount("/data/workspace", StaticFiles(directory=str(workspace_dir)), name="workspace")
 
     # Desktop SPA assets are served by the desktop route handler (routes/desktop.py)
 
@@ -1881,6 +1960,49 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     # Agent base image prefetch status endpoint
     register_prefetch_endpoint(app)
+
+    # Workspace file serving with per-user authorization
+    # This route replaces the bare StaticFiles mount to enforce ownership checks
+    # for user-scoped paths while keeping legacy shared paths session-gated only.
+    @app.get("/data/workspace/{path:path}")
+    async def serve_workspace_file(request: Request, path: str):
+        """Serve files from the workspace directory with per-user authorization.
+
+        Path structure:
+        - /data/workspace/users/<uid>/images/generated/<file> -> requires ownership or admin
+        - /data/workspace/users/<uid>/music/generated/<file> -> requires ownership or admin
+        - /data/workspace/images/generated/<file> (legacy) -> session gate only
+        - /data/workspace/music/generated/<file> (legacy) -> session gate only
+        - Other paths under /data/workspace/ -> session gate only (existing behavior)
+        """
+        # Resolve the requested path relative to workspace_dir
+        workspace_root = workspace_dir.resolve()
+        try:
+            requested_path = (workspace_dir / path).resolve()
+            # Path traversal protection: the resolved path must stay inside
+            # the workspace. ``relative_to`` raises ValueError otherwise.
+            rel_parts = requested_path.relative_to(workspace_root).parts
+        except (ValueError, OSError):
+            raise HTTPException(status_code=404, detail="Not found")
+
+        # Owner decision comes from the RESOLVED path, never the raw one.
+        # Starlette percent-decodes the path parameter, so a raw-path check is
+        # bypassed by dot segments: ``%2e/users/<uid>/...`` or
+        # ``images/%2e%2e/users/<uid>/...`` resolve into users/<uid>/ while
+        # their first raw segment is not ``users`` (tsk-shj7wq).
+        if len(rel_parts) >= 2 and rel_parts[0] == "users":
+            # This is a user-scoped path, require ownership or admin
+            target_user_id = rel_parts[1]
+            user = current_user(request)
+            require_owner_or_admin(user, target_user_id)
+
+        # For legacy paths (non-user-scoped), the session gate from AuthMiddleware
+        # already ensures the request is authenticated (401 if not)
+
+        if not requested_path.exists() or not requested_path.is_file():
+            raise HTTPException(status_code=404, detail="Not found")
+
+        return FileResponse(requested_path)
 
     return app
 
@@ -1916,7 +2038,7 @@ def _recover_password_cli(argv) -> int:
     ns = parser.parse_args(argv)
 
     override = ns.data_dir or os.environ.get("TAOS_DATA_DIR")
-    data_dir = Path(override) if override else (PROJECT_DIR / "data")
+    data_dir = resolve_data_dir(Path(override) if override else None)
 
     new_password = ns.password
     if not new_password:

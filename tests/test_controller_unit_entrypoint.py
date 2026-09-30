@@ -12,7 +12,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _service_files() -> list[Path]:
-    return sorted(REPO_ROOT.rglob("*.service"))
+    files = sorted(REPO_ROOT.rglob("*.service"))
+    for path in REPO_ROOT.rglob("*.sh"):
+        if ".venv" in path.parts or "node_modules" in path.parts:
+            continue
+        files.append(path)
+    return files
 
 
 def _exec_start_values(unit_text: str) -> list[str]:

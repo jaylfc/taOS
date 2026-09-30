@@ -48,11 +48,8 @@ _FIELDS = (
 
 
 def _data_dir() -> Path:
-    env = os.environ.get("TAOS_DATA_DIR")
-    if env:
-        return Path(env)
-    # tinyagentos/taosnet/mesh_credentials.py -> project root is two parents up.
-    return Path(__file__).resolve().parent.parent.parent / "data"
+    from tinyagentos.app import resolve_data_dir
+    return resolve_data_dir()
 
 
 def _path() -> Path:

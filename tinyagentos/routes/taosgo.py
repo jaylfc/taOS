@@ -66,7 +66,9 @@ async def app_join(
     # Method 1: Session cookie (browser flow)
     session_token = request.cookies.get("taos_session")
     if session_token:
-        user_id = auth_mgr.validate_session(session_token)
+        user_id = auth_mgr.validate_session(
+            session_token, user_agent=request.headers.get("user-agent", "")
+        )
         if user_id:
             current_user = auth_mgr.get_user_by_id(user_id)
             auth_via = "session_cookie"

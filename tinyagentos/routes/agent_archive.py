@@ -24,6 +24,19 @@ def _archive_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
 
+def _revoke_gateway_keys(request: Request, slug: str, agent_id: str | None) -> None:
+    """Revoke LLM gateway keys bound to the agent (by slug and by id).
+
+    Legacy per-agent keys are keyed by the agent NAME (slug); gateway keys may
+    be bound to either, so both are revoked.
+    """
+    from tinyagentos.llm_gateway.auth import revoke_keys_for
+
+    data_dir = request.app.state.data_dir
+    for principal in {slug, agent_id} - {None, ""}:
+        revoke_keys_for(principal, data_dir=data_dir)
+
+
 async def archive_agent_fully(request: Request, name: str) -> dict:
     """Archive via incus snapshot. Zero-copy on btrfs/ZFS pools; rsync fallback
     on dir-backed. Container stays intact (snapshots live alongside); restoring
@@ -100,6 +113,7 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
         has_trace_history = trace_dir.exists() and any(trace_dir.iterdir())
 
         # Always revoke LiteLLM key first (best effort, same as below).
+        _revoke_gateway_keys(request, slug, agent_id)
         llm_key = agent.get("llm_key")
         llm_proxy = getattr(request.app.state, "llm_proxy", None)
         if llm_key and llm_proxy and llm_proxy.is_running():
@@ -261,7 +275,10 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.warning("archive: channel flag failed for %s: %s", channel_id, exc)
 
-    # 5) Revoke LiteLLM key (best effort).
+    # 5) Revoke LiteLLM key (best effort) and every LLM gateway key bound to
+    #    the agent. The gateway revoke is NOT gated on the LiteLLM proxy
+    #    running: the gateway lives in this process.
+    _revoke_gateway_keys(request, slug, agent_id)
     llm_key = agent.get("llm_key")
     llm_proxy = getattr(request.app.state, "llm_proxy", None)
     if llm_key and llm_proxy and llm_proxy.is_running():

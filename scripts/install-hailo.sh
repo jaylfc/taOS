@@ -240,6 +240,63 @@ detect_hailo() {
     return 0
 }
 
+# -------- (1.5) pre-install detection --------------------------------------
+
+# Checks for a pre-existing hailo-ollama instance running on upstream port 8000
+# (Hailo's own default / the Ollama-compatible tags endpoint). When found, logs
+# what was detected and exits 3 -- taOS must not silently build a second server.
+# Exit 3 is reserved for "refused: pre-existing instance" so auto-install callers
+# can distinguish the conflict from an ordinary installer failure. Port 8000 is
+# the Django slot in taOS port hygiene and is already probed as a
+# llama-cpp/vllm candidate, so a coexisting server there also makes those probes
+# ambiguous. See issue #2083.
+detect_preexisting_hailoollama() {
+    local url="http://localhost:8000/api/tags"
+    local tags
+    tags="$(curl -fs "$url" 2>/dev/null || true)"
+    if [[ -n "$tags" ]] && grep -q '"models"' <<<"$tags"; then
+        warn "pre-existing hailo-ollama detected on :8000 (Hailo's default upstream)"
+        log "response from $url:"
+        echo "$tags" | sed 's/^/    /' || true
+        warn "This installer would have built a second server on port $HAILO_OLLAMA_PORT."
+        log "The existing instance on :8000 will be left alone (not modified by this script)."
+        exit 3
+    fi
+
+    # Check for an upstream unit that exists but lacks our OLLAMA_HOST marker.
+    # Our units always set OLLAMA_HOST=127.0.0.1:7836; upstream instances won't.
+    if systemctl list-unit-files --full | grep -q '^hailo-ollama.service'; then
+        local has_marker
+        has_marker="$(systemctl cat hailo-ollama.service 2>/dev/null | grep 'OLLAMA_HOST=' || true)"
+        if [[ -n "$has_marker" && "$has_marker" != *"OLLAMA_HOST=127.0.0.1:$HAILO_OLLAMA_PORT"* ]]; then
+            warn "upstream hailo-ollama.service detected without taOS marker (no OLLAMA_HOST=127.0.0.1:$HAILO_OLLAMA_PORT)"
+            warn "This installer would have built a second server on port $HAILO_OLLAMA_PORT."
+            warn "The existing instance will be left alone (not modified by this script)."
+            exit 3
+        fi
+    fi
+
+    # Check for an upstream binary on PATH resolving outside our install directory.
+    local bin_path
+    bin_path="$(command -v hailo-ollama 2>/dev/null || true)"
+    if [[ -n "$bin_path" ]]; then
+        # Resolve symlinks to find the real binary location
+        local resolved
+        if [[ -L "$bin_path" ]]; then
+            resolved="$(readlink -f "$bin_path")"
+        else
+            resolved="$bin_path"
+        fi
+        # Check if the binary is outside our install directory
+        if ! [[ "$resolved" == "$HAILO_OLLAMA_DIR"* ]]; then
+            warn "upstream hailo-ollama binary found on PATH outside our install directory"
+            warn "This installer would have built a second server on port $HAILO_OLLAMA_PORT."
+            warn "The existing instance will be left alone (not modified by this script)."
+            exit 3
+        fi
+    fi
+}
+
 # -------- (2) HailoRT + firmware -----------------------------------------
 
 ensure_hailort() {
@@ -470,6 +527,9 @@ main() {
             log "Hailo-10H detected -- proceeding with install"
             ;;
     esac
+
+    # Pre-install: check for a pre-existing hailo-ollama on upstream port 8000.
+    detect_preexisting_hailoollama
 
     resolve_target
 

@@ -11,9 +11,12 @@
 # Test paths (test_*.py, *.test.*, *.spec.*, __tests__/) are never structural
 # and are always excluded from triggering.
 #
-# The Docs-Reviewed: trailer is an explicit escape hatch: when present in a
-# commit message, the gate prints which commit used it and who authored it,
-# then passes all rules for that PR.
+# The Docs-Reviewed: trailer is an explicit escape hatch scoped to the commit
+# that carries it: the gate prints which commit used it, who authored it and
+# which files that commit touched, then waives the rules tripped by THOSE
+# files for THAT commit only. Files changed by other commits in the PR stay
+# gated. `Docs-Reviewed: [rule, rule] <why>` narrows the waiver to the named
+# rules (the `name` fields below); an unknown name waives nothing.
 
 [gate]
 trailer = "Docs-Reviewed:"

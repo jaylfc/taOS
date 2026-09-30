@@ -7,7 +7,7 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
-AGENT_ZERO_VERSION="${TAOS_AGENT_ZERO_VERSION:-main}"
+AGENT_ZERO_VERSION="${TAOS_AGENT_ZERO_VERSION:-v0.8.0}"
 AGENT_ZERO_REPO="https://github.com/frdel/agent-zero.git"
 AGENT_ZERO_HOME="/opt/agent-zero"
 

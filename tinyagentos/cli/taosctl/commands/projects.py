@@ -35,6 +35,21 @@ def register(subparsers) -> None:
     ap.add_argument("id", help="Project id")
     ap.set_defaults(func=_archive)
 
+    cop = verbs.add_parser("canvas-original", help="Fetch original payload for one canvas element")
+    cop.add_argument("project_id", help="Project id")
+    cop.add_argument("element_id", help="Canvas element id")
+    cop.set_defaults(func=_canvas_original)
+
+    clp = verbs.add_parser("canvas-legacy", help="List legacy canvas elements with tldraw_shape")
+    clp.add_argument("project_id", help="Project id")
+    clp.add_argument("--include-deleted", action="store_true", default=False, help="Include soft-deleted rows")
+    clp.set_defaults(func=_canvas_legacy)
+
+    cetp = verbs.add_parser("canvas-export-tldr", help="Export project canvas as a .tldr file")
+    cetp.add_argument("project_id", help="Project id")
+    cetp.add_argument("-o", "--output", default=None, help="Output file path (default: stdout)")
+    cetp.set_defaults(func=_canvas_export_tldr)
+
 
 def _list(args, client):
     return client.get("/api/projects")
@@ -64,3 +79,29 @@ def _delete(args, client):
 
 def _archive(args, client):
     return client.post(f"/api/projects/{args.id}/archive")
+
+
+def _canvas_original(args, client):
+    return client.get(f"/api/projects/{args.project_id}/canvas/elements/{args.element_id}/original")
+
+
+def _canvas_legacy(args, client):
+    params = {"include_deleted": "1" if args.include_deleted else "0"}
+    return client.get(f"/api/projects/{args.project_id}/canvas/legacy", params=params)
+
+
+def _canvas_export_tldr(args, client):
+    resp = client.get(f"/api/projects/{args.project_id}/canvas/snapshot.tldr")
+    if args.output:
+        import json
+        from pathlib import Path
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(resp, (dict, list)):
+            out.write_text(json.dumps(resp, separators=(",", ":")))
+        elif isinstance(resp, str):
+            out.write_text(resp)
+        else:
+            out.write_bytes(resp if isinstance(resp, bytes) else str(resp).encode())
+        return {"file_path": str(out)}
+    return resp

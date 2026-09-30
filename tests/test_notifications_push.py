@@ -1034,3 +1034,42 @@ def test_build_device_push_payload_non_decision_has_no_category_or_thread():
     payload, _ = _build_device_push_payload(row)
     assert "category" not in payload
     assert "thread_id" not in payload
+
+
+def test_build_device_push_payload_null_label_and_value_roundtrip_to_empty_string():
+    # tsk-zuw4il: regression guard for null label/value in options.
+    # Before the fix, o.get("label", "")[:40] raises TypeError when label is None
+    # because None[:40] is not subscriptable. The builder must coerce at the read
+    # site so the function stays total (never raises), matching the send_device_push
+    # contract documented at line 486.
+    row = {
+        "title": "Pick",
+        "message": "pick one",
+        "source": "decisions",
+        "data": {
+            "decision_type": "single_select",
+            "options": [
+                {"label": None, "value": "x"},
+                {"label": "valid", "value": None},
+                {"label": None, "value": None},
+            ],
+        },
+    }
+    payload, actions = _build_device_push_payload(row)
+    assert len(payload["data"]["options"]) == 3
+    assert len(actions) == 3
+    # null label -> "", present value preserved
+    assert payload["data"]["options"][0]["label"] == ""
+    assert payload["data"]["options"][0]["value"] == "x"
+    assert actions[0]["label"] == ""
+    assert actions[0]["id"] == "x"
+    # present label preserved, null value -> falls back to label (per fallback logic)
+    assert payload["data"]["options"][1]["label"] == "valid"
+    assert payload["data"]["options"][1]["value"] == "valid"
+    assert actions[1]["label"] == "valid"
+    assert actions[1]["id"] == "valid"
+    # both null -> both ""
+    assert payload["data"]["options"][2]["label"] == ""
+    assert payload["data"]["options"][2]["value"] == ""
+    assert actions[2]["label"] == ""
+    assert actions[2]["id"] == ""

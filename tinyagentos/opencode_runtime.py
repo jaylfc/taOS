@@ -147,6 +147,15 @@ class OpenCodeServerConfig:
     binary: str = "opencode"
     """Path or name of the opencode binary."""
 
+    taos_api_base_url: str | None = None
+    """Base URL of the taOS API (e.g. ``http://127.0.0.1:6969``). If set, passed as
+    ``TAOS_API_BASE_URL`` to the opencode server process so the agent can call
+    the taOS API with its scoped credential."""
+
+    taos_api_credential: str | None = None
+    """Scoped credential for the taOS API (native agent's registry JWT). If set,
+    passed as ``TAOS_API_CREDENTIAL`` to the opencode server process."""
+
 
 class OpenCodeServer:
     """Manage one host ``opencode serve`` process.
@@ -236,6 +245,12 @@ class OpenCodeServer:
         }
         if self._cfg.server_password:
             env["OPENCODE_SERVER_PASSWORD"] = self._cfg.server_password
+        # Pass taOS API credential to the opencode server so the agent can call
+        # the taOS API with its scoped credential (not the admin local token).
+        if self._cfg.taos_api_base_url:
+            env["TAOS_API_BASE_URL"] = self._cfg.taos_api_base_url
+        if self._cfg.taos_api_credential:
+            env["TAOS_API_CREDENTIAL"] = self._cfg.taos_api_credential
 
         # Redirect output to a log file rather than PIPE: a long-lived server
         # with an unread PIPE deadlocks once the OS buffer fills, and we still

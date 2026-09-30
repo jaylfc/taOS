@@ -49,7 +49,7 @@ mkdir -p "$OUTPUT"
 SNIPPET="$OUTPUT/appcast-snippet.xml"
 : "${NOTES_FILE:=$REPO_ROOT/CHANGELOG.md}"
 NOTES="$(awk -v v="$VERSION" 'BEGIN{p=0} /^## /{p=($2=="["v"]")} p' "$NOTES_FILE" 2>/dev/null || echo "")"
-NOTES="${NOTES//]]>/]]]]><![CDATA[>}"
+NOTES="${NOTES//]]>/]]]]<![CDATA[>}"
 
 cat > "$SNIPPET" <<XML
     <item>

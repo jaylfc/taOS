@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import hmac
 import json as _json
+import logging
 import stat
 import sys
 import time
@@ -489,3 +490,49 @@ class TestPrintManualInstructions:
         _print_manual_instructions("http://x:1", "CODE1234", print_fn=lines.append)
         assert any("http://x:1" in line for line in lines)
         assert any("CODE1234" in line for line in lines)
+
+
+# ======================================================================
+# "not paired" hint (agent side)
+# ======================================================================
+
+@pytest.mark.asyncio
+class TestNotPairedHint:
+    """The hint must let an operator fix the problem by copy-paste.
+
+    The daemon reads its key from TAOS_WORKER_STATE_DIR (set by the systemd
+    unit and the launchd plist to $INSTALL_DIR/.taos-worker-state), while
+    pair.py defaults to ~/.local/state/taos-worker. A hint without
+    --state-dir therefore writes the key where the service never looks.
+    """
+
+    async def test_register_hint_names_the_state_dir(self, tmp_path, caplog):
+        from tinyagentos.worker.agent import WorkerAgent
+
+        state_dir = tmp_path / "worker-state"
+        agent = WorkerAgent(
+            controller_url="http://controller:9000",
+            name="hint-worker",
+            state_dir=state_dir,
+        )
+        with caplog.at_level(logging.ERROR):
+            assert await agent.register() is False
+        message = caplog.text
+        assert "worker not paired" in message, message
+        assert "--state-dir" in message, message
+        assert str(state_dir) in message, message
+
+    async def test_heartbeat_hint_names_the_state_dir(self, tmp_path, caplog):
+        from tinyagentos.worker.agent import WorkerAgent
+
+        state_dir = tmp_path / "worker-state"
+        agent = WorkerAgent(
+            controller_url="http://controller:9000",
+            name="hint-worker",
+            state_dir=state_dir,
+        )
+        with caplog.at_level(logging.ERROR):
+            assert await agent.heartbeat() == 0
+        message = caplog.text
+        assert "--state-dir" in message, message
+        assert str(state_dir) in message, message

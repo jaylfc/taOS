@@ -148,3 +148,36 @@ class TestNonMappingYAML:
         with pytest.raises(ValidationError) as exc:
             AppManifest.from_file(d / "manifest.yaml")
         assert str(d / "manifest.yaml") in str(exc.value)
+
+
+class TestEveryManifestLoads:
+    def test_all_app_catalog_manifests_load(self):
+        """Every manifest.yaml under app-catalog/agents, models, services,
+        plugins must load through the real AppRegistry loader without being
+        skipped. Guards against silent regressions such as a YAML numeric
+        version being parsed as float when the schema expects str."""
+        import pathlib
+        import tempfile
+
+        catalog_dir = pathlib.Path(__file__).resolve().parent.parent / "app-catalog"
+        reg = AppRegistry(
+            catalog_dir=catalog_dir,
+            installed_path=pathlib.Path(tempfile.mktemp()),
+        )
+        apps = reg.list_available()
+
+        expected_ids = []
+        for type_name in ("agents", "models", "services", "plugins"):
+            base = catalog_dir / type_name
+            if not base.exists():
+                continue
+            for app_dir in sorted(base.iterdir()):
+                if (app_dir / "manifest.yaml").exists():
+                    expected_ids.append(app_dir.name)
+
+        loaded_ids = {a.id for a in apps}
+        missing = sorted(set(expected_ids) - loaded_ids)
+        assert len(apps) == len(expected_ids), (
+            f"Catalog loaded {len(apps)} manifests but {len(expected_ids)} "
+            f"manifest.yaml files exist under app-catalog/. Missing ids: {missing}"
+        )

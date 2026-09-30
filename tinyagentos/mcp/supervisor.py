@@ -228,7 +228,7 @@ class MCPSupervisor:
             return cmd if isinstance(cmd, list) else [cmd]
         try:
             if self._catalog is not None:
-                manifest = self._catalog.get_manifest(server_id)
+                manifest = self._catalog.get(server_id)
                 if manifest:
                     lifecycle = getattr(manifest, "lifecycle", {})
                     start_cmd = lifecycle.get("start") or lifecycle.get("cmd")

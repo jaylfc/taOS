@@ -382,6 +382,40 @@ class TestAuthRequestRoutes:
             payload = auth[0]["data"]
             assert payload["project_id"] == "prj-btrdrl"
             assert payload["request_id"] == resp.json()["request_id"]
+            # New: check that duration fields are present (they may be None for unbounded grants)
+            assert "duration_secs" in payload
+            assert "human_duration" in payload
+            assert payload["human_duration"] == "no expiry"
+        finally:
+            if notif_store._db is not None:
+                await notif_store.close()
+
+    async def test_create_with_duration_carries_duration_in_notification(self, consent_client):
+        """The consent notification must include human-readable duration when duration_secs is set."""
+        notif_store = consent_client._transport.app.state.notifications
+        if notif_store._db is None:
+            await notif_store.init()
+        try:
+            transport = ASGITransport(app=consent_client._transport.app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as bare:
+                # Create an auth request with a 1-hour duration
+                resp = await bare.post(
+                    "/api/agents/auth-requests",
+                    json={**_CREATE_BODY, "duration_secs": 3600},  # 1 hour
+                )
+            assert resp.status_code == 200
+            items = await notif_store.list()
+            auth = [i for i in items if i.get("source") == "auth_requests"]
+            assert auth, "creating a request should raise an access-request notification"
+            payload = auth[0]["data"]
+            # Check that duration_secs is included in the payload
+            assert "duration_secs" in payload
+            assert payload["duration_secs"] == 3600
+            # Check that human_duration is included and human-readable
+            assert "human_duration" in payload
+            assert payload["human_duration"] == "expires 1 hour after approval"
         finally:
             if notif_store._db is not None:
                 await notif_store.close()

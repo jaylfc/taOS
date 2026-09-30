@@ -11,6 +11,11 @@ requires:
 install:
   method: script
   script: scripts/install-picoclaw.sh
+  security_notes: >
+    PicoClaw's custom_allow_patterns is NOT an allowlist.
+    The container or unit sandbox remains the security boundary.
+    Allowlists in patterns only limit named path globs inside the harness;
+    they do not replace the OS-level sandbox.
 hardware_tiers:
   arm-npu-16gb: full
   arm-cpu-8gb: full

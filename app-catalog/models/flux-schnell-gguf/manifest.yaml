@@ -1,7 +1,7 @@
 id: flux-schnell-gguf
 name: Flux.1 Schnell (GGUF)
 type: model
-version: 1.0
+version: "1.0"
 capabilities:
 - image-generation
 description: SOTA-quality images in 4 steps. Apache 2.0 licensed — the only high-end

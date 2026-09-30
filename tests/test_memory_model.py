@@ -104,7 +104,7 @@ class TestPutMemoryModel:
         called = {"set": False}
         monkeypatch.setattr(librarian_mod.taosmd, "set_memory_model",
                             lambda m, clear=False: called.__setitem__("set", True))
-        monkeypatch.setattr(app.state.auth, "session_user", lambda token: {"is_admin": False})
+        monkeypatch.setattr(app.state.auth, "session_user", lambda token, user_agent=None: {"is_admin": False})
 
         resp = await client.put("/api/memory/model", json={"model": "ollama:qwen3:4b"})
 

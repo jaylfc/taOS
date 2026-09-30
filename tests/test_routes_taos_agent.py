@@ -108,7 +108,7 @@ async def test_patch_settings_non_string_model_returns_422(client):
 @pytest.mark.asyncio
 async def test_config_returns_full_payload(client):
     """GET /config returns model, permitted_models, persona, key_masked,
-    framework, and system."""
+    framework (the effective harness), why it was chosen, and system."""
     await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
     resp = await client.get("/api/taos-agent/config")
     assert resp.status_code == 200
@@ -116,6 +116,7 @@ async def test_config_returns_full_payload(client):
     assert set(data.keys()) == {
         "model", "permitted_models", "persona",
         "key_masked", "framework", "system",
+        "framework_preference", "framework_reason", "device_class",
     }
     assert data["model"] == "gpt-4o"
     assert data["framework"] == "opencode"

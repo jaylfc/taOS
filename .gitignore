@@ -17,6 +17,7 @@ mac/launcher/.build/
 
 # User config — never commit (contains IPs, backend URLs, agent definitions)
 data/config.yaml
+data/demo_mode.json
 data/hardware.json
 data/installed.json
 data/.setup_complete

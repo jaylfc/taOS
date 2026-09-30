@@ -274,8 +274,9 @@ class AgentGrantsStore(BaseStore):
     async def list_active_grants(self) -> list[dict]:
         """Return all grants that are not yet expired.
 
-        Phase 1: no expiry is set (expires_at IS NULL), so every row is active.
-        Phase 2: add WHERE (expires_at IS NULL OR expires_at > now).
+        Grants without an expiry (expires_at IS NULL) are always active.
+        Grants with a future expiry (expires_at > now) are also active.
+        Expired grants (expires_at <= now) are excluded.
         """
         if self._db is None:
             raise RuntimeError("AgentGrantsStore not initialised")

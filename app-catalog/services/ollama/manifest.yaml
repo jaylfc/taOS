@@ -2,7 +2,7 @@ id: ollama
 name: Ollama
 type: service
 category: llm-runtime
-version: latest
+version: 0.6.0
 description: "Local LLM runner — serves GGUF models via OpenAI-compatible API. Cross-platform."
 homepage: https://github.com/ollama/ollama
 license: MIT

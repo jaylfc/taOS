@@ -66,6 +66,11 @@ def register_all_routers(app):
     from tinyagentos.routes.settings import router as settings_router
     app.include_router(settings_router, dependencies=_csrf)
 
+    # Settings -> Lock screen. NOT on the settings router: that one is admin-
+    # only, and every signed-in user owns their own unlock method.
+    from tinyagentos.routes.lock_settings import router as lock_settings_router
+    app.include_router(lock_settings_router, dependencies=_csrf)
+
     from tinyagentos.routes.share import router as share_router
     app.include_router(share_router, dependencies=_csrf)
 
@@ -170,6 +175,9 @@ def register_all_routers(app):
 
     from tinyagentos.routes.cluster_capability import router as cluster_capability_router
     app.include_router(cluster_capability_router, dependencies=_csrf)
+
+    from tinyagentos.routes.cluster_ble import router as cluster_ble_router
+    app.include_router(cluster_ble_router, dependencies=_csrf)
 
     from tinyagentos.routes.training import router as training_router
     app.include_router(training_router, dependencies=_csrf)
@@ -426,6 +434,13 @@ def register_all_routers(app):
 
     from tinyagentos.routes.agent_model_api import router as agent_model_api_router
     app.include_router(agent_model_api_router, dependencies=_csrf)
+
+    # In-process LLM gateway (/api/llm/v1), the LiteLLM replacement. On by
+    # default; TAOS_LLM_GATEWAY=0 leaves it unmounted, so off is a 404.
+    from tinyagentos import llm_gateway
+    if llm_gateway.enabled():
+        from tinyagentos.llm_gateway.router import mount as mount_llm_gateway
+        mount_llm_gateway(app, dependencies=_csrf)
 
     from tinyagentos.routes.agent_model_keys import router as agent_model_keys_router
     app.include_router(agent_model_keys_router, dependencies=_csrf)

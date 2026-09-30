@@ -80,16 +80,22 @@ def probe_frame_grid_readback(socket_path: str) -> str:
         spawned = conduit.spawn("sh", ["-c", "echo test"], cols=80, rows=24)
 
         try:
-            for frame in conduit.iter_frames(timeout=2.0):
-                lines = TuiuiConduit.frame_lines(frame)
-                transcript_lines.append(f"Result: Frame with text: {lines}")
-                count = ansi_count(frame.cells)
+            frames = list(conduit.iter_frames(timeout=2.0))
+            matched_frame = first_match(
+                frames,
+                lambda f: any("test" in l for l in TuiuiConduit.frame_lines(f))
+            )
+            if matched_frame is None:
+                transcript_lines.append("FAILED: no frame carried the command output")
+                failed = True
+            else:
+                transcript_lines.append(f"Result: Frame with text: {TuiuiConduit.frame_lines(matched_frame)}")
+                count = ansi_count(matched_frame.cells)
                 if count:
                     transcript_lines.append(f"FAILED: ANSI escape count: {count} (should be 0)")
                     failed = True
                 else:
                     transcript_lines.append(f"ANSI escape count: {count} (should be 0)")
-                break
         except TuiuiConduitError:
             transcript_lines.append("FAILED: timed out waiting for frame")
             failed = True

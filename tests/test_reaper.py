@@ -43,6 +43,31 @@ class _MockProc:
         self.wait_called = True
 
 
+class _FailingMockProc:
+    """Mock proc that raises on kill() or wait() to simulate failures."""
+    __slots__ = ("info", "kill_called", "wait_called", "_kill_raises", "_wait_raises")
+
+    def __init__(self, info: dict, *, kill_raises=None, wait_raises=None):
+        self.info = info
+        self.kill_called = False
+        self.wait_called = False
+        self._kill_raises = kill_raises
+        self._wait_raises = wait_raises
+
+    def ppid(self) -> int:
+        return self.info["ppid"]
+
+    def kill(self) -> None:
+        self.kill_called = True
+        if self._kill_raises:
+            raise self._kill_raises
+
+    def wait(self, timeout: int | None = None) -> None:
+        self.wait_called = True
+        if self._wait_raises:
+            raise self._wait_raises
+
+
 class _MockPI:
     """Mock psutil.process_iter that yields our controlled processes."""
     def __init__(self, processes: list[_MockProc]):
@@ -56,7 +81,7 @@ def _make_mock_process(create_time: float, cmdline_parts: list, ppid: int = None
     """Create a mock process info object."""
     import os
     pid = os.getpid() + hash(tuple(cmdline_parts)) % 10000 + 1000  # uniqueish
-    actual_ppid = ppid if ppid is not None else max(os.getppid(), 1)
+    actual_ppid = ppid if ppid is not None else 4242  # Fixed non-1 default to avoid container PID-1 false orphan
     info = {
         "pid": pid,
         "cmdline": cmdline_parts,
@@ -174,5 +199,90 @@ async def test_reap_hung_executor_sh_live_parent_gets_reaped(monkeypatch):
         assert "executor.sh" in reaped[0]["cmdline"]
         assert proc.kill_called
         assert proc.wait_called
+    finally:
+        monkeypatch.setattr(psutil, "process_iter", original_iter)
+
+
+@pytest.mark.asyncio
+async def test_create_time_none_skipped(monkeypatch):
+    """RED: a proc with create_time=None must NOT be killed."""
+    proc = _make_mock_process(
+        create_time=time.time() - 3600,
+        cmdline_parts=["executor.sh", "sleep", "3600"],
+    )
+    proc.info["create_time"] = None
+
+    original_iter = psutil.process_iter
+
+    def mock_iter(attrs=None):
+        return _MockPI([proc])
+
+    monkeypatch.setattr(psutil, "process_iter", mock_iter)
+
+    try:
+        reaped = reap_hung_executor_sh(cap_seconds=300)
+        assert len(reaped) == 0
+        assert not proc.kill_called
+        assert not proc.wait_called
+    finally:
+        monkeypatch.setattr(psutil, "process_iter", original_iter)
+
+
+@pytest.mark.asyncio
+async def test_wait_timeout_expired_not_reaped(monkeypatch):
+    """RED: a proc whose wait() raises TimeoutExpired must NOT appear in reaped list."""
+    base_info = _make_mock_process(
+        create_time=time.time() - 3600,
+        cmdline_parts=["executor.sh", "sleep", "3600"],
+    ).info
+    proc = _FailingMockProc(
+        info=base_info,
+        wait_raises=psutil.TimeoutExpired(base_info["pid"], 5),
+    )
+
+    original_iter = psutil.process_iter
+
+    def mock_iter(attrs=None):
+        return _MockPI([proc])
+
+    monkeypatch.setattr(psutil, "process_iter", mock_iter)
+
+    try:
+        reaped = reap_hung_executor_sh(cap_seconds=300)
+        assert len(reaped) == 0
+        assert proc.wait_called
+    finally:
+        monkeypatch.setattr(psutil, "process_iter", original_iter)
+
+
+@pytest.mark.asyncio
+async def test_kill_access_denied_skipped_without_aborting_scan(monkeypatch):
+    """RED: kill() raising AccessDenied must be skipped; later proc still reaped."""
+    failing_info = _make_mock_process(
+        create_time=time.time() - 3600,
+        cmdline_parts=["executor.sh", "sleep", "3600"],
+    ).info
+    failing_proc = _FailingMockProc(
+        info=failing_info,
+        kill_raises=psutil.AccessDenied(failing_info["pid"]),
+    )
+    good_proc = _make_mock_process(
+        create_time=time.time() - 3600,
+        cmdline_parts=["executor.sh", "sleep", "3600"],
+    )
+
+    original_iter = psutil.process_iter
+
+    def mock_iter(attrs=None):
+        return _MockPI([failing_proc, good_proc])
+
+    monkeypatch.setattr(psutil, "process_iter", mock_iter)
+
+    try:
+        reaped = reap_hung_executor_sh(cap_seconds=300)
+        assert len(reaped) == 1
+        assert reaped[0]["pid"] == good_proc.info["pid"]
+        assert good_proc.kill_called
+        assert good_proc.wait_called
     finally:
         monkeypatch.setattr(psutil, "process_iter", original_iter)

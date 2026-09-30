@@ -60,3 +60,16 @@ async def test_compatible_skills_for_framework(store):
     assert len(smol_skills) > 0
     for s in smol_skills:
         assert store.is_compatible(s, "smolagents") != "unsupported"
+
+
+@pytest.mark.asyncio
+async def test_seeded_skills_match_implementations(store):
+    from tinyagentos.routes.skill_exec import SKILL_IMPLEMENTATIONS
+
+    cursor = await store._db.execute(
+        "SELECT id FROM skills WHERE install_method = 'builtin'"
+    )
+    rows = await cursor.fetchall()
+    builtin_ids = {row[0] for row in rows}
+    impl_ids = set(SKILL_IMPLEMENTATIONS.keys())
+    assert builtin_ids == impl_ids

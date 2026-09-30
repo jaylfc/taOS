@@ -19,16 +19,17 @@ import re
 import time
 
 import httpx
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
 from tinyagentos.taosnet import mesh, mesh_credentials
 from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
 from tinyagentos.peer import resolve_local_identity_id
+from tinyagentos.auth_context import require_admin
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 # Per-host service tokens the join ready payload carries. They are persisted
 # server-side and stripped from the browser-facing poll body so a bearer

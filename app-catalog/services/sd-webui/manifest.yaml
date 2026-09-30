@@ -2,7 +2,7 @@ id: sd-webui
 name: Stable Diffusion WebUI (AUTOMATIC1111)
 type: service
 category: image-runtime
-version: latest
+version: 1.10.0
 description: "Full-featured SD WebUI — supports checkpoints, LoRA, ControlNet, upscalers."
 homepage: https://github.com/AUTOMATIC1111/stable-diffusion-webui
 license: AGPL-3.0

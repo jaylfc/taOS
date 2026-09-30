@@ -354,3 +354,117 @@ async def test_list_elements_without_filter_returns_all(store):
     )
     rows = await store.list_elements("p")
     assert len(rows) == 2
+
+
+# ---------------------------------------------------------------------------
+# Append-only tldraw_shape guard (Excalidraw migration C3). A user_shape row's
+# original tldraw_shape blob is the only lossless copy of the drawing, so no
+# payload update may drop or rewrite it, and deletes stay soft.
+# ---------------------------------------------------------------------------
+
+_LEGACY_TLDRAW_SHAPE = {
+    "type": "geo",
+    "id": "shape:abc123",
+    "x": 10, "y": 20, "rotation": 0,
+    "props": {"geo": "rectangle", "w": 120, "h": 80, "color": "blue", "fill": "solid",
+              "dash": "draw", "size": "m", "richText": {"type": "doc", "content": []}},
+    "meta": {},
+}
+
+
+async def _legacy_user_shape(store):
+    import copy
+    return await store.add_element(
+        project_id="prj-legacy",
+        element={"kind": "user_shape", "x": 10, "y": 20, "w": 120, "h": 80,
+                 "payload": {"tldraw_shape": copy.deepcopy(_LEGACY_TLDRAW_SHAPE)}},
+        author_kind="user", author_id="user-1",
+    )
+
+
+def _canon(v):
+    import json
+    return json.dumps(v, sort_keys=True, separators=(",", ":"))
+
+
+@pytest.mark.asyncio
+async def test_patch_user_shape_payload_preserves_tldraw_shape(store):
+    el = await _legacy_user_shape(store)
+    excal = {"type": "rectangle", "id": "ex-1", "x": 10, "y": 20, "width": 120, "height": 80}
+    await store.update_element(
+        project_id="prj-legacy", element_id=el["id"],
+        patch={"payload": {"excalidraw_element": excal}},
+        author_kind="user", author_id="user-1",
+    )
+    got = await store.get_element(el["id"], project_id="prj-legacy")
+    assert got["payload"]["excalidraw_element"] == excal
+    assert "tldraw_shape" in got["payload"], "PATCH silently dropped the tldraw_shape blob"
+    assert _canon(got["payload"]["tldraw_shape"]) == _canon(_LEGACY_TLDRAW_SHAPE)
+
+
+@pytest.mark.asyncio
+async def test_patch_cannot_overwrite_tldraw_shape(store):
+    el = await _legacy_user_shape(store)
+    forged = {"type": "draw", "id": "shape:other", "props": {"segments": []}}
+    await store.update_element(
+        project_id="prj-legacy", element_id=el["id"],
+        patch={"payload": {"tldraw_shape": forged, "excalidraw_element": {"type": "freedraw"}}},
+        author_kind="user", author_id="user-1",
+    )
+    got = await store.get_element(el["id"], project_id="prj-legacy")
+    assert _canon(got["payload"]["tldraw_shape"]) == _canon(_LEGACY_TLDRAW_SHAPE)
+    assert got["payload"]["excalidraw_element"] == {"type": "freedraw"}
+
+
+@pytest.mark.asyncio
+async def test_patch_note_payload_still_replaces(store):
+    # Control: the guard is scoped to user_shape rows; other kinds replace
+    # their payload wholesale exactly as before (a stray tldraw_shape key on a
+    # note is not protected).
+    el = await store.add_element(
+        project_id="prj-legacy",
+        element={"kind": "note", "x": 0, "y": 0, "w": 10, "h": 10,
+                 "payload": {"text": "old", "tldraw_shape": {"type": "note"}}},
+        author_kind="user", author_id="user-1",
+    )
+    await store.update_element(
+        project_id="prj-legacy", element_id=el["id"],
+        patch={"payload": {"text": "new"}},
+        author_kind="user", author_id="user-1",
+    )
+    got = await store.get_element(el["id"], project_id="prj-legacy")
+    assert got["payload"] == {"text": "new"}
+
+
+@pytest.mark.asyncio
+async def test_patch_user_shape_without_tldraw_shape_still_replaces(store):
+    # A user_shape that never carried a tldraw_shape blob has nothing to
+    # protect: its payload keeps the wholesale-replace behaviour.
+    el = await store.add_element(
+        project_id="prj-legacy",
+        element={"kind": "user_shape", "x": 0, "y": 0, "w": 10, "h": 10,
+                 "payload": {"shape": "rectangle"}},
+        author_kind="user", author_id="user-1",
+    )
+    await store.update_element(
+        project_id="prj-legacy", element_id=el["id"],
+        patch={"payload": {"excalidraw_element": {"type": "ellipse"}}},
+        author_kind="user", author_id="user-1",
+    )
+    got = await store.get_element(el["id"], project_id="prj-legacy")
+    assert got["payload"] == {"excalidraw_element": {"type": "ellipse"}}
+
+
+@pytest.mark.asyncio
+async def test_soft_deleted_legacy_row_keeps_payload(store):
+    el = await _legacy_user_shape(store)
+    await store.delete_element(
+        project_id="prj-legacy", element_id=el["id"],
+        author_kind="user", author_id="user-1",
+    )
+    listed = await store.list_elements("prj-legacy")
+    assert el["id"] not in [e["id"] for e in listed]
+    got = await store.get_element(el["id"], project_id="prj-legacy")
+    assert got is not None, "delete hard-purged a legacy row"
+    assert got["deleted_at"] is not None
+    assert _canon(got["payload"]["tldraw_shape"]) == _canon(_LEGACY_TLDRAW_SHAPE)

@@ -18,16 +18,16 @@ export function ThreadPanel({
   isFullscreen = false,
   liveReplies = [],
   authorCtx = { currentUserId: null, currentUserDisplayName: null },
+  onMarkSeen,
 }: {
   channelId: string;
   parentId: string;
   onClose: () => void;
   onSend: (content: string, attachments: AttachmentRecord[]) => Promise<void>;
   isFullscreen?: boolean;
-  /** Replies that arrived over the WS while the panel is open. Merged with the
-   *  initial fetch, de-duplicated by id. */
   liveReplies?: Msg[];
   authorCtx?: AuthorContext;
+  onMarkSeen?: (messageId: string) => void;
 }) {
   const [parent, setParent] = useState<Msg | null>(null);
   const [msgs, setMsgs] = useState<Msg[]>([]);
@@ -83,6 +83,17 @@ export function ThreadPanel({
       });
     return () => controller.abort();
   }, [channelId, parentId]);
+
+  /* ---- mark incoming messages as seen when thread opens ---- */
+  useEffect(() => {
+    if (!onMarkSeen) return;
+    const incoming = [parent, ...msgs].filter((m) => m && m.author_id !== authorCtx.currentUserId);
+    if (incoming.length > 0) {
+      incoming.forEach((m) => {
+        if (m) onMarkSeen(m.id);
+      });
+    }
+  }, [parent, msgs, authorCtx.currentUserId, onMarkSeen]);
 
   async function submit() {
     const content = input.trim();

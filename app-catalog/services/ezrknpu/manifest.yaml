@@ -2,7 +2,7 @@ id: ezrknpu
 name: EzRKNPU
 type: service
 category: llm-runtime
-version: latest
+version: 0.2.0
 description: "Easy inference on Rockchip NPU — lightweight wrapper for RKNN model deployment."
 homepage: https://github.com/leafqycc/rknn-llm
 license: MIT

@@ -557,7 +557,7 @@ async def test_list_workers_still_public(app, tmp_data_dir):
 async def test_pending_non_admin_gets_403(client, app, monkeypatch):
     """Authenticated but non-admin session: GET /api/cluster/pairing/pending -> 403."""
     await app.state.cluster_pairing.init()
-    monkeypatch.setattr(app.state.auth, "session_user", lambda token: {"is_admin": False})
+    monkeypatch.setattr(app.state.auth, "session_user", lambda token, user_agent=None: {"is_admin": False})
     resp = await client.get("/api/cluster/pairing/pending")
     assert resp.status_code == 403
     await app.state.cluster_pairing.close()
@@ -567,7 +567,7 @@ async def test_pending_non_admin_gets_403(client, app, monkeypatch):
 async def test_confirm_non_admin_gets_403(client, app, monkeypatch):
     """Authenticated but non-admin session: POST /api/cluster/pairing/confirm -> 403."""
     await app.state.cluster_pairing.init()
-    monkeypatch.setattr(app.state.auth, "session_user", lambda token: {"is_admin": False})
+    monkeypatch.setattr(app.state.auth, "session_user", lambda token, user_agent=None: {"is_admin": False})
     resp = await client.post("/api/cluster/pairing/confirm", json={"name": "w", "code": "c"})
     assert resp.status_code == 403
     await app.state.cluster_pairing.close()

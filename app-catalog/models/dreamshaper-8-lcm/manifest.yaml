@@ -1,7 +1,7 @@
 id: dreamshaper-8-lcm
 name: Dreamshaper 8 LCM
 type: model
-version: 8.0
+version: "8.0"
 capabilities:
 - image-generation
 description: Photorealistic and stylized images — LCM-distilled, 4-step generation.

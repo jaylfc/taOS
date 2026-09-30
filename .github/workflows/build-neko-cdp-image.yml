@@ -104,6 +104,7 @@ jobs:
           docker buildx imagetools create \
             -t ghcr.io/jaylfc/taos-neko-cdp:latest \
             -t ghcr.io/jaylfc/taos-neko-cdp:${{ github.sha }} \
+            -t ghcr.io/jaylfc/taos-neko-cdp:2.4.0 \
             $digests
 
       - name: Inspect final manifest

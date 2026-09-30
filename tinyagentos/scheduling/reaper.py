@@ -18,7 +18,9 @@ def reap_hung_executor_sh(cap_seconds: int) -> list[dict]:
         cmdline = proc.info.get("cmdline") or []
         if not any("executor.sh" in str(part) for part in cmdline):
             continue
-        create_time = proc.info.get("create_time") or 0
+        create_time = proc.info.get("create_time")
+        if create_time is None:
+            continue
         age = now - create_time
         if age <= cap_seconds:
             continue
@@ -31,8 +33,8 @@ def reap_hung_executor_sh(cap_seconds: int) -> list[dict]:
         try:
             proc.kill()
             proc.wait(timeout=5)
-        except (psutil.NoSuchProcess, psutil.TimeoutExpired):
-            pass
+        except (psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.AccessDenied):
+            continue
         reaped.append({
             "pid": proc.info.get("pid"),
             "age": age,

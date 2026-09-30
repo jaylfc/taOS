@@ -434,6 +434,11 @@ class TestClusterLeaseIntegration:
         assert resp.json()["lease_id"] is not None
         assert cluster.get_leases() == []
 
+    # The #2988 defect, verbatim: an admin's body `holder` read as its identity.
+    @pytest.mark.guards(
+        "tinyagentos.routes.a2a_gpu_lease:_resolve_actor",
+        replace=[('identity="@operator"', "identity=holder")],
+    )
     async def test_release_does_not_free_another_holders_lease(
         self, lease_client, bus, cluster
     ):
@@ -449,6 +454,27 @@ class TestClusterLeaseIntegration:
         assert resp.status_code == 200
         assert resp.json()["lease_id"] is None
         assert [lease.lease_id for lease in cluster.get_leases()] == [foreign.lease_id]
+        assert await cluster.release_lease(foreign.lease_id)
+
+        # The leases at risk are AGENT leases (`a2a:<canonical_id>`), and the
+        # admin's only lever on the node-scoped path is the body's `holder`.
+        # Without both, this test cannot see an admin reading `holder` as its
+        # identity (the #2988 defect: it passed with that defect in the code).
+        cid, token = await _agent_token(lease_client._app, scopes=("a2a_send",))
+        async with _bare(lease_client._app) as bare:
+            claimed = await bare.post(
+                "/api/a2a/gpu/claim",
+                json={"node": "linstation", "vram_mb": 4096},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert claimed.status_code == 200
+        (victim,) = cluster.get_leases()
+        assert victim.caller == f"a2a:{cid}"
+        for body in ({"node": "linstation"}, {"node": "linstation", "holder": cid}):
+            resp = await lease_client.post("/api/a2a/gpu/release", json=body)
+            assert resp.status_code == 200
+            assert resp.json()["lease_id"] is None, body
+            assert [lease.lease_id for lease in cluster.get_leases()] == [victim.lease_id]
 
     async def test_release_keeps_the_lease_when_the_bus_post_fails(
         self, lease_client, bus, cluster
@@ -790,6 +816,10 @@ class TestClusterLeaseIntegration:
         assert renewed.json()["expires_at"] == before
         assert cluster.get_leases()[0].expires_at == before
 
+    @pytest.mark.guards(
+        "tinyagentos.routes.a2a_gpu_lease:_resolve_actor",
+        replace=[('identity="@operator"', "identity=holder")],
+    )
     async def test_an_admin_cannot_take_ownership_of_an_agent_lease_by_holder(
         self, lease_client, bus, cluster
     ):

@@ -259,13 +259,37 @@ async def save_platform_settings(request: Request, body: PlatformUpdate):
 
 @router.get("/api/settings/llm-proxy")
 async def llm_proxy_status(request: Request):
-    """Return LLM proxy status for the settings page."""
+    """Return LLM proxy status for the settings page.
+
+    With the in-process gateway on (the default) the proxy agents use IS the
+    gateway: ``port`` is its agent listener (what each container's
+    ``127.0.0.1:4000`` forwards to) and ``running`` says the listener was seen
+    accepting connections. LiteLLM's own state is reported beside it while it
+    still runs (cutover stage 1).
+    """
+    from tinyagentos import llm_gateway
+    from tinyagentos.llm_gateway.cutover import llm_gateway_live_port
+
     proxy = request.app.state.llm_proxy
-    return {
+    state = request.app.state
+    litellm = {
         "running": proxy.is_running() if hasattr(proxy, "is_running") else False,
         "port": proxy.port if hasattr(proxy, "port") else 7834,
-        "backends": len(request.app.state.config.backends),
     }
+    backends = len(state.config.backends)
+    if llm_gateway.enabled():
+        port = getattr(state, "llm_gateway_agent_port", None)
+        if port is None:
+            port = llm_gateway.agent_port(state.config)
+        return {
+            "mode": "gateway",
+            "running": bool(llm_gateway_live_port(state)),
+            "port": port,
+            "url": "/api/llm/v1",
+            "backends": backends,
+            "litellm": litellm,
+        }
+    return {"mode": "litellm", **litellm, "backends": backends}
 
 
 @router.post("/api/settings/test-backend")
@@ -1396,6 +1420,36 @@ async def _probe_taosmd(request: Request, url: str) -> tuple[bool, str | None]:
 
 class MemoryUrlUpdate(BaseModel):
     url: str
+
+
+@router.get("/api/settings/demo-mode")
+async def get_demo_mode(request: Request):
+    """Whether the lock screen's scripted demo content is SHOWN.
+
+    ``available`` says whether any ``TAOS_LOCK_DEMO_*`` flag defines demo
+    content on this device at all; with none, the switch has nothing to show.
+    """
+    from tinyagentos.demo_mode import demo_flags_configured, read_demo_mode
+
+    return {
+        "enabled": read_demo_mode(request.app.state.data_dir),
+        "available": demo_flags_configured(),
+    }
+
+
+@router.put("/api/settings/demo-mode")
+async def put_demo_mode(request: Request):
+    """Flip the demo switch. Admin-only via this router's dependency."""
+    from tinyagentos.demo_mode import demo_flags_configured, write_demo_mode
+
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+        return JSONResponse({"error": "'enabled' must be true or false"}, status_code=400)
+    write_demo_mode(request.app.state.data_dir, body["enabled"])
+    return {"ok": True, "enabled": body["enabled"], "available": demo_flags_configured()}
 
 
 @router.get("/api/settings/memory-url")

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -19,6 +19,7 @@ from tinyagentos.store_popularity import (
     parse_repo,
     popularity_for_homepage_cached,
 )
+from tinyagentos.auth_context import require_admin
 
 
 def _popularity_by_app_id(apps) -> dict[str, dict]:
@@ -223,10 +224,11 @@ async def hardware_profile(request: Request):
     profile = request.app.state.hardware_profile
     data = asdict(profile)
     data["profile_id"] = profile.profile_id
+    data["recommended_framework"] = profile.recommended_framework
     return data
 
 
-@router.post("/api/hardware/detect")
+@router.post("/api/hardware/detect", dependencies=[Depends(require_admin)])
 async def redetect_hardware(request: Request):
     """Re-detect hardware profile and save updated results."""
     from tinyagentos.hardware import detect_hardware
@@ -235,10 +237,11 @@ async def redetect_hardware(request: Request):
     request.app.state.hardware_profile = profile
     data = asdict(profile)
     data["profile_id"] = profile.profile_id
+    data["recommended_framework"] = profile.recommended_framework
     return data
 
 
-@router.post("/api/store/sync")
+@router.post("/api/store/sync", dependencies=[Depends(require_admin)])
 async def sync_store(request: Request):
     """Sync the app catalog from the git repository."""
     from tinyagentos.catalog_sync import sync_catalog
@@ -249,7 +252,7 @@ async def sync_store(request: Request):
     return result
 
 
-@router.post("/api/store/install")
+@router.post("/api/store/install", dependencies=[Depends(require_admin)])
 async def install_app(request: Request, body: InstallRequest):
     """Install an app from the catalog."""
     registry = request.app.state.registry
@@ -286,7 +289,7 @@ async def install_app(request: Request, body: InstallRequest):
     return JSONResponse({"error": result.get("error", "Install failed")}, status_code=500)
 
 
-@router.post("/api/store/resolve")
+@router.post("/api/store/resolve", dependencies=[Depends(require_admin)])
 async def resolve_model(request: Request):
     """Wrapper around the resolver for the Store frontend.
 
@@ -332,7 +335,7 @@ async def resolve_model(request: Request):
     }
 
 
-@router.post("/api/store/uninstall")
+@router.post("/api/store/uninstall", dependencies=[Depends(require_admin)])
 async def uninstall_app(request: Request, body: UninstallRequest):
     """Uninstall an installed app.
 

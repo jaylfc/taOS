@@ -313,6 +313,75 @@ async def test_update_element_not_found_returns_404(client):
 
 
 # ---------------------------------------------------------------------------
+# Append-only tldraw_shape guard through PATCH (Excalidraw migration C3)
+# ---------------------------------------------------------------------------
+
+_ROUTE_TLDRAW_SHAPE = {
+    "type": "geo", "id": "shape:route1", "x": 5, "y": 6, "rotation": 0,
+    "props": {"geo": "ellipse", "w": 40, "h": 30, "color": "red"},
+}
+
+
+async def _create_legacy_shape(client, project_id="proj-1"):
+    body = {
+        "kind": "user_shape",
+        "x": 5, "y": 6, "w": 40, "h": 30,
+        "payload": {"tldraw_shape": _ROUTE_TLDRAW_SHAPE},
+    }
+    resp = await client.post(f"/api/projects/{project_id}/canvas/elements", json=body)
+    assert resp.status_code == 201, resp.text
+    return resp.json()["element"]
+
+
+@pytest.mark.asyncio
+async def test_patch_route_keeps_tldraw_shape_when_payload_omits_it(client):
+    el = await _create_legacy_shape(client)
+    resp = await client.patch(
+        f"/api/projects/proj-1/canvas/elements/{el['id']}",
+        json={"payload": {"excalidraw_element": {"type": "ellipse", "id": "ex"}}},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["element"]["payload"]["tldraw_shape"] == _ROUTE_TLDRAW_SHAPE
+    listed = (await client.get("/api/projects/proj-1/canvas/elements")).json()["elements"]
+    row = next(e for e in listed if e["id"] == el["id"])
+    assert row["payload"]["tldraw_shape"] == _ROUTE_TLDRAW_SHAPE
+    assert row["payload"]["excalidraw_element"] == {"type": "ellipse", "id": "ex"}
+
+
+@pytest.mark.asyncio
+async def test_patch_route_cannot_rewrite_tldraw_shape(client):
+    el = await _create_legacy_shape(client)
+    resp = await client.patch(
+        f"/api/projects/proj-1/canvas/elements/{el['id']}",
+        json={"payload": {"tldraw_shape": {"type": "text", "id": "shape:forged"}}},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["element"]["payload"]["tldraw_shape"] == _ROUTE_TLDRAW_SHAPE
+
+
+@pytest.mark.asyncio
+async def test_patch_route_size_cap_counts_carried_tldraw_shape(client):
+    # The carried-forward blob counts against the 64 KiB cap: a new payload
+    # that fits on its own but overflows once merged is refused with 413, and
+    # the stored row is untouched.
+    big_shape = {"type": "draw", "id": "shape:big", "props": {"blob": "a" * 40_000}}
+    resp = await client.post("/api/projects/proj-1/canvas/elements", json={
+        "kind": "user_shape", "x": 0, "y": 0, "w": 10, "h": 10,
+        "payload": {"tldraw_shape": big_shape},
+    })
+    assert resp.status_code == 201, resp.text
+    eid = resp.json()["element"]["id"]
+    resp = await client.patch(
+        f"/api/projects/proj-1/canvas/elements/{eid}",
+        json={"payload": {"excalidraw_element": {"type": "freedraw", "pad": "b" * 40_000}}},
+    )
+    assert resp.status_code == 413, resp.text[:200]
+    listed = (await client.get("/api/projects/proj-1/canvas/elements")).json()["elements"]
+    row = next(e for e in listed if e["id"] == eid)
+    assert row["payload"] == {"tldraw_shape": big_shape}
+
+
+# ---------------------------------------------------------------------------
 # Delete element
 # ---------------------------------------------------------------------------
 
@@ -338,6 +407,71 @@ async def test_delete_element_not_found_returns_204(client):
     """Delete of a nonexistent element returns 204 (soft-delete is idempotent)."""
     resp = await client.delete("/api/projects/proj-1/canvas/elements/nonexistent")
     assert resp.status_code == 204
+
+
+# ---------------------------------------------------------------------------
+# Raw JSON backup (include_deleted): manual recovery must never lose a row
+# ---------------------------------------------------------------------------
+
+
+_TLDRAW_BLOB = {
+    "tldraw_shape": {
+        "id": "shape:abc", "type": "draw", "typeName": "shape",
+        "props": {"segments": [{"type": "free", "points": [{"x": 0, "y": 0, "z": 0.5}]}],
+                  "color": "blue", "size": "m"},
+        "meta": {"nested": {"deep": [1, 2, {"k": None}]}},
+    },
+}
+
+
+async def _create_user_shape(client) -> dict:
+    body = {"kind": "user_shape", "x": 1, "y": 2, "w": 30, "h": 40, "payload": _TLDRAW_BLOB}
+    resp = await client.post("/api/projects/proj-1/canvas/elements", json=body)
+    assert resp.status_code == 201, resp.text
+    return resp.json()["element"]
+
+
+@pytest.mark.asyncio
+async def test_backup_listing_includes_soft_deleted_rows_flagged(client):
+    live = await _create_note(client)
+    gone = await _create_user_shape(client)
+    await client.delete(f"/api/projects/proj-1/canvas/elements/{gone['id']}")
+
+    resp = await client.get("/api/projects/proj-1/canvas/elements?include_deleted=true")
+    assert resp.status_code == 200, resp.text
+    by_id = {e["id"]: e for e in resp.json()["elements"]}
+    assert set(by_id) == {live["id"], gone["id"]}
+    assert by_id[live["id"]]["deleted"] is False
+    assert by_id[live["id"]]["deleted_at"] is None
+    assert by_id[gone["id"]]["deleted"] is True
+    assert by_id[gone["id"]]["deleted_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_backup_listing_keeps_tldraw_shape_payload_untouched(client):
+    gone = await _create_user_shape(client)
+    await client.delete(f"/api/projects/proj-1/canvas/elements/{gone['id']}")
+    data = (await client.get(
+        "/api/projects/proj-1/canvas/elements?include_deleted=true"
+    )).json()
+    (row,) = [e for e in data["elements"] if e["id"] == gone["id"]]
+    assert row["payload"] == _TLDRAW_BLOB
+
+
+@pytest.mark.asyncio
+async def test_backup_listing_is_an_attachment(client):
+    resp = await client.get("/api/projects/proj-1/canvas/elements?include_deleted=true")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.headers["content-disposition"] == 'attachment; filename="proj-1-canvas.json"'
+
+
+@pytest.mark.asyncio
+async def test_default_listing_still_hides_deleted_rows(client):
+    gone = await _create_note(client)
+    await client.delete(f"/api/projects/proj-1/canvas/elements/{gone['id']}")
+    data = (await client.get("/api/projects/proj-1/canvas/elements")).json()
+    assert gone["id"] not in [e["id"] for e in data["elements"]]
 
 
 # ---------------------------------------------------------------------------

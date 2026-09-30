@@ -1,7 +1,7 @@
 # TinyAgentOS Streaming App: Neko Browser
 # Based on m1k1o/neko — WebRTC browser streaming
-# Upstream image: ghcr.io/m1k1o/neko/firefox:latest
-FROM ghcr.io/m1k1o/neko/firefox:latest
+# Upstream image: ghcr.io/m1k1o/neko/firefox:2.4.0
+FROM ghcr.io/m1k1o/neko/firefox:2.4.0
 
 LABEL taos.app.id="neko-browser"
 LABEL taos.app.version="2.0.0"

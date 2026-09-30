@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { registerServiceWorker } from "../sw-register";
+import { registerServiceWorker, getServiceWorkerStatus } from "../sw-register";
 
 describe("registerServiceWorker", () => {
   let originalSW: any;
@@ -29,14 +29,50 @@ describe("registerServiceWorker", () => {
     expect(register).toHaveBeenCalledWith("/sw.js");
   });
 
-  it("swallows registration errors (logs only)", async () => {
-    const consoleErr = vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("never throws a registration failure into the boot path", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
     const register = vi.fn().mockRejectedValue(new Error("nope"));
     Object.defineProperty(navigator, "serviceWorker", {
       value: { register }, writable: true, configurable: true,
     });
     await expect(registerServiceWorker()).resolves.toBeUndefined();
+  });
+
+  it("makes a registration failure observable, not a console.warn", async () => {
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onFailed = vi.fn();
+    window.addEventListener("taos:sw-registration-failed", onFailed);
+    const register = vi.fn().mockRejectedValue(
+      new SyntaxError("Unexpected token '{'. import call expects one or two arguments."),
+    );
+    Object.defineProperty(navigator, "serviceWorker", {
+      value: { register }, writable: true, configurable: true,
+    });
+    try {
+      await registerServiceWorker();
+    } finally {
+      window.removeEventListener("taos:sw-registration-failed", onFailed);
+    }
     expect(consoleErr).toHaveBeenCalled();
+    expect(getServiceWorkerStatus()).toEqual({
+      state: "failed",
+      error: "SyntaxError: Unexpected token '{'. import call expects one or two arguments.",
+    });
+    expect(document.documentElement.dataset.taosSw).toBe("failed");
+    expect(onFailed).toHaveBeenCalledTimes(1);
+    expect((onFailed.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      error: "SyntaxError: Unexpected token '{'. import call expects one or two arguments.",
+    });
+  });
+
+  it("records a successful registration", async () => {
+    const register = vi.fn().mockResolvedValue({ scope: "/" });
+    Object.defineProperty(navigator, "serviceWorker", {
+      value: { register }, writable: true, configurable: true,
+    });
+    await registerServiceWorker();
+    expect(getServiceWorkerStatus()).toEqual({ state: "registered", error: null });
+    expect(document.documentElement.dataset.taosSw).toBe("registered");
   });
 
   it("proactively calls registration.update() to check for a new SW", async () => {

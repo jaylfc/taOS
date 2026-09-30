@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, JSONResponse
+
+from tinyagentos.auth_context import require_admin
 
 router = APIRouter()
 
@@ -20,7 +22,7 @@ async def get_settings(request: Request):
     return JSONResponse(settings)
 
 
-@router.put("/api/desktop/settings")
+@router.put("/api/desktop/settings", dependencies=[Depends(require_admin)])
 async def update_settings(request: Request):
     store = request.app.state.desktop_settings
     body = await request.json()
@@ -35,7 +37,7 @@ async def get_dock(request: Request):
     return JSONResponse(dock)
 
 
-@router.put("/api/desktop/dock")
+@router.put("/api/desktop/dock", dependencies=[Depends(require_admin)])
 async def update_dock(request: Request):
     store = request.app.state.desktop_settings
     body = await request.json()
@@ -50,7 +52,7 @@ async def get_windows(request: Request):
     return JSONResponse(windows)
 
 
-@router.put("/api/desktop/windows")
+@router.put("/api/desktop/windows", dependencies=[Depends(require_admin)])
 async def save_windows(request: Request):
     store = request.app.state.desktop_settings
     body = await request.json()
@@ -65,7 +67,7 @@ async def get_widgets(request: Request):
     return JSONResponse(widgets)
 
 
-@router.put("/api/desktop/widgets")
+@router.put("/api/desktop/widgets", dependencies=[Depends(require_admin)])
 async def save_widgets(request: Request):
     store = request.app.state.desktop_settings
     body = await request.json()
@@ -89,7 +91,7 @@ async def get_preference(request: Request, namespace: str):
     return JSONResponse(data)
 
 
-@router.put("/api/preferences/{namespace}")
+@router.put("/api/preferences/{namespace}", dependencies=[Depends(require_admin)])
 async def save_preference(request: Request, namespace: str):
     store = request.app.state.desktop_settings
     body = await request.json()
@@ -133,7 +135,7 @@ async def serve_app_pwa():
     return JSONResponse({"error": "App PWA shell not built"}, status_code=404)
 
 
-@router.post("/api/desktop/browser/agent-command")
+@router.post("/api/desktop/browser/agent-command", dependencies=[Depends(require_admin)])
 async def browser_agent_command(request: Request):
     """Execute a natural language command on the current page using browser-use."""
     body = await request.json()

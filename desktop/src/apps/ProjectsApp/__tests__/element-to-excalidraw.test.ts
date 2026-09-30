@@ -87,8 +87,78 @@ describe("elementToSkeleton", () => {
   });
 
   it("maps an unknown kind to a generic rectangle", () => {
-    const s = elementToSkeleton(el({ kind: "user_shape" as CanvasElement["kind"] }));
+    const s = elementToSkeleton(el({ kind: "bogus_kind" as CanvasElement["kind"] }));
     expect(s.type).toBe("rectangle");
+  });
+
+  it("passes a user_shape's excalidraw_element through untouched (new rows drawn in Excalidraw)", () => {
+    const native = {
+      id: "el1",
+      type: "ellipse",
+      x: 1,
+      y: 2,
+      width: 30,
+      height: 40,
+      angle: 0.25,
+      strokeColor: "#123456",
+      customData: { taos_id: "el1" },
+    };
+    const s = elementToSkeleton(el({ kind: "user_shape", payload: { excalidraw_element: native } }));
+    expect(s).toMatchObject({ type: "ellipse", x: 1, y: 2, width: 30, height: 40, angle: 0.25, strokeColor: "#123456" });
+    expect(s.customData).toMatchObject({ taos_id: "el1", taos_kind: "user_shape" });
+  });
+
+  it("converts a legacy user_shape (tldraw_shape only) through the tldraw converter", () => {
+    const s = elementToSkeleton(
+      el({
+        kind: "user_shape",
+        x: 300,
+        y: 400,
+        w: 250,
+        h: 80,
+        payload: {
+          tldraw_shape: {
+            type: "geo",
+            x: 10,
+            y: 20,
+            props: { geo: "ellipse", w: 100, h: 100, color: "blue", fill: "none", dash: "draw", size: "m" },
+          },
+        },
+      }),
+    );
+    expect(s).toMatchObject({ type: "ellipse", x: 300, y: 400, width: 250, height: 80, strokeColor: "#4465e9" });
+  });
+
+  it("prefers excalidraw_element over tldraw_shape when a legacy row has been edited in Excalidraw", () => {
+    const s = elementToSkeleton(
+      el({
+        kind: "user_shape",
+        payload: {
+          tldraw_shape: { type: "geo", props: { geo: "rectangle" } },
+          excalidraw_element: { id: "el1", type: "diamond", x: 0, y: 0, width: 9, height: 9 },
+        },
+      }),
+    );
+    expect(s.type).toBe("diamond");
+  });
+
+  it("turns a user_shape with neither blob into a visible placeholder carrying the row id", () => {
+    const s = elementToSkeleton(el({ id: "u9", kind: "user_shape", payload: {} }));
+    expect(s.type).toBe("rectangle");
+    expect(s.customData).toMatchObject({ taos_placeholder: true, taos_original_element_id: "u9", taos_id: "u9" });
+  });
+
+  it("stamps customData {taos_id, taos_kind, taos_author_id, taos_author_kind} on every skeleton", () => {
+    const kinds: CanvasElement["kind"][] = ["note", "link", "image", "text", "mermaid", "flowchart", "mindmap_edge", "user_shape"];
+    for (const kind of kinds) {
+      const s = elementToSkeleton(el({ id: `id-${kind}`, kind, author_id: "agent-7", author_kind: "agent" }));
+      expect(s.customData, kind).toMatchObject({
+        taos_id: `id-${kind}`,
+        taos_kind: kind,
+        taos_author_id: "agent-7",
+        taos_author_kind: "agent",
+      });
+    }
   });
 
   it("coerces malformed geometry to defaults instead of crashing", () => {

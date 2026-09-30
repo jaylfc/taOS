@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-router = APIRouter()
+from tinyagentos.auth_context import require_admin
+
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 @router.post("/api/chat/channels")

@@ -51,7 +51,9 @@ export function WindowChooser({
   function handleNewWindow() {
     const browserApp = getApp("browser");
     if (!browserApp) return;
-    const newId = openWindow("browser", browserApp.defaultSize);
+    // IN-PAGE, never the handset shell: onSelect needs the new window's id,
+    // and a shell launch returns "" (it opens a separate compositor window).
+    const newId = openWindow("browser", browserApp.defaultSize, undefined, { inPage: true });
     queueMicrotask(() => onSelect(newId));
     onClose();
   }

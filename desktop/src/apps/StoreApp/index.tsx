@@ -340,9 +340,7 @@ function formatStars(n: number): string {
    AppCard -- used in grid views (non-discover sections)
    ------------------------------------------------------------------ */
 
-function AppCard({
-  app, affected, onInstall, onUninstall, installTargets, runtimeHost, defaultTargetRemote, resolveResponse,
-}: {
+function AppCard(props: {
   app: CatalogApp;
   affected: number;
   onInstall: (id: string) => void;
@@ -351,7 +349,9 @@ function AppCard({
   runtimeHost: string | null;
   defaultTargetRemote?: string;
   resolveResponse?: ResolveResponse;
+  recommendedFramework?: string;
 }) {
+  const { app, affected, onInstall, onUninstall, installTargets, runtimeHost, defaultTargetRemote, resolveResponse, recommendedFramework } = props;
   const [busy, setBusy] = useState(false);
   const [selectedTarget, setSelectedTarget] = useState<string>(defaultTargetRemote ?? "local");
   const [selectedVariant, setSelectedVariant] = useState<string>("auto");
@@ -512,6 +512,11 @@ function AppCard({
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <span className="text-[13px] font-semibold text-shell-text truncate leading-snug">{app.name}</span>
+              {recommendedFramework === app.id && (
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/20 text-emerald-400 leading-none shrink-0">
+                  Recommended for this device
+                </span>
+              )}
               {app.installed && <Check className="w-3 h-3 text-emerald-400 shrink-0" />}
               {affected > 0 && <span className="bg-yellow-700/30 text-yellow-200 text-[10px] px-1.5 py-0.5 rounded shrink-0">Update</span>}
             </div>
@@ -687,7 +692,9 @@ function RichCard({
         <div className="flex items-center gap-2.5">
           <AppIcon app={app} size={40} />
           <div>
-            <div className="text-[14px] font-semibold text-shell-text leading-snug">{app.name}</div>
+            <div className="flex items-center gap-2">
+              <div className="text-[14px] font-semibold text-shell-text leading-snug">{app.name}</div>
+            </div>
             <div className="text-[11.5px] text-shell-text-tertiary">{app.tagline ?? (app.category || app.type)}</div>
           </div>
         </div>
@@ -988,6 +995,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   const [selectedBackends, setSelectedBackends] = useState<string[]>([]);
   const [compatMap, setCompatMap] = useState<Map<string, ResolveResponse>>(new Map());
   const [optionalCatalog, setOptionalCatalog] = useState<Array<{ id: string; version: string; installed: boolean; update_available: boolean }>>([]);
+  const [recommendedFramework, setRecommendedFramework] = useState<string>("");
 
   const userId = typeof window !== "undefined" ? window.localStorage.getItem("taos.user.id") || "anon" : "anon";
   const profileId = typeof window !== "undefined" ? window.localStorage.getItem("taos.profile.id") || "default" : "default";
@@ -1052,6 +1060,21 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
     })();
     return () => { cancelled = true; };
   }, [fetchCatalog]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/hardware", { headers: { Accept: "application/json" } });
+        const ct = res.headers.get("content-type") ?? "";
+        if (res.ok && ct.includes("application/json")) {
+          const data = await res.json();
+          if (!cancelled) setRecommendedFramework(String(data.recommended_framework ?? ""));
+        }
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const modelIds = apps.filter((a) => a.type === "model").map((a) => a.id);
@@ -1366,6 +1389,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
                         runtimeHost={runtimeHosts[app.id] ?? null}
                         defaultTargetRemote={selectedDevices.length === 1 ? selectedDevices[0] : undefined}
                         resolveResponse={compatMap.get(app.id)}
+                        recommendedFramework={recommendedFramework}
                       />
                     );
                   })}
@@ -1385,6 +1409,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
                         runtimeHost={runtimeHosts[app.id] ?? null}
                         defaultTargetRemote={selectedDevices.length === 1 ? selectedDevices[0] : undefined}
                         resolveResponse={compatMap.get(app.id)}
+                        recommendedFramework={recommendedFramework}
                       />
                     ))}
                   </div>

@@ -325,6 +325,176 @@ class TestLinkwardenSecretSubstitution:
         assert secret_a == secret_a_again
 
 
+class TestLinkwardenCompose:
+    @pytest.mark.asyncio
+    async def test_generate_compose_linkwarden_has_postgres_companion(self, tmp_path):
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, host_port = installer._generate_compose(
+            "linkwarden",
+            {
+                "image": "ghcr.io/linkwarden/linkwarden:latest",
+                "volumes": ["data:/data/data"],
+                "ports": [3000],
+                "env": {
+                    "NEXTAUTH_SECRET": "changeme",
+                    "NEXTAUTH_URL": "http://localhost:3000",
+                    "DATABASE_URL": "postgresql://linkwarden:{secret_key}@postgres:5432/linkwarden",
+                },
+                "companions": [
+                    {
+                        "name": "postgres",
+                        "image": "postgres:16-alpine",
+                        "volumes": ["pgdata:/var/lib/postgresql/data"],
+                        "env": {
+                            "POSTGRES_PASSWORD": "{secret_key}",
+                            "POSTGRES_USER": "linkwarden",
+                            "POSTGRES_DB": "linkwarden",
+                        },
+                    }
+                ],
+            },
+        )
+        # Compose must have both linkwarden and postgres services
+        assert "linkwarden" in compose["services"]
+        assert "postgres" in compose["services"]
+        # postgres service must use the alpine image
+        pg_service = compose["services"]["postgres"]
+        assert pg_service["image"] == "postgres:16-alpine"
+        # postgres must have a named volume
+        assert "volumes" in pg_service
+        pg_volumes = pg_service["volumes"]
+        assert any(
+            v.startswith("pgdata:") or (":" in v and v.split(":")[0] == "pgdata")
+            for v in pg_volumes
+        )
+        # linkwarden must have DATABASE_URL pointing at the postgres service
+        lw_env = compose["services"]["linkwarden"]["environment"]
+        docker_url = lw_env["DATABASE_URL"]
+        assert "postgres" in docker_url
+        assert "localhost" not in docker_url
+        # The host in DATABASE_URL must resolve to the postgres service name
+        # Format: postgresql://[user[:password]@][host][:port][/dbname]
+        # e.g. postgresql://linkwarden:{password}@postgres:5432/linkwarden
+        assert docker_url.startswith("postgresql://linkwarden:")
+        # Extract host (between @ and :port or /dbname)
+        after_at = docker_url.split("@")[1]  # e.g. "postgres:5432/linkwarden"
+        host_with_port = after_at.split("/")[0]  # e.g. "postgres:5432"
+        host_part = host_with_port.split(":")[0]  # e.g. "postgres"
+        assert host_part == "postgres", f"Expected host 'postgres', got '{host_part}'"
+        # Host port must be in the managed pool, not 3000
+        assert host_port is not None
+        assert _POOL_START <= host_port < _POOL_END
+        assert host_port not in RESERVED_PORTS
+
+    @pytest.mark.asyncio
+    async def test_generate_compose_linkwarden_secret_key_persisted(self, tmp_path):
+        """Verify {secret_key} is replaced with a persisted 64-hex-char secret."""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        # Verify {secret_key} is replaced with a persisted 64-hex-char secret.
+        installer = DockerInstaller(apps_dir=tmp_path)
+        # First install - should generate a secret
+        compose1, _ = installer._generate_compose(
+            "linkwarden",
+            {
+                "image": "ghcr.io/linkwarden/linkwarden:latest",
+                "volumes": ["data:/data/data"],
+                "ports": [3000],
+                "env": {
+                    "NEXTAUTH_SECRET": "changeme",
+                    "NEXTAUTH_URL": "http://localhost:3000",
+                    "DATABASE_URL": "postgresql://linkwarden:{secret_key}@postgres:5432/linkwarden",
+                },
+                "companions": [
+                    {
+                        "name": "postgres",
+                        "image": "postgres:16-alpine",
+                        "volumes": ["pgdata:/var/lib/postgresql/data"],
+                        "env": {
+                            "POSTGRES_PASSWORD": "{secret_key}",
+                            "POSTGRES_USER": "linkwarden",
+                            "POSTGRES_DB": "linkwarden",
+                        },
+                    }
+                ],
+            },
+        )
+        # Verify {secret_key} was replaced
+        for env_key, env_val in compose1["services"]["linkwarden"]["environment"].items():
+            assert "{secret_key}" not in str(env_val)
+        # Check DATABASE_URL host resolves to postgres
+        db_url = compose1["services"]["linkwarden"]["environment"]["DATABASE_URL"]
+        assert "postgres" in db_url
+        assert "localhost" not in db_url
+        after_at = db_url.split("@")[1]
+        host_with_port = after_at.split("/")[0]
+        host_part = host_with_port.split(":")[0]
+        assert host_part == "postgres", f"Expected host 'postgres', got '{host_part}'"
+
+        # Second install with same app_dir - should reuse the same secret
+        compose2, _ = installer._generate_compose(
+            "linkwarden",
+            {
+                "image": "ghcr.io/linkwarden/linkwarden:latest",
+                "volumes": ["data:/data/data"],
+                "ports": [3000],
+                "env": {
+                    "NEXTAUTH_SECRET": "changeme",
+                    "NEXTAUTH_URL": "http://localhost:3000",
+                    "DATABASE_URL": "postgresql://linkwarden:{secret_key}@postgres:5432/linkwarden",
+                },
+                "companions": [
+                    {
+                        "name": "postgres",
+                        "image": "postgres:16-alpine",
+                        "volumes": ["pgdata:/var/lib/postgresql/data"],
+                        "env": {
+                            "POSTGRES_PASSWORD": "{secret_key}",
+                            "POSTGRES_USER": "linkwarden",
+                            "POSTGRES_DB": "linkwarden",
+                        },
+                    }
+                ],
+            },
+        )
+        # Same secret should be reused
+        for env_key, env_val in compose2["services"]["linkwarden"]["environment"].items():
+            assert "{secret_key}" not in str(env_val)
+        # The secret values should match across installs
+        db_url_1 = compose1["services"]["linkwarden"]["environment"]["DATABASE_URL"]
+        db_url_2 = compose2["services"]["linkwarden"]["environment"]["DATABASE_URL"]
+        assert db_url_1 == db_url_2
+
+    @pytest.mark.asyncio
+    async def test_generate_compose_linkwarden_no_companions(self, tmp_path):
+        """Verify linkwarden without companions still works (single-service compose)."""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, host_port = installer._generate_compose(
+            "linkwarden",
+            {
+                "image": "ghcr.io/linkwarden/linkwarden:latest",
+                "volumes": ["data:/data/data"],
+                "ports": [3000],
+                "env": {
+                    "NEXTAUTH_SECRET": "changeme",
+                    "NEXTAUTH_URL": "http://localhost:3000",
+                    # No companions - DATABASE_URL would point at localhost which is fine
+                    # for a single-service setup, but the app wouldn't have a real DB
+                    "DATABASE_URL": "postgresql://postgres:postgres@localhost:5432/linkwarden",
+                },
+                # No 'companions' key
+            },
+        )
+        # Should still produce a single-service compose
+        assert "linkwarden" in compose["services"]
+        assert "postgres" not in compose["services"]
+        assert host_port is not None
+        assert _POOL_START <= host_port < _POOL_END
+        # DATABASE_URL should still point at localhost since there's no companion
+        lw_env = compose["services"]["linkwarden"]["environment"]
+        docker_url = lw_env["DATABASE_URL"]
+        assert "localhost" in docker_url
+
+
 class TestCatalogManifestAudit:
     """tsk-teaogm: catalog manifests must not ship literal secrets.
 
@@ -333,31 +503,69 @@ class TestCatalogManifestAudit:
     the shipped default ``"changeme"``.
     """
 
-    def test_no_hardcoded_secrets_in_manifests(self):
-        manifest_paths = sorted((_CATALOG_ROOT / "services").rglob("manifest.yaml"))
-        assert manifest_paths, "no service manifests found under app-catalog/services"
-
-        failures: list[str] = []
+    def _audit_manifest(self, data, rel="tmp/manifest.yaml"):
+        failures = []
         secret_suffixes = ("_SECRET", "_KEY")
-        for mp in manifest_paths:
-            data = yaml.safe_load(mp.read_text())
-            if not isinstance(data, dict):
-                continue
-            env = (data.get("install") or {}).get("env") or {}
+
+        def _check_env(env, prefix):
             if not isinstance(env, dict):
-                continue
-            rel = mp.relative_to(_CATALOG_ROOT)
+                return
             for key, val in env.items():
                 if not isinstance(val, str):
                     continue
                 if val == "changeme":
-                    failures.append(f"{rel}: {key} == 'changeme'")
+                    failures.append(f"{rel}: {prefix}{key} == 'changeme'")
                 if key.endswith(secret_suffixes) and "{secret_key}" not in val:
                     failures.append(
-                        f"{rel}: {key} is a literal secret (no {{secret_key}} placeholder)"
+                        f"{rel}: {prefix}{key} is a literal secret (no {{secret_key}} placeholder)"
                     )
 
+        env = (data.get("install") or {}).get("env") or {}
+        _check_env(env, "")
+        for companion in (data.get("install") or {}).get("companions") or []:
+            if not isinstance(companion, dict):
+                continue
+            c_name = companion.get("name", "unnamed")
+            c_env = companion.get("env")
+            _check_env(c_env, f"companions[{c_name}].")
+        return failures
+
+    def test_no_hardcoded_secrets_in_manifests(self):
+        manifest_paths = sorted((_CATALOG_ROOT / "services").rglob("manifest.yaml"))
+        assert manifest_paths, "no service manifests found under app-catalog/services"
+
+        failures = []
+        for mp in manifest_paths:
+            data = yaml.safe_load(mp.read_text())
+            if not isinstance(data, dict):
+                continue
+            rel = mp.relative_to(_CATALOG_ROOT)
+            failures.extend(self._audit_manifest(data, rel=str(rel) + ": "))
+
         assert not failures, "; ".join(failures)
+
+    def test_companion_literal_secret_is_rejected(self):
+        manifest = {
+            "install": {
+                "method": "docker",
+                "image": "test:latest",
+                "env": {
+                    "SAFE_VAR": "ok",
+                },
+                "companions": [
+                    {
+                        "name": "postgres",
+                        "image": "postgres:16",
+                        "env": {
+                            "POSTGRES_SECRET": "hunter2",
+                        },
+                    }
+                ],
+            }
+        }
+        failures = self._audit_manifest(manifest)
+        assert failures, "expected failures for literal companion secret, got none"
+        assert any("companions[postgres].POSTGRES_SECRET" in f for f in failures)
 
 
 class TestDownloadInstaller:

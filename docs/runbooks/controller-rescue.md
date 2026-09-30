@@ -56,6 +56,7 @@ sudo systemctl start tinyagentos
 | Component | What it is | Restart |
 |---|---|---|
 | Controller | `tinyagentos.service`, the main app on :6969 (+ browser proxy on :6970) | `sudo systemctl restart tinyagentos` |
+| LLM gateway | in the controller: `/api/llm/v1`, plus the agent listener on `127.0.0.1:7838` that each agent's `127.0.0.1:4000` proxy device forwards to. On by default; `TAOS_LLM_GATEWAY=0` in the unit's environment turns it off and the next start points agents back at LiteLLM | restart the controller |
 | LiteLLM | model router on `127.0.0.1:7834` (legacy installs may use 4000), child process of the controller, config under `/tmp/taos-litellm/` | restart the controller (it respawns LiteLLM) |
 | qmd | shared embed/rerank provider, `qmd.service` on :7832 | `sudo systemctl restart qmd` |
 | Agent containers | one LXC per agent, named `taos-agent-<name>` | `incus restart taos-agent-<name>` (or start/stop) |
@@ -75,7 +76,7 @@ Notes:
 
 ```bash
 # What is listening where
-ss -tlnp | grep -E "6969|6970|7834|7832"
+ss -tlnp | grep -E "6969|6970|7834|7838|7832"
 
 # Is the process hung rather than dead? Dump live Python stacks
 sudo /opt/tinyagentos/.venv/bin/pip install py-spy   # once

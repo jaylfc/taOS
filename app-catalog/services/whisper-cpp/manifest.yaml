@@ -2,7 +2,7 @@ id: whisper-cpp
 name: whisper.cpp
 type: service
 category: asr-runtime
-version: latest
+version: 1.7.0
 description: "C++ inference engine for OpenAI Whisper — fast speech-to-text on CPU and GPU."
 homepage: https://github.com/ggerganov/whisper.cpp
 license: MIT

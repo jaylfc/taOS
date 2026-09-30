@@ -93,7 +93,7 @@ Result: 1 apps
   App 1: cmd=sh, pid=12345, alive=True
 
 === Test 4: Send Input ===
-Result: Input sent successfully
+Result: Input echoed in frame
 ```
 
 ## Example Output (No Apphost)

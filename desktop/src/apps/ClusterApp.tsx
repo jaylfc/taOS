@@ -3,17 +3,19 @@ import { MobileSplitView } from "@/components/mobile/MobileSplitView";
 import {
   Network, RefreshCw, ExternalLink, Copy, Check, Trash2, Wand2,
   Cpu, MemoryStick, HardDrive, CircuitBoard, Zap, Server, Monitor,
-  X, Plus, Shield, ShieldOff, LogOut,
+  X, Plus, Shield, ShieldOff, LogOut, Bluetooth, Loader2,
+  SignalHigh, SignalMedium, SignalLow, SignalZero,
 } from "lucide-react";
-import { Button, Card, CardContent } from "@/components/ui";
+import { Button, Card, CardContent, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import type { ClusterWorker, ClusterDevice, WorkerStatus } from "@/lib/cluster";
+import type { ClusterWorker, ClusterDevice, WorkerStatus, BleScanDevice } from "@/lib/cluster";
 import {
   workerStatus,
   workerHardwareSummary,
   workerShortIp,
   formatRelativeSeconds,
   normalizeBackendName,
+  bleSignalLevel,
   STATUS_PILL_CLASS,
   STATUS_LABEL,
 } from "@/lib/cluster";
@@ -41,6 +43,28 @@ function StatusPill({ status }: { status: WorkerStatus }) {
   );
 }
 
+/** Small badge marking a node that was paired over Bluetooth and never runs jobs. */
+function DeviceBadge() {
+  return (
+    <span
+      className="text-[10px] px-1.5 py-0.5 rounded-full bg-white/[0.05] border border-white/10 text-shell-text-tertiary font-semibold"
+      aria-label="Device"
+      title="Paired device -- does not run jobs"
+    >
+      Device
+    </span>
+  );
+}
+
+function BleSignalIcon({ rssi }: { rssi?: number }) {
+  const level = bleSignalLevel(rssi);
+  const label = `Signal: ${level}`;
+  if (level === "strong") return <SignalHigh size={12} className="text-emerald-300" aria-label={label} />;
+  if (level === "medium") return <SignalMedium size={12} className="text-amber-300" aria-label={label} />;
+  if (level === "weak") return <SignalLow size={12} className="text-red-300" aria-label={label} />;
+  return <SignalZero size={12} className="text-shell-text-tertiary" aria-label={label} />;
+}
+
 function WorkerListCard({
   worker,
   selected,
@@ -51,6 +75,7 @@ function WorkerListCard({
   onSelect: () => void;
 }) {
   const status = workerStatus(worker);
+  const isDevice = worker.kind === "device";
   const backends = worker.backends ?? [];
   const capabilities = worker.capabilities ?? [];
   const activeSet = new Set(capabilities);
@@ -78,52 +103,59 @@ function WorkerListCard({
             {"\u00b7"} {workerShortIp(worker)}
           </span>
         </div>
-        <StatusPill status={status} />
+        <div className="flex items-center gap-1 shrink-0">
+          {isDevice && <DeviceBadge />}
+          <StatusPill status={status} />
+        </div>
       </div>
-      <div className="text-[10px] text-shell-text-tertiary truncate">
-        {workerHardwareSummary(worker)}
-      </div>
-      <div className="mt-1.5 flex flex-wrap gap-1">
-        {backends.length === 0 ? (
-          <span className="text-[9px] text-shell-text-tertiary italic">No backends loaded</span>
-        ) : (
-          backends.slice(0, 4).map((b, i) => (
-            <span
-              key={`${worker.name}-lb-${i}`}
-              className="text-[9px] px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-200 font-medium"
-            >
-              {normalizeBackendName(b.name ?? b.type ?? "backend")}
-            </span>
-          ))
-        )}
-        {capabilities.slice(0, 4).map((c) => (
-          <span
-            key={`${worker.name}-lc-${c}`}
-            className="text-[9px] px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-200 font-medium"
-            aria-label={`Current capability: ${c}`}
-          >
-            {c}
-          </span>
-        ))}
-        {latentCaps.slice(0, 3).map((c) => (
-          <span
-            key={`${worker.name}-lp-${c}`}
-            className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/[0.03] border border-white/10 text-shell-text-tertiary font-medium"
-            aria-label={`Potential capability: ${c}`}
-            title="Hardware can support this — install a model with this capability to enable it"
-          >
-            {c}
-          </span>
-        ))}
-        {latentCaps.length > 3 && (
-          <span
-            className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/[0.03] border border-white/10 text-shell-text-tertiary font-medium"
-            aria-label={`${latentCaps.length - 3} more potential capabilities`}
-          >
-            +{latentCaps.length - 3} more
-          </span>
-        )}
-      </div>
+      {isDevice ? null : (
+        <>
+          <div className="text-[10px] text-shell-text-tertiary truncate">
+            {workerHardwareSummary(worker)}
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {backends.length === 0 ? (
+              <span className="text-[9px] text-shell-text-tertiary italic">No backends loaded</span>
+            ) : (
+              backends.slice(0, 4).map((b, i) => (
+                <span
+                  key={`${worker.name}-lb-${i}`}
+                  className="text-[9px] px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-200 font-medium"
+                >
+                  {normalizeBackendName(b.name ?? b.type ?? "backend")}
+                </span>
+              ))
+            )}
+            {capabilities.slice(0, 4).map((c) => (
+              <span
+                key={`${worker.name}-lc-${c}`}
+                className="text-[9px] px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-200 font-medium"
+                aria-label={`Current capability: ${c}`}
+              >
+                {c}
+              </span>
+            ))}
+            {latentCaps.slice(0, 3).map((c) => (
+              <span
+                key={`${worker.name}-lp-${c}`}
+                className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/[0.03] border border-white/10 text-shell-text-tertiary font-medium"
+                aria-label={`Potential capability: ${c}`}
+                title="Hardware can support this — install a model with this capability to enable it"
+              >
+                {c}
+              </span>
+            ))}
+            {latentCaps.length > 3 && (
+              <span
+                className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/[0.03] border border-white/10 text-shell-text-tertiary font-medium"
+                aria-label={`${latentCaps.length - 3} more potential capabilities`}
+              >
+                +{latentCaps.length - 3} more
+              </span>
+            )}
+          </div>
+        </>
+      )}
     </button>
   );
 }
@@ -282,6 +314,7 @@ function WorkerDetail({
 }) {
   const [copied, setCopied] = useState<"name" | "url" | null>(null);
   const status = workerStatus(worker);
+  const isDevice = worker.kind === "device";
   const hw = worker.hardware ?? {};
   const cpu = hw.cpu ?? {};
   const gpu = hw.gpu ?? {};
@@ -319,6 +352,7 @@ function WorkerDetail({
           <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-sm font-semibold text-shell-text">{worker.name}</h2>
             <StatusPill status={status} />
+            {isDevice && <DeviceBadge />}
             {worker.tier_id && (
               <span
                 className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/[0.05] border border-white/10 text-shell-text-tertiary font-mono"
@@ -365,6 +399,8 @@ function WorkerDetail({
           </div>
         </Section>
 
+        {!isDevice && (
+        <>
         {/* GPU */}
         <Section title="GPU" icon={<CircuitBoard size={14} className="text-cyan-400" />}>
           {gpu.type && gpu.type !== "none" ? (
@@ -550,6 +586,8 @@ function WorkerDetail({
             </div>
           )}
         </Section>
+        </>
+        )}
 
         {/* Actions */}
         <Section title="Actions" icon={<Wand2 size={14} className="text-white/70" />}>
@@ -586,6 +624,8 @@ function WorkerDetail({
               {copied === "url" ? <Check size={13} /> : <Copy size={13} />}
               {copied === "url" ? "Copied" : "Copy URL"}
             </Button>
+            {!isDevice && (
+            <>
             <Button
               size="sm"
               variant="outline"
@@ -617,6 +657,8 @@ function WorkerDetail({
               <RefreshCw size={13} />
               Restart
             </Button>
+            </>
+            )}
             {worker.blocked ? (
               <Button
                 size="sm"
@@ -983,6 +1025,146 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     setAddBusy(false);
   }, [addIp, addPin, showToast, fetchWorkers]);
 
+  // Bluetooth (BLE) pairing: scan for nearby taOSusb-style boards, then pair
+  // by matching a short code the controller and the board both display.
+  const [addTab, setAddTab] = useState<"manual" | "bluetooth">("manual");
+  const [bleDevices, setBleDevices] = useState<BleScanDevice[]>([]);
+  const [bleScanning, setBleScanning] = useState(false);
+  const [bleScanned, setBleScanned] = useState(false);
+  const [bleScanError, setBleScanError] = useState<"unavailable" | "error" | null>(null);
+  const [pairSession, setPairSession] = useState<{
+    session: string;
+    code: string;
+    board_id: string;
+    name: string;
+  } | null>(null);
+  const [pairStarting, setPairStarting] = useState(false);
+  const [pairConfirming, setPairConfirming] = useState(false);
+  const [pairError, setPairError] = useState<string | null>(null);
+  const pairCodeRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (pairSession && pairCodeRef.current) {
+      pairCodeRef.current.focus();
+    }
+  }, [pairSession]);
+
+  const handleBleScan = useCallback(async () => {
+    setBleScanning(true);
+    setBleScanError(null);
+    try {
+      const res = await fetch("/api/cluster/ble/scan?seconds=6", {
+        headers: { Accept: "application/json" },
+      });
+      if (res.status === 503) {
+        setBleScanError("unavailable");
+        setBleDevices([]);
+      } else if (res.ok) {
+        const json = await res.json();
+        setBleDevices(Array.isArray(json?.devices) ? (json.devices as BleScanDevice[]) : []);
+      } else {
+        setBleScanError("error");
+        setBleDevices([]);
+      }
+    } catch {
+      setBleScanError("error");
+      setBleDevices([]);
+    }
+    setBleScanned(true);
+    setBleScanning(false);
+  }, []);
+
+  const cancelBlePairSession = useCallback((session: string) => {
+    fetch("/api/cluster/ble/pair/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session }),
+    }).catch(() => {
+      /* fire and forget */
+    });
+  }, []);
+
+  const handleBlePairStart = useCallback(async (device: BleScanDevice) => {
+    setPairStarting(true);
+    setPairError(null);
+    try {
+      const res = await fetch("/api/cluster/ble/pair/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ address: device.address }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setPairSession({
+          session: json.session,
+          code: json.code,
+          board_id: json.board_id,
+          name: json.name,
+        });
+      } else if (res.status === 409) {
+        setPairError("This device isn't pairable right now. It may already be paired, or be pausing after failed attempts. Wait a minute and try again.");
+      } else if (res.status === 504) {
+        setPairError("The device stopped responding.");
+      } else if (res.status === 429) {
+        setPairError("Another pairing is in progress.");
+      } else {
+        const j = await res.json().catch(() => ({}));
+        setPairError(j?.error ? String(j.error) : `Pairing failed (${res.status})`);
+      }
+    } catch (e) {
+      setPairError(e instanceof Error ? e.message : "Network error");
+    }
+    setPairStarting(false);
+  }, []);
+
+  const handleBlePairConfirm = useCallback(async () => {
+    if (!pairSession) return;
+    setPairConfirming(true);
+    setPairError(null);
+    try {
+      const res = await fetch("/api/cluster/ble/pair/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ session: pairSession.session }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        showToast(`Device "${json?.node?.name ?? pairSession.name}" paired`);
+        setPairSession(null);
+        setAddOpen(false);
+        setBleDevices([]);
+        setBleScanned(false);
+        fetchWorkers();
+      } else if (res.status === 404) {
+        setPairError("Pairing timed out, start again.");
+      } else if (res.status === 502) {
+        const j = await res.json().catch(() => ({}));
+        setPairError(j?.why ? String(j.why) : "The device rejected pairing.");
+      } else {
+        const j = await res.json().catch(() => ({}));
+        setPairError(j?.error ? String(j.error) : `Confirm failed (${res.status})`);
+      }
+    } catch (e) {
+      setPairError(e instanceof Error ? e.message : "Network error");
+    }
+    setPairConfirming(false);
+  }, [pairSession, showToast, fetchWorkers]);
+
+  const handleBlePairCancel = useCallback(() => {
+    if (pairSession) cancelBlePairSession(pairSession.session);
+    setPairSession(null);
+    setPairError(null);
+  }, [pairSession, cancelBlePairSession]);
+
+  const closeAddModal = useCallback(() => {
+    if (addBusy || pairStarting || pairConfirming) return;
+    if (pairSession) cancelBlePairSession(pairSession.session);
+    setAddOpen(false);
+    setAddTab("manual");
+    setPairSession(null);
+    setPairError(null);
+  }, [addBusy, pairStarting, pairConfirming, pairSession, cancelBlePairSession]);
+
   const handleNodeRevoke = useCallback(
     async (name: string) => {
       setBusy(true);
@@ -1183,11 +1365,11 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
               variant="ghost"
               size="sm"
               onClick={() => setAddOpen(true)}
-              aria-label="Add a worker"
+              aria-label="Add a device"
               className="gap-1.5"
             >
               <Plus size={14} />
-              Add worker
+              Add device
             </Button>
           )}
           {activeTab === "nodes" && (
@@ -1276,10 +1458,10 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
                       size="sm"
                       onClick={() => setAddOpen(true)}
                       className="gap-1.5"
-                      aria-label="Add a worker"
+                      aria-label="Add a device"
                     >
                       <Plus size={14} />
-                      Add worker
+                      Add device
                     </Button>
                     <a
                       href="https://github.com/jaylfc/tinyagentos#distributed-compute-cluster"
@@ -1339,61 +1521,201 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
         />
       </div>
 
-      {/* Add worker (manual / free-tier) modal */}
+      {/* Add device modal (manual worker pairing / free-tier, or Bluetooth) */}
       {addOpen && (
         <div
           className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           role="dialog"
           aria-modal="true"
-          aria-label="Add a worker"
-          onClick={() => !addBusy && setAddOpen(false)}
+          aria-label="Add a device"
+          onClick={closeAddModal}
         >
           <div
             className="w-full max-w-sm rounded-xl border border-white/10 bg-shell-bg-deep p-5 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-shell-text">Add a worker</h3>
-              <Button variant="ghost" size="icon" onClick={() => setAddOpen(false)} aria-label="Close">
+              <h3 className="text-sm font-semibold text-shell-text">Add a device</h3>
+              <Button variant="ghost" size="icon" onClick={closeAddModal} aria-label="Close">
                 <X size={14} />
               </Button>
             </div>
-            <p className="text-[11px] text-shell-text-tertiary mb-3 leading-relaxed">
-              Install the worker on the other machine. It shows a PIN. Enter that machine's
-              IP and the PIN below, then it joins the cluster. For one-tap setup from anywhere,
-              taOSgo handles this automatically.
-            </p>
-            <label className="block text-[10px] uppercase tracking-wide text-shell-text-tertiary mb-1" htmlFor="add-worker-ip">
-              Worker IP address
-            </label>
-            <input
-              id="add-worker-ip"
-              value={addIp}
-              onChange={(e) => setAddIp(e.target.value)}
-              placeholder="192.168.1.50"
-              autoComplete="off"
-              className="w-full h-9 mb-3 rounded-md border border-white/10 bg-shell-bg px-2.5 text-sm text-shell-text focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20"
-            />
-            <label className="block text-[10px] uppercase tracking-wide text-shell-text-tertiary mb-1" htmlFor="add-worker-pin">
-              Pairing PIN
-            </label>
-            <input
-              id="add-worker-pin"
-              value={addPin}
-              onChange={(e) => setAddPin(e.target.value)}
-              placeholder="shown on the worker"
-              autoComplete="off"
-              onKeyDown={(e) => { if (e.key === "Enter") submitAddWorker(); }}
-              className="w-full h-9 mb-4 rounded-md border border-white/10 bg-shell-bg px-2.5 text-sm font-mono tracking-widest text-shell-text focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20"
-            />
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setAddOpen(false)} disabled={addBusy}>
-                Cancel
-              </Button>
-              <Button variant="default" size="sm" onClick={submitAddWorker} disabled={addBusy}>
-                {addBusy ? "Authorising..." : "Add worker"}
-              </Button>
-            </div>
+
+            <Tabs value={addTab} onValueChange={(v) => setAddTab(v as "manual" | "bluetooth")}>
+              <TabsList aria-label="Add device method" className="mb-3 w-full">
+                <TabsTrigger value="manual" className="flex-1">
+                  Worker (address + PIN)
+                </TabsTrigger>
+                <TabsTrigger value="bluetooth" className="flex-1">
+                  Bluetooth
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="manual">
+                <p className="text-[11px] text-shell-text-tertiary mb-3 leading-relaxed">
+                  Install the worker on the other machine. It shows a PIN. Enter that machine's
+                  IP and the PIN below, then it joins the cluster. For one-tap setup from anywhere,
+                  taOSgo handles this automatically.
+                </p>
+                <label className="block text-[10px] uppercase tracking-wide text-shell-text-tertiary mb-1" htmlFor="add-worker-ip">
+                  Worker IP address
+                </label>
+                <input
+                  id="add-worker-ip"
+                  value={addIp}
+                  onChange={(e) => setAddIp(e.target.value)}
+                  placeholder="192.168.1.50"
+                  autoComplete="off"
+                  className="w-full h-9 mb-3 rounded-md border border-white/10 bg-shell-bg px-2.5 text-sm text-shell-text focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20"
+                />
+                <label className="block text-[10px] uppercase tracking-wide text-shell-text-tertiary mb-1" htmlFor="add-worker-pin">
+                  Pairing PIN
+                </label>
+                <input
+                  id="add-worker-pin"
+                  value={addPin}
+                  onChange={(e) => setAddPin(e.target.value)}
+                  placeholder="shown on the worker"
+                  autoComplete="off"
+                  onKeyDown={(e) => { if (e.key === "Enter") submitAddWorker(); }}
+                  className="w-full h-9 mb-4 rounded-md border border-white/10 bg-shell-bg px-2.5 text-sm font-mono tracking-widest text-shell-text focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20"
+                />
+                <div className="flex justify-end gap-2">
+                  <Button variant="ghost" size="sm" onClick={closeAddModal} disabled={addBusy}>
+                    Cancel
+                  </Button>
+                  <Button variant="default" size="sm" onClick={submitAddWorker} disabled={addBusy}>
+                    {addBusy ? "Authorising..." : "Add worker"}
+                  </Button>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="bluetooth">
+                {pairSession ? (
+                  <div>
+                    <p className="text-[11px] text-shell-text-tertiary mb-2">
+                      Pairing with {pairSession.name}. If the device has a screen, check it
+                      shows the same code.
+                    </p>
+                    <div
+                      ref={pairCodeRef}
+                      tabIndex={-1}
+                      aria-label={`Pairing code ${pairSession.code.split("").join(" ")}`}
+                      className="py-3 text-center outline-none"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="text-3xl font-mono font-bold tracking-[0.2em] text-shell-text"
+                      >
+                        {pairSession.code.slice(0, 3)} {pairSession.code.slice(3)}
+                      </span>
+                    </div>
+                    {pairError && (
+                      <p className="text-[11px] text-red-300 mt-1" role="alert">
+                        {pairError}
+                      </p>
+                    )}
+                    <div className="flex justify-end gap-2 mt-3">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleBlePairCancel}
+                        disabled={pairConfirming}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={handleBlePairConfirm}
+                        disabled={pairConfirming}
+                      >
+                        {pairConfirming ? "Pairing..." : "Pair"}
+                      </Button>
+                    </div>
+                  </div>
+                ) : bleScanError === "unavailable" ? (
+                  <div className="py-6 text-center">
+                    <Bluetooth size={20} className="mx-auto mb-2 text-shell-text-tertiary" />
+                    <p className="text-[11px] text-shell-text-tertiary">
+                      Bluetooth isn't available on this controller.
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    <div aria-live="polite" className="min-h-[2rem]">
+                      {bleScanned && !bleScanning && bleDevices.length === 0 ? (
+                        <div className="py-4 text-center">
+                          <p className="text-[11px] text-shell-text-tertiary mb-3">
+                            No taOS devices found. Power the device on; it stays pairable
+                            until it's paired.
+                          </p>
+                        </div>
+                      ) : bleDevices.length > 0 ? (
+                        <div className="space-y-1.5 mb-3 max-h-56 overflow-y-auto" aria-label="Nearby Bluetooth devices">
+                          {bleDevices.map((d) => {
+                            const paired = d.paired === true || d.state === "paired";
+                            const disabled = paired || !d.pairable;
+                            const label = paired ? "Already paired" : "Not pairable";
+                            return (
+                              <div
+                                key={d.address}
+                                className="flex items-center justify-between gap-2 p-2 rounded-md border border-white/5 bg-white/[0.02]"
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <BleSignalIcon rssi={d.rssi} />
+                                  <span className="text-[12px] text-shell-text truncate">{d.name}</span>
+                                </div>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={disabled || pairStarting}
+                                  onClick={() => handleBlePairStart(d)}
+                                  aria-label={disabled ? `${d.name}: ${label.toLowerCase()}` : `Pair with ${d.name}`}
+                                >
+                                  {disabled ? label : pairStarting ? "Starting..." : "Pair"}
+                                </Button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : !bleScanning ? (
+                        <p className="text-[11px] text-shell-text-tertiary mb-3">
+                          Search for nearby taOS devices over Bluetooth.
+                        </p>
+                      ) : null}
+                    </div>
+
+                    {bleScanError === "error" && (
+                      <p className="text-[11px] text-red-300 mb-2" role="alert">
+                        Scan failed. Try again.
+                      </p>
+                    )}
+                    {pairError && (
+                      <p className="text-[11px] text-red-300 mb-2" role="alert">
+                        {pairError}
+                      </p>
+                    )}
+
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleBleScan}
+                      disabled={bleScanning}
+                      className="gap-1.5 w-full justify-center"
+                      aria-label={bleScanned ? "Search again" : "Search"}
+                    >
+                      {bleScanning ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <Bluetooth size={14} />
+                      )}
+                      {bleScanning ? "Searching nearby…" : bleScanned ? "Search again" : "Search"}
+                    </Button>
+                  </div>
+                )}
+              </TabsContent>
+            </Tabs>
           </div>
         </div>
       )}

@@ -15,6 +15,20 @@ import sys
 from pathlib import Path
 
 
+class CollectionError(Exception):
+    """Raised when pytest exits with an unexpected return code on a test file."""
+
+
+def _write_github_output(reason: str, detail: str = "") -> None:
+    github_output = os.environ.get("GITHUB_OUTPUT", "")
+    if not github_output:
+        return
+    with open(github_output, "a") as f:
+        f.write(f"failure_reason={reason}\n")
+        if detail:
+            f.write(f"failure_detail={detail}\n")
+
+
 def resolve_base_ref(base_ref: str) -> str:
     """Resolve base_ref to a revision that exists in this checkout.
 
@@ -78,7 +92,7 @@ def get_test_outcomes(test_files: list[str]) -> dict[str, dict]:
                 f"(collection error or crash) — cannot judge skip status.\n"
                 f"{proc.stdout[-2000:]}{proc.stderr[-2000:]}"
             )
-            sys.exit(1)
+            raise CollectionError(filepath)
 
         # Parse stdout for summary lines like "4 passed, 2 skipped, 1 failed"
         # and individual test outcomes like "test_name SKIPPED"
@@ -273,7 +287,11 @@ def main() -> int:
         return 0
 
     # Get test outcomes
-    results = get_test_outcomes(test_files)
+    try:
+        results = get_test_outcomes(test_files)
+    except CollectionError as e:
+        _write_github_output("collection_error", str(e))
+        return 1
 
     # Get PR body for escape hatch
     pr_body = get_pr_body()
@@ -372,6 +390,10 @@ def main() -> int:
             parts.append(f"{zero_collected_files} file(s) yielded no collected tests")
         if setup_error_files > 0:
             parts.append(f"{setup_error_files} file(s) had setup/teardown errors")
+        if unwaived_all_skip > 0:
+            _write_github_output("all_skip")
+        else:
+            _write_github_output("other_failure")
         print(f"\n::error:: {', '.join(parts)} — see above for details")
         return 1
 

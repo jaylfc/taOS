@@ -316,16 +316,11 @@ def resolve_local_identity_id(data_dir: str | Path | None = None) -> str | None:
     except Exception:
         return None
 
-    # Resolve hub.db path the same way hub.store resolves it:
-    # TAOS_DATA_DIR override, else project data dir.
     if data_dir:
         hub_dir = Path(data_dir) / "hub"
     else:
-        env = os.environ.get("TAOS_DATA_DIR")
-        if env:
-            hub_dir = Path(env) / "hub"
-        else:
-            hub_dir = Path(__file__).resolve().parent.parent / "data" / "hub"
+        from tinyagentos.app import resolve_data_dir
+        hub_dir = resolve_data_dir() / "hub"
 
     hub_db = hub_dir / "hub.db"
     if not hub_db.is_file():

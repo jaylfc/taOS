@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { WindowChooser } from "./WindowChooser";
 import { useBrowserStore } from "@/stores/browser-store";
+import { useProcessStore } from "@/stores/process-store";
 
 beforeEach(() => {
   useBrowserStore.setState({ windows: {} });
@@ -75,4 +76,23 @@ describe("WindowChooser", () => {
     fireEvent.click(screen.getByLabelText("Close windows list"));
     expect(onClose).toHaveBeenCalled();
   });
+
+  it("New window opens the browser IN-PAGE, so onSelect gets a real window id", () => {
+    // On a taOSmobile handset a plain openWindow goes to the shell and returns
+    // "", and onSelect("") would point the chooser at no window at all.
+    const openWindow = vi.fn(() => "new-win-id");
+    const real = useProcessStore.getState().openWindow;
+    useProcessStore.setState({ openWindow });
+    try {
+      useBrowserStore.getState().createWindow("win-a", "personal");
+      render(<WindowChooser currentWindowId="win-a" onSelect={() => {}} onClose={() => {}} />);
+      fireEvent.click(screen.getByText(/new window/i));
+      expect(openWindow).toHaveBeenCalledTimes(1);
+      expect(openWindow.mock.calls[0][0]).toBe("browser");
+      expect(openWindow.mock.calls[0][3]).toMatchObject({ inPage: true });
+    } finally {
+      useProcessStore.setState({ openWindow: real });
+    }
+  });
 });
+

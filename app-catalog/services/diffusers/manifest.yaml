@@ -2,7 +2,7 @@ id: diffusers
 name: HuggingFace Diffusers
 type: service
 category: image-runtime
-version: latest
+version: 0.30.0
 description: "HuggingFace Diffusers library — runs diffusion models in safetensors/diffusers format."
 homepage: https://github.com/huggingface/diffusers
 license: Apache-2.0

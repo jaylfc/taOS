@@ -13,7 +13,7 @@ requires:
 
 install:
   method: docker
-  image: searxng/searxng:latest
+  image: searxng/searxng:2024.12.0
   volumes:
     - ./settings.yml:/etc/searxng/settings.yml:ro
   # 8080 is the container-internal port; the host port is allocated from the

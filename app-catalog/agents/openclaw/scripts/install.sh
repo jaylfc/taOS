@@ -3,17 +3,17 @@
 # Runs once inside a fresh Debian bookworm LXC container.
 # Idempotent: safe to re-run on an already-provisioned container.
 #
-# Installs UPSTREAM OpenClaw from npm (openclaw@latest) — no fork. taOS drives
+# Installs UPSTREAM OpenClaw from npm (openclaw@0.2.0) — no fork. taOS drives
 # the agent over ACP (tinyagentos/openclaw_acp_runtime), so the legacy
 # taos-bridge channel is no longer installed/needed.
 set -euo pipefail
 
 # The pre-built taos-openclaw-base image warms Node + system deps + a recent
-# openclaw. We still always install openclaw@latest from npm (the base image's
+# openclaw. We still always install openclaw@0.2.0 from npm (the base image's
 # baked version may lag) and re-write per-deploy config/env + the systemd unit.
 # See tinyagentos/agent_image.py and .github/workflows/build-agent-images.yml.
 TAOS_BASE_IMAGE_PRESENT="${TAOS_BASE_IMAGE_PRESENT:-0}"
-echo "[openclaw] installing upstream OpenClaw (openclaw@latest from npm)"
+echo "[openclaw] installing upstream OpenClaw (openclaw@0.2.0 from npm)"
 
 # ---------------------------------------------------------------------------
 # 1. Node >= 22.19 via NodeSource (upstream OpenClaw's minimum; Debian default
@@ -82,9 +82,9 @@ fi
 # is needed.
 # ----------------------------------------------------------------------
 
-echo "[openclaw] installing openclaw@latest from npm (upstream)"
-if ! npm install -g --unsafe-perm openclaw@latest; then
-  echo "[openclaw] FATAL: 'npm install -g openclaw@latest' failed"
+echo "[openclaw] installing openclaw@0.2.0 from npm (upstream)"
+if ! npm install -g --unsafe-perm openclaw@0.2.0; then
+  echo "[openclaw] FATAL: 'npm install -g openclaw@0.2.0' failed"
   echo "[openclaw] check network connectivity to the npm registry from inside this container."
   exit 1
 fi

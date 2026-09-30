@@ -93,6 +93,7 @@ function defaults(
     onOpenSettings: vi.fn(),
     typingHumans: [],
     typingAgents: [],
+    receipts: {},
     ...overrides,
   };
 }
@@ -725,9 +726,9 @@ describe("MessageList", () => {
       });
       const svgs = document.querySelectorAll("svg");
       const checkSvg = Array.from(svgs).find((svg) =>
-        svg.querySelector('path[d="M20 6 9 17l-5-5"]'),
+        svg.getAttribute("aria-label") === "Sent",
       );
-      expect(checkSvg).toBeFalsy();
+      expect(checkSvg).toBeTruthy();
     });
 
     it("does not show delivery tick for remote-authored dm-remote messages", () => {
@@ -782,6 +783,147 @@ describe("MessageList", () => {
         svg.querySelector('path[d="M20 6 9 17l-5-5"]'),
       );
       expect(checkSvg).toBeFalsy();
+    });
+  });
+
+  describe("A2A receipt ticks", () => {
+    it("renders single check (sent) when no receipt row exists", () => {
+      renderWithMsg({
+        channel: channel({ type: "dm-remote", members: ["user", "peer"] }),
+        messages: [
+          msg({ channel_id: "ch1", author_id: "user", receipts: [] }),
+        ],
+      });
+      const svgs = document.querySelectorAll("svg");
+      const sentSvg = Array.from(svgs).find((svg) =>
+        svg.getAttribute("aria-label") === "Sent",
+      );
+      expect(sentSvg).toBeTruthy();
+    });
+
+    it("renders double check (delivered) when receipt has no seen_at", () => {
+      renderWithMsg({
+        channel: channel({ type: "dm-remote", members: ["user", "peer"] }),
+        messages: [
+          msg({
+            channel_id: "ch1",
+            author_id: "user",
+            receipts: [
+              { message_id: "m1", agent_id: "peer", delivered_at: 1000, seen_at: null },
+            ],
+          }),
+        ],
+      });
+      const svgs = document.querySelectorAll("svg");
+      const deliveredSvg = Array.from(svgs).find((svg) =>
+        svg.getAttribute("aria-label") === "Delivered",
+      );
+      expect(deliveredSvg).toBeTruthy();
+    });
+
+    it("renders coloured double check (seen) when receipt has seen_at", () => {
+      renderWithMsg({
+        channel: channel({ type: "dm-remote", members: ["user", "peer"] }),
+        messages: [
+          msg({
+            channel_id: "ch1",
+            author_id: "user",
+            receipts: [
+              { message_id: "m1", agent_id: "peer", delivered_at: 1000, seen_at: 2000 },
+            ],
+          }),
+        ],
+      });
+      const svgs = document.querySelectorAll("svg");
+      const seenSvg = Array.from(svgs).find((svg) =>
+        svg.getAttribute("aria-label") === "Seen",
+      );
+      expect(seenSvg).toBeTruthy();
+      expect(seenSvg?.getAttribute("class")).toContain("text-accent");
+    });
+
+    it("does not render receipt tick for non-own messages", () => {
+      renderWithMsg({
+        channel: channel({ type: "dm-remote", members: ["user", "peer"] }),
+        messages: [
+          msg({
+            channel_id: "ch1",
+            author_id: "peer",
+            receipts: [
+              { message_id: "m1", agent_id: "user", delivered_at: 1000, seen_at: 2000 },
+            ],
+          }),
+        ],
+      });
+      const svgs = document.querySelectorAll("svg");
+      const receiptTick = Array.from(svgs).find((svg) =>
+        svg.getAttribute("aria-label") === "Sent" ||
+        svg.getAttribute("aria-label") === "Delivered" ||
+        svg.getAttribute("aria-label") === "Seen",
+      );
+      expect(receiptTick).toBeFalsy();
+    });
+
+    it("renders delivered for multi-addressee when all have rows but not all seen", () => {
+      renderWithMsg({
+        channel: channel({ type: "group", settings: { kind: "a2a" }, members: ["user", "peer1", "peer2"] }),
+        messages: [
+          msg({
+            channel_id: "ch1",
+            author_id: "user",
+            receipts: [
+              { message_id: "m1", agent_id: "peer1", delivered_at: 1000, seen_at: null },
+              { message_id: "m1", agent_id: "peer2", delivered_at: 1000, seen_at: 2000 },
+            ],
+          }),
+        ],
+      });
+      const svgs = document.querySelectorAll("svg");
+      const deliveredSvg = Array.from(svgs).find((svg) =>
+        svg.getAttribute("aria-label") === "Delivered",
+      );
+      expect(deliveredSvg).toBeTruthy();
+    });
+
+    it("renders seen for multi-addressee when all have seen_at", () => {
+      renderWithMsg({
+        channel: channel({ type: "group", settings: { kind: "a2a" }, members: ["user", "peer1", "peer2"] }),
+        messages: [
+          msg({
+            channel_id: "ch1",
+            author_id: "user",
+            receipts: [
+              { message_id: "m1", agent_id: "peer1", delivered_at: 1000, seen_at: 2000 },
+              { message_id: "m1", agent_id: "peer2", delivered_at: 1000, seen_at: 2000 },
+            ],
+          }),
+        ],
+      });
+      const svgs = document.querySelectorAll("svg");
+      const seenSvg = Array.from(svgs).find((svg) =>
+        svg.getAttribute("aria-label") === "Seen",
+      );
+      expect(seenSvg).toBeTruthy();
+    });
+
+    it("renders sent when some addressees have no receipt row", () => {
+      renderWithMsg({
+        channel: channel({ type: "group", settings: { kind: "a2a" }, members: ["user", "peer1", "peer2"] }),
+        messages: [
+          msg({
+            channel_id: "ch1",
+            author_id: "user",
+            receipts: [
+              { message_id: "m1", agent_id: "peer1", delivered_at: 1000, seen_at: null },
+            ],
+          }),
+        ],
+      });
+      const svgs = document.querySelectorAll("svg");
+      const sentSvg = Array.from(svgs).find((svg) =>
+        svg.getAttribute("aria-label") === "Sent",
+      );
+      expect(sentSvg).toBeTruthy();
     });
   });
 });

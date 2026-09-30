@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { launchInShell, shouldLaunchInShell } from "@/lib/mobile-shell";
 
 export type SnapPosition =
   | "left"
@@ -28,7 +29,14 @@ interface ProcessStore {
   windows: WindowState[];
   nextZIndex: number;
 
-  openWindow: (appId: string, defaultSize: { w: number; h: number }, props?: Record<string, unknown>, opts?: { forceNew?: boolean }) => string;
+  /**
+   * Open (or focus) an app's window. On a taOSmobile handset a plain open is
+   * handed to the device shell instead (see lib/mobile-shell) and returns "";
+   * if the shell does not confirm, the in-page window opens after all and is
+   * surfaced via the `taos:activate-window` event. `inPage` forces the in-page
+   * window (session restore, agent window control, the fallback itself).
+   */
+  openWindow: (appId: string, defaultSize: { w: number; h: number }, props?: Record<string, unknown>, opts?: { forceNew?: boolean; inPage?: boolean }) => string;
   closeWindow: (id: string) => void;
   removeWindow: (id: string) => void;
   focusWindow: (id: string) => void;
@@ -106,6 +114,26 @@ export const useProcessStore = create<ProcessStore>((set, get) => ({
   nextZIndex: 1,
 
   openWindow(appId, defaultSize, props, opts) {
+    // On a taOSmobile handset a plain open goes to the device shell FIRST, even
+    // when an in-page window for the app exists (restored from a saved layout,
+    // or left by an earlier fallback): otherwise one in-page window would pin
+    // that app in-page for good. A confirmed launch drops the in-page copy; a
+    // failed one falls through to the in-page path below, restoring it.
+    if (!opts?.inPage && shouldLaunchInShell(appId, props, opts)) {
+      void launchInShell(appId).then((launched) => {
+        if (launched) {
+          // removeWindow, not closeWindow: a non-active window on the mobile
+          // layout has no mounted Window to finish a close animation.
+          for (const w of get().windows.filter((w) => w.appId === appId)) get().removeWindow(w.id);
+          return;
+        }
+        // The shell did not confirm: never leave the tap dead. Open (or
+        // restore) the in-page window and ask the shell layout to surface it.
+        const wid = get().openWindow(appId, defaultSize, props, { ...opts, inPage: true });
+        window.dispatchEvent(new CustomEvent("taos:activate-window", { detail: { windowId: wid } }));
+      });
+      return "";
+    }
     // Single-instance by default: clicking an app focuses its existing window.
     // forceNew skips that so an app can open a second window (e.g. a different
     // project), keyed by its own props -- the basis for multi-window apps.

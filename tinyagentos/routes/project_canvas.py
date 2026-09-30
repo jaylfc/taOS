@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -16,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, Response
 from pydantic import BaseModel, Field
 
-from tinyagentos.projects.canvas.store import CanvasPermissionError
+from tinyagentos.projects.canvas.store import CanvasPermissionError, guard_payload_update
 from tinyagentos.projects.canvas.unfurl import fetch_link_metadata
 from tinyagentos.projects.canvas.render import render_snapshot_png
 from tinyagentos.projects.canvas.watch_projection import build_watch_projection
@@ -189,12 +190,27 @@ class CreateElementIn(BaseModel):
 @router.get("/api/projects/{project_id}/canvas/elements")
 async def list_canvas_elements(
     project_id: str, request: Request, element_id: str | None = None,
+    include_deleted: bool = False,
 ):
     auth = await _authorize_canvas_actor(request, project_id, "read")
     if isinstance(auth, JSONResponse):
         return auth
     cs = request.app.state.project_canvas_store
-    elements = await cs.list_elements(project_id, element_id=element_id)
+    elements = await cs.list_elements(
+        project_id, element_id=element_id, include_deleted=include_deleted,
+    )
+    if include_deleted:
+        # The raw JSON backup download (manual recovery): every row, including
+        # soft-deleted ones (flagged ``deleted``) and the untouched payloads
+        # (legacy ``tldraw_shape`` blobs included). Served as an attachment so
+        # the browser saves a file instead of rendering it.
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", project_id)
+        return JSONResponse(
+            {"elements": elements},
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe}-canvas.json"',
+            },
+        )
     return {"elements": elements}
 
 
@@ -272,7 +288,11 @@ async def update_canvas_element(
     patch = {k: v for k, v in payload.model_dump().items() if v is not None}
     _clamp_element_geometry(patch)
     if "payload" in patch:
-        _check_payload_size(patch["payload"])
+        # Size-check the payload that will actually be stored: the store carries
+        # a legacy user_shape's tldraw_shape forward, so that blob counts
+        # against the cap too.
+        existing = await cs.get_element(element_id, project_id=project_id)
+        _check_payload_size(guard_payload_update(existing, patch["payload"]))
     try:
         updated = await cs.update_element(
             project_id=project_id, element_id=element_id, patch=patch,
@@ -352,6 +372,48 @@ async def get_canvas_tldr(project_id: str, request: Request):
         media_type="application/json",
         filename=f"{project_id}-canvas.tldr",
     )
+
+
+@router.get("/api/projects/{project_id}/canvas/elements/{element_id}/original")
+async def get_canvas_element_original(project_id: str, element_id: str, request: Request):
+    auth = await _authorize_canvas_actor(request, project_id, "read")
+    if isinstance(auth, JSONResponse):
+        return auth
+    cs = request.app.state.project_canvas_store
+    el = await cs.get_element_any(element_id, project_id=project_id)
+    if el is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    payload = el.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "element_id": el["id"],
+        "kind": el["kind"],
+        "deleted_at": el.get("deleted_at"),
+        "x": el["x"],
+        "y": el["y"],
+        "w": el["w"],
+        "h": el["h"],
+        "rotation": el.get("rotation", 0),
+        "z_index": el.get("z_index", 0),
+        "author_kind": el.get("author_kind"),
+        "author_id": el.get("author_id"),
+        "tldraw_shape": payload.get("tldraw_shape"),
+        "excalidraw_element": payload.get("excalidraw_element"),
+        "payload": payload,
+    }
+
+
+@router.get("/api/projects/{project_id}/canvas/legacy")
+async def get_canvas_legacy_elements(
+    project_id: str, request: Request, include_deleted: bool = False,
+):
+    auth = await _authorize_canvas_actor(request, project_id, "read")
+    if isinstance(auth, JSONResponse):
+        return auth
+    cs = request.app.state.project_canvas_store
+    elements = await cs.list_legacy(project_id, include_deleted=include_deleted)
+    return {"elements": elements}
 
 
 @router.patch("/api/projects/{project_id}/canvas/permissions/{agent_id}")

@@ -438,6 +438,80 @@ class ProjectTaskStore(ProjectsDBStore):
         if existing is not None:
             await self._publish(existing["project_id"], "task.updated", {"id": task_id, "patch": patch})
 
+    async def assign_if_unassigned(self, task_id: str, assignee: str, actor: str) -> bool:
+        now = time.time()
+        async with self._tx():
+            cursor = await self._db.execute(
+                """UPDATE project_tasks
+                   SET assignee_id = ?, updated_at = ?
+                   WHERE id = ? AND status = 'open'
+                     AND claimed_by IS NULL
+                     AND (assignee_id IS NULL OR lower(trim(assignee_id)) IN ('', '@any', '@all', 'unassigned', 'none'))""",
+                (assignee, now, task_id),
+            )
+            changed = cursor.rowcount == 1
+        if changed:
+            existing = await self.get_task(task_id)
+            if existing is not None:
+                await self._publish(existing["project_id"], "task.updated", {"id": task_id, "patch": {"assignee_id": assignee}})
+            await self._record_audit(
+                task_id, "task.assigned", actor, "open", "open",
+                project_id=existing["project_id"] if existing else "",
+            )
+        return changed
+
+    async def unassign_if(self, task_id: str, expected_assignee: str, actor: str) -> bool:
+        now = time.time()
+        async with self._tx():
+            cursor = await self._db.execute(
+                """UPDATE project_tasks
+                   SET assignee_id = NULL
+                   WHERE id = ? AND assignee_id = ? AND claimed_by IS NULL AND status = 'open'""",
+                (task_id, expected_assignee),
+            )
+            changed = cursor.rowcount == 1
+        if changed:
+            existing = await self.get_task(task_id)
+            if existing is not None:
+                await self._publish(existing["project_id"], "task.updated", {"id": task_id, "patch": {"assignee_id": None}})
+            await self._record_audit(
+                task_id, "task.unassigned", actor, "open", "open",
+                project_id=existing["project_id"] if existing else "",
+            )
+        return changed
+
+    async def count_open_load(self, assignee_ids: list[str]) -> int:
+        if not assignee_ids:
+            return 0
+        placeholders = ",".join("?" for _ in assignee_ids)
+        sql = (
+            f"SELECT COUNT(*) FROM project_tasks "
+            f"WHERE (claimed_by IN ({placeholders}) AND status = 'claimed') "
+            f"OR (assignee_id IN ({placeholders}) AND status = 'open' AND claimed_by IS NULL)"
+        )
+        params = assignee_ids + assignee_ids
+        async with self._read(sql, params) as cur:
+            row = await cur.fetchone()
+        return row[0] if row else 0
+
+    async def count_open_load_by_project(self, assignee_ids: list[str]) -> dict[str, int]:
+        if not assignee_ids:
+            return {}
+        placeholders = ",".join("?" for _ in assignee_ids)
+        sql = (
+            f"SELECT project_id, COUNT(*) FROM project_tasks "
+            f"WHERE (claimed_by IN ({placeholders}) AND status = 'claimed') "
+            f"OR (assignee_id IN ({placeholders}) AND status = 'open' AND claimed_by IS NULL)"
+            f" GROUP BY project_id"
+        )
+        params = assignee_ids + assignee_ids
+        result: dict[str, int] = {}
+        async with self._read(sql, params) as cur:
+            rows = await cur.fetchall()
+            for row in rows:
+                result[row[0]] = row[1]
+        return result
+
     async def held_task(self, claimer_id: str) -> str | None:
         """Return the id of the active ('claimed') task this agent currently
         holds, or None. Used to enforce one active claim per agent."""

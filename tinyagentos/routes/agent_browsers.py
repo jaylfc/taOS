@@ -9,13 +9,15 @@ All routes live under /api/agent-browsers/.  The router reads
 
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
+from tinyagentos.auth_context import require_admin
+
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 # ------------------------------------------------------------------

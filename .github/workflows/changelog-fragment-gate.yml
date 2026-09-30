@@ -1,0 +1,46 @@
+name: Changelog fragment gate
+
+# Authoritative changelog-fragment gate. Blocks PRs that make non-test changes
+# under `tinyagentos/` or `desktop/src/` without adding a changelog fragment
+# (changelog.d/<pr>-<slug>.md or changelog.d/tsk-<cardid>-<slug>.md) or editing
+# CHANGELOG.md. Escape hatches: PR label `no-changelog-needed` or PR body
+# trailer `Changelog-Not-Needed: <why>`. See docs/changelog-fragments.md and
+# scripts/check_changelog_fragment.py for details. This job is authoritative
+# regardless of local hooks.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
+    branches: [master, dev]
+
+# This gate only reads the checkout; nothing here writes to the repo.
+permissions:
+  contents: read
+
+jobs:
+  changelog-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch origin "$BASE_REF"
+
+      - name: Changelog fragment gate
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python scripts/check_changelog_fragment.py \
+            --base "origin/$BASE_REF" \
+            --pr-labels "$PR_LABELS" \
+            --pr-body "$PR_BODY"

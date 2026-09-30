@@ -55,6 +55,7 @@ import {
   editMessage as apiEditMessage, deleteMessage as apiDeleteMessage,
   markUnread as apiMarkUnread,
 } from "@/lib/chat-messages-api";
+import { getReceipts, markSeen, type Receipt } from "@/lib/a2a-receipts-api";
 import { projectsApi, type Project } from "@/lib/projects";
 import {
   findA2aChannelId,
@@ -905,6 +906,7 @@ export function MessagesApp({
   const [busSelected, setBusSelected] = useState<string | null>(null);
   const bus = useBusChannels();
   const [messages, setMessages] = useState<Message[]>([]);
+  const [receipts, setReceipts] = useState<Record<string, Receipt[]>>({});
   const [unread, setUnread] = useState<Record<string, number>>({});
   const unreadRef = useRef<Record<string, number>>({});
   const pendingNewCountRef = useRef(0);
@@ -1081,6 +1083,39 @@ export function MessagesApp({
       /* offline */
     }
   }, []);
+
+  /* ---- fetch receipts for own messages ---- */
+  const fetchReceipts = useCallback(async (messageIds: string[]) => {
+    const results = await Promise.allSettled(
+      messageIds.map((id) => getReceipts(id)),
+    );
+    const next: Record<string, Receipt[]> = {};
+    let idx = 0;
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        next[messageIds[idx] ?? ""] = result.value;
+      }
+      idx++;
+    }
+    if (Object.keys(next).length > 0) {
+      setReceipts((prev) => ({ ...prev, ...next }));
+    }
+  }, []);
+
+  /* ---- mark a single message as seen (idempotent) ---- */
+  const handleMarkSeen = useCallback(async (messageId: string) => {
+    if (!currentUserId) return;
+    try {
+      const existing = receipts[messageId] ?? [];
+      const mine = existing.find((r) => r.agent_id === currentUserId);
+      if (mine?.seen_at != null) return;
+      await markSeen(messageId);
+      const updated = await getReceipts(messageId);
+      setReceipts((prev) => ({ ...prev, [messageId]: updated }));
+    } catch {
+      /* ignore */
+    }
+  }, [currentUserId, receipts]);
 
   /* ---- mark channel read ---- */
   const markRead = useCallback(async (channelId: string) => {
@@ -1279,6 +1314,42 @@ export function MessagesApp({
     };
 
     wsRef.current = ws;
+  }, []);
+
+  /* ---- A2A bus stream: live receipt updates ---- */
+  useEffect(() => {
+    if (typeof EventSource === "undefined") {
+      console.debug("[MessagesApp] EventSource unavailable, skipping A2A bus stream");
+      return;
+    }
+    const es = new EventSource("/api/a2a/bus/stream");
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.type === "receipt" && data.message_id) {
+          setReceipts((prev) => {
+            const existing = prev[data.message_id] ?? [];
+            const idx = existing.findIndex((r) => r.agent_id === data.agent_id);
+            const updated: Receipt = {
+              message_id: data.message_id,
+              agent_id: data.agent_id,
+              delivered_at: data.delivered_at ?? existing[idx]?.delivered_at ?? null,
+              seen_at: data.seen_at ?? existing[idx]?.seen_at ?? null,
+            };
+            const next = [...existing];
+            if (idx >= 0) next[idx] = updated;
+            else next.push(updated);
+            return { ...prev, [data.message_id]: next };
+          });
+        }
+      } catch {
+        /* ignore malformed stream event */
+      }
+    };
+    es.onerror = () => {
+      es.close();
+    };
+    return () => es.close();
   }, []);
 
   /* ---- emoji popover: escape and outside click ---- */
@@ -1481,6 +1552,17 @@ export function MessagesApp({
     setTypingHumans([]);
     setTypingAgents([]);
   }, [selectedChannel, fetchMessages, markRead]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ---- fetch receipts for own messages when messages change ---- */
+  useEffect(() => {
+    if (!currentUserId || messages.length === 0) return;
+    const ownIds = messages
+      .filter((m) => m.author_id === currentUserId && m.state !== "pending" && m.state !== "streaming")
+      .map((m) => m.id);
+    if (ownIds.length > 0) {
+      void fetchReceipts(ownIds);
+    }
+  }, [messages, currentUserId, fetchReceipts]);
 
   /* ---- deep-link scroll on ?msg=<id> — latch so it fires once per URL ---- */
   const deepLinkSeenRef = useRef<string | null>(null);
@@ -2264,6 +2346,7 @@ export function MessagesApp({
             onOpenSettings={handleOpenSettings}
             typingHumans={typingHumans}
             typingAgents={typingAgents}
+            receipts={receipts}
           />
 
           {/* #1741: stall banner — surfaces only when a response is abnormally
@@ -2508,6 +2591,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
           isFullscreen={isMobile}
           liveReplies={threadLiveReplies}
           authorCtx={{ currentUserId, currentUserDisplayName }}
+          onMarkSeen={handleMarkSeen}
           onSend={async (content, attachments) => {
             const r = await fetch("/api/chat/messages", {
               method: "POST",

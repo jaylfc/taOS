@@ -5,6 +5,8 @@ import { useDockStore } from "@/stores/dock-store";
 import { useThemeStore } from "@/stores/theme-store";
 import { useAuthReadyStore } from "@/stores/auth-ready-store";
 import { APP_REDIRECTS } from "@/registry/app-registry";
+import { useProcessStore } from "@/stores/process-store";
+import { _resetMobileShellForTests, isShellDevice, primeDeviceClass } from "@/lib/mobile-shell";
 
 vi.mock("@/registry/app-registry", () => {
   const g = globalThis as Record<string, unknown>;
@@ -402,3 +404,28 @@ function TestPersistence() {
   useSessionPersistence();
   return null;
 }
+
+describe("useSessionPersistence — window restore on a taOSmobile handset", () => {
+  afterEach(() => _resetMobileShellForTests());
+
+  it("restores saved windows in-page and never hands them to the device shell", async () => {
+    mockFetchWith({
+      "/api/taos-agent/config": { device_class: "mobile" },
+      "/api/desktop/windows": [
+        { appId: "files", x: 10, y: 10, w: 500, h: 400, maximized: false, snapped: null },
+        { appId: "agents", x: 20, y: 20, w: 500, h: 400, maximized: false, snapped: null },
+      ],
+    });
+    await primeDeviceClass();
+    expect(isShellDevice()).toBe(true);
+    useProcessStore.setState({ windows: [], nextZIndex: 1 });
+
+    render(<TestPersistence />);
+
+    await waitFor(() => {
+      expect(useProcessStore.getState().windows.map((w) => w.appId)).toEqual(["files", "agents"]);
+    });
+    const shellCalls = vi.mocked(globalThis.fetch).mock.calls.filter(([u]) => String(u).includes(":6973"));
+    expect(shellCalls).toHaveLength(0);
+  });
+});

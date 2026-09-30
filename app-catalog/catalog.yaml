@@ -681,7 +681,7 @@ apps:
   - id: filebrowser
     type: service
     category: productivity
-    version: latest
+    version: 2.27.0
     name: File Browser
     description: "Web file manager — browse and manage agent workspaces through a clean browser UI"
 
@@ -689,7 +689,7 @@ apps:
   - id: excalidraw
     type: service
     category: productivity
-    version: latest
+    version: 0.17.0
     name: Excalidraw
     description: "Collaborative whiteboard — agents can generate and share diagrams and sketches"
   - id: memos
@@ -701,18 +701,18 @@ apps:
   - id: linkwarden
     type: service
     category: productivity
-    version: latest
+    version: 2.13.0
     name: Linkwarden
     description: "Bookmark and link manager — agents save and organize research links with archiving"
 
   # Voice / Speech
   - id: whisper
     type: voice
-    version: latest
+    version: 2024.11.15
     name: Whisper ASR
     description: "Speech-to-text via OpenAI Whisper — agents can transcribe audio files and streams"
   - id: piper-tts
     type: voice
-    version: latest
+    version: 1.7.0
     name: Piper TTS
     description: "Fast local text-to-speech via Wyoming Piper — agents can generate natural voice audio"

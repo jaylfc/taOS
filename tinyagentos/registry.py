@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from pydantic_core import PydanticCustomError
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,17 @@ class AppManifest(BaseModel):
     capabilities: list[Any] = Field(default_factory=list)
     lifecycle: dict[str, Any] = Field(default_factory=dict)
     manifest_dir: Path | None = None
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _coerce_numeric_version(cls, value: Any) -> str:
+        if isinstance(value, bool):
+            raise ValueError("version must be a string")
+        if isinstance(value, (int, float)):
+            return str(value)
+        if not isinstance(value, str):
+            raise ValueError("version must be a string")
+        return value
 
     @classmethod
     def from_file(cls, path: Path) -> AppManifest:

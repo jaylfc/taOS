@@ -2,6 +2,7 @@ import { renderHook } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { useDesktopControl } from "./use-desktop-control";
 import { useProcessStore } from "@/stores/process-store";
+import { _resetMobileShellForTests, isShellDevice, primeDeviceClass } from "@/lib/mobile-shell";
 
 const reset = () => useProcessStore.setState({ windows: [], nextZIndex: 1 });
 
@@ -77,5 +78,32 @@ describe("useDesktopControl taos:window receiver", () => {
     );
 
     expect(useProcessStore.getState().windows.find((w) => w.id === id)!.closing).toBeFalsy();
+  });
+});
+
+describe("useDesktopControl open on a taOSmobile handset", () => {
+  beforeEach(reset);
+  afterEach(() => {
+    _resetMobileShellForTests();
+    vi.unstubAllGlobals();
+  });
+
+  it("opens the agent's window in-page, with a real id, and never calls the device shell", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        new Response(JSON.stringify(String(input).includes("/api/taos-agent/config") ? { device_class: "mobile" } : { ok: true })),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await primeDeviceClass();
+    expect(isShellDevice()).toBe(true);
+    renderHook(() => useDesktopControl());
+
+    const id = window.taosDesktop!.run({ action: "open", appId: "files" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(typeof id === "string" && id.length > 0).toBe(true);
+    expect(useProcessStore.getState().windows.map((w) => w.id)).toEqual([id]);
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).includes(":6973"))).toHaveLength(0);
   });
 });

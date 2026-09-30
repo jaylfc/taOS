@@ -25,6 +25,16 @@ from tinyagentos.routes.onscreen_keyboard import (
     osk_assets,
 )
 
+# The demo helpers read the Settings demo-mode switch from the app's data dir.
+# A fresh dir with no switch file is a device that has never flipped it: ON
+# exactly when a demo flag is set, which is what these tests were written for.
+import tempfile as _tempfile
+from pathlib import Path as _Path
+from types import SimpleNamespace as _NS
+
+_DEMO_REQ = _NS(app=_NS(state=_NS(data_dir=_Path(_tempfile.mkdtemp()))))
+
+
 
 @pytest.fixture()
 def login_console():
@@ -351,7 +361,15 @@ class TestNumericLayoutForPin:
         assert 'el.setAttribute("role", "button")' in LOCK_SCRIPT
         assert 'el.setAttribute("tabindex", "0")' in LOCK_SCRIPT
         # A role="list" whose children are buttons is an invalid a11y tree.
-        assert 'id="ls-activity" role="group"' in login_console
+        # The panel is now a tabpanel under the view row, not a bare group: the
+        # role moved with the feature, and it has to KEEP naming its tab, or the
+        # fan-out has no accessible owner.
+        assert 'id="ls-activity" data-view="agents"' in login_console
+        assert re.search(
+            r'id="ls-activity"[^>]*role="tabpanel"[^>]*aria-labelledby="ls-tab-agents"',
+            login_console,
+            re.S,
+        )
 
     def test_lock_chrome_does_not_select_text_like_a_browser(self, login_console):
         """Press-and-hold is bound to the islands. Without this, chromium starts
@@ -591,10 +609,10 @@ class TestLockScreenNotifications:
         monkeypatch.setattr(auth_mod, "_request_is_console", lambda _request: True)
         monkeypatch.delenv("TAOS_LOCK_DEMO_AGENTS", raising=False)
         monkeypatch.setenv("TAOS_LOCK_DEMO_NOTIFICATIONS", "1")
-        assert (await auth_mod.lock_notifications(None)).status_code == 404
+        assert (await auth_mod.lock_notifications(_DEMO_REQ)).status_code == 404
 
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Demo")
-        resp = await auth_mod.lock_notifications(None)
+        resp = await auth_mod.lock_notifications(_DEMO_REQ)
         assert resp.status_code == 200
         assert json.loads(resp.body)["demo"] is True
 
@@ -614,9 +632,9 @@ class TestLockScreenNotifications:
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Demo")
         monkeypatch.delenv("TAOS_LOCK_DEMO_NOTIFICATIONS", raising=False)
 
-        assert (await auth_mod.lock_notifications(None)).status_code == 404
+        assert (await auth_mod.lock_notifications(_DEMO_REQ)).status_code == 404
         # The islands are deliberately untouched by the same switch.
-        assert auth_mod._demo_enabled() is True
+        assert auth_mod._demo_enabled(_DEMO_REQ) is True
 
     @pytest.mark.asyncio
     async def test_notifications_are_console_only(self, monkeypatch):
@@ -625,21 +643,50 @@ class TestLockScreenNotifications:
         monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "Demo")
         monkeypatch.setenv("TAOS_LOCK_DEMO_NOTIFICATIONS", "1")
         monkeypatch.setattr(auth_mod, "_request_is_console", lambda _request: False)
-        assert (await auth_mod.lock_notifications(None)).status_code == 403
+        assert (await auth_mod.lock_notifications(_DEMO_REQ)).status_code == 403
 
     def test_every_source_jay_asked_for_has_a_stack(self):
-        from tinyagentos.routes.auth import _demo_notifications
+        """Jay moved four of the five original stacks out of Alerts: "the alerts
+        category has some of the old notifications that need moving into the
+        correct categories". The stacks predate the panels and were written when
+        Alerts was the only place anything could go -- mail, X and SMS repeated
+        the mailbox, and the phone stack repeated the missed calls.
+
+        So the sources he asked for are now the ones nothing else can carry, and
+        this asserts BOTH halves: what Alerts holds, and that it no longer holds
+        what another panel owns. Asserting only the first would still pass with
+        every duplicate stack back in place.
+        """
+        from tinyagentos.routes.auth import _demo_notifications, _demo_panels
 
         sources = {group["source"] for group in _demo_notifications()}
-        assert {"mail", "x", "reddit", "phone", "sms"} <= sources
+        assert {"agent", "system"} <= sources
+
+        # Read off the panels rather than a hand-typed list: a source that moves
+        # into a panel later is covered without anyone remembering to come here.
+        owned = {
+            str(item.get("app", "")).lower()
+            for key in ("phone", "mailbox", "apps")
+            for item in _demo_panels()[key]
+        }
+        clash = {s for s in sources if s in owned}
+        assert not clash, "Alerts is duplicating a panel again: %r" % (clash,)
 
     def test_items_are_collated_by_source_not_listed_flat(self):
         """The whole point of the stack: several mails are ONE pile, not three
         banners pushing the islands off the screen."""
         from tinyagentos.routes.auth import _demo_notifications
 
-        groups = {g["source"]: g for g in _demo_notifications()}
-        assert len(groups["mail"]["items"]) >= 3
+        groups = _demo_notifications()
+
+        # One stack per source is what "collated" MEANS: two groups with the
+        # same source are two banners for one pile, which is the flat list this
+        # is here to rule out.
+        sources = [g["source"] for g in groups]
+        assert len(sources) == len(set(sources)), sources
+        assert max(len(g["items"]) for g in groups) > 1, (
+            "no stack has more than one item -- every alert is its own banner"
+        )
 
     def test_stacks_and_their_items_are_newest_first(self):
         """A phone orders by arrival. A fixed table order would leave an
@@ -658,7 +705,11 @@ class TestLockScreenNotifications:
         operable by Enter -- the same rule the islands already follow."""
         assert 'el.setAttribute("role", "button")' in LOCK_SCRIPT
         assert 'el.setAttribute("aria-expanded"' in LOCK_SCRIPT
-        assert 'id="ls-notifs" role="group"' in login_console
+        assert re.search(
+            r'id="ls-notifs"[^>]*role="tabpanel"[^>]*aria-labelledby="ls-tab-alerts"',
+            login_console,
+            re.S,
+        )
 
     def test_notification_text_is_never_written_as_markup(self):
         """Titles and bodies are content. The only innerHTML on this path is an
@@ -711,8 +762,14 @@ class TestLockScreenFeedScrollsAsOne:
     def test_the_fade_is_measured_not_assumed(self, login_console):
         """An unconditional mask eats the bottom of the last card on a device
         with one agent and no notifications, where nothing scrolls."""
+        # The measurement moved into `feedOverflows()` when the unlock-swipe
+        # veto (tsk-6bjsvg) came to need the same answer; asserted through the
+        # helper so the fade is still proven to ASK rather than assume, and so
+        # gutting it to a constant still fails here.
+        assert re.search(r"var over = feedOverflows\(\);", LOCK_SCRIPT)
         assert re.search(
-            r"var over = feedEl\.scrollHeight - feedEl\.clientHeight", LOCK_SCRIPT
+            r"function feedOverflows\(\)[^}]*feedEl\.scrollHeight - feedEl\.clientHeight",
+            LOCK_SCRIPT,
         )
         # The plain .ls-feed rule must not carry a mask of its own.
         feed = re.search(r"\.ls-feed\s*\{([^}]*)\}", login_console)
@@ -720,7 +777,7 @@ class TestLockScreenFeedScrollsAsOne:
 
 
 class TestTheIslandRepaintKeepsKeyboardFocus:
-    """The islands poll every 15 seconds and paintActivity rebuilds the list.
+    """The islands poll every 15 seconds and paintActivity repaints the list.
 
     Measured on the handset over CDP before this was fixed: focus an island,
     wait 17s, and document.activeElement had fallen back to the lock screen
@@ -738,19 +795,27 @@ class TestTheIslandRepaintKeepsKeyboardFocus:
         end = LOCK_SCRIPT.index("function pollActivity(", start)
         return LOCK_SCRIPT[start:end]
 
-    def test_focus_is_captured_before_the_wipe_and_restored_after_the_rebuild(self):
+    def test_focus_is_captured_before_the_repaint_and_restored_after_it(self):
         """Ordering is the whole assertion.
 
-        Reading activeElement AFTER `agentsEl.textContent = ""` reads the body,
-        because the wipe is what moved focus there -- so a capture in the wrong
-        place records nothing and restores nothing while looking correct.
+        This used to be expressed against `agentsEl.textContent = ""`, because
+        the wipe was what moved focus to the body. The wipe is gone: the list is
+        now reconciled in place (see `test_lock_screen_repaint.py`), so a
+        persisting island is the same DOM node afterwards and NEVER loses focus
+        in the first place -- a stronger guarantee than restoring it.
+
+        The capture and restore stay, and stay in this order, for the case
+        reconciliation cannot cover: an island whose avatar or framework changed
+        is genuinely rebuilt, and an agent that goes away takes its element with
+        it. Reading activeElement after the repaint would read whatever those
+        cases left behind.
         """
         body = self._paint_activity()
         capture = body.index("document.activeElement")
-        wipe = body.index('agentsEl.textContent = ""')
+        repaint = body.index("reconcileIslands(agents)")
         restore = body.index(".focus()")
-        assert capture < wipe, "focus must be read BEFORE the list is wiped"
-        assert wipe < restore, "focus must be restored AFTER the list is rebuilt"
+        assert capture < repaint, "focus must be read BEFORE the list is repainted"
+        assert repaint < restore, "focus must be restored AFTER the list is repainted"
 
     def test_the_island_is_found_again_by_a_stable_key_not_by_position(self):
         """Restoring by index moves focus to a DIFFERENT agent whenever the list

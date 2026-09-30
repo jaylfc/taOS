@@ -19,7 +19,7 @@
 # The taOS launcher maps this to a host-local address via docker exec / a
 # dedicated port binding — see browser_container.py build_neko_run_args.
 
-FROM ghcr.io/m1k1o/neko/chromium:latest
+FROM ghcr.io/m1k1o/neko/chromium:2.4.0
 
 # ── 1. Upgrade Chromium to >=148 from Debian trixie-security ────────────────
 # The stock Neko chromium image is Debian trixie-based, so trixie-security is

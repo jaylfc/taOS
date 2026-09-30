@@ -11,8 +11,16 @@
  *  - Same scenarios run against /chat-pwa (parameterized)
  *
  * The backend is assumed running by the test harness (playwright.config.ts
- * webServer or external). Network conditions are simulated via
- * page.route() rather than actually restarting the backend.
+ * webServer or external). The backend going down is simulated with
+ * context.setOffline(), not page.route(): once the service worker controls
+ * the page, WebKit sends the page's requests through the worker and
+ * page.route() never sees them (measured: an abort route on every /api/ URL matched 0
+ * requests and /api/health answered 200 from the real backend). Going offline
+ * fails those requests at the network, which is also what a user sees when
+ * the backend is really gone. The version-mismatch test has to rewrite a
+ * response header, which only page.route() can do, so it runs with service
+ * workers blocked; sw.ts never handles /api/*, so the header reaches the page
+ * unchanged whether or not a worker is in control.
  */
 import { test, expect, type Page } from "@playwright/test";
 
@@ -29,40 +37,61 @@ async function waitForSWReady(page: Page) {
   }, { timeout: 15_000 });
 }
 
+/** The fast-boot state under test: the worker has claimed the page. */
+async function waitForSWControl(page: Page) {
+  await waitForSWReady(page);
+  await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller), undefined, {
+    timeout: 15_000,
+  });
+}
+
 for (const pwa of PWA_PATHS) {
   test.describe(`${pwa.name} fast-boot UX`, () => {
     test(`registers SW and precaches the shell (${pwa.url})`, async ({ page }) => {
-      // Quarantined, NOT a test defect: no service worker ever registers, so
-      // caches.keys() is empty on BOTH paths. Tracked as card tsk-jz2fke.
-      test.fixme(true, "tsk-jz2fke: the service worker is never registered, so nothing precaches");
       await page.goto(pwa.url);
       await waitForSWReady(page);
-      const cacheNames = await page.evaluate(() => caches.keys());
-      expect(cacheNames.some((n) => n.startsWith("taos-static-"))).toBe(true);
+      // Polled, not read once: on WebKit reg.active can be visible to the page
+      // a moment before the worker's cache writes are (CI: caches.keys() was
+      // [] at the first read, filled on a retry).
+      await expect
+        .poll(() => page.evaluate(() => caches.keys()), { timeout: 15_000 })
+        .toContainEqual(expect.stringMatching(/^taos-static-/));
+      // And the shell for this path is actually in it.
+      await expect
+        .poll(() => page.evaluate(async (u) => Boolean(await caches.match(u)), pwa.url), {
+          timeout: 15_000,
+        })
+        .toBe(true);
     });
 
-    test(`shows BackendBanner when /api/health is unreachable (${pwa.url})`, async ({ page }) => {
+    test(`shows BackendBanner when /api/health is unreachable (${pwa.url})`, async ({ page, context }) => {
       await page.goto(pwa.url);
-      await waitForSWReady(page);
-      // Block all /api/* traffic to simulate the backend being down.
-      await page.route("**/api/**", (route) => route.abort("connectionrefused"));
+      await waitForSWControl(page);
+      // Take the backend "down" under a controlling worker (see header).
+      await context.setOffline(true);
       // Trigger a reconnect by waiting longer than the first poll.
       await page.waitForTimeout(3_500);
       await expect(page.getByText(/taOS is restarting/i)).toBeVisible();
     });
 
-    test(`banner clears when backend recovers (${pwa.url})`, async ({ page }) => {
+    test(`banner clears when backend recovers (${pwa.url})`, async ({ page, context }) => {
       await page.goto(pwa.url);
-      await waitForSWReady(page);
+      await waitForSWControl(page);
       // First make backend "fail"...
-      await page.route("**/api/health", (route) => route.abort("connectionrefused"));
+      await context.setOffline(true);
       await page.waitForTimeout(3_500);
       await expect(page.getByText(/taOS is restarting/i)).toBeVisible();
       // ...then "recover"
-      await page.unroute("**/api/health");
+      await context.setOffline(false);
       await page.waitForTimeout(5_500);
       await expect(page.getByText(/taOS is restarting/i)).not.toBeVisible();
     });
+  });
+
+  test.describe(`${pwa.name} version check`, () => {
+    // page.route() cannot see a worker-controlled page's requests (see header),
+    // so keep the worker out of this one to rewrite X-Taos-Version.
+    test.use({ serviceWorkers: "block" });
 
     test(`update toast appears on version mismatch (${pwa.url})`, async ({ page }) => {
       await page.route("**/api/health", async (route) => {
@@ -75,7 +104,6 @@ for (const pwa of PWA_PATHS) {
         });
       });
       await page.goto(pwa.url);
-      await waitForSWReady(page);
       await page.waitForTimeout(3_000);
       await expect(page.getByText(/new taOS version available/i)).toBeVisible();
     });

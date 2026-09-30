@@ -29,7 +29,11 @@ VALID_TARGETS = {
     "x86-vulkan",
     "arm-vulkan",
     "cpu",
+    "hailo",
 }
+
+_RAM_BUCKETS_GB = frozenset({2, 4, 6, 8, 12, 16, 24, 32, 64, 128})
+_KNOWN_METHODS = {"docker", "pip", "script", "lxc", "ollama", "rkllama", "download", "huggingface"}
 
 
 def _load(path: Path) -> dict | None:
@@ -184,6 +188,56 @@ def audit(root: Path) -> int:
                     f"([{_POOL_START}, {_POOL_END})); remap to a high-pool port or "
                     "allowlist if it is an integrated backend"
                 )
+
+    # ------------------------------------------------------------------
+    # Drift checks — catch missing version, duplicate IDs, unknown install
+    # methods, deprecated health_check blocks, and non-canonical
+    # hardware_tiers keys.
+    seen_ids: dict[str, Path] = {}
+    for sp in sorted(root.rglob("manifest.yaml")):
+        d = _load(sp)
+        if not d:
+            continue
+        mid = d.get("id", sp.parent.name)
+        rel = sp.relative_to(root)
+        kind = rel.parts[0] if rel.parts else ""
+
+        if not d.get("version"):
+            issues.append(f"{kind}/{mid}: manifest missing version")
+
+        if mid in seen_ids:
+            issues.append(
+                f"{kind}/{mid}: duplicate id (also at {seen_ids[mid].relative_to(root)})"
+            )
+        else:
+            seen_ids[mid] = sp
+
+        inst = d.get("install") or {}
+        if isinstance(inst, dict) and inst.get("method"):
+            method = inst["method"]
+            if method not in _KNOWN_METHODS:
+                issues.append(f"{kind}/{mid}: unknown install.method {method!r}")
+
+        lifecycle = d.get("lifecycle") or {}
+        if isinstance(lifecycle, dict) and "health_check" in lifecycle:
+            issues.append(
+                f"{kind}/{mid}: deprecated lifecycle.health_check — migrate to lifecycle.health"
+            )
+
+        hw = d.get("hardware_tiers") or {}
+        if isinstance(hw, dict):
+            for key in hw:
+                parts = key.split("-")
+                if len(parts) >= 3 and parts[-1].endswith("gb"):
+                    try:
+                        gb = int(parts[-1][:-2])
+                        if gb not in _RAM_BUCKETS_GB:
+                            issues.append(
+                                f"{kind}/{mid}: hardware_tiers key {key!r} uses "
+                                f"non-canonical {gb}gb bucket"
+                            )
+                    except ValueError:
+                        pass
 
     if not issues:
         print("clean: catalog matches requires.backends schema")

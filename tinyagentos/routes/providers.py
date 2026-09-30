@@ -520,7 +520,7 @@ async def list_providers(request: Request):
 
     return providers
 
-@router.post("/api/providers/test")
+@router.post("/api/providers/test", dependencies=[Depends(require_admin)])
 async def test_provider(request: Request, body: ProviderTest):
     """Test connectivity to a provider. Auto-starts if stopped and auto_manage is on."""
     if not body.url:
@@ -777,7 +777,7 @@ async def get_litellm_models(request: Request, refresh: bool = False):
     }
 
 
-@router.post("/api/providers/models/refresh")
+@router.post("/api/providers/models/refresh", dependencies=[Depends(require_admin)])
 async def force_refresh_models(request: Request):
     """Force an immediate re-probe of all cloud provider catalogs and
     return the fresh model list.  Bypasses the TTL unconditionally —

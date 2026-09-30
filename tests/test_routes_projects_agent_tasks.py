@@ -782,6 +782,103 @@ class TestLeadAgentMarkClaimable:
         labels = resp.json()["labels"]
         assert "claimable" in labels and "urgent" in labels
 
+    @staticmethod
+    def _is_selectable(task):
+        labels = task.get("labels") or []
+        claimer_id = task.get("claimed_by")
+        return (
+            task.get("status") in ("open", "todo", "ready", "backlog")
+            and claimer_id is None
+            and ("claimable" in labels or "fleet:claimable" in labels)
+        )
+
+    async def test_revoke_dual_claimable_labels_makes_task_not_selectable(self, ctx):
+        """Revoking a task carrying both claimable and fleet:claimable strips both
+        labels, so the dispatcher can no longer select it."""
+        pid = await _new_project(ctx, "claimable-dual-revoke")
+        tid = await _new_task(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid)
+        await ctx.app.state.project_store.add_member(pid, cid, "native")
+        await ctx.app.state.project_store.set_lead(pid, cid)
+        async with _bare(ctx.app) as bare:
+            await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/claimable",
+                json={"claimable": True},
+                headers=_hdr(token),
+            )
+            await ctx.client.patch(
+                f"/api/projects/{pid}/tasks/{tid}",
+                json={"labels": ["claimable", "fleet:claimable"]},
+            )
+            revoke = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/claimable",
+                json={"claimable": False},
+                headers=_hdr(token),
+            )
+        assert revoke.status_code == 200, revoke.text
+        assert not self._is_selectable(revoke.json())
+
+    async def test_revoke_claimable_only_makes_task_not_selectable(self, ctx):
+        """Revoking a task carrying only the bare claimable label removes it."""
+        pid = await _new_project(ctx, "claimable-single-revoke")
+        tid = await _new_task(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid)
+        await ctx.app.state.project_store.add_member(pid, cid, "native")
+        await ctx.app.state.project_store.set_lead(pid, cid)
+        async with _bare(ctx.app) as bare:
+            await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/claimable",
+                json={"claimable": True},
+                headers=_hdr(token),
+            )
+            revoke = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/claimable",
+                json={"claimable": False},
+                headers=_hdr(token),
+            )
+        assert revoke.status_code == 200, revoke.text
+        assert not self._is_selectable(revoke.json())
+
+    async def test_revoke_fleet_claimable_only_makes_task_not_selectable(self, ctx):
+        """Revoking a task carrying only fleet:claimable removes it even though the
+        bare claimable label is absent. The old handler early-returned in this case."""
+        pid = await _new_project(ctx, "claimable-fleet-only-revoke")
+        tid = await _new_task(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid)
+        await ctx.app.state.project_store.add_member(pid, cid, "native")
+        await ctx.app.state.project_store.set_lead(pid, cid)
+        async with _bare(ctx.app) as bare:
+            await ctx.client.patch(
+                f"/api/projects/{pid}/tasks/{tid}",
+                json={"labels": ["fleet:claimable"]},
+            )
+            revoke = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/claimable",
+                json={"claimable": False},
+                headers=_hdr(token),
+            )
+        assert revoke.status_code == 200, revoke.text
+        assert not self._is_selectable(revoke.json())
+
+    async def test_grant_claimable_adds_only_claimable(self, ctx):
+        """Granting claimable on a bare task adds only the bare claimable label,
+        never fleet:claimable."""
+        pid = await _new_project(ctx, "claimable-grant-only")
+        tid = await _new_task(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid)
+        await ctx.app.state.project_store.add_member(pid, cid, "native")
+        await ctx.app.state.project_store.set_lead(pid, cid)
+        async with _bare(ctx.app) as bare:
+            resp = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/claimable",
+                json={"claimable": True},
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 200, resp.text
+        labels = resp.json()["labels"]
+        assert "claimable" in labels
+        assert "fleet:claimable" not in labels
+
     async def test_session_owner_marks_claimable(self, ctx):
         pid = await _new_project(ctx, "claimable-owner")
         tid = await _new_task(ctx, pid)

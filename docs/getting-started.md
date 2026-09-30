@@ -436,6 +436,16 @@ If you prefer to do it yourself:
 cp -r ~/tinyagentos/data /your/backup/location/tinyagentos-data-$(date +%Y%m%d)
 ```
 
+### Data directory precedence
+
+taOS resolves the data directory in the following order:
+
+1. `TAOS_DATA_DIR` environment variable
+2. `--data-dir` flag (for the `taos recover-password` CLI)
+3. `<install-dir>/data` default
+
+If both the `TAOS_DATA_DIR` environment variable and an explicit `--data-dir` are set to different paths, taOS refuses to start and prints a clear conflict message. This prevents the server from silently writing state to one directory while a CLI tool reads from another.
+
 ---
 
 ## 9. Getting Help

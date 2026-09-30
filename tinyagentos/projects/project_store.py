@@ -310,6 +310,27 @@ class ProjectStore(ProjectsDBStore):
             desc = cur.description
         return [_row_to_project(r, desc) for r in rows]
 
+    async def list_writable_for_user(self, user_id: str, status: str | None = "active") -> list[dict]:
+        """List projects the user can write to: owned or member with write permission."""
+        if not user_id:
+            return []
+        status_clause = "AND p.status = ?" if status is not None else ""
+        params: list = [user_id, user_id]
+        if status is not None:
+            params.append(status)
+        sql = f"""
+            SELECT p.* FROM projects p
+            LEFT JOIN project_members m ON p.id = m.project_id AND m.member_id = ?
+            WHERE p.user_id = ? OR (m.can_edit_canvas = 1 OR m.is_lead = 1)
+            {status_clause}
+            GROUP BY p.id
+            ORDER BY p.created_at DESC
+        """
+        async with self._read(sql, params) as cur:
+            rows = await cur.fetchall()
+            desc = cur.description
+        return [_row_to_project(r, desc) for r in rows]
+
     async def update_project(
         self,
         project_id: str,

@@ -4,9 +4,12 @@ import hmac
 import importlib.util
 import json as _json
 import os
+import psutil
 import socket
 import sqlite3
+import subprocess
 import sys
+import threading
 import time
 from unittest.mock import patch
 
@@ -14,6 +17,72 @@ import pytest
 import pytest_asyncio
 import yaml
 from httpx import ASGITransport, AsyncClient
+
+# ---------------------------------------------------------------------------
+# LiteLLM proxy leak guard.
+#
+# Some tests spawn a real LiteLLM subprocess via subprocess.Popen and never
+# call LLMProxy.stop(), leaving an orphan that outlives the test session.
+# This guard tracks every Popen whose command line contains "litellm" and
+# fails the session if any such process is still alive at session end.
+# ---------------------------------------------------------------------------
+
+_LITELLM_LEAK_PIDS: dict[int, str] = {}
+_LITELLM_LEAK_LOCK = threading.Lock()
+_LITELLM_LEAK_CURRENT_TEST = ""
+
+_ORIG_POPEN = subprocess.Popen
+
+
+def _is_litellm_cmd(cmd):
+    if not cmd:
+        return False
+    return any("litellm" in str(arg) for arg in cmd)
+
+
+def _tracking_popen(*args, **kwargs):
+    proc = _ORIG_POPEN(*args, **kwargs)
+    cmd = args[0] if args else kwargs.get("args", [])
+    if _is_litellm_cmd(cmd):
+        with _LITELLM_LEAK_LOCK:
+            _LITELLM_LEAK_PIDS[proc.pid] = _LITELLM_LEAK_CURRENT_TEST
+    return proc
+
+
+subprocess.Popen = _tracking_popen
+
+
+def pytest_runtest_logstart(nodeid, location):
+    global _LITELLM_LEAK_CURRENT_TEST
+    _LITELLM_LEAK_CURRENT_TEST = nodeid
+
+
+def pytest_sessionfinish(session, exitstatus):
+    my_pid = os.getpid()
+    leaked = []
+    try:
+        my_proc = psutil.Process(my_pid)
+        for child in my_proc.children(recursive=True):
+            try:
+                cmdline = child.cmdline()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            if _is_litellm_cmd(cmdline):
+                started_by = _LITELLM_LEAK_PIDS.get(child.pid, "unknown test")
+                leaked.append((child.pid, started_by, cmdline))
+    except Exception:
+        pass
+
+    if leaked:
+        lines = [
+            "LITELLM PROCESS LEAK: the following litellm process(es) survived the session:"
+        ]
+        for pid, started_by, cmdline in leaked:
+            lines.append(
+                f"  pid {pid} started by {started_by}: {' '.join(cmdline)}"
+            )
+        raise RuntimeError("\n".join(lines))
+
 
 from tinyagentos.app import create_app
 from tinyagentos.routes.desktop import SPA_DIR

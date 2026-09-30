@@ -365,6 +365,57 @@ class TestPdfProcessor:
         artifacts = await proc.process(item)
         assert len(artifacts) == 0
 
+    @pytest.mark.asyncio
+    async def test_process_pdf_extracts_text(self, lib_store, storage_dir):
+        """RED-FIRST: PDF with text content must extract text artifact.
+        Currently FAILS because pypdf is not a declared dependency."""
+        fixture_path = Path(__file__).parent / "fixtures" / "test_with_text.pdf"
+        file_path = storage_dir / "test_with_text.pdf"
+        file_path.write_bytes(fixture_path.read_bytes())
+
+        item_id = await lib_store.create_item(
+            kind="pdf", title="test_with_text.pdf", storage_path=str(file_path)
+        )
+        item = await lib_store.get_item(item_id)
+
+        proc = PdfProcessor(lib_store, storage_dir)
+        artifacts = await proc.process(item)
+
+        # Should produce a text artifact with extracted content
+        text_artifacts = [a for a in artifacts if a["kind"] == "text"]
+        assert len(text_artifacts) == 1, (
+            f"Expected 1 text artifact, got {len(text_artifacts)}. "
+            f"Artifacts: {[a['kind'] for a in artifacts]}"
+        )
+        text_path = Path(text_artifacts[0]["path"])
+        assert text_path.exists()
+        content = text_path.read_text()
+        assert "Hello World from test PDF" in content
+        assert "extractable text" in content
+
+    @pytest.mark.asyncio
+    async def test_process_pdf_import_error_fails_item(self, lib_store, storage_dir):
+        """RED-FIRST: When pypdf is missing, PDF processor must fail the item
+        (status=error with message), not mark it ready with empty text."""
+        from unittest.mock import patch
+
+        file_path = storage_dir / "test.pdf"
+        _create_minimal_pdf(file_path)
+
+        item_id = await lib_store.create_item(
+            kind="pdf", title="test.pdf", storage_path=str(file_path)
+        )
+        item = await lib_store.get_item(item_id)
+
+        # Force ImportError by patching the import inside PdfProcessor.process
+        with patch.dict("sys.modules", {"pypdf": None}):
+            proc = PdfProcessor(lib_store, storage_dir)
+            with pytest.raises(ModuleNotFoundError):
+                await proc.process(item)
+
+        # The exception propagates to run_pipeline which marks item as error
+        # This test verifies the processor no longer swallows ImportError
+
 
 class TestImageProcessor:
     @pytest.mark.asyncio

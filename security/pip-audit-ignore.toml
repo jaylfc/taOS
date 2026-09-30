@@ -6,8 +6,3 @@
 #
 # check_upgrade = false for tool-level deps (pip, setuptools, etc.)
 # that are not pinned by the project itself.
-
-[[ignore]]
-package = "pip"
-id = "CVE-2026-3219"
-check_upgrade = false

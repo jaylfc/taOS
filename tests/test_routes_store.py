@@ -98,6 +98,14 @@ class TestStoreAPI:
         assert "ram_mb" in data
         assert data["ram_mb"] >= 0
 
+    async def test_hardware_profile_includes_recommended_framework(self, store_client):
+        resp = await store_client.get("/api/hardware")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "recommended_framework" in data
+        assert isinstance(data["recommended_framework"], str)
+        assert len(data["recommended_framework"]) > 0
+
     async def test_resolve_returns_200_not_500(self, store_client):
         """Regression: registry.get_app -> registry.get typo caused 500 on every resolve."""
         resp = await store_client.post(

@@ -1,0 +1,2 @@
+### Fixed
+- Admin DELETE of a cluster node (`DELETE /api/cluster/workers/{name}`) now revokes the node's pairing signing key, preventing a deleted node from authenticating (heartbeat/register) with its old key.

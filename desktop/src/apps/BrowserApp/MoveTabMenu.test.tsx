@@ -3,10 +3,11 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { MoveTabMenu } from "./MoveTabMenu";
 import { useBrowserStore } from "@/stores/browser-store";
 
-// Mock process-store: openWindow isn't exercised in unit tests for MoveTabMenu
+// Mock process-store: record openWindow calls, return a fixed window id.
+const openWindow = vi.hoisted(() => vi.fn(() => "new-win-id"));
 vi.mock("@/stores/process-store", () => ({
-  useProcessStore: (selector: (s: { openWindow: () => string }) => unknown) =>
-    selector({ openWindow: () => "new-win-id" }),
+  useProcessStore: (selector: (s: { openWindow: typeof openWindow }) => unknown) =>
+    selector({ openWindow }),
 }));
 
 beforeEach(() => {
@@ -74,4 +75,21 @@ describe("MoveTabMenu", () => {
 
     expect(screen.getByText(/no other windows/i)).toBeTruthy();
   });
+
+  it("New window opens the browser IN-PAGE, so the moved tab has somewhere to land", () => {
+    // On a taOSmobile handset a plain openWindow goes to the shell and returns
+    // "" -- the source tab would be removed and the move would wait forever on
+    // windows[""]. A tab move needs a real in-page window id.
+    openWindow.mockClear();
+    useBrowserStore.getState().createWindow("win-a", "personal");
+    const tabId = useBrowserStore.getState().addTab("win-a", "https://x.test/");
+    render(
+      <MoveTabMenu fromWindowId="win-a" tabId={tabId} anchorRect={{ x: 0, y: 0 }} onClose={() => {}} />,
+    );
+    fireEvent.click(screen.getByText(/new window/i));
+    expect(openWindow).toHaveBeenCalledTimes(1);
+    expect(openWindow.mock.calls[0][0]).toBe("browser");
+    expect(openWindow.mock.calls[0][3]).toMatchObject({ inPage: true });
+  });
 });
+

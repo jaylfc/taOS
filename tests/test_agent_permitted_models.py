@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
+from tinyagentos.auth_context import CurrentUser
 from tinyagentos.llm_proxy import LLMProxy
 from tinyagentos.cluster.model_resolver import ModelLocation
 
@@ -170,7 +172,7 @@ async def test_put_permitted_sets_field(monkeypatch):
     proxy = _FakeProxy()
     req = _FakeRequest(agents, proxy=proxy)
     body = PermittedModelsUpdate(models=["llama3", "qwen3"])
-    resp = await set_permitted_models(req, "alpha", body)
+    resp = await set_permitted_models(req, "alpha", body, user=CurrentUser(is_admin=True, user_id="test-admin"))
     assert resp["status"] == "updated"
     assert "llama3" in resp["permitted"]
     assert "qwen3" in resp["permitted"]
@@ -184,7 +186,7 @@ async def test_put_permitted_empty_list_returns_400(monkeypatch):
     agents = [{"name": "alpha", "model": "llama3"}]
     req = _FakeRequest(agents)
     body = PermittedModelsUpdate(models=[])
-    resp = await set_permitted_models(req, "alpha", body)
+    resp = await set_permitted_models(req, "alpha", body, user=CurrentUser(is_admin=True, user_id="test-admin"))
     assert resp.status_code == 400
 
 
@@ -196,7 +198,7 @@ async def test_put_permitted_unreachable_model_returns_409(monkeypatch):
     agents = [{"name": "alpha", "model": "llama3"}]
     req = _FakeRequest(agents)
     body = PermittedModelsUpdate(models=["llama3", "bad-model"])
-    resp = await set_permitted_models(req, "alpha", body)
+    resp = await set_permitted_models(req, "alpha", body, user=CurrentUser(is_admin=True, user_id="test-admin"))
     assert resp.status_code == 409
     import json
     data = json.loads(resp.body)
@@ -213,7 +215,7 @@ async def test_put_permitted_downloaded_backend_down_returns_actionable_409(monk
     agents = [{"name": "alpha", "model": "llama3"}]
     req = _FakeRequest(agents)
     body = PermittedModelsUpdate(models=["llama3", "qwen2.5-3b-rkllm"])
-    resp = await set_permitted_models(req, "alpha", body)
+    resp = await set_permitted_models(req, "alpha", body, user=CurrentUser(is_admin=True, user_id="test-admin"))
     assert resp.status_code == 409
     import json
     data = json.loads(resp.body)
@@ -233,7 +235,7 @@ async def test_put_permitted_unreachable_current_returns_409(monkeypatch):
     agents = [{"name": "alpha", "model": "stale-current", "llm_key": "sk-a"}]
     req = _FakeRequest(agents)
     body = PermittedModelsUpdate(models=["qwen3"])  # all reachable, but current is not
-    resp = await set_permitted_models(req, "alpha", body)
+    resp = await set_permitted_models(req, "alpha", body, user=CurrentUser(is_admin=True, user_id="test-admin"))
     assert resp.status_code == 409
     import json
     assert json.loads(resp.body)["model"] == "stale-current"
@@ -251,7 +253,7 @@ async def test_put_permitted_prepends_current_if_omitted(monkeypatch):
     req = _FakeRequest(agents, proxy=proxy)
     # body does NOT include llama3
     body = PermittedModelsUpdate(models=["qwen3"])
-    resp = await set_permitted_models(req, "alpha", body)
+    resp = await set_permitted_models(req, "alpha", body, user=CurrentUser(is_admin=True, user_id="test-admin"))
     assert resp["status"] == "updated"
     assert "llama3" in resp["permitted"]
     assert "qwen3" in resp["permitted"]
@@ -271,7 +273,7 @@ async def test_put_permitted_rescopes_key(monkeypatch):
     proxy = _FakeProxy()
     req = _FakeRequest(agents, proxy=proxy)
     body = PermittedModelsUpdate(models=["llama3", "qwen3"])
-    resp = await set_permitted_models(req, "alpha", body)
+    resp = await set_permitted_models(req, "alpha", body, user=CurrentUser(is_admin=True, user_id="test-admin"))
     assert resp["key_rescoped"] is True
     calls = cap.get("calls", [])
     assert any(c["json"]["models"] == resp["permitted"] for c in calls)
@@ -283,8 +285,20 @@ async def test_put_permitted_404_unknown_agent(monkeypatch):
     from tinyagentos.routes.agents import set_permitted_models, PermittedModelsUpdate
     req = _FakeRequest([])
     body = PermittedModelsUpdate(models=["llama3"])
-    resp = await set_permitted_models(req, "ghost", body)
+    resp = await set_permitted_models(req, "ghost", body, user=CurrentUser(is_admin=True, user_id="test-admin"))
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_put_permitted_non_admin_403_for_unattributed_agent(monkeypatch):
+    """A non-admin user must get 403 when the registry cannot attribute the agent."""
+    _patch_save(monkeypatch)
+    from tinyagentos.routes.agents import set_permitted_models, PermittedModelsUpdate
+    req = _FakeRequest([])
+    body = PermittedModelsUpdate(models=["llama3"])
+    with pytest.raises(HTTPException) as exc_info:
+        await set_permitted_models(req, "ghost", body, user=CurrentUser(is_admin=False, user_id="user-1"))
+    assert exc_info.value.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +324,7 @@ async def test_update_agent_model_scopes_key_to_permitted_set(monkeypatch):
     proxy = _FakeProxy()
     req = _FakeRequest(agents, proxy=proxy)
     body = AgentModelUpdate(model="qwen3")
-    resp = await update_agent_model(req, "alpha", body)
+    resp = await update_agent_model(req, "alpha", body, user=CurrentUser(is_admin=True, user_id="test-admin"))
     assert resp["status"] == "updated"
     assert resp["model"] == "qwen3"
     # The key should be scoped to ALL permitted models, not just [qwen3]
@@ -335,7 +349,7 @@ async def test_update_agent_model_adds_new_model_to_permitted(monkeypatch):
     proxy = _FakeProxy()
     req = _FakeRequest(agents, proxy=proxy)
     body = AgentModelUpdate(model="qwen3")
-    resp = await update_agent_model(req, "alpha", body)
+    resp = await update_agent_model(req, "alpha", body, user=CurrentUser(is_admin=True, user_id="test-admin"))
     # Should auto-create permitted set with qwen3 prepended
     assert "qwen3" in resp["permitted"]
     calls = cap.get("calls", [])
@@ -355,7 +369,7 @@ async def test_update_agent_model_downloaded_backend_down_returns_actionable_409
     agents = [{"name": "alpha", "model": "llama3", "llm_key": "sk-a"}]
     req = _FakeRequest(agents)
     body = AgentModelUpdate(model="qwen2.5-3b-rkllm")
-    resp = await update_agent_model(req, "alpha", body)
+    resp = await update_agent_model(req, "alpha", body, user=CurrentUser(is_admin=True, user_id="test-admin"))
     assert resp.status_code == 409
     import json
     data = json.loads(resp.body)
@@ -397,7 +411,7 @@ async def test_update_agent_model_discards_stale_key_on_re_scope_failure(monkeyp
     ]
     req = _FakeRequest(agents, proxy=proxy)
     body = AgentModelUpdate(model="qwen3")
-    resp = await update_agent_model(req, "alpha", body)
+    resp = await update_agent_model(req, "alpha", body, user=CurrentUser(is_admin=True, user_id="test-admin"))
     assert resp["status"] == "updated"
     assert resp["key_rescoped"] is False
     # The stale key must be discarded in memory...

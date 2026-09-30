@@ -208,16 +208,26 @@ def _local_backend_models_from_registry(
     return matched
 
 
-def generate_litellm_config(
+def build_model_list(
     backends: list[dict],
     default_model: str = "default",
     *,
     registry=None,
-    master_key: str | None = None,
     discovered: dict[str, list[str]] | None = None,
-    inhouse_keys: bool = False,
-) -> dict:
-    """Generate LiteLLM config from TinyAgentOS backend list.
+    discover: bool = True,
+) -> list[dict]:
+    """Build the routing table: every model name taOS serves, and where it goes.
+
+    This is the ONE source of routing truth. ``generate_litellm_config`` wraps
+    it for the LiteLLM proxy, and the in-process gateway
+    (``tinyagentos.llm_gateway.resolve``) reads it per request, so a model
+    name can never route to one backend through LiteLLM and another through
+    the gateway. Pure apart from the optional ollama probe.
+
+    ``discover=False`` skips the ``/api/tags`` probe for any ollama backend
+    not already in ``discovered``: only the probe-derived embedding entries
+    are then absent. The gateway uses it so a chat request never waits on a
+    2s probe per ollama backend.
 
     Emits two kinds of model_list entries:
 
@@ -359,7 +369,7 @@ def generate_litellm_config(
         if backend_type in ("ollama", "rkllama", "hailo-ollama"):
             _probed = (discovered or {}).get(url)
             if _probed is None:
-                _probed = _discover_ollama_models(url)
+                _probed = _discover_ollama_models(url) if discover else []
             for discovered_name in _probed:
                 if not _is_embedding_model(discovered_name):
                     continue
@@ -389,6 +399,26 @@ def generate_litellm_config(
                     })
                     aliased_embedding_claimed = True
 
+    return model_list
+
+
+def generate_litellm_config(
+    backends: list[dict],
+    default_model: str = "default",
+    *,
+    registry=None,
+    master_key: str | None = None,
+    discovered: dict[str, list[str]] | None = None,
+    inhouse_keys: bool = False,
+) -> dict:
+    """Generate LiteLLM config from TinyAgentOS backend list.
+
+    The ``model_list`` is ``build_model_list`` verbatim (see there for what
+    it contains); this adds LiteLLM's router, auth and callback settings.
+    """
+    model_list = build_model_list(
+        backends, default_model, registry=registry, discovered=discovered,
+    )
     resolved_master_key = master_key if master_key is not None else get_litellm_master_key()
     general_settings = {
         "master_key": resolved_master_key,

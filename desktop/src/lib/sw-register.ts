@@ -10,6 +10,28 @@
  * clients.claim in sw.ts make the new SW activate promptly; this reload swaps
  * the page onto the fresh index so its chunk refs match the deployed assets.
  */
+export interface ServiceWorkerStatus {
+  state: "unregistered" | "registered" | "failed";
+  error: string | null;
+}
+
+let status: ServiceWorkerStatus = { state: "unregistered", error: null };
+
+/** The outcome of the last registerServiceWorker() call. A failed registration
+ *  means taOS has no service worker and no fast-boot cache, so it is recorded
+ *  where a human or a test can see it: here, on `<html data-taos-sw>`, and as a
+ *  `taos:sw-registration-failed` window event, besides console.error. */
+export function getServiceWorkerStatus(): ServiceWorkerStatus {
+  return status;
+}
+
+function recordStatus(next: ServiceWorkerStatus): void {
+  status = next;
+  if (typeof document !== "undefined") {
+    document.documentElement.dataset.taosSw = next.state;
+  }
+}
+
 export async function registerServiceWorker(): Promise<void> {
   if (typeof navigator === "undefined" || !navigator.serviceWorker) return;
   try {
@@ -43,6 +65,7 @@ export async function registerServiceWorker(): Promise<void> {
     }
 
     const registration = await navigator.serviceWorker.register("/sw.js");
+    recordStatus({ state: "registered", error: null });
 
     // Proactively check for a new SW now (browsers otherwise only check on
     // navigation / ~24h) so a fresh deploy is picked up without waiting.
@@ -54,6 +77,16 @@ export async function registerServiceWorker(): Promise<void> {
       });
     }
   } catch (err) {
-    console.warn("[taos] service worker registration failed:", err);
+    // Not thrown into the boot path, but not a quiet warning either: a failed
+    // registration (e.g. a worker script the browser cannot parse) leaves the
+    // app with no service worker at all.
+    const error = String(err);
+    recordStatus({ state: "failed", error });
+    console.error("[taos] service worker registration failed:", err);
+    if (typeof window !== "undefined" && typeof CustomEvent === "function") {
+      window.dispatchEvent(
+        new CustomEvent("taos:sw-registration-failed", { detail: { error } }),
+      );
+    }
   }
 }

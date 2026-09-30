@@ -79,6 +79,8 @@ interface AuthRequest {
   reason?: string;
   created_ts?: string;
   project_id?: string;
+  duration_secs?: number;
+  human_duration?: string;
 }
 
 // created_at is stored as an epoch-seconds REAL on the backend, but the API
@@ -651,6 +653,7 @@ function AuthRequestCard({
         requestId={req.id}
         scopes={req.requested_scopes}
         requestedProjectId={req.project_id}
+        humanDuration={req.human_duration}
         onResolved={onResolved}
       />
     </li>

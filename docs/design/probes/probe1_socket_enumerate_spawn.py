@@ -4,9 +4,7 @@
 Verifies the tuiui apphost Unix socket protocol for listing apps and spawning new ones.
 """
 
-import json
 import os
-import socket
 import sys
 from pathlib import Path
 

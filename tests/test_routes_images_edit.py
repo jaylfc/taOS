@@ -39,8 +39,9 @@ class _FakeCatalog:
 
 
 def _request_with_catalog(catalog):
-    state = SimpleNamespace(backend_catalog=catalog)
-    return SimpleNamespace(app=SimpleNamespace(state=state))
+    app_state = SimpleNamespace(backend_catalog=catalog)
+    req_state = SimpleNamespace(user_id="u1")
+    return SimpleNamespace(app=SimpleNamespace(state=app_state), state=req_state)
 
 
 def test_edit_routes_registered():
@@ -178,11 +179,11 @@ async def test_flux_fill_missing_images_raises():
 async def test_edit_image_quality_routes_to_flux_fill(tmp_path):
     """A healthy flux-fill backend on the quality tier dispatches to
     FluxFillClient (POST /sdapi/v1/img2img) and saves the returned bytes."""
-    # Workspace: config_path.parent/workspace/images/generated/
-    images_dir = tmp_path / "workspace" / "images" / "generated"
-    images_dir.mkdir(parents=True)
+    # Workspace: config_path.parent/workspace/users/u1/images/generated/
+    user_images_dir = tmp_path / "workspace" / "users" / "u1" / "images" / "generated"
+    user_images_dir.mkdir(parents=True)
     src_bytes = base64.b64decode(_png_b64())
-    (images_dir / "src.png").write_bytes(src_bytes)
+    (user_images_dir / "src.png").write_bytes(src_bytes)
 
     result_b64 = _png_b64(color=(7, 8, 9))
     route = respx.post("http://flux/sdapi/v1/img2img").mock(
@@ -190,15 +191,15 @@ async def test_edit_image_quality_routes_to_flux_fill(tmp_path):
     )
 
     catalog = _FakeCatalog({"image-editing": [_backend("flux", "flux-fill")]})
-    state = SimpleNamespace(backend_catalog=catalog, config_path=str(tmp_path / "config.json"))
-    request = SimpleNamespace(app=SimpleNamespace(state=state))
+    app_state = SimpleNamespace(backend_catalog=catalog, config_path=str(tmp_path / "config.json"))
+    request = SimpleNamespace(app=SimpleNamespace(state=app_state), state=SimpleNamespace(user_id="u1"))
 
     body = EditRequest(image_ref="src.png", op="inpaint", mask=_png_b64(), prompt="sky", tier="quality")
     result = await edit_image(request, body)
 
     assert route.called
     assert result["status"] == "edited"
-    saved = (images_dir / result["filename"]).read_bytes()
+    saved = (user_images_dir / result["filename"]).read_bytes()
     assert saved == base64.b64decode(result_b64)
 
 
@@ -207,9 +208,9 @@ async def test_edit_image_quality_routes_to_flux_fill(tmp_path):
 async def test_edit_image_quality_falls_back_to_iopaint(tmp_path):
     """With no flux-fill backend, the quality tier still uses iopaint
     (POST /api/v1/inpaint), leaving the fast path untouched."""
-    images_dir = tmp_path / "workspace" / "images" / "generated"
-    images_dir.mkdir(parents=True)
-    (images_dir / "src.png").write_bytes(base64.b64decode(_png_b64()))
+    user_images_dir = tmp_path / "workspace" / "users" / "u1" / "images" / "generated"
+    user_images_dir.mkdir(parents=True)
+    (user_images_dir / "src.png").write_bytes(base64.b64decode(_png_b64()))
 
     result_png = base64.b64decode(_png_b64(color=(1, 2, 3)))
     route = respx.post("http://io/api/v1/inpaint").mock(
@@ -217,14 +218,14 @@ async def test_edit_image_quality_falls_back_to_iopaint(tmp_path):
     )
 
     catalog = _FakeCatalog({"image-editing": [_backend("io", "iopaint")]})
-    state = SimpleNamespace(backend_catalog=catalog, config_path=str(tmp_path / "config.json"))
-    request = SimpleNamespace(app=SimpleNamespace(state=state))
+    app_state = SimpleNamespace(backend_catalog=catalog, config_path=str(tmp_path / "config.json"))
+    request = SimpleNamespace(app=SimpleNamespace(state=app_state), state=SimpleNamespace(user_id="u1"))
 
     body = EditRequest(image_ref="src.png", op="inpaint", mask=_png_b64(), tier="quality")
     result = await edit_image(request, body)
 
     assert route.called
-    assert (images_dir / result["filename"]).read_bytes() == result_png
+    assert (user_images_dir / result["filename"]).read_bytes() == result_png
 
 
 # --------------------------------------------------------------------------- #
@@ -232,13 +233,13 @@ async def test_edit_image_quality_falls_back_to_iopaint(tmp_path):
 # --------------------------------------------------------------------------- #
 def _edit_request_with_workspace(tmp_path, backends):
     """Build a request whose workspace holds a single src.png + return its dir."""
-    images_dir = tmp_path / "workspace" / "images" / "generated"
-    images_dir.mkdir(parents=True)
-    (images_dir / "src.png").write_bytes(base64.b64decode(_png_b64()))
+    user_images_dir = tmp_path / "workspace" / "users" / "u1" / "images" / "generated"
+    user_images_dir.mkdir(parents=True)
+    (user_images_dir / "src.png").write_bytes(base64.b64decode(_png_b64()))
     catalog = _FakeCatalog({"image-editing": list(backends)})
-    state = SimpleNamespace(backend_catalog=catalog, config_path=str(tmp_path / "config.json"))
-    request = SimpleNamespace(app=SimpleNamespace(state=state))
-    return request, images_dir
+    app_state = SimpleNamespace(backend_catalog=catalog, config_path=str(tmp_path / "config.json"))
+    request = SimpleNamespace(app=SimpleNamespace(state=app_state), state=SimpleNamespace(user_id="u1"))
+    return request, user_images_dir
 
 
 @pytest.mark.asyncio
@@ -431,3 +432,48 @@ async def test_capabilities_no_catalog_reports_all_unhealthy():
 
     assert result["image_editing"] is False
     assert result["image_editing_tiers"] == {"quality": False, "fast": False}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_edit_result_urls_resolve_to_written_file(tmp_path):
+    """Regression: edit result url and path must resolve to the per-user directory where the file was written.
+    
+    The generated-media chain moved files to per-user directories (tsk-3143), but images_edit.py
+    failed to pass user_id to _image_url_path, returning legacy shared URLs that 404.
+    Both result["url"] and result["path"] must point at the location _images_dir(request) actually wrote to.
+    """
+    result_png = base64.b64decode(_png_b64(color=(9, 9, 9)))
+    import httpx
+
+    route = respx.post("http://io/api/v1/inpaint").mock(
+        return_value=httpx.Response(200, content=result_png, headers={"content-type": "image/png"})
+    )
+    user_images_dir = tmp_path / "workspace" / "users" / "u1" / "images" / "generated"
+    user_images_dir.mkdir(parents=True)
+    (user_images_dir / "src.png").write_bytes(base64.b64decode(_png_b64()))
+
+    catalog = _FakeCatalog({"image-editing": [_backend("io", "iopaint")]})
+    app_state = SimpleNamespace(backend_catalog=catalog, config_path=str(tmp_path / "config.json"))
+    request = SimpleNamespace(app=SimpleNamespace(state=app_state), state=SimpleNamespace(user_id="u1"))
+
+    body = EditRequest(image_ref="src.png", op="erase", mask=_png_b64(), tier="fast")
+    result = await edit_image(request, body)
+
+    assert result["status"] == "edited"
+    saved_file = user_images_dir / result["filename"]
+    assert saved_file.exists()
+
+    # Both url and path must resolve to the file on disk
+    import httpx
+
+    # The result should contain a URL/path that resolves to the saved file
+    # Check that both url and path start with the expected per-user directory
+    # This ensures they're using the user-scoped path, not the legacy shared one
+    assert result["url"].startswith("/data/workspace/users/u1/images/generated/")
+    assert result["path"].startswith("/data/workspace/users/u1/images/generated/")
+
+    # Ensure the resolved paths match the actual saved location
+    # The serve_workspace_file route in app.py maps /data/workspace/users/<uid>/... to the per-user dir
+    assert result["url"] == f"/data/workspace/users/u1/images/generated/{result['filename']}"
+    assert result["path"] == f"/data/workspace/users/u1/images/generated/{result['filename']}"
