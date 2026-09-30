@@ -212,6 +212,7 @@ for (var t = 0; t < SCN.ticks.length; t++) {
       attention: el.getAttribute("data-attention"),
       label: el.getAttribute("aria-label"),
       status: (el.querySelector(".ls-status") || {}).textContent,
+      statusId: (el.querySelector(".ls-status") || {}).__id,
       record: el.__agent ? el.__agent.name : null
     };
   }));
@@ -239,6 +240,10 @@ def _source(*, reconciled: bool = True) -> str:
         _function("hueFor"),
         _function("initials"),
         _function("islandIdentity"),
+        _var("STATUS_CHANGE_MS"),
+        _var("STATUS_PULSE_MS"),
+        _function("isDoneStatus"),
+        _function("animateStatusChange"),
         _function("applyAgent"),
         _function("setAttrIfChanged"),
         _function("island"),
@@ -343,6 +348,12 @@ class TestIslandsSurviveTheRepaint:
         before, after = out["snapshots"]
         assert _ids(before) == _ids(after), "the island was replaced, not updated"
         assert after[1]["status"] == "thinking"
+        # The status LINE too, not just its island: the status-change
+        # animation runs on that node, so a swapped-in replacement would
+        # restart from nothing and drop the outgoing text's ghost.
+        assert after[1]["statusId"] == before[1]["statusId"], (
+            "the status node was replaced, not updated"
+        )
         assert after[1]["state"] == "busy", "a working agent must read as busy"
         assert "thinking" in after[1]["label"], "the accessible name went stale"
 

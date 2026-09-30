@@ -38,6 +38,13 @@ TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 # Anything else (401/403/404: taOS's own key or config is wrong) is a 502.
 _CALLER_4XX = {400, 409, 413, 422, 429}
 OLLAMA_PROVIDERS = ("ollama", "ollama_chat")
+# LiteLLM provider prefixes that speak the OpenAI chat API with a bearer key.
+OPENAI_COMPATIBLE_PROVIDERS = ("openai", "openrouter")
+# Where a provider lives when its backend entry names no api_base.
+PROVIDER_DEFAULT_BASES = {
+    "openai": DEFAULT_OPENAI_BASE,
+    "openrouter": "https://openrouter.ai/api/v1",
+}
 
 
 def _ollama_404_error(route: Route, resp: httpx.Response) -> GatewayError:
@@ -68,11 +75,24 @@ def _ollama_404_error(route: Route, resp: httpx.Response) -> GatewayError:
     )
 
 
+def forwardable(route: Route) -> bool:
+    """True iff this module can send ``route`` a chat completion.
+
+    OpenAI-compatible providers (``openai``, and ``openrouter``: bearer key,
+    ``<base>/chat/completions``) and Ollama's ``/v1`` surface. Whether a
+    given Ollama-shaped BACKEND really exposes ``/v1`` is a property of the
+    backend type (``cutover.models_problem`` checks it before moving agents).
+    """
+    return route.provider in OPENAI_COMPATIBLE_PROVIDERS or route.provider in OLLAMA_PROVIDERS
+
+
 def _build_url(route: Route) -> str:
-    base = (route.api_base or DEFAULT_OPENAI_BASE).rstrip("/")
+    default = PROVIDER_DEFAULT_BASES.get(route.provider, DEFAULT_OPENAI_BASE)
+    base = (route.api_base or default).rstrip("/")
     if route.provider in OLLAMA_PROVIDERS:
         return f"{base}/v1/chat/completions"
     return f"{base}/chat/completions"
+
 
 _MAX_ATTEMPTS = 10
 _DEADLINE_SECONDS = 60.0

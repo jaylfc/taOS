@@ -158,7 +158,9 @@ function run(op: WindowOp): string | void {
       const app = op.appId ? resolveApp(op.appId) : undefined;
       if (!app) return;
       const size = op.w != null && op.h != null ? { w: op.w, h: op.h } : app.defaultSize;
-      const id = s.openWindow(app.id, size, op.props);
+      // In-page even on the handset: the agent gets this id back and drives
+      // the window's geometry with it.
+      const id = s.openWindow(app.id, size, op.props, { inPage: true });
       if (op.x != null && op.y != null) s.updatePosition(id, op.x, op.y);
       return id;
     }

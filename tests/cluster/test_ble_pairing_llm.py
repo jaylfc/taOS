@@ -150,10 +150,11 @@ async def test_gateway_off_sends_llm_null_and_mints_nothing(tmp_path, store):
 
 
 def test_gateway_flag_is_read_from_the_same_switch_that_mounts_it(tmp_path, monkeypatch):
-    monkeypatch.delenv("TAOS_LLM_GATEWAY", raising=False)
+    # The gateway is on by default (unset); "0" is the operator's off switch.
+    monkeypatch.setenv("TAOS_LLM_GATEWAY", "0")
     off = BlePairingManager(data_dir=tmp_path, cluster_manager=ClusterManager(),
                             pairing_store=None, bind_port=1)
-    monkeypatch.setenv("TAOS_LLM_GATEWAY", "1")
+    monkeypatch.delenv("TAOS_LLM_GATEWAY", raising=False)
     on = BlePairingManager(data_dir=tmp_path, cluster_manager=ClusterManager(),
                            pairing_store=None, bind_port=1)
     assert (off._llm_enabled, on._llm_enabled) == (False, True)

@@ -411,6 +411,28 @@ describe("ConsentActions", () => {
     expect(container.querySelectorAll('[data-state="added"]')).toHaveLength(0);
   });
 
+  it("renders the human duration text when humanDuration is provided", () => {
+    render(
+      <ConsentActions
+        requestId="req-dur"
+        scopes={["memory_read"]}
+        humanDuration="expires 1 hour after approval"
+      />,
+    );
+    expect(screen.getByText("expires 1 hour after approval")).toBeInTheDocument();
+  });
+
+  it("renders 'no expiry' when humanDuration is 'no expiry'", () => {
+    render(
+      <ConsentActions
+        requestId="req-ne"
+        scopes={["memory_read"]}
+        humanDuration="no expiry"
+      />,
+    );
+    expect(screen.getByText("no expiry")).toBeInTheDocument();
+  });
+
   const missingProjectScopes = [
     "project_notes",
     "files_read",

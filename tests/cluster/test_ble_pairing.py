@@ -223,7 +223,10 @@ async def test_cancel_drops_the_session(cluster, store, tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_scan_start_confirm_happy_path(cluster, store, tmp_path):
+async def test_scan_start_confirm_happy_path(cluster, store, tmp_path, monkeypatch):
+    # S1 scope, with the LLM gateway pinned OFF: the gateway is on by default
+    # now, and the default-on provision is covered by the sibling below.
+    monkeypatch.setenv("TAOS_LLM_GATEWAY", "0")
     board = FakeBoard(board_id="HAPP", name="taOSusb-HAPP")
     mgr = make_manager(cluster, store, tmp_path, {"addr1": board})
 
@@ -248,7 +251,7 @@ async def test_scan_start_confirm_happy_path(cluster, store, tmp_path):
     assert board.responder.provisioned is not None
     assert worker.signing_key.hex() == board.responder.provisioned["node_key"]
 
-    # The provision carried no wifi/llm/mesh_preauth (S1 scope).
+    # The provision carried no wifi/llm/mesh_preauth (S1 scope, gateway off).
     assert board.responder.provisioned["wifi"] == []
     assert board.responder.provisioned["llm"] is None
     assert board.responder.provisioned["mesh_preauth"] is None
@@ -256,3 +259,32 @@ async def test_scan_start_confirm_happy_path(cluster, store, tmp_path):
     # The registry's signing key matches what confirm() minted.
     stored_key = await store.get_signing_key("taOSusb-HAPP")
     assert stored_key == worker.signing_key
+
+
+@pytest.mark.asyncio
+async def test_happy_path_with_the_gateway_default_provisions_a_scoped_llm_key(
+    cluster, store, tmp_path, monkeypatch,
+):
+    """With TAOS_LLM_GATEWAY unset (the default is now ON), the board gets the
+    gateway's base URL and its own node-bound, scoped gateway key."""
+    from types import SimpleNamespace
+
+    from tinyagentos.llm_gateway.auth import gateway_caller
+
+    monkeypatch.delenv("TAOS_LLM_GATEWAY", raising=False)
+    board = FakeBoard(board_id="HAPD", name="taOSusb-HAPD")
+    mgr = make_manager(cluster, store, tmp_path, {"addr1": board})
+    started = await mgr.start("addr1")
+    await mgr.confirm(started["session"])
+
+    llm = board.responder.provisioned["llm"]
+    assert isinstance(llm, dict) and {"base", "key"} <= set(llm)
+    assert llm["base"].endswith("/api/llm/v1")
+    assert llm["key"].startswith("sk-taosgw-")
+    caller = gateway_caller(SimpleNamespace(
+        state=SimpleNamespace(),
+        headers={"authorization": f"Bearer {llm['key']}"},
+        app=SimpleNamespace(state=SimpleNamespace(data_dir=tmp_path)),
+    ))
+    assert caller.kind == "node" and caller.caller_id == "node:taOSusb-HAPD"
+    assert caller.allowed_models is not None  # scoped, never admin

@@ -309,6 +309,7 @@ function ToastItem({ notif, onExpire }: { notif: Notification; onExpire: () => v
             requestedProjectId={consent.projectId}
             source={notif.source}
             canonicalId={consent.canonicalId}
+            humanDuration={consent.humanDuration}
             onResolved={() => archiveRead(notif.id)}
           />
         )}

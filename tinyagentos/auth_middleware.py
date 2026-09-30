@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # password. See routes.auth.swipe_unlock.
 # Note /auth/pin (set/clear a PIN) is deliberately absent from this set: those
 # require a live session and must stay gated here.
-EXEMPT_PATHS = {"/auth/login", "/auth/pin-login", "/auth/swipe-unlock", "/auth/osk.js", "/auth/pin-panel.js", "/auth/lock-screen.js", "/auth/lock-widgets", "/auth/lock-weather", "/auth/lock-notifications", "/auth/lock-stats", "/auth/lock-panels", "/auth/lock-events", "/auth/lock-power-menu", "/auth/lock-screen-off", "/auth/lock-screen-on", "/auth/lock-brightness", "/auth/lock-torch", "/auth/lock-volume", "/auth/lock-volume-key", "/auth/lock-charge", "/auth/lock-radios", "/auth/lock-power-action", "/auth/lock-app", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
+EXEMPT_PATHS = {"/auth/login", "/auth/pin-login", "/auth/swipe-unlock", "/auth/osk.js", "/auth/pin-panel.js", "/auth/lock-screen.js", "/auth/lock-widgets", "/auth/lock-weather", "/auth/lock-notifications", "/auth/lock-stats", "/auth/lock-panels", "/auth/lock-events", "/auth/lock-power-menu", "/auth/lock-screen-off", "/auth/lock-screen-on", "/auth/lock-brightness", "/auth/lock-torch", "/auth/lock-volume", "/auth/lock-volume-key", "/auth/lock-charge", "/auth/lock-radios", "/auth/lock-power-action", "/auth/lock-app", "/auth/device-agent/heartbeat", "/auth/device-agent/message", "/auth/lock-call", "/auth/lock-call/ring", "/auth/lock-call/reset", "/auth/lock-call/action", "/auth/lock-call/dismiss", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
 
 # Registry feed endpoints accept EITHER an admin session OR a registry JWT.
 # When a Bearer token is present for these paths the request bypasses the
@@ -239,10 +239,12 @@ _AGENT_CANVAS_ROUTES = (
     ("POST", re.compile(rf"^/api/projects/{_SEG}/canvas/elements$")),
     ("PATCH", re.compile(rf"^/api/projects/{_SEG}/canvas/elements/{_SEG}$")),
     ("DELETE", re.compile(rf"^/api/projects/{_SEG}/canvas/elements/{_SEG}$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/elements/{_SEG}/original$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/snapshot\.png$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/snapshot\.tldr$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/stream$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/watch-projection$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/legacy$")),
 )
 
 # Decisions route an agent may reach with its own registry JWT (scope
@@ -422,11 +424,14 @@ def _is_agent_skill_exec_path(method: str, path: str) -> bool:
 # check is the authoritative guard for all WebSocket endpoints.
 # The lock screen renders BEFORE sign-in, so every URL it fetches has to be
 # reachable without a session or the screen half-loads with no visible error.
-# The two /auth/lock-* prefixes are its per-agent reads (portrait, conversation);
-# both are console-gated in the route itself, which is where that check belongs.
+# The /auth/lock-* prefixes are the lock screen's per-agent paths: two reads
+# (portrait, conversation) and ONE WRITE -- lock-send, which relays what was
+# typed to a physical device agent. All three are console-gated in the route
+# itself, which is where that check belongs, and lock-send additionally
+# refuses unless its own demo flag is on and the board is currently live.
 EXEMPT_PREFIXES = (
     "/static/", "/desktop/", "/chat-pwa/", "/ws/", "/shortcut/", "/api/peer/",
-    "/auth/lock-avatar/", "/auth/lock-thread/",
+    "/auth/lock-avatar/", "/auth/lock-thread/", "/auth/lock-send/",
 )
 
 # Consent-loop status-poll paths are unauthenticated (the opaque request_id is

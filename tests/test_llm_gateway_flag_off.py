@@ -1,4 +1,4 @@
-"""The LLM gateway is not mounted unless TAOS_LLM_GATEWAY is exactly "1".
+"""The LLM gateway is mounted by default; TAOS_LLM_GATEWAY=0/false/no/off unmounts it.
 
 Mounting is decided at create_app, so each flag value needs its own app; no
 other state is shared, so these tests are order-free by construction. The
@@ -25,8 +25,8 @@ def _build(tmp_data_dir, monkeypatch, flag):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("flag", [None, "0", "", "true", "yes"],
-                         ids=["unset", "0", "empty", "true", "yes"])
+@pytest.mark.parametrize("flag", ["0", "false", "no", "off", " OFF "],
+                         ids=["0", "false", "no", "off", "OFF-padded"])
 async def test_gateway_routes_are_404_when_the_flag_is_off(tmp_data_dir, monkeypatch, flag):
     app = _build(tmp_data_dir, monkeypatch, flag)
     token = app.state.auth.get_local_token()
@@ -44,9 +44,11 @@ async def test_gateway_routes_are_404_when_the_flag_is_off(tmp_data_dir, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_flag_on_mounts_the_routes(tmp_data_dir, monkeypatch):
-    """Control for the test above: the same probe sees the routes when on."""
-    app = _build(tmp_data_dir, monkeypatch, "1")
+@pytest.mark.parametrize("flag", [None, "1", "", "true", "yes"], ids=["unset", "1", "empty", "true", "yes"])
+async def test_flag_on_mounts_the_routes(tmp_data_dir, monkeypatch, flag):
+    """Control for the test above: the same probe sees the routes when on,
+    and on is the default."""
+    app = _build(tmp_data_dir, monkeypatch, flag)
     paths = {getattr(r, "path", "") for r in app.routes}
     assert {"/api/llm/v1/models", "/api/llm/v1/chat/completions"} <= paths
     token = app.state.auth.get_local_token()

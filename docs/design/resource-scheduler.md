@@ -155,6 +155,25 @@ TinyAgentOS worker API — a GPU on a gaming PC, a Mac, an Android phone —
 appearing in the local scheduler exactly like a local resource, just with
 the added round-trip latency baked into the cost model.
 
+### Worker resource inventory grammar
+
+A worker advertises the classes it owns as the `resources` array on
+`POST /api/cluster/workers` and `POST /api/cluster/heartbeat`. The classes are
+exactly the `Resource.name` values in the table above:
+`cpu-inference`, `gpu-metal`, `gpu-mali`, `gpu-cuda-<n>`, `gpu-rocm-<n>`,
+`gpu-vulkan-<n>`, `gpu-sycl-<n>`, `npu-<soc>` (e.g. `npu-rk3588`) and
+`accel-<name>` (e.g. `accel-hailo`). `scripts/install-worker.sh` exports the
+detected set as `TAOS_WORKER_RESOURCES`, so the inventory is partly operator
+supplied.
+
+The controller validates that grammar before it stores anything
+(`RESOURCE_CLASS_RE` in `tinyagentos/cluster/worker_protocol.py`, used by
+`routes/cluster.py` on both endpoints and by `ClusterManager` for the
+lease-time fallback): an unknown class is a 400, because the inventory is what
+authorises lease claims (`ClusterManager._worker_for_resource`) and what the
+cluster UI renders. A worker that registers without an inventory keeps the
+legacy fallback path.
+
 ### Platform and runtime signature
 
 Each Resource carries a platform signature:

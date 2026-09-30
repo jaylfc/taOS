@@ -9,6 +9,7 @@ returns either {"element": ...} / {"elements": ...} on success or
 """
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -243,6 +244,91 @@ async def canvas_get_snapshot_png(
     target = out_dir / f"snapshot-{int(time.time())}.png"
     elements = await ctx.canvas_store.list_elements(project_id)
     render_snapshot_png(elements=elements, output_path=target)
+    return {
+        "file_path": str(target),
+        "byte_size": target.stat().st_size,
+    }
+
+
+async def canvas_get_original_element(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str, element_id: str
+) -> dict:
+    project = await ctx.project_store.get_project(project_id)
+    if project is None:
+        return {"error": "not_found", "message": "project not found"}
+    try:
+        await ctx.canvas_store.check_read_permission(
+            project_id, "agent", agent_id
+        )
+    except CanvasPermissionError:
+        return {
+            "error": "permission_denied",
+            "message": (
+                "This agent does not have read permission on the canvas. "
+                "Ask the user to enable it in project settings, or message "
+                "them to grant access."
+            ),
+        }
+    el = await ctx.canvas_store.get_element_any(element_id, project_id=project_id)
+    if el is None:
+        return {"error": "not_found", "message": f"element {element_id} not found"}
+    payload = el.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "element_id": el["id"],
+        "kind": el["kind"],
+        "deleted_at": el.get("deleted_at"),
+        "x": el["x"],
+        "y": el["y"],
+        "w": el["w"],
+        "h": el["h"],
+        "rotation": el.get("rotation", 0),
+        "z_index": el.get("z_index", 0),
+        "author_kind": el.get("author_kind"),
+        "author_id": el.get("author_id"),
+        "tldraw_shape": payload.get("tldraw_shape"),
+        "excalidraw_element": payload.get("excalidraw_element"),
+        "payload": payload,
+    }
+
+
+async def canvas_list_legacy_elements(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str, include_deleted: bool = True
+) -> dict:
+    project = await ctx.project_store.get_project(project_id)
+    if project is None:
+        return {"error": "not_found", "message": "project not found"}
+    try:
+        await ctx.canvas_store.check_read_permission(
+            project_id, "agent", agent_id
+        )
+    except CanvasPermissionError:
+        return {
+            "error": "permission_denied",
+            "message": (
+                "This agent does not have read permission on the canvas. "
+                "Ask the user to enable it in project settings, or message "
+                "them to grant access."
+            ),
+        }
+    elements = await ctx.canvas_store.list_legacy(project_id, include_deleted=include_deleted)
+    return {"elements": elements}
+
+
+async def canvas_export_tldr(
+    ctx: CanvasToolContext, *, project_id: str,
+) -> dict:
+    project = await ctx.project_store.get_project(project_id)
+    if project is None:
+        return {"error": "not_found", "message": "project not found"}
+    out_dir = ctx.data_root / project["slug"] / "files" / "canvas"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / f"canvas-{int(time.time())}.tldr"
+    elements = await ctx.canvas_store.list_elements(project_id)
+    from tinyagentos.projects.canvas.snapshotter import _build_tldraw_snapshot
+    snapshot = _build_tldraw_snapshot(elements)
+    target.write_text(json.dumps(snapshot, separators=(",", ":")))
     return {
         "file_path": str(target),
         "byte_size": target.stat().st_size,

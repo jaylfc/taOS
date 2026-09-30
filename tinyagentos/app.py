@@ -1199,12 +1199,21 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # can call it after each write.
         app.state.trace_registry.set_emitter(_otel_emitter)
         # Phase 4: reasoning judge — fire on lifecycle session_end.
-        from tinyagentos.litellm_config import get_litellm_master_key
+        from tinyagentos import llm_gateway as _llm_gateway
         from tinyagentos.otel.judge import ReasoningJudge
-        _judge = ReasoningJudge(
-            litellm_base_url=f"http://localhost:{app.state.llm_proxy.port}/v1",
-            litellm_api_key=get_litellm_master_key(data_dir),
-        )
+        if _llm_gateway.enabled():
+            # The gateway on this controller, as the host (local token = the
+            # admin kind). The LiteLLM master key no longer opens it.
+            _judge = ReasoningJudge(
+                litellm_base_url=f"http://127.0.0.1:{controller_port}/api/llm/v1",
+                litellm_api_key=app.state.auth.get_local_token() or "",
+            )
+        else:
+            from tinyagentos.litellm_config import get_litellm_master_key
+            _judge = ReasoningJudge(
+                litellm_base_url=f"http://localhost:{app.state.llm_proxy.port}/v1",
+                litellm_api_key=get_litellm_master_key(data_dir),
+            )
         app.state.trace_registry.set_judge(_judge)
 
         # Bridge session registry — per-agent queue + accumulator for openclaw.
@@ -1481,6 +1490,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # All startup init complete — allow requests through.
         from tinyagentos.agent_budget_store import AgentBudgetStore, default_budget_path
         app.state.agent_budget_store = AgentBudgetStore(default_budget_path(data_dir))
+
+        # LiteLLM -> gateway cutover: point each agent's LLM proxy device at
+        # the gateway agent listener (flag on) or back at LiteLLM (flag off).
+        # A no-op unless __main__ recorded the listener port on app.state.
+        from tinyagentos.llm_gateway.cutover import run_startup_reconcile
+        _create_supervised_task(run_startup_reconcile(app.state), app.state._background_tasks)
+
         app.state._startup_complete = True
         logger.info("startup complete — accepting requests")
 

@@ -77,6 +77,79 @@ class TestS224_ResourceInventory:
 
 @pytest.mark.asyncio
 class TestS224_Routes:
+    async def test_register_route_rejects_an_unknown_resource_class(self, client, app):
+        """The controller must not store an operator-supplied junk class.
+
+        install-worker.sh exports TAOS_WORKER_RESOURCES, so the inventory is an
+        operator knob; a typo there used to be stored verbatim and rendered in
+        the cluster UI (and consulted on every lease claim).
+        """
+        from test_routes_cluster_pairing import pair_worker, sign_worker_request
+        await app.state.cluster_pairing.init()
+        key = await pair_worker(client, app, "bad-res", "http://bad-res:9000")
+        body = {
+            "name": "bad-res",
+            "url": "http://bad-res:9000",
+            "resources": ["cpu-inference", "gpu-cuda-99; rm -rf /"],
+        }
+        body_bytes = json.dumps(body).encode()
+        path = "/api/cluster/workers"
+        headers = sign_worker_request(key, "bad-res", "POST", path, body_bytes)
+        headers["content-type"] = "application/json"
+        resp = await client.post(path, content=body_bytes, headers=headers)
+        assert resp.status_code == 400, resp.text
+        assert "resource" in resp.json()["error"], resp.text
+        assert app.state.cluster_manager.get_worker("bad-res") is None
+
+    async def test_register_route_accepts_gpu_metal(self, client, app):
+        """gpu-metal is the class #37 registers on Apple Silicon."""
+        from test_routes_cluster_pairing import pair_worker, sign_worker_request
+        await app.state.cluster_pairing.init()
+        key = await pair_worker(client, app, "mac-res", "http://mac-res:9000")
+        body = {
+            "name": "mac-res",
+            "url": "http://mac-res:9000",
+            "resources": ["gpu-metal", "cpu-inference"],
+        }
+        body_bytes = json.dumps(body).encode()
+        path = "/api/cluster/workers"
+        headers = sign_worker_request(key, "mac-res", "POST", path, body_bytes)
+        headers["content-type"] = "application/json"
+        resp = await client.post(path, content=body_bytes, headers=headers)
+        assert resp.status_code == 200, resp.text
+        assert app.state.cluster_manager.get_worker("mac-res").resources == [
+            "gpu-metal",
+            "cpu-inference",
+        ]
+
+    async def test_heartbeat_route_rejects_an_unknown_resource_class(self, client, app):
+        """A bad heartbeat class is refused and leaves the stored list intact."""
+        from test_routes_cluster_pairing import pair_worker, sign_worker_request
+        await app.state.cluster_pairing.init()
+        key = await pair_worker(client, app, "hb-bad", "http://hb-bad:9000")
+        reg = {
+            "name": "hb-bad",
+            "url": "http://hb-bad:9000",
+            "resources": ["cpu-inference"],
+        }
+        reg_bytes = json.dumps(reg).encode()
+        reg_path = "/api/cluster/workers"
+        reg_headers = sign_worker_request(key, "hb-bad", "POST", reg_path, reg_bytes)
+        reg_headers["content-type"] = "application/json"
+        resp = await client.post(reg_path, content=reg_bytes, headers=reg_headers)
+        assert resp.status_code == 200, resp.text
+
+        hb = {"name": "hb-bad", "resources": ["cpu-inference", "not-a-class"]}
+        hb_bytes = json.dumps(hb).encode()
+        hb_path = "/api/cluster/heartbeat"
+        hb_headers = sign_worker_request(key, "hb-bad", "POST", hb_path, hb_bytes)
+        hb_headers["content-type"] = "application/json"
+        resp = await client.post(hb_path, content=hb_bytes, headers=hb_headers)
+        assert resp.status_code == 400, resp.text
+        assert app.state.cluster_manager.get_worker("hb-bad").resources == [
+            "cpu-inference"
+        ]
+
     async def test_register_route_populates_resources(self, client, app):
         """POST /api/cluster/workers with resources stores them on WorkerInfo."""
         from test_routes_cluster_pairing import pair_worker, sign_worker_request
@@ -132,8 +205,11 @@ class TestS224_Routes:
 
 @pytest.mark.asyncio
 class TestS224_WorkerAgent:
-    async def test_worker_agent_register_sends_resources(self):
+    async def test_worker_agent_register_sends_resources(self, monkeypatch):
         """WorkerAgent.register() payload includes discovered resources."""
+        # install-worker.sh exports TAOS_WORKER_RESOURCES; the exact-list
+        # assertion below only holds with no installer classes in the env.
+        monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
         from tinyagentos.worker.agent import WorkerAgent
         captured = {}
 
@@ -178,8 +254,10 @@ class TestS224_WorkerAgent:
         assert "resources" in captured["body"]
         assert captured["body"]["resources"] == ["cpu-inference"]
 
-    async def test_worker_agent_heartbeat_sends_resources(self):
+    async def test_worker_agent_heartbeat_sends_resources(self, monkeypatch):
         """WorkerAgent.heartbeat() payload includes discovered resources."""
+        # Same env-independence as the register case above.
+        monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
         from tinyagentos.worker.agent import WorkerAgent
         captured = {}
 
@@ -227,3 +305,67 @@ class TestS224_WorkerAgent:
         assert status == 200
         assert "resources" in captured["body"]
         assert captured["body"]["resources"] == ["cpu-inference"]
+
+
+# --- resource-class grammar (docs/design/resource-scheduler.md) -----------
+
+
+def test_resource_class_grammar_matches_the_documented_classes():
+    """One grammar for the register validation and the lease fallback."""
+    from tinyagentos.cluster.worker_protocol import RESOURCE_CLASS_RE
+
+    for valid in (
+        "cpu-inference",
+        "gpu-metal",
+        "gpu-mali",
+        "gpu-cuda-0",
+        "gpu-cuda-11",
+        "gpu-rocm-0",
+        "gpu-vulkan-0",
+        "gpu-sycl-0",
+        "npu-rk3588",
+        "accel-hailo",
+    ):
+        assert RESOURCE_CLASS_RE.match(valid), valid
+
+    for invalid in (
+        "",
+        "cpu",
+        "GPU-METAL",
+        "gpu-cuda",
+        "gpu-metal-1",
+        "npu-",
+        "accel-",
+        "gpu-cuda-0 ",
+        "gpu-cuda-0\n",
+        "cpu-inference\n",
+        "gpu-cuda-99; rm -rf /",
+        "TAOS_WORKER_RESOURCES",
+    ):
+        assert not RESOURCE_CLASS_RE.match(invalid), invalid
+
+
+def test_invalid_resource_classes_lists_only_the_offenders():
+    from tinyagentos.cluster.worker_protocol import invalid_resource_classes
+
+    assert invalid_resource_classes(None) == []
+    assert invalid_resource_classes([]) == []
+    assert invalid_resource_classes(["cpu-inference", "gpu-metal"]) == []
+    assert invalid_resource_classes(["cpu-inference", "bogus"]) == ["bogus"]
+
+
+@pytest.mark.asyncio
+class TestS224_LegacyFallback:
+    async def test_worker_without_an_inventory_can_claim_gpu_metal(self):
+        """The lease-time fallback grammar must accept the Apple Silicon class.
+
+        The local regex this replaced predated gpu-metal, so a Mac that
+        registered without an inventory could not lease its own resource.
+        """
+        mgr = ClusterManager()
+        worker = _make_worker("mac-worker")
+        await mgr.register_worker(worker)
+        assert worker.resources == []
+        lease = await mgr.claim_lease("mac-worker:gpu-metal", caller="test")
+        assert lease is not None, "the fallback grammar rejected gpu-metal"
+        assert await mgr.claim_lease("mac-worker:nonsense", caller="test") is None

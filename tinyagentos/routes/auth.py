@@ -5,6 +5,8 @@ import html
 import json
 import math
 import random
+import re
+import secrets
 import socket
 from pathlib import Path
 import logging
@@ -13,6 +15,7 @@ import threading
 import time
 import zlib
 from collections import OrderedDict
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 
 import httpx
@@ -503,6 +506,17 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
   overscroll-behavior: contain;
 }
 .ls-feed::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+/* Command output from a device agent. df, free and ip all speak in columns,
+   and a proportional font turns them into a wall of text -- the one place on
+   this screen where monospace is the honest rendering rather than a style.
+   pre-wrap because the lines are already wrapped by the board and re-wrapping
+   them on whitespace would shuffle the columns anyway. */
+.ls-bubble[data-mono="1"] {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 12px; line-height: 1.35; white-space: pre-wrap;
+  overflow-x: auto;
+}
 
 /* PRESSING THE ACTIVE CATEGORY CLEARS THE FEED AWAY. Jay asked for it, and it
    is the one thing a lock screen full of cards could not do: see the screen
@@ -1572,8 +1586,49 @@ body.ls-black { background: #000; }
   letter-spacing: -0.01em;
 }
 .ls-status {
+  position: relative;
   font-size: 11.5px; color: rgba(255,255,255,0.52);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* A demo agent's task rotation (see _DEMO_TASK_SCRIPTS): a completion beat
+   ("✓ ...") reads as just-finished rather than as the ongoing task, so
+   it gets the same live green as the busy pip instead of the resting grey. */
+.ls-island[data-done="1"] .ls-status { color: #3ddc84; }
+/* The status-change slide: the OLD text is a `::before` ghost carrying
+   `data-prev` (set immediately before the real text swaps, see
+   animateStatusChange), sliding up and out while the real node -- already
+   holding the NEW text -- slides in from below. Both on the same DOM node:
+   the island is never rebuilt for a status change. */
+.ls-status[data-prev]::before {
+  content: attr(data-prev);
+  position: absolute; inset: 0;
+  color: inherit; background: inherit; pointer-events: none;
+  animation: ls-status-out 380ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.ls-status.ls-status-slide {
+  animation: ls-status-in 380ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+@keyframes ls-status-out {
+  from { transform: translateY(0); opacity: 1; }
+  to   { transform: translateY(-100%); opacity: 0; }
+}
+@keyframes ls-status-in {
+  from { transform: translateY(100%); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+/* prefers-reduced-motion: a crossfade instead of a slide -- the ghost still
+   fades out and the real text still fades in, just with no motion. */
+.ls-status.ls-status-crossfade::before { animation: ls-status-out-fade 380ms ease forwards; }
+.ls-status.ls-status-crossfade { animation: ls-status-in-fade 380ms ease backwards; }
+@keyframes ls-status-out-fade { from { opacity: 1; } to { opacity: 0; } }
+@keyframes ls-status-in-fade { from { opacity: 0; } to { opacity: 1; } }
+/* A brief soft highlight on the whole island in the agent's own hue, so a
+   task rotation reads as "this one, right now" even from across a room. */
+.ls-island[data-status-pulse="1"] { animation: ls-status-pulse 700ms ease-out; } /* keep <= STATUS_PULSE_MS in the script */
+@keyframes ls-status-pulse {
+  0%   { box-shadow: 0 6px 18px -6px rgba(0,0,0,0.75), 0 0 0 0 transparent; }
+  45%  { box-shadow: 0 6px 18px -6px rgba(0,0,0,0.75), 0 0 22px 3px var(--ls-a, #4c9aff); }
+  100% { box-shadow: 0 6px 18px -6px rgba(0,0,0,0.75), 0 0 0 0 transparent; }
 }
 /* Live pip: present only while the agent is actually doing something. */
 .ls-pip {
@@ -1597,6 +1652,9 @@ body.ls-black { background: #000; }
 @media (prefers-reduced-motion: reduce) {
   .ls-island, .ls-island[data-attention="1"] { animation: none; }
   .ls-island[data-attention="1"] { outline: 2px solid rgba(255,176,32,0.7); outline-offset: 2px; }
+  .ls-status.ls-status-slide,
+  .ls-status.ls-status-slide::before,
+  .ls-island[data-status-pulse="1"] { animation: none; }
 }
 /* Scheduled tasks stay quieter than the agents: they are context, not actors. */
 .ls-tasks { width: 100%; align-self: stretch; }
@@ -2121,6 +2179,349 @@ body.lockscreen-on .osk-toggle { display: none !important; }
   .ls-notif { transition: none; }
   .lockscreen:not([data-sheet="none"]) .ls-head { filter: none; }
 }
+/* THE LIVE ZONE: an incoming call (demo). Jay: "not a siri type orb but
+   stylised rectangle widget type design that appears when needed adaptive to
+   its content". So it is ONE card, in the same material and column as the
+   islands, that exists only while there is a call and changes SHAPE with what
+   it holds: compact while ringing, tall while the PA talks, a one-line pill as
+   it ends.
+
+   It takes the feed's place rather than sitting over it. The feed is hidden
+   with its OWN attribute (data-call), never with `hidden`, `data-off` or
+   `data-hidden` -- those three already have owners (the poll, the switcher and
+   the collapse), and borrowing any of them would hand the feed back in the
+   wrong state when the call ends. */
+.ls-feed[data-call="1"] { display: none; }
+.ls-feed[data-call="return"] { opacity: 0; transition: none; }
+.ls-head[data-call] .ls-views { opacity: 0.28; pointer-events: none; transition: opacity 280ms ease; }
+
+.ls-live-call {
+  --ls-call-r: 28px;
+  position: relative; flex: none;
+  width: 100%; max-width: var(--ls-card-w);
+  margin-top: 6px;
+  padding: 1.5px;                    /* the edge the glow shows through */
+  border-radius: var(--ls-call-r);
+  overflow: hidden; isolation: isolate;
+  background: rgba(255,255,255,0.07);
+  box-shadow: 0 18px 40px -18px rgba(0,0,0,0.9), 0 2px 10px -4px rgba(0,0,0,0.6);
+  transition: width 480ms cubic-bezier(0.34, 1.2, 0.5, 1),
+              opacity 220ms ease;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.ls-live-call[hidden] { display: none; }
+/* Laid out but unseen, so its size can be measured before it is revealed. */
+.ls-live-call[data-phase="measure"] { position: absolute; visibility: hidden; transition: none; }
+.ls-live-call[data-phase="grow"] { opacity: 0; transition: none; }
+/* Its first size is a starting point, not a change: nothing to animate from. */
+.ls-live-call[data-phase="measure"] .ls-call-card,
+.ls-live-call[data-phase="grow"] .ls-call-card { transition: none; }
+/* A ring the script moved focus to is for keyboard users; on the glass, where
+   the finger is the pointer, it would read as a stray outline. */
+.ls-live-call[data-kbd="0"] :focus-visible,
+.ls-live-call[data-kbd="0"] :focus-visible .ls-call-dot { outline: none; }
+.ls-live-call[data-phase="leave"] { opacity: 0; transition: opacity 120ms ease; }
+
+/* THE EDGE. One conic gradient per voice, spun by the compositor (a transform
+   animation, no per-frame paint) and faded by the script from the speech
+   envelope -- opacity only. Square and oversized so the sweep covers the card
+   at every height it morphs through. */
+.ls-call-glow { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.ls-call-ring {
+  position: absolute; left: 50%; top: 50%;
+  width: 900px; height: 900px; margin: -450px 0 0 -450px;
+  opacity: 0; will-change: transform, opacity;
+  animation: ls-call-spin 5.2s linear infinite;
+}
+.ls-call-ring[data-tone="caller"] {
+  background: conic-gradient(from 0deg,
+    rgba(255,122,89,0) 0deg, #ff7a59 50deg, #ffb020 95deg, rgba(255,176,32,0) 150deg,
+    rgba(255,79,139,0) 185deg, #ff4f8b 245deg, #ff7a59 300deg, rgba(255,122,89,0) 360deg);
+}
+.ls-call-ring[data-tone="pa"] {
+  background: conic-gradient(from 90deg,
+    rgba(76,154,255,0) 0deg, #4c9aff 55deg, #8b5cf6 110deg, rgba(139,92,246,0) 160deg,
+    rgba(61,214,255,0) 190deg, #3dd6ff 250deg, #4c9aff 305deg, rgba(76,154,255,0) 360deg);
+  animation-duration: 6.4s; animation-direction: reverse;
+}
+/* ONE spin rate for every state. It used to be faster while ringing, but a
+   running animation's position is its elapsed time over its duration, so
+   changing the duration at ringing -> PA snapped the sweep to a new angle in a
+   single frame. Ringing reads through the pulse instead. */
+@keyframes ls-call-spin { to { transform: rotate(360deg); } }
+
+/* THE BODY. Solid rather than backdrop-blurred: the glow behind it moves every
+   frame, and a backdrop filter over a moving backdrop is a full blur per frame
+   on a phone GPU. The height is set by the script from the measured content,
+   so the card MORPHS between states instead of snapping. */
+.ls-call-card {
+  position: relative; z-index: 1;
+  border-radius: calc(var(--ls-call-r) - 1.5px);
+  background: rgba(22, 22, 27, 0.955);
+  overflow: hidden;
+  transition: height 480ms cubic-bezier(0.34, 1.2, 0.5, 1);
+}
+/* The ambient wash: each voice's colour pooled at the top of the card. */
+.ls-call-wash {
+  position: absolute; inset: 0; pointer-events: none; opacity: 0;
+  will-change: opacity;
+}
+.ls-call-wash[data-tone="caller"] {
+  background: radial-gradient(120% 90px at 50% 0%, rgba(255,122,89,0.26), rgba(255,79,139,0.08) 60%, transparent 100%);
+}
+.ls-call-wash[data-tone="pa"] {
+  background: radial-gradient(120% 110px at 50% 0%, rgba(76,154,255,0.28), rgba(139,92,246,0.10) 60%, transparent 100%);
+}
+.ls-call-views { position: relative; }
+.ls-call-view {
+  position: relative; display: flow-root;   /* contain the last child's margin, or the measure misses it */
+  transition: opacity 240ms ease 110ms, transform 380ms cubic-bezier(0.16, 1, 0.3, 1) 60ms;
+}
+.ls-call-view:not([data-on="1"]) {
+  position: absolute; left: 0; right: 0; top: 0;
+  opacity: 0; transform: scale(0.97); pointer-events: none; visibility: hidden;
+  transition: opacity 160ms ease, transform 200ms ease, visibility 0s linear 200ms;
+}
+
+/* RINGING. Compact: who, then the answers. */
+.ls-call-caller { display: flex; align-items: center; gap: 14px; padding: 18px 20px 4px; }
+.ls-call-avatar {
+  position: relative; flex: none;
+  width: 54px; height: 54px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; font-weight: 600; color: #fff;
+  background: linear-gradient(140deg, #ff9a62, #ff4f8b);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18);
+}
+.ls-call-avatar::after {
+  content: ""; position: absolute; inset: -5px; border-radius: 50%;
+  border: 2px solid rgba(255,138,101,0.6);
+  animation: ls-call-halo 1.6s cubic-bezier(0.2, 0.7, 0.3, 1) infinite;
+}
+.ls-live-call:not([data-state="ringing"]) .ls-call-avatar::after { animation: none; opacity: 0; }
+@keyframes ls-call-halo {
+  0% { transform: scale(0.94); opacity: 0.9; }
+  100% { transform: scale(1.32); opacity: 0; }
+}
+.ls-call-id { min-width: 0; display: flex; flex-direction: column; }
+.ls-call-kicker {
+  font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  color: rgba(255,255,255,0.55);
+}
+.ls-call-name { font-size: 30px; font-weight: 600; line-height: 1.12; letter-spacing: -0.015em; color: #fff; }
+.ls-call-label { font-size: 14px; color: rgba(255,255,255,0.55); }
+.ls-call-row {
+  display: flex; justify-content: space-around; align-items: flex-start;
+  padding: 14px 18px 4px;
+}
+.ls-call-btn {
+  -webkit-appearance: none; appearance: none; border: 0; background: none; padding: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  min-width: 72px; color: rgba(255,255,255,0.78);
+  font: inherit; font-size: 12.5px; font-weight: 500;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.ls-call-dot {
+  width: 58px; height: 58px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,0.12);
+  transition: transform 140ms cubic-bezier(0.32,0.72,0,1), background 160ms ease;
+}
+.ls-call-dot svg { width: 25px; height: 25px; fill: none; stroke: #fff; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.ls-call-btn[data-kind="danger"] .ls-call-dot { background: #ff4d4f; }
+.ls-call-btn[data-kind="go"] .ls-call-dot { background: #30c26a; }
+.ls-call-btn:active .ls-call-dot { transform: scale(0.92); }
+.ls-call-btn[aria-pressed="true"] .ls-call-dot { background: #fff; }
+.ls-call-btn[aria-pressed="true"] .ls-call-dot svg { stroke: #16161b; }
+.ls-call-btn:focus-visible { outline: none; }
+.ls-call-btn:focus-visible .ls-call-dot { outline: 3px solid #4c9aff; outline-offset: 3px; }
+/* The headline answer. Full width, the accent gradient, and a slow sheen, so
+   it reads as THE thing to press without shouting over the call itself. */
+.ls-call-pa {
+  -webkit-appearance: none; appearance: none; border: 0;
+  position: relative; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  width: calc(100% - 32px); height: 54px; margin: 14px 16px 16px;
+  border-radius: 999px;
+  font: inherit; font-size: 16.5px; font-weight: 600; letter-spacing: 0.005em; color: #fff;
+  background: linear-gradient(100deg, #3f7dff 0%, #4c9aff 38%, #7c5cff 100%);
+  box-shadow: 0 10px 26px -10px rgba(76,154,255,0.75), inset 0 1px 0 rgba(255,255,255,0.25);
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  transition: transform 140ms cubic-bezier(0.32,0.72,0,1);
+}
+.ls-call-pa::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -40%; width: 40%;
+  background: linear-gradient(100deg, transparent, rgba(255,255,255,0.28), transparent);
+  transform: skewX(-18deg);
+  animation: ls-call-sheen 3.2s cubic-bezier(0.4, 0, 0.2, 1) 0.8s infinite;
+}
+@keyframes ls-call-sheen { 0% { left: -40%; } 45%, 100% { left: 120%; } }
+.ls-call-pa svg { width: 20px; height: 20px; fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ls-call-pa:active { transform: scale(0.98); }
+.ls-call-pa:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+
+/* THE CONVERSATION: the PA talking, or you. */
+.ls-call-head {
+  display: flex; align-items: center; gap: 9px;
+  padding: 16px 20px 10px;
+  font-size: 15px; font-weight: 600; color: rgba(255,255,255,0.94);
+}
+.ls-call-live {
+  flex: none; width: 8px; height: 8px; border-radius: 50%; background: #3ddc84;
+  box-shadow: 0 0 0 0 rgba(61,220,132,0.55);
+  animation: ls-call-live 1.8s ease-out infinite;
+}
+@keyframes ls-call-live {
+  0% { box-shadow: 0 0 0 0 rgba(61,220,132,0.55); }
+  70%, 100% { box-shadow: 0 0 0 8px rgba(61,220,132,0); }
+}
+.ls-call-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ls-call-timer {
+  flex: none; font-size: 14px; font-weight: 500; color: rgba(255,255,255,0.55);
+  font-variant-numeric: tabular-nums;
+}
+.ls-call-log {
+  display: flex; flex-direction: column; gap: 8px;
+  max-height: 318px; overflow-y: auto; padding: 4px 16px 12px;
+  scrollbar-width: none; overscroll-behavior: contain;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+}
+.ls-call-log::-webkit-scrollbar { display: none; }
+.ls-call-log:empty { display: none; }
+.ls-call-line {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  max-width: 86%;
+  animation: ls-call-line-in 420ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.ls-call-line[data-who="pa"] { align-self: flex-end; align-items: flex-end; }
+@keyframes ls-call-line-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+.ls-call-speaker {
+  display: flex; align-items: center; gap: 6px; padding: 0 6px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+  color: rgba(255,255,255,0.45);
+}
+.ls-call-bars { display: inline-flex; align-items: center; gap: 2px; height: 10px; opacity: 0; transition: opacity 200ms ease; }
+.ls-call-bars i {
+  display: block; width: 2.5px; height: 10px; border-radius: 2px;
+  background: currentColor; transform: scaleY(0.3); transform-origin: 50% 50%;
+}
+.ls-call-line[data-speaking="1"] .ls-call-bars { opacity: 1; }
+.ls-call-line[data-who="pa"] .ls-call-speaker { color: #8fbcff; }
+.ls-call-line[data-who="caller"] .ls-call-speaker { color: #ffb09a; }
+.ls-call-text {
+  padding: 9px 13px; border-radius: 18px;
+  font-size: 15px; line-height: 1.38; color: rgba(255,255,255,0.92);
+  background: rgba(255,255,255,0.08);
+  border-bottom-left-radius: 6px;
+  min-height: 39px; min-width: 44px;
+}
+.ls-call-line[data-who="pa"] .ls-call-text {
+  background: linear-gradient(135deg, rgba(76,154,255,0.30), rgba(124,92,255,0.26));
+  border-bottom-left-radius: 18px; border-bottom-right-radius: 6px;
+}
+.ls-call-line[data-cut="1"] .ls-call-text::after { content: "\u2026"; color: rgba(255,255,255,0.45); }
+.ls-call-mark {
+  align-self: center; margin: 4px 0 2px; padding: 4px 11px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; color: #3ddc84;
+  background: rgba(61,220,132,0.12);
+  animation: ls-call-line-in 420ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.ls-call-ctls { position: relative; }
+.ls-call-ctl { display: flex; gap: 10px; padding: 4px 16px 16px; }
+.ls-call-ctl[data-for="live"] { justify-content: space-around; padding-top: 8px; }
+.ls-call-ctl:not([data-on="1"]) { display: none; }
+.ls-call-wide {
+  -webkit-appearance: none; appearance: none; border: 0;
+  flex: 1 1 0; height: 50px; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  font: inherit; font-size: 15.5px; font-weight: 600; color: #fff;
+  background: rgba(255,255,255,0.12);
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  transition: transform 140ms cubic-bezier(0.32,0.72,0,1);
+}
+.ls-call-wide svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.ls-call-wide[data-kind="primary"] {
+  background: linear-gradient(100deg, #3f7dff, #6d6bff);
+  box-shadow: 0 8px 22px -10px rgba(76,154,255,0.8), inset 0 1px 0 rgba(255,255,255,0.22);
+}
+.ls-call-wide[data-kind="danger"] { background: rgba(255,77,79,0.16); color: #ff7b7d; }
+.ls-call-wide:active { transform: scale(0.97); }
+.ls-call-wide:focus-visible { outline: 3px solid #4c9aff; outline-offset: 2px; }
+
+/* ENDED: one line, then gone. */
+.ls-call-view[data-for="ended"] { text-align: center; white-space: nowrap; }
+.ls-call-pill {
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 13px 20px; white-space: nowrap;
+  font-size: 14.5px; font-weight: 600; color: rgba(255,255,255,0.9);
+}
+.ls-call-pill-ico {
+  flex: none; width: 26px; height: 26px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,0.12);
+}
+.ls-call-pill-ico svg { width: 16px; height: 16px; fill: none; stroke: #fff; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.ls-call-pill[data-kind="event"] .ls-call-pill-ico { background: linear-gradient(135deg, #4c9aff, #7c5cff); }
+.ls-call-pill-text { transition: opacity 200ms ease; }
+
+/* THE LIQUID. A throwaway layer that exists only during the hand-over: blobs
+   stand in for the cards, run together under an alpha-contrast (goo) filter
+   into one droplet, and the droplet stretches into the card. The filter never
+   touches the real cards -- a blur-and-threshold over text and backdrop-blurred
+   glass reads as mud, and a filtered ancestor would break their backdrop. */
+.ls-goo {
+  position: fixed; z-index: 30; pointer-events: none;
+  filter: url(#ls-goo-filter);
+  transition: opacity 240ms ease;
+}
+.ls-goo-blob {
+  position: absolute; left: 0; top: 0;
+  background: #2b2c33;
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+.ls-feed [data-call-card] { will-change: transform, opacity; }
+/* THE REMINDER the PA leaves in Alerts, in the PA's colours so it reads as
+   something your assistant did rather than one more app notification. Its exit
+   is the islands' entrance run backwards, so a dismissal looks like the same
+   material leaving rather than a node being deleted. */
+.ls-call-reminder {
+  background: linear-gradient(180deg, rgba(76,154,255,0.16), rgba(124,92,255,0.05) 75%), rgba(30, 30, 34, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(125,160,255,0.35), 0 6px 18px -6px rgba(0, 0, 0, 0.75);
+}
+.ls-call-reminder-tile {
+  flex: none; width: 30px; height: 30px; border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #4c9aff, #7c5cff);
+}
+.ls-call-reminder-tile svg { width: 17px; height: 17px; fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ls-call-reminder-meta {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  color: #8fbcff;
+}
+.ls-call-reminder-title { margin-top: 2px; font-size: 14px; font-weight: 600; color: #fff; }
+.ls-call-reminder-text { margin-top: 2px; font-size: 13px; line-height: 1.38; color: rgba(255,255,255,0.72); }
+.ls-call-reminder[data-leaving="1"] {
+  animation: ls-call-out 300ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  pointer-events: none;
+}
+@keyframes ls-call-out {
+  from { opacity: 1; transform: none; filter: none; }
+  to   { opacity: 0; transform: translateY(6px) scale(0.96); filter: blur(3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ls-live-call, .ls-call-card, .ls-call-view, .ls-call-view:not([data-on="1"]) { transition: opacity 180ms ease; }
+  .ls-call-ring, .ls-call-avatar::after, .ls-call-pa::after, .ls-call-live,
+  .ls-call-line, .ls-call-mark, .ls-call-reminder[data-leaving="1"] { animation: none; }
+  .ls-call-ring { opacity: 0.55; }
+  .ls-call-view:not([data-on="1"]) { transform: none; }
+}
+.lockscreen[data-blanked] .ls-live-call *, .lockscreen[data-blanked] .ls-live-call *::after { animation-play-state: paused; }
 /* Landscape: the keypad and the clock sit side by side or neither fits. */
 @media (orientation: landscape) and (max-height: 560px) {
   .lockscreen { flex-direction: row; align-items: center; gap: 24px; padding-top: 12px; }
@@ -2564,6 +2965,99 @@ def _lock_head_html(unlock_method: str = "pin") -> str:
         <div class="ls-panel" id="ls-stats" data-view="stats"
              role="tabpanel" aria-labelledby="ls-tab-stats" aria-label="System" hidden></div>
       </div>
+      <!-- THE LIVE ZONE (incoming-call demo). Present only while a call is;
+           /auth/lock-screen.js fills it from /auth/lock-call. Every word in it
+           is scripted server-side: this screen renders before sign-in. -->
+      <section class="ls-live-call" id="ls-call" aria-labelledby="ls-call-heading" hidden>
+        <div class="ls-call-glow" aria-hidden="true">
+          <span class="ls-call-ring" data-tone="caller"></span>
+          <span class="ls-call-ring" data-tone="pa"></span>
+        </div>
+        <div class="ls-call-card" id="ls-call-card">
+          <span class="ls-call-wash" data-tone="caller" aria-hidden="true"></span>
+          <span class="ls-call-wash" data-tone="pa" aria-hidden="true"></span>
+          <div class="ls-call-views">
+            <div class="ls-call-view" data-for="ringing">
+              <div class="ls-call-caller">
+                <div class="ls-call-avatar" id="ls-call-avatar" aria-hidden="true">N</div>
+                <div class="ls-call-id">
+                  <div class="ls-call-kicker" id="ls-call-heading">Incoming call</div>
+                  <div class="ls-call-name" id="ls-call-name">Mary</div>
+                  <div class="ls-call-label" id="ls-call-label">mobile</div>
+                </div>
+              </div>
+              <div class="ls-call-row">
+                <button type="button" class="ls-call-btn" data-kind="danger" data-call-act="decline">
+                  <span class="ls-call-dot"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.2 13.9c5-4.6 12.6-4.6 17.6 0l-1.8 2.6-3.6-1.2-.5-2.6a10 10 0 0 0-5.8 0l-.5 2.6-3.6 1.2z"/></svg></span>
+                  Decline
+                </button>
+                <button type="button" class="ls-call-btn" data-call-act="voicemail">
+                  <span class="ls-call-dot"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6.8" cy="12.5" r="4"/><circle cx="17.2" cy="12.5" r="4"/><path d="M6.8 16.5h10.4"/></svg></span>
+                  Voicemail
+                </button>
+                <button type="button" class="ls-call-btn" data-kind="go" data-call-act="answer">
+                  <span class="ls-call-dot"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.2 3.5l2.4 4-1.9 2a11 11 0 0 0 5.8 5.8l2-1.9 4 2.4v3.1a1.7 1.7 0 0 1-1.9 1.7A16.5 16.5 0 0 1 3.4 5.4 1.7 1.7 0 0 1 5.1 3.5z"/></svg></span>
+                  Answer
+                </button>
+              </div>
+              <button type="button" class="ls-call-pa" data-call-act="pa">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 3.5l1.9 5.1 5.1 1.9-5.1 1.9L11 17.5l-1.9-5.1L4 10.5l5.1-1.9z"/><path d="M18.3 14.8l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8z"/></svg>
+                Send to PA
+              </button>
+            </div>
+            <div class="ls-call-view" data-for="talk">
+              <div class="ls-call-head">
+                <span class="ls-call-live" aria-hidden="true"></span>
+                <span class="ls-call-title" id="ls-call-title"></span>
+                <span class="ls-call-timer" id="ls-call-timer" role="timer" aria-live="off">0:00</span>
+              </div>
+              <div class="ls-call-log" id="ls-call-log" role="log" aria-live="polite"
+                   aria-label="Call transcript"></div>
+              <div class="ls-call-ctls">
+                <div class="ls-call-ctl" data-for="pa">
+                  <button type="button" class="ls-call-wide" data-kind="primary" data-call-act="takeover">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.2 3.5l2.4 4-1.9 2a11 11 0 0 0 5.8 5.8l2-1.9 4 2.4v3.1a1.7 1.7 0 0 1-1.9 1.7A16.5 16.5 0 0 1 3.4 5.4 1.7 1.7 0 0 1 5.1 3.5z"/></svg>
+                    Take over
+                  </button>
+                  <button type="button" class="ls-call-wide" data-kind="danger" data-call-act="end">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.2 13.9c5-4.6 12.6-4.6 17.6 0l-1.8 2.6-3.6-1.2-.5-2.6a10 10 0 0 0-5.8 0l-.5 2.6-3.6 1.2z"/></svg>
+                    End call
+                  </button>
+                </div>
+                <div class="ls-call-ctl" data-for="live">
+                  <button type="button" class="ls-call-btn" data-call-toggle="mute" aria-pressed="false">
+                    <span class="ls-call-dot"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M4 4l16 16"/></svg></span>
+                    Mute
+                  </button>
+                  <button type="button" class="ls-call-btn" data-call-toggle="speaker" aria-pressed="false">
+                    <span class="ls-call-dot"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg></span>
+                    Speaker
+                  </button>
+                  <button type="button" class="ls-call-btn" data-kind="danger" data-call-act="end">
+                    <span class="ls-call-dot"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.2 13.9c5-4.6 12.6-4.6 17.6 0l-1.8 2.6-3.6-1.2-.5-2.6a10 10 0 0 0-5.8 0l-.5 2.6-3.6 1.2z"/></svg></span>
+                    End
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="ls-call-view" data-for="ended">
+              <div class="ls-call-pill" id="ls-call-pill" role="status">
+                <span class="ls-call-pill-ico" id="ls-call-pill-ico" aria-hidden="true"></span>
+                <span class="ls-call-pill-text" id="ls-call-outcome"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <svg class="ls-goo-defs" width="0" height="0" aria-hidden="true" focusable="false"
+           style="position:absolute;width:0;height:0">
+        <filter id="ls-goo-filter" x="-20%" y="-20%" width="140%" height="140%"
+                color-interpolation-filters="sRGB">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="9" result="blur"/>
+          <feColorMatrix in="blur" mode="matrix"
+                         values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -10"/>
+        </filter>
+      </svg>
       {_FRAMEWORK_SPRITE}
       {_VIEW_SPRITE}
     </div>
@@ -2854,6 +3348,61 @@ _LOCK_SCREEN_SCRIPT = r"""
       ]);
     }
 
+    // Whether a status reads as a just-finished completion beat ("✓
+    // Table booked at Dishoom") rather than an ongoing task -- shared between
+    // paint and animation so the two never disagree about which one a status
+    // is.
+    function isDoneStatus(status) {
+      return /^✓\s/.test(status || "");
+    }
+
+    // How long the status-change animation runs. The swap below happens at
+    // roughly the halfway point of this same duration, so the two stay in
+    // sync by construction rather than by two numbers that can drift apart.
+    var STATUS_CHANGE_MS = 380;
+    // How long `data-status-pulse` stays on the island. The pulse keyframes
+    // (`ls-status-pulse`, 700ms in the stylesheet) run longer than the slide,
+    // and removing the attribute cuts the animation off, so this must be at
+    // least that duration. tests/test_lock_demo_task_rotation.py pins the two
+    // together.
+    var STATUS_PULSE_MS = 700;
+
+    // Slide the OLD status up and out while the NEW one slides in from below,
+    // on the SAME `.ls-status` node -- the island must never be rebuilt for
+    // this (see reconcileIslands). `data-prev` carries the outgoing text for
+    // a `::before` ghost to render and animate out; the real node's
+    // textContent is swapped to the new status IMMEDIATELY and synchronously,
+    // so a caller reading `.textContent` right after this call -- as the
+    // repaint tests do -- sees the new value with no animation-timing
+    // dependency. The ghost and the pulse attribute are cosmetic cleanup only
+    // and are cleared after the animation via a sequence number, so a second
+    // change arriving before the first finishes cannot clear the newer one's
+    // state early.
+    function animateStatusChange(el, s, status) {
+      s.setAttribute("data-prev", s.textContent);
+      s.textContent = status;
+      var reduced = false;
+      try {
+        reduced = !!(window.matchMedia
+          && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      } catch (err) { reduced = false; }
+      s.className = "ls-status" + (reduced ? " ls-status-crossfade" : " ls-status-slide");
+      setAttrIfChanged(el, "data-status-pulse", "1");
+      var seq = (s.__statusChangeSeq = (s.__statusChangeSeq || 0) + 1);
+      setTimeout(function () {
+        if (s.__statusChangeSeq !== seq) return; // superseded by a newer change
+        s.removeAttribute("data-prev");
+        s.className = "ls-status";
+      }, STATUS_CHANGE_MS);
+      // The pulse outlives the slide, so it has its own timer and its own
+      // supersede check.
+      var pulseSeq = (el.__statusPulseSeq = (el.__statusPulseSeq || 0) + 1);
+      setTimeout(function () {
+        if (el.__statusPulseSeq !== pulseSeq) return;
+        el.removeAttribute("data-status-pulse");
+      }, STATUS_PULSE_MS);
+    }
+
     // An island's MUTABLE half: everything a 15s poll can legitimately change.
     // Written in place, and only where the value actually differs, so that a
     // tick which changes nothing touches nothing.
@@ -2868,11 +3417,13 @@ _LOCK_SCREEN_SCRIPT = r"""
       setAttrIfChanged(el, "data-state", busy ? "busy" : "idle");
       if (agent.attention) setAttrIfChanged(el, "data-attention", "1");
       else if (el.hasAttribute("data-attention")) el.removeAttribute("data-attention");
+      if (isDoneStatus(status)) setAttrIfChanged(el, "data-done", "1");
+      else if (el.hasAttribute("data-done")) el.removeAttribute("data-done");
       setAttrIfChanged(el, "aria-label", (agent.attention && agent.decision)
         ? name + " needs a decision: " + (agent.decision.question || "")
         : name + ", " + status + ". Open conversation.");
       var s = el.querySelector(".ls-status");
-      if (s && s.textContent !== status) s.textContent = status;
+      if (s && s.textContent !== status) animateStatusChange(el, s, status);
     }
 
     function setAttrIfChanged(el, attr, value) {
@@ -2891,9 +3442,13 @@ _LOCK_SCREEN_SCRIPT = r"""
       // without a key there is no way to put keyboard focus back on the island
       // the user was actually on -- an index would silently move the focus to a
       // different agent whenever the list reorders.
-      el.setAttribute("data-agent", name);
+      // A device agent carries its OWN key (`device:<slug>`), so a plugged-in
+      // board and a TAOS_LOCK_DEMO_AGENTS placeholder of the same name cannot
+      // land on the same island and hand each other's payload to one node.
+      el.setAttribute("data-agent", agent.key || name);
       el.setAttribute("data-state", busy ? "busy" : "idle");
       if (agent.attention) el.setAttribute("data-attention", "1");
+      if (isDoneStatus(status)) el.setAttribute("data-done", "1");
       // An island OPENS something, so it is a button, not a list item: it has
       // to be reachable by tab and operable by Enter, not only by a press.
       el.setAttribute("role", "button");
@@ -2915,6 +3470,10 @@ _LOCK_SCREEN_SCRIPT = r"""
       var hue = hueFor(name);
       av.style.setProperty("--ls-a", "hsl(" + hue + " 62% 58%)");
       av.style.setProperty("--ls-b", "hsl(" + ((hue + 28) % 360) + " 58% 38%)");
+      // Also set on the ISLAND itself, not only its avatar child: the status
+      // pulse glow lives on `.ls-island` and a custom property set on a
+      // descendant does not flow back up to its ancestor.
+      el.style.setProperty("--ls-a", "hsl(" + hue + " 62% 58%)");
       // A photo when one is configured; the monogram is the fallback, so a
       // missing file degrades to initials rather than a broken image frame.
       if (agent.avatar) {
@@ -3057,8 +3616,12 @@ _LOCK_SCREEN_SCRIPT = r"""
       for (var j = 0; j < agents.length; j++) {
         var agent = agents[j];
         var name = agent.name || "agent";
-        var el = Object.prototype.hasOwnProperty.call(existing, name)
-          ? existing[name] : null;
+        // Look up by the SAME key island() writes to data-agent. Looking up by
+        // name never matched a device island (key `device:<slug>`), so it was
+        // rebuilt, entrance animation and all, on every poll.
+        var key = agent.key || name;
+        var el = Object.prototype.hasOwnProperty.call(existing, key)
+          ? existing[key] : null;
         // A reconfigured agent -- new portrait, different framework -- is the
         // one case where the element itself is wrong rather than merely stale.
         if (el && el.getAttribute("data-identity") !== islandIdentity(agent)) {
@@ -3072,7 +3635,7 @@ _LOCK_SCREEN_SCRIPT = r"""
         }
         // Claimed: a second agent sharing this name gets its own island
         // rather than the two of them fighting over one element.
-        delete existing[name];
+        delete existing[key];
         want.push(el);
       }
       // Whatever the payload no longer lists has genuinely gone away, and
@@ -3155,15 +3718,84 @@ _LOCK_SCREEN_SCRIPT = r"""
       syncFeedFade();
     }
 
+    // Default cadence when the server does not say otherwise (demo mode off,
+    // or on but nothing scheduled to change).
+    var WIDGETS_POLL_MS = 15000;
+    var widgetsTimer = null;
+    var widgetsPaused = false;
+
+    // Schedules the NEXT fetch rather than re-arming a fixed interval, so a
+    // rotating demo task's `refresh_in_ms` can pull the next poll in tighter
+    // than 15s and land the fetch right as the status is due to change,
+    // instead of the change sitting there stale for up to 15s.
+    function scheduleWidgetsPoll(ms) {
+      if (widgetsTimer) { clearTimeout(widgetsTimer); widgetsTimer = null; }
+      if (widgetsPaused) return;
+      widgetsTimer = setTimeout(pollActivity, ms || WIDGETS_POLL_MS);
+    }
+
     function pollActivity() {
       fetch("/auth/lock-widgets", { credentials: "same-origin" })
         .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (d) { if (d) paintActivity(d); })
-        .catch(function () { /* offline or off-console: leave the card as is */ });
+        .then(function (d) {
+          if (d) paintActivity(d);
+          scheduleWidgetsPoll(d && d.refresh_in_ms);
+        })
+        .catch(function () {
+          // Offline or off-console: leave the card as is, but keep polling --
+          // the network coming back is exactly when this needs to recover.
+          scheduleWidgetsPoll();
+        });
     }
+
+    // The screen is off or the tab/app is backgrounded: a poll landing then
+    // paints nothing anyone can see and just burns battery and radio, so this
+    // pauses the schedule entirely rather than merely slowing it down.
+    function pauseWidgetsPoll() {
+      widgetsPaused = true;
+      if (widgetsTimer) { clearTimeout(widgetsTimer); widgetsTimer = null; }
+    }
+
+    // Coming back: fetch immediately rather than waiting out whatever was
+    // left of the paused schedule, so a lock screen that was just woken shows
+    // this instant's state, not a stale one from before it went dark.
+    function resumeWidgetsPoll() {
+      if (!widgetsPaused) return;
+      widgetsPaused = false;
+      pollActivity();
+    }
+
+    // THE SAFETY NET, as for data-blanked. The pause is lifted by the stream's
+    // screen-on; if that event never arrives -- a dead or reconnecting stream,
+    // a restarted controller -- nothing else would lift it (the kiosk's
+    // visibility does not change with the panel), and the islands would sit
+    // frozen on a lit screen. Real input means someone is looking, so it
+    // resumes the poll; on a running poll resume is a no-op.
+    function armWidgetsInputResume(doc) {
+      ["touchstart", "keydown", "pointerdown"].forEach(function (evt) {
+        doc.addEventListener(evt, function () { resumeWidgetsPoll(); },
+                             { passive: true, capture: true });
+      });
+    }
+
+    // And when the lock stream (re)opens. EventSource reconnects on its own
+    // after a drop, and a screen-on sent while it was down is gone for good;
+    // on a lit screen nobody touches, the input net alone would leave the
+    // islands frozen. A reconnect therefore assumes the screen may be on. If
+    // it is in fact dark, the next screen-off pauses the poll again.
+    function armWidgetsStreamResume(stream) {
+      stream.addEventListener("open", function () { resumeWidgetsPoll(); });
+    }
+
     if (card) {
       pollActivity();
-      setInterval(pollActivity, 15000);
+      try {
+        document.addEventListener("visibilitychange", function () {
+          if (document.visibilityState === "hidden") pauseWidgetsPoll();
+          else resumeWidgetsPoll();
+        });
+        armWidgetsInputResume(document);
+      } catch (err) { /* no document in this harness: keep polling on the timer */ }
     }
 
     // -----------------------------------------------------------------------
@@ -3715,7 +4347,9 @@ _LOCK_SCREEN_SCRIPT = r"""
       phone: '<path d="M6.2 3.5l2.4 4-1.9 2a11 11 0 0 0 5.8 5.8l2-1.9 4 2.4v3.1a1.7 1.7 0 0 1-1.9 1.7A16.5 16.5 0 0 1 3.4 5.4 1.7 1.7 0 0 1 5.1 3.5z"/>',
       sms: '<path d="M4 4.5h16v11H8.5L4 19z"/><path d="M8 8.6h8M8 11.6h5"/>',
       // Two rings joined by a bar: the mark every phone uses for voicemail.
-      voicemail: '<circle cx="6.8" cy="13.5" r="4.3"/><circle cx="17.2" cy="13.5" r="4.3"/><path d="M6.8 17.8h10.4"/>'
+      voicemail: '<circle cx="6.8" cy="13.5" r="4.3"/><circle cx="17.2" cy="13.5" r="4.3"/><path d="M6.8 17.8h10.4"/>',
+      // A page of a calendar: what the PA leaves behind after a call (demo).
+      calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.6"/><path d="M3.5 9.8h17M8 3v4M16 3v4"/>'
     };
 
     // Which stacks the user has fanned out, kept OUTSIDE the paint so a repaint
@@ -3852,10 +4486,17 @@ _LOCK_SCREEN_SCRIPT = r"""
       var sheetNow = screenEl ? screenEl.getAttribute("data-sheet") : "none";
       if (sheetNow && sheetNow !== "none") return;
       var groups = (data && data.groups) || [];
+      // The PA's reminder lives in this panel but is not a notification: it
+      // comes from the call, and it goes when it is DISMISSED, not when a poll
+      // finds no stacks. So an empty paint keeps it, node and all.
+      var remEl = document.getElementById("ls-call-reminder");
+      if (remEl && remEl.parentNode !== notifsEl) remEl = null;
       if (!groups.length) {
+        if (remEl) notifsEl.removeChild(remEl);
         notifsEl.textContent = "";
+        if (remEl) notifsEl.appendChild(remEl);
         notifClocks = [];
-        notifsEl.hidden = true;
+        notifsEl.hidden = !notifsEl.firstChild;
         return;
       }
 
@@ -3896,6 +4537,7 @@ _LOCK_SCREEN_SCRIPT = r"""
       // everything past the last wanted element: left out, the decisions would
       // be deleted by the next notification poll.
       var decEl = document.getElementById("ls-decisions");
+      if (remEl) want.unshift(remEl);
       if (decEl && decEl.children.length) want.unshift(decEl);
 
       placeInOrder(notifsEl, want);
@@ -4740,6 +5382,8 @@ _LOCK_SCREEN_SCRIPT = r"""
         if (screenEl && screenEl.getAttribute("data-sheet") === "none") openShade();
       }, null, function (ev) {
         var t = ev.touches[0];
+        // Nor may a drag on the call card pull the shade down over it.
+        if (ev.target && ev.target.closest && ev.target.closest(".ls-live-call")) return true;
         return !t || t.clientY > 90;      // vetoed unless it began up top
       });
 
@@ -5054,6 +5698,7 @@ _LOCK_SCREEN_SCRIPT = r"""
             setBlack(false);
           }, TV_MS + 20);
         });
+
         // One listener shape for all four, reading the payload rather than
         // relying on the event name to carry the screen state.
         var volKeys = [["up", "press"], ["up", "release"],
@@ -5307,6 +5952,20 @@ _LOCK_SCREEN_SCRIPT = r"""
         if (chargeRun === run) chargeFinish(false);
       }, CHARGE_MS);
     }
+
+    // The widgets poll (agent islands, rotating demo tasks) has no reason to
+    // run against a dark panel -- pause it there and catch up the instant the
+    // screen wakes, same as visibilitychange does for a backgrounded app. On
+    // the shared stream, not inside `if (powerSheet)`, so it does not depend
+    // on the power menu's markup being present.
+    (function () {
+      if (!card) return;
+      var stream = lockEvents();
+      if (!stream) return;
+      stream.addEventListener("screen-off", function () { pauseWidgetsPoll(); });
+      stream.addEventListener("screen-on", function () { resumeWidgetsPoll(); });
+      armWidgetsStreamResume(stream);
+    })();
 
     (function () {
       var stream = lockEvents();
@@ -5774,6 +6433,9 @@ _LOCK_SCREEN_SCRIPT = r"""
       // microphone must never outlive the sheet that opened it.
       if (window.taosOSK) window.taosOSK.disable();
       stopVoice();
+      // The device thread poll belongs to the open sheet. Its own tick also
+      // checks, but that leaves one request after the sheet is gone.
+      if (typeof stopDevicePoll === "function") stopDevicePoll();
       setKeyboardOffset(0);
       var el = sheetEl(current);
       // Wait out the slide before hiding, or the sheet vanishes mid-animation.
@@ -6044,6 +6706,12 @@ _LOCK_SCREEN_SCRIPT = r"""
       return !screenEl || screenEl.getAttribute("data-sheet") === "none";
     }, function (ev) {
       var t = ev.target;
+      // The call card is a surface of buttons: a drag that starts on it is
+      // never an unlock, whatever the feed underneath would have said.
+      if (t && t.closest && t.closest(".ls-live-call")) return true;
+      // Nor on the PA's reminder card: it carries a button, and a thumb
+      // that lands on Dismiss and slips must not open the keypad.
+      if (t && t.closest && t.closest(".ls-call-reminder")) return true;
       if (!t || !t.closest || !t.closest(".ls-feed")) return false;
       return feedScrollRoom() > 4 || !feedOverflows();
     });
@@ -6161,6 +6829,7 @@ _LOCK_SCREEN_SCRIPT = r"""
 
     function openChat(agent) {
       chatAgent = agent;
+      startDevicePoll(agent);
       chatName.textContent = agent.name || "agent";
       chatSub.textContent = agent.status || "";
       fillAvatar(chatAv, agent);
@@ -6188,7 +6857,11 @@ _LOCK_SCREEN_SCRIPT = r"""
         }, 60);
       }, 420);
 
-      fetch("/auth/lock-thread/" + encodeURIComponent(slugFor(agent.name || "")), {
+      // A device agent's slug is GIVEN, never derived: the board chose it, the
+      // phone validated it, and it is the key of the thread. Deriving one from
+      // the display name would work right up until two boards differ only in
+      // case.
+      fetch("/auth/lock-thread/" + encodeURIComponent(threadSlug(agent)), {
         credentials: "same-origin"
       }).then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
@@ -6221,14 +6894,115 @@ _LOCK_SCREEN_SCRIPT = r"""
       });
     }
 
+    function threadSlug(agent) {
+      return (agent && agent.slug) || slugFor((agent && agent.name) || "");
+    }
+
+    // Messages already on screen, keyed by id:seq. The device posts progress
+    // lines as the work runs, so this thread GROWS while the sheet is open --
+    // and a poller that rebuilt the list every two seconds would replay every
+    // bubble's entrance animation, which is the flicker bug this screen has
+    // already been through once. Append only what is new.
+    var deviceSeen = {};
+    var devicePoll = null;
+
+    function paintDeviceMessages(messages) {
+      var added = false;
+      for (var i = 0; i < (messages || []).length; i++) {
+        var m = messages[i];
+        // ROLE IS PART OF THE KEY. /auth/lock-send puts the user's own words in
+        // the thread under the id it just minted with seq 0, and the device's
+        // FIRST message for that same id is also seq 0 ("working on it…").
+        // Keyed on id:seq alone the two collide and the device's opening line
+        // is silently dropped -- the sheet would sit on the user's question
+        // with no sign the board had picked it up.
+        var key = String(m.role || "") + ":" + String(m.id || "") + ":" + String(m.seq);
+        if (deviceSeen[key]) continue;
+        deviceSeen[key] = true;
+        var el = bubble({ role: m.role, text: m.text, at: m.at });
+        // Command output is a block of columns -- df, free, ip -- and a
+        // proportional font turns it into a wall. The user's own words are
+        // left alone.
+        if (m.role !== "user") el.setAttribute("data-mono", "1");
+        msgsEl.appendChild(el);
+        added = true;
+      }
+      if (added) msgsEl.scrollTop = msgsEl.scrollHeight;
+    }
+
+    function stopDevicePoll() {
+      if (devicePoll) { window.clearInterval(devicePoll); devicePoll = null; }
+    }
+
+    function startDevicePoll(agent) {
+      stopDevicePoll();
+      deviceSeen = {};
+      if (!agent || !agent.device) return;
+      var slug = threadSlug(agent);
+      // 2s: the board posts progress while apt runs, and a slower poll makes a
+      // working update look like a hung one.
+      devicePoll = window.setInterval(function () {
+        if (!screenEl || screenEl.getAttribute("data-sheet") !== "chat") {
+          stopDevicePoll();
+          return;
+        }
+        fetch("/auth/lock-thread/" + encodeURIComponent(slug),
+              { credentials: "same-origin" })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) {
+            if (!d) return;
+            paintDeviceMessages(d.messages);
+            // The board can be unplugged mid-conversation. Say so rather than
+            // leaving a composer that silently posts into nothing.
+            if (d.online === false) {
+              chatSub.textContent = "Offline — unplugged";
+              if (composer) composer.disabled = true;
+              if (sendBtn) sendBtn.disabled = true;
+            }
+          })
+          .catch(function () {});
+      }, 2000);
+    }
+
     function send() {
       if (!composer) return;
       var text = composer.value.trim();
       if (!text) return;
       var now = Date.now() / 1000;
+      if (sendBtn) sendBtn.disabled = true;
+
+      // A DEVICE agent is a real board with a real command path, so this is a
+      // real send: the text goes to the phone, the phone relays it, and the
+      // reply comes back through the thread poll rather than being invented
+      // here. The bubble is NOT drawn locally -- the server puts the user's
+      // words in the thread first, so the poll paints them, and drawing them
+      // here as well would show everything the user typed twice.
+      if (chatAgent && chatAgent.device) {
+        composer.value = "";
+        fetch("/auth/lock-send/" + encodeURIComponent(threadSlug(chatAgent)), {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: text })
+        })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (d) {
+            if (!d || !d.ok) {
+              msgsEl.appendChild(bubble({
+                role: "agent",
+                text: (d && (d.detail || d.error)) || "The device did not answer.",
+                at: Date.now() / 1000
+              }));
+              msgsEl.scrollTop = msgsEl.scrollHeight;
+            }
+          })
+          .catch(function () {})
+          .then(function () { if (sendBtn) sendBtn.disabled = false; });
+        return;
+      }
+
       msgsEl.appendChild(bubble({ role: "user", text: text, at: now }));
       composer.value = "";
-      if (sendBtn) sendBtn.disabled = true;
       msgsEl.scrollTop = msgsEl.scrollHeight;
       // A reply only comes back in a demo thread. Outside demo mode there is no
       // agent on the other end of this sheet -- the lock screen is pre-auth and
@@ -6788,6 +7562,925 @@ _LOCK_SCREEN_SCRIPT = r"""
           }
         }, 60);
       });
+    }
+
+    // -----------------------------------------------------------------------
+    // THE LIVE ZONE: an incoming call, and "Send to PA". DEMO.
+    //
+    // Jay: the collapsible area is also the live zone. A call from Mary
+    // collapses whatever cards are showing into one droplet, the droplet
+    // stretches into a call card, and the headline answer hands the call to the
+    // PA -- whose conversation then plays as a live transcript with Take over
+    // and End call always in reach. When it ends the zone runs backwards and
+    // the feed returns exactly as it was.
+    //
+    // Everything shown is scripted by /auth/lock-call; there is no phone line.
+    //
+    // Pure pieces first (callView, callOutcomeText, revealWords, callEnvelope,
+    // callRingPulse, callTimerText, callBubble, reconcileTranscript): they are
+    // executed under node by the test suite, so they take everything they need
+    // as arguments.
+    // -----------------------------------------------------------------------
+
+    // What the zone should show for a snapshot. `view` picks the panel,
+    // `controls` the pinned buttons, `log` whether the transcript is shown and
+    // `tone` whose colour the edge glows in.
+    function callView(snap) {
+      var state = snap && snap.state;
+      var who = (snap && snap.caller && snap.caller.name) || "Caller";
+      if (state === "ringing") {
+        return { view: "ringing", controls: null, log: false, tone: "caller", title: "" };
+      }
+      if (state === "pa") {
+        return { view: "talk", controls: "pa", log: true, tone: "pa",
+                 title: "Your PA is talking to " + who };
+      }
+      if (state === "live") {
+        return { view: "talk", controls: "live", log: !!snap.taken_over, tone: "caller",
+                 title: "On call with " + who };
+      }
+      if (state === "ended") {
+        return { view: "ended", controls: null, log: false,
+                 tone: snap.outcome === "pa-done" ? "pa" : "caller",
+                 title: callOutcomeText(snap) };
+      }
+      return { view: null, controls: null, log: false, tone: null, title: "" };
+    }
+
+    // The one line an ended call leaves on screen before the zone folds away.
+    function callOutcomeText(snap) {
+      var outcome = snap && snap.outcome;
+      if (outcome === "pa-done") return "Call ended · your PA took a message";
+      if (outcome === "declined") return "Declined";
+      if (outcome === "voicemail") return "Sent to voicemail";
+      if (snap && snap.taken_over) return "Call ended · you took over";
+      return "Call ended";
+    }
+
+    // The words of `text` already spoken at `progress` (0..1). Whole words
+    // only -- a half-drawn word reads as a rendering fault -- and a word shows
+    // as soon as it is begun, so the first appears the moment the line does.
+    function revealWords(text, progress) {
+      var words = String(text || "").split(" ");
+      if (!(progress > 0)) return "";
+      var n = Math.min(words.length, Math.ceil(progress * words.length));
+      return words.slice(0, n).join(" ");
+    }
+
+    // A synthetic speech envelope, 0..1, at time `t` seconds into a line that
+    // is `progress` of the way through. Two incommensurate syllable rates so it
+    // never visibly loops, tapered in and out so a line starts and ends softly.
+    function callEnvelope(t, progress) {
+      var a = Math.abs(Math.sin(t * 2 * Math.PI * 3.1) * 0.62
+                     + Math.sin(t * 2 * Math.PI * 5.3 + 1.3) * 0.38);
+      var p = progress > 0 ? progress : 0;
+      var taper = Math.max(0, Math.min(1, p * 7, (1 - p) * 7));
+      return Math.max(0, Math.min(1, 0.22 + 0.78 * a * taper));
+    }
+
+    // The ring: two quick swells and a rest, like a ringtone's cadence.
+    function callRingPulse(t) {
+      var ph = (t % 2.2);
+      var a = Math.exp(-Math.pow((ph - 0.18) / 0.13, 2));
+      var b = Math.exp(-Math.pow((ph - 0.62) / 0.13, 2));
+      return Math.max(a, b);
+    }
+
+    // The ended pill's second line once the PA has set a reminder: the same
+    // words as the card it leaves in Alerts, cut to one line.
+    function callReminderPill(note) {
+      var n = note || {};
+      return (n.title || "Reminder added") + " \u00b7 " + (n.event || "Call") + " \u00b7 " + (n.time || "");
+    }
+
+    // THE GLOW'S LOW-PASS. The edge used to take the speech envelope's value
+    // straight, and that envelope moves at syllable rate: measured in chromium
+    // at 540x1200, the ring's opacity stepped by up to 0.48 in ONE frame and by
+    // more than 0.08 on 99 of 230 frames while the PA spoke. That is a strobe,
+    // and it was Jay's "flickery". The glow now eases toward the envelope --
+    // quick to rise, slower to fall, the way a VU meter reads -- measured in
+    // milliseconds rather than frames, so a dropped frame cannot become a jump.
+    function callGlowStep(prev, target, dtMs) {
+      var dt = Math.max(0, Math.min(dtMs || 0, 100));
+      var tau = target > prev ? 160 : 360;
+      return prev + (target - prev) * (1 - Math.exp(-dt / tau));
+    }
+
+    function callTimerText(ms) {
+      var s = Math.max(0, Math.floor((ms || 0) / 1000));
+      var m = Math.floor(s / 60);
+      s = s % 60;
+      return m + ":" + (s < 10 ? "0" : "") + s;
+    }
+
+    // One transcript bubble. Built once per line and then only ever updated in
+    // place: the reveal and the speaking state touch its text and attributes,
+    // never the node.
+    function callBubble(line, index) {
+      var el = document.createElement("div");
+      el.className = "ls-call-line";
+      el.setAttribute("data-line", String(index));
+      el.setAttribute("data-who", line.who === "pa" ? "pa" : "caller");
+      var head = document.createElement("div");
+      head.className = "ls-call-speaker";
+      var name = document.createElement("span");
+      name.textContent = line.who === "pa" ? "Your PA" : (line.name || "Caller");
+      var bars = document.createElement("span");
+      bars.className = "ls-call-bars";
+      bars.setAttribute("aria-hidden", "true");
+      for (var i = 0; i < 4; i++) bars.appendChild(document.createElement("i"));
+      head.appendChild(name);
+      head.appendChild(bars);
+      var text = document.createElement("div");
+      text.className = "ls-call-text";
+      el.appendChild(head);
+      el.appendChild(text);
+      return el;
+    }
+
+    // Bring the transcript up to date WITHOUT repainting it. Bubbles are keyed
+    // by line index: a line already on screen keeps its node (so it does not
+    // replay its entrance), a new line is appended, and only text that
+    // actually changed is written. The line being spoken is left for the
+    // animation loop to reveal word by word. Returns how many bubbles it added.
+    function reconcileTranscript(logEl, lines, speakingLine, tookOver, callerName) {
+      var have = {};
+      var marker = null;
+      for (var i = 0; i < logEl.children.length; i++) {
+        var kid = logEl.children[i];
+        var key = kid.getAttribute("data-line");
+        if (key !== null) have[key] = kid;
+        else if (kid.getAttribute("data-mark") === "takeover") marker = kid;
+      }
+      var added = 0;
+      for (var j = 0; j < lines.length; j++) {
+        var line = lines[j];
+        var el = have[String(j)];
+        if (!el) {
+          el = callBubble({ who: line.who, name: callerName }, j);
+          logEl.appendChild(el);
+          added += 1;
+        }
+        var speaking = j === speakingLine;
+        if (speaking) {
+          if (el.getAttribute("data-speaking") !== "1") el.setAttribute("data-speaking", "1");
+        } else {
+          if (el.hasAttribute("data-speaking")) el.removeAttribute("data-speaking");
+          var cut = typeof line.upto === "number";
+          var want = cut ? revealWords(line.text, line.upto) : line.text;
+          var textEl = el.children[1];
+          if (textEl && textEl.textContent !== want) textEl.textContent = want;
+          if (cut && el.getAttribute("data-cut") !== "1") el.setAttribute("data-cut", "1");
+        }
+      }
+      if (tookOver && !marker) {
+        marker = document.createElement("div");
+        marker.className = "ls-call-mark";
+        marker.setAttribute("data-mark", "takeover");
+        marker.textContent = "You took over";
+        logEl.appendChild(marker);
+        added += 1;
+      }
+      return added;
+    }
+
+    var callEl = document.getElementById("ls-call");
+    if (callEl) {
+      var callCard = document.getElementById("ls-call-card");
+      var callLog = document.getElementById("ls-call-log");
+      var callTitle = document.getElementById("ls-call-title");
+      var callTimer = document.getElementById("ls-call-timer");
+      var callOutcome = document.getElementById("ls-call-outcome");
+      var callPill = document.getElementById("ls-call-pill");
+      var callPillIco = document.getElementById("ls-call-pill-ico");
+      var callHead = callEl.parentNode;
+      var callRings = callEl.querySelectorAll(".ls-call-ring");
+      var callWashes = callEl.querySelectorAll(".ls-call-wash");
+      var CALL_ICONS = {
+        end: '<path d="M3.2 13.9c5-4.6 12.6-4.6 17.6 0l-1.8 2.6-3.6-1.2-.5-2.6a10 10 0 0 0-5.8 0l-.5 2.6-3.6 1.2z"/>',
+        voicemail: NOTIF_GLYPHS.voicemail,
+        calendar: NOTIF_GLYPHS.calendar
+      };
+      var reduceMotion = !!(window.matchMedia
+        && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+      var callOff = false;          // the demo is switched off: stop asking
+      var callTimerId = null;
+      var callSnap = null;          // the last snapshot applied
+      var callAt = 0;               // performance.now() when it arrived
+      var callId = null;            // the call the zone is showing (or last saw)
+      var callShown = false;        // is the zone up
+      var callPhase = "none";       // none | entering | shown | ended | leaving
+      var callPending = null;       // a snapshot that arrived mid-choreography
+      var callBusy = false;         // an action request is in flight
+      var callSaved = null;         // what the feed looked like before the call
+      var callEndTimers = [];
+      var callFrame = null;
+      var callToneW = { pa: 0, caller: 0 };
+      var callGlow = 0.3;           // the edge's smoothed amplitude
+      var callLastFrame = 0;
+      var callLastSec = -1;
+      var callSpeakEl = null;
+
+      var callNow = function () {
+        return (window.performance && performance.now) ? performance.now() : Date.now();
+      };
+
+      // The views and the pinned control rows, switched by attribute.
+      var callViews = {};
+      [].forEach.call(callEl.querySelectorAll(".ls-call-view"), function (v) {
+        callViews[v.getAttribute("data-for")] = v;
+      });
+      var callCtls = {};
+      [].forEach.call(callEl.querySelectorAll(".ls-call-ctl"), function (c) {
+        callCtls[c.getAttribute("data-for")] = c;
+      });
+      var callActive = null;
+
+      // THE MORPH. The card's size is always an explicit number taken from the
+      // content it now holds, so a change of state is a transition between two
+      // measured sizes rather than a jump.
+      var callFullWidth = function () {
+        var cap = callHead ? callHead.clientWidth : 436;
+        var css = parseFloat(getComputedStyle(callEl).maxWidth) || 436;
+        return Math.min(cap, css);
+      };
+      var callFit = function () {
+        // Not while hidden: a hidden card measures as nothing, and that
+        // "size" would be the start of the next entrance's transition.
+        if (!callActive || callEl.hidden) return;
+        var h = callActive.offsetHeight;
+        callCard.style.height = h + "px";
+        var w = callFullWidth();
+        if (callActive === callViews.ended && callPill) {
+          // A one-line pill: as wide as its words, never wider than the column.
+          w = Math.min(w, Math.ceil(callPill.offsetWidth) + 3);
+        }
+        callEl.style.width = w + "px";
+      };
+      if (window.ResizeObserver) {
+        var callRO = new ResizeObserver(function () { callFit(); });
+        for (var cv in callViews) callRO.observe(callViews[cv]);
+      }
+      window.addEventListener("resize", callFit);
+
+      var callSwitch = function (name) {
+        var next = callViews[name] || null;
+        if (next === callActive) return;
+        for (var k in callViews) {
+          if (callViews[k] === next) callViews[k].setAttribute("data-on", "1");
+          else callViews[k].removeAttribute("data-on");
+        }
+        callActive = next;
+        callFit();
+      };
+
+      // Keyboard or finger, whichever was used last: the focus ring is only
+      // drawn for a keyboard.
+      callEl.setAttribute("data-kbd", "0");
+      document.addEventListener("keydown", function () { callEl.setAttribute("data-kbd", "1"); }, true);
+      document.addEventListener("touchstart", function () { callEl.setAttribute("data-kbd", "0"); },
+        { passive: true, capture: true });
+      var callFocus = function (sel) {
+        var el = callEl.querySelector(sel);
+        if (el && el.focus) { try { el.focus({ preventScroll: true }); } catch (e) {} }
+      };
+
+      // Paint the zone for a snapshot. Idempotent: an unchanged poll writes
+      // nothing (the transcript reconcile guarantees it for the bubbles, and
+      // the rest are attribute and text writes guarded by comparison).
+      var paintCall = function (snap) {
+        var v = callView(snap);
+        var prevView = callEl.getAttribute("data-view");
+        var prevCtl = callEl.getAttribute("data-controls");
+        setAttrIfChanged(callEl, "data-state", snap.state);
+        if (snap.caller) {
+          var nameEl = document.getElementById("ls-call-name");
+          var labelEl = document.getElementById("ls-call-label");
+          var avEl = document.getElementById("ls-call-avatar");
+          setText(nameEl, snap.caller.name);
+          setText(labelEl, snap.caller.label);
+          setText(avEl, (snap.caller.name || "?").charAt(0));
+          setAttrIfChanged(callEl, "aria-label", "Call from " + snap.caller.name);
+        }
+        if (v.view === "talk") {
+          setText(callTitle, v.title);
+          for (var c in callCtls) {
+            if (c === v.controls) callCtls[c].setAttribute("data-on", "1");
+            else callCtls[c].removeAttribute("data-on");
+          }
+          var lines = snap.transcript || [];
+          var speakingLine = snap.speaking ? snap.speaking.line : -1;
+          var added = reconcileTranscript(callLog, v.log ? lines : [], speakingLine,
+            !!snap.taken_over, snap.caller && snap.caller.name);
+          callSpeakEl = speakingLine >= 0
+            ? callLog.querySelector('[data-line="' + speakingLine + '"]') : null;
+          if (added && callLog.scrollTo) {
+            callLog.scrollTo({ top: callLog.scrollHeight, behavior: reduceMotion ? "auto" : "smooth" });
+          }
+        }
+        if (v.view === "ended") {
+          setText(callOutcome, v.title);
+          if (callPill && callPill.getAttribute("data-kind") !== "outcome") {
+            callPill.setAttribute("data-kind", "outcome");
+            if (callPillIco) callPillIco.innerHTML = '<svg viewBox="0 0 24 24">' + CALL_ICONS.end + "</svg>";
+          }
+        }
+        // Only on a CHANGE. A poll lands every 300ms, and every write here is a
+        // style invalidation on the ancestor of the spinning edge.
+        setAttrIfChanged(callEl, "data-view", v.view || "");
+        setAttrIfChanged(callEl, "data-controls", v.controls || "");
+        callSwitch(v.view);
+        // Move focus only when the thing under the finger changed, so a poll
+        // never steals it: the headline answer while ringing, Take over while
+        // the PA talks, End once you are on the line.
+        if (v.view !== prevView || v.controls !== prevCtl) {
+          if (v.view === "ringing") callFocus('[data-call-act="pa"]');
+          else if (v.controls === "pa") callFocus('[data-call-act="takeover"]');
+          else if (v.controls === "live") callFocus('.ls-call-ctl[data-for="live"] [data-call-act="end"]');
+        }
+      };
+
+      // THE ANIMATION LOOP: the edge glow, the wash, the speaking bars, the
+      // word-by-word reveal and the timer. Opacity and transform writes only.
+      // It runs only while the zone is up AND the panel is lit.
+      var callLoopOn = function () {
+        return callShown && callPhase !== "leaving"
+          && !(screenEl && screenEl.hasAttribute("data-blanked"))
+          && !document.hidden;
+      };
+      var callTick = function () {
+        callFrame = null;
+        if (!callLoopOn() || !callSnap) return;
+        var now = callNow();
+        var t = now / 1000;
+        var snap = callSnap;
+        var v = callView(snap);
+        var sp = snap.speaking;
+        var amp = 0.3;
+        var tone = v.tone || "caller";
+        var progress = 0;
+        if (sp) {
+          var line = (snap.transcript || [])[sp.line];
+          var dur = line ? line.dur_ms : 3000;
+          progress = Math.min(1, sp.progress + (now - callAt) / dur);
+          tone = sp.who === "pa" ? "pa" : "caller";
+          amp = progress < 1 ? callEnvelope(t, progress) : 0.3;
+          if (callSpeakEl && line) {
+            var tEl = callSpeakEl.children[1];
+            var want = revealWords(line.text, progress);
+            if (tEl && tEl.textContent !== want) tEl.textContent = want;
+            var bars = callSpeakEl.children[0] && callSpeakEl.children[0].children[1];
+            if (bars) {
+              for (var b = 0; b < bars.children.length; b++) {
+                var k = progress < 1 ? callEnvelope(t + b * 0.11, progress) : 0.2;
+                bars.children[b].style.transform = "scaleY(" + (0.25 + 0.75 * k).toFixed(3) + ")";
+              }
+            }
+          }
+        } else if (snap.state === "ringing") {
+          amp = 0.35 + 0.65 * callRingPulse(t);
+        } else if (snap.state === "pa") {
+          amp = 0.3 + 0.08 * Math.sin(t * 2.4);          // between lines: a breath
+        } else if (snap.state === "live") {
+          amp = 0.34 + 0.1 * Math.sin(t * 1.6);
+        } else {
+          amp = 0.2;
+        }
+        // Both by elapsed time, never by frame count: the bars above keep the
+        // raw envelope (they are MEANT to flutter), the edge and the wash get
+        // the smoothed one, and a change of speaker is a cross-fade of colour.
+        var dt = callLastFrame ? now - callLastFrame : 16;
+        callLastFrame = now;
+        callGlow = callGlowStep(callGlow, amp, dt);
+        var fade = 1 - Math.exp(-Math.max(0, Math.min(dt, 100)) / 380);
+        callToneW.pa += ((tone === "pa" ? 1 : 0) - callToneW.pa) * fade;
+        callToneW.caller += ((tone === "caller" ? 1 : 0) - callToneW.caller) * fade;
+        for (var r = 0; r < callRings.length; r++) {
+          var w = callToneW[callRings[r].getAttribute("data-tone")] || 0;
+          callRings[r].style.opacity = (w * (0.45 + 0.55 * callGlow)).toFixed(3);
+        }
+        for (var q = 0; q < callWashes.length; q++) {
+          var ww = callToneW[callWashes[q].getAttribute("data-tone")] || 0;
+          callWashes[q].style.opacity = (ww * (0.4 + 0.6 * callGlow)).toFixed(3);
+        }
+        if (typeof snap.elapsed_ms === "number" && callTimer) {
+          var ms = snap.elapsed_ms + (now - callAt);
+          var sec = Math.floor(ms / 1000);
+          if (sec !== callLastSec) { callLastSec = sec; callTimer.textContent = callTimerText(ms); }
+        }
+        callFrame = requestAnimationFrame(callTick);
+      };
+      var callLoop = function () {
+        if (callFrame === null && callLoopOn()) {
+          callLastFrame = 0;                 // a resumed loop starts from rest
+          callFrame = requestAnimationFrame(callTick);
+        }
+      };
+      document.addEventListener("visibilitychange", callLoop);
+
+      // THE LIQUID. The cards the feed is showing right now, measured.
+      var callCards = function () {
+        if (!feedEl || feedIsHidden()) return [];
+        var fr = feedEl.getBoundingClientRect();
+        if (fr.height < 4) return [];
+        var out = [];
+        var panels = feedEl.children;
+        for (var i = 0; i < panels.length; i++) {
+          var p = panels[i];
+          if (p.hidden || p.hasAttribute("data-off")) continue;
+          var cand = p.id === "ls-activity"
+            ? [].slice.call(p.querySelectorAll(".ls-agents > *, .ls-tasks > *"))
+            : [].slice.call(p.children);
+          for (var j = 0; j < cand.length; j++) {
+            var c = cand[j];
+            var r = c.getBoundingClientRect();
+            if (r.height < 8 || r.width < 8) continue;
+            if (r.bottom < fr.top || r.top > fr.bottom) continue;   // scrolled away
+            out.push({ el: c, r: r });
+            if (out.length >= 10) return out;
+          }
+        }
+        return out;
+      };
+      var callRadius = function (el, r) {
+        var rad = parseFloat(getComputedStyle(el).borderTopLeftRadius) || 20;
+        return Math.min(rad, r.height / 2, r.width / 2);
+      };
+      var gooLayer = function (box) {
+        var g = document.createElement("div");
+        g.className = "ls-goo";
+        g.setAttribute("aria-hidden", "true");
+        g.style.left = box.left + "px"; g.style.top = box.top + "px";
+        g.style.width = box.width + "px"; g.style.height = box.height + "px";
+        document.body.appendChild(g);
+        return g;
+      };
+      var gooBlob = function (layer, box, x, y, w, h, radius) {
+        var b = document.createElement("div");
+        b.className = "ls-goo-blob";
+        b.style.width = w + "px"; b.style.height = h + "px";
+        b.style.left = (x - box.left) + "px"; b.style.top = (y - box.top) + "px";
+        b.style.borderRadius = radius + "px";
+        layer.appendChild(b);
+        return b;
+      };
+      var unionBox = function (rects, pad) {
+        var l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+        for (var i = 0; i < rects.length; i++) {
+          l = Math.min(l, rects[i].left); t = Math.min(t, rects[i].top);
+          r = Math.max(r, rects[i].right); b = Math.max(b, rects[i].bottom);
+        }
+        l -= pad; t -= pad; r += pad; b += pad;
+        return { left: l, top: t, width: r - l, height: b - t, right: r, bottom: b };
+      };
+      var later = function (fn, ms) { var id = window.setTimeout(fn, ms); callEndTimers.push(id); return id; };
+      var clearLater = function () {
+        for (var i = 0; i < callEndTimers.length; i++) window.clearTimeout(callEndTimers[i]);
+        callEndTimers = [];
+      };
+      var DROP = 60;                 // the droplet's diameter
+      var EASE_IN = "cubic-bezier(0.55, 0, 0.25, 1)";
+      var SPRING = "cubic-bezier(0.34, 1.25, 0.5, 1)";
+
+      // In: the cards run together into a droplet, the droplet stretches into
+      // the call card. `done` fires once the card is showing.
+      var callEnter = function (snap, done) {
+        callPhase = "entering";
+        callSaved = {
+          scroll: feedEl ? feedEl.scrollTop : 0,
+          focus: document.activeElement
+        };
+        if (callHead) callHead.setAttribute("data-call", "1");
+        if (viewsEl) viewsEl.setAttribute("inert", "");
+        // Lay the card out unseen so the droplet knows where it is going.
+        callEl.hidden = false;
+        callEl.setAttribute("data-phase", "measure");
+        paintCall(snap);
+        callFit();
+        var cards = reduceMotion ? [] : callCards();
+        // Where the card WILL be, measured rather than predicted: put the
+        // layout into its end state, read the rect, and put it back, all in
+        // one task -- the browser never paints the in-between.
+        var target = null;
+        if (feedEl) feedEl.setAttribute("data-call", "1");
+        callEl.setAttribute("data-phase", "grow");
+        target = callEl.getBoundingClientRect();
+        if (feedEl) feedEl.removeAttribute("data-call");
+        callEl.setAttribute("data-phase", "measure");
+        var cx = target.left + target.width / 2;
+        var cy = target.top + Math.min(target.height, 180) / 2;
+
+        var reveal = function () {
+          if (feedEl) feedEl.setAttribute("data-call", "1");
+          callEl.setAttribute("data-phase", "grow");
+          callFit();
+          return callEl.getBoundingClientRect();
+        };
+
+        if (reduceMotion) {
+          if (feedEl) feedEl.setAttribute("data-call", "return");     // opacity 0
+          later(function () {
+            reveal();
+            requestAnimationFrame(function () {
+              callEl.removeAttribute("data-phase");
+              callPhase = "shown"; done();
+            });
+          }, 180);
+          return;
+        }
+
+        var rects = [target];
+        for (var i = 0; i < cards.length; i++) rects.push(cards[i].r);
+        var box = unionBox(rects, 40);
+        var layer = gooLayer(box);
+        var blobs = [];
+        for (var n = 0; n < cards.length; n++) {
+          var c = cards[n];
+          var rad = callRadius(c.el, c.r);
+          var bl = gooBlob(layer, box, c.r.left, c.r.top, c.r.width, c.r.height, rad);
+          blobs.push({ b: bl, r: c.r });
+        }
+        // The droplet itself, at the card's heart, from nothing.
+        var drop = gooBlob(layer, box, cx - DROP / 2, cy - DROP / 2, DROP, DROP, DROP / 2);
+        drop.style.transform = "scale(0)";
+        void layer.offsetWidth;                                  // commit the start
+
+        var STAG = 42, RUN = 560;
+        for (var m = 0; m < blobs.length; m++) {
+          var o = blobs[m], r = o.r;
+          var dx = cx - (r.left + r.width / 2), dy = cy - (r.top + r.height / 2);
+          var sx = DROP / r.width, sy = DROP / r.height;
+          var tr = "translate(" + dx.toFixed(1) + "px," + dy.toFixed(1) + "px) scale("
+            + sx.toFixed(3) + "," + sy.toFixed(3) + ")";
+          o.b.style.transition = "transform " + RUN + "ms " + EASE_IN + " " + (m * STAG) + "ms, border-radius "
+            + RUN + "ms ease " + (m * STAG) + "ms";
+          o.b.style.transform = tr;
+          // 50% of the unscaled box is an ellipse that the scale turns into a
+          // circle, so each card arrives as a drop, not a squashed tile.
+          o.b.style.borderRadius = "50%";
+          // The real card goes with it, and fades as the liquid takes over.
+          var el = cards[m].el;
+          el.setAttribute("data-call-card", "1");
+          el.style.transition = "transform " + RUN + "ms " + EASE_IN + " " + (m * STAG) + "ms, opacity 200ms ease "
+            + (m * STAG + 60) + "ms";
+          el.style.transform = "translate(" + (dx * 0.35).toFixed(1) + "px," + (dy * 0.35).toFixed(1) + "px) scale(0.9)";
+          el.style.opacity = "0";
+        }
+        var gathered = cards.length ? RUN + (cards.length - 1) * STAG : 120;
+        drop.style.transition = "transform " + Math.max(320, gathered - 160) + "ms " + SPRING
+          + " " + (cards.length ? 200 : 0) + "ms";
+        drop.style.transform = "scale(1)";
+
+        later(function () {
+          // Merged. The feed leaves the layout (its own attribute; its nodes
+          // and every state they carry stay exactly as they were) and the
+          // cards' borrowed styles are handed back while nobody can see them.
+          for (var k = 0; k < cards.length; k++) {
+            var e = cards[k].el;
+            e.style.transition = ""; e.style.transform = ""; e.style.opacity = "";
+            e.removeAttribute("data-call-card");
+          }
+          for (var q = 0; q < blobs.length; q++) blobs[q].b.remove();
+          var R = reveal();
+          // The droplet stretches into the card, with a little overshoot.
+          drop.style.transition = "left 460ms " + SPRING + ", top 460ms " + SPRING + ", width 460ms "
+            + SPRING + ", height 460ms " + SPRING + ", border-radius 460ms ease";
+          drop.style.left = (R.left - box.left) + "px";
+          drop.style.top = (R.top - box.top) + "px";
+          drop.style.width = R.width + "px";
+          drop.style.height = R.height + "px";
+          drop.style.borderRadius = "28px";
+          later(function () {
+            callEl.removeAttribute("data-phase");               // fades in
+            layer.style.opacity = "0";
+            later(function () { layer.remove(); }, 260);
+            callPhase = "shown";
+            done();
+          }, 400);
+        }, gathered + 30);
+      };
+
+      // Out: the card shrinks back to a droplet, which splits into the cards
+      // it came from. The feed comes back with the same nodes, view, scroll
+      // and collapsed state it had -- nothing was rebuilt, only un-hidden.
+      var callLeave = function () {
+        callPhase = "leaving";
+        clearLater();
+        var R = callEl.getBoundingClientRect();
+        var finish = function () {
+          callEl.hidden = true;
+          callEl.removeAttribute("data-phase");
+          callEl.removeAttribute("data-state");
+          callEl.removeAttribute("data-view");
+          callEl.removeAttribute("data-controls");
+          callShown = false;
+          callPhase = "none";
+          if (callHead) callHead.removeAttribute("data-call");
+          if (viewsEl) viewsEl.removeAttribute("inert");
+          if (callSaved && callSaved.focus && callSaved.focus !== document.body
+              && callSaved.focus.focus) {
+            try { callSaved.focus.focus({ preventScroll: true }); } catch (e) {}
+          } else if (document.activeElement && callEl.contains(document.activeElement)) {
+            document.activeElement.blur();
+          }
+          callSaved = null;
+          if (callPending) { var p = callPending; callPending = null; applyCall(p); }
+        };
+        var restoreFeed = function () {
+          if (!feedEl) return;
+          feedEl.setAttribute("data-call", "return");               // in layout, unseen
+          if (callSaved) feedEl.scrollTop = callSaved.scroll;
+          syncFeedFade();
+        };
+
+        if (reduceMotion || R.width < 4) {
+          callEl.setAttribute("data-phase", "leave");
+          later(function () {
+            callEl.hidden = true;
+            restoreFeed();
+            requestAnimationFrame(function () {
+              if (feedEl) feedEl.removeAttribute("data-call");
+              finish();
+            });
+          }, 140);
+          return;
+        }
+
+        var cx = R.left + R.width / 2, cy = R.top + R.height / 2;
+        var box = { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+        var layer = gooLayer(box);
+        var drop = gooBlob(layer, box, R.left, R.top, R.width, R.height, Math.min(28, R.height / 2));
+        void layer.offsetWidth;
+        callEl.setAttribute("data-phase", "leave");
+        drop.style.transition = "left 380ms " + EASE_IN + ", top 380ms " + EASE_IN + ", width 380ms "
+          + EASE_IN + ", height 380ms " + EASE_IN + ", border-radius 380ms ease";
+        drop.style.left = (cx - DROP / 2) + "px"; drop.style.top = (cy - DROP / 2) + "px";
+        drop.style.width = DROP + "px"; drop.style.height = DROP + "px";
+        drop.style.borderRadius = (DROP / 2) + "px";
+
+        later(function () {
+          callEl.hidden = true;
+          restoreFeed();
+          var cards = callCards();
+          var STAG = 36, RUN = 540;
+          var blobs = [];
+          for (var i = 0; i < cards.length; i++) {
+            var r = cards[i].r;
+            var b = gooBlob(layer, box, r.left, r.top, r.width, r.height, callRadius(cards[i].el, r));
+            var dx = cx - (r.left + r.width / 2), dy = cy - (r.top + r.height / 2);
+            b.style.transform = "translate(" + dx.toFixed(1) + "px," + dy.toFixed(1) + "px) scale("
+              + (DROP / r.width).toFixed(3) + "," + (DROP / r.height).toFixed(3) + ")";
+            b.setAttribute("data-r", b.style.borderRadius);
+            b.style.borderRadius = "50%";
+            blobs.push(b);
+          }
+          void layer.offsetWidth;
+          for (var j = 0; j < blobs.length; j++) {
+            blobs[j].style.transition = "transform " + RUN + "ms " + SPRING + " " + (j * STAG)
+              + "ms, border-radius " + RUN + "ms ease " + (j * STAG) + "ms";
+            blobs[j].style.transform = "none";
+            blobs[j].style.borderRadius = blobs[j].getAttribute("data-r");
+          }
+          drop.style.transition = "transform 420ms " + EASE_IN + " 120ms";
+          drop.style.transform = "scale(0)";
+          var spread = cards.length ? RUN + (cards.length - 1) * STAG : 420;
+          later(function () {
+            if (feedEl) feedEl.removeAttribute("data-call");      // the real cards return
+            layer.style.opacity = "0";
+            later(function () { layer.remove(); finish(); }, 250);
+          }, spread - 60);
+        }, 390);
+      };
+
+      // Mark the event the PA added, so it is the first thing seen when the
+      // alerts come into view, and flag the alerts tab if they are not showing.
+      // THE REMINDER the PA leaves, as a card at the top of Alerts with a
+      // Dismiss button. Driven by the call snapshot (polled every 2s even when
+      // no call is up), so a dismissal on the server -- or a reset -- takes it
+      // down, and nothing but a finished PA call puts it up.
+      var callReminder = null;          // the card node, built once per reminder
+      var callReminderAt = null;        // which reminder it is showing
+      var callReminderGone = null;      // one the user dismissed, awaiting the server
+      var alertsTab = function () {
+        return viewsEl ? viewsEl.querySelector('.ls-view-tab[data-view="alerts"]') : null;
+      };
+      var buildReminder = function (note) {
+        var el = document.createElement("div");
+        el.className = "ls-row ls-call-reminder";
+        el.id = "ls-call-reminder";
+        el.setAttribute("role", "group");
+        el.setAttribute("aria-label", (note.title || "Reminder") + ". " + (note.body || ""));
+        var tile = document.createElement("div");
+        tile.className = "ls-call-reminder-tile";
+        tile.setAttribute("aria-hidden", "true");
+        tile.innerHTML = '<svg viewBox="0 0 24 24">' + NOTIF_GLYPHS.calendar + "</svg>";
+        var body = document.createElement("div");
+        body.className = "ls-row-body";
+        var meta = document.createElement("div");
+        meta.className = "ls-call-reminder-meta";
+        meta.textContent = (note.from || "Your PA") + " \u00b7 now";
+        var title = document.createElement("div");
+        title.className = "ls-call-reminder-title";
+        title.textContent = note.title || "";
+        var text = document.createElement("div");
+        text.className = "ls-call-reminder-text";
+        text.textContent = note.body || "";
+        var acts = document.createElement("div");
+        acts.className = "ls-dec-actions";
+        var dismiss = document.createElement("button");
+        dismiss.type = "button";
+        dismiss.className = "ls-dec-btn";
+        dismiss.setAttribute("data-act", "dismiss");
+        dismiss.textContent = "Dismiss";
+        acts.appendChild(dismiss);
+        body.appendChild(meta); body.appendChild(title); body.appendChild(text); body.appendChild(acts);
+        el.appendChild(tile); el.appendChild(body);
+        dismiss.addEventListener("click", function () {
+          callReminderGone = callReminderAt;
+          leaveReminder();
+          fetch("/auth/lock-call/dismiss", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json", "X-taOS-Console": "1" },
+            body: "{}"
+          })
+            .catch(function () { /* the next poll will show it again if it stuck */ })
+            .then(function () { pollCall(); });
+        });
+        return el;
+      };
+      // Out with the reverse of the entrance every card on this screen has.
+      var leaveReminder = function () {
+        var el = callReminder;
+        if (!el) return;
+        callReminder = null;
+        callReminderAt = null;
+        el.setAttribute("data-leaving", "1");
+        var tab = alertsTab();
+        if (tab) tab.removeAttribute("data-badge");
+        var gone = function () {
+          if (el.parentNode) el.parentNode.removeChild(el);
+          if (notifsEl && !notifsEl.firstChild) notifsEl.hidden = true;
+          syncFeedFade();
+        };
+        window.setTimeout(gone, reduceMotion ? 0 : 320);
+      };
+      var syncReminder = function (note) {
+        if (!notifsEl) return;
+        if (note && callReminderGone !== null && note.at === callReminderGone) return;
+        if (!note) {
+          callReminderGone = null;
+          if (callReminder) leaveReminder();
+          return;
+        }
+        if (callReminder && callReminderAt === note.at) return;      // unchanged
+        if (callReminder) { callReminder.remove(); callReminder = null; }
+        callReminder = buildReminder(note);
+        callReminderAt = note.at;
+        // Under the pending decisions, above the notification stacks.
+        var dec = document.getElementById("ls-decisions");
+        var ref = (dec && dec.parentNode === notifsEl) ? dec.nextSibling : notifsEl.firstChild;
+        notifsEl.insertBefore(callReminder, ref);
+        notifsEl.hidden = false;
+        if (currentView !== "alerts") {
+          var tab = alertsTab();
+          if (tab) tab.setAttribute("data-badge", "1");
+        }
+        syncFeedFade();
+      };
+      if (viewsEl) {
+        viewsEl.addEventListener("click", function () {
+          window.setTimeout(function () {
+            if (currentView !== "alerts") return;
+            var tab = alertsTab();
+            if (tab) tab.removeAttribute("data-badge");
+          }, 0);
+        });
+      }
+
+      // The ended pill, then the fold. A finished PA call shows its outcome,
+      // then the event it added, before the zone goes.
+      var callEnded = function (snap) {
+        callPhase = "ended";
+        var hold = 1900;
+        if (snap.outcome === "pa-done") {
+          later(function () {
+            if (callOutcome) callOutcome.style.opacity = "0";
+            later(function () {
+              setText(callOutcome, callReminderPill(snap.notification));
+              if (callPill) callPill.setAttribute("data-kind", "event");
+              if (callPillIco) callPillIco.innerHTML = '<svg viewBox="0 0 24 24">' + CALL_ICONS.calendar + "</svg>";
+              if (callOutcome) callOutcome.style.opacity = "";
+              callFit();
+            }, 200);
+          }, 1500);
+          hold = 4300;
+        }
+        later(callLeave, hold);
+      };
+
+      var applyCall = function (snap) {
+        if (!snap || !snap.state) return;
+        syncReminder(snap.notification || null);
+        if (callPhase === "entering" || callPhase === "leaving") {
+          callPending = snap;
+          // Keep the content current underneath an entrance; an exit is final.
+          if (callPhase === "entering" && callSnap && snap.call_id === callSnap.call_id) {
+            callSnap = snap; callAt = callNow(); paintCall(snap);
+          }
+          return;
+        }
+        var active = snap.state === "ringing" || snap.state === "pa" || snap.state === "live";
+        var prevId = callId;
+        callSnap = snap; callAt = callNow();
+        if (!callShown) {
+          callId = snap.call_id;
+          // A call that had already ended when we first saw it is history,
+          // not something to animate.
+          if (!active) return;
+          callShown = true;
+          if (callOutcome) callOutcome.style.opacity = "";
+          if (prevId !== snap.call_id) callLog.textContent = "";
+          callEnter(snap, function () {
+            var p = callPending; callPending = null;
+            if (p) applyCall(p);
+            callLoop();
+          });
+          return;
+        }
+        if (snap.call_id !== callId) {
+          callId = snap.call_id;
+          callLog.textContent = "";                // a genuinely new call
+        }
+        if (snap.state === "idle") { callLeave(); return; }
+        if (callPhase === "ended") return;           // the pill is already folding away
+        paintCall(snap);
+        if (snap.state === "ended") callEnded(snap);
+        callLoop();
+      };
+
+      var callSchedule = function () {
+        if (callOff) return;
+        if (callTimerId) window.clearTimeout(callTimerId);
+        var active = callShown && callPhase !== "ended" && callPhase !== "leaving";
+        callTimerId = window.setTimeout(pollCall, active ? 300 : 2000);
+      };
+      var pollCall = function () {
+        callTimerId = null;
+        if (callOff) return;
+        fetch("/auth/lock-call", { credentials: "same-origin" })
+          .then(function (r) {
+            if (r.status === 404 || r.status === 403) { callOff = true; return null; }
+            return r.ok ? r.json() : null;
+          })
+          .then(function (d) { if (d) applyCall(d); })
+          .catch(function () { /* offline: try again on the next tick */ })
+          .then(callSchedule);
+      };
+
+      var callAct = function (action) {
+        if (callBusy) return;
+        callBusy = true;
+        fetch("/auth/lock-call/action", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", "X-taOS-Console": "1" },
+          body: JSON.stringify({ action: action })
+        }).then(function (r) { return r.json().catch(function () { return null; }); })
+          .then(function (d) {
+            callBusy = false;
+            // A 409 carries only the state; fetch the whole picture instead.
+            if (d && d.transcript) applyCall(d); else pollCall();
+          })
+          .catch(function () { callBusy = false; });
+      };
+
+      callEl.addEventListener("click", function (ev) {
+        var btn = ev.target.closest ? ev.target.closest("button") : null;
+        if (!btn || !callEl.contains(btn)) return;
+        if (callPhase !== "shown") return;
+        var act = btn.getAttribute("data-call-act");
+        if (act) { callAct(act); return; }
+        if (btn.hasAttribute("data-call-toggle")) {
+          // Visual only: there is no audio path in a demo.
+          btn.setAttribute("aria-pressed", btn.getAttribute("aria-pressed") === "true" ? "false" : "true");
+        }
+      });
+
+      // The push is a nudge to look NOW; the poll is what makes it reliable.
+      // The page's ONE stream, from lockEvents(): a second EventSource would
+      // be a second connection to the controller for the same events.
+      var callStream = lockEvents();
+      if (callStream) {
+        callStream.addEventListener("call", function () { if (!callOff) pollCall(); });
+        callStream.addEventListener("screen-on", function () {
+          // The blanked flag is cleared by the stream's other listener; look
+          // once it has been.
+          window.setTimeout(callLoop, 0);
+        });
+      }
+      pollCall();
     }
 
     // Keypad -> the existing PIN input.
@@ -7433,6 +9126,172 @@ def _avatar_url(name: str) -> str:
     return f"/auth/lock-avatar/{slug}"
 
 
+#: Scripted "current task" follow-ons for the lock screen's demo agent
+#: islands. Keyed by the demo agent's NAME exactly as it appears in
+#: TAOS_LOCK_DEMO_AGENTS. Jay: "it would be nice if the agents' current task
+#: changed whilst being on the lock screen" -- an agent with no entry here
+#: just holds its configured status forever; its task cycle is itself alone,
+#: so it never gets a `next_change_ms`.
+_DEMO_TASK_SCRIPTS: dict[str, list[str]] = {
+    "Personal Assistant": [
+        "✓ Tomorrow's schedule planned",
+        "Rescheduling your 3pm with Dana",
+        "Booking a table for Friday, 7:30",
+        "✓ Table booked at Dishoom",
+    ],
+    "Social Media Manager": [
+        "✓ 3 posts scheduled",
+        "Replying to 12 comments",
+        "Drafting Thursday's launch thread",
+        "Reviewing reel analytics",
+    ],
+    "Accountant": [
+        "✓ 41 invoices reconciled",
+        "Categorising card spend",
+        "Chasing 2 overdue invoices",
+        "Preparing the VAT summary",
+    ],
+    "Sales Manager": [
+        "✓ 4 follow-ups sent",
+        "Updating the pipeline",
+        "Booking a demo with Northwind",
+        "Drafting a proposal for Acme",
+    ],
+    "Customer Service": [
+        "✓ Inbox cleared",
+        "Answering 3 new tickets",
+        "Processing a refund for #4821",
+        "Tagging feedback for the roadmap",
+    ],
+}
+
+#: How long a normal scripted status holds before its turn ends, before pace
+#: and per-entry jitter scale it (see _demo_agent_independent_state).
+_DEMO_TASK_DWELL_S = 20.0
+#: A completion beat ("✓ ...") reads as just-finished rather than as the
+#: ongoing task, so its turn is a much shorter beat before moving on.
+_DEMO_TASK_DONE_DWELL_S = 5.0
+
+
+def _demo_task_clock() -> float:
+    """Wall-clock seconds. A function, not a bare `time.time()` call, so a
+    test can substitute a fixed or stepped clock without sleeping in real
+    time to observe the rotation."""
+    return time.time()
+
+
+def _demo_task_cycle(name: str, configured_status: str) -> list[str]:
+    """The full rotation for a demo agent: its configured status first, then
+    any scripted follow-ons for that name. No script -> a cycle of exactly
+    one entry, which never changes and never gets a `next_change_ms`."""
+    script = _DEMO_TASK_SCRIPTS.get(name)
+    if not script:
+        return [configured_status]
+    return [configured_status, *script]
+
+
+def _demo_task_dwell(status: str) -> float:
+    """The BASE seconds a status holds, before pace and per-entry jitter
+    scale it for a particular agent (see _demo_agent_independent_state)."""
+    return (
+        _DEMO_TASK_DONE_DWELL_S
+        if status.startswith("✓ ")
+        else _DEMO_TASK_DWELL_S
+    )
+
+
+def _demo_task_pace(name: str) -> float:
+    """A stable per-agent speed multiplier in [0.75, 1.35).
+
+    Derived from a hash of the agent's name rather than drawn per request, so
+    every poll -- and every OTHER agent computing its own state -- agrees on
+    it without any stored state. `crc32` rather than Python's built-in
+    `hash()`: string hashing is salted per PROCESS by default, so the same
+    name would get a different pace after every restart.
+    """
+    seed = zlib.crc32(name.encode("utf-8", "replace"))
+    return 0.75 + (seed % 1000) / 1000.0 * 0.60
+
+
+def _demo_task_phase(name: str) -> float:
+    """A stable per-agent phase offset, in seconds, from a hash of the name.
+
+    Jay, on the handset: "the agent changes shouldnt all be staggered, it
+    looks unnatural, some things can coincide." This offset exists so agents
+    do not all start their cycle at the same point -- but nothing here
+    enforces a MINIMUM separation between agents: two agents' next changes
+    can land on the same second, or even the same millisecond, purely by
+    chance, exactly as two independent real workers' status updates could.
+    """
+    seed = zlib.crc32((name + "\x00phase").encode("utf-8", "replace"))
+    return (seed % 10000) / 10000.0 * 97.0
+
+
+def _demo_task_entry_jitter(name: str, index: int) -> float:
+    """A stable per-entry dwell multiplier in [0.8, 1.2).
+
+    Keyed by name AND index so two states at the same position in different
+    scripts do not scale by the same amount, and so a single agent's own
+    states do not all hold for identically-scaled durations -- a script
+    where every dwell is `base * pace` exactly would still look metronomic
+    even with agents desynchronised from each other.
+    """
+    seed = zlib.crc32(f"{name}\x00{index}".encode("utf-8", "replace"))
+    return 0.8 + (seed % 1000) / 1000.0 * 0.40
+
+
+def _demo_agent_independent_state(
+    name: str, configured_status: str, now: float
+) -> tuple[str, float | None]:
+    """(current status, seconds until it next changes) for one demo agent,
+    on its OWN independent clock -- no coordination with any other agent.
+
+    Time-based, not poll-counted: recomputed fresh from `now` every call, so
+    the server stays authoritative -- a poll landing late or early never
+    desyncs from what the schedule says right now, and a client-side
+    animation can never be reverted by a poll that catches a change mid-air.
+
+    Deliberately NOT a shared turn-taking schedule: Jay wanted agents to be
+    free to coincide and a livelier overall pace, both of which a schedule
+    that spaces every change apart works against by construction.
+    """
+    cycle = _demo_task_cycle(name, configured_status)
+    if len(cycle) <= 1:
+        return cycle[0], None
+    pace = _demo_task_pace(name)
+    dwells = [
+        _demo_task_dwell(status) * pace * _demo_task_entry_jitter(name, i)
+        for i, status in enumerate(cycle)
+    ]
+    total = sum(dwells)
+    if total <= 0:
+        return cycle[0], None
+    offset = _demo_task_phase(name)
+    local_t = (now + offset) % total
+    acc = 0.0
+    for status, d in zip(cycle, dwells):
+        if local_t < acc + d:
+            return status, (acc + d) - local_t
+        acc += d
+    # Floating-point edge only: local_t landed exactly on `total`, which is
+    # the same position as 0.
+    return cycle[0], dwells[0]
+
+
+def _demo_refresh_in_ms(next_change_candidates: list[int]) -> int | None:
+    """The top-level `refresh_in_ms`: soonest scheduled change plus a small
+    margin so it lands on or just after the change rather than just before
+    it, clamped so a pathological value can never make the client hammer the
+    endpoint or go silent for the rest of the lock screen's timeout.
+
+    None when nothing is scheduled to change, so the client keeps its own
+    15s default instead of being told to poll on an arbitrary cadence.
+    """
+    if not next_change_candidates:
+        return None
+    return max(1000, min(15000, min(next_change_candidates) + 150))
+
+
 @router.get("/lock-widgets")
 async def lock_widgets(request: Request):
     """Agent activity + scheduled tasks for the lock screen. Console-only.
@@ -7534,6 +9393,44 @@ async def lock_widgets(request: Request):
                     "demo": True,
                 })
 
+        # Rotating "current task": each demo agent with a script (see
+        # _DEMO_TASK_SCRIPTS) cycles through it on its OWN independent clock
+        # -- its own pace, phase and per-entry jitter (all stable, derived
+        # from its name) -- instead of sitting on its configured status
+        # forever. Computed fresh from the clock on every request -- the
+        # SERVER is authoritative, so a 15s poll landing while the client is
+        # mid-animation can never revert what the client is showing, and a
+        # late or early poll just sees whatever the schedule says right now
+        # rather than drifting out of sync with it.
+        #
+        # Only an agent the demo config says is BUSY rotates. The stats panel
+        # reads the same (name, busy) pairs (_demo_agent_specs), so a scripted
+        # agent configured with a resting status must stay at rest here too --
+        # rotating it into "Replying to 12 comments" would show a working
+        # island for an agent the stats model has idle.
+        busy = {name for name, is_busy in _demo_agent_specs(request) if is_busy}
+        now = _demo_task_clock()
+        for agent in agents:
+            if not agent.get("demo") or agent["name"] not in busy:
+                continue
+            status, remaining = _demo_agent_independent_state(
+                agent["name"], agent["status"], now
+            )
+            agent["status"] = status
+            if remaining is not None:
+                agent["next_change_ms"] = int(round(remaining * 1000))
+
+    # Live device agents: physical boards that are plugged in right now.
+    #
+    # MERGED HERE rather than served from their own endpoint because the lock
+    # screen already polls this one and reconciles the islands by key -- a
+    # second list would mean a second poll and two painters racing over the
+    # same row. Their keys are namespaced (`device:<slug>`) so a board can
+    # never collide with a TAOS_LOCK_DEMO_AGENTS placeholder of the same name.
+    if _device_agents_enabled(request):
+        for entry in _device_live():
+            agents.append(_device_island(entry))
+
     # Pending decisions. An agent that is blocked waiting on a human is the one
     # thing on this screen that is actually ASKING for something, so it gets the
     # attention ring -- everything else here is status. Best-effort for the same
@@ -7615,14 +9512,28 @@ async def lock_widgets(request: Request):
         1 for a in agents
         if not a.get("system") and a["status"].strip().lower() not in resting
     )
-    return JSONResponse({
-        "agents": agents[:6],
+    # NO cap on the islands (Jay: "there shouldnt be a cap"); the feed scrolls.
+    # A cap of six silently cut off a plugged-in board, which is appended last,
+    # whenever five demo agents were configured. New agents go at the BOTTOM,
+    # in arrival order (Jay; custom ordering comes later).
+    visible = agents
+    payload = {
+        "agents": visible,
         "agent_total": len(agents),
         "agent_running": running,
         "tasks": tasks[:4],
         "task_total": len(tasks),
         "threads": bool(demo),
-    })
+    }
+    # Only agents actually SENT can schedule the client's next fetch -- a
+    # rotation happening off the sent list would tell the client to poll
+    # sooner for a change it could never paint anyway.
+    refresh_in_ms = _demo_refresh_in_ms(
+        [a["next_change_ms"] for a in visible if "next_change_ms" in a]
+    )
+    if refresh_in_ms is not None:
+        payload["refresh_in_ms"] = refresh_in_ms
+    return JSONResponse(payload)
 
 
 
@@ -7892,6 +9803,20 @@ async def lock_thread(slug: str, request: Request):
     """
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
+    # A DEVICE thread is real, not scripted, so it is checked first and on its
+    # own flag. The sheet polls one endpoint either way -- it should not have
+    # to know whether the agent it is talking to is a board or a placeholder.
+    if _device_agents_enabled(request) and _DEVICE_SLUG_RE.match(slug or ""):
+        live = {e["slug"] for e in _device_live()}
+        with _DEVICE_LOCK:
+            thread = list(_DEVICE_THREADS.get(slug, []))
+        if slug in live or thread:
+            return JSONResponse({
+                "slug": slug, "messages": thread, "device": True, "demo": True,
+                # The sheet greys the composer when the board has gone.
+                "online": slug in live,
+            })
+
     if not _demo_enabled(request):
         return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -7899,6 +9824,371 @@ async def lock_thread(slug: str, request: Request):
     if not safe:
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse({"slug": safe, "messages": _demo_thread(safe), "demo": True})
+
+
+# ---------------------------------------------------------------------------
+# DEVICE AGENTS: a physical board that appears on the lock screen while it is
+# plugged in, and disappears when it is not.
+#
+# Jay's taOSusb demo. A Pi Zero on a USB expansion board runs a real agent
+# (PicoClaw), heartbeats here every 5s, and is asked to do things from the
+# lock screen's chat sheet. @taOS-dev owns the device half; this is the phone
+# half, and the contract between them is TAOSUSB-DEMO.md.
+#
+# ⛔ THE THING TO KEEP HOLD OF: this screen renders BEFORE SIGN-IN, so what is
+# built here lets someone holding a LOCKED phone make a physical device run a
+# command. That is deliberate, it is what Jay asked for, and it is why every
+# route below is (a) behind its own flag, off on a real device, (b) marked
+# `demo: true` in every payload, (c) console-only, and (d) useless without the
+# pairing token.
+#
+# ⚠ THE DEVICE-SIDE CONTROL IS NOT AN ALLOWLIST. The spec promised one and I
+# repeated it here; @taOS-dev then measured that PicoClaw v0.3.1 cannot do it
+# (`custom_allow_patterns` only EXEMPTS from its deny list, and the real
+# allowlist field is unreachable from config). The control is the OS instead,
+# and it is stronger: the agent runs unprivileged with no sudo under a
+# hardened unit, and the single privileged action -- the OS update -- goes
+# through a root drop box, the same shape as /run/taos-power here. Recorded
+# because "there is an allowlist" is the kind of comfortable sentence that
+# outlives the thing it describes.
+#
+# STATE IS IN MEMORY AND THAT IS CORRECT. A device agent exists only while it
+# is heartbeating; a restart of the controller should forget every board, not
+# resurrect one that was unplugged an hour ago.
+
+#: Contract numbers, agreed with @taOS-dev on bus 4475/4480. The device beats
+#: every 5s; two missed beats is gone. The 8s is NOT arbitrary -- the shot list
+#: wants the island gone ~15s after the board is unplugged, and the lock
+#: screen's widgets poll is the other half of that budget.
+_DEVICE_LIVENESS_SECS = 8.0
+
+#: Slugs are REJECTED, not sanitised. The slug lands in a URL path and is the
+#: key of a thread, so two boards that differ only in case or punctuation must
+#: not quietly become one conversation.
+_DEVICE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+
+#: Device islands live in their OWN key namespace. The lock screen reconciles
+#: islands by key, so a board called "taosusb" and a TAOS_LOCK_DEMO_AGENTS
+#: entry of the same name would otherwise fight over one island -- each poll
+#: would hand the other's payload to the same node.
+_DEVICE_KEY_PREFIX = "device:"
+
+#: Thread caps. `apt upgrade` on a Pi Zero emits thousands of lines, and this
+#: is a pre-auth screen holding the output in the phone's memory. The device
+#: trims first (a few progress lines and a summary, 4 KB per message) -- these
+#: are the backstop for when it does not.
+_DEVICE_THREAD_LINES = 200
+_DEVICE_THREAD_BYTES = 64 * 1024
+_DEVICE_MESSAGE_BYTES = 4 * 1024
+#: What may be RELAYED to the board. @taOS-dev's agentd 400s above 2000, so
+#: sending more is a round trip that can only fail.
+_DEVICE_SEND_CHARS = 2000
+#: Ceiling on the per-board dedup set.
+_DEVICE_SEEN_MAX = 2000
+_DEVICE_TRIM_MARKER = "…earlier output trimmed"
+
+#: Live boards and their threads. Guarded because heartbeats, messages and the
+#: lock screen's polls all arrive on different requests.
+_DEVICE_LOCK = threading.Lock()
+_DEVICE_AGENTS: dict[str, dict] = {}
+_DEVICE_THREADS: dict[str, list[dict]] = {}
+#: (id, seq) pairs already appended, per slug. A device that retries a POST it
+#: already delivered must not print the same progress line twice.
+_DEVICE_SEEN: dict[str, set] = {}
+
+
+def _device_agents_enabled(request: Request) -> bool:
+    """Its OWN flag, not the demo-agents one, AND the demo-mode switch.
+
+    Device agents are a bigger exposure than a scripted island -- they carry a
+    real command path to real hardware -- so turning the scripted demo on must
+    never turn this on as a side effect. Read through _demo_value like every
+    other TAOS_LOCK_DEMO_* flag, so the Settings switch also takes the board
+    path down: with demo mode off, heartbeats are refused and no board island
+    or thread is served. The two conditions only ever narrow each other.
+    """
+    return bool(_demo_value("TAOS_LOCK_DEMO_DEVICE_AGENTS", request).strip())
+
+
+def _device_token() -> str | None:
+    """The pairing token, from a file the drop-in points at.
+
+    NOT an environment variable: the value would then be readable in
+    /proc/<pid>/environ by anything running as the user, and it is the only
+    thing standing between "someone on the Wi-Fi" and an island on a locked
+    phone. @taOS-dev generates it at provisioning; the device reads its own
+    copy from /etc/taosusb/pair.token.
+    """
+    path = os.environ.get("TAOS_DEVICE_AGENT_TOKEN_FILE", "").strip()
+    if not path:
+        return None
+    try:
+        token = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return token or None
+
+
+def _device_authorised(request: Request) -> bool:
+    """Constant-time compare against the pairing token.
+
+    A missing token file is a REFUSAL, never an open door: a misconfigured
+    phone that accepted unauthenticated heartbeats would look exactly like a
+    working one right up until someone else's board appeared on the screen.
+    """
+    want = _device_token()
+    if not want:
+        return False
+    header = request.headers.get("authorization", "")
+    prefix = "bearer "
+    if not header.lower().startswith(prefix):
+        return False
+    return secrets.compare_digest(header[len(prefix):].strip(), want)
+
+
+def _device_live(now: float | None = None) -> list[dict]:
+    """Boards heard from within the liveness window, newest first."""
+    now = time.time() if now is None else now
+    with _DEVICE_LOCK:
+        return [
+            dict(entry) for entry in _DEVICE_AGENTS.values()
+            if now - entry.get("last_seen", 0.0) <= _DEVICE_LIVENESS_SECS
+        ]
+
+
+def _device_island(entry: dict) -> dict:
+    """One live board, in the shape the lock screen's islands already speak.
+
+    `link` is rendered, never inferred. The device measures it from
+    /sys/class/udc/*/state: "usb" means a computer really enumerated the
+    gadget, "power" means it is on a charger with nobody plugged in. Guessing
+    here would turn a measurement back into a story.
+    """
+    link = entry.get("link") or ""
+    status = "Online · USB" if link == "usb" else "Online"
+    if link == "power":
+        # Jay: "power only" -> "idle". Lowercase "idle" is also a RESTING
+        # status to the page, so the island draws as at rest, not busy.
+        status = "Idle"
+    return {
+        "key": _DEVICE_KEY_PREFIX + entry["slug"],
+        "name": entry.get("name") or entry["slug"],
+        "framework": entry.get("framework", ""),
+        "framework_icon": _framework_icon(entry.get("framework", "")),
+        "status": status,
+        "avatar": _avatar_url(entry.get("name") or entry["slug"]),
+        # Both true, and both load-bearing: `device` is what makes the page
+        # send to this agent for real instead of drawing a bubble, and `demo`
+        # is what marks the whole surface as demo content.
+        "device": True,
+        "demo": True,
+        "slug": entry["slug"],
+    }
+
+
+def _device_thread_append(slug: str, message: dict) -> None:
+    """Append one message, then hold the thread to its caps.
+
+    Trimmed from the FRONT with a marker rather than silently: a sheet that
+    quietly loses the beginning of a health check reads as the agent having
+    answered something else.
+    """
+    with _DEVICE_LOCK:
+        thread = _DEVICE_THREADS.setdefault(slug, [])
+        thread.append(message)
+        trimmed = False
+        while len(thread) > _DEVICE_THREAD_LINES:
+            thread.pop(0)
+            trimmed = True
+        total = sum(len(m.get("text", "")) for m in thread)
+        while total > _DEVICE_THREAD_BYTES and len(thread) > 1:
+            total -= len(thread.pop(0).get("text", ""))
+            trimmed = True
+        if trimmed and thread and thread[0].get("text") != _DEVICE_TRIM_MARKER:
+            thread.insert(0, {
+                "role": "system", "text": _DEVICE_TRIM_MARKER,
+                "at": int(time.time()), "id": "", "seq": -1,
+            })
+
+
+@router.post("/device-agent/heartbeat")
+async def device_agent_heartbeat(request: Request):
+    """A board saying it is here. Bearer token, demo flag.
+
+    NOT console-only: this arrives over the network from the board, which is
+    the whole point. The token is therefore the entire gate, which is why a
+    missing token file refuses rather than opens.
+    """
+    if not _device_agents_enabled(request):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not _device_authorised(request):
+        return JSONResponse({"error": "unauthorised"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    slug = str(body.get("slug", "")).strip()
+    if not _DEVICE_SLUG_RE.match(slug):
+        return JSONResponse({"error": "bad slug"}, status_code=400)
+    # THE URL IS PINNED TO THE CALLER, AND REBUILT FROM PARTS.
+    #
+    # @taOS-dev demonstrated the hole rather than arguing it: a heartbeat
+    # claiming url="http://127.0.0.1:<port>/internal/admin-action?x=" made the
+    # phone POST to "/internal/admin-action?x=/chat" -- the query swallows the
+    # path this code used to append -- against a LOCAL service, carrying the
+    # bearer token. That is an SSRF with credentials, from a pre-auth surface.
+    #
+    # Two defences, because one of them is only a filter. The host must be the
+    # address the heartbeat actually came from, so a board can only ever name
+    # itself; and the stored value is REBUILT from scheme/host/port, so there
+    # is no attacker-controlled string left to concatenate a path onto.
+    url = str(body.get("url", "")).strip()
+    parsed = urlparse(url)
+    peer = getattr(getattr(request, "client", None), "host", None)
+    if parsed.scheme != "http" or not parsed.hostname:
+        return JSONResponse({"error": "bad url"}, status_code=400)
+    if parsed.query or parsed.fragment or parsed.path not in ("", "/"):
+        return JSONResponse({"error": "url must have no path or query"}, status_code=400)
+    if parsed.username or parsed.password:
+        return JSONResponse({"error": "bad url"}, status_code=400)
+    if peer and parsed.hostname != peer:
+        # A board may only point at itself. The address it connects FROM is
+        # the one fact here nobody on the other end gets to choose.
+        return JSONResponse({"error": "url must match the caller"}, status_code=400)
+    try:
+        port = parsed.port or 80
+    except ValueError:
+        return JSONResponse({"error": "bad url"}, status_code=400)
+    url = "http://%s:%d" % (parsed.hostname, port)
+    with _DEVICE_LOCK:
+        _DEVICE_AGENTS[slug] = {
+            "slug": slug,
+            "name": str(body.get("name", "")).strip() or slug,
+            "framework": str(body.get("framework", "")).strip().lower(),
+            "url": url,
+            "link": str(body.get("link", "")).strip().lower(),
+            "last_seen": time.time(),
+        }
+    return JSONResponse({"ok": True, "slug": slug, "demo": True})
+
+
+@router.post("/device-agent/message")
+async def device_agent_message(request: Request):
+    """Progress lines and final replies, posted back by the board."""
+    if not _device_agents_enabled(request):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not _device_authorised(request):
+        return JSONResponse({"error": "unauthorised"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    slug = str(body.get("slug", "")).strip()
+    if not _DEVICE_SLUG_RE.match(slug):
+        return JSONResponse({"error": "bad slug"}, status_code=400)
+    with _DEVICE_LOCK:
+        known = slug in _DEVICE_AGENTS
+    if not known:
+        # A board we have never heard heartbeat from cannot write to a thread.
+        return JSONResponse({"error": "unknown device"}, status_code=404)
+    msg_id = str(body.get("id", "")).strip()
+    try:
+        seq = int(body.get("seq", 0))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "seq must be an integer"}, status_code=400)
+    # Truncated HERE as well as on the device. The device promises 4 KB per
+    # message; this is what happens when a promise meets a bug.
+    text = str(body.get("text", ""))[:_DEVICE_MESSAGE_BYTES]
+
+    with _DEVICE_LOCK:
+        seen = _DEVICE_SEEN.setdefault(slug, set())
+        if len(seen) > _DEVICE_SEEN_MAX:
+            # Bounded: this grows once per message for the life of a board, and
+            # a board that is plugged in all day would otherwise be a slow leak
+            # on a phone. Clearing wholesale (rather than evicting) can only
+            # ever re-admit a retry of something older than the last 2000
+            # messages, which cannot still be in flight.
+            seen.clear()
+        if (msg_id, seq) in seen:
+            # Idempotent by contract: a retried delivery is a no-op, not a
+            # second copy of the same line.
+            return JSONResponse({"ok": True, "duplicate": True, "demo": True})
+        seen.add((msg_id, seq))
+    _device_thread_append(slug, {
+        "role": "agent", "text": text, "at": int(time.time()),
+        "id": msg_id, "seq": seq, "done": bool(body.get("done")),
+    })
+    return JSONResponse({"ok": True, "demo": True})
+
+
+@router.post("/lock-send/{slug}")
+async def lock_send(slug: str, request: Request):
+    """Relay what was typed on the lock screen to the board. Console-only.
+
+    Returns as soon as the board has ACCEPTED the text. It must not wait for
+    the work: `apt update` on a Zero takes 30-90s and an upgrade takes many
+    minutes, and a lock screen whose send button hangs for a minute reads as
+    broken. The replies come back through /device-agent/message.
+
+    The full lock-POST gate, not just loopback: this relays text to real
+    hardware WITH the pairing token, and a web page open in the phone's own
+    browser is loopback too -- a no-cors text/plain POST would otherwise ride
+    straight through to the board. Checked before anything else, so the
+    refusal is the same whatever the device flag says.
+    """
+    refused = _lock_post_refusal(request)
+    if refused is not None:
+        return refused
+    if not _device_agents_enabled(request):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not _DEVICE_SLUG_RE.match(slug or ""):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    live = {entry["slug"]: entry for entry in _device_live()}
+    entry = live.get(slug)
+    if entry is None:
+        # Unplugged between the island being drawn and the send landing.
+        return JSONResponse({"error": "device is not online"}, status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    text = str(body.get("text", "")).strip()
+    if not text:
+        return JSONResponse({"error": "text required"}, status_code=400)
+    if len(text) > _DEVICE_SEND_CHARS:
+        # Refused here rather than sent and bounced: the board answers 400
+        # above this, and a round trip that can only fail is worse than a
+        # straight answer.
+        return JSONResponse(
+            {"error": "text too long", "max": _DEVICE_SEND_CHARS}, status_code=400
+        )
+
+    token = _device_token()
+    msg_id = secrets.token_hex(8)
+    # The user's own words go into the thread FIRST, so the sheet shows what
+    # was asked even if the board never answers.
+    _device_thread_append(slug, {
+        "role": "user", "text": text[:_DEVICE_MESSAGE_BYTES],
+        "at": int(time.time()), "id": msg_id, "seq": 0,
+    })
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                entry["url"] + "/chat",
+                json={"id": msg_id, "text": text},
+                headers={"Authorization": "Bearer %s" % token} if token else {},
+            )
+    except httpx.HTTPError as exc:
+        # The board's own failure, said out loud: "no route to host" is a
+        # different problem from "the agent refused it".
+        return JSONResponse(
+            {"error": "device did not answer", "detail": str(exc)}, status_code=502
+        )
+    if resp.status_code >= 400:
+        return JSONResponse(
+            {"error": "device refused", "status": resp.status_code}, status_code=502
+        )
+    return JSONResponse({"ok": True, "id": msg_id, "slug": slug, "demo": True})
 
 
 #: The lock screen's weather is FIXED to Liverpool, in Celsius and mph.
@@ -9239,6 +11529,380 @@ async def lock_notifications(request: Request):
     return JSONResponse({"groups": _demo_notifications(), "demo": True})
 
 
+# ---------------------------------------------------------------------------
+# THE INCOMING-CALL DEMO. "Send to PA".
+#
+# Jay: an incoming call from Mary lands in the lock screen's live zone, and
+# the headline answer is to hand it to the personal assistant, who takes a
+# message while the user watches the transcript and can take over at any
+# moment. When the PA finishes, a calendar event has been added.
+#
+# DEMO CONTENT, and it can never be anything else. This screen renders BEFORE
+# sign-in, so the caller, the script and the calendar event are all fixed
+# strings in this file. There is no code path from here to a phone line, a
+# contact list or a calendar: the "event" exists only as a notification this
+# process serves until it is reset. The number is from Ofcom's 07700 900xxx
+# drama range, reserved for fiction.
+#
+# Behind its OWN flag, TAOS_LOCK_DEMO_CALL, independent of the others: the call
+# is triggered by the demo daemon on the handset over loopback, and a device can
+# run it with or without the rest of the scripted content.
+# ---------------------------------------------------------------------------
+
+#: Who calls. A fictional number, and a label rather than a contact record.
+_CALL_CALLER: dict = {
+    "name": "Mary",
+    "label": "mobile",
+    "number": "07700 900318",
+}
+
+#: The script. The PA's opening line is Jay's, verbatim, and must stay so.
+_CALL_SCRIPT: tuple[tuple[str, str], ...] = (
+    ("pa", "Hi, and thank you for calling Jason's phone. This is his personal "
+           "assistant speaking — can I take a message?"),
+    # Jay: "call me back tomorrow lunch time instead, the demo works any time
+    # of the day then" -- nothing here names a time of day it is NOW.
+    ("caller", "Oh hi! Could you ask him to give me a call back tomorrow? "
+               "Lunchtime would be best."),
+    ("pa", "Of course. Does half past twelve tomorrow work for you?"),
+    ("caller", "Half twelve's perfect, thank you."),
+    ("pa", "Lovely — I've added it to his calendar, and he'll call you "
+           "tomorrow at 12:30. Take care!"),
+    ("caller", "Thanks, bye!"),
+)
+
+#: Speech pacing. 200 words a minute: Jay, from the glass, "the agent needs to
+#: appear to be talking slightly faster" -- it was 165 (360ms a word), which
+#: read as the PA reading aloud. Both voices move together so the exchange
+#: keeps its rhythm. The floor keeps a two-word line from flashing past; the
+#: gap is the breath between turns and the lead-in is the PA picking up.
+_CALL_MS_PER_WORD = 300
+_CALL_MIN_LINE_MS = 900
+_CALL_GAP_MS = 520
+_CALL_LEAD_MS = 700
+
+#: What the PA leaves behind: a reminder, in its own voice, shown at the top of
+#: the Alerts panel until the user dismisses it. Jay: "reminder to call Mary
+#: at time etc added to calendar, I will remind you closer to the time". It is
+#: never written anywhere -- the "calendar" is this dict.
+_CALL_REMINDER: dict = {
+    "kind": "reminder",
+    "from": "Your PA",
+    "title": "Reminder added",
+    "body": "Reminder to call Mary tomorrow at 12:30 pm added to your calendar. "
+            "I'll remind you closer to the time.",
+    "event": "Call Mary",
+    "time": "Tomorrow 12:30 pm",
+}
+
+#: Every action the page may send. Anything else is a 400; one of these at the
+#: wrong moment is a 409.
+_CALL_ACTIONS = frozenset({"answer", "decline", "voicemail", "pa", "takeover", "end"})
+
+
+def _call_timeline() -> list[dict]:
+    """The script as offsets from the moment the PA picked up.
+
+    Computed, not tabled: each line lasts as long as its words take to say, so
+    editing a line cannot leave its timing describing the old one.
+    """
+    out: list[dict] = []
+    at = _CALL_LEAD_MS
+    for who, text in _CALL_SCRIPT:
+        words = len(text.split())
+        dur = max(_CALL_MIN_LINE_MS, words * _CALL_MS_PER_WORD)
+        out.append({"who": who, "text": text, "at_ms": at, "dur_ms": dur})
+        at += dur + _CALL_GAP_MS
+    return out
+
+
+def _call_demo_enabled(request: Request) -> bool:
+    """Whether the incoming-call demo is switched on.
+
+    Its own flag, alone -- but read through _demo_active like every other demo
+    flag, so the Settings demo-mode switch takes the call down with the rest.
+    """
+    return _demo_active("TAOS_LOCK_DEMO_CALL", request)
+
+
+class _LockCall:
+    """One scripted call, as a small state machine. In memory, one per process.
+
+    idle -> ringing -> pa | live (answered) | ended (declined, voicemail)
+    pa   -> live (taken over) | ended (pa-done, ended-by-user)
+    live -> ended (ended-by-user)
+
+    There is NO background thread. The PA's progress is a pure function of the
+    clock and the moment the PA picked up, and the pa -> ended(pa-done) step is
+    taken lazily by whichever read notices the script has run out. That keeps
+    the state inspectable at any instant and lets a test drive it with a fake
+    clock instead of sleeping through thirty seconds of dialogue.
+    """
+
+    def __init__(self, clock=time.monotonic, wall=time.time):
+        self._clock = clock
+        self._wall = wall
+        self._lock = threading.Lock()
+        self._timeline = _call_timeline()
+        self._script_ms = (self._timeline[-1]["at_ms"] + self._timeline[-1]["dur_ms"])
+        self.notification: dict | None = None
+        self._reset_locked()
+
+    # -- internals, all called with the lock held --------------------------
+    def _reset_locked(self) -> None:
+        self.state = "idle"
+        self.outcome: str | None = None
+        self.call_id = getattr(self, "call_id", 0)
+        self._since = self._clock()
+        self._since_wall = self._wall()
+        self._pa_started: float | None = None
+        self._connected: float | None = None
+        self._taken_over_ms: int | None = None
+        self._ended_ms: int | None = None
+
+    def _enter(self, state: str, outcome: str | None = None) -> None:
+        self.state = state
+        self.outcome = outcome
+        self._since = self._clock()
+        self._since_wall = self._wall()
+
+    def _pa_ms(self) -> int:
+        if self._pa_started is None:
+            return 0
+        return int(round((self._clock() - self._pa_started) * 1000))
+
+    def _advance(self) -> None:
+        """Take the lazy step: a PA whose script has run out has finished."""
+        if self.state == "pa" and self._pa_ms() >= self._script_ms:
+            # Backdated to the instant the last line ended, not to whenever
+            # somebody happened to look.
+            self._ended_ms = self._script_ms
+            self._enter("ended", "pa-done")
+            self.notification = {
+                **_CALL_REMINDER,
+                "at": self._wall(),
+                "demo": True,
+            }
+
+    def _transcript(self) -> tuple[list[dict], dict | None]:
+        """Lines heard so far, and who is speaking right now (or None)."""
+        if self._pa_started is None:
+            return [], None
+        if self.state == "pa":
+            now = self._pa_ms()
+        elif self._taken_over_ms is not None:
+            now = self._taken_over_ms
+        elif self._ended_ms is not None:
+            now = self._ended_ms
+        else:
+            now = self._script_ms
+        lines: list[dict] = []
+        speaking = None
+        for index, line in enumerate(self._timeline):
+            if line["at_ms"] > now:
+                break
+            entry = dict(line)
+            end = line["at_ms"] + line["dur_ms"]
+            if now < end:
+                progress = (now - line["at_ms"]) / line["dur_ms"]
+                if self.state == "pa":
+                    speaking = {"who": line["who"], "line": index,
+                                "progress": round(progress, 4)}
+                else:
+                    # Cut off mid-sentence by a take-over or a hang-up: the
+                    # page reveals only what had been said.
+                    entry["upto"] = round(progress, 4)
+            lines.append(entry)
+        return lines, speaking
+
+    def _snapshot(self) -> dict:
+        transcript, speaking = self._transcript()
+        connected_ms = None
+        if self._connected is not None and self.state in ("pa", "live"):
+            connected_ms = int(round((self._clock() - self._connected) * 1000))
+        return {
+            "demo": True,
+            "call_id": self.call_id,
+            "state": self.state,
+            "caller": dict(_CALL_CALLER) if self.state != "idle" else None,
+            "outcome": self.outcome,
+            "since": self._since_wall,
+            "elapsed_ms": connected_ms,
+            "taken_over": self._taken_over_ms is not None,
+            "transcript": transcript,
+            "speaking": speaking,
+            "notification": dict(self.notification) if self.notification else None,
+        }
+
+    # -- the public surface --------------------------------------------------
+    def snapshot(self) -> dict:
+        with self._lock:
+            self._advance()
+            return self._snapshot()
+
+    def ring(self) -> tuple[int, dict]:
+        """Start a call. Idempotent while it is already ringing."""
+        with self._lock:
+            self._advance()
+            if self.state == "ringing":
+                return 200, self._snapshot()
+            if self.state in ("pa", "live"):
+                return 409, {"error": "a call is already in progress",
+                             "state": self.state}
+            # From idle or from a finished call. A finished call's transcript
+            # goes; the calendar event it added stays until reset.
+            self.call_id += 1
+            self._pa_started = None
+            self._connected = None
+            self._taken_over_ms = None
+            self._ended_ms = None
+            self._enter("ringing")
+            return 201, self._snapshot()
+
+    def reset(self) -> dict:
+        with self._lock:
+            self._reset_locked()
+            self.notification = None
+            return self._snapshot()
+
+    def dismiss(self) -> tuple[int, dict]:
+        """The user put the reminder away. 409 when there is none to put away."""
+        with self._lock:
+            self._advance()
+            if self.notification is None:
+                return 409, {"error": "nothing to dismiss", "state": self.state}
+            self.notification = None
+            return 200, self._snapshot()
+
+    def act(self, action: str) -> tuple[int, dict]:
+        if action not in _CALL_ACTIONS:
+            return 400, {"error": "unknown action"}
+        with self._lock:
+            # Advance FIRST: a take-over tapped after the PA had already
+            # finished is a take-over of nothing, and must not un-end the call.
+            self._advance()
+            state = self.state
+            if state == "ringing" and action == "answer":
+                self._connected = self._clock()
+                self._enter("live")
+            elif state == "ringing" and action == "decline":
+                self._enter("ended", "declined")
+            elif state == "ringing" and action == "voicemail":
+                self._enter("ended", "voicemail")
+            elif state == "ringing" and action == "pa":
+                self._pa_started = self._clock()
+                self._connected = self._pa_started
+                self._enter("pa")
+            elif state == "pa" and action == "takeover":
+                self._taken_over_ms = self._pa_ms()
+                self._enter("live")
+            elif state == "pa" and action == "end":
+                self._ended_ms = self._pa_ms()
+                self._enter("ended", "ended-by-user")
+            elif state == "live" and action == "end":
+                self._enter("ended", "ended-by-user")
+            else:
+                return 409, {"error": "not allowed now", "state": state,
+                             "action": action}
+            return 200, self._snapshot()
+
+
+_LOCK_CALL = _LockCall()
+
+
+def _call_gate(request: Request, *, post: bool = False):
+    """The refusals every call route shares, in the order they matter.
+
+    Console first, then -- for a POST -- the same non-simple-request gate as
+    every other /auth/lock-* POST (_lock_post_refusal), and only then the flag,
+    so neither a remote caller nor a no-cors page learns whether the demo is on.
+    """
+    refused = _lock_post_refusal(request) if post else None
+    if refused is not None:
+        return refused
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    if not _call_demo_enabled(request):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return None
+
+
+@router.get("/lock-call")
+async def lock_call(request: Request):
+    """The call as the lock screen should draw it right now. Console-only.
+
+    Polled by the page (every ~2s idle, ~300ms during a call) because the push
+    stream is not guaranteed to exist; a 404 means the demo is off and the page
+    stops asking.
+    """
+    refused = _call_gate(request)
+    if refused is not None:
+        return refused
+    return JSONResponse(_LOCK_CALL.snapshot())
+
+
+@router.post("/lock-call/ring")
+async def lock_call_ring(request: Request):
+    """Ring the phone: Mary calling. Console-only; the demo daemon's button."""
+    refused = _call_gate(request, post=True)
+    if refused is not None:
+        return refused
+    status, body = _LOCK_CALL.ring()
+    if status < 300:
+        # No content on the stream -- the page fetches /auth/lock-call itself.
+        body["delivered"] = _push_lock_event("call", {"state": body["state"]})
+    return JSONResponse(body, status_code=status)
+
+
+@router.post("/lock-call/reset")
+async def lock_call_reset(request: Request):
+    """Back to idle, and the calendar notification goes with it. Console-only."""
+    refused = _call_gate(request, post=True)
+    if refused is not None:
+        return refused
+    body = _LOCK_CALL.reset()
+    body["delivered"] = _push_lock_event("call", {"state": body["state"]})
+    return JSONResponse(body)
+
+
+@router.post("/lock-call/dismiss")
+async def lock_call_dismiss(request: Request):
+    """Put away the reminder the PA left. Console-only.
+
+    Cleared SERVER-side, so the next poll does not bring it back; 409 when
+    there is nothing to dismiss, so a double tap is visible as such.
+    """
+    refused = _call_gate(request, post=True)
+    if refused is not None:
+        return refused
+    status, body = _LOCK_CALL.dismiss()
+    if status == 200:
+        body["delivered"] = _push_lock_event("call", {"state": body["state"]})
+    return JSONResponse(body, status_code=status)
+
+
+@router.post("/lock-call/action")
+async def lock_call_action(request: Request):
+    """Answer, decline, voicemail, send to the PA, take over, or end.
+
+    400 for anything that is not one of those six, 409 for one of them at the
+    wrong moment -- a take-over while it is still ringing, say.
+    """
+    refused = _call_gate(request, post=True)
+    if refused is not None:
+        return refused
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "body must be JSON"}, status_code=400)
+    if not isinstance(body, dict) or not isinstance(body.get("action"), str):
+        return JSONResponse({"error": "action required"}, status_code=400)
+    status, out = _LOCK_CALL.act(body["action"].strip())
+    if status == 200:
+        out["delivered"] = _push_lock_event("call", {"state": out["state"]})
+    return JSONResponse(out, status_code=status)
+
+
 #: Where the privileged helper looks for a power request. The controller runs as
 #: `taos` and CANNOT power the handset off itself -- logind answers "challenge"
 #: to that user, and a challenge on a device with no keyboard and no polkit
@@ -9252,6 +11916,14 @@ _POWER_REQUEST = "/run/taos-power/request"
 #: The lock screen's fastest poll is 3s and its panels are 15 MINUTES -- a menu
 #: that arrives on a poll is a broken menu.
 _LOCK_EVENT_WAITERS: set = set()
+
+#: The last screen state the device reported ("screen-off" / "screen-on"), or
+#: None when it has not reported one since the controller started. Kept so a
+#: stream that (re)opens can be told the CURRENT state: after a controller
+#: restart the page reconnects while the panel may be dark, and a screen-off
+#: sent before the restart is gone. None means unknown, and unknown sends
+#: nothing rather than guessing.
+_LOCK_SCREEN_STATE: str | None = None
 
 
 def _push_lock_event(kind: str, payload: dict | None = None) -> int:
@@ -9285,15 +11957,21 @@ async def lock_events(request: Request):
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
 
-    queue: asyncio.Queue = asyncio.Queue(maxsize=8)
-    _LOCK_EVENT_WAITERS.add(queue)
-
     async def stream():
         try:
+            queue: asyncio.Queue = asyncio.Queue(maxsize=8)
+            _LOCK_EVENT_WAITERS.add(queue)
+            initial_state = _LOCK_SCREEN_STATE
             # An immediate byte, so the browser's EventSource resolves its
             # connection rather than sitting in CONNECTING until the first real
             # event -- which could be hours.
             yield ": connected\n\n"
+            # The current screen state, to THIS client only (it is written to
+            # this response, not pushed through the fan-out): the page pauses
+            # its widgets poll on screen-off, and a reopen against a dark panel
+            # would otherwise resume it until the next screen-off.
+            if initial_state is not None:
+                yield "event: %s\ndata: {}\n\n" % initial_state
             while True:
                 if await request.is_disconnected():
                     break
@@ -9780,6 +12458,8 @@ async def lock_screen_off(request: Request):
     refusal = _lock_post_refusal(request)
     if refusal is not None:
         return refusal
+    global _LOCK_SCREEN_STATE
+    _LOCK_SCREEN_STATE = "screen-off"
     return JSONResponse({"ok": True, "delivered": _push_lock_event("screen-off")})
 
 
@@ -9795,6 +12475,8 @@ async def lock_screen_on(request: Request):
     refusal = _lock_post_refusal(request)
     if refusal is not None:
         return refusal
+    global _LOCK_SCREEN_STATE
+    _LOCK_SCREEN_STATE = "screen-on"
     return JSONResponse({"ok": True, "delivered": _push_lock_event("screen-on")})
 
 

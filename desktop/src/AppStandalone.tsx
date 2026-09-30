@@ -21,7 +21,7 @@ export function AppStandalone({ appId }: Props) {
     [appId],
   );
 
-  // Guard: caller should verify pwa:true before mounting this component.
+  // Any registered app renders; an unknown id renders nothing.
   if (!manifest || !AppComponent) return null;
 
   return (
@@ -36,7 +36,8 @@ export function AppStandalone({ appId }: Props) {
         paddingTop: "env(safe-area-inset-top, 0px)",
       }}
     >
-      <InstallPromptBanner />
+      {/* pwa:true gates only the install surface, never the app itself. */}
+      {manifest.pwa && <InstallPromptBanner />}
       <Suspense fallback={
         <div className="flex items-center justify-center h-full" style={{ color: "rgba(255,255,255,0.4)" }}>
           Loading...

@@ -1,6 +1,6 @@
 import { type ReactNode } from "react";
 import { useIsMobile } from "@/hooks/use-is-mobile";
-import { ScrollText, Trash2, Server, Wrench, MessageSquare, PauseCircle, RotateCcw, HardDrive, Database } from "lucide-react";
+import { ScrollText, Trash2, Server, Wrench, MessageSquare, PauseCircle, RotateCw, HardDrive, Database, Play, Square, Pause } from "lucide-react";
 import { LatestVersion } from "@/lib/framework-api";
 import { resolveAgentEmoji } from "@/lib/agent-emoji";
 import { Button, Card } from "@/components/ui";
@@ -125,7 +125,7 @@ function PausedChip() {
   return (
     <span
       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/15 text-amber-400 border border-amber-500/25"
-      title="This agent is paused due to a worker failure"
+      title="This agent is paused"
     >
       <PauseCircle size={10} aria-hidden="true" />
       paused
@@ -178,6 +178,11 @@ export function AgentRow({
   onViewMessages,
   onDelete,
   onResume,
+  onStart,
+  onStop,
+  onRestart,
+  onPause,
+  busy = false,
   leftActions,
   protected: isProtected = false,
 }: {
@@ -189,8 +194,17 @@ export function AgentRow({
   onViewMessages: (name: string) => void;
   onDelete: (name: string) => void;
   onResume: (name: string) => void;
+  /** Lifecycle controls. Each button only renders when its handler is given
+   *  and the agent's live state allows the action. */
+  onStart?: (name: string) => void;
+  onStop?: (name: string) => void;
+  onRestart?: (name: string) => void;
+  onPause?: (name: string) => void;
+  /** A lifecycle request for this agent is in flight: disable its controls. */
+  busy?: boolean;
   leftActions?: ReactNode;
-  /** When true, destructive actions (delete, resume-from-paused) are hidden. */
+  /** When true, destructive and lifecycle actions (delete, start, stop,
+   *  restart, pause, resume) are hidden. */
   protected?: boolean;
 }) {
   const isMobile = useIsMobile();
@@ -209,6 +223,13 @@ export function AgentRow({
       ? agent.framework
       : null;
   const subLabel = frameworkLabel;
+
+  // Live lifecycle state. A stopped container wins over a stale paused flag
+  // (Start clears the flag); otherwise a frozen container or the paused flag
+  // reads as paused.
+  const isStopped = agent.status === "stopped";
+  const isPaused = !isStopped && Boolean(agent.paused || agent.frozen);
+  const isLive = agent.status === "running" && !isPaused;
 
   // Only allow management actions while the agent is running.
   const running = agent.status === "running";
@@ -239,18 +260,74 @@ export function AgentRow({
     />
   );
 
+  const sizeCls = isMobile ? "h-11 w-11" : "h-8 w-8";
+  const busyCls = busy ? " opacity-40 cursor-wait" : "";
+
   const actionButtons = (
     <>
-      {!isProtected && agent.paused && (
+      {!isProtected && isStopped && onStart && (
         <Button
           variant="ghost"
           size="icon"
-          className={`${isMobile ? "h-11 w-11" : "h-8 w-8"} text-amber-400 hover:bg-emerald-500/15 hover:text-emerald-400`}
+          className={`${sizeCls} text-shell-text-tertiary hover:bg-emerald-500/15 hover:text-emerald-400${busyCls}`}
+          onClick={() => onStart(agent.name)}
+          disabled={busy}
+          aria-label={`Start ${agent.name}`}
+          title="Start agent"
+        >
+          <Play size={15} />
+        </Button>
+      )}
+      {!isProtected && isPaused && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className={`${sizeCls} text-amber-400 hover:bg-emerald-500/15 hover:text-emerald-400${busyCls}`}
           onClick={() => onResume(agent.name)}
+          disabled={busy}
           aria-label={`Resume ${agent.name}`}
           title="Resume agent"
         >
-          <RotateCcw size={15} />
+          <Play size={15} />
+        </Button>
+      )}
+      {!isProtected && isLive && onPause && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className={`${sizeCls} text-shell-text-tertiary hover:bg-amber-500/15 hover:text-amber-400${busyCls}`}
+          onClick={() => onPause(agent.name)}
+          disabled={busy}
+          aria-label={`Pause ${agent.name}`}
+          title="Pause agent"
+        >
+          <Pause size={15} />
+        </Button>
+      )}
+      {!isProtected && isLive && onRestart && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className={`${sizeCls} text-shell-text-tertiary hover:bg-shell-surface-hover hover:text-shell-text${busyCls}`}
+          onClick={() => onRestart(agent.name)}
+          disabled={busy}
+          aria-label={`Restart ${agent.name}`}
+          title="Restart agent"
+        >
+          <RotateCw size={15} />
+        </Button>
+      )}
+      {!isProtected && isLive && onStop && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className={`${sizeCls} text-shell-text-tertiary hover:bg-red-500/15 hover:text-red-400${busyCls}`}
+          onClick={() => onStop(agent.name)}
+          disabled={busy}
+          aria-label={`Stop ${agent.name}`}
+          title="Stop agent"
+        >
+          <Square size={15} />
         </Button>
       )}
       <Button
@@ -336,7 +413,7 @@ export function AgentRow({
             )}
             <IndicatorRow agent={agent} />
           </div>
-          <StatusIndicator status={agent.status} paused={agent.paused} />
+          <StatusIndicator status={agent.status} paused={isPaused} />
         </div>
         {/* Row 2: host + vectors chips */}
         <div className="flex items-center gap-2 mt-2 min-w-0">
@@ -348,16 +425,16 @@ export function AgentRow({
             <span className="text-shell-text-tertiary">vectors</span>
           </MetricChip>
         </div>
-        {(agent.paused || (diskState && diskState.state !== "ok")) && (
+        {(isPaused || (diskState && diskState.state !== "ok")) && (
           <div className="flex flex-wrap gap-1.5 mt-2">
-            {agent.paused && <PausedChip />}
+            {isPaused && <PausedChip />}
             {diskState && diskState.state !== "ok" && <DiskChip diskState={diskState} />}
           </div>
         )}
         {/* Row 3: action buttons */}
         <div className="flex items-center justify-between mt-1.5 -ml-1.5">
           <div className="flex items-center gap-0">{leftActions}</div>
-          <div className="flex items-center gap-0">{actionButtons}</div>
+          <div className="flex flex-wrap items-center justify-end gap-0">{actionButtons}</div>
         </div>
       </Card>
     );
@@ -379,7 +456,7 @@ export function AgentRow({
           </div>
           <IndicatorRow agent={agent} />
         </div>
-        {agent.paused && <PausedChip />}
+        {isPaused && <PausedChip />}
         {diskState && diskState.state !== "ok" && <DiskChip diskState={diskState} verbose />}
       </div>
 
@@ -399,13 +476,14 @@ export function AgentRow({
 
       {/* Status pill (fixed-width column so it lines up row to row) */}
       <div className="w-24 shrink-0 flex justify-end">
-        <StatusIndicator status={agent.status} paused={agent.paused} />
+        <StatusIndicator status={agent.status} paused={isPaused} />
       </div>
 
       {/* Actions: fixed-width + right-aligned so a protected agent's 3 icons
-          reserve the same column as a deployed agent's 4 (no column drift).
+          reserve the same column as a deployed agent's up to 7 (lifecycle
+          controls plus logs, skills, messages, delete), so no column drift.
           Calm at rest, revealed on card hover / keyboard focus. */}
-      <div className="flex items-center justify-end gap-1 border-l border-shell-border pl-2 shrink-0 w-[152px] opacity-100 [@media(hover:hover)]:opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+      <div className="flex items-center justify-end gap-1 border-l border-shell-border pl-2 shrink-0 w-[264px] opacity-100 [@media(hover:hover)]:opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
         {leftActions}
         {actionButtons}
       </div>

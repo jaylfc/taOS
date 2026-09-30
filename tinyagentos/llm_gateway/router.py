@@ -1,9 +1,3 @@
-"""The G1 routes: ``GET /api/llm/v1/models``, non-streaming ``POST /api/llm/v1/chat/completions``,
-and streaming ``POST /api/llm/v1/chat/completions``.
-
-Auth and model permission come ONLY from the ``gateway_caller`` dependency
-(see auth.py). Mounted by ``mount`` when ``TAOS_LLM_GATEWAY=1``.
-"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
@@ -17,13 +11,19 @@ from tinyagentos.llm_gateway.errors import (
     model_not_found,
     model_not_permitted,
 )
-from tinyagentos.llm_gateway.forward import chat_completion, chat_completion_stream
+from tinyagentos.llm_gateway.forward import (
+    OLLAMA_PROVIDERS,
+    forwardable,
+    chat_completion,
+    chat_completion_stream,
+    resolve_api_key,
+)
+from tinyagentos.llm_gateway.anthropic import chat_completion_anthropic
 from tinyagentos.llm_gateway.resolve import TAOS_DEFAULT, find_routes, model_names, routing_table
 import tinyagentos.llm_gateway.resolve as resolve_mod
 
 PREFIX = "/api/llm/v1"
 OPENAI_PROVIDER = "openai"
-OLLAMA_PROVIDERS = ("ollama", "ollama_chat")
 
 router = APIRouter(prefix=PREFIX)
 
@@ -34,7 +34,7 @@ def mount(app, dependencies=None) -> None:
 
 
 def _forwardable(route) -> bool:
-    return route.provider == OPENAI_PROVIDER or route.provider in OLLAMA_PROVIDERS
+    return forwardable(route)
 
 
 def _model_entry(name: str) -> dict:
@@ -96,6 +96,31 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
     alias_grant = requested == TAOS_DEFAULT and caller.may_use(TAOS_DEFAULT)
     if route.model_name != requested and not alias_grant and not caller.may_use(route.model_name):
         raise model_not_permitted(route.model_name)
+
+    # Route through appropriate handler based on provider
+    if route.provider == "anthropic":
+        api_key = await resolve_api_key(state, route.api_key_ref)
+        principal = caller.caller_id
+        if body.get("stream"):
+            from fastapi.responses import StreamingResponse
+            from tinyagentos.llm_gateway.anthropic import chat_completion_stream_anthropic
+            gen = chat_completion_stream_anthropic(routes, body, api_key, principal, state)
+            try:
+                first = await gen.__anext__()
+            except StopAsyncIteration:
+                return StreamingResponse((), media_type="text/event-stream", headers={"cache-control": "no-cache"})
+            except GatewayError as exc:
+                return exc.response()
+
+            async def _full():
+                yield first
+                async for chunk in gen:
+                    yield chunk
+
+            return StreamingResponse(_full(), media_type="text/event-stream", headers={"cache-control": "no-cache"})
+        return JSONResponse(await chat_completion_anthropic(routes, body, api_key, principal, state))
+
+    # Default to OpenAI-compatible handler
     if not _forwardable(route):
         raise GatewayError(
             501,

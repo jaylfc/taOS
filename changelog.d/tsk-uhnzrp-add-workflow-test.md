@@ -1,2 +1,0 @@
-### Added
-- Test `tests/test_changelog_gate_workflow.py` asserting the changelog fragment gate workflow triggers on all required PR event types (`opened`, `synchronize`, `reopened`, `labeled`, `unlabeled`, `edited`)

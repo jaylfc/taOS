@@ -70,13 +70,9 @@ export async function publishSite(
   return res.json();
 }
 
-export function siteUnpublishUrl(id: string): string {
-  return `/api/web/sites/${encodeURIComponent(id)}/publish`;
-}
-
 /** Unpublish a previously published site (drops the binding; the claim survives). */
 export async function unpublishSite(id: string): Promise<void> {
-  const res = await fetch(siteUnpublishUrl(id), {
+  const res = await fetch(sitePublishUrl(id), {
     method: "DELETE",
     credentials: "include",
   });

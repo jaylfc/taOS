@@ -126,6 +126,7 @@ export function ConsentActions({
   onResolved,
   source = "auth_requests",
   canonicalId,
+  humanDuration,
 }: {
   requestId: string;
   scopes: string[];
@@ -137,6 +138,7 @@ export function ConsentActions({
   onResolved?: () => void;
   source?: string;
   canonicalId?: string;
+  humanDuration?: string;
 }) {
   // `granted` is what the approve call will actually send. It defaults to the
   // full requested set, so the out-of-the-box behaviour (grant exactly what was
@@ -448,137 +450,144 @@ export function ConsentActions({
           )}
         </div>
       )}
-      {needsProject && (
+      {humanDuration && (
         <div className="mb-2">
-          {requestedProjectId && requestedProjectNotFound && (
-            <p
-              role="alert"
-              className="mb-1.5 text-[11px] text-red-300"
-            >
-              Requested project {requestedProjectId} not found (not visible to
-              you). Pick a project you can see below, or create one.
-            </p>
-          )}
-          {requestedProjectId && resolvedRequestedProject && (
-            <p className="mb-1 text-[11px] text-shell-text-secondary">
-              Requesting access for{" "}
-              <span className="font-medium text-shell-text">
-                {resolvedRequestedProject.name}
-              </span>
-              {" "}
-              (<code className="text-shell-text-tertiary">
-                {resolvedRequestedProject.id}
-              </code>)
-            </p>
-          )}
-          {!creating ? (
-            <div className="flex items-center gap-1.5">
-              <select
-                id={`consent-project-${requestId}`}
-                aria-label="Grant project access for"
-                value={selectedProjectId}
-                onChange={(e) => {
-                  e.stopPropagation();
-                  setSelectedProjectId(e.target.value);
-                  setRequestedProjectNotFound(false);
-                }}
-                onClick={(e) => e.stopPropagation()}
-                disabled={busy || loadingProjects}
-                className="flex-1 min-w-0 px-2 py-1 rounded-md text-[11px] bg-white/5 border border-white/10 text-shell-text disabled:opacity-50"
-                aria-invalid={requestedProjectNotFound ? "true" : undefined}
-              >
-                <option value="">
-                  {loadingProjects ? "Loading..." : "Select a project"}
-                </option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setRequestedProjectNotFound(false);
-                  setCreating(true);
-                }}
-                disabled={busy}
-                className="px-2 py-1 rounded-md text-[11px] bg-white/5 hover:bg-white/10 border border-white/10 text-shell-text-secondary disabled:opacity-50"
-              >
-                New
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1.5">
-              <input
-                aria-label="New project name"
-                value={newName}
-                onChange={(e) => {
-                  e.stopPropagation();
-                  setNewName(e.target.value);
-                }}
-                onClick={(e) => e.stopPropagation()}
-                placeholder="New project name"
-                className="flex-1 min-w-0 px-2 py-1 rounded-md text-[11px] bg-white/5 border border-white/10 text-shell-text"
-              />
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setCreating(false);
-                  setNewName("");
-                }}
-                disabled={busy}
-                className="px-2 py-1 rounded-md text-[11px] bg-white/5 hover:bg-white/10 border border-white/10 text-shell-text-secondary disabled:opacity-50"
-              >
-                Cancel
-              </button>
-            </div>
-          )}
+          <p className="text-[11px] text-shell-text-tertiary">
+            {humanDuration}
+          </p>
         </div>
       )}
-      <div className="flex flex-wrap gap-1.5">
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            decide(true);
-          }}
-          disabled={allowDisabled}
-          className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <CheckCircle size={11} />
-          Allow
-        </button>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            decide(false);
-          }}
-          disabled={busy}
-          className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-white/5 hover:bg-red-500/15 hover:text-red-300 text-shell-text-secondary border border-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <XCircle size={11} />
-          Deny
-        </button>
+      {needsProject && (
+          <div className="mb-2">
+            {requestedProjectId && requestedProjectNotFound && (
+              <p
+                role="alert"
+                className="mb-1.5 text-[11px] text-red-300"
+              >
+                Requested project {requestedProjectId} not found (not visible to
+                you). Pick a project you can see below, or create one.
+              </p>
+            )}
+            {requestedProjectId && resolvedRequestedProject && (
+              <p className="mb-1 text-[11px] text-shell-text-secondary">
+                Requesting access for{" "}
+                <span className="font-medium text-shell-text">
+                  {resolvedRequestedProject.name}
+                </span>
+                {" "}
+                (<code className="text-shell-text-tertiary">
+                  {resolvedRequestedProject.id}
+                </code>)
+              </p>
+            )}
+            {!creating ? (
+              <div className="flex items-center gap-1.5">
+                <select
+                  id={`consent-project-${requestId}`}
+                  aria-label="Grant project access for"
+                  value={selectedProjectId}
+                  onChange={(e) => {
+                    e.stopPropagation();
+                    setSelectedProjectId(e.target.value);
+                    setRequestedProjectNotFound(false);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  disabled={busy || loadingProjects}
+                  className="flex-1 min-w-0 px-2 py-1 rounded-md text-[11px] bg-white/5 border border-white/10 text-shell-text disabled:opacity-50"
+                  aria-invalid={requestedProjectNotFound ? "true" : undefined}
+                >
+                  <option value="">
+                    {loadingProjects ? "Loading..." : "Select a project"}
+                  </option>
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRequestedProjectNotFound(false);
+                    setCreating(true);
+                  }}
+                  disabled={busy}
+                  className="px-2 py-1 rounded-md text-[11px] bg-white/5 hover:bg-white/10 border border-white/10 text-shell-text-secondary disabled:opacity-50"
+                >
+                  New
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <input
+                  aria-label="New project name"
+                  value={newName}
+                  onChange={(e) => {
+                    e.stopPropagation();
+                    setNewName(e.target.value);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  placeholder="New project name"
+                  className="flex-1 min-w-0 px-2 py-1 rounded-md text-[11px] bg-white/5 border border-white/10 text-shell-text"
+                />
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCreating(false);
+                    setNewName("");
+                  }}
+                  disabled={busy}
+                  className="px-2 py-1 rounded-md text-[11px] bg-white/5 hover:bg-white/10 border border-white/10 text-shell-text-secondary disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              decide(true);
+            }}
+            disabled={allowDisabled}
+            className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <CheckCircle size={11} />
+            Allow
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              decide(false);
+            }}
+            disabled={busy}
+            className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-white/5 hover:bg-red-500/15 hover:text-red-300 text-shell-text-secondary border border-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <XCircle size={11} />
+            Deny
+          </button>
+        </div>
+        {error && (
+          <p role="alert" className="mt-1.5 text-[11px] text-red-300">
+            {error}
+          </p>
+        )}
       </div>
-      {error && (
-        <p role="alert" className="mt-1.5 text-[11px] text-red-300">
-          {error}
-        </p>
-      )}
-    </div>
-  );
+    );
 }
 
 /** Pull the consent payload (request id + requested scopes + any requested
- * project) out of a notification's `data` field. Returns null when the shape
- * is missing. */
+ * project + human-readable duration) out of a notification's `data` field.
+ * Returns null when the shape is missing. */
 export function consentPayload(
   data: Record<string, unknown> | undefined,
-): { requestId: string; scopes: string[]; projectId?: string; canonicalId?: string } | null {
+): { requestId: string; scopes: string[]; projectId?: string; canonicalId?: string; humanDuration?: string } | null {
   if (!data) return null;
   const requestId = data.request_id;
   if (typeof requestId !== "string") return null;
@@ -586,5 +595,6 @@ export function consentPayload(
   const scopes = Array.isArray(raw) ? raw.filter((s): s is string => typeof s === "string") : [];
   const projectId = typeof data.project_id === "string" ? data.project_id : undefined;
   const canonicalId = typeof data.canonical_id === "string" ? data.canonical_id : undefined;
-  return { requestId, scopes, projectId, canonicalId };
+  const humanDuration = typeof data.human_duration === "string" ? data.human_duration : undefined;
+  return { requestId, scopes, projectId, canonicalId, humanDuration };
 }

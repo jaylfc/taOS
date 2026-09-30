@@ -361,8 +361,10 @@ class TestGitCommandErrorHandling:
         mock_result_diff.stdout = "A\ttinyagentos/routes/themes.py\n"
         mock_result_log = MagicMock()
         mock_result_log.stdout = "\x00"
+        mock_result_ls_tree = MagicMock()
+        mock_result_ls_tree.stdout = ""
         
-        with patch.object(_MOD.subprocess, "run", side_effect=[mock_result_diff, mock_result_log]):
+        with patch.object(_MOD.subprocess, "run", side_effect=[mock_result_diff, mock_result_log, mock_result_ls_tree]):
             code = _MOD.main(["diff-gate", "--base", "origin/HEAD"])
             assert code == _MOD.EXIT_VIOLATION
 
@@ -372,8 +374,10 @@ class TestGitCommandErrorHandling:
         mock_result_diff.stdout = ""
         mock_result_log = MagicMock()
         mock_result_log.stdout = "\x00"
+        mock_result_ls_tree = MagicMock()
+        mock_result_ls_tree.stdout = ""
         
-        with patch.object(_MOD.subprocess, "run", side_effect=[mock_result_diff, mock_result_log]):
+        with patch.object(_MOD.subprocess, "run", side_effect=[mock_result_diff, mock_result_log, mock_result_ls_tree]):
             code = _MOD.main(["diff-gate", "--base", "origin/HEAD"])
             assert code == _MOD.EXIT_OK
 

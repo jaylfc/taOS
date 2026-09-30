@@ -709,8 +709,10 @@ class TestParityWithLiteLLMHook:
         wrong = token[:-4] + ("AAAA" if not token.endswith("AAAA") else "BBBB")
         assert await self._both(app, wrong, "gpt-a") == ("deny_auth", "deny_auth")
 
-    async def test_parity_admin_master_key(self, app, parity_env):
-        assert await self._both(app, parity_env["master"], "anything") == ("admin", "admin")
+    async def test_master_key_is_admin_on_litellm_but_refused_by_the_gateway(self, app, parity_env):
+        # Deliberate divergence (cutover stage 1): G2 kept master-key-as-admin
+        # for parity; the gateway now maps the master key to nothing.
+        assert await self._both(app, parity_env["master"], "anything") == ("admin", "deny_auth")
 
     async def test_parity_over_budget(self, app, parity_env):
         token = parity_env["store"].mint("par-broke", ["gpt-a"])
@@ -803,5 +805,10 @@ class TestBudget:
         assert await _listed(bare, key) == ["gpt-small"]
 
     async def test_admin_is_never_budget_checked(self, bare, app, parity_env):
+        # The host local token is the admin credential now (the master key is
+        # refused outright); a budget row under its caller id never blocks it.
+        token = app.state.auth.get_local_token()
+        _over_budget(parity_env, "local")
         _over_budget(parity_env, "litellm-master")
-        assert (await bare.get(MODELS, headers=_b(parity_env["master"]))).status_code == 200
+        assert (await bare.get(MODELS, headers=_b(token))).status_code == 200
+        assert (await bare.get(MODELS, headers=_b(parity_env["master"]))).status_code == 401

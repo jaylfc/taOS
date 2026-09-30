@@ -1,10 +1,60 @@
 from __future__ import annotations
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field, asdict
 
 logger = logging.getLogger(__name__)
+
+
+# Scheduler resource-class grammar (docs/design/resource-scheduler.md).
+#
+# A worker advertises the resources it owns as `Resource.name` values, and the
+# controller trusts that list when authorising lease claims
+# (ClusterManager._worker_for_resource). The list is also stored per worker and
+# rendered in the cluster UI, so an unchecked class is an operator-controlled
+# string that reaches the scheduler. install-worker.sh exports
+# TAOS_WORKER_RESOURCES, which makes the inventory an operator knob, so the
+# controller validates the grammar before it stores anything.
+#
+# Grammar (one entry per class):
+#   cpu-inference            everything; the universal fallback
+#   gpu-cuda-<n>             NVIDIA GPU index
+#   gpu-rocm-<n>             AMD GPU index
+#   gpu-vulkan-<n>           Vulkan GPU index
+#   gpu-sycl-<n>             SYCL GPU index
+#   gpu-metal                Apple Silicon (Metal)
+#   gpu-mali                 Mali (experimental)
+#   npu-<soc>                NPU, e.g. npu-rk3588
+#   accel-<name>             accelerator boards, e.g. accel-hailo
+#
+# Anchored with \Z rather than $: $ also matches immediately before a trailing
+# newline, so "gpu-cuda-0\n" would validate and then be stored and compared
+# verbatim by the lease path.
+RESOURCE_CLASS_RE = re.compile(
+    r"^(?:"
+    r"cpu-inference"
+    r"|gpu-(?:cuda|rocm|vulkan|sycl)-\d+"
+    r"|gpu-(?:metal|mali)"
+    r"|npu-[a-z0-9][a-z0-9-]*"
+    r"|accel-[a-z0-9][a-z0-9-]*"
+    r")\Z"
+)
+
+
+def invalid_resource_classes(resources: list[str] | None) -> list[str]:
+    """Return the entries of a resource inventory that break the class grammar.
+
+    Empty/None inventories are valid: an older worker that registers without an
+    inventory falls back to the legacy grammar check at lease time.
+    """
+    if not resources:
+        return []
+    return [
+        name for name in resources
+        if not isinstance(name, str) or not RESOURCE_CLASS_RE.match(name)
+    ]
 
 
 @dataclass

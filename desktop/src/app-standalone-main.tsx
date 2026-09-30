@@ -23,8 +23,8 @@ const params = new URLSearchParams(location.search);
 const appId = params.get("app") ?? "";
 const manifest = appId ? getApp(appId) : undefined;
 
-if (!manifest?.pwa) {
-  // Unknown or non-PWA app: show a minimal not-installable message.
+if (!manifest) {
+  // Unknown app id: nothing in the registry to render.
   document.title = "Not installable";
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
@@ -41,17 +41,22 @@ if (!manifest?.pwa) {
           background: "#141415",
         }}
       >
-        This app is not available as a standalone PWA.
+        This app is not available as a standalone app.
       </div>
     </StrictMode>,
   );
 } else {
-  // Inject the dynamic manifest link so the browser picks up the correct
-  // name, icons, and start_url for this specific app.
-  const link = document.createElement("link");
-  link.rel = "manifest";
-  link.href = `/manifest?app=${encodeURIComponent(appId)}`;
-  document.head.appendChild(link);
+  // Any registered app renders standalone (taOSmobile opens every app as its
+  // own window at this URL). `pwa: true` controls ONLY the install surface:
+  // the dynamic manifest link below and the install prompt in AppStandalone.
+  if (manifest.pwa) {
+    // Inject the dynamic manifest link so the browser picks up the correct
+    // name, icons, and start_url for this specific app.
+    const link = document.createElement("link");
+    link.rel = "manifest";
+    link.href = `/manifest?app=${encodeURIComponent(appId)}`;
+    document.head.appendChild(link);
+  }
 
   document.title = manifest.name;
 

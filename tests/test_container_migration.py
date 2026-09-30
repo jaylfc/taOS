@@ -182,6 +182,7 @@ class TestMigrateContainerMove:
             (0, _INFO_RUNNING),   # incus info
             (0, _REMOTE_CSV),     # incus remote list
             (0, ""),              # snapshot_create (pre-stop)
+            (0, "[]"),             # stop_container project lookup
             (0, ""),              # incus stop
             (0, ""),              # incus move
             (0, ""),              # incus start on target
@@ -206,8 +207,10 @@ class TestMigrateContainerMove:
             (0, _INFO_RUNNING),   # incus info
             (0, _REMOTE_CSV),     # incus remote list
             (0, ""),              # snapshot_create
+            (0, "[]"),             # stop_container project lookup
             (0, ""),              # incus stop
             (1, "transfer error"),  # incus move FAILS
+            (0, "[]"),             # start_container project lookup
             (0, ""),              # rollback: incus start (source)
         ]
         with patch("tinyagentos.containers._run", new_callable=AsyncMock) as mock_run:
@@ -234,6 +237,7 @@ class TestMigrateContainerMove:
             (0, _INFO_RUNNING_UPPER),  # incus info — Status: RUNNING
             (0, _REMOTE_CSV),          # incus remote list
             (0, ""),                   # snapshot_create (pre-stop)
+            (0, "[]"),             # stop_container project lookup
             (0, ""),                   # incus stop
             (0, ""),                   # incus move
             (0, ""),                   # incus start on target

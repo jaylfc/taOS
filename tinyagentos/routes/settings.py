@@ -259,13 +259,37 @@ async def save_platform_settings(request: Request, body: PlatformUpdate):
 
 @router.get("/api/settings/llm-proxy")
 async def llm_proxy_status(request: Request):
-    """Return LLM proxy status for the settings page."""
+    """Return LLM proxy status for the settings page.
+
+    With the in-process gateway on (the default) the proxy agents use IS the
+    gateway: ``port`` is its agent listener (what each container's
+    ``127.0.0.1:4000`` forwards to) and ``running`` says the listener was seen
+    accepting connections. LiteLLM's own state is reported beside it while it
+    still runs (cutover stage 1).
+    """
+    from tinyagentos import llm_gateway
+    from tinyagentos.llm_gateway.cutover import llm_gateway_live_port
+
     proxy = request.app.state.llm_proxy
-    return {
+    state = request.app.state
+    litellm = {
         "running": proxy.is_running() if hasattr(proxy, "is_running") else False,
         "port": proxy.port if hasattr(proxy, "port") else 7834,
-        "backends": len(request.app.state.config.backends),
     }
+    backends = len(state.config.backends)
+    if llm_gateway.enabled():
+        port = getattr(state, "llm_gateway_agent_port", None)
+        if port is None:
+            port = llm_gateway.agent_port(state.config)
+        return {
+            "mode": "gateway",
+            "running": bool(llm_gateway_live_port(state)),
+            "port": port,
+            "url": "/api/llm/v1",
+            "backends": backends,
+            "litellm": litellm,
+        }
+    return {"mode": "litellm", **litellm, "backends": backends}
 
 
 @router.post("/api/settings/test-backend")

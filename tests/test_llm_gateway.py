@@ -42,6 +42,26 @@ ANTHROPIC = {
     "api_key": "sk-ant-nope",
     "priority": 2,
 }
+# A cloud provider the gateway does NOT forward to yet (not OpenAI-compatible,
+# not Ollama, not Anthropic): it must stay a 501, never a network call.
+UNSUPPORTED_PROVIDER = {
+    "name": "router-cloud",
+    "type": "deepseek",
+    "url": "https://deepseek.test",
+    "models": [{"id": "router-model"}],
+    "api_key": "sk-ds-nope",
+    "priority": 2,
+}
+# OpenRouter IS OpenAI-compatible (bearer key, <base>/chat/completions): the
+# Orange Pi's live agents run on it, so the gateway forwards it.
+OPENROUTER = {
+    "name": "or-cloud",
+    "type": "openrouter",
+    "url": "https://openrouter.test/api/v1",
+    "models": [{"id": "tencent/hy3:free"}],
+    "api_key": "sk-or-live",
+    "priority": 2,
+}
 SECRET_BACKED = {
     "name": "vault-llm",
     "type": "openai-compatible",
@@ -518,11 +538,58 @@ async def test_upstream_200_that_is_not_json_is_502(client):
 @_ASYNC
 @respx.mock
 async def test_non_openai_backend_is_501_naming_the_model(client):
+    # Anthropic and OpenRouter are served now, so the unsupported example is a
+    # provider the gateway still cannot speak to: deepseek (LiteLLM-native).
+    _app(client).state.config.backends = [OPENAI_COMPAT, UNSUPPORTED_PROVIDER]
     route = respx.post(url__regex=r".*")
-    resp = await client.post(BASE + "/chat/completions", json=_chat("claude-x"))
+    resp = await client.post(BASE + "/chat/completions", json=_chat("router-model"))
     err = _assert_openai_error(resp, 501, "backend_not_supported")
-    assert "claude-x" in err["message"]
+    assert "router-model" in err["message"]
+    assert "deepseek" in err["message"]
     assert not route.called
+
+
+@_ASYNC
+@respx.mock
+@pytest.mark.parametrize("url,upstream", [
+    ("https://openrouter.test/api/v1", "https://openrouter.test/api/v1/chat/completions"),
+    ("", "https://openrouter.ai/api/v1/chat/completions"),  # no url: OpenRouter's own base
+], ids=["explicit-base", "default-base"])
+async def test_openrouter_model_is_forwarded_openai_compatible(client, url, upstream):
+    _app(client).state.config.backends = [OPENAI_COMPAT, {**OPENROUTER, "url": url}]
+    route = respx.post(upstream).mock(return_value=httpx.Response(200, json=_completion("tencent/hy3:free")))
+    resp = await client.post(BASE + "/chat/completions", json=_chat("tencent/hy3:free"))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["choices"][0]["message"]["content"] == "hi"
+    sent = route.calls.last.request
+    # The provider prefix is stripped: OpenRouter is asked for its own model id.
+    assert json.loads(sent.content)["model"] == "tencent/hy3:free"
+    assert sent.headers["authorization"] == "Bearer sk-or-live"
+
+
+@_ASYNC
+@respx.mock
+async def test_openrouter_stream_is_forwarded(client):
+    _app(client).state.config.backends = [OPENAI_COMPAT, OPENROUTER]
+    route = respx.post("https://openrouter.test/api/v1/chat/completions").mock(return_value=httpx.Response(
+        200, content=_sse_chunk("hi") + _sse_done(), headers={"content-type": "text/event-stream"}))
+    resp = await client.post(BASE + "/chat/completions", json=_chat("tencent/hy3:free", stream=True))
+    assert resp.status_code == 200, resp.text
+    assert '"content": "hi"' in resp.read().decode()
+    assert route.calls.last.request.headers["authorization"] == "Bearer sk-or-live"
+
+
+@_ASYNC
+@respx.mock
+async def test_anthropic_model_never_reaches_the_real_api(client):
+    """claude-x is served by the Anthropic translator now, so a request for it
+    makes an upstream call. With no route registered, respx's strict default
+    router must refuse that call in-process: this suite cannot reach the real
+    api.anthropic.com."""
+    assert respx.mock._assert_all_mocked is True
+    with pytest.raises(respx.models.AllMockedAssertionError):
+        await client.post(BASE + "/chat/completions", json=_chat("claude-x"))
+    assert respx.mock.calls.call_count == 0 or respx.mock.calls.last.response is None
 
 
 # ---------------------------------------------------------------------------

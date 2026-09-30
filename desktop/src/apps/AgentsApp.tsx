@@ -19,6 +19,54 @@ import { ArchivedAgentsPanel } from "./agents/ArchivedAgents";
 import { RegistryPanel } from "./agents/RegistryPanel";
 import { BaseImagesPanel } from "./agents/BaseImagesPanel";
 import { fetchTaosAgentConfig } from "@/lib/taos-agent-api";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+
+/** Lifecycle actions, each a POST /api/agents/{name}/{action}. */
+type LifecycleAction = "start" | "stop" | "restart" | "pause" | "resume";
+
+const LIFECYCLE_LABEL: Record<LifecycleAction, string> = {
+  start: "Start",
+  stop: "Stop",
+  restart: "Restart",
+  pause: "Pause",
+  resume: "Resume",
+};
+
+/** Fetch live container state keyed by agent name. Returns an empty map on any
+ *  failure so the list falls back to each agent's stored status. */
+async function fetchLiveContainerStates(): Promise<Record<string, string>> {
+  try {
+    const res = await fetch("/api/agents/containers");
+    if (!res.ok) return {};
+    const data = await res.json();
+    if (!Array.isArray(data)) return {};
+    const out: Record<string, string> = {};
+    for (const c of data as Array<Record<string, unknown>>) {
+      if (c && typeof c.agent_name === "string" && typeof c.status === "string") {
+        out[c.agent_name] = c.status;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Overlay an incus container status onto an agent's stored status. */
+function applyLiveState(agent: Agent, live: string | undefined): Agent {
+  switch (live) {
+    case "Running":
+      return { ...agent, status: "running", frozen: false };
+    case "Frozen":
+      return { ...agent, status: "running", frozen: true };
+    case "Stopped":
+      return { ...agent, status: "stopped", frozen: false };
+    case "Error":
+      return { ...agent, status: "error", frozen: false };
+    default:
+      return agent;
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /*  AgentsApp (main)                                                   */
@@ -77,7 +125,10 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
 
   const fetchAgents = useCallback(async () => {
     try {
-      const res = await fetch("/api/agents");
+      const [res, live] = await Promise.all([
+        fetch("/api/agents"),
+        fetchLiveContainerStates(),
+      ]);
       if (res.ok) {
         const ct = res.headers.get("content-type") ?? "";
         if (ct.includes("application/json")) {
@@ -102,7 +153,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
                 kv_cache_quant_boundary_layers: typeof a.kv_cache_quant_boundary_layers === "number" ? a.kv_cache_quant_boundary_layers : 0,
                 framework_version_sha: a.framework_version_sha != null ? String(a.framework_version_sha) : null,
                 migrated_to_v2_personas: Boolean(a.migrated_to_v2_personas),
-              }))
+              })).map((agent: Agent) => applyLiveState(agent, live[agent.name]))
             );
             setLoading(false);
             return;
@@ -182,30 +233,55 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
     fetchTaosAgentConfig().then((cfg) => setTaosModel(cfg.model ?? undefined)).catch(() => {});
   }, []);
 
-  async function handleResume(name: string) {
+  // Agents with a lifecycle request in flight (their controls are disabled).
+  const [busyAgents, setBusyAgents] = useState<Record<string, boolean>>({});
+  // Stop and Restart ask first.
+  const [pendingConfirm, setPendingConfirm] = useState<
+    { name: string; action: "stop" | "restart" } | null
+  >(null);
+
+  async function runLifecycle(name: string, action: LifecycleAction) {
+    const label = LIFECYCLE_LABEL[action];
+    const fail = (body: string) =>
+      useNotificationStore.getState().addNotification({
+        source: name, title: `${label} failed`, body, level: "error",
+      });
+    setBusyAgents((prev) => ({ ...prev, [name]: true }));
     try {
-      const res = await fetch(`/api/agents/${encodeURIComponent(name)}/resume`, {
+      const res = await fetch(`/api/agents/${encodeURIComponent(name)}/${action}`, {
         method: "POST",
         headers: { Accept: "application/json" },
       });
+      let data: Record<string, unknown> | null = null;
+      try {
+        data = await res.json();
+      } catch { /* non-JSON body */ }
       if (!res.ok) {
-        let msg = `Resume failed (${res.status})`;
-        try {
-          const err = await res.json();
-          if (err?.error) msg = String(err.error);
-        } catch { /* ignore */ }
-        useNotificationStore.getState().addNotification({
-          source: name, title: "Resume failed", body: msg, level: "error",
-        });
+        fail(data?.error ? String(data.error) : `${label} failed (${res.status})`);
         return;
       }
-      fetchAgents();
+      // Stop answers 200 with the incus result; a failed stop that the
+      // force-kill did not rescue is still a failure.
+      const stopResult = data?.stop_result as { success?: boolean; output?: string } | undefined;
+      if (action === "stop" && stopResult && stopResult.success === false && !data?.force_killed) {
+        fail(stopResult.output ? String(stopResult.output) : "The container did not stop.");
+      }
     } catch (e) {
-      useNotificationStore.getState().addNotification({
-        source: name, title: "Resume failed",
-        body: e instanceof Error ? e.message : "Network error", level: "error",
+      fail(e instanceof Error ? e.message : "Network error");
+    } finally {
+      // Refresh first so the row's controls come back already reflecting the
+      // new state (fetchAgents handles its own errors).
+      await fetchAgents();
+      setBusyAgents((prev) => {
+        const next = { ...prev };
+        delete next[name];
+        return next;
       });
     }
+  }
+
+  function handleResume(name: string) {
+    void runLifecycle(name, "resume");
   }
 
   // Fetch disk states whenever agent list changes
@@ -656,6 +732,11 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
                   onViewMessages={(name) => setDetail({ name, tab: "messages" })}
                   onDelete={handleDelete}
                   onResume={handleResume}
+                  onStart={(name) => void runLifecycle(name, "start")}
+                  onPause={(name) => void runLifecycle(name, "pause")}
+                  onStop={(name) => setPendingConfirm({ name, action: "stop" })}
+                  onRestart={(name) => setPendingConfirm({ name, action: "restart" })}
+                  busy={Boolean(busyAgents[agent.name])}
                 />
               ))}
             </div>
@@ -669,6 +750,28 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={pendingConfirm !== null}
+        title={
+          pendingConfirm
+            ? `${LIFECYCLE_LABEL[pendingConfirm.action]} ${pendingConfirm.name}?`
+            : ""
+        }
+        message={
+          pendingConfirm?.action === "stop"
+            ? "The agent's container shuts down and the agent stops answering until you start it again."
+            : "The agent's container restarts. Work in progress may be interrupted."
+        }
+        confirmLabel={pendingConfirm ? LIFECYCLE_LABEL[pendingConfirm.action] : "Confirm"}
+        danger={pendingConfirm?.action === "stop"}
+        onConfirm={() => {
+          const pending = pendingConfirm;
+          setPendingConfirm(null);
+          if (pending) void runLifecycle(pending.name, pending.action);
+        }}
+        onCancel={() => setPendingConfirm(null)}
+      />
 
       {/* Deploy wizard overlay */}
       <DeployWizard open={wizardOpen} onClose={handleWizardClose} />

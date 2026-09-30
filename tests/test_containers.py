@@ -73,6 +73,44 @@ class TestListContainers:
             assert containers[0].memory_mb == 1907
 
     @pytest.mark.asyncio
+    async def test_stopped_container_with_null_network_is_listed(self):
+        # Real `incus list -f json` shape for a STOPPED instance (captured on an
+        # Orange Pi, Incus 6.x, 2026-09-29): "state" is an object but its
+        # "network" is null, not {}. The listing must not crash on it; one
+        # stopped agent used to 500 GET /api/agents/containers for every agent.
+        mock_output = json.dumps([
+            {
+                "name": "taos-agent-mary",
+                "status": "Running",
+                "config": {},
+                "state": {"network": {"eth0": {"addresses": [
+                    {"family": "inet", "address": "10.0.0.91", "scope": "global"},
+                ]}}},
+            },
+            {
+                "name": "taos-agent-speedtest",
+                "status": "Stopped",
+                "config": {},
+                "state": {"network": None},
+            },
+            {
+                "name": "taos-agent-nostate",
+                "status": "Stopped",
+                "config": {},
+                "state": None,
+            },
+        ])
+        with patch("tinyagentos.containers._run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (0, mock_output)
+            containers = await list_containers()
+        by_name = {c.name: c for c in containers}
+        assert set(by_name) == {"taos-agent-mary", "taos-agent-speedtest", "taos-agent-nostate"}
+        assert by_name["taos-agent-mary"].ip == "10.0.0.91"
+        assert by_name["taos-agent-speedtest"].status == "Stopped"
+        assert by_name["taos-agent-speedtest"].ip is None
+        assert by_name["taos-agent-nostate"].ip is None
+
+    @pytest.mark.asyncio
     async def test_handles_incus_failure(self):
         with patch("tinyagentos.containers._run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = (1, "error")
@@ -465,3 +503,21 @@ class TestAddProxyDeviceSelfHeal:
         assert res["success"] is False
         # only the single add attempt, no project-set self-heal
         assert mr.call_count == 1
+
+
+class TestLXCBackendListNullNetwork:
+    @pytest.mark.asyncio
+    async def test_stopped_container_with_null_network_is_listed(self):
+        # Same real stopped-instance shape as TestListContainers: the LXC
+        # backend's own listing had the identical dict.get-default bug.
+        from tinyagentos.containers.lxc import LXCBackend
+        mock_output = json.dumps([
+            {"name": "taos-agent-speedtest", "status": "Stopped", "config": {},
+             "state": {"network": None}},
+            {"name": "taos-agent-nostate", "status": "Stopped", "config": {}, "state": None},
+        ])
+        with patch("tinyagentos.containers.lxc._run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (0, mock_output)
+            containers = await LXCBackend().list_containers()
+        assert {c.name for c in containers} == {"taos-agent-speedtest", "taos-agent-nostate"}
+        assert all(c.ip is None for c in containers)

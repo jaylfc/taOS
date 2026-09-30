@@ -1,0 +1,3 @@
+### Changed
+- Every registered app now opens standalone at `app.html?app=<id>`, not only Messages; `pwa: true` now controls only the install surface (the manifest link and install prompt), and an unknown app id still shows the not-available message.
+- On a taOSmobile handset (`device_class` "mobile"), opening an app asks the device shell to open it as its own window instead of a window inside the desktop page; if the shell does not confirm within 1.5 s, the in-page window opens instead. An app already open in-page moves to its own window on the next tap. Settings, deep-link opens that carry context, second windows, session restore and agent window control stay in-page. Other devices are unchanged.

@@ -108,6 +108,26 @@ class TestEvaluateRules:
         assert len(failures) == 1
         assert failures[0].startswith("routes -- ")
 
+    def test_new_file_inside_existing_app_dir_does_not_fire_apps_rule(self):
+        """A new file inside an already-tracked desktop app directory must not
+        trip the apps-added rule -- only a brand-new top-level app directory
+        counts."""
+        changed = [("A", "desktop/src/apps/Foo/components/Bar.tsx")]
+        failures = dg.evaluate_rules(
+            changed, [], APPS_RULE_CONFIG, existing_toplevel_dirs={"Foo"},
+        )
+        assert failures == []
+
+    def test_brand_new_app_directory_does_fire_apps_rule(self):
+        """A new app directory (not in the existing set) must fire the
+        apps-added rule."""
+        changed = [("A", "desktop/src/apps/NewApp/NewApp.tsx")]
+        failures = dg.evaluate_rules(
+            changed, [], APPS_RULE_CONFIG, existing_toplevel_dirs=set(),
+        )
+        assert len(failures) == 1
+        assert failures[0].startswith("apps -- ")
+
 
 class TestGlobMatch:
     def test_single_star_stays_within_segment(self):
@@ -1620,3 +1640,67 @@ class TestCommitAttributionParsing:
         commits = self._parse(monkeypatch)
         monkeypatch.setattr(dg, "_run_git", lambda args, ref=None: self.LOG_OUTPUT)
         assert dg._git_commits_with_messages("base") == [c[:3] for c in commits]
+
+
+class TestNewAppDirOnlyTriggersAppsRule:
+    """A new file inside an existing app must not trip the apps rule.
+
+    Regression: tsk-h6flaz -- adding desktop/src/apps/ProjectsApp/canvas/new.ts
+    tripped the apps rule even though ProjectsApp already existed.
+    """
+
+    def _setup_repo(self, tmp_path: Path) -> tuple[Path, Path]:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        (repo / "desktop" / "src" / "apps" / "ProjectsApp").mkdir(parents=True)
+        (repo / "desktop" / "src" / "apps" / "ProjectsApp" / "ProjectsApp.tsx").write_text(
+            "// app\n"
+        )
+        (repo / "README.md").write_text("# README\n")
+
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"], cwd=repo, check=True
+        )
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "initial"],
+            cwd=repo, check=True, capture_output=True,
+        )
+
+        docs_dir = repo / "docs"
+        docs_dir.mkdir(exist_ok=True)
+        cfg = docs_dir / "doc-gate.toml"
+        cfg.write_text(
+            '[gate]\ntrailer = "Docs-Reviewed:"\n\n[[rules]]\n'
+            'name = "apps"\n'
+            'when_changed = ["desktop/src/apps/*/**"]\n'
+            'require_doc = ["README.md"]\n'
+            'hint = "a desktop app was added or removed"\n'
+        )
+        return repo, cfg
+
+    def test_new_file_in_existing_app_is_clean(self, tmp_path: Path, monkeypatch):
+        """Adding desktop/src/apps/ProjectsApp/canvas/new.ts to an existing app
+        must not trip the apps rule."""
+        repo, cfg = self._setup_repo(tmp_path)
+
+        (repo / "desktop" / "src" / "apps" / "ProjectsApp" / "canvas").mkdir(parents=True)
+        (repo / "desktop" / "src" / "apps" / "ProjectsApp" / "canvas" / "new.ts").write_text(
+            "// new\n"
+        )
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "add canvas file"],
+            cwd=repo, check=True, capture_output=True,
+        )
+
+        monkeypatch.setattr(dg, "REPO_ROOT", repo)
+        rc = dg.main(["--config", str(cfg), "diff-gate", "--base", "HEAD~1"])
+        assert rc == dg.EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))

@@ -78,7 +78,10 @@ export function useSessionPersistence() {
         for (const saved of positions) {
           const app = getApp(saved.appId);
           if (!app) continue;
-          const wid = openWindow(saved.appId, { w: saved.w, h: saved.h });
+          // Restoring the saved in-page layout, not a user open: never hand
+          // these to the handset shell (that would launch every saved window
+          // as its own app at boot).
+          const wid = openWindow(saved.appId, { w: saved.w, h: saved.h }, undefined, { inPage: true });
           updatePosition(wid, saved.x, saved.y);
           updateSize(wid, saved.w, saved.h);
           if (saved.maximized) {
