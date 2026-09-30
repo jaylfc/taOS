@@ -42,7 +42,22 @@ jobs:
   # one that would fix it. The aggregate "test" job below keeps reporting those
   # two exact names, so no protection change is needed and there is no window
   # where dev is wedged.
+  lock-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Check lockfile freshness
+        run: uv lock --check
+
   shards:
+    needs: [lock-check]
     runs-on: ubuntu-latest
     # Measured 2026-07-26 over the last 12 job records: 3.13 runs 31-35 min and
     # 3.12 runs 38-41 min. The previous comment claimed "~16 min", which had
