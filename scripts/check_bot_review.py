@@ -540,8 +540,10 @@ def get_collaborator_permission(
 
 def is_fork_pr(
     owner: str, repo: str, pr_number: int, token: str | None = None,
-) -> bool | None:
-    """Return True if the PR is a fork PR, False if it is an in-repo PR,
+) -> tuple[bool | None, str | None]:
+    """Return (is_fork, head_sha) for the PR.
+
+    is_fork is True if the PR is a fork PR, False if it is an in-repo PR,
     None on infrastructure failure.
 
     A null head.repo (deleted fork) counts as a fork.
@@ -549,19 +551,19 @@ def is_fork_pr(
     token = token or _get_token()
     data = _api_get(f"{API}/repos/{owner}/{repo}/pulls/{pr_number}", token)
     if data is None:
-        return None
+        return None, None
     pr = data[0] if isinstance(data, list) and data else {}
     if not isinstance(pr, dict):
-        return None
+        return None, None
     head = pr.get("head") or {}
     base = pr.get("base") or {}
     head_repo = head.get("repo")
     if head_repo is None:
-        return True
+        return True, head.get("sha", "")
     head_full = head_repo.get("full_name", "")
     base_repo = base.get("repo") or {}
     base_full = base_repo.get("full_name", "")
-    return head_full != base_full
+    return head_full != base_full, head.get("sha", "")
 
 
 def classify(items: list[CRItem]) -> tuple[int, str]:
@@ -651,17 +653,26 @@ def check_bot_review(
     a fork PR has no bot output to be stubbed.
     """
     if _is_fork is None:
-        fork_result = is_fork_pr(owner, repo, pr_number, token)
+        fork_result, head_sha = is_fork_pr(owner, repo, pr_number, token)
         if fork_result is None:
             return EXIT_ERROR, (
                 f"error: could not determine if PR #{pr_number} is a fork "
                 f"(exit {EXIT_ERROR})"
             )
         _is_fork = fork_result
+    else:
+        head_sha = None
 
     if _is_fork:
+        if head_sha is None:
+            _, head_sha = is_fork_pr(owner, repo, pr_number, token)
         labels = collect_pr_labels(owner, repo, pr_number, token)
-        if labels is not None and LEAD_REVIEWED_LABEL in labels:
+        if labels is None:
+            return EXIT_ERROR, (
+                f"error: could not fetch labels for fork PR #{pr_number} "
+                f"(exit {EXIT_ERROR})"
+            )
+        if LEAD_REVIEWED_LABEL in labels:
             return EXIT_OK, (
                 f"bot-review-gate: fork PR -- lead review present "
                 f"(lead-reviewed label) (exit {EXIT_OK})"
@@ -673,9 +684,30 @@ def check_bot_review(
                 f"error: could not fetch reviews for fork PR #{pr_number} "
                 f"(exit {EXIT_ERROR})"
             )
+
+        # Build each reviewer's latest decisive review (by submitted_at,
+        # ignoring COMMENTED), then require that the latest review is
+        # APPROVED on the current head sha by a maintainer.
+        latest_by_login: dict[str, dict] = {}
         for review in reviews:
             state = (review.get("state") or "").upper()
+            if state == "COMMENTED":
+                continue
+            user = review.get("user") or {}
+            login = user.get("login")
+            if not login:
+                continue
+            submitted_at = review.get("submitted_at") or ""
+            prev = latest_by_login.get(login)
+            if prev is None or submitted_at > (prev.get("submitted_at") or ""):
+                latest_by_login[login] = review
+
+        for review in latest_by_login.values():
+            state = (review.get("state") or "").upper()
             if state != "APPROVED":
+                continue
+            commit_id = review.get("commit_id") or ""
+            if commit_id != head_sha:
                 continue
             user = review.get("user") or {}
             login = user.get("login")
@@ -695,7 +727,7 @@ def check_bot_review(
 
         return EXIT_FORK_UNREVIEWED, (
             f"FAIL: fork PR requires lead review "
-            f"(no maintainer approval, no lead-reviewed label) "
+            f"(no maintainer approval on head sha, no lead-reviewed label) "
             f"(exit {EXIT_FORK_UNREVIEWED})"
         )
 

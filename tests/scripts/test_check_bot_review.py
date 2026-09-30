@@ -761,16 +761,20 @@ class TestForkPrGate:
       E: head.repo == null (deleted fork) -> treated as fork
     """
 
-    FORK_PR_DATA = [{"head": {"repo": {"full_name": "external-user/taOS"}}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}]
-    IN_REPO_PR_DATA = [{"head": {"repo": {"full_name": "jaylfc/taOS"}}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}]
-    DELETED_FORK_PR_DATA = [{"head": {"repo": None}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}]
+    FORK_PR_DATA = [{"head": {"repo": {"full_name": "external-user/taOS"}, "sha": "head_sha_abc"}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}]
+    IN_REPO_PR_DATA = [{"head": {"repo": {"full_name": "jaylfc/taOS"}, "sha": "head_sha_abc"}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}]
+    DELETED_FORK_PR_DATA = [{"head": {"repo": None, "sha": "head_sha_abc"}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}]
 
     def _mock_api(self, check_mod, pr_data, reviews=None, labels=None, permission=None, issue_comments=None):
         """Build a side_effect for _api_get that handles all URLs check_bot_review touches."""
         reviews = reviews or []
-        labels_data = labels or []
         issue_comments = issue_comments or []
         call_count = 0
+        # A special string value signals that the labels call should return
+        # None (simulating an API failure).
+        _LABELS_API_ERROR = "__LABELS_API_ERROR__"
+        labels_data = [] if labels is None else labels
+        label_api_error = labels == _LABELS_API_ERROR
 
         def side_effect(url, token=None):
             nonlocal call_count
@@ -779,6 +783,8 @@ class TestForkPrGate:
             if "/pulls/" in url and "/reviews" not in url and "/comments" not in url and "/collaborators" not in url:
                 if call_count == 1:
                     return pr_data
+                if label_api_error:
+                    return None
                 return [{"labels": labels_data}]
             if url.endswith("/reviews"):
                 return reviews
@@ -802,13 +808,13 @@ class TestForkPrGate:
             exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3001)
         assert exit_code == check_mod.EXIT_FORK_UNREVIEWED
         assert "FAIL: fork PR requires lead review" in message
-        assert "no maintainer approval, no lead-reviewed label" in message
+        assert "no maintainer approval on head sha, no lead-reviewed label" in message
 
-    # Arm B: fork PR + APPROVED review by admin -> EXIT_OK
+    # Arm B: fork PR + APPROVED review by admin on head sha -> EXIT_OK
     def test_fork_pr_approved_by_admin_green(self, check_mod) -> None:
         with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
             check_mod, self.FORK_PR_DATA,
-            reviews=[{"id": 1, "state": "APPROVED", "user": {"login": "jaylfc"}}],
+            reviews=[{"id": 1, "state": "APPROVED", "commit_id": "head_sha_abc", "submitted_at": "2026-09-30T00:00:00Z", "user": {"login": "jaylfc"}}],
             permission="admin",
         )):
             exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3002)
@@ -820,7 +826,7 @@ class TestForkPrGate:
     def test_fork_pr_approved_by_read_only_still_red(self, check_mod) -> None:
         with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
             check_mod, self.FORK_PR_DATA,
-            reviews=[{"id": 1, "state": "APPROVED", "user": {"login": "drive-by"}}],
+            reviews=[{"id": 1, "state": "APPROVED", "commit_id": "head_sha_abc", "submitted_at": "2026-09-30T00:00:00Z", "user": {"login": "drive-by"}}],
             permission="read",
         )):
             exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3003)
@@ -893,6 +899,79 @@ class TestForkPrGate:
             exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3010)
         assert exit_code == check_mod.EXIT_FORK_UNREVIEWED
         assert "FAIL: fork PR requires lead review" in message
+
+    # 2(a): admin APPROVED on an older commit_id -> EXIT_FORK_UNREVIEWED
+    def test_fork_pr_approved_on_older_commit_red(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            reviews=[
+                {
+                    "id": 1, "state": "APPROVED",
+                    "commit_id": "old_sha_xyz",
+                    "submitted_at": "2026-09-29T23:00:00Z",
+                    "user": {"login": "jaylfc"},
+                }
+            ],
+            permission="admin",
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3011)
+        assert exit_code == check_mod.EXIT_FORK_UNREVIEWED
+        assert "FAIL: fork PR requires lead review" in message
+
+    # 2(b): admin APPROVED then CHANGES_REQUESTED by the same login -> EXIT_FORK_UNREVIEWED
+    def test_fork_pr_approved_then_changes_requested_same_login_red(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            reviews=[
+                {
+                    "id": 1, "state": "APPROVED",
+                    "commit_id": "head_sha_abc",
+                    "submitted_at": "2026-09-29T23:00:00Z",
+                    "user": {"login": "jaylfc"},
+                },
+                {
+                    "id": 2, "state": "CHANGES_REQUESTED",
+                    "commit_id": "head_sha_abc",
+                    "submitted_at": "2026-09-30T00:00:00Z",
+                    "user": {"login": "jaylfc"},
+                },
+            ],
+            permission="admin",
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3012)
+        assert exit_code == check_mod.EXIT_FORK_UNREVIEWED
+        assert "FAIL: fork PR requires lead review" in message
+
+    # 2(c) control: admin APPROVED on the head sha -> EXIT_OK
+    def test_fork_pr_approved_on_head_sha_green(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            reviews=[
+                {
+                    "id": 1, "state": "APPROVED",
+                    "commit_id": "head_sha_abc",
+                    "submitted_at": "2026-09-30T00:00:00Z",
+                    "user": {"login": "jaylfc"},
+                }
+            ],
+            permission="admin",
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3013)
+        assert exit_code == check_mod.EXIT_OK
+        assert "fork PR -- lead review present" in message
+        assert "admin" in message
+
+    # 3: label read returns None -> EXIT_ERROR (fail closed)
+    def test_fork_pr_label_read_failure_fails_closed(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            reviews=[],
+            labels="__LABELS_API_ERROR__",
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3014)
+        assert exit_code == check_mod.EXIT_ERROR
+        assert "error" in message.lower()
+        assert "label" in message.lower()
 
 
 # ---------------------------------------------------------------------------

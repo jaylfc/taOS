@@ -65,7 +65,7 @@ Fork PRs receive no automated review: Gitar is on the free plan (no code review)
 
 For a fork PR the CodeRabbit classification is irrelevant: the verdict is EXIT_OK only when a maintainer has approved (APPROVED review by a collaborator with admin or write permission) or the `lead-reviewed` label is present. Otherwise the verdict is EXIT_FORK_UNREVIEWED (3). The `bot-review-allow` label does NOT waive the fork verdict: it waives stub-shaped bot output, and a fork PR has no bot output to be stubbed.
 
-The `bot-review-gate` check stays red until a maintainer approves the PR with a review (or applies the `lead-reviewed` label). Expected turnaround is within 24-48 hours for routine code changes; complex changes requiring multiple reviews may take longer.
+The `lead-reviewed` label is the always-working path. An approval-based pass requires a successful read of `collaborators/{login}/permission`; we have not yet measured whether the read-only `GITHUB_TOKEN` of a fork `pull_request` run can read that endpoint, so a failed permission read fails closed (EXIT_ERROR) rather than guessing. The `bot-review-gate` check stays red until a maintainer approves the PR with a review on the current head sha (or applies the `lead-reviewed` label). Expected turnaround is within 24-48 hours for routine code changes; complex changes requiring multiple reviews may take longer.
 
 ### Adding Apps to the Catalog
 
