@@ -14,6 +14,18 @@ is what shows or hides the bar there:
 Measured on the handset before writing this: chromium --kiosk accepted
 `fullscreen disable` and did not re-request it.
 
+THE BAR ITSELF IS STARTED HERE, not by sway at session start. Jay (2026-09-30):
+the boot logo showed the nav bar. sway paints the boot wordmark as its
+background for the ~16 s the server takes to start, and nothing fullscreen
+covered a bar started with the session. So there is no bar until the first
+surface that needs one (the signed-in desktop or a taOS app window); after
+that it stays, and the lock screen covers it by being fullscreen as before.
+
+A kiosk window whose title is still loading (empty, or the URL chromium shows
+before the page sets one) is left alone entirely: it is neither the lock
+screen nor the desktop yet, so it must not start the bar or have its
+fullscreen state touched.
+
 Event-driven (sway's window events), plus a scan at start so the state is
 right after a restart. Runs in the session as taos (exec_always), so it has
 SWAYSOCK; a reload replaces the previous copy by pid.
@@ -33,8 +45,36 @@ def swaymsg(*args):
     return subprocess.run(["swaymsg", *args], capture_output=True, text=True)
 
 
+BAR = "/usr/local/bin/taos-kiosk-bar"
+
+
 def wanted_fullscreen(title):
     return (title or "").startswith(LOCK_TITLE)
+
+
+def loading(title):
+    """The page has not set a title yet: chromium shows the URL, or nothing."""
+    t = (title or "").strip().lower()
+    return (not t or "://" in t or t.startswith("about:")
+            or t.startswith("127.0.0.1") or t.startswith("localhost"))
+
+
+def run_dir():
+    return os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid()
+
+
+def bar_running():
+    try:
+        pid = int(open(os.path.join(run_dir(), "taos-kiosk-bar.pid")).read().strip())
+        return open("/proc/%d/comm" % pid).read().strip() == "waybar"
+    except (OSError, ValueError):
+        return False
+
+
+def start_bar(replace=False):
+    """Start the nav bar unless it is up. replace=True restarts it (a reload)."""
+    if replace or not bar_running():
+        subprocess.run([BAR])
 
 
 #: taOS apps opened in the kiosk's profile (taos-shelld /launch). The kiosk's
@@ -46,17 +86,20 @@ APP_WINDOW_PREFIX = "chrome-127.0.0.1__app.html"
 
 
 def apply(con):
+    """Set this window's fullscreen state. True when it is a surface that
+    needs the nav bar (a taOS app, or the signed-in desktop)."""
     app_id = con.get("app_id") or ""
     if app_id.startswith(APP_WINDOW_PREFIX):
         if con.get("fullscreen_mode"):
             swaymsg("[con_id=%d] fullscreen disable" % con["id"])
-        return
-    if app_id != KIOSK_APP_ID:
-        return
+        return True
+    if app_id != KIOSK_APP_ID or loading(con.get("name")):
+        return False
     want = wanted_fullscreen(con.get("name"))
     have = bool(con.get("fullscreen_mode"))
     if want != have:
         swaymsg("[con_id=%d] fullscreen %s" % (con["id"], "enable" if want else "disable"))
+    return not want
 
 
 def walk(node):
@@ -69,13 +112,15 @@ def walk(node):
 def scan():
     out = swaymsg("-t", "get_tree", "-r").stdout
     if out:
-        for con in walk(json.loads(out)):
-            apply(con)
+        needs_bar = [apply(con) for con in walk(json.loads(out))]
+        if any(needs_bar):
+            # A reload re-runs this script: restart the bar so it picks up a
+            # changed config, as the old exec_always taos-kiosk-bar did.
+            start_bar(replace=True)
 
 
 def replace_previous():
-    run = os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid()
-    pidfile = os.path.join(run, "taos-kiosk-shellmode.pid")
+    pidfile = os.path.join(run_dir(), "taos-kiosk-shellmode.pid")
     try:
         old = int(open(pidfile).read().strip())
         if old != os.getpid() and b"taos-kiosk-shellmode" in open(
@@ -99,7 +144,8 @@ def main():
         except ValueError:
             continue
         if event.get("change") in ("new", "title", "focus", "fullscreen_mode"):
-            apply(event.get("container") or {})
+            if apply(event.get("container") or {}):
+                start_bar()
     return proc.wait()
 
 
