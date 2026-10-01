@@ -73,6 +73,7 @@ def _guard_data_dir_mutation(request):
             )
 
 
+@pytest.hookimpl(optionalhook=True)
 def pytest_testnodedown(node, error):
     _XDIST_CONTROLLER_MUTATIONS.extend(node.workeroutput.get("data_mutations", []))
 

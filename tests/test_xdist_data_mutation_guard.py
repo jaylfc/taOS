@@ -125,3 +125,26 @@ def test_serial_mutation_guard_fails_run(tmp_path, pytester):
     result = pytester.runpytest_subprocess()
     result.stdout.fnmatch_lines(["*PROJECT_DIR/data was mutated*"])
     assert result.ret != 0
+
+
+def test_serial_without_xdist_does_not_internalerror(tmp_path, pytester):
+    """Serial run with xdist disabled must not INTERNALERROR on the unknown hook."""
+    src = str(Path(__file__).resolve().parent.parent)
+    conftest_path = Path(__file__).resolve().parent / "conftest.py"
+    conftest_content = conftest_path.read_text()
+    conftest_with_syspath = (
+        f"import sys\n"
+        f"sys.path.insert(0, {src!r})\n"
+        f"sys.path.insert(0, {src + '/tests'!r})\n"
+        + conftest_content
+    )
+    pytester.makepyfile(conftest=conftest_with_syspath)
+    pytester.makepyfile(test_pass="""
+def test_trivial():
+    assert True
+""")
+
+    result = pytester.runpytest_subprocess("-p", "no:xdist")
+    assert result.ret == 0
+    combined = result.stdout.str() + result.stderr.str()
+    assert "unknown hook" not in combined
