@@ -63,6 +63,20 @@ def token_hash(token: str) -> str:
 # LiteLLM's own sk- keys.
 _TOKEN_PREFIX = "sk-taos-"
 
+# key_id prefix of a gateway key minted FROM an agent_keys row (the LiteLLM
+# cutover): same key_hash, so the agent's existing key authenticates on the
+# gateway with no redeploy. Kept in step with its agent_keys row below.
+MIRROR_KEY_PREFIX = "gk_lit_"
+_IS_MIRROR = f"substr(key_id, 1, {len(MIRROR_KEY_PREFIX)}) = '{MIRROR_KEY_PREFIX}'"
+
+
+# PRAGMA user_version once the one-shot embedding-alias grant has run.
+_EMBED_ALIAS_VERSION = 1
+
+
+def mirror_key_id(key_hash: str) -> str:
+    return MIRROR_KEY_PREFIX + key_hash[:16]
+
 
 class LiteLLMKeyStore:
     """SQLite-backed per-agent key store, safe for cross-process read/write.
@@ -87,6 +101,7 @@ class LiteLLMKeyStore:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
             self._migrate_agent_key_hashes(conn)
+            self._migrate_embedding_alias(conn)
 
     @staticmethod
     def _migrate_agent_key_hashes(conn: sqlite3.Connection) -> None:
@@ -114,6 +129,58 @@ class LiteLLMKeyStore:
                 "UPDATE agent_keys SET token_hash = ? WHERE token = ?",
                 (token_hash(row["token"]), row["token"]),
             )
+
+    @staticmethod
+    def _migrate_embedding_alias(conn: sqlite3.Connection) -> None:
+        """Grant the embedding alias to agent keys minted before it was granted.
+
+        Every mint path now scopes an agent key to its models PLUS
+        ``taos-embedding-default`` (``llm_proxy.scoped_key_models``), and the
+        deployer hands every agent ``TAOS_EMBEDDING_MODEL`` set to that alias.
+        Keys minted earlier lack it, so those agents get 403 on
+        ``/v1/embeddings``. This adds it once to live agent keys in both tables
+        (a ``gk_lit_`` mirror is kept in step with its ``agent_keys`` row).
+
+        Runs ONCE per file (``PRAGMA user_version`` 0 -> 1): re-adding the
+        alias on every open would silently undo a later deliberate revocation.
+        An empty allowlist is deny-all and stays that way.
+        """
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= _EMBED_ALIAS_VERSION:
+            return
+        # Take the write lock BEFORE reading the allowlists, so a concurrent
+        # set_models (the other process) cannot land between our read and our
+        # write and be overwritten. Re-check the marker under the lock: another
+        # opener may have finished the grant while we waited.
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= _EMBED_ALIAS_VERSION:
+            return
+        from tinyagentos.litellm_config import EMBEDDING_ALIAS
+
+        def _grant(raw: str) -> str | None:
+            models = _models(raw)
+            if not models or EMBEDDING_ALIAS in models:
+                return None
+            return json.dumps(models + [EMBEDDING_ALIAS])
+
+        for row in conn.execute("SELECT token, allowed_models FROM agent_keys").fetchall():
+            new = _grant(row["allowed_models"])
+            if new is not None:
+                conn.execute(
+                    "UPDATE agent_keys SET allowed_models = ? WHERE token = ?",
+                    (new, row["token"]),
+                )
+        for row in conn.execute(
+            "SELECT key_id, allowed_models FROM gateway_keys "
+            "WHERE kind = 'agent' AND revoked_ts IS NULL"
+        ).fetchall():
+            new = _grant(row["allowed_models"])
+            if new is not None:
+                conn.execute(
+                    "UPDATE gateway_keys SET allowed_models = ? WHERE key_id = ?",
+                    (new, row["key_id"]),
+                )
+        conn.execute(f"PRAGMA user_version = {_EMBED_ALIAS_VERSION}")
 
     def mint(self, agent: str, allowed_models: list[str] | None) -> str:
         """Create a fresh token for an agent scoped to allowed_models.
@@ -149,24 +216,97 @@ class LiteLLMKeyStore:
 
     def set_models(self, token: str, allowed_models: list[str]) -> bool:
         """Re-scope a token's allowed models in place. Returns True if it existed."""
+        models_json = json.dumps(list(allowed_models or []))
         with self._connect() as conn:
             cur = conn.execute(
                 "UPDATE agent_keys SET allowed_models = ? WHERE token = ?",
-                (json.dumps(list(allowed_models or [])), token),
+                (models_json, token),
+            )
+            # The gateway key minted from this row follows the re-scope.
+            conn.execute(
+                f"UPDATE gateway_keys SET allowed_models = ? WHERE key_hash = ? AND {_IS_MIRROR}",
+                (models_json, token_hash(token)),
             )
             return cur.rowcount > 0
 
     def delete(self, token: str) -> bool:
-        """Remove a token. Returns True if it existed."""
+        """Remove a token (and revoke the gateway key minted from it).
+        Returns True if it existed."""
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM agent_keys WHERE token = ?", (token,))
+            conn.execute(
+                f"UPDATE gateway_keys SET revoked_ts = ? WHERE key_hash = ? "
+                f"AND revoked_ts IS NULL AND {_IS_MIRROR}",
+                (time.time(), token_hash(token)),
+            )
             return cur.rowcount > 0
 
     def delete_agent(self, agent: str) -> int:
-        """Remove all tokens for an agent (e.g. on undeploy). Returns count."""
+        """Remove all tokens for an agent (e.g. on undeploy), revoking the
+        gateway keys minted from them. Returns the agent_keys count."""
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM agent_keys WHERE agent = ?", (agent,))
+            conn.execute(
+                f"UPDATE gateway_keys SET revoked_ts = ? WHERE bound_to = ? "
+                f"AND revoked_ts IS NULL AND {_IS_MIRROR}",
+                (time.time(), agent),
+            )
             return cur.rowcount
+
+    def mint_mirror(self, agent: str, token: str) -> str | None:
+        """Mint the gateway key for ``agent``'s LiteLLM key ``token``.
+
+        The gateway row carries the SAME hash, so the agent keeps presenting
+        the key it already has. Idempotent: returns the ``key_id`` when a live
+        mirror bound to ``agent`` exists or was just written. Returns None,
+        writing nothing, when the key is not an ``agent_keys`` row of this
+        agent, or when a different or revoked gateway row already holds that
+        hash: an unknown key is never guessed at, and nothing unscoped is
+        ever minted here.
+        """
+        if not isinstance(token, str) or not token or not agent:
+            return None
+        h = token_hash(token)
+        key_id = mirror_key_id(h)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT agent, allowed_models FROM agent_keys WHERE token_hash = ?",
+                (h,),
+            ).fetchone()
+            if row is None or row["agent"] != agent:
+                return None
+            existing = conn.execute(
+                "SELECT key_id, bound_to, kind, revoked_ts FROM gateway_keys WHERE key_hash = ?",
+                (h,),
+            ).fetchone()
+            if existing is not None:
+                live = (
+                    existing["key_id"] == key_id
+                    and existing["bound_to"] == agent
+                    and existing["kind"] == "agent"
+                    and existing["revoked_ts"] is None
+                )
+                return key_id if live else None
+            conn.execute(
+                "INSERT INTO gateway_keys (key_id, key_hash, bound_to, kind, "
+                "allowed_models, created_ts, expires_ts, revoked_ts) "
+                "VALUES (?, ?, ?, 'agent', ?, ?, NULL, NULL)",
+                (key_id, h, agent, json.dumps(_models(row["allowed_models"])), time.time()),
+            )
+        return key_id
+
+    def live_mirror(self, agent: str, token: str) -> bool:
+        """True iff a live gateway key minted from ``token`` is bound to ``agent``."""
+        if not isinstance(token, str) or not token:
+            return False
+        rec = self.gateway_key_by_hash(token_hash(token))
+        return bool(
+            rec
+            and rec["key_id"] == mirror_key_id(rec["key_hash"])
+            and rec["bound_to"] == agent
+            and rec["kind"] == "agent"
+            and rec["revoked_ts"] is None
+        )
 
     # -- hashed lookups + gateway keys (tinyagentos.llm_gateway.auth) -------
 

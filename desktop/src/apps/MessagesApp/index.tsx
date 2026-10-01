@@ -1347,7 +1347,7 @@ export function MessagesApp({
       }
     };
     es.onerror = () => {
-      es.close();
+      /* let the browser reconnect; do not force-close */
     };
     return () => es.close();
   }, []);

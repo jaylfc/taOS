@@ -18,6 +18,7 @@ import {
 import { Button, Card, Input } from "@/components/ui";
 import { projectsApi } from "@/lib/projects";
 import { AssignAgentToProjectDialog } from "./AssignAgentToProjectDialog";
+import { AgentGrantsPanel } from "./AgentGrantsPanel";
 import { InviteAgentDialog } from "@/apps/ProjectsApp/InviteAgentDialog";
 import { ConsentActions } from "@/components/ConsentActions";
 import { copyText } from "@/lib/clipboard";
@@ -265,6 +266,7 @@ function RegistryEntryRow({
   currentUserId,
   onAction,
   onAssign,
+  onGrants,
   onPatchHandle,
 }: {
   entry: RegistryEntry;
@@ -272,6 +274,7 @@ function RegistryEntryRow({
   currentUserId: string;
   onAction: (id: string, action: "approve" | "reject" | "suspend" | "reactivate" | "revoke") => Promise<void>;
   onAssign: (entry: RegistryEntry) => void;
+  onGrants: (entry: RegistryEntry) => void;
   onPatchHandle: (id: string, handle: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
@@ -495,6 +498,19 @@ function RegistryEntryRow({
               title="Assign to project"
             >
               <UserPlus size={14} />
+            </Button>
+          )}
+          {isAdmin && entry.status === "active" && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 hover:bg-purple-500/15 hover:text-purple-400"
+              onClick={() => onGrants(entry)}
+              disabled={busy}
+              aria-label={`Manage grants for ${stripAt(entry.display_name) || entry.canonical_id}`}
+              title="Manage grants"
+            >
+              <ScrollText size={14} />
             </Button>
           )}
         </div>
@@ -889,6 +905,7 @@ export function RegistryPanel() {
   const [inviteProjectId, setInviteProjectId] = useState<string | null>(null);
   const [invitePickerOpen, setInvitePickerOpen] = useState(false);
   const [assignEntry, setAssignEntry] = useState<RegistryEntry | null>(null);
+  const [grantsEntry, setGrantsEntry] = useState<RegistryEntry | null>(null);
   // Monotonic counter, only the latest in-flight response is applied.
   const loadSeq = useRef(0);
 
@@ -1073,6 +1090,7 @@ export function RegistryPanel() {
                 currentUserId={currentUserId}
                 onAction={handleAction}
                 onAssign={setAssignEntry}
+                onGrants={setGrantsEntry}
                 onPatchHandle={handlePatchHandle}
               />
             ))}
@@ -1093,6 +1111,7 @@ export function RegistryPanel() {
                       currentUserId={currentUserId}
                       onAction={handleAction}
                       onAssign={setAssignEntry}
+                      onGrants={setGrantsEntry}
                       onPatchHandle={handlePatchHandle}
                     />
                   ))}
@@ -1129,6 +1148,7 @@ export function RegistryPanel() {
                       currentUserId={currentUserId}
                       onAction={handleAction}
                       onAssign={setAssignEntry}
+                      onGrants={setGrantsEntry}
                       onPatchHandle={handlePatchHandle}
                     />
                   ))}
@@ -1159,6 +1179,16 @@ export function RegistryPanel() {
         <AssignAgentToProjectDialog
           entry={assignEntry}
           onClose={() => setAssignEntry(null)}
+        />
+      )}
+      {grantsEntry && (
+        <AgentGrantsPanel
+          target={{
+            canonical_id: grantsEntry.canonical_id,
+            handle: grantsEntry.handle,
+            display_name: grantsEntry.display_name,
+          }}
+          onClose={() => setGrantsEntry(null)}
         />
       )}
       {isAdmin && (

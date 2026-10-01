@@ -3,8 +3,10 @@
 Every gateway route takes ``caller: GatewayCaller = Depends(gateway_caller)``
 and asks ``caller.may_use(model)`` (for the requested model AND the model it
 resolves to); nothing else in the package looks at credentials. The auth
-middleware exempts exactly ``GET /api/llm/v1/models`` and
-``POST /api/llm/v1/chat/completions`` so a bearer key reaches this function.
+middleware exempts exactly ``GET /api/llm/v1/models``,
+``POST /api/llm/v1/chat/completions``, ``POST /api/llm/v1/embeddings`` and
+``POST /api/llm/v1/audio/transcriptions`` so a
+bearer key reaches this function.
 
 Accepted, in order:
 
@@ -15,12 +17,16 @@ Accepted, in order:
   kind "local_token", every model. A deployer-minted per-agent local token is
   REFUSED: it is the agent's controller identity, and granting it every model
   would sidestep the agent's model scope;
-- the per-install LiteLLM master key (``<data_dir>/.litellm_master_key``) ->
-  kind "admin", every model (parity with ``litellm_auth.user_api_key_auth``);
 - a gateway key (``sk-taosgw-...``) minted here, bound to an agent id or a
   node (principal ``node:<id>``) -> kind "agent" / "node", its allowlist;
-- a legacy per-agent LiteLLM key (``sk-taos-...``, ``agent_keys``) -> kind
-  "agent", its allowlist.
+- an agent's LiteLLM key (``sk-taos-...``) -> kind "agent", its allowlist.
+  Once the cutover has minted the agent's gateway key from its
+  ``agent_keys`` row (same hash, ``key_id`` ``gk_lit_...``) that gateway row
+  decides, revocation and expiry included; before that the legacy row does.
+
+The per-install LiteLLM master key is NOT accepted (cutover stage 1 dropped
+G2's master-key-as-admin parity): it maps to nothing and gets a 401. An
+agent still holding it stays on LiteLLM until it is re-keyed.
 
 Everything else -- missing, malformed, unknown, revoked or expired -- is a
 401 ``GatewayError`` (OpenAI-shaped). The key is never logged. An agent over
@@ -56,6 +62,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.litellm_keystore import (
+    MIRROR_KEY_PREFIX,
     LiteLLMKeyStore,
     default_keystore_path,
     token_hash,
@@ -71,7 +78,10 @@ GATEWAY_KEY_LEN = len(GATEWAY_KEY_PREFIX) + _KEY_BODY_LEN
 
 _SCOPED_KINDS = frozenset({"agent", "node"})
 # Kinds that carry allowed_models=None (every model), and only they may.
+# ("admin" is no longer issued: it was the master key's kind.)
 ADMIN_KINDS = frozenset({"admin", "session", "local_token"})
+# key_id prefix of a gateway key minted from an agent's LiteLLM key row.
+LITELLM_MIRROR_PREFIX = MIRROR_KEY_PREFIX
 NODE_PRINCIPAL_PREFIX = "node:"
 # request.state.via values set by auth_middleware.
 _VIA_SESSION = "session"
@@ -320,28 +330,39 @@ def _over_budget(agent: str, data_dir: Path) -> bool:
         return False
 
 
+def _gateway_row_caller(rec: dict, presented_hash: str) -> GatewayCaller | None:
+    if not _ct_equal(rec["key_hash"], presented_hash):
+        return None
+    if rec["revoked_ts"] is not None:
+        logger.info("llm gateway: rejected revoked key %s", rec["key_id"])
+        return None
+    if rec["expires_ts"] is not None and rec["expires_ts"] <= _now():
+        logger.info("llm gateway: rejected expired key %s", rec["key_id"])
+        return None
+    if rec["kind"] not in _SCOPED_KINDS:
+        return None
+    return GatewayCaller(
+        caller_id=rec["bound_to"],
+        kind=rec["kind"],
+        allowed_models=frozenset(rec["allowed_models"]),
+        key_id=rec["key_id"],
+    )
+
+
 def _resolve_scoped(store: LiteLLMKeyStore, presented: str) -> GatewayCaller | None:
     presented_hash = token_hash(presented)
     if presented.startswith(GATEWAY_KEY_PREFIX):
         if len(presented) != GATEWAY_KEY_LEN:
             return None
         rec = store.gateway_key_by_hash(presented_hash)
-        if rec is None or not _ct_equal(rec["key_hash"], presented_hash):
+        if rec is None:
             return None
-        if rec["revoked_ts"] is not None:
-            logger.info("llm gateway: rejected revoked key %s", rec["key_id"])
-            return None
-        if rec["expires_ts"] is not None and rec["expires_ts"] <= _now():
-            logger.info("llm gateway: rejected expired key %s", rec["key_id"])
-            return None
-        if rec["kind"] not in _SCOPED_KINDS:
-            return None
-        return GatewayCaller(
-            caller_id=rec["bound_to"],
-            kind=rec["kind"],
-            allowed_models=frozenset(rec["allowed_models"]),
-            key_id=rec["key_id"],
-        )
+        return _gateway_row_caller(rec, presented_hash)
+    # An agent's LiteLLM key: the gateway key minted from it wins once it
+    # exists (a revoked or expired one is final, no fallback).
+    rec = store.gateway_key_by_hash(presented_hash)
+    if rec is not None and str(rec["key_id"]).startswith(LITELLM_MIRROR_PREFIX):
+        return _gateway_row_caller(rec, presented_hash)
     rec = store.agent_key_by_hash(presented_hash)
     if rec is None or not _ct_equal(rec["token_hash"], presented_hash):
         return None
@@ -404,15 +425,12 @@ def gateway_caller(request: Request) -> GatewayCaller:
         raise unauthorized()
     data_dir = Path(data_dir)
 
-    # Both admin files are always compared, so timing does not say which one
-    # exists or matched. A per-agent local token matches neither and falls
-    # through to the key store, where it is unknown: 401.
-    is_local = _matches_file(presented, data_dir / ".auth_local_token")
-    is_master = _matches_file(presented, data_dir / ".litellm_master_key")
-    if is_local:
+    # The host local token is the only admin credential. The LiteLLM master
+    # key is deliberately NOT checked: it falls through to the key store,
+    # where it is unknown, so it is a 401 like any other stranger. A per-agent
+    # local token likewise matches nothing and is refused.
+    if _matches_file(presented, data_dir / ".auth_local_token"):
         return _local_token_caller(request)
-    if is_master:
-        return GatewayCaller(caller_id="litellm-master", kind="admin", allowed_models=None)
 
     try:
         store = _store(data_dir)

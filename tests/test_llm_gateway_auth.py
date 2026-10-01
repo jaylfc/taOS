@@ -24,7 +24,6 @@ from httpx import ASGITransport, AsyncClient
 
 import tinyagentos.llm_gateway.auth as gw
 from tinyagentos.litellm_keystore import LiteLLMKeyStore, default_keystore_path
-from tinyagentos.llm_gateway.errors import GatewayError
 
 # G1's module-scoped app + signed-in client (one create_app per module, reset
 # before and after every test).
@@ -584,89 +583,14 @@ class TestMintValidation:
             gw.node_principal("")
 
 
-# ---------------------------------------------------------------------------
-# Parity with tinyagentos.litellm_auth.user_api_key_auth
-# ---------------------------------------------------------------------------
-#
-# Verdicts are compared on the SAME key store file. The hook folds "which
-# model" into auth (403); the gateway resolves the caller and leaves the model
-# to may_use(). Both map onto one vocabulary:
-#   "admin" | "allow" | "deny_model" | "deny_auth" | "deny_budget"
-#
-# The ONLY exception is the empty allowlist -- see
-# test_parity_exception_empty_allowlist.
-
-
-class _HookRequest:
-    def __init__(self, model):
-        self._body = {"model": model} if model is not None else {}
-
-    async def json(self):
-        return self._body
-
-
-async def _hook(key, model):
-    import tinyagentos.litellm_auth as hook
-    try:
-        return await hook.user_api_key_auth(_HookRequest(model), key)
-    except ModuleNotFoundError:
-        pytest.skip("litellm not installed")
-
-
-async def _hook_verdict(key, model):
-    from fastapi import HTTPException
-    try:
-        res = await _hook(key, model)
-    except HTTPException as e:
-        return {401: "deny_auth", 403: "deny_model", 429: "deny_budget"}[e.status_code]
-    if not getattr(res, "models", None) and not getattr(res, "metadata", None):
-        return "admin"
-    return "allow"
-
-
-def _gateway_verdict(app, key, model):
-    try:
-        caller = _resolve(app, key)
-    except GatewayError as e:
-        return {401: "deny_auth", 429: "deny_budget"}[e.status]
-    if caller.allowed_models is None:
-        return "admin"
-    return "allow" if caller.may_use(model) else "deny_model"
-
-
-def _litellm_wire(exc) -> tuple[int, dict]:
-    """What a LiteLLM client received for a custom_auth HTTPException.
-
-    Mirrors LiteLLM's own glue (UserAPIKeyAuthExceptionHandler: HTTPException
-    -> ProxyException(type=auth_error), then openai_exception_handler:
-    {"error": exc.to_dict()} at int(exc.code)) using LiteLLM's real classes.
-    """
-    import json as _json
-    types = pytest.importorskip("litellm.proxy._types")
-    pe = types.ProxyException(
-        message=getattr(exc, "detail", f"Authentication Error({exc})"),
-        type=types.ProxyErrorTypes.auth_error,
-        param=getattr(exc, "param", "None"),
-        code=getattr(exc, "status_code", 401),
-    )
-    return int(pe.code), _json.loads(_json.dumps({"error": pe.to_dict()}))
-
-
 @pytest.fixture
-def parity_env(app, monkeypatch):
-    import tinyagentos.litellm_auth as hook
+def parity_env(app):
+    """The key store, a stale on-disk LiteLLM master key (old installs still
+    have the file; nothing may accept it) and the budget store path."""
     from tinyagentos.agent_budget_store import default_budget_path
-    from tinyagentos.litellm_config import get_litellm_master_key
     data_dir = app.state.data_dir
-    master = get_litellm_master_key(data_dir)
-    assert (data_dir / ".litellm_master_key").read_text().strip() == master
-    monkeypatch.setattr(hook, "_store", None)
-    monkeypatch.setattr(hook, "_store_path", None)
-    monkeypatch.setattr(hook, "_budget_store_cache", None)
-    monkeypatch.setattr(hook, "_budget_store_cache_path", None)
-    monkeypatch.setenv("LITELLM_MASTER_KEY", master)
-    monkeypatch.setenv("TAOS_LITELLM_KEYSTORE", str(default_keystore_path(data_dir)))
-    monkeypatch.setenv("TAOS_AGENT_BUDGETS", str(default_budget_path(data_dir)))
+    master = "sk-taos-stale-litellm-master-key-0123456789"
+    (data_dir / ".litellm_master_key").write_text(master)
     return {
         "store": LiteLLMKeyStore(default_keystore_path(data_dir)),
         "master": master,
@@ -681,72 +605,6 @@ def _over_budget(parity_env, agent):
     b.add_spend(agent, 2.0)
 
 
-@_ASYNC
-class TestParityWithLiteLLMHook:
-    async def _both(self, app, key, model):
-        return (await _hook_verdict(key, model), _gateway_verdict(app, key, model))
-
-    async def test_parity_valid_key(self, app, parity_env):
-        token = parity_env["store"].mint("par-agent", ["gpt-a"])
-        assert await self._both(app, token, "gpt-a") == ("allow", "allow")
-
-    async def test_parity_valid_key_wrong_model(self, app, parity_env):
-        token = parity_env["store"].mint("par-agent", ["gpt-a"])
-        assert await self._both(app, token, "gpt-b") == ("deny_model", "deny_model")
-
-    async def test_parity_revoked_key(self, app, parity_env):
-        token = parity_env["store"].mint("par-rev", ["gpt-a"])
-        parity_env["store"].delete(token)
-        assert await self._both(app, token, "gpt-a") == ("deny_auth", "deny_auth")
-
-    async def test_parity_revoked_via_revoke_keys_for(self, app, parity_env):
-        token = parity_env["store"].mint("par-rev2", ["gpt-a"])
-        gw.revoke_keys_for("par-rev2", data_dir=app.state.data_dir)
-        assert await self._both(app, token, "gpt-a") == ("deny_auth", "deny_auth")
-
-    async def test_parity_wrong_key(self, app, parity_env):
-        token = parity_env["store"].mint("par-wrong", ["gpt-a"])
-        wrong = token[:-4] + ("AAAA" if not token.endswith("AAAA") else "BBBB")
-        assert await self._both(app, wrong, "gpt-a") == ("deny_auth", "deny_auth")
-
-    async def test_parity_admin_master_key(self, app, parity_env):
-        assert await self._both(app, parity_env["master"], "anything") == ("admin", "admin")
-
-    async def test_parity_over_budget(self, app, parity_env):
-        token = parity_env["store"].mint("par-broke", ["gpt-a"])
-        _over_budget(parity_env, "par-broke")
-        assert await self._both(app, token, "gpt-a") == ("deny_budget", "deny_budget")
-
-    async def test_parity_expired_has_no_hook_counterpart(self, app, parity_env, monkeypatch):
-        """Documented: agent_keys rows carry no expiry, so the hook has no
-        expired case to agree with. A gateway key refused as expired gets the
-        verdict the hook gives any dead key."""
-        key = gw.mint_gateway_key(
-            bound_to="par-exp", kind="agent", allowed_models=["gpt-a"],
-            ttl_seconds=5, data_dir=app.state.data_dir,
-        )
-        real_now = gw._now
-        monkeypatch.setattr(gw, "_now", lambda: real_now() + 10)
-        assert _gateway_verdict(app, key, "gpt-a") == "deny_auth"
-
-    async def test_parity_exception_empty_allowlist(self, app, parity_env):
-        """THE deliberate difference, and the only one.
-
-        LiteLLM's own reading of an empty model list (UserAPIKeyAuth(models=[]))
-        is allow-all; the hook had to bolt on a 403 at auth time to stop that.
-        The gateway makes deny-all a property of the empty frozenset itself: the
-        key authenticates (its identity is real) and may_use refuses every model,
-        with no special-case check that a refactor could drop.
-        """
-        token = parity_env["store"].mint("par-empty", [])
-        assert await _hook_verdict(token, None) == "deny_model"   # hook: refused at auth
-        caller = _resolve(app, token)
-        assert caller.allowed_models == frozenset()             # gateway: authenticated...
-        assert not any(caller.may_use(m) for m in ("gpt-a", "taos-default", "default", "*"))
-        types = pytest.importorskip("litellm.proxy._types")
-        assert types.UserAPIKeyAuth(api_key="x", models=[]).models == []  # allow-all to LiteLLM
-
-
 # ---------------------------------------------------------------------------
 # Budget: the hook's hard stop, same status AND body
 # ---------------------------------------------------------------------------
@@ -756,15 +614,15 @@ class TestParityWithLiteLLMHook:
 class TestBudget:
     @respx.mock
     async def test_over_budget_matches_the_hook_on_the_wire(self, bare, app, parity_env):
-        from fastapi import HTTPException
+        # Frozen from the LiteLLM custom_auth hook's 429 as LiteLLM rendered it
+        # (string param and code), so a client that handled that refusal
+        # handles this one. LiteLLM itself is gone (removal stage 2b-2a).
         upstream = respx.post(UPSTREAM_CHAT)
         token = parity_env["store"].mint("broke-agent", ["gpt-small"])
         _over_budget(parity_env, "broke-agent")
-
-        with pytest.raises(HTTPException) as hook_exc:
-            await _hook(token, "gpt-small")
-        want_status, want_body = _litellm_wire(hook_exc.value)
-        assert want_status == 429
+        want_status = 429
+        want_body = {"error": {"message": "agent 'broke-agent' has exceeded its LLM budget",
+                               "type": "auth_error", "param": "None", "code": "429"}}
 
         for resp in (
             await bare.post(CHAT, json=_chat("gpt-small"), headers=_b(token)),
@@ -790,7 +648,6 @@ class TestBudget:
         b = AgentBudgetStore(parity_env["budget_path"])
         b.set_budget("thrifty", 5.0)
         b.add_spend("thrifty", 1.0)
-        assert (await _hook_verdict(token, "gpt-small")) == "allow"
         resp = await bare.post(CHAT, json=_chat("gpt-small"), headers=_b(token))
         assert resp.status_code == 200, resp.text
 
@@ -803,5 +660,10 @@ class TestBudget:
         assert await _listed(bare, key) == ["gpt-small"]
 
     async def test_admin_is_never_budget_checked(self, bare, app, parity_env):
+        # The host local token is the admin credential now (the master key is
+        # refused outright); a budget row under its caller id never blocks it.
+        token = app.state.auth.get_local_token()
+        _over_budget(parity_env, "local")
         _over_budget(parity_env, "litellm-master")
-        assert (await bare.get(MODELS, headers=_b(parity_env["master"]))).status_code == 200
+        assert (await bare.get(MODELS, headers=_b(token))).status_code == 200
+        assert (await bare.get(MODELS, headers=_b(parity_env["master"]))).status_code == 401

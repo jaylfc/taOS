@@ -1,5 +1,5 @@
 """Tests for the local-installed-model registration path in
-generate_litellm_config — the fix that lets the agent picker actually
+build_model_list — the fix that lets the agent picker actually
 chat with locally-installed models like gemma-4-e2b-gguf."""
 from __future__ import annotations
 
@@ -7,12 +7,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from tinyagentos.llm_proxy import generate_litellm_config
+from tinyagentos.litellm_config import build_model_list
+
+
+def _model_table(backends, **kwargs) -> dict:
+    """The gateway routing table (the LiteLLM config writer it used to feed is gone)."""
+    return {"model_list": build_model_list(backends, **kwargs)}
 
 
 def _fake_registry(manifests: list[dict], installed_ids: list[str]):
     """Build a stub object exposing the AppRegistry surface that
-    generate_litellm_config uses (list_installed + get).
+    build_model_list uses (list_installed + get).
     """
     by_id = {m["id"]: SimpleNamespace(**m) for m in manifests}
 
@@ -61,7 +66,7 @@ class TestLocalInstalledModelRegistration:
             installed_ids=["gemma-4-e2b-gguf"],
         )
 
-        config = generate_litellm_config([_local_backend()], registry=registry)
+        config = _model_table([_local_backend()], registry=registry)
         names = [e["model_name"] for e in config["model_list"]]
         assert "gemma-4-e2b-gguf" in names, names
 
@@ -82,7 +87,7 @@ class TestLocalInstalledModelRegistration:
             installed_ids=["gemma-4-e2b-gguf", "ollama-only-model"],
         )
 
-        config = generate_litellm_config([_local_backend()], registry=registry)
+        config = _model_table([_local_backend()], registry=registry)
         names = [e["model_name"] for e in config["model_list"]]
         assert "gemma-4-e2b-gguf" in names
         assert "ollama-only-model" not in names
@@ -90,7 +95,7 @@ class TestLocalInstalledModelRegistration:
     def test_no_registry_no_local_entries(self):
         """Existing behaviour without the registry must be preserved —
         no installed-model entries when the caller doesn't pass it."""
-        config = generate_litellm_config([_local_backend()])
+        config = _model_table([_local_backend()])
         names = [e["model_name"] for e in config["model_list"]]
         # "default" alias should still be there for the openai-compatible backend
         assert "default" in names
@@ -112,7 +117,7 @@ class TestLocalInstalledModelRegistration:
             manifests=[_gemma_manifest("gemma-4-e2b-gguf", "rk-llama-cpp")],
             installed_ids=["gemma-4-e2b-gguf"],
         )
-        config = generate_litellm_config([cloud], registry=registry)
+        config = _model_table([cloud], registry=registry)
         names = [e["model_name"] for e in config["model_list"]]
         # Cloud per-model entries still present
         assert "gpt-4o" in names
@@ -135,6 +140,6 @@ class TestLocalInstalledModelRegistration:
             manifests=[_gemma_manifest("gemma-4-e2b-gguf", "rk-llama-cpp")],
             installed_ids=["gemma-4-e2b-gguf"],
         )
-        config = generate_litellm_config([backend], registry=registry)
+        config = _model_table([backend], registry=registry)
         gemma_entries = [e for e in config["model_list"] if e["model_name"] == "gemma-4-e2b-gguf"]
         assert len(gemma_entries) == 1

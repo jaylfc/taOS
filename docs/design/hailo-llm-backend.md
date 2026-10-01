@@ -162,7 +162,7 @@ Mirrors the structure and safety contract of `scripts/install-rknpu.sh`:
      (section on licensing below).
   3. Install `hailo-ollama` at a pinned ref (`TAOS_HAILO_OLLAMA_REPO` /
      `TAOS_HAILO_OLLAMA_REF` overrides, defaults pinned in the script), into
-     `TAOS_HAILO_OLLAMA_DIR` (default `~<user>/hailo-ollama`).
+     `TAOS_HAILO_OLLAMA_DIR` (default `~<user>/hailo_model_zoo_genai`).
   4. Configure it to listen on `TAOS_HAILO_OLLAMA_PORT` (default 7836). The
      exact mechanism (flag, env var, or config file) is confirmed against the
      tester's install in slice S2 before the script is finalized; see open

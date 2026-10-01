@@ -307,6 +307,119 @@ class TestResolveSymbolIsolation:
         finally:
             self._purge_package("tinyagentos")
 
+    def test_module_with_import_sys_exit_still_defines_symbol(self, tmp_path: Path):
+        """RED (pre-fix bug): a module that calls sys.exit(2) at import escapes
+        _resolve_symbol's except Exception: return False handler, killing the
+        whole gate process. After fix, the AST fallback detects the symbol and
+        returns True."""
+        merge = self._write_tree(
+            tmp_path,
+            {
+                "tinyagentos/__init__.py": "",
+                "tinyagentos/exit_module.py": "import sys\nsys.exit(2)\n\ndef defined_symbol():\n    pass\n",
+            },
+        )
+        self._purge_package("tinyagentos")
+        
+        try:
+            # On current dev, this will either raise SystemExit (killing the process)
+            # or _resolve_symbol will return False (incorrectly treating defined_symbol as deleted)
+            result = cds._resolve_symbol(merge, "tinyagentos/exit_module.py", "defined_symbol")
+            # If we reach here without SystemExit, the old code incorrectly returns False
+            assert result is True, f"Expected True (AST fallback should detect defined_symbol), got {result}"
+        finally:
+            self._purge_package("tinyagentos")
+
+    def test_gone_symbol_returns_false(self, tmp_path: Path):
+        """CONTROL: a module whose top level calls sys.exit(2) and does not
+        define the symbol must return False through the AST fallback."""
+        merge = self._write_tree(
+            tmp_path,
+            {
+                "tinyagentos/__init__.py": "",
+                "tinyagentos/exit_module.py": "import sys\nsys.exit(2)\n",
+            },
+        )
+        self._purge_package("tinyagentos")
+        
+        try:
+            result = cds._resolve_symbol(merge, "tinyagentos/exit_module.py", "defined_symbol")
+            assert result is False, f"Expected False (symbol missing, AST fallback), got {result}"
+        finally:
+            self._purge_package("tinyagentos")
+
+    def test_sys_exit_module_symbol_present_returns_true(self, tmp_path: Path):
+        """A module that calls sys.exit(2) at import but still defines the
+        symbol must return True through the AST fallback."""
+        merge = self._write_tree(
+            tmp_path,
+            {
+                "tinyagentos/__init__.py": "",
+                "tinyagentos/exit_module.py": (
+                    "import sys\n"
+                    "sys.exit(2)\n"
+                    "\n"
+                    "def defined_symbol():\n"
+                    "    pass\n"
+                ),
+            },
+        )
+        self._purge_package("tinyagentos")
+        
+        try:
+            result = cds._resolve_symbol(merge, "tinyagentos/exit_module.py", "defined_symbol")
+            assert result is True, f"Expected True (AST fallback detected symbol), got {result}"
+        finally:
+            self._purge_package("tinyagentos")
+
+    def test_import_error_module_symbol_present_returns_true(self, tmp_path: Path):
+        """A module that raises ImportError at import but still defines the
+        symbol must return True through the AST fallback."""
+        merge = self._write_tree(
+            tmp_path,
+            {
+                "tinyagentos/__init__.py": "",
+                "tinyagentos/import_error_module.py": (
+                    "import nonexistent_optional_dep\n"
+                    "\n"
+                    "def defined_symbol():\n"
+                    "    pass\n"
+                ),
+            },
+        )
+        self._purge_package("tinyagentos")
+        
+        try:
+            result = cds._resolve_symbol(merge, "tinyagentos/import_error_module.py", "defined_symbol")
+            assert result is True, f"Expected True (AST fallback detected symbol), got {result}"
+        finally:
+            self._purge_package("tinyagentos")
+
+    def test_import_error_module_symbol_absent_returns_false(self, tmp_path: Path):
+        """CONTROL: a module that raises ImportError at import and does not
+        define the symbol must return False through the AST fallback."""
+        merge = self._write_tree(
+            tmp_path,
+            {
+                "tinyagentos/__init__.py": "",
+                "tinyagentos/import_error_module.py": (
+                    "import nonexistent_optional_dep\n"
+                ),
+            },
+        )
+        self._purge_package("tinyagentos")
+        
+        try:
+            result = cds._resolve_symbol(merge, "tinyagentos/import_error_module.py", "defined_symbol")
+            assert result is False, f"Expected False (symbol missing, AST fallback), got {result}"
+        finally:
+            self._purge_package("tinyagentos")
+
+
+# ---------------------------------------------------------------------------
+# _resolve_symbol .py -> symlink typechange (in-process, no git required)
+# ---------------------------------------------------------------------------
+
 
 class TestResolveSymbolSymlinkTypechange:
     """_resolve_symbol must handle a .py -> symlink typechange in the merge

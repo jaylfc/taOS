@@ -70,9 +70,10 @@ async def api_send_message(request: Request, name: str, body: SendMessageRequest
 @router.get("/api/agents/{name}/workspace/usage")
 async def api_agent_usage(request: Request, name: str):
     """Get LLM usage stats for an agent's virtual key."""
+    # Read from taOS's own key + budget stores: works with LiteLLM stopped.
     proxy = getattr(request.app.state, "llm_proxy", None)
-    if not proxy or not proxy.is_running():
-        return {"available": False, "message": "LLM proxy not running"}
+    if not proxy:
+        return {"available": False, "message": "LLM proxy not configured"}
     # Look up the agent's key alias
     config = request.app.state.config
     agent = None

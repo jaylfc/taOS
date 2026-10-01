@@ -114,7 +114,9 @@ class ReasoningJudge:
     def __init__(
         self,
         *,
-        litellm_base_url: str = "http://127.0.0.1:7834/v1",
+        # The in-process LLM gateway on the controller's default port. The
+        # parameter keeps its old name; it is any OpenAI-compatible base URL.
+        litellm_base_url: str = "http://127.0.0.1:6969/api/llm/v1",
         litellm_api_key: str,
         judge_model: str | None = None,
         timeout: float = 60.0,

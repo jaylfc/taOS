@@ -80,11 +80,47 @@ vi.mock("../MessagesApp.a2aSelection", () => ({
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { MessagesApp } from "../MessagesApp";
 
+/* ------------------------------------------------------------------ */
+/*  Fake EventSource that mirrors real browser close() semantics       */
+/* ------------------------------------------------------------------ */
+
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+  readyState = 0;
+  onopen: (() => void) | null = null;
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  onerror: (() => void) | null = null;
+  private _closed = false;
+
+  constructor(public url: string) {
+    FakeEventSource.instances.push(this);
+  }
+
+  close() {
+    this._closed = true;
+    this.readyState = 2;
+  }
+
+  simulateMessage(data: string) {
+    if (this._closed) return;
+    if (this.onmessage) {
+      this.onmessage({ data } as MessageEvent);
+    }
+  }
+
+  simulateError() {
+    if (this.onerror) {
+      this.onerror();
+    }
+  }
+}
+
 describe("MessagesApp receipt EventSource guard", () => {
   const originalEventSource = globalThis.EventSource;
 
   beforeEach(() => {
     (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(false);
+    FakeEventSource.instances = [];
   });
 
   afterEach(() => {
@@ -108,5 +144,41 @@ describe("MessagesApp receipt EventSource guard", () => {
     }).not.toThrow();
 
     expect(screen.getByTestId("channel-sidebar")).toBeInTheDocument();
+  });
+
+  it("continues delivering receipt messages after a transient error", async () => {
+    Object.defineProperty(globalThis, "EventSource", {
+      value: FakeEventSource,
+      writable: true,
+      configurable: true,
+    });
+
+    render(<MessagesApp windowId="test" />);
+
+    const instance = FakeEventSource.instances[0];
+    expect(instance).toBeDefined();
+
+    // Simulate an error event from the stream
+    instance.simulateError();
+
+    // Simulate a receipt message event arriving after the error
+    let receiptHandled = false;
+    const originalOnMessage = instance.onmessage;
+    instance.onmessage = ((ev: MessageEvent) => {
+      receiptHandled = true;
+      if (originalOnMessage) originalOnMessage(ev);
+    });
+
+    instance.simulateMessage(
+      JSON.stringify({
+        type: "receipt",
+        message_id: "m1",
+        agent_id: "peer",
+        delivered_at: 1000,
+        seen_at: null,
+      }),
+    );
+
+    expect(receiptHandled).toBe(true);
   });
 });

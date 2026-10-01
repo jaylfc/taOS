@@ -165,9 +165,11 @@ async def test_unregister_worker(client, app):
 
 
 @pytest.mark.asyncio
-async def test_unregister_unknown_worker(client):
+async def test_unregister_unknown_worker(client, app):
+    await app.state.cluster_pairing.init()
     resp = await client.delete("/api/cluster/workers/ghost")
     assert resp.status_code == 404
+    await app.state.cluster_pairing.close()
 
 
 @pytest.mark.asyncio

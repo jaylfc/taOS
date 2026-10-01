@@ -32,6 +32,29 @@ class Route:
     api_base: str | None
     api_key_ref: str | None  # literal key or "os.environ/<secret>"; never render it
     backend_name: str
+    # taOS backend type ("ollama", "rkllama", "hailo-ollama", "deepseek", ...),
+    # from the table entry's metadata. The provider prefix alone cannot tell
+    # rkllama from hailo-ollama (both ``ollama_chat``), and they stream
+    # differently.
+    backend_type: str = ""
+
+
+def route_from_entry(entry: dict, name: str) -> Route:
+    """The Route for one routing-table entry, served under ``name``."""
+    params = entry.get("litellm_params") or {}
+    provider, sep, upstream = str(params.get("model", "")).partition("/")
+    if not sep:
+        provider, upstream = "", provider
+    metadata = entry.get("metadata") or {}
+    return Route(
+        model_name=name,
+        provider=provider,
+        upstream_model=upstream,
+        api_base=params.get("api_base") or None,
+        api_key_ref=params.get("api_key") or None,
+        backend_name=str(metadata.get("backend_name", "")),
+        backend_type=str(metadata.get("backend_type") or ""),
+    )
 
 
 def routing_table(state) -> list[dict]:
@@ -70,23 +93,11 @@ def find_route(table: list[dict], name: str) -> Route | None:
 
 def find_routes(table: list[dict], name: str) -> list[Route]:
     """All chat entries for name, in priority order (highest first)."""
-    routes: list[Route] = []
-    for entry in table:
-        if entry.get("model_name") != name or not _is_chat(entry):
-            continue
-        params = entry.get("litellm_params") or {}
-        provider, sep, upstream = str(params.get("model", "")).partition("/")
-        if not sep:
-            provider, upstream = "", provider
-        routes.append(Route(
-            model_name=name,
-            provider=provider,
-            upstream_model=upstream,
-            api_base=params.get("api_base") or None,
-            api_key_ref=params.get("api_key") or None,
-            backend_name=str((entry.get("metadata") or {}).get("backend_name", "")),
-        ))
-    return routes
+    return [
+        route_from_entry(entry, name)
+        for entry in table
+        if entry.get("model_name") == name and _is_chat(entry)
+    ]
 
 
 async def default_chat_model(state) -> str | None:

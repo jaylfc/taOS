@@ -79,6 +79,8 @@ function NotificationItem({
             requestedProjectId={consent.projectId}
             source={n.source}
             canonicalId={consent.canonicalId}
+            humanDuration={consent.humanDuration}
+            harness={consent.harness}
             onResolved={() => onResolveConsent(n.id)}
           />
         </div>

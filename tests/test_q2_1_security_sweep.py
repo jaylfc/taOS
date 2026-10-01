@@ -1,7 +1,6 @@
 """RED tests for Q2-1 security hygiene sweep (tsk-wc5fns).
 
 Covers:
-  - litellm_auth: secrets.compare_digest for master-key comparison
   - routes/agents.py: secrets.compare_digest for llm_key bearer match
   - opencode_runtime: atomic_write_text(mode=0o600) for config; log file created
     with mode 0o600 at open-time (no separate chmod)
@@ -12,11 +11,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-import importlib
 import os
-import sys
-import types
-from pathlib import Path
 
 import pytest
 
@@ -49,68 +44,6 @@ async def _add_item(store, title="T", content="C", summary="S", author="A"):
         tags=[],
         metadata={},
     )
-
-
-# ---------------------------------------------------------------------------
-# 1. litellm_auth -- secrets.compare_digest for master key
-# ---------------------------------------------------------------------------
-
-
-class _FakeRequest:
-    """Minimal request stand-in for _requested_model."""
-    def __init__(self, body: dict | None = None):
-        self._body = body or {}
-
-    async def json(self):
-        return self._body
-
-
-def _stub_litellm(monkeypatch):
-    """Inject a minimal litellm.proxy._types.UserAPIKeyAuth into sys.modules."""
-    class _UserAPIKeyAuth:
-        def __init__(self, **kw):
-            self.api_key = kw.get("api_key")
-            self.key_alias = kw.get("key_alias")
-            self.models = kw.get("models", [])
-            self.metadata = kw.get("metadata", {})
-
-    litellm = types.ModuleType("litellm")
-    proxy = types.ModuleType("litellm.proxy")
-    _types = types.ModuleType("litellm.proxy._types")
-    _types.UserAPIKeyAuth = _UserAPIKeyAuth
-    proxy._types = _types
-    litellm.proxy = proxy
-    monkeypatch.setitem(sys.modules, "litellm", litellm)
-    monkeypatch.setitem(sys.modules, "litellm.proxy", proxy)
-    monkeypatch.setitem(sys.modules, "litellm.proxy._types", _types)
-
-
-@pytest.mark.asyncio
-async def test_litellm_auth_master_key_uses_compare_digest(monkeypatch):
-    """Master-key comparison must go through secrets.compare_digest."""
-    import secrets as secrets_mod
-
-    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master-123")
-    monkeypatch.delenv("TAOS_LITELLM_KEYSTORE", raising=False)
-    monkeypatch.delenv("TAOS_AGENT_BUDGETS", raising=False)
-
-    _stub_litellm(monkeypatch)
-
-    called = []
-    real = secrets_mod.compare_digest
-    def spy(a, b):
-        called.append((a, b))
-        return real(a, b)
-    monkeypatch.setattr(secrets_mod, "compare_digest", spy)
-
-    import tinyagentos.litellm_auth as auth
-    importlib.reload(auth)
-
-    result = await auth.user_api_key_auth(_FakeRequest(), "sk-master-123")
-    assert result is not None
-    assert called, "secrets.compare_digest was not called for master-key check"
-    assert called[0][0] == "sk-master-123"
-    assert called[0][1] == "sk-master-123"
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ This script will:
 4. Install `chromium-browser` if not present
 5. Generate `/etc/systemd/system/taos-kiosk.service` with the seatd dependency declared
 6. Create the `taos-kiosk` convenience script
+7. Install the BLE extra (`ble`) into the taOS Python virtual environment to ensure fresh handset installs work correctly
 
 Seat configuration (step 3) runs whenever `seatd` is available, including when it was already installed before the script ran; Chromium installation (step 4) does not depend on `seatd`. If enabling `seatd`, creating the `seat` group, or the group update fails, the script exits non-zero rather than reporting a successful setup.
 

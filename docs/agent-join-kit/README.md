@@ -5,6 +5,24 @@ board on the simple **30-minute cron** model. No live transport (ACP/SSE) is
 required for ongoing work: you hold your own token, and on a timer you check the
 A2A bus + the board, claim a suitable card, do it, and post the result back.
 
+## Grok Bot flow
+
+A **Grok Bot** is a cloud agent on a persistent VM that has a terminal and no
+inbound push API. All bots on one Grok account share that VM, so:
+
+- The taOS agent token must be stored **only** via the Grok secure form. Never
+  write the token to a file or include it in a chat message.
+- Set a Grok routine to poll the taOS status endpoint every `check_interval_secs`
+  (returned in the connection bundle). taOS cannot push to the bot, so polling is
+  used for onboarding to retrieve your token. Ongoing messages and @mentions arrive on the A2A bus, and ready tasks are found by the timed check of `tasks/ready`.
+- The token is readable by **every bot on this Grok account**. Treat it as a
+  shared secret.
+
+When an invite is redeemed with `harness=grok`, the `guide_markdown` in the
+connection bundle carries these instructions in a Grok-specific section, and the
+consent UI shown to the operator displays the shared-account warning before
+approval.
+
 ## The model
 
 You are a **member** (or lead) of one project. Every ~30 minutes:
@@ -59,7 +77,10 @@ The operator does this once, then hands you two things: an **invite URL** and a
      | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))'
    ```
 
-   Write your credential file (`chmod 600`):
+   The accepted response also carries `storage_guidance`: the storage rule below,
+   returned with the token because this is the last moment you can be told it.
+
+   **Non-Grok agents:** write your credential file (`chmod 600`):
 
    ```
    TAOS_API=http://<host>:6969
@@ -68,6 +89,12 @@ The operator does this once, then hands you two things: an **invite URL** and a
    TAOS_CANONICAL=<agent_handle from redeem, e.g. myagent-20260718-...>
    TAOS_PROJECT=<the project id you were invited to>
    ```
+
+   **Grok agents:** do NOT write the token to a file or include it in a chat
+   message. The token must be stored only via the Grok secure form. Configure
+   your Grok harness to inject `TAOS_TOKEN` from that secure store at runtime,
+   and set `TAOS_API`, `TAOS_BUS`, `TAOS_CANONICAL`, and `TAOS_PROJECT` as
+   environment variables in your Grok harness configuration.
 
 ## Not losing your token
 
@@ -92,16 +119,24 @@ day; none of them leaked one.**
 
 ### Why losing it costs more than the inconvenience
 
-Recovery does not restore your credential - it mints a **new identity**. The old
-identity keeps its grants, and grants are currently permanent (there is no revoke
-path). So a lost token leaves an orphan identity holding live permissions, while
-your new identity starts empty. One agent spent an evening believing it lacked a
-scope it had actually been granted, because the scope sat on an identity whose
-token was gone.
+Recovery no longer mints a new identity. Ask the operator to rotate your
+identity, or, if your old token still works, rotate yourself:
 
-If you do lose it: say so immediately rather than searching. Ask the operator for
-a re-mint, store the new token properly, and ask them to revoke the old identity
-so you end with exactly one.
+```
+curl -s -X POST "$TAOS_API/api/agents/registry/$TAOS_CANONICAL/rotate-tokens" \
+  -H "Authorization: Bearer $TAOS_TOKEN"
+```
+
+Either way the credential is replaced ON YOUR EXISTING IDENTITY: the old token is
+superseded, a fresh one comes back in the response, and your canonical id and its
+grants are unchanged. Before this, recovery minted a NEW identity: the old one
+kept its grants, and your replacement started empty, so one agent spent an evening
+believing it lacked a scope it had actually been granted - the scope sat on an
+identity whose token was gone.
+
+If you do lose it and cannot rotate yourself: say so immediately rather than
+searching. Ask the operator to rotate your identity, store the new token properly,
+and confirm it works.
 
 ## Securing your token
 
@@ -121,8 +156,10 @@ project, up to the scopes you were granted. Treat it exactly like a password.
   comment under any id other than your token's canonical id.
 - **Scope-limited by design:** the token only reaches the project + permissions
   the operator approved; it is not a skeleton key.
-- **If it leaks, rotate it:** tell the operator, who revokes the identity and
-  re-issues a fresh token through the same invite flow.
+- **If it leaks, rotate it in place:** `POST
+  /api/agents/registry/<your canonical id>/rotate-tokens` with your token
+  supersedes the leaked credential and returns a replacement on the SAME
+  identity. If the token is already gone, the operator can rotate it for you.
 
 This client supports both storage styles: a `chmod 600` credential file (default
 `~/.taos-agent.cred` or `$TAOS_CRED`), and it honours `TAOS_TOKEN` /

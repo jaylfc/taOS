@@ -90,7 +90,7 @@ mDNS).
 | Browser proxy port | 6970 |
 | qmd model service | port 7832 |
 | rkllama (NPU models) | port 7833 on new installs; 8080 on installs from before June 2026 |
-| LiteLLM (model routing) | port 7834 on new installs; 4000 on installs from before June 2026 |
+| LLM gateway (model routing) | in the controller at `/api/llm/v1`; agents reach it at their own `127.0.0.1:4000`, forwarded to the host's 7838 |
 | Agent frameworks | OpenClaw (default), Hermes, SmolAgents, Langroid, PocketFlow, OpenAI Agents SDK |
 | Memory system | taOSmd, long-term memory shared by all agents |
 | Community | github.com/jaylfc/tinyagentos/discussions |

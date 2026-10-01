@@ -91,3 +91,43 @@ async def test_serve_exception_is_reraised():
 
     with pytest.raises(RuntimeError, match="lifespan crash"):
         await _serve_until_first_exit(main_server, proxy_server)
+
+
+class _ExitableServer:
+    """Runs until should_exit is set, like uvicorn.Server."""
+
+    def __init__(self):
+        self.started = True
+        self.should_exit = False
+
+    async def serve(self) -> None:
+        while not self.should_exit:
+            await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc", [SystemExit(1), OSError("address in use")])
+async def test_failing_sidecar_never_stops_the_controller(exc):
+    """The LLM gateway agent listener is a sidecar: uvicorn's sys.exit(1) on a
+    busy port must not take the controller down."""
+    from tinyagentos.__main__ import _serve_until_first_exit
+
+    main_server = _ExitableServer()
+    sidecar = _StubServer(started=False, raise_on_serve=exc)
+    task = asyncio.create_task(_serve_until_first_exit(main_server, None, sidecars=(sidecar,)))
+    await asyncio.sleep(0.1)
+    assert not task.done()
+    main_server.should_exit = True
+    assert await asyncio.wait_for(task, 5) is True
+
+
+@pytest.mark.asyncio
+async def test_sidecar_is_stopped_with_the_main_server():
+    from tinyagentos.__main__ import _serve_until_first_exit
+
+    main_server = _StubServer(started=True)
+    sidecar = _ExitableServer()
+    assert await asyncio.wait_for(
+        _serve_until_first_exit(main_server, None, sidecars=(sidecar,)), 5
+    ) is True
+    assert sidecar.should_exit is True

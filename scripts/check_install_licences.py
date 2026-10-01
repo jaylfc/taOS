@@ -33,8 +33,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# The extras a real server install asks for (scripts/install-server.sh).
-SERVER_EXTRAS = ("proxy",)
+# The extras a real server install asks for (scripts/install-server.sh). None
+# since the LiteLLM ``proxy`` extra was removed (a handset adds ``ble``).
+SERVER_EXTRAS: tuple[str, ...] = ()
 
 # Licence expressions/classifiers that must never reach the shipped venv.
 # ``LicenseRef-`` is SPDX's escape hatch for a licence with no SPDX id, which in
@@ -177,23 +178,6 @@ def canonical(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def litellm_cap_pins_mirrored_minor(
-    litellm_req: str, floor: str = "1.94.2", ceiling: str = "1.95"
-) -> bool:
-    """True iff ``litellm_req`` pins exactly ``>=floor,<ceiling``.
-
-    ``"<" in litellm_req`` alone cannot tell a real cap from a decoy one — it is
-    true for a ceiling as loose as ``<2`` just as it is for the ``<1.95`` the
-    inlined proxy subset actually mirrors, which would let a fresh
-    ``pip install -e .[proxy]`` pull a litellm minor whose proxy extra has grown
-    requirements this repo's inlined subset does not carry.
-    """
-    from packaging.requirements import Requirement
-
-    specifiers = {(s.operator, s.version) for s in Requirement(litellm_req).specifier}
-    return specifiers == {(">=", floor), ("<", ceiling)}
-
-
 def licence_from_info(info: dict) -> str:
     """Best-effort licence string from a PyPI release ``info`` dict.
 
@@ -251,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--extras", default=",".join(SERVER_EXTRAS),
-        help="comma-separated extras the install asks for (default: proxy)",
+        help="comma-separated extras the install asks for (default: none)",
     )
     args = parser.parse_args(argv)
 

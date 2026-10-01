@@ -1513,3 +1513,91 @@ class TestTheDropBoxDirectoryIsNeverCreatedHere:
         # that gate cannot see: that the three routes share ONE writer.
         src = inspect.getsource(auth)
         assert src.count("_write_power_request(") >= 4  # 1 def + 3 callers
+
+
+class TestTheStreamOpensWithTheCurrentScreenState:
+    """After a controller restart the page's stream reopens while the panel may
+    be dark. The stream therefore leads with the last screen state the device
+    reported, to the connecting client only."""
+
+    @staticmethod
+    async def _first_frames(n):
+        resp = await auth.lock_events(_Req())
+        frames = []
+        async for chunk in resp.body_iterator:
+            frames.append(chunk)
+            if len(frames) >= n:
+                break
+        await resp.body_iterator.aclose()
+        return frames
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch):
+        monkeypatch.setattr(auth, "_request_is_console", lambda _r: True)
+        monkeypatch.setattr(auth, "_LOCK_SCREEN_STATE", None)
+        auth._LOCK_EVENT_WAITERS.clear()
+        yield
+        auth._LOCK_EVENT_WAITERS.clear()
+
+    def test_after_screen_off_a_new_client_is_told_first(self):
+        _call(auth.lock_screen_off(_Req()))
+        frames = asyncio.run(self._first_frames(2))
+        assert frames[0] == ": connected\n\n"
+        assert frames[1].startswith("event: screen-off\n")
+
+    def test_after_screen_on_a_new_client_is_told_first(self):
+        _call(auth.lock_screen_off(_Req()))
+        _call(auth.lock_screen_on(_Req()))
+        frames = asyncio.run(self._first_frames(2))
+        assert frames[1].startswith("event: screen-on\n")
+
+    def test_with_no_state_known_nothing_is_invented(self):
+        # _Req reports a disconnect at once, so the stream ends after whatever
+        # it leads with: with no state known that is the connect byte alone.
+        async def run():
+            resp = await auth.lock_events(_Req())
+            return [c async for c in resp.body_iterator]
+        assert asyncio.run(run()) == [": connected\n\n"]
+
+    def test_it_goes_to_the_new_client_only(self):
+        _call(auth.lock_screen_off(_Req()))
+        other: asyncio.Queue = asyncio.Queue(maxsize=8)
+        auth._LOCK_EVENT_WAITERS.add(other)
+        asyncio.run(self._first_frames(2))
+        assert other.empty(), "the connect-time state must not fan out"
+
+    def test_a_refused_post_does_not_change_the_remembered_state(self, monkeypatch):
+        _call(auth.lock_screen_off(_Req()))
+        monkeypatch.setattr(auth, "_request_is_console", lambda _r: False)
+        assert _call(auth.lock_screen_on(_Req())).status_code == 403
+        assert auth._LOCK_SCREEN_STATE == "screen-off"
+
+    def test_the_stream_is_still_console_only(self, monkeypatch):
+        monkeypatch.setattr(auth, "_request_is_console", lambda _r: False)
+        assert _call(auth.lock_events(_Req())).status_code == 403
+
+
+class TestAbandonedClientsDoNotLeakWaiters:
+    """A client that aborts before the stream starts must not leave its queue
+    registered forever."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch):
+        monkeypatch.setattr(auth, "_request_is_console", lambda _r: True)
+        monkeypatch.setattr(auth, "_LOCK_SCREEN_STATE", None)
+        auth._LOCK_EVENT_WAITERS.clear()
+        self._start_size = len(auth._LOCK_EVENT_WAITERS)
+        yield
+        auth._LOCK_EVENT_WAITERS.clear()
+
+    def test_dropping_the_response_without_iterating_does_not_leak(self):
+        for _ in range(3):
+            resp = _call(auth.lock_events(_Req()))
+        assert len(auth._LOCK_EVENT_WAITERS) == self._start_size
+
+    def test_a_client_that_iterates_and_then_disconnects_is_removed(self):
+        async def run():
+            resp = await auth.lock_events(_Req())
+            return [c async for c in resp.body_iterator]
+        _call(run())
+        assert len(auth._LOCK_EVENT_WAITERS) == self._start_size

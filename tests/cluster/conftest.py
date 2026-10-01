@@ -21,7 +21,8 @@ class FakeBoard:
 
     def __init__(self, *, board_id: str = "TEST", name: str | None = None,
                  state: str = "unpaired", pairable: bool = True,
-                 advert_uuid: bool = True, advert_mfr: bool = True):
+                 advert_uuid: bool = True, advert_mfr: bool = True,
+                 caps: list[str] | None = None):
         self.board_id = board_id
         # What the board puts in its advert: the service UUID, the taOS
         # manufacturer-data marker, or both (the real board sends both).
@@ -30,14 +31,22 @@ class FakeBoard:
         self.name = name or f"taOSusb-{board_id}"
         self.state = state
         self.pairable = pairable
+        self.caps = caps if isinstance(caps, list) else None
         self.priv, self.pub = proto.x25519_keypair()
         self.responder = proto.PairResponder(board_id, self.priv, paired=(state == "paired"))
 
     def info_bytes(self) -> bytes:
-        return proto.info_frame(
-            self.board_id, self.name, self.state, self.pairable,
-            proto.pub_bytes(self.pub),
-        )
+        caps = self.caps if self.caps is not None else ["agent"]
+        frame = {
+            "v": 1,
+            "id": self.board_id,
+            "name": self.name,
+            "caps": caps,
+            "state": self.state,
+            "pairable": bool(self.pairable),
+            "bpub": proto.b64(proto.pub_bytes(self.pub)),
+        }
+        return json.dumps(frame).encode("utf-8")
 
 
 class FakeConnection(Connection):

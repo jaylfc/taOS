@@ -15,7 +15,8 @@ by a doc edit stays PR-wide: a fragment or doc in any commit of the range
 satisfies the rule. An unscoped trailer covers every rule its commit trips;
 `Docs-Reviewed: [rule, rule] <why>` narrows it to the named rules, which is
 the only way a squash-shaped single commit can waive one rule and still be
-held to the others (a name that matches no rule waives nothing).
+held to the others (a name that matches no rule waives nothing). Multiple
+scoped trailers in one commit union their rule names.
 
 Two layers:
   invariants  -- deterministic sanity checks (Layer A). Currently: every
@@ -458,16 +459,36 @@ def _commit_waivers(
     commit_messages: list[str], trailer: str
 ) -> list[set[str] | None | bool]:
     """For each commit message: False when it carries no usable trailer,
-    None for an unscoped trailer, or the set of rule names it is scoped to."""
+    None for an unscoped trailer, or the set of rule names it is scoped to.
+
+    Unscoped trailers (no [scope]) cover every rule. Multiple scoped trailers
+    union their rule names: any [a] followed by [b] waives both a and b.
+    """
     waivers: list[set[str] | None | bool] = []
     for message in commit_messages:
-        scope: set[str] | None | bool = False
+        collected: set[str] | None = None
+        found_unscoped = False
         for line in message.splitlines():
             parsed = _trailer_scope(line, trailer)
-            if parsed is not None:
-                scope = parsed[0]
-                break
-        waivers.append(scope)
+            if parsed is None:
+                # Not a trailer line at all; skip
+                continue
+            names, why = parsed
+            if names is None:
+                # Unscoped trailer: covers all rules
+                found_unscoped = True
+            else:
+                # Scoped trailer: collect rule names
+                if collected is None:
+                    collected = set(names)
+                else:
+                    collected |= set(names)
+        if found_unscoped:
+            waivers.append(None)
+        elif collected is None:
+            waivers.append(False)
+        else:
+            waivers.append(collected)
     return waivers
 
 
@@ -485,6 +506,7 @@ def evaluate_rules(
     config: dict,
     pin_only_paths: set[str] | None = None,
     commit_paths: list[set[str]] | None = None,
+    existing_toplevel_dirs: set[str] | None = None,
 ) -> list[str]:
     """Layer B: run every configured rule against a changeset.
 
@@ -510,6 +532,10 @@ def evaluate_rules(
     caller has no per-commit attribution (a single staged change, or a
     legacy caller): every trailer then covers every path, which is the
     single-commit meaning the commit-msg hook relies on.
+    existing_toplevel_dirs: top-level directory names that already existed
+    before this change set. When provided, the `apps` rule filters out added
+    files inside those directories so that new files in existing apps do not
+    trip the rule.
     """
     trailer = get_trailer(config)
     rules = config.get("rules", [])
@@ -549,6 +575,16 @@ def evaluate_rules(
         ]
 
         triggering = [p for p in rule_structural_paths if _match_any(p, when_changed)]
+
+        if name == "apps" and existing_toplevel_dirs is not None:
+            added_paths = {path for status, path in changed_status if status == "A"}
+            triggering = [
+                p
+                for p in triggering
+                if p not in added_paths
+                or not _is_path_in_existing_app(p, existing_toplevel_dirs)
+            ]
+
         if not triggering:
             continue
 
@@ -597,6 +633,44 @@ def _git_changed_base(base_ref: str) -> list[tuple[str, str]]:
         raise GitCommandError(
             f"git diff --name-status {base_ref}...HEAD failed (ref: {base_ref})"
         ) from None
+
+
+def _existing_toplevel_app_dirs(repo_root: Path, base_ref: str | None) -> set[str]:
+    """Return top-level app directory names under desktop/src/apps/ that existed
+    before the current change set.
+
+    For --base mode, inspects the base commit. For --staged mode, inspects HEAD.
+    """
+    ref = "HEAD" if base_ref is None else base_ref
+    try:
+        out = _run_git(["ls-tree", "-r", "--name-only", ref], ref=ref)
+    except GitCommandError:
+        return set()
+
+    apps_prefix = "desktop/src/apps/"
+    existing: set[str] = set()
+    for line in out.splitlines():
+        path = line.strip()
+        if path.startswith(apps_prefix):
+            rest = path[len(apps_prefix):]
+            parts = rest.split("/")
+            if parts:
+                existing.add(parts[0])
+    return existing
+
+
+def _is_path_in_existing_app(path: str, existing_dirs: set[str]) -> bool:
+    """Return True if the path is inside a top-level app directory that is
+    already tracked (i.e., not a new app)."""
+    parts = path.split("/")
+    if (
+        len(parts) >= 5
+        and parts[0] == "desktop"
+        and parts[1] == "src"
+        and parts[2] == "apps"
+    ):
+        return parts[3] in existing_dirs
+    return False
 
 
 def _git_commit_messages(base_ref: str) -> list[str]:
@@ -695,7 +769,6 @@ def _log_trailer_usage(commits: list[tuple], trailer: str) -> None:
                 covers = ", ".join(sorted(paths)) if paths else "no files (inert)"
                 msg += f" [covers: {covers}]"
             print(msg)
-            break
 
 
 def get_trailer(config: dict) -> str:
@@ -767,9 +840,13 @@ def main(argv: list[str] | None = None) -> int:
     # any identity is still red.
     pin_only_paths = _collect_pin_only_paths(changed, args.base)
 
+    base_ref = args.base if args.command == "diff-gate" and args.base else None
+    existing_toplevel_dirs = _existing_toplevel_app_dirs(REPO_ROOT, base_ref)
+
     failures = evaluate_rules(
         changed, commit_messages, config,
         pin_only_paths=pin_only_paths, commit_paths=commit_paths,
+        existing_toplevel_dirs=existing_toplevel_dirs,
     )
     return _report(failures)
 

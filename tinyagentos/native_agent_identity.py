@@ -84,6 +84,7 @@ SYSTEM_AGENT_API_SCOPES = (
     "project_doc_review",
     "observatory_control",
     "registry_feeds_read",
+    "notifications_write",
 )
 
 # How much of the install id goes into the canonical_id and the handle.  The
@@ -301,6 +302,14 @@ async def rotate_native_agent_token(
     """Rotate the native agent's token by bumping token_min_iat and minting a new one.
 
     Returns the new token, or None if the native agent identity does not exist.
+
+    The cutoff is ``max(now + 1, current_cutoff + 1)`` and the replacement is
+    minted AT that cutoff.  Bumping to ``now`` would leave a token minted
+    earlier in the same second unsuperseded (its ``iat`` equals the cutoff, and
+    the cutoff check rejects only a strictly older ``iat``); advancing only by
+    the second would let two rotations in one second share a cutoff, so the
+    first replacement would survive the second. Monotonic advancement makes
+    every rotation supersede every token issued before it.
     """
     install = read_install_id(Path(data_dir))
     if not install:
@@ -314,18 +323,32 @@ async def rotate_native_agent_token(
         return None
 
     # Bump token_min_iat to invalidate all existing tokens for this identity.
-    # Use current timestamp (seconds since epoch) as the new cutoff.
+    # The target is above both the current cutoff and this second; the store
+    # applies it as a single MAX(token_min_iat + 1, ?), so concurrent rotations
+    # cannot share a cutoff.  Mint BEFORE the cutoff moves: minting is the step
+    # that can fail, and a moved cutoff with no replacement leaves the agent
+    # with no usable credential.
     import time
-    new_min_iat = int(time.time())
-    await registry.bump_token_min_iat(record["canonical_id"], new_min_iat)
+    before_iat = record.get("token_min_iat") or 0
+    target = max(int(time.time()) + 1, before_iat + 1)
 
-    # Mint a new token with the updated cutoff.
-    token = mint_registry_token(
-        record["canonical_id"],
-        signing_key_pem,
-        user_id=record.get("user_id", ""),
-        framework=record.get("framework", NATIVE_AGENT_ORIGIN),
-    )
+    def _mint(at: int) -> str:
+        return mint_registry_token(
+            record["canonical_id"],
+            signing_key_pem,
+            user_id=record.get("user_id", ""),
+            framework=record.get("framework", NATIVE_AGENT_ORIGIN),
+            iat=at,
+        )
+
+    token = _mint(target)
+
+    updated = await registry.bump_token_min_iat(record["canonical_id"], target)
+    cutoff = int((updated or record).get("token_min_iat") or 0)
+    if updated is not None and cutoff != target:
+        # A concurrent rotation advanced the cutoff past our target; re-mint at
+        # the cutoff that actually landed so the credential we write clears it.
+        token = _mint(cutoff)
 
     # Write the new token, replacing the old one.
     path = token_path(data_dir)

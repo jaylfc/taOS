@@ -12,9 +12,17 @@ from pydantic import BaseModel, field_validator
 from tinyagentos.notifications import VALID_LEVELS
 
 from tinyagentos.auth import get_current_user
+from tinyagentos.agent_token_auth import check_agent_scope_for_project
+from tinyagentos.rate_limit import MovingWindowLimiter
 from tinyagentos.routes.auth import _require_admin
 
 router = APIRouter()
+
+# Per-canonical_id rate limit for agent notification posts: 10 per 10 minutes.
+_AGENT_NOTIF_WINDOW_SECS = 600
+_AGENT_NOTIF_MAX_PER_WINDOW = 10
+_agent_notif_limiter = MovingWindowLimiter(_AGENT_NOTIF_MAX_PER_WINDOW, _AGENT_NOTIF_WINDOW_SECS)
+_agent_notif_rate_hits = _agent_notif_limiter.hits
 
 
 def _notif_user_id(request: Request) -> str:
@@ -82,11 +90,87 @@ class CreateNotificationRequest(BaseModel):
 
 @router.post("/api/notifications")
 async def create_notification(request: Request, body: CreateNotificationRequest):
-    """Admin-only: create a notification through the internal store.
+    """Create a notification through the internal store.
 
-    Lets orchestrators and lead agents signal that a doc or PR is ready for
-    review without a raw DB insert, which would skip SSE and web-push delivery.
+    Human path (session/local token): admin-only via _require_admin.
+    Agent path (registry JWT with notifications_write grant): the route
+    verifies the JWT + grant + project binding. Delivery goes through the
+    same store.add path so SSE and web-push fire.
     """
+    # Check for the agent bearer token first so the dual-auth contract is
+    # explicit: either path is valid, but the route decides which one applies.
+    agent_cid = None
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        presented = auth_header[7:].strip()
+        if presented:
+            try:
+                agent_cid = await check_agent_scope_for_project(
+                    request, "notifications_write", body.data.get("project_id") if body.data else None
+                )
+            except HTTPException:
+                # Bad token, missing grant, or project mismatch: fall through
+                # to the human path (which will 401/403 on its own merits).
+                agent_cid = None
+
+    if agent_cid is not None:
+        # Agent path: rate-limit per canonical_id.
+        if not _agent_notif_limiter.check(agent_cid):
+            retry = _agent_notif_limiter.retry_after(agent_cid)
+            return JSONResponse(
+                {"error": "rate_limited", "retry_after": retry},
+                status_code=429,
+                headers={"Retry-After": str(max(1, int(retry)))},
+            )
+
+        # Enforce caps only on the agent path (after agent_cid is resolved).
+        if len(body.title) > 120:
+            raise HTTPException(status_code=422, detail="title must be at most 120 characters")
+        if len(body.message) > 1000:
+            raise HTTPException(status_code=422, detail="message must be at most 1000 characters")
+        if body.data is not None and len(json.dumps(body.data).encode("utf-8")) > 4096:
+            raise HTTPException(status_code=422, detail="data must be at most 4 KB serialized")
+
+        # Level: agents may post info|warning only.
+        if body.level not in ("info", "warning"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"agent may only post level info or warning, got {body.level!r}",
+            )
+
+        # Resolve the recipient user_id from the grant, NOT from the body.
+        project_id = body.data.get("project_id") if body.data else None
+        if project_id is not None:
+            project = await request.app.state.project_store.get_project(project_id)
+            if project is None:
+                raise HTTPException(status_code=400, detail="project_id not found")
+            user_id = project.get("user_id") or ""
+            if not user_id:
+                raise HTTPException(status_code=409, detail="project has no owner to notify")
+        else:
+            admins = [u for u in request.app.state.auth.list_users() if u.get("is_admin")]
+            if not admins:
+                raise HTTPException(status_code=409, detail="no admin to receive an OS-level notification")
+            user_id = admins[0]["id"]
+
+        # Source comes from the grant, NOT the body.
+        source = f"agent:{agent_cid}"
+        # Stamp from_agent on the data payload.
+        data = dict(body.data) if body.data else {}
+        data["from_agent"] = agent_cid
+
+        store = request.app.state.notifications
+        await store.add(
+            title=body.title,
+            message=body.message,
+            level=body.level,
+            source=source,
+            data=data,
+            user_id=user_id,
+        )
+        return {"ok": True}
+
+    # Human path (session/local token): unchanged.
     ok, err = _require_admin(request)
     if not ok:
         return err

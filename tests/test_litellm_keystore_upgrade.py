@@ -5,10 +5,9 @@ agent_keys with dev's ORIGINAL schema -- copied verbatim below, deliberately
 NOT created through the current code -- and fills it with rows, then opens it
 with the new LiteLLMKeyStore.
 
-LiteLLM stays the default path during side-by-side, and its hook
-(litellm_auth.user_api_key_auth -> LiteLLMKeyStore.lookup) reads the PLAINTEXT
-token column, so the migration must add token_hash without dropping, blanking
-or no longer writing that column.
+The LiteLLM hook that read the plaintext token column is gone (LiteLLM
+removal stage 2b-2a); the gateway authenticates by token_hash, which is what
+these tests pin over an old database.
 """
 from __future__ import annotations
 
@@ -20,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-import tinyagentos.litellm_auth as hook_mod
 import tinyagentos.llm_gateway.auth as gw
+from tinyagentos.litellm_config import EMBEDDING_ALIAS
 from tinyagentos.litellm_keystore import LiteLLMKeyStore, default_keystore_path
 
 # dev's agent_keys schema before this change, verbatim.
@@ -71,37 +70,6 @@ def _rows(path: Path) -> list[dict]:
         return [dict(r) for r in conn.execute("SELECT * FROM agent_keys ORDER BY agent")]
     finally:
         conn.close()
-
-
-@pytest.fixture
-def hook_env(monkeypatch):
-    for attr in ("_store", "_store_path", "_budget_store_cache", "_budget_store_cache_path"):
-        monkeypatch.setattr(hook_mod, attr, None)
-    monkeypatch.delenv("TAOS_AGENT_BUDGETS", raising=False)
-    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master-not-under-test")
-
-    def point_at(path):
-        monkeypatch.setenv("TAOS_LITELLM_KEYSTORE", str(path))
-    return point_at
-
-
-class _HookReq:
-    def __init__(self, model):
-        self._b = {"model": model}
-
-    async def json(self):
-        return self._b
-
-
-async def _hook_allows(token: str, model: str) -> bool:
-    from fastapi import HTTPException
-    try:
-        res = await hook_mod.user_api_key_auth(_HookReq(model), token)
-    except ModuleNotFoundError:
-        pytest.skip("litellm not installed")
-    except HTTPException:
-        return False
-    return bool(res.models)
 
 
 class _Req:
@@ -172,33 +140,22 @@ def test_row_written_by_an_old_process_is_backfilled_on_next_open(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_old_key_still_authenticates_through_the_litellm_hook(tmp_path, hook_env):
-    path = tmp_path / "keys.db"
-    tokens = _old_db(path)
-    LiteLLMKeyStore(path)  # migrate
-    hook_env(path)
-    assert await _hook_allows(tokens["agent-a"], "gpt-small")
-    assert not await _hook_allows(tokens["agent-a"], "qwen3-8b")
-    assert await _hook_allows(tokens["agent-c"], "qwen3-8b")
-
-
-@pytest.mark.asyncio
 async def test_old_key_authenticates_through_the_gateway(tmp_path):
     data_dir = tmp_path / "data"
     tokens = _old_db(default_keystore_path(data_dir))
     caller = _gateway(data_dir, tokens["agent-a"])
     assert (caller.caller_id, caller.kind) == ("agent-a", "agent")
-    assert caller.allowed_models == frozenset({"gpt-small", "default"})
+    # Its own scope, plus the embedding alias the one-shot grant adds to
+    # pre-alias agent keys (test_litellm_keystore_embed_alias_upgrade.py).
+    assert caller.allowed_models == frozenset({"gpt-small", "default", EMBEDDING_ALIAS})
 
 
 @pytest.mark.asyncio
-async def test_key_minted_after_migration_works_through_both_paths(tmp_path, hook_env):
+async def test_key_minted_after_migration_works_through_the_gateway(tmp_path):
     data_dir = tmp_path / "data"
     path = default_keystore_path(data_dir)
     _old_db(path)
     tok = LiteLLMKeyStore(path).mint("agent-new", ["gpt-small"])
-    hook_env(path)
-    assert await _hook_allows(tok, "gpt-small")
     caller = _gateway(data_dir, tok)
     assert caller.caller_id == "agent-new"
     assert caller.may_use("gpt-small") and not caller.may_use("qwen3-8b")

@@ -7,6 +7,870 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.55] - 2026-10-01
+
+### Added
+
+- Operators can now review a registered agent's active scope grants per project from the Agents app and revoke them (individually or the whole project) through the admin-gated `POST /api/projects/{id}/members/revoke-agent` route. (#2985).
+- Lock screen: a physical device agent (taOSusb) appears while it is plugged
+  in and disappears when it is unplugged, and can be asked to do things from
+  the chat sheet. Demo-gated behind `TAOS_LOCK_DEMO_DEVICE_AGENTS` AND the
+  Settings demo-mode switch, and off by default.
+- Lock screen: no cap on the agent islands; the feed scrolls, and a new agent
+  goes at the bottom.
+- Lock-screen pull-down USB tile: switch the USB-C port between USB network, charge only and file transfer. The switch goes through the root drop box and the answer is the read-back after the mode lands.
+- **Local speech-to-text in the LLM gateway**: `POST /api/llm/v1/audio/transcriptions` (OpenAI-compatible multipart, `json` or `text` response) transcribes 16 kHz mono PCM WAV up to 30 s through the on-device `taos-sttd` daemon on `127.0.0.1`. The upload is capped while it streams and is never written to disk; there is no cloud fallback. Helpers live in `tinyagentos/llm_gateway/stt.py` for reuse by a device voice route.
+- **macOS worker install registers Apple Silicon as a `gpu-metal` resource**
+  (#37). `scripts/install-worker.sh` now runs a macOS accelerator probe in its
+  Darwin branch: arm64 with Metal present selects the `gpu-metal` resource
+  class (MLX / llama.cpp Metal / Core ML on unified memory, 1 concurrent task),
+  and probes the python for the MLX runtime only to advise on GPU inference.
+  Intel Macs, and arm64 hosts whose Metal probe answers nothing (a VM), fall
+  back to `cpu-inference`. `TAOS_FORCE_METAL=1` forces the Apple Silicon branch
+  on a bench box whose probe is silent; `TAOS_WORKER_RESOURCES` overrides the
+  detected set.
+- `POST /api/agents/registry/{canonical_id}/rotate-tokens` now replaces the
+  credential ON the same canonical identity and returns the new token in the
+  response, instead of only bumping `token_min_iat`. The cutoff moves to
+  `max(now + 1, current_cutoff + 1)` and the replacement is minted at the
+  resulting cutoff, so a token minted in the same second is superseded rather
+  than surviving its own rotation. Owner or admin may rotate an identity they
+  own; an agent may rotate its OWN identity with its own live registry JWT (the
+  route joins the middleware's Bearer allowlist), giving agents the
+  self-service "rotate my credential" action they lacked. Mint responses
+  (register, mint-internal, auth-request poll, rotate) now carry a
+  `storage_guidance` field: store the token in two migration-surviving
+  locations, mode 0600, outside git. (taOS #2158)
+- `docs/design/cross-node-summarization.md`: design spike for taOS #156 — idle CPU nodes compress
+  old conversation segments in the background. Covers node eligibility (derived from worker status,
+  GPU leases and idleness), how summaries are produced, stored and pulled back through the RAG path,
+  stale-summary vs live-context consistency rules, and a three-slice plan (local compression behind
+  an idle gate, cross-node dispatch, live-context splice) with per-slice acceptance criteria.
+  Design only — no behaviour change in this PR.
+- Follows the #3225 Lead review: the summary row identity is owner-scoped (`user_id` in the store
+  primary key, the vector `metadata_json` and both lookup tiers, since agent names are not unique
+  under per-user namespacing), and the "default on or default off" choice is recorded as an open
+  product question instead of being assumed.
+- Invite bundle `relay` endpoint kind: when `TAOS_CONTROLLER_RELAY_URL` is set to an `https://` URL or an `http://` loopback URL, it is emitted at priority 1 ahead of LAN and mesh endpoints. Non-loopback `http://` relay and public `http://` callback-host endpoints are omitted with a logged warning rather than downgraded to cleartext.
+- Design doc for the skill-collaboration layer (`docs/design/skill-collaboration.md`): the `learning` A2A channel and its subscription/scoping model, the guide-supplement envelope (immutable content-addressed id, attested promotion record, authorized tombstones) and how it merges over the read-only canonical guides without overriding them, per-user (or per-project) isolation and a review-before-spread governance gate built on the Decisions app and the #896 control plane, with a three-slice build plan (#tsk-8801c4b2).
+- `GET /api/cluster/map` (admin-only, `tinyagentos/routes/cluster_map.py`) — the
+  read-only capability map and live placement view for the Cluster app. It
+  aggregates the cluster manager's existing state (`get_workers()` and the GPU
+  arbiter's `get_leases()`) per request and adds nothing to the manager, so it
+  cannot become a second source of truth: `nodes` lists every registered node
+  (offline rows included) with health, tier, hardware, VRAM, backends,
+  per-model placement rows and active leases; `placement` marks each model
+  `loaded` or `installed` from the worker's own `backends[].available_models`,
+  so installed-but-stopped capacity is visible; `capabilities` unions what the
+  whole mesh can do, split into `active_nodes` / `installed_nodes` /
+  `potential_nodes`. The desktop Cluster app gains a **Map** tab rendering both
+  halves. Read-only slice: no move, relocation or auto-organise (#897).
+- Grok Bot variant for project invite guide text: secure-form token storage, routine poll instructions, and shared-account warning in the consent UI.
+- Canvas drawing recovery endpoints: `GET /api/projects/{project_id}/canvas/elements/{element_id}/original` returns an element's verbatim original payload (including soft-deleted rows), and `GET /api/projects/{project_id}/canvas/legacy?include_deleted=1` lists every row carrying a `tldraw_shape`. Agent-token gating mirrors existing canvas routes.
+- CI gate that fails when an extra present in the merge-base `pyproject.toml` or `uv.lock` is deleted at the PR head, forcing authors to empty extras (`name = []`) instead of removing them.
+- Self-maintaining updater-extras test that drives `_compute_update_extras()` through every branch (mobile/non-mobile x `TAOS_EXTRAS_BLE` unset/1/0/true/false) and asserts every returned extra is in `SHIPPED_UPDATER_EXTRAS` and defined in both `pyproject.toml` and `uv.lock`.
+- Added `ble` extra (bleak) support for taOSmobile handsets. The installer and settings updater now detect handsets via `hardware._detect_device_class()` and install the `ble` extra on handsets to enable Orb BLE scan/pair routes. Operators can override this behavior using the `TAOS_EXTRAS_BLE=1` or `TAOS_EXTRAS_BLE=0` environment variables.
+- Added `taos_controller_extras()` bash function in `scripts/install-server.sh` for device-class-based extras selection.
+- Added test coverage in `tests/test_updater_extras_ble.py` for handset detection and extras selection logic.
+
+### Changed
+
+- Every registered app now opens standalone at `app.html?app=<id>`, not only Messages; `pwa: true` now controls only the install surface (the manifest link and install prompt), and an unknown app id still shows the not-available message.
+- On a taOSmobile handset (`device_class` "mobile"), opening an app asks the device shell to open it as its own window instead of a window inside the desktop page; if the shell does not confirm within 1.5 s, the in-page window opens instead. An app already open in-page moves to its own window on the next tap. Settings, deep-link opens that carry context, second windows, session restore and agent window control stay in-page. Other devices are unchanged.
+- The macOS launchd agent (`~/Library/LaunchAgents/com.tinyagentos.worker.plist`)
+  now carries `EnvironmentVariables` (`PYTHONUNBUFFERED`,
+  `TAOS_WORKER_STATE_DIR`, and the detected `TAOS_WORKER_RESOURCES`), so the
+  resource class survives a re-login instead of depending on the installer's
+  process environment.
+- `tinyagentos.worker.agent` advertises Apple Silicon as `gpu-metal` rather
+  than `gpu-cuda-0` (an MLX/ollama backend on a Mac is the Metal GPU, not a
+  CUDA device), and unions the installer-detected classes from
+  `TAOS_WORKER_RESOURCES` into the `resources` array it reports at
+  registration and on every heartbeat.
+- On a Mac that is not Apple Silicon, a running Ollama/llama.cpp backend no
+  longer makes the worker advertise `gpu-cuda-0`: macOS has no CUDA or ROCm
+  class, so an Intel Mac stays `cpu-inference` in both its registration and
+  its heartbeats, matching the installer's fallback.
+- Licensing: taOS is now offered under AGPL-3.0-or-later only. The separate commercial licence and the Contributor License Agreement are withdrawn: `COMMERCIAL-LICENSE.md`, `CLA.md` and the CLA Assistant workflow are removed, and contributions are accepted under the AGPL with contributors keeping their copyright. README, CONTRIBUTING, the dependency-licence notes and the contributor skill now say so.
+- `TAOS_LLM_GATEWAY=0` (or `false` / `no` / `off`) no longer turns the gateway
+  off or moves agents back to LiteLLM: there is no LiteLLM to roll back to.
+  The value is ignored and logged once at startup.
+- At startup every agent container whose `taos-proxy-litellm` device still
+  connects to an old LiteLLM host port (4000, 7834, or the configured
+  `server.litellm_port`) is moved to the gateway's agent listener
+  unconditionally. An agent whose key cannot be mirrored or whose models the
+  gateway cannot route is still moved, with the reason logged, instead of
+  being left on a dead port. A device is never moved onto a listener this
+  start could not verify as its own. The device keeps its
+  `taos-proxy-litellm` name and its in-container `127.0.0.1:4000` listen
+  side; there is no rename migration.
+- Remote agent deploys are refused with "remote agents need the network LLM
+  gateway, not built yet" (the gateway's agent listener is loopback-only).
+  They were handed LiteLLM over the network before.
+- New local deploys get `OPENAI_BASE_URL=http://127.0.0.1:4000/v1` and
+  `TAOS_EMBEDDING_URL=http://127.0.0.1:4000/v1/embeddings`, the container's
+  own proxy-device address, whatever the host's `litellm_port` is. Fresh
+  installs used to inject `http://localhost:7834/v1`, which no container can
+  reach. A local deploy is refused, with the reason, when this controller
+  start has not verified its gateway listener.
+- The macOS launchd agent the installer writes now runs `python -m tinyagentos`
+  instead of bare uvicorn, so the gateway's agent listener starts there too
+  (it is every agent's only LLM path now). A controller started with bare
+  `uvicorn tinyagentos.app:create_app --factory` has no agent listener and
+  refuses local agent deploys with the reason.
+- `/api/settings/llm-proxy` always reports the gateway (`mode: gateway`) and
+  no longer carries a `litellm` block.
+- The taOS agent's opencode harness always uses the in-process gateway; when
+  the gateway cannot serve the model the chat answers 503 with the reason.
+- Same doc, lead-review revision: the isolation unit is the **user** (or a project), not the taOS instance, because a multi-user instance hosts several unrelated fleets and "the same taOS instance" is not "a user's own agents"; S2 is now recorded as blocked on the A2A bus redesign (maintainer hold since 2026-08-24), in addition to the isolation question; the section 4 envelope example is now valid JSON (a `//` note inside the fenced block made it unparseable). `tests/test_skill_collaboration_design_doc.py` pins the invariants and rejects the pre-fix wording.
+- The LLM gateway now serves `/v1/embeddings` itself (`taos-embedding-default` and discovered embedding models, to the same Ollama-shaped and llama.cpp backends LiteLLM used), with the same key allowlist and usage recording as chat. The agent listener no longer relays anything to LiteLLM, so agents chat, stream and embed with LiteLLM stopped.
+- Gateway chat answers carry `reasoning_content` (same text) wherever the upstream sent `reasoning`, in plain and streamed responses, matching what LiteLLM returned; upstream fields are kept.
+- Nothing in taOS presents the LiteLLM master key any more: a deploy LiteLLM cannot mint for gets a key scoped to its models from the local key store (`TAOS_DISABLE_AGENT_MASTER_KEY_FALLBACK` is now a no-op), the taOS agent likewise (and it uses the gateway when the gateway can serve its models), per-agent key admin and the workspace usage view read the local key and budget stores, the provider model catalog is read from the routing table, the reasoning judge is off when the gateway is off, and the LiteLLM auth hook no longer admits the master key.
+- A remote agent is named as having no LLM gateway path (the agent listener is loopback-only) in deploy steps, logs and the cutover report.
+- `scripts/llm_gateway_parity.py --gateway-only` checks the gateway alone: status, shape, `reasoning_content`, usage, trace rows and embeddings.
+- The in-process LLM gateway (`/api/llm/v1`) is always on (see the `TAOS_LLM_GATEWAY` entry above: the flag is now a logged no-op).
+- Agents move to the gateway without a redeploy. Their base URL stays `127.0.0.1:4000`, and at startup the controller points each container's `taos-proxy-litellm` proxy device at a new loopback-only agent listener on host port 7838 (`server.llm_gateway_port` / `TAOS_LLM_GATEWAY_PORT`; 7837 stays with the MLX backend).
+- An agent only moves after three checks pass: the listener has proved it is this controller's (it must answer with a nonce minted fresh at each start, so another process holding the port is never trusted), the gateway can serve every model the agent's key allows, and the agent's gateway key has been minted from its LiteLLM key row. Otherwise the agent is not moved and the controller logs the reason. The move is idempotent, and one container that errors or hangs does not stop the others.
+- The gateway now forwards OpenRouter models, which are OpenAI-compatible (default base `https://openrouter.ai/api/v1`).
+- The agent listener serves only the gateway's models and chat paths, plus `/v1/embeddings`, which the gateway serves itself. Every other path is a 404, including LiteLLM's admin API, `/v1/messages` and `/v1/responses`. Paths are normalised and request bodies are capped at 32 MiB.
+- The gateway no longer accepts the LiteLLM master key as admin. Agents that still hold it are not re-keyed. With the gateway on, a new deploy that would have fallen back to the master key gets a scoped key instead.
+- Turning the gateway on by default also enables the LLM key and gateway URLs that BLE pairing provisions to boards, and lets a handset choose PicoClaw as the system agent's harness.
+- The reasoning judge now calls the gateway using the host local token. `GET /api/settings/llm-proxy` reports the gateway (`mode`, listener `port`, `url`), with LiteLLM's status listed alongside it.
+
+### Fixed
+
+- Web Studio's Share view shows a "publishing isn't available on this taOS yet" empty state when the publish endpoint answers 404 or 501, instead of a raw error.
+- The Share view no longer flashes "Sign in to your taOS account" while the account is still loading, and says when the account service is unavailable.
+- Copy link reports "Copied!" or "Copy failed" instead of silently doing nothing when the clipboard is unavailable.
+- Publish and unpublish share one URL helper.
+- Unpublish does not survive a reload until the site listing returns its binding, because the current SiteRow shape carries no binding or fqdn field to hydrate that state.
+- Lock-screen USB tile: the read-back poll after a switch now gives up 12s after it starts, even if the mode helper hangs during the poll (a hung helper could hold it for minutes). The 12s covers only that poll: the first read of the current mode and the switch itself run before it starts. A failing mode list no longer throws away the mode already read.
+- The macOS install now pairs the worker before it installs the launchd
+  agent. The pair step used to live inside `install_and_enroll_incus()`, which
+  the Darwin branch skips (incus is Linux-only), so a Mac started a launchd
+  agent with no signing key and reported "not paired" forever (#37). The step
+  is now the shared `pair_worker()` function, called from the incus path on
+  Linux and directly before `install_macos_launchd` on macOS, always with
+  `--state-dir $INSTALL_DIR/.taos-worker-state`.
+- The "not paired" hint in `tinyagentos.worker.agent` now includes
+  `--state-dir`, so following it writes the key where the service reads it
+  instead of pairing.py's `~/.local/state/taos-worker` default.
+- The controller validates a worker's advertised `resources` against the
+  scheduler resource-class grammar (`tinyagentos/cluster/worker_protocol.py`)
+  on registration and heartbeat, and answers 400 for an unknown class. The
+  list used to be stored verbatim, and `TAOS_WORKER_RESOURCES` makes it an
+  operator knob. The lease-time fallback grammar in `ClusterManager` now
+  accepts `gpu-metal` too.
+- `rotate_native_agent_token` used `now` as the rotation cutoff, so rotating in
+  the second right after a mint left the previous token unsuperseded. It now
+  uses `max(now + 1, current_cutoff + 1)` and mints the replacement at the
+  resulting cutoff.
+- `AgentRegistryStore.bump_token_min_iat` now advances the cutoff in one
+  statement (`MAX(token_min_iat + 1, ?)`) instead of writing a value computed
+  from an earlier read, so two rotations can never share a cutoff and a
+  replacement can never be born superseded by a concurrent rotation.
+- bot-review-gate now treats CodeRabbit's "review in progress" placeholder as a stub rather than a completed review. A comment carrying the `review in progress by coderabbit.ai` marker means the review is still running, so the gate must stay red until CodeRabbit posts the completed walkthrough. This prevents a fake-green merge when CodeRabbit edits its in-progress placeholder into the auto-summary comment before the review finishes (as happened on PR #3322).
+- **Item 1 (LOST GUARD)**: Restored `test_updater_extras_match_install_server` test with proper guard against installer pip line, verifying the installer's final `pip install -e` line installs `.[\$(taos_controller_extras)]` and matches the lib's inlined function
+- **Item 2 (PARITY REGEX)**: Fixed regex to extract full `taos_controller_extras()` function from install-server.sh, including the case block that was previously truncated
+- **Item 3 (DEAD PATCH)**: Updated test patches to use `tinyagentos.routes.settings._detect_device_class` instead of `tinyagentos.hardware._detect_device_class`, fixing device probe routing
+- **Item 4 (INERT TEST)**: Removed `test_installer_extras_repo_unchanged` test which was read-only and could never fail
+- **Item 5 (KIOSK PIP USER)**: Fixed `scripts/kiosk-setup.sh` to run pip as the venv owner (`taos` service user) instead of the kiosk login user, preventing permission errors
+- **Item 6 (TOP-LEVEL LOCAL)**: Removed `local venv_owner=""` at script top level in `scripts/kiosk-setup.sh` which caused the script to abort under `set -e` on the default BLE path
+- **Item 7 (NIT)**: Updated comment in `tinyagentos/routes/settings.py` to reflect the correct installer pip line pattern
+- Anthropic gateway rate-limit errors now preserve `Retry-After` in response headers and use code `rate_limit_exceeded`.
+- Streaming Anthropic errors now return their real HTTP status and headers instead of HTTP 200 with an in-band error.
+- `tool_choice: "none"` maps to `{type:"none"}` per the Messages API docs; tools are still sent.
+- Tool `input_schema` defaults to `{type:"object", properties:{}}` when no parameters are provided.
+- Device capability allowlist to prevent boards from registering arbitrary capabilities; now only "agent" and "orb" are allowed, with unknown caps dropped and logged.
+- **Item 1 (LLM GATEWAY COST KEY)**: Fixed `cost_of` callers in `tinyagentos/llm_gateway/forward.py` and `tinyagentos/llm_gateway/embeddings.py` to pass `route.backend_type or route.backend_name` instead of `route.backend_name`. This ensures local backends with custom names (e.g. `llama-cpp` backend named `pi-npu`) are correctly billed as $0, and OpenRouter backends are not mistakenly priced from the direct-provider price table.
+- `redeploy_agents` in `convert_to_lxc.py` now accepts and passes `llm_proxy` in `DeployRequest.extra_config`, so agents redeployed during flat-to-worker-LXC conversion receive a scoped per-agent LLM key and go through the verified gateway port guard (matching the route callers in `routes/agents.py` and `routes/agent_import.py`).
+- `redeploy_agents` no longer raises `TypeError` when an `agents.json` row already carries `extra_config`; kwargs are built without the duplicate key before merging.
+- `_convert_to_lxc` in `cli/worker.py` now queries the running controller's `/api/settings/llm-proxy` endpoint for the verified agent-listener port instead of assuming the host `litellm_port`.
+- `_convert_to_lxc` returns non-zero when any redeploy fails, instead of silently printing `Convert-to-LXC complete.`
+- dm-remote channels no longer render duplicate contradictory receipt ticks; the legacy dm-remote tick branch remains as the single source for that channel type.
+- EventSource `onerror` handler no longer calls `close()`, allowing the browser to reconnect after transient errors and keeping live receipt updates flowing.
+- ThreadPanel now marks live thread replies as seen when the thread opens, including replies arriving over the WebSocket stream that are not in the initially fetched message set.
+- Cluster app Map tab copy: the potential-capability tooltip and the
+  read-only placement caption no longer use an em dash (#3223, #897).
+- The LLM gateway now serves rkllama and hailo-ollama chat models. Both
+  expose `/v1/chat/completions` at the refs taOS installs, so the startup
+  cutover no longer leaves their agents on LiteLLM. hailo-ollama streams
+  Ollama NDJSON even on that path; the gateway turns it into OpenAI SSE
+  chunks (role on the first delta, `finish_reason` from `done_reason`,
+  `data: [DONE]` at the end) and records usage through the estimated path,
+  since hailo reports no prompt token count. A hailo stream that errors or
+  closes before `done: true` after tokens went out aborts (no finish chunk,
+  no `[DONE]`), as the SSE path does, instead of ending as a clean `stop`.
+- DeepSeek backends are forwarded as OpenAI-compatible (default base
+  `https://api.deepseek.com/v1`, the backend's own key) instead of being
+  refused as "cannot forward yet".
+- Chat and embedding calls through the gateway reset the backend's
+  lifecycle keep-alive timer, as LiteLLM's callback did via
+  `/api/lifecycle/notify`. A notify failure never fails the request.
+- taOS agent chat on the opencode harness no longer answers 503 "LiteLLM
+  proxy is not running" when the gateway can serve its models. With no path
+  at all, the 503 now says why the gateway could not carry it.
+- `scripts/llm_gateway_parity.py` no longer reports an agent's trace count
+  as unknown when one of its hourly trace buckets is a legacy file without a
+  `trace_events` table; that bucket counts 0. Other sqlite errors (locked,
+  corrupt) still make the count unknown.
+- Agents whose keys were minted before the embedding alias was granted
+  (every agent deployed before 2026-09-30) can embed again. Opening the key
+  store grants `taos-embedding-default` to their live agent keys once, in
+  both the legacy and gateway tables, so `/v1/embeddings` no longer answers
+  403 `model_not_permitted` for them. It runs once per key store: a later
+  deliberate removal of the alias sticks, and deny-all (empty) or revoked
+  keys are left alone.
+- A streaming backend that sends more than 4 MiB without a line or event
+  delimiter now fails the stream instead of growing the gateway's buffer
+  until the controller runs out of memory (both the SSE and the hailo NDJSON
+  paths). The one-shot embedding grant takes the key store's write lock
+  before reading, so a concurrent re-scope cannot be overwritten.
+- Updating an existing install past the LiteLLM removal no longer fails with "Dependency install failed". The updater already on the box still asks for the old `proxy` extra, so `proxy` stays defined as an empty extra that installs nothing.
+- Agent key mint, re-scope and delete no longer silently do nothing when
+  LiteLLM is not running: re-minting an agent's key (openclaw), restoring an
+  archived agent (which now also scopes the new key to the agent's models and
+  pushes `LITELLM_API_KEY` beside `OPENAI_API_KEY`) and deleting the
+  archived agent's key-store key all work against the local key store
+  directly.
+- Unified the three mint paths that build a new agent key's allowed models into a single `scoped_key_models()` helper in `tinyagentos/llm_proxy.py`. All three call sites (`create_agent_key`, `deployer._mint_local_scoped_key`, `taos_agent_runtime._mint_local_taos_agent_key`) now use the same rule: `(models or ["default"]) + [EMBEDDING_ALIAS]` with no duplicate alias. This fixes the fallback-mint regression where a model-bearing deploy dropped the embedding alias, and restores the canonical model-first ordering.
+- LLM gateway Anthropic backend now sends the configured upstream model id and `stream: true` on streaming requests.
+- OpenAI tools and `tool_choice` are converted to Anthropic `input_schema` and `{type:tool,name}` shapes.
+- OpenAI `tool` result messages and assistant `tool_calls` are converted to Anthropic `tool_result` and `tool_use` content blocks.
+- Every non-2xx upstream status becomes a proper OpenAI-style error (429 keeps `Retry-After`), never `None` and never a silent empty stream.
+- Mapped extra documented stop_reasons: `refusal` -> `content_filter`, `model_context_window_exceeded` -> `length`.
+- A failed permission read for one reviewer no longer aborts fork-PR evaluation before later qualifying approvals are checked. The gate now records the first failing login and continues, returning EXIT_OK as soon as a valid admin/write approval is found, and only returning EXIT_ERROR naming that login if no approval qualified.
+- Fixed flaky notification tests that assumed `list()` return order. Tests in `test_notifications.py` and `test_notifications_agent_grant.py` now select notifications by content (title) instead of by list position (`items[0]` or `items[-1]`), since `ORDER BY timestamp DESC` makes `items[-1]` the oldest row and ties on whole-second timestamps are non-deterministic.
+- Two stale assertions in `tests/test_litellm_master_key_callers.py` now expect every newly minted key to include the `taos-embedding-default` embedding alias in its allowed models list.
+- `install-hailo.sh`: upstream hailo-ollama.service units without the OLLAMA_HOST marker are now correctly refused (exit 3) instead of being mistaken for a taOS install. The detection now requires the marker to be present and match `OLLAMA_HOST=127.0.0.1:7836`.
+- Replaced two fragile text-grep tests in `tests/test_install_hailo_preexisting_refusal.py` with the existing behavioral tests that properly assert caller script conflict handling.
+- Added `test_upstream_unit_without_marker_is_refused` to prevent regression of the marker-absence bug.
+- Grant expiry is never silently dropped or lengthened on additive paths (scope-request approve, consent handle-reuse). `add_grant` now keeps `min(existing, new)` unless `renew=True` is passed. The consent and scope-request approve bodies accept `renew: bool = False` to allow explicit renewal.
+- Fork PRs now require lead review as the gate for this repository. Previously, fork PRs could bypass the bot-review-gate, but now they stay red until a maintainer applies `lead-reviewed` label or approves with admin/write permission. This prevents fork PRs from merging on vacuous green.
+- Added `EXIT_FORK_UNREVIEWED` (exit code 3) to distinguish fork PR failures from other gate failures.
+- The `bot-review-allow` label no longer waives fork PR verdicts: it waives stub-shaped bot output only, and fork PRs have no bot output to be stubbed.
+- An approval on a fork PR now must be on the current head sha: an older APPROVED review or a later CHANGES_REQUESTED by the same reviewer no longer passes the gate.
+- Label fetch failures for fork PRs now fail closed (EXIT_ERROR) instead of falling through to the reviews check.
+- Added "Fork PRs" subsection to CONTRIBUTING.md explaining the lead review requirement, the head-sha constraint, and the fail-closed permission read.
+- Restored correct `hailo_model_zoo_genai.git` header in `scripts/install-hailo.sh`, undoing a stray revert that had changed it back to `hailo-ollama.git`.
+- Re-approving an expired grant with a bounded `expires_at` now restores access instead of silently keeping the dead bound; an unbounded re-approval preserves the expired row rather than widening it to NULL.
+- `add_grant` now compares `expires_at` instants via `datetime.fromisoformat` instead of string `min`, so cross-timezone bounds are evaluated correctly.
+- `renew=True` through `add_agent_to_project` now honours the caller's `expires_at` even when a deferred grant with an earlier expiry exists.
+- `AgentScopeRequestsStore.create` now persists `duration_secs`, so `approve_scope_request` can derive `expires_at` from the request.
+- Restore deleted agent manual rules lost during size trim: the secret wording in `01-rules.md`, the `open_app` usage hint in `09-os-control.md`, and the community-page and privacy detail in `08-answer-templates.md`.
+- Fixed BLE extras computation to run at update time instead of import time, eliminating systemctl subprocess calls during server startup
+- Updated tests to not mutate module globals, using proper monkeypatch for _detect_device_class and environment variables
+- Added test_install_extras_ble.py with comprehensive bash-level tests for taos_controller_extras function
+- Enhanced fresh handset installation by adding ble extra installation in kiosk-setup.sh
+- Fixed stray indentation in install-server.sh pip commands
+- BLE Reassembler.last_drop now resets on every feed() call, so it only names a drop caused by the current fragment (fixes stale drop reason bleeding into subsequent feeds).
+- PairResponder now returns a named `weak_key` error frame for weak ephemeral/public keys (all-zero or low-order), instead of the generic `bad hello`. Malformed input still returns `bad hello`.
+- `_validate_key_not_weak` now maps ANY ValueError from the trial X25519 exchange (including `Error computing shared key.` from cryptography 50.0.0 for low-order points) to `ValueError('weak_key')`, dropping the fragile substring match.
+- PairResponder's hello handler now answers every ValueError from `_validate_key_not_weak` with a `weak_key` error frame, never an exception.
+- doc-gate `apps` rule no longer trips on new files inside an existing desktop app; it now fires only when a new top-level app directory appears under `desktop/src/apps/`
+- Remote agent deployments are now refused when `inhouse_keys` is off (Postgres-backed install), because local key-store keys are not accepted by LiteLLM in that mode. The error message names the `.litellm_force_inhouse_keys` marker remedy.
+- The taOS agent runtime now correctly handles legacy (non-local-store) keys: when re-scoping fails, it mints a fresh local-store key instead of keeping the legacy one.
+- The taOS agent runtime now errors with the `.litellm_force_inhouse_keys` marker remedy when a local key would be routed to LiteLLM directly while `inhouse_keys` is off (gateway disabled or models_problem).
+- Updated stale comments in `deployer.py` to describe the local key store as the only mint path.
+- Fixed documentation in `agent-coordination.md` to reflect that `scoped_key_models` adds the embedding alias to every mint and re-scope.
+- Fixed usage header in `scripts/install-hailo.sh` to document the correct default repo `hailo_model_zoo_genai.git` instead of the incorrect `hailo-ollama.git`
+- `check_doc_gate.py` diff-gate clean-run path now exits 0 when the apps-added rule
+  is configured: the `_existing_toplevel_app_dirs` lookup is mocked in
+  `test_clean_run_still_exits_0` and `test_genuine_violation_still_exits_1` so CI
+  shards no longer see a `StopIteration`. New tests pin that a file added inside an
+  existing desktop app directory does not trip the rule, while a brand-new app
+  directory still does.
+- **convert-to-lxc gateway port (C1+C2+C3)**: `_convert_to_lxc` now resolves the verified LLM gateway port from the local controller via `taosctl` (authenticated, `http://127.0.0.1:6969`) as a preflight step before any agents are drained or deleted. On failure (unreachable, 401, gateway not running) it prints a clear error pointing to `TAOS_TOKEN` or `~/.config/taosctl/config.json` and exits non-zero, preventing destructive deletion of flat-mode agents before the port is confirmed valid.
+- Notification caps (title <= 120, message <= 1000, data <= 4 KB) no longer apply to the admin/human path. They are enforced only on the agent path (after agent_cid is resolved, before the rate-limit charge), preserving the documented behavior that the admin path is "unchanged".
+- Extended the pre-existing `hailo-ollama` detection in `scripts/install-hailo.sh` to catch installed-but-stopped upstream instances
+- Detect upstream `hailo-ollama.service` units that exist but lack the `OLLAMA_HOST=127.0.0.1:7836` marker
+- Detect upstream `hailo-ollama` binaries on PATH that resolve outside the install directory
+- All detection tests pass, including the critical "our own install" negative test to prevent false positives
+- The refusal message now specifies which signal fired (upstream unit vs upstream binary)
+- Preserved the existing live probe on port 8000 as the cheap and unambiguous case
+- Invite bundle now correctly advertises Tailscale CGNAT IPs (100.64.0.0/10) and Tailscale ULA (fd7a:115c:a1e0::/48) as priority-1 LAN endpoints instead of omitting them with a false "public address" warning.
+- Hostname overrides ending in `.local`, `.lan`, `.home.arpa`, `.ts.net`, or single-label LAN names are now advertised over HTTP (previously all hostnames were omitted).
+- Full-URL override (e.g. `http://192.168.1.5:6969`) now deduplicates correctly against LAN IP enumeration by comparing parsed hostname.
+- Relay endpoint (`TAOS_CONTROLLER_RELAY_URL`) now requires `https://` only; `http://` relay URLs are omitted even for private addresses.
+- Bare IPv6 callback overrides (e.g. `fd7a:115c:a1e0::1`) are now bracketed in the advertised bundle URL so they parse correctly and do not produce malformed endpoints.
+- **Security:** Fixed cluster node DELETE to fail closed when the pairing store is unavailable (tsk-khpvzn: cluster-node-delete-fix)
+  - DELETE /api/cluster/workers/{name} now returns 503 with "STORE_UNAVAILABLE" error when the pairing store is unavailable
+  - The worker row is no longer deleted when the store is unavailable, preventing deleted nodes from still authenticating
+  - The pairing key is always revoked when the store is available, ensuring deleted nodes cannot authenticate with their old key
+- **Tests:** Fixed test harness to properly initialize ClusterPairingStore
+  - Added `_ensure_cluster_pairing_store` fixture to initialize the store for the test client
+  - Added `TestClusterAdminDeleteWithoutPairingStore` tests to verify the fix works correctly
+- BLE pairing for Orb boards no longer mints or seals a model key (`llm` block) into the provision bundle; `revoke_for_node` is still called on (re)pair to retire any legacy key minted under the same name.
+- Agent consent cards and notifications now display human-readable grant duration bounds (e.g., "expires 1 hour after approval", "no expiry") when duration_secs is set on auth requests, making it clear to approvers how long the grant will last. This addresses the issue where unbounded grants and bounded grants were indistinguishable in the UI.
+- Duration formatting now consistently uses "after approval" wording for all units (minutes, hours, days), omits zero-minute parts (e.g., 3601s shows "expires 1 hour after approval" not "1 hour 0 minutes"), and uses "expires in under a minute" for 1-59 seconds.
+- Updated backend notification messages and auth-request status responses to include human-readable duration information
+- Updated frontend ConsentActions component to display the human-readable duration in the consent UI
+- Updated frontend AuthRequestCard component in the Decisions app to display grant duration information
+- real handset probe in `controller_extras.sh` via `systemctl cat taos-kiosk.service`
+- `install-server.sh` inlines `taos_controller_extras` so `curl | sh` works
+- `kiosk-setup.sh` honours `TAOS_INSTALL_DIR` and `TAOS_EXTRAS_BLE=0`, installs as service user
+- updater parity test now compares Python and shell helper output for identical inputs
+- `llm_proxy` self-heal uses `_compute_update_extras()` so handset gets `--extra ble`
+- `_commit_waivers` now unions all scoped trailers from a commit message instead of breaking on the first one. A commit with multiple `Docs-Reviewed: [scope]` lines now correctly waives all referenced rules.
+- The CI log now lists every trailer override used in a commit instead of stopping after the first one.
+- BLE pairing now correctly registers the platform from the board's info caps. Boards advertising `caps: ["orb"]` are registered as platform "orb", while boards with `caps: ["agent"]` or missing/invalid caps are registered as platform "taosusb". The default node name for Orb boards is now "taOS Orb-{board_id}".
+- `/auth/lock-events` no longer leaks a listener queue when the client drops the response before the stream body is iterated. Previously the queue was registered in the handler body, so an aborted client left it in `_LOCK_EVENT_WAITERS` forever.
+- Fork PR bot-review gate now fails closed when the head SHA is empty (prevented a null commit_id from matching an empty head sha). Added fail-closed tests for collaborator permission read and reviews read failures.
+- `scripts/check_deleted_symbols.py:_resolve_symbol` now falls back to an AST scan for ANY import-time failure (`Exception` and `SystemExit`), not just `SystemExit`. Missing optional dependencies and other import errors no longer cause false deletion reports. `KeyboardInterrupt` still propagates.
+- `tests/test_check_deleted_symbols.py`: restored the accidentally deleted `TestResolveSymbolSymlinkTypechange` class. Added control tests for `sys.exit(2)` and `ImportError` at import time, with both symbol-present and symbol-absent cases.
+- `test_unregister_unknown_worker` now initializes `app.state.cluster_pairing` before the DELETE request and closes it afterwards, matching the pattern used by sibling tests. This fixes a false 503 failure caused by the new fail-closed behavior in the cluster node DELETE route.
+- Moved the extras never-delete rule (a) from pytest into `scripts/check_extras_never_deleted.py` and wired it into the deleted-symbols gate workflow, fixing the `no merge base with origin/dev` failure on every CI shard
+- Fixed model-less deploy key losing the default chat alias. The embedding alias is now properly granted for agents deployed without an explicit model, allowing them to chat without a 403 error. This was done by:
+  1. Adding the embedding alias inside `llm_proxy.create_agent_key` (same way `update_agent_key` already does)
+  2. Reverting `deployer.py` to pass `models=key_models or None` (dropping its own alias-adding branch)
+  3. Dropping the alias append in `taos_agent_runtime.py`
+  4. Ensuring the local key store also includes the embedding alias
+- Fix `scripts/check_deleted_symbols.py:_resolve_symbol` to catch `SystemExit` (but not `KeyboardInterrupt`) when importing modules during deleted-symbols gate checks. When `exec_module` fails with `SystemExit`, the function now falls back to an AST scan of the merge-tree file to determine if a symbol exists, instead of killing the entire gate process. This allows the gate to properly report false deletions while handling modules that call `sys.exit()` at import time.
+- Admin DELETE of a cluster node (`DELETE /api/cluster/workers/{name}`) now revokes the node's pairing signing key, preventing a deleted node from authenticating (heartbeat/register) with its old key.
+- Deployer and taOS agent runtime now include `taos-embedding-default` in every
+  scoped per-agent key so deployed agents can embed through the gateway without
+  a 403.
+- BLE proto v2 hardening: validate weak hello keys before commit, refuse unknown fragment flags, and report all drop reasons distinctly
+- Board side (PairResponder): now validates static and ephemeral public keys in hello parsing for weak/low-order keys
+- Controller side (PairInitiator): now validates board public keys in hello commit for weak/low-order keys
+- Reassembler: validates unknown fragment flags and reports drop reasons via last_drop attribute
+- Added last_drop tracking for inflight, oversize, orphan, duplicate-first, and bad-flags drops
+- pairing.py: logs drop reasons when fragments are dropped
+- Fixed usage header in `scripts/install-hailo.sh` to document the correct default directory `~<user>/hailo_model_zoo_genai` instead of the incorrect `~<user>/hailo-ollama`
+- Updated corresponding documentation in `docs/design/hailo-llm-backend.md` to match the actual install directory default
+- Verified all other default values in the header (REF, PORT, REPO) against the actual code defaults and confirmed they were already correct
+
+### Removed
+
+- The old marketing pages (`landing/`, `site/public/`) and the never-deployed tinyagentos.com platform provisioner (`scripts/install-platform-lxc.sh`, `scripts/platform/`, `docs/deploy/platform*.md`). The `site/docs` MkDocs config stays.
+- The LiteLLM proxy process is gone. The controller no longer spawns,
+  health-checks, restarts or self-heals LiteLLM, writes no LiteLLM config,
+  master key or callback shims, and binds nothing on `server.litellm_port`.
+  Every agent's chat, stream and embedding already went through the
+  in-process LLM gateway; it is now the only LLM path.
+- The `proxy` extra (litellm and its 29 inlined proxy dependencies) is out of
+  `pyproject.toml` and `uv.lock`. The installer and the Settings updater
+  install no extra by default (a handset still adds `ble`), and the installer
+  no longer sets up a local Postgres for LiteLLM virtual keys. The LiteLLM
+  service manifest is gone from the app catalog.
+- `scripts/llm_gateway_parity.py` lost its side-by-side LiteLLM mode; the
+  gateway check (formerly `--gateway-only`) is the only mode, and the flag
+  is still accepted as a no-op.
+
+### Caveat
+
+- There is no LiteLLM rollback path in this release: the gateway is the only
+  LLM path, and `TAOS_LLM_GATEWAY=0` is ignored (logged once) rather than
+  breaking agents.
+
+## [1.0.0-beta.54] - 2026-09-29
+
+### Added
+
+- Lock screen: the System panel now lists each agent's CPU, RAM and storage
+  alongside the device readings.
+- Lock screen: the phone, mailbox and apps panels no longer show "not wired up
+  yet" placeholders over their content.
+- Lock screen: summoning the agent chooser on a dark screen no longer flashes
+  the lock screen first, and the arc fades up out of black.
+- Lock screen: closing the agent chooser that was summoned on a dark screen
+  returns to black instead of revealing the lock screen.
+- Lock screen: the power menu, quick-settings radios and camera shortcut now
+  write their privileged request durably and through one writer, so two taps
+  in quick succession can no longer be confused for each other.
+- Lock screen: swipe down from the top edge for a quick-settings shade with a
+  brightness slider.
+- Lock screen: the power menu is now a centred dialog over the blurred screen
+  rather than a bottom sheet, and Emergency call is red.
+- Lock screen: the agent chooser opens on the agent you last left it on, and
+  arranges the faces with the most recently used first.
+- Lock screen: pressing the category icon you are already on fades the cards
+  away so you can see the screen underneath; pressing it again brings them
+  back.
+- Lock screen: the Phone, Mailbox, Apps and Projects panels now carry content,
+  and pending decisions appear at the top of Alerts where they can be approved
+  or dismissed without leaving the screen.
+- Lock screen: the Settings tab is replaced by Projects.
+- Lock screen: panel content is scripted demo data served by
+  `/auth/lock-panels`, which is console-only and 404s unless both
+  `TAOS_LOCK_DEMO_AGENTS` and `TAOS_LOCK_DEMO_PANELS` are set. The lock screen
+  renders before sign-in, so there is no path from any of it to a real account.
+- Lock screen: holding the power key for 1.5s opens a power menu with Power
+  off, Restart, Stop all agents, Screenshot and Emergency call. A short tap
+  still toggles the screen.
+- Lock screen: "Stop all agents" and "Emergency call" ask for confirmation
+  before acting.
+- Handset: double-tapping the dark screen wakes it. A single stray touch no
+  longer does.
+- Lock screen: the camera shortcut beside the unlock bar now opens the taOS
+  camera app instead of saying there is not one.
+- Lock screen: blanking the screen now dismisses the volume bezel and agent
+  chooser, so neither ghosts onto the next wake.
+- Lock screen: the Phone, Mailbox, Apps and Projects panels now render their
+  "nothing here" state on a device without the demo content, instead of being
+  blank.
+- Lock screen: "Stop all agents" in the power menu now asks for the passcode.
+  The confirm collects the intent and raises the keypad, so the agents are
+  stopped as the signed-in user. Power off and Restart are unchanged: holding
+  the power key already did both from the lock screen.
+- Lock screen: a volume key on a dark screen wakes it and shows the agent
+  chooser over black, rather than acting invisibly.
+- Handset: volume presses are ignored while the proximity sensor says the phone
+  is in a pocket or against something.
+- Lock screen: the first volume-down press only opens the chooser; it no longer
+  also rotates it.
+- Lock screen: the pull-down shade has Wi-Fi and Bluetooth switches alongside
+  the brightness slider.
+- Lock screen: a surface opened while the screen is in standby returns to
+  standby when it closes, rather than sometimes leaving the lock screen up.
+- Lock screen: a torch toggle and a camera shortcut sit either side of the
+  swipe-to-unlock bar. The torch drives the flash LED directly.
+- Lock screen: volume-down now moves toward your most recently used agent on
+  the rotary chooser.
+- Lock screen: the microphone on an agent island opens a centred dialog over
+  the blurred screen instead of a bottom sheet.
+- Lock screen: changing the volume on a dark screen no longer leaves the lock
+  screen showing when the slider goes away.
+- Lock screen: opening an agent thread slides the thread and keyboard up as one
+  motion instead of two.
+- Lock screen: pressing volume up reveals a volume bezel without changing the
+  volume; the next presses adjust it.
+- Lock screen: pressing volume down slides an agent carousel out of the left
+  edge. The volume keys cycle agents, and holding one starts a mock
+  push-to-talk with the focused agent.
+- New `tinyagentos/llm_usage` package: token usage and estimated cost tracking that does not depend
+  on LiteLLM, the first piece of replacing it. It normalises usage across the OpenAI, Anthropic and
+  Ollama formats (streamed or not, with cached and reasoning tokens counted correctly), and prices
+  calls from a vendored, MIT-licensed price table pinned to an upstream commit. Local backends cost
+  $0; a cloud model with no known price is reported as unpriced rather than free, so budgets can
+  never silently stop counting it. Not yet wired in: the LiteLLM path is unchanged.
+- Cluster: the controller can now pair a taOSusb board over Bluetooth (S1).
+  `GET /api/cluster/ble/scan`, `POST /api/cluster/ble/pair/start`,
+  `POST /api/cluster/ble/pair/confirm` and `POST /api/cluster/ble/pair/cancel`
+  drive a BLE GATT handshake against the board, show a 6-digit confirmation
+  code, and mint the node's signing key through the same path manual worker
+  pairing uses. The browser never sees the key, an LLM credential, or a mesh
+  preauth. Requires the optional `ble` extra (`bleak`); without it or an
+  adapter, the routes answer 503 `bluetooth_unavailable`.
+- Cluster workers gain a `kind` field (`worker` or `device`). A BLE-paired
+  board registers as `kind="device"` and is excluded from every placement
+  path that picks a job candidate -- chat/embed/image-generation routing and
+  browser-session placement -- regardless of what it advertises in
+  `capabilities`. Existing rows default to `kind="worker"` via a guarded
+  migration.
+- Cluster app: **Add device → Bluetooth** lists nearby taOSusb boards, shows
+  the 6-digit pairing code to compare with the board, and pairs on confirm.
+  Paired boards appear as devices with job and capacity controls hidden.
+- The Bluetooth scan recognises a taOSusb board by its manufacturer-data
+  marker as well as its service UUID, and lists a board that is already
+  paired straight from its advert, without connecting to it.
+- With the LLM gateway on (`TAOS_LLM_GATEWAY=1`), pairing a board also mints
+  its model key, bound to the node and allowed `taos-default`, and seals
+  `llm: {base, key}` into the provision sent to the board. The key never
+  appears in an HTTP response or a log. It is revoked if the board rejects
+  the provision, and with the node through the existing revoke, block and
+  delete routes. With the gateway off the board gets `llm: null`.
+- Settings -> Demo mode (admin): one switch that shows or hides the lock
+  screen's scripted agents, notifications, panels and decisions. The
+  `TAOS_LOCK_DEMO_*` flags still define what demo content exists; with the
+  switch off every lock-screen surface behaves as if its flag were unset. It
+  is stored in `data/demo_mode.json` and starts ON wherever a demo flag is set,
+  so an existing demo device is unchanged until someone flips it.
+- Settings -> Lock screen: choose how this device's own screen unlocks -- Swipe,
+  PIN or Password (Pattern is listed as coming soon). Changing it needs your
+  current password. The console lock screen now appears on any single-account
+  install, with or without a PIN.
+  Swipe opens taOS through the new `POST /auth/swipe-unlock`, which is honoured
+  only from the device's own console (no forwarding headers, no cross-origin
+  caller, and, like every lock-screen POST, never from a simple form or no-cors
+  request: it needs `X-taOS-Console` or a JSON body), only on a single-account install, only for an owner who chose Swipe,
+  and under the same throttle as PIN sign-in. Picking Password now really
+  turns PIN entry off: a PIN that still exists is refused.
+- Lock screen: plugging in a charger plays a ten-second charging animation
+  styled as a coding-agent terminal: a spinner, a rotating slogan ("Drinking
+  the juice…"), and the battery percentage counting up with a block bar. With
+  the screen off, it plays over pure black before the lock screen fades in.
+  Its trigger, `POST /auth/lock-charge`, is gated like every other lock
+  control: loopback plus the `X-taOS-Console` header or a JSON body.
+- Lock screen: turning the screen off closes the lock screen into a line and
+  then a point in the centre; turning it on expands back out. Reduced motion
+  gets a plain fade.
+- Lock screen: the taOS Agent's island reads "Idle" instead of "On device".
+- Lock screen: agent rows show their source icon centred and a size larger;
+  Hermes, Grok, OpenAI and DeepSeek get updated framework badges, and icon URLs
+  carry the file's modification time so a changed icon is not served stale.
+- Desktop: on the handset, turning the screen off with the power key locks the
+  session and returns to the lock screen.
+- Desktop: the install banner no longer shows inside a fullscreen kiosk.
+- Lock screen: the System panel's agent numbers and device totals now come
+  from one model, so they move together: CPU is the system's own load plus
+  each agent's share (shown as a split bar with a stacked history strip),
+  memory and throughput are the agents' sums, and temperature and power
+  follow the load. Busy agents work harder than idle ones, and readings change
+  smoothly between polls.
+- Lock screen: the voice dialog's empty-transcript hint shows "Say something…"
+  again instead of a garbled character.
+- Lock screen: the voice-note dialog shows an animated, speech-like waveform
+  and no longer asks for the microphone before sign-in.
+- Lock screen: demo and developer wording is gone from what a viewer sees:
+  "(demo)" tags, "microphone access refused", raw error text and internal file
+  paths are replaced with finished-product wording.
+- Lock screen: an incoming-call demo in the live zone. A call from Mary gathers
+  the showing islands or cards into one liquid droplet that stretches into a
+  call card, with Decline, Voicemail, Answer and a headline Send to PA. With
+  Send to PA, the PA's conversation plays as a live transcript that reveals
+  word by word, with Take over and End call pinned for the whole call. When the
+  PA finishes, the card shrinks to a one-line "Reminder added · Call Mary ·
+  Tomorrow 12:30 pm" pill, the feed returns exactly as it was, and the PA's reminder
+  appears at the top of Alerts with a Dismiss button.
+- Lock screen: the call is scripted demo content served by `/auth/lock-call`
+  (with `/ring`, `/reset`, `/action` and `/dismiss`). All five routes are
+  console-only and 404 unless `TAOS_LOCK_DEMO_CALL` is set, which is
+  independent of the other demo flags; the Settings demo-mode switch turned off
+  404s them too. The four POSTs pass the same console-header gate as every
+  other `/auth/lock-*` POST, and the call zone listens on the page's one shared
+  event stream. There is no path from it to a phone
+  line, contacts or a calendar.
+- The lock screen's DEMO agent islands now rotate their "current task" while the lock screen is showing. Each agent runs on its own independent clock -- a stable pace, phase and per-entry dwell jitter derived from its name -- so changes come and go at a livelier, more organic pace (roughly 8-12 across the five scripted agents in any 30s look) and are not artificially kept apart: two islands can update at the same moment, the way independent real workers would. The status text animates with a slide/fade transition (a crossfade under `prefers-reduced-motion`) and a brief highlight in the agent's own colour; a completed step ("✓ ...") gets a green tint and a shorter dwell. The `/auth/lock-widgets` poll now schedules its next fetch from the server's `refresh_in_ms` instead of a fixed 15s interval, and pauses while the screen is off or the app is backgrounded.
+- Agents app rows now have Start, Stop, Restart and Pause/Resume controls that follow the agent's live container state: Start when stopped, Stop, Restart and Pause when running, Resume when paused or frozen. Stop and Restart ask for confirmation, controls are disabled while a request is in flight, and failures are shown as notifications.
+- The Agents app reads live container state (running, stopped, frozen) from `/api/agents/containers` instead of relying only on the stored agent status.
+- `scripts/check_doc_gate.py`: a `Docs-Reviewed:` trailer now waives doc-gate rules only for the files changed by the commit that carries it. Previously one trailer anywhere in a PR's commit range (even on an empty "retrigger CI" commit) waived every rule, including the changelog-fragment rule, for every later commit. Failures now name the files that tripped the rule, the CI log shows which files each trailer covers, and `Docs-Reviewed: [rule, rule] <why>` narrows a trailer to the named rules for squash-merged single-commit PRs.
+- `ProjectTaskStore.assign_if_unassigned`, `unassign_if`, `count_open_load`, and `count_open_load_by_project` for race-free, audited assignee writes and open-load counting used by the dispatcher
+- Member-vs-member authorization test coverage for generated media isolation: non-admin users (bob) are now tested to be denied (403) when accessing another member's (alice) user-scoped generated images and music paths.
+- Canvas: legacy `user_shape` rows (tldraw snapshots) now convert at read time into Excalidraw elements through a pure TypeScript converter with no tldraw import; geo, text, sticky note, freehand draw/highlight (tldraw 4.5 delta-encoded paths), line, arrow and frame convert, and every unconvertible or malformed shape (image, video, bookmark, embed, group, unknown, missing blob) becomes a visible dashed placeholder labelled with the original element id so nothing is silently lost
+- Canvas: every Excalidraw skeleton now carries `customData` with the taOS element id, kind and author; `user_shape` rows written by the Excalidraw board (`payload.excalidraw_element`) pass through untouched
+- PicoClaw runtime pin bumped from v0.2.9 to v0.3.1 with arm64 and amd64 checksum verification, self-update disabled, and a security note on `custom_allow_patterns` in the manifest.
+- A2A per-recipient read receipts in taOStalk: own messages now show a three-state tick (sent/delivered/seen) derived from GET /api/a2a/messages/{id}/receipts, with missing receipts rendering as sent rather than unseen. Opening a thread marks incoming messages as seen via PATCH /api/a2a/receipts, and the bus stream is subscribed for live receipt updates.
+- An in-process LLM gateway at `/api/llm/v1` (`chat/completions`, non-streaming, and `models`), the first step to replacing the LiteLLM proxy. It is off unless `TAOS_LLM_GATEWAY=1`, routes model names through the same table as the LiteLLM config, resolves `taos-default` to the current default chat model on every request, and forwards to OpenAI-compatible backends only. It runs beside LiteLLM, which is unchanged.
+- PicoClaw is now the recommended default agent framework on hosts with 8 GB RAM or less (including boards that report ~7.6 GiB and snap to the 8 GB canonical bucket). The Agents deploy picker preselects PicoClaw on qualifying hardware and shows a "Recommended for this device" badge; hosts above 8 GB see no change. The same badge appears on PicoClaw's catalog card in the Store when the current host qualifies.
+- Projects canvas: a new "Backup" button (bottom right of the board) offers two recovery downloads, a `.tldr` file that opens in stock tldraw and a raw `.json` of every canvas element row. The button sits outside the drawing engine, so it keeps working through the Excalidraw migration.
+- `GET /api/projects/{id}/canvas/elements?include_deleted=true` returns soft-deleted rows as well, each flagged with `deleted: true|false`, keeps every payload (legacy `tldraw_shape` blobs included) untouched, and is served as a file attachment. The default listing is unchanged.
+- Widen `requires-python` to `>=3.11,<3.15`, adding Python 3.14 support. The previous `<3.14` cap was stale: the pinned litellm 1.94.x (1.94.3 in uv.lock) supports `>=3.10,<3.15`, and Alpine edge ships only Python 3.14, so the old bound forced uv to provision a private 3.13 that could not import Alpine's `py3-onnxruntime` (built for 3.14).
+- XWatchStore `_post_init` migration now uses a named `LEGACY_USER_ID` constant with a comment explaining the intentional retroactive ownership assignment.
+- Guard-discrimination gate (`scripts/check_non_discriminating.py`, `guard-discrimination-gate` workflow): a test marked `@pytest.mark.guards("module:function", replace=[...])` is re-run against a broken variant of the function it guards and must fail there; a guard that cannot see its defect exits 1, an uncheckable guard exits 2.
+- LLM gateway retries on connect error, timeout, and upstream 5xx across backends serving the same model, with a total attempt cap, overall deadline, and per-backend cooldown
+- Added the Excalidraw scene-to-CanvasElement sync core (`desktop/src/apps/ProjectsApp/canvas/excalidraw-sync.ts`): diffs scenes by element version, suppresses echoes of remote and own writes, debounces and merges PATCHes per row, drops a stale local write when a newer remote change lands first, simplifies oversized freedraw strokes under the payload cap, and never sends a `user_shape` payload that drops `tldraw_shape`. Pure module with type-only Excalidraw imports; the interactive board wires it in a later slice.
+- The `/api/llm/v1` gateway now forwards ollama and rkllama model requests to the upstream's `/v1/chat/completions` endpoint instead of returning 501, reusing the existing retry, streaming, and usage recording code.
+- Phone lock screen: a row of seven icons above the feed chooses what it shows
+  — agents, phone, mailbox, apps, alerts, system and settings — with agents the
+  default and the resting state. It is a real tablist: one tab stop, traversed
+  with the arrow keys, so it does not put six dead ends between the clock and
+  the unlock button.
+- Phone lock screen: long-pressing an agent island's avatar opens that agent's
+  menu. Nothing in it acts on the agent — the screen renders before sign-in, so
+  the menu records what was asked for and then requires the passcode, the way
+  the decision sheet already does. A short tap and a long press on the rest of
+  the island keep opening the conversation as before.
+- Phone lock screen: a system view reporting CPU, memory and GPU clock, plus the
+  remote processors as running/offline chips, from a new console-only
+  `/auth/lock-stats`. It reports only what the hardware exposes: there is no NPU
+  utilisation counter on this SoC, so none is shown, the GPU is labelled as a
+  clock rather than as usage, and anything unmeasured renders `--` rather than
+  zero.
+- Added `tests/test_check_evil_merge.py::TestEvilMergeGuard::test_conflict_resolved_by_taking_one_side_wholesale_stays_green` covering the conflict-resolution control case.
+- Added `tests/test_check_evil_merge.py::TestEvilMergeGuard::test_clean_auto_merge_then_take_one_side_wholesale_is_violation` covering the clean-auto-merge-then-take-one-side case that must be flagged.
+- `POST /api/a2a/bus/send` now returns `credential_forwarded: bool` in its response body, telling the caller whether the proxy actually forwarded its registry credential to the bus
+- The `/api/llm/v1/chat/completions` gateway now supports `stream: true`, proxying upstream SSE chunks verbatim (including `tool_calls` deltas) and closing the upstream connection when the client disconnects.
+- Implemented Anthropic gateway translator in `tinyagentos/llm_gateway/anthropic.py` to support Anthropic provider models (Phase 3 of LiteLLM replacement). The translator converts OpenAI chat requests to Anthropic Messages API and back, including support for:
+  - System message placement
+  - Tool calls and tool_choice mapping
+  - Streaming with text deltas and streamed tool arguments
+  - Default max_tokens handling
+  - Proper error handling and API key redaction
+- RED-FIRST test `TestSessionUserAgentBindingRED.test_browser_user_agent_binding_fixes_auth_endpoints` that logs in through the real login route with a User-Agent header, verifies that protected endpoints accept the session when the User-Agent matches, and controls that a different User-Agent is properly rejected.
+- Canvas: saving a legacy tldraw drawing element can no longer drop or rewrite its original `tldraw_shape` data. The server keeps the stored copy on every update, counts it toward the payload size limit, and deleted elements stay recoverable.
+- Extended `recommended_framework(ram_mb, device_class=None)` to return "picoclaw" for mobile device class (taOSmobile handsets) regardless of RAM, in addition to the existing <=8 GB RAM rule.
+- Added `device_class` field to `HardwareProfile` with detection via `taos-kiosk.service` systemd unit presence (capability probe matching the session-mode API).
+- Hardware profile API (`/api/hardware`) now exposes `device_class` field.
+- DeployWizard test verifying that PicoClaw recommendation is never forced — users can select a different framework and the deploy request carries their choice.
+- New pure dispatch policy module `tinyagentos/projects/dispatch_policy.py` with unserved-board-first fairness for fleet task assignment. Includes `is_candidate`, `is_board_dispatchable`, `Assignment` dataclass, and `select_assignments` function with anti-affinity fallback and per-board load tracking.
+- Added per-distro-family collapsible dependency fallbacks under the controller install one-liner in README.md
+- Test `tests/test_changelog_gate_workflow.py` asserting the changelog fragment gate workflow triggers on all required PR event types (`opened`, `synchronize`, `reopened`, `labeled`, `unlabeled`, `edited`)
+- On a taOSmobile handset the built-in taOS Agent now runs on PicoClaw instead of
+  opencode, talking to the controller's own LLM gateway with a key scoped to its
+  permitted models. Choose the harness with `taos_agent.framework` (auto, opencode
+  or picoclaw) and `device.class`, or `PUT /api/taos-agent/framework` without a
+  restart; switching back to opencode revokes the key.
+- The taOS Agent settings and the lock screen show the harness that is actually
+  running, and why: with the gateway off, PicoClaw is not used and the log says so.
+- Under PicoClaw the taOS Agent keeps its reach into taOS (desktop control, notes,
+  todos, projects, memory): a `bin/taos` helper in its workspace calls the taOS API
+  with the same credential opencode uses, and is removed when you switch back.
+- Pin hermes-agent pip version (0.2.0) in hermes install script
+- Pin agent-zero git tag (v0.8.0) in manifest and install script
+- Pin all floating Docker image tags in service manifests (21 images)
+- Pin neko-browser base images (firefox, chromium, taos-neko-cdp) to 2.4.0
+- Pin openclaw npm package to 0.2.0
+- Pin engram go package to v0.1.0
+- Add digest-aware structure for pinned Docker images
+- Replace `version: latest` with concrete versions in 15 service manifests
+- Sync catalog.yaml version fields with pinned service versions
+- Fix supervisor.py indentation after get_manifest → get refactor
+- Extend audit-manifests.py with drift checks (missing version, duplicate IDs, unknown methods, deprecated health_check, non-canonical hardware_tiers)
+- Extend check_dependency_audit_ignores.py with stale CVE detection
+- Remove stale CVE-2026-3219 ignore from pip-audit-ignore.toml
+- Update branding: TinyAgentOS → taOS in index.html, mkdocs.yml, landing page
+- Acceptance tests for the claimable revoke fix: verify that revoking a task strips both `claimable` and `fleet:claimable` labels, including the `fleet:claimable`-only case, and that granting still adds only `claimable`.
+- Gate the inlined `litellm` proxy extra mirrors against a snapshot so dependabot
+  cannot widen a sibling ceiling past the litellm 1.94.2 set the list mirrors
+  (fixes #3083 ceiling drift on gunicorn/mcp/rich/websockets and future siblings).
+- Changelog fragment gate: new CI check (`scripts/check_changelog_fragment.py` + `.github/workflows/changelog-fragment-gate.yml`) that enforces the changelog-fragment rule for non-test changes under `tinyagentos/` or `desktop/src/`, with escape hatches via `no-changelog-needed` PR label or `Changelog-Not-Needed:` PR body trailer.
+
+### Changed
+
+- The Hailo installer (`scripts/install-hailo.sh`) now checks for a pre-existing
+  hailo-ollama instance on upstream port 8000 before any install or systemd
+  mutation. When found (a server answering `GET /api/tags` with `"models"`), the
+  script prints what was detected, reports that it would have built a second
+  server on port 7836, and exits — leaving the existing instance untouched. This
+  prevents the silent coexistence bug from issue #2083 where an upstream
+  hailo-ollama (running on its default `0.0.0.0:8000`) would go unseen while
+  taOS built a second server and installed no systemd unit.
+- `approve_request_record` now reads `duration_secs` from the auth-request record and passes
+  a computed `expires_at` to every `add_grant` call, so time-boxed grants actually expire.
+  Previously every approval created permanent grants even when `duration_secs > 0`. (taOS #2985)
+- Phone lock screen: the notification stacks now have their own switch,
+  `TAOS_LOCK_DEMO_NOTIFICATIONS`, and are off by default while they are
+  redesigned. It is required on top of `TAOS_LOCK_DEMO_AGENTS` rather than
+  replacing it, so the agent islands stay up with no stacks under them, and
+  turning off the master flag still takes down everything invented on this
+  pre-sign-in screen in one move.
+- `scripts/install-server.sh`: `pick_system_python` now accepts up to 3.14 while still preferring 3.13 when both exist. The stale-venv self-heal check recreates venvs using Python >=3.15 instead of >=3.14. The die message and litellm comment no longer claim 3.14 is unsupported.
+- `scripts/install-server.sh`: on Alpine, `py3-onnxruntime` is installed via apk and the venv is created with `--system-site-packages` when the system interpreter is used, so the distro's `onnxruntime` binding (built for the system Python) is importable.
+- Phone lock screen: the agent islands, notification stacks, view row and stats
+  card are ~10% wider (a 396px cap becomes 436px, now a single token rather than
+  six copies of the same number). Measured on the handset rather than guessed:
+  sway drives the panel at 1080x2400 with scale 2.0, so the page gets a 540px
+  CSS viewport and that cap is what was actually holding the cards in — widening
+  the side padding instead would only have moved the gutters.
+- Phone lock screen: the taOS wordmark and the battery reading sit level with
+  the middle of the punch-hole camera instead of above it. The camera's centre
+  is a measurement, not a nudge: the panel's own vendor description puts it
+  68.50 physical pixels down, which is 34.25 CSS pixels at the scale this
+  display runs at.
+- `tests/test_memory_model.py::TestPutMemoryModel::test_put_forbidden_for_non_admin` - Updated monkeypatched `session_user` lambda to accept `user_agent=None` parameter
+- `tests/test_routes_cluster_pairing.py::test_pending_non_admin_gets_403` and `test_confirm_non_admin_gets_403` - Updated monkeypatched `session_user` lambda to accept `user_agent=None` parameter
+- `tests/test_taos_agent_config.py::TestAdminGate` - Updated all 4 test methods to accept `user_agent=None` parameter
+- `tinyagentos/auth.py` - Added `session_user_for_request` and `validate_session_for_request` helper methods, updated `get_current_user` and `get_user` to pass user_agent parameter
+- `tinyagentos/routes/auth.py` - Updated `get_user` call to include user_agent parameter
+- `tinyagentos/routes/chat.py` - Updated all 4 `session_user` calls to include user_agent from request headers
+- `tinyagentos/routes/chat_unified_bus_view.py` - Updated `session_user` call to include user_agent from request headers
+- `tinyagentos/routes/store_install.py` - Updated `_get_current_user` helper to include user_agent from request headers
+- `tinyagentos/routes/taosgo.py` - Updated `validate_session` call to include user_agent from request headers
+
+### Fixed
+
+- Unregistering a worker now cancels the GPU arbiter tasks still running on its leases, releasing their VRAM reservations and scheduler slots instead of leaking them into a later re-registration of the same GPU.
+- A lock-screen event stream that (re)opens, for example after a controller restart, now starts with the current screen state (`screen-off` or `screen-on`) as its first event, sent to that client only. The page pauses its widgets poll on `screen-off`, so a reopen while the panel is dark no longer resumes the poll until the next screen-off.
+- The status-change highlight on a lock-screen agent island now stays for its full 700 ms. The attribute that drives it was removed after 380 ms, cutting the glow off partway; its lifetime is now a named constant tied to the keyframe duration.
+- Pause now really pauses an agent: after a best-effort graceful prepare it freezes the agent's container with `incus pause`, and Resume unfreezes it before clearing the paused flag. Previously Pause only set a flag that nothing enforced.
+- Agent start, stop and restart now target the container's own Incus project (for example `user-999`) instead of relying on the ambient project, matching delete.
+- `/api/agents/containers` lists agent containers across all Incus projects, so agents in a restricted project show their real state.
+- Start and Restart return an error status with a message when Incus fails, instead of a 200 response with `success: false`. A successful Start clears a stale paused flag left by Stop.
+- The agent container listing no longer crashes when an agent's container is stopped: Incus reports a stopped instance's network as null, which made `GET /api/agents/containers` return 500 for every agent (and the Agents app fell back to the stored status instead of the live one). Fixed in both the Incus listing and the LXC backend.
+- LLM gateway cooldown now reorders candidates instead of excluding all cooled backends, so a single-backend model can recover from transient failures within the cooldown window
+- Removed stale legacy-path fallbacks in DesignStudioApp and MusicStudioApp; frontend now exclusively uses server-provided user-scoped paths returned by generate/compose endpoints.
+- Lock screen: swiping up to unlock works again once you have read to the end of
+  the notification feed. The veto added for tsk-6bjsvg asked only whether the
+  feed OVERFLOWS, never where it was SCROLLED -- and swipe-up is both the unlock
+  gesture and the gesture that scrolls the feed toward its end. At the bottom of
+  a long feed the drag could no longer scroll and was vetoed anyway, so nothing
+  happened at all over most of the glass. The veto now asks how far the feed can
+  still travel, measured at `touchstart` with a pixel tolerance rather than an
+  equality (scroll geometry is fractional under a non-integer DPR). A feed with
+  nothing to scroll reads as already at its end, so unlock still works across the
+  whole screen on a device with one agent and no notifications.
+- POST /api/agents/{agent_id}/skills now validates skill_id against the seeded skills table and returns 404 instead of accepting arbitrary skill_ids.
+- Controller unit gate: `test_controller_unit_entrypoint.py` now parses `[Service]` sections generically from every shipped unit source instead of relying on a hardcoded heredoc opener in `install.sh`, closing the fail-open defect where a one-space edit to the heredoc opener silently disarmed the gate while `-m uvicorn` shipped to production.
+- Skip executor.sh processes with unknown `create_time` instead of treating them as epoch-old.
+- Only report a process as reaped after successful termination; catch `psutil.AccessDenied` on kill so the scan continues.
+- Unify data-dir resolution across `create_app`, `taos recover-password`, and all satellite modules under a single `resolve_data_dir()` helper. `TAOS_DATA_DIR` now takes precedence, and a mismatch between the environment variable and an explicit `--data-dir`/`data_dir=` argument refuses to start with a clear error instead of silently writing to two different directories.
+- `tests/test_auth.py`: Fixed session validation to properly pass user-agent headers, resolving 403 Forbidden errors for legitimate admin users and restoring expected behavior for non-object JSON body validation tests
+- `tinyagentos/auth.py`: Updated `session_user()` method to accept optional user_agent parameter for proper session validation
+- `tinyagentos/routes/auth.py`: Updated `_require_admin()` and `_require_self()` functions to pass user-agent headers to session validation, fixing admin authorization issues
+- `tests/test_auth.py`: Updated `auth_client` and `no_cookie_client` fixtures to initialize agent registry and grants stores, preventing "AgentRegistryStore not initialised" errors
+- Phone lock screen: the system stats widget no longer flickers. The stats poll
+  runs every three seconds and rebuilt the whole panel each time, and
+  `.ls-stat-card` carries the same 520ms entrance animation the agent islands
+  do -- so the card replayed its entrance twenty times a minute. Measured in
+  chromium at the device's 540x1200 viewport before the fix: two entrance
+  replays in 7.5 seconds, the card a different and already-detached element
+  each time; after: none. The panel is now reconciled part by part and the
+  readings are written in place.
+- Phone lock screen: the meter bars now animate to their new value instead of
+  snapping to it. `.ls-stat-fill` has a 420ms width transition, which needs an
+  element that survives the repaint to have a width to travel FROM; every bar
+  was a brand new element, so every bar jumped.
+- Phone lock screen: a reading that stops being measured now loses its bar
+  rather than leaving the last one on screen. A meter frozen at its final value
+  is indistinguishable from a live one.
+- Phone lock screen: the notification stacks are reconciled by source, so a
+  stack whose notifications have not changed keeps its element, its entrance
+  animation and its keyboard focus. A stack whose contents genuinely changed is
+  still rebuilt, because that is new content arriving.
+- Fixed regression in `images_edit.py` where edited images returned legacy shared URLs instead of per-user directory URLs, causing all edit/remove-bg/upscale results to 404 (tsk-5fzvbv)
+- `POST /api/agents/auth-requests` now refuses a `duration_secs` that cannot be a real grant bound with 422: a bool, a string or float, zero or a negative value, or more than ten years. An oversized value used to be accepted and then make the approve route fail with a 500, and JSON `true` became a 1-second grant.
+- Approving a pending request stored before this check with an oversized `duration_secs` now clamps the grant expiry to ten years instead of failing.
+- Lock screen: scrolling through the notification feed no longer opens the PIN
+  keypad. The unlock swipe was bound to `document.body`, so the long upward drag
+  that reads to the end of a full feed read as swipe-up-to-unlock. The gesture is
+  now vetoed from where the touch BEGAN (latched at `touchstart`, since the finger
+  usually leaves the feed before it lifts), and only while the feed actually has
+  somewhere to scroll -- so unlock still works over the whole resting screen on a
+  device with one agent and no notifications.
+- Ollama model-not-pulled 404s now return `model_not_found` (404) with a pull hint instead of being reported as `backend_not_supported` (501).
+- probe4_detach_reattach_appid.py: Fixed kill timing so the spawned app is killed after `rebind_by_meta` is evaluated, not before. Wrapped the entire probe body in try/finally and moved the kill to the outer finally over a fresh connection.
+- probe5_scroll_viewport.py: Corrected scroll sign from "positive = forward into history" to "positive = back into history" with citation from `jaylfc/tuiui/src/ptyhost.rs:PtyHost::scroll`.
+- probe2_input_bytes_typing.py: Removed unused `json` import. Transcript now lists the full byte array `[104, 101, 108, 108, 111, 10]` including the newline byte.
+- probe3_frame_grid_readback.py: Match on the frame itself inside `first_match` instead of matching on lines and re-looking up the frame, preventing ANSI counts on the wrong frame.
+- probe4_detach_reattach_appid.py: Updated `from source:` citation to `TuiuiConduit.rebind_by_meta`.
+- docs/design/taos-tuiui-spike-findings.md: Added source-based citation for scroll sign and `display_offset` behavior.
+- A2A bus stream proxy now emits `: ping` heartbeats on a timer independent of upstream activity, so idle streams are kept alive and not reaped by intermediaries.
+- CI: the full sharded suite still runs on 3.12 and 3.13 (plus 3.11 nightly); a new advisory `py314-import-smoke` job, modelled on `py311-import-smoke`, checks that the app and every route module import and compile on 3.14. It is not a required check.
+- Lock screen and `/api/taos-agent/config` now agree on the taOS Agent framework id, derived from the actual runtime adapter instead of two disagreeing hard-coded strings.
+- `distrust-green-gate` now has a dedicated `other_failure` comment branch for zero-collected-tests and setup/teardown errors instead of misleading contributors with the `Tests-Skipped-Intentionally` waiver trailer that cannot clear those cases.
+- The failure reason is passed to the workflow script via `env` instead of inline `${{ }}` interpolation.
+- Fixed `test_device_member_with_write_is_refused_like_a_session` to use a real browser session (`taos_session` cookie) for the member and POST to `/api/projects/shared/files/upload`, asserting the exact 404 refusal. The prior test hit a nonexistent `/api/sessions/upload` route with the device bearer and accepted `in (403, 404)`, so it never exercised the session upload path.
+- Phone lock screen: swiping up from an agent island no longer opens the PIN
+  keypad. Measured at the device's real viewport with a full screen of agents,
+  `#ls-feed` does not overflow -- it is content-sized and the islands fit -- so
+  the unlock veto, which asked only how far the feed could still travel, was
+  never arming. A feed that cannot scroll at all is now treated as the cards
+  they are rather than as a feed already read to its end. Swiping up at the end
+  of a feed that CAN scroll still unlocks, unchanged.
+- Phone lock screen: the agent islands no longer flicker every fifteen seconds.
+  The activity poll wiped the list and rebuilt every island, so each one was a
+  new element replaying its 520ms entrance animation on every tick, whether or
+  not anything had changed. The list is now reconciled by agent name and updated
+  in place: an island that persists keeps its element, its animation and its
+  keyboard focus.
+- XWatchStore test fixture now closes the store after each test to avoid leaking aiosqlite worker threads.
+- `test_release_does_not_free_another_holders_lease` now exercises an agent (`a2a:`) lease with a spoofed `holder`, so it fails on the admin-reads-holder-as-identity defect it was written to guard.
+- Drop write-never `version` and `requires_hardware` columns from the skills schema and replace `SELECT s.*` in `get_agent_skills` with an explicit column list
+- Route `AgentRegistryStore.revoke` through the state-transition guard so illegal transitions raise `ValueError` consistently
+- Catch `aiosqlite.IntegrityError` in `AgentRegistryStore.update` when a handle collides with another active agent and raise `ValueError` mentioning the handle, allowing the registry route to return 409
+- Add a drift test asserting every seeded builtin skill id has a matching entry in `SKILL_IMPLEMENTATIONS` and vice versa
+- Fixed DELETE /api/agents/registry/{canonical_id} route to be idempotent when revoking an already-revoked entry. Previously, it would raise an unhandled ValueError and return HTTP 500 instead of returning the existing record with 200 like the route docstring promised. The route now checks the record's status before attempting to revoke, returning the existing revoked record, and catches (ValueError, KeyError) exceptions like the _transition helper does. This matches the dev behavior and prevents client breakage.
+- XWatchStore now runs on aiosqlite via BaseStore, lives under `data_dir` instead of the current working directory, scopes rows by `user_id`, and is wired onto `app.state.x_watch_store` in the app lifespan so watch endpoints are reachable.
+- Anthropic through the LLM gateway now reads tool calls in the shape Anthropic actually sends: a flat `tool_use` block with `id`, `name` and an object `input`, turned into an OpenAI `tool_calls` entry whose `arguments` is a JSON string. Text written before a tool call is kept.
+- Anthropic `stop_reason` is mapped to OpenAI `finish_reason` (`end_turn` and `stop_sequence` to `stop`, `max_tokens` to `length`, `tool_use` to `tool_calls`); any other value becomes `stop` and is logged. Clients that decide whether to run tools from `finish_reason` now see `tool_calls`.
+- Streamed Anthropic responses are parsed from their real `event:`/`data:` frames and re-emitted as OpenAI `chat.completion.chunk` frames, with streamed tool arguments assembled from `input_json_delta` pieces, usage taken from `message_start` and `message_delta`, and a closing `data: [DONE]`.
+- The Anthropic translator no longer carries an MIT licence header; it is AGPL-3.0 like the rest of taOS core, with a note that its design follows aisuite.
+- Fix first-party tag naming test to correctly parse `FROM` tag pins when the image name contains a version tag, so published tags are matched against the right image
+- Handle `--platform`-prefixed `FROM` lines so arm64 pins are checked instead of silently skipped
+- Glob `*.yaml` as well as `*.yml` for workflow publisher definitions
+- The human-principal bus `from` handle is now sanitised (non-printable characters stripped, capped at 64 characters) using the same helper as the admin branch, preventing control-character injection into bus records and logs.
+- A valid human-principal token on the project-tasks aggregate now returns a distinguishable 403 (`human-principal token cannot enumerate agent project grants`) instead of the generic `agent is not active in the registry` message it previously received from the agent-registry lookup, so a wrong token type is no longer reported as a missing registry record.
+- The human-principal bus handle now falls back to `@<user_id>` when the username is empty or entirely non-printable after sanitisation, preventing two distinct users from collapsing to the bare `@` handle.
+- Extract shared `_unpublished_first_party_pins` helper so both first-party tag-pairing tests call the same parser, preventing a regression from passing green when the real-repo test never reaches the tag branch
+- Fixed vacuous test passes in reaper tests when pytest runs under PID 1 (containers). The `_make_mock_process` helper now defaults `ppid` to a fixed non-1 value (4242) instead of the test runner's parent PID, and the orphan test explicitly sets `ppid=1`. Added `assert proc.wait_called` to the wait-timeout test to prevent vacuous passes.
+- Coerce numeric YAML versions to strings in `AppManifest` so manifests with `version: 8.0` (or similar) load correctly instead of being skipped with a schema validation error.
+- Quote the `version` field in four model manifests that used bare floats.
+- Changed `test_device_can_upload_when_member_with_write` to `test_device_member_with_write_is_refused_like_a_session` and updated assertion to expect 403 refusal instead of 200. The test now also verifies that the same member's session upload is refused (404 or 403).
+- `scripts/check_evil_merge.py` now allows a merge conflict resolution that matches one parent wholesale to pass the guard **only when the path actually conflicted**. Previously the exemption was unconditional, which blinded the guard to evil merges where a clean auto-merge was resolved by taking one side wholesale and discarding the other parent's changes.
+- Updated the CLI failure output to include the specific rule that fired (`matches neither parent` for conflicted paths, `clean merge not taken` for clean merges, `deleted file both parents kept` for silent drops) instead of the generic `matches neither parent`.
+- Fixed docker_installer to handle host:container port format in manifests (e.g., "6333:6333")
+- Removed requires.ports from all 27 service manifests, keeping only install.ports
+- Added extra_hosts: host.docker.internal:host-gateway when manifests reference host.docker.internal
+- Fixed dead branch in docker_installer._generate_compose that caused ValueError when parsing host:container format
+- Distrust Green Gate now reports collection errors separately from all-skip violations and no longer offers the `Tests-Skipped-Intentionally` waiver for files that crash on collection.
+- The service worker now builds as a self-contained classic script (`/sw.js`
+  with no `import`/`export` and no external chunk), so browsers can register
+  it again; it was emitted as an ES module and every browser rejected it,
+  leaving taOS with no service worker and an empty fast-boot cache.
+- A failed service worker registration is now observable: it is logged with
+  `console.error`, recorded on `<html data-taos-sw="failed">` and via
+  `getServiceWorkerStatus()`, and announced as a `taos:sw-registration-failed`
+  window event, instead of a single console warning.
+- System taOS Agent now uses a scoped registry JWT instead of the host's admin local token for API access. The credential is limited to exactly the endpoints the taOS Agent manual uses (desktop control, skill-exec, files, projects, notes, todo, decisions, canvas, observatory), with admin-only endpoints (user management, secrets, settings) returning 403. The credential is rotated on agent restart and never logged. Applies to both PicoClaw (via `.taos_credential`) and opencode (via `TAOS_API_CREDENTIAL` env var).
+- CSRF stale-cookie clear no longer deletes a fresh session cookie minted by the same response.
+- `verify_csrf` now passes the request's User-Agent to `validate_session`, preventing UA-bound sessions from being misread as stale when #3120 lands.
+- Linkwarden now ships a companion Postgres service in its compose manifest, fixing the boot failure caused by `DATABASE_URL` pointing at a non-existent `localhost:5432`.
+- Default-deny admin/owner dependency on every mutating global router that previously carried none, closing the authz gap where AuthMiddleware authenticated but did not authorize.
+- validate_session now rejects a session that has a stored User-Agent hash when the caller omits the User-Agent header (missing UA is a mismatch, not a bypass).
+- change_password now revokes all other sessions for the user after a successful password change, matching admin_reset_password behaviour.
+- Threads the request's User-Agent header into every auth session validation caller, including the `get_current_user` dependency and all `session_user` calls in routes (chat, store, etc.). This fixes browser users who were rejected with 401 errors after the User-Agent hash validation hardening in #3120.
+- Added `session_user_for_request` and `validate_session_for_request` helper methods in `tinyagentos/auth.py` to read User-Agent from requests.
+- Updated all `get_user`, `validate_session`, and `session_user` calls in routes to include the `user_agent` parameter.
+- Updated all test mocks to accept the `user_agent=None` parameter.
+- Docker installer now falls back to legacy `requires.ports` when the canonical top-level `ports` key is absent, preserving port mappings for already-installed and third-party manifests. A deprecation warning is logged naming the app id. If both keys are present and disagree, the canonical key wins with a warning.
+- Remove inert auto_update and update_channel keys from PicoClaw installer config writing block that overwrote user config files. The installer now only sets the binary read-only permission as v0.3.1 ships no self-update command.
+- Declared `dompurify`, `@codemirror/commands`, and `@codemirror/language` as explicit dependencies in `desktop/package.json` (they were previously only available via transitive dependencies/overrides). Added a vitest guard test (`desktop/src/__tests__/deps.test.ts`) that verifies every bare specifier imported under `desktop/src/` appears in `dependencies` or `devDependencies`.
+- LiteLLM proxy startup no longer blocks the event loop when `lsof` is slow or hung on the restart-over-stale-LiteLLM path; `_pids_listening_on` now runs in a thread with a 5s timeout and the health endpoint stays responsive.
+- PDF processor now declares `pypdf>=6.17` as a core dependency and fails items with extraction errors instead of silently marking them ready with empty text.
+- **auth-requests.py:1019-1105** - Fix for deferred grant expiry inheritance issue:
+  - When an agent with a deferred grant (project_id=None) is assigned to a project, the project-bound grant now correctly inherits the expires_at from the deferred grant
+  - If the deferred grant has expired, the binding is refused with a 400 error (no grant row written)
+  - When both a deferred grant with expiry and a request with expiry exist, the earlier bound is kept (never lengthened)
+  - Deferred grants without expiry still bind to unbounded project-bound grants (unbounded unchanged behavior)
+- Hardened the body-authz gate to use AST parsing instead of regex, closing a fail-open where authz calls inside docstrings or string literals were incorrectly accepted as real authorization.
+- Pin taos-neko-cdp base image by digest in Dockerfile.rk3588 and NOTES-cdp.md so the consumer build does not depend on a tag being published first
+- Fix first-party tag naming test to key workflow tags by (image, tag) so a tag published for a different image cannot satisfy a pin; skip expression tags and document that the test checks the workflow YAML publish list, not the registry
+- Generated media created before per-user isolation remains on disk at the legacy shared path but is no longer listed in Design Studio or Music Studio. Removed inert `_legacy_images_dir` and `_legacy_music_dir` helpers that were intended to cover pre-isolation files but were never wired into listing endpoints.
+- Installer mktemp templates no longer carry a suffix after the Xs (busybox/BSD/macOS reject them), fixing all five sites.
+- qmd npm install drops removed `--unsafe-perm` flag (hard error on npm >= 11), runs lifecycle scripts explicitly via `--allow-scripts`, and cd's to `/tmp` to avoid a project-level `.npmrc` vetoing the global install.
+- Proxy ceiling guard now preserves the operator (`<`, `<=`, `==`) alongside the version in `_effective_upper_bound` and `_parse_snapshot`, so `<15` correctly fails against `<=15` and `==15`
+- Generated images and music are now stored per-user under `data_dir/workspace/users/<user_id>/images|music/generated` instead of a shared directory.
+- The `/data/workspace` static file mount is replaced with an authenticated route that enforces ownership checks for user-scoped paths (`/data/workspace/users/<uid>/...`) via `require_owner_or_admin`, while legacy shared paths remain session-gated only.
+- Path traversal is prevented via `.resolve()` + `is_relative_to()` validation.
+- Frontend apps (DesignStudio, MusicStudio) now use server-provided user-scoped paths for generated media.
+- XWatchStore now migrates pre-user_id author-watch databases on init instead of crashing with `no such column: user_id`.
+- Stale `taos_session` cookies from a previous install no longer lock users out of
+  first-run setup with a 403. `verify_csrf` now validates the session behind the
+  cookie: when the token does not resolve to a live session the cookie is treated
+  as absent for CSRF purposes and cleared in the response. This fixes the
+  reinstall bring-up state where a browser still presents the old cookie but has
+  no matching `csrf_token`, which previously forced the double-submit check to
+  fail on every sign-in surface.
+- uv.lock regenerated for the widened `requires-python = ">=3.11,<3.15"`, so `uv sync --frozen --python 3.14` installs instead of refusing with "not compatible with the locked Python requirement". No package versions changed; the lock gains cp314 wheels only.
+- New offline guard `test_uv_lock_requires_python_matches_pyproject` fails whenever uv.lock's recorded Python bound disagrees with pyproject.toml.
+- Device bearers can now write to share destinations with per-destination authorization
+- The three ingest endpoints are now accessible to device bearers with appropriate authorization checks:
+  - `POST /api/library/ingest` → into that user's library only
+  - `POST /api/projects/{slug}/files/upload` → the user must have WRITE access to that project
+  - `POST /api/chat/messages` → the user must be a MEMBER of `channel_id`; the author is the device's user and must not be settable from the request body
+- This extends the device-bearer self-service routes to cover all share destinations, enabling paired phones to post shared items to each returned destination as intended by the original design
+- Catalog manifest audit now also scans `install.companions[].env` for literal secrets, closing a hole where companion env vars like `POSTGRES_PASSWORD` could ship with hardcoded values unflagged.
+- `test_waiver_text_only_in_all_skip_branch` now correctly scans the `other_failure` branch body by collecting lines up to the closing `}` instead of using broken indentation logic that stopped at the first body line.
+- Extended `tests/test_version_lock_sync.py` to compare `pyproject.toml` version against all four sibling version carriers: `tinyagentos/__init__.py` (`__version__`), `desktop/package.json` (root `version`), and both root `version` fields in `desktop/package-lock.json` (top-level and `packages[""].version`). Each file has a dedicated test so failures name the drifted file. The uv.lock comparison continues to use PEP 440 `Version()` equality; the three JS/Python places use exact string comparison against pyproject's literal `1.0.0-beta.N` format.
+- Updated `docs/RELEASING.md` step 1 to list all five version files, including the `desktop/package-lock.json` note that only the two root `version` fields change and the lockfile must not be regenerated.
+- Controller systemd unit generation: `install.sh` now correctly uses ``-m tinyagentos`` instead of ``-m uvicorn``, ensuring all installed units properly load the module's graceful-shutdown handler and avoiding infinite hangs during restarts on real deployments.
+- Pinned first-party neko-cdp image to `:2.4.0` tag in workflow, updated Dockerfile and NOTES references
+- Removed stale CVE-2026-3219 from pip-audit-ignore.toml
+- Added first-party tag naming test to prevent recurrence
+- Restored docstrings on 16 mutating agent endpoints that were displaced by the authz insert in PR #3120, so OpenAPI descriptions are no longer blank.
+- Hardened the authz gate's body-authz check to ignore commented-out calls and require the call to be awaited as a statement, closing a potential fail-open path.
+- Add a session-level guard in `tests/conftest.py` that tracks `subprocess.Popen` calls spawning LiteLLM processes and fails the session if any survive past teardown.
+- Fix `test_health_endpoint_responsive_during_litellm_bringup` to mock the LiteLLM subprocess and use free ports (17999 / 17998) instead of real defaults (7834 / 6969).
+- Fix `test_readiness_fails_fast_when_proxy_crashes_at_startup` to call `LLMProxy.stop()` in a `finally` block and use a free controller port (14022).
+- `_build_device_push_payload` no longer raises `TypeError` when an option's `label` or `value` is `null` in stored notification rows. Both fields are now coerced to empty strings at the read site, keeping the builder total (never raises) per the `send_device_push` contract.
+
+### Security
+
+- LLM gateway: scoped keys for the in-process gateway at `/api/llm/v1`.
+  A key is bound to one agent or one cluster node, is stored only as a hash,
+  and can use only the models it names. A key with an empty model list can
+  use no model (LiteLLM read an empty list as "every model").
+- LLM gateway: a key allowed `taos-default` can use whatever the owner has
+  set as the default model, and keeps working when the owner changes it.
+  Listing the concrete model does not grant the alias.
+- LLM gateway: existing per-agent LiteLLM keys keep working on the gateway,
+  and an agent over its LLM budget is refused before its request is sent,
+  with the same 429 LiteLLM gave.
+- Revoking, blocking or deleting a cluster node now also cuts that node's
+  model access in the same step, and archiving an agent revokes its gateway
+  keys even when the LiteLLM proxy is not running.
+- Lock-screen control POSTs (`/auth/lock-*`) now refuse "simple" requests: the caller must send `X-taOS-Console` or `Content-Type: application/json`, so a web page in a local browser can no longer drive power, radios, torch, volume or the power menu with a no-cors fetch.
+- "Stop all agents" from the lock screen now requires a signed-in session (401 otherwise); power off and restart stay pre-auth, as the hardware key already allows both.
+- The lock screen page sends the console header on every control POST. The handset scripts taos-kiosk-power-hold and taos-kiosk-screen must add `-H "X-taOS-Console: 1"` (taos-kiosk-volume already sends JSON).
+- LLM gateway failover now sends each backend only its own API key, resolved per attempt; a failover no longer carries the first backend's key to a later backend (for example a third-party host or a plain-http LAN server). Backends the gateway cannot speak to are dropped from the failover list.
+- LLM gateway streaming now maps an upstream non-2xx answer the same way as the non-streaming path: a 5xx or a rejected key fails over, a caller 4xx returns an OpenAI-shaped error with the key redacted, and the raw upstream error body is never relayed.
+- Bluetooth board pairing now commits the board nonce before the controller reveals its own (protocol v2), so a man in the middle can no longer grind a nonce that makes the controller and the board show the same 6-digit code
+- The pairing protocol version is now 2: an old board and a new controller refuse each other with a clear version error, and taOSusb boards need the matching proto.py
+- Bluetooth board pairing now refuses (409) a board whose advertised name matches an existing worker, or a device that has not been revoked, so a board can no longer take over another node's key, clear its block or revoke state, or have a failed provision unregister the real node. A rolled-back pairing only undoes what it wrote itself.
+- A paired device (kind=device) can no longer promote itself to a worker by registering or heartbeating with its own key: the kind is recorded with the key at pairing and kept on every registration, so the device never becomes a candidate for chat, embed, image or browser jobs.
+- Generated images and music under `/data/workspace/users/<id>/` can no longer be read by another member through a dot-segment URL (`%2e/users/...`, `images/%2e%2e/users/...` or literal `./` and `../`). The owner check now uses the resolved path, the same path the file is served from.
+
 ## [1.0.0-beta.53] - 2026-09-16
 
 ### Added

@@ -1,6 +1,11 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { ShareView } from "./ShareView";
+import { copyText } from "@/lib/clipboard";
+
+vi.mock("@/lib/clipboard", () => ({
+  copyText: vi.fn(),
+}));
 
 const SITE = {
   id: "share-site",
@@ -340,5 +345,136 @@ describe("ShareView", () => {
     fireEvent.click(screen.getByRole("button", { name: /Publish/ }));
 
     await waitFor(() => expect(screen.getByText("subdomain_not_active")).toBeDefined());
+  });
+
+  it("renders an empty state when publish returns 404 instead of a raw error", async () => {
+    const notFoundMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/account/me") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ user_id: "u1", email: "jay@example.com", taosgo: { status: "active" }, subdomains: [{ id: "c1", account_id: "u1", name: "mybiz", status: "active" }] }) } as Response);
+      }
+      if (url === "/api/account/mesh/status") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ joined: true }) } as Response);
+      }
+      if (url === "/api/web/sites/share-site" && (init?.method ?? "GET").toUpperCase() === "GET") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(SITE) } as Response);
+      }
+      if (url === "/api/userspace-apps/analyze" && (init?.method ?? "GET").toUpperCase() === "POST") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ findings: [], blocked: false }) } as Response);
+      }
+      if (url === "/api/web/sites/share-site/publish" && (init?.method ?? "GET").toUpperCase() === "POST") {
+        return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as Response);
+    });
+    vi.stubGlobal("fetch", notFoundMock as unknown as typeof fetch);
+
+    render(<ShareView siteId="share-site" provenance="user-uploaded" />);
+    const select = await screen.findByRole("combobox");
+    fireEvent.change(select, { target: { value: "mybiz" } });
+    fireEvent.click(screen.getByRole("button", { name: /Publish/ }));
+
+    await waitFor(() => expect(screen.getByText(/Publishing isn't available on this taOS yet/)).toBeDefined());
+    expect(screen.queryByText(/Request failed/)).not.toBeInTheDocument();
+  });
+
+  it("does not flash the sign-in message while the account is loading", async () => {
+    let resolveAccount: (value: Response) => void;
+    const accountPromise = new Promise<Response>((resolve) => {
+      resolveAccount = resolve;
+    });
+
+    const loadingFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+
+      if (url === "/api/account/me") {
+        return accountPromise as Promise<Response>;
+      }
+      if (url === "/api/account/mesh/status") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ joined: true }) } as Response);
+      }
+      if (url === "/api/web/sites/share-site" && method === "GET") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(SITE) } as Response);
+      }
+      if (url === "/api/userspace-apps/analyze" && method === "POST") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ findings: [], blocked: false }) } as Response);
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as Response);
+    });
+    vi.stubGlobal("fetch", loadingFetch as unknown as typeof fetch);
+
+    render(<ShareView siteId="share-site" provenance="user-uploaded" />);
+
+    await waitFor(() => expect(screen.queryByText(/Loading site/)).not.toBeInTheDocument());
+
+    expect(screen.queryByText(/Sign in to your taOS account to publish/)).not.toBeInTheDocument();
+
+    resolveAccount!(
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            user_id: "u1",
+            email: "jay@example.com",
+            taosgo: { status: "active" },
+            subdomains: [{ id: "c1", account_id: "u1", name: "mybiz", status: "active" }],
+          }),
+      } as Response),
+    );
+
+    await waitFor(() => expect(screen.getByText(/No security issues found/)).toBeDefined());
+  });
+
+  it("reports 'Copy failed' when copyText resolves false after publish", async () => {
+    vi.mocked(copyText).mockResolvedValue(false);
+    const { fetchMock } = makeFetchMock({
+      accountStatus: 200,
+      accountBody: {
+        user_id: "u1",
+        email: "jay@example.com",
+        taosgo: { status: "active" },
+        subdomains: [{ id: "c1", account_id: "u1", name: "mybiz", status: "active" }],
+      },
+      meshJoined: true,
+    });
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    render(<ShareView siteId="share-site" provenance="user-uploaded" />);
+    const select = await screen.findByRole("combobox");
+    fireEvent.change(select, { target: { value: "mybiz" } });
+    fireEvent.click(screen.getByRole("button", { name: /Publish/ }));
+
+    await waitFor(() => expect(screen.getByText("Published to mybiz.taos.my")).toBeDefined());
+    fireEvent.click(screen.getByRole("button", { name: /Copy link/ }));
+
+    await waitFor(() => expect(screen.getByText("Copy failed")).toBeDefined());
+    expect(copyText).toHaveBeenCalledWith("https://mybiz.taos.my");
+  });
+
+  it("reports 'Copied!' when copyText resolves true after publish", async () => {
+    vi.mocked(copyText).mockResolvedValue(true);
+    const { fetchMock } = makeFetchMock({
+      accountStatus: 200,
+      accountBody: {
+        user_id: "u1",
+        email: "jay@example.com",
+        taosgo: { status: "active" },
+        subdomains: [{ id: "c1", account_id: "u1", name: "mybiz", status: "active" }],
+      },
+      meshJoined: true,
+    });
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    render(<ShareView siteId="share-site" provenance="user-uploaded" />);
+    const select = await screen.findByRole("combobox");
+    fireEvent.change(select, { target: { value: "mybiz" } });
+    fireEvent.click(screen.getByRole("button", { name: /Publish/ }));
+
+    await waitFor(() => expect(screen.getByText("Published to mybiz.taos.my")).toBeDefined());
+    fireEvent.click(screen.getByRole("button", { name: /Copy link/ }));
+
+    await waitFor(() => expect(screen.getByText("Copied!")).toBeDefined());
+    expect(copyText).toHaveBeenCalledWith("https://mybiz.taos.my");
   });
 });

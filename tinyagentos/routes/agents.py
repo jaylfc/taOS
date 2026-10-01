@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 import taosmd.agents as tm_agents
 
 from tinyagentos.agent_db import find_agent, get_agent_summaries
+from tinyagentos.llm_gateway.cutover import llm_gateway_live_port, llm_gateway_models_check
 from tinyagentos.config import (
     save_config_locked,
     slugify_agent_name,
@@ -918,6 +919,8 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                     extra_config={
                         "llm_proxy": llm_proxy,
                         "registry": request.app.state.registry,
+                        "llm_gateway_port": llm_gateway_live_port(request.app.state),
+                        "llm_gateway_models_problem": llm_gateway_models_check(request.app.state),
                     },
                     can_read_user_memory=body.can_read_user_memory,
                     secrets_store=secrets_store,
@@ -1178,25 +1181,81 @@ async def bulk_restart_agents(request: Request):
 
 @router.post("/api/agents/{name}/start")
 async def start_agent(request: Request, name: str, user: CurrentUser = Depends(current_user)):
-    """Start an agent's LXC container."""
+    """Start an agent's LXC container.
+
+    A stop goes through the graceful-shutdown prepare, which marks the agent
+    paused; a successful start clears that flag so the agent is not left
+    reading as paused while its container runs.
+    """
     await require_agent_owner_or_admin(request, user, name)
     from tinyagentos.containers import start_container
-    return await start_container(f"taos-agent-{name}")
+    result = await start_container(f"taos-agent-{name}")
+    if not result.get("success"):
+        return JSONResponse(
+            {"error": f"Could not start agent '{name}': {result.get('output', '').strip()}"},
+            status_code=500,
+        )
+    agent = find_agent(request.app.state.config, name)
+    if agent is not None and agent.get("paused"):
+        agent["paused"] = False
+        config = request.app.state.config
+        await save_config_locked(config, config.config_path)
+    return result
 
 
 @router.post("/api/agents/{name}/pause")
 async def pause_agent(request: Request, name: str, user: CurrentUser = Depends(current_user)):
-    """Gracefully prepare an agent for pause (paused=True, container still running)."""
+    """Pause an agent: best-effort graceful prepare, then freeze its container.
+
+    The container is frozen with ``incus pause`` (in its own project) so the
+    agent really stops running, and the agent is marked ``paused=True``.
+    Resume unfreezes it.
+    """
     await require_agent_owner_or_admin(request, user, name)
+    from tinyagentos.containers import get_container_state, pause_container
+
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
+    container_name = f"taos-agent-{name}"
+    state = await get_container_state(container_name)
+    if state is None:
+        return JSONResponse(
+            {"error": f"No container found for agent '{name}'"}, status_code=404,
+        )
+    if state["status"] != "Running":
+        return JSONResponse(
+            {"error": f"Agent '{name}' is not running (container is {state['status']})"},
+            status_code=409,
+        )
     orchestrator = getattr(request.app.state, "orchestrator", None)
     report = {}
     if orchestrator is not None:
-        report = await orchestrator.prepare([name], "pause")
-    return {"status": "paused", "name": name, "report": report}
+        try:
+            report = await orchestrator.prepare([name], "pause")
+        except Exception:  # noqa: BLE001 - prepare is best-effort; the freeze is the pause
+            logger.warning("pause prepare failed for %s", name, exc_info=True)
+    result = await pause_container(container_name)
+    if not result.get("success"):
+        # The container is still running, so the agent must not read as
+        # paused. prepare() marks the agent paused before the freeze, so undo
+        # that here too.
+        agent["paused"] = False
+        await save_config_locked(config, config.config_path)
+        return JSONResponse(
+            {
+                "error": f"Could not freeze agent '{name}': {result.get('output', '').strip()}",
+                "paused": False,
+                "frozen": False,
+            },
+            status_code=500,
+        )
+    # Persist the flag only once the freeze succeeded (prepare() may already
+    # have set it; set it here so it is recorded without an orchestrator too).
+    agent["paused"] = True
+    await save_config_locked(config, config.config_path)
+    return {"status": "paused", "name": name, "paused": True, "frozen": True, "report": report}
 
 
 @router.post("/api/agents/{name}/stop")
@@ -1284,7 +1343,13 @@ async def restart_agent(request: Request, name: str, user: CurrentUser = Depends
     """Restart an agent's LXC container."""
     await require_agent_owner_or_admin(request, user, name)
     from tinyagentos.containers import restart_container
-    return await restart_container(f"taos-agent-{name}")
+    result = await restart_container(f"taos-agent-{name}")
+    if not result.get("success"):
+        return JSONResponse(
+            {"error": f"Could not restart agent '{name}': {result.get('output', '').strip()}"},
+            status_code=500,
+        )
+    return result
 
 
 @router.get("/api/agents/{name}/logs")
@@ -1509,12 +1574,28 @@ async def _registry_canonical_ids(state) -> list[str]:
 
 @router.post("/api/agents/{name}/resume")
 async def resume_agent(request: Request, name: str, user: CurrentUser = Depends(current_user)):
-    """Clear the paused flag on an agent, allowing it to accept new calls."""
+    """Resume an agent: unfreeze its container if frozen, then clear the flag.
+
+    A container that is already running (e.g. the flag was left set by a
+    controller restart) only has its flag cleared.
+    """
     await require_agent_owner_or_admin(request, user, name)
+    from tinyagentos.containers import get_container_state, start_container
+
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
+    container_name = f"taos-agent-{name}"
+    state = await get_container_state(container_name)
+    if state is not None and state["status"] == "Frozen":
+        # ``incus start`` on a Frozen instance unfreezes it.
+        result = await start_container(container_name)
+        if not result.get("success"):
+            return JSONResponse(
+                {"error": f"Could not unfreeze agent '{name}': {result.get('output', '').strip()}"},
+                status_code=500,
+            )
     if not agent.get("paused", False):
         return {"status": "ok", "name": name, "paused": False}
     agent["paused"] = False

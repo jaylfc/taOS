@@ -30,8 +30,8 @@
 #     TAOS_FORCE_HAILO        set to 1/true to force the 10H branch on bench
 #                             boxes without a /dev/hailo0 node (mirrors
 #                             TAOS_FORCE_RKNPU)
-#     TAOS_HAILO_OLLAMA_DIR   install dir (default: ~<user>/hailo-ollama)
-#     TAOS_HAILO_OLLAMA_REPO  git remote (default: https://github.com/hailo-ai/hailo-ollama.git)
+#     TAOS_HAILO_OLLAMA_DIR   install dir (default: ~<user>/hailo_model_zoo_genai)
+#     TAOS_HAILO_OLLAMA_REPO  git remote (default: https://github.com/hailo-ai/hailo_model_zoo_genai.git)
 #     TAOS_HAILO_OLLAMA_REF   git ref  (default: pinned, see below)
 #     TAOS_HAILO_OLLAMA_PORT  HTTP port (default: 7836)
 #
@@ -261,6 +261,39 @@ detect_preexisting_hailoollama() {
         warn "This installer would have built a second server on port $HAILO_OLLAMA_PORT."
         log "The existing instance on :8000 will be left alone (not modified by this script)."
         exit 3
+    fi
+
+    # Check for an upstream unit that exists but lacks our OLLAMA_HOST marker.
+    # Our units always set OLLAMA_HOST=127.0.0.1:7836; upstream instances won't.
+    if systemctl list-unit-files --full | grep -q '^hailo-ollama.service'; then
+        local has_marker
+        has_marker="$(systemctl cat hailo-ollama.service 2>/dev/null | grep 'OLLAMA_HOST=' || true)"
+        if [[ -z "$has_marker" || "$has_marker" != *"OLLAMA_HOST=127.0.0.1:$HAILO_OLLAMA_PORT"* ]]; then
+            warn "upstream hailo-ollama.service detected without taOS marker (no OLLAMA_HOST=127.0.0.1:$HAILO_OLLAMA_PORT)"
+            warn "This installer would have built a second server on port $HAILO_OLLAMA_PORT."
+            warn "The existing instance will be left alone (not modified by this script)."
+            exit 3
+        fi
+    fi
+
+    # Check for an upstream binary on PATH resolving outside our install directory.
+    local bin_path
+    bin_path="$(command -v hailo-ollama 2>/dev/null || true)"
+    if [[ -n "$bin_path" ]]; then
+        # Resolve symlinks to find the real binary location
+        local resolved
+        if [[ -L "$bin_path" ]]; then
+            resolved="$(readlink -f "$bin_path")"
+        else
+            resolved="$bin_path"
+        fi
+        # Check if the binary is outside our install directory
+        if ! [[ "$resolved" == "$HAILO_OLLAMA_DIR"* ]]; then
+            warn "upstream hailo-ollama binary found on PATH outside our install directory"
+            warn "This installer would have built a second server on port $HAILO_OLLAMA_PORT."
+            warn "The existing instance will be left alone (not modified by this script)."
+            exit 3
+        fi
     fi
 }
 

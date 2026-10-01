@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -74,19 +75,32 @@ async def drain_and_delete_agents(agents: list[dict[str, str]]) -> None:
             logger.warning("delete %s failed: %s", agent["name"], r.stderr)
 
 
-async def redeploy_agents(agent_configs: list[dict[str, Any]]) -> None:
+async def redeploy_agents(agent_configs: list[dict[str, Any]], llm_proxy=None, gateway_port: int = 0) -> list[str]:
     """Redeploy each agent into the new worker LXC's nested incus.
 
     Each entry is the agent's row from agents.json (name, framework, model,
     plus whatever else DeployRequest accepts). Deploys sequentially —
     parallel deploy could thrash incus.
+
+    Returns a list of agent names whose deploy failed.
     """
-    from tinyagentos.deployer import deploy_agent, DeployRequest
+    from tinyagentos.deployer import DeployRequest, deploy_agent
+    failed: list[str] = []
     for cfg in agent_configs:
         logger.info("redeploying %s", cfg["name"])
-        req = DeployRequest(**cfg)
+        extra_config = dict(cfg.get("extra_config") or {})
+        if llm_proxy is not None:
+            extra_config["llm_proxy"] = llm_proxy
+        if gateway_port:
+            extra_config["llm_gateway_port"] = gateway_port
+        req = DeployRequest(
+            **{k: v for k, v in cfg.items() if k != "extra_config"},
+            extra_config=extra_config,
+        )
         result = await deploy_agent(req)
         if not result.get("success"):
+            failed.append(cfg["name"])
             logger.error("redeploy %s failed: %s", cfg["name"], result)
         else:
             logger.info("redeployed %s", cfg["name"])
+    return failed

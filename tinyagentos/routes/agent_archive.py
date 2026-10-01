@@ -112,11 +112,11 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
         trace_dir = data_dir / "trace" / slug
         has_trace_history = trace_dir.exists() and any(trace_dir.iterdir())
 
-        # Always revoke LiteLLM key first (best effort, same as below).
+        # Always revoke the agent's LLM keys first (best effort, same as below).
         _revoke_gateway_keys(request, slug, agent_id)
         llm_key = agent.get("llm_key")
         llm_proxy = getattr(request.app.state, "llm_proxy", None)
-        if llm_key and llm_proxy and llm_proxy.is_running():
+        if llm_key and llm_proxy:
             try:
                 await llm_proxy.delete_agent_key(llm_key)
             except Exception:
@@ -275,13 +275,13 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.warning("archive: channel flag failed for %s: %s", channel_id, exc)
 
-    # 5) Revoke LiteLLM key (best effort) and every LLM gateway key bound to
-    #    the agent. The gateway revoke is NOT gated on the LiteLLM proxy
-    #    running: the gateway lives in this process.
+    # 5) Revoke the agent's key-store key (best effort) and every LLM gateway
+    #    key bound to the agent. Both stores are local; nothing is gated on a
+    #    process.
     _revoke_gateway_keys(request, slug, agent_id)
     llm_key = agent.get("llm_key")
     llm_proxy = getattr(request.app.state, "llm_proxy", None)
-    if llm_key and llm_proxy and llm_proxy.is_running():
+    if llm_key and llm_proxy:
         try:
             await llm_proxy.delete_agent_key(llm_key)
         except Exception:
@@ -397,12 +397,17 @@ async def restore_archived(request: Request, archive_id: str):
     except Exception as exc:  # noqa: BLE001
         logger.warning("restore: start_container failed for %s: %s", target_container, exc)
 
-    # 4) Mint new LiteLLM key if proxy running.
+    # 4) Mint a new key in the local key store.
     llm_proxy = getattr(request.app.state, "llm_proxy", None)
     new_key = None
-    if llm_proxy and llm_proxy.is_running():
+    if llm_proxy:
+        # Scoped to the models the agent had when archived (the default alias
+        # when it had none), as a deploy would scope it.
+        restore_models = [
+            m for m in [original.get("model"), *(original.get("fallback_models") or [])] if m
+        ]
         try:
-            new_key = await llm_proxy.create_agent_key(final_slug)
+            new_key = await llm_proxy.create_agent_key(final_slug, models=restore_models or None)
         except Exception:
             pass
 
@@ -412,6 +417,8 @@ async def restore_archived(request: Request, archive_id: str):
     #    bind-mounted file. Also restart openclaw.service if present.
     if new_key is not None:
         try:
+            # LITELLM_API_KEY first: the framework units read that name.
+            await set_env(target_container, "LITELLM_API_KEY", new_key)
             env_result = await set_env(target_container, "OPENAI_API_KEY", new_key)
             if not env_result.get("success"):
                 logger.warning(

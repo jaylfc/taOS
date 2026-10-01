@@ -53,7 +53,9 @@ export function MoveTabMenu({
   function handleNewWindow() {
     const browserApp = getApp("browser");
     if (!browserApp) return;
-    const newWindowId = openWindow("browser", browserApp.defaultSize);
+    // IN-PAGE, never the handset shell: the move needs the new window's id,
+    // and a shell launch returns "" (it opens a separate compositor window).
+    const newWindowId = openWindow("browser", browserApp.defaultSize, undefined, { inPage: true });
 
     // openWindow enqueues a React render. The new BrowserApp's mount
     // effect will call createWindow(newWindowId). queueMicrotask fires

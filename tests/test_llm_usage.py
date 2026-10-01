@@ -172,96 +172,6 @@ def test_vendored_table_records_its_provenance_and_licence():
     assert "MIT License" in notice and "Berri AI" in notice
 
 
-# ---- exact parity with LiteLLM (meaningful only while LiteLLM is still installed) ---------------
-
-PARITY_CASES = [
-    ("claude-sonnet-4-5", "anthropic", Usage(input_tokens=5_000, output_tokens=700,
-                                               cache_read_tokens=2_000, cache_write_tokens=1_000)),
-    ("claude-sonnet-4-5", "anthropic", Usage(input_tokens=250_000, output_tokens=4_000,
-                                               cache_read_tokens=10_000, cache_write_tokens=5_000)),
-    ("gpt-4o", "openai", Usage(input_tokens=12_000, output_tokens=900, cache_read_tokens=8_000)),
-    ("gpt-4o", "openai", Usage(input_tokens=100, output_tokens=50)),
-    ("deepseek/deepseek-chat", "deepseek", Usage(input_tokens=3_000, output_tokens=400, cache_read_tokens=1_000)),
-    # OpenAI bills reasoning at the output rate (no separate rate): exercises the output-split path.
-    ("o3", "openai", Usage(input_tokens=2_000, output_tokens=1_500, reasoning_tokens=1_000)),
-]
-
-
-def _reasoning_case():
-    for key, entry in price_table().items():
-        if entry.get("mode") == "chat" and "output_cost_per_reasoning_token" in entry \
-                and entry.get("litellm_provider") in ("openai", "anthropic", "deepseek", "openrouter"):
-            # taOS backend providers only: a model we never call is not evidence either way.
-            return key, entry["litellm_provider"]
-    return None
-
-
-def _openrouter_case():
-    for key, entry in price_table().items():
-        if key.startswith("openrouter/") and entry.get("mode") == "chat":
-            return key
-    return None
-
-
-@pytest.fixture(scope="module")
-def litellm_mod():
-    litellm = pytest.importorskip("litellm", reason="parity is only checkable while LiteLLM is installed")
-    return litellm
-
-
-def _litellm_cost(litellm, key, provider, u: Usage, entry=None) -> float:
-    ours = entry if entry is not None else price_table()[key]
-    saved = litellm.model_cost.get(key)
-    base = dict(saved) if saved else {"litellm_provider": provider, "mode": "chat", "max_tokens": 1_000_000}
-    # Same rates on both sides: strip every rate LiteLLM knows for this model, then load ours, so the
-    # comparison tests the FORMULA, not two snapshots of the price data.
-    base = {k: v for k, v in base.items() if "cost" not in k}
-    base.update(ours)
-    litellm.model_cost[key] = base
-    try:
-        lu = litellm.Usage(
-            prompt_tokens=u.input_tokens, completion_tokens=u.output_tokens,
-            total_tokens=u.input_tokens + u.output_tokens,
-            prompt_tokens_details={"cached_tokens": u.cache_read_tokens,
-                                   "cache_creation_tokens": u.cache_write_tokens},
-            completion_tokens_details={"reasoning_tokens": u.reasoning_tokens},
-            cache_creation_input_tokens=u.cache_write_tokens,
-            cache_read_input_tokens=u.cache_read_tokens,
-        )
-        p, c = litellm.cost_per_token(model=key, custom_llm_provider=provider, usage_object=lu)
-        return p + c
-    finally:
-        if saved is None:
-            litellm.model_cost.pop(key, None)
-        else:
-            litellm.model_cost[key] = saved
-
-
-@pytest.mark.parametrize("key,provider,u", PARITY_CASES, ids=[f"{c[0]}-{c[2].input_tokens}" for c in PARITY_CASES])
-def test_cost_matches_litellm_exactly(litellm_mod, key, provider, u):
-    ours = price_usage(price_table()[key], u)
-    theirs = _litellm_cost(litellm_mod, key, provider, u)
-    assert math.isclose(ours, theirs, rel_tol=1e-12, abs_tol=1e-15), (key, ours, theirs)
-
-
-def test_reasoning_and_openrouter_costs_match_litellm(litellm_mod):
-    checked = 0
-    rc = _reasoning_case()
-    if rc:
-        key, provider = rc
-        u = Usage(input_tokens=2_000, output_tokens=1_500, reasoning_tokens=1_000)
-        assert math.isclose(price_usage(price_table()[key], u), _litellm_cost(litellm_mod, key, provider, u),
-                            rel_tol=1e-12, abs_tol=1e-15), key
-        checked += 1
-    ork = _openrouter_case()
-    if ork:
-        u = Usage(input_tokens=4_000, output_tokens=600)
-        assert math.isclose(price_usage(price_table()[ork], u), _litellm_cost(litellm_mod, ork, "openrouter", u),
-                            rel_tol=1e-12, abs_tol=1e-15), ork
-        checked += 1
-    assert checked, "the table should contain at least one reasoning-priced or OpenRouter model to compare"
-
-
 # Every reasoning-priced model we route to (OpenRouter's Gemini 3 family) happens to charge the SAME
 # rate for reasoning as for output, so real data cannot tell "reasoning rate applied" from "ignored".
 # A synthetic model with a DIFFERENT reasoning rate is the only case that can.
@@ -274,17 +184,10 @@ def test_a_distinct_reasoning_rate_is_applied_to_reasoning_tokens_only():
     assert math.isclose(price_usage(_SYNTH, u), 1_000 * 1e-6 + 300 * 2e-6 + 200 * 9e-6)
 
 
-def test_distinct_reasoning_rate_matches_litellm(litellm_mod):
-    u = Usage(input_tokens=1_000, output_tokens=500, reasoning_tokens=200)
-    theirs = _litellm_cost(litellm_mod, "taos-test/synthetic-reasoner", "openai", u, entry=_SYNTH)
-    assert math.isclose(price_usage(_SYNTH, u), theirs, rel_tol=1e-12, abs_tol=1e-15), theirs
-
-
 # ---- frozen LiteLLM parity: runs WITHOUT LiteLLM, and outlives its removal -----------------------
-# LiteLLM is only the optional `proxy` extra, so CI's plain `uv sync` does not install it and the live
-# parity tests above SKIP there. These numbers were produced by LiteLLM's own `cost_per_token` (1.94.x,
-# via `_litellm_cost` above) over synthetic entries that cover every branch of the formula. Synthetic
-# on purpose: a price-table refresh can never break them. `no-cache-rate` pins LiteLLM's quirk that
+# LiteLLM is no longer a dependency (removal stage 2b-2a), so the live parity tests that called it are
+# gone. These numbers were produced by LiteLLM's own `cost_per_token` (1.94.x) over synthetic entries
+# that cover every branch of the formula. Synthetic on purpose: a price-table refresh can never break them. `no-cache-rate` pins LiteLLM's quirk that
 # cached tokens cost $0 when a model has no cache rate.
 GOLDEN_ENTRIES = {
     "cache+tier200k": {"input_cost_per_token": 3e-06, "output_cost_per_token": 1.5e-05,

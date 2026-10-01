@@ -374,9 +374,9 @@ async def _legacy_generate(request: Request, body: GenerateRequest, seed: int):
         #   - backend_name is None (server-level override, not a catalog entry)
         #   - lifecycle_manager is not wired on this app (tests, startup race)
         #   - keep_alive_minutes == 0 (always-on backend)
-        # NOTE: chat / embedding traffic goes through LiteLLM and does not hit
-        # this route, so its keep-alive timer is NOT reset here. Fixing that
-        # requires a LiteLLM callback or proxy hook — tracked separately.
+        # Chat and embedding traffic resets the same timer from the LLM
+        # gateway (llm_gateway.forward._notify_lifecycle), and from LiteLLM's
+        # callback while LiteLLM still runs.
         if backend_name and lifecycle_mgr is not None:
             lifecycle_mgr.notify_task_complete(backend_name)
     image_data = data["images"][0] if backend_type == "sd-cpp" else data["data"][0]["b64_json"]

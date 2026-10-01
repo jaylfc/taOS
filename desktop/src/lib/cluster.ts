@@ -385,3 +385,153 @@ export function bleSignalLevel(rssi: number | undefined): BleSignalLevel {
   if (rssi >= -75) return "medium";
   return "weak";
 }
+
+/* ------------------------------------------------------------------------- *
+ * Cluster capability + placement map (taOS #897, first slice — read-only).
+ *
+ * Types for GET /api/cluster/map: one aggregate over every node, split into
+ * the capability map (what the cluster can do) and live placement (what is
+ * loaded vs merely installed, on which node, on what hardware, and how
+ * healthy it is). Presentation helpers below stay pure so they are unit
+ * testable without a running server.
+ * ------------------------------------------------------------------------- */
+
+/** Whether a model is resident on its node right now, or only installed. */
+export type PlacementState = "loaded" | "installed";
+
+export interface ClusterMapPlacement {
+  model_id: string;
+  /** Capability the model serves, from the worker manifest ("" when undeclared). */
+  capability: string;
+  backend: string;
+  backend_type: string;
+  /** Status of the owning backend — "ok" when serving, "stopped" when installed only. */
+  backend_status: string;
+  state: PlacementState;
+  vram_required_gb: number;
+  health_url: string;
+}
+
+export interface ClusterMapBackend {
+  name: string;
+  type: string;
+  status: string;
+  capabilities: string[];
+  model_count: number;
+  available_model_count: number;
+}
+
+export interface ClusterMapLease {
+  lease_id: string;
+  resource_id: string;
+  caller: string;
+  expires_at: number;
+  required_vram_mb: number;
+}
+
+/** VRAM in MiB. `null` means the node never reported a probe (e.g. CPU-only) —
+ *  deliberately distinct from a reported 0. */
+export interface ClusterMapVram {
+  free_mb: number | null;
+  used_mb: number | null;
+  total_mb: number | null;
+}
+
+export interface ClusterMapNode {
+  name: string;
+  url: string;
+  platform?: string;
+  status?: string;
+  /** Freshness derived from the heartbeat, matching `workerStatus()`. */
+  health: WorkerStatus;
+  last_heartbeat?: number;
+  heartbeat_age_s: number | null;
+  load?: number;
+  tier_id?: string;
+  hardware?: ClusterHardware;
+  vram: ClusterMapVram;
+  capabilities: string[];
+  potential_capabilities: string[];
+  backends: ClusterMapBackend[];
+  placement: ClusterMapPlacement[];
+  leases: ClusterMapLease[];
+}
+
+export interface ClusterMapCapability {
+  capability: string;
+  /** Nodes serving it now (reported by the worker or by a running backend). */
+  active_nodes: string[];
+  /** Nodes that have a model/backend for it installed but not serving. */
+  installed_nodes: string[];
+  /** Nodes whose hardware could run it — nothing installed yet. */
+  potential_nodes: string[];
+}
+
+export interface ClusterMap {
+  generated_at: number;
+  nodes: ClusterMapNode[];
+  capabilities: ClusterMapCapability[];
+}
+
+/** How a node relates to one capability: serving, installed, or only capable. */
+export type CapabilityNodeState = "active" | "installed" | "potential";
+
+/**
+ * A node's strongest relation to a capability, or null when it has none.
+ * Ordering matters: a node counted as active is never also reported as
+ * merely installed.
+ */
+export function capabilityNodeState(
+  cap: ClusterMapCapability,
+  nodeName: string,
+): CapabilityNodeState | null {
+  if ((cap.active_nodes ?? []).includes(nodeName)) return "active";
+  if ((cap.installed_nodes ?? []).includes(nodeName)) return "installed";
+  if ((cap.potential_nodes ?? []).includes(nodeName)) return "potential";
+  return null;
+}
+
+/** Every node related to a capability, in the order active, installed, potential. */
+export function capabilityNodeNames(cap: ClusterMapCapability): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const name of [
+    ...(cap.active_nodes ?? []),
+    ...(cap.installed_nodes ?? []),
+    ...(cap.potential_nodes ?? []),
+  ]) {
+    if (!seen.has(name)) {
+      seen.add(name);
+      out.push(name);
+    }
+  }
+  return out;
+}
+
+/** One-line count summary for a capability row: "2 active, 1 installed, 3 capable". */
+export function capabilitySummary(cap: ClusterMapCapability): string {
+  const parts: string[] = [];
+  const active = (cap.active_nodes ?? []).length;
+  const installed = (cap.installed_nodes ?? []).length;
+  const potential = (cap.potential_nodes ?? []).length;
+  if (active) parts.push(`${active} active`);
+  if (installed) parts.push(`${installed} installed`);
+  if (potential) parts.push(`${potential} capable`);
+  return parts.length ? parts.join(", ") : "no nodes";
+}
+
+/** Placement rows on a node that serve a given capability. */
+export function placementForCapability(
+  node: ClusterMapNode,
+  capability: string,
+): ClusterMapPlacement[] {
+  return (node.placement ?? []).filter((p) => p.capability === capability);
+}
+
+/** Human-readable VRAM line; never invents numbers the node did not report. */
+export function formatVram(vram: ClusterMapVram | undefined): string {
+  if (!vram || vram.free_mb === null || vram.used_mb === null) return "no VRAM probe";
+  const gb = (mb: number) => `${(mb / 1024).toFixed(1)} GB`;
+  return `${gb(vram.used_mb)} used of ${gb(vram.used_mb + vram.free_mb)}`;
+}
+

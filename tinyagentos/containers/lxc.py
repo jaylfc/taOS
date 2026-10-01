@@ -195,7 +195,9 @@ class LXCBackend(ContainerBackend):
                 continue
             status = c.get("status", "Unknown")
             ip = None
-            network = c.get("state", {}).get("network", {})
+            # Stopped instances report "network": null (and "state" can be
+            # null); dict.get defaults only cover a missing key.
+            network = (c.get("state") or {}).get("network") or {}
             for iface in network.values():
                 for addr in iface.get("addresses", []):
                     if addr.get("family") == "inet" and addr.get("scope") == "global":

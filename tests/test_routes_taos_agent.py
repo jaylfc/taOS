@@ -340,11 +340,10 @@ async def test_chat_no_model_returns_400(client):
 
 
 @pytest.mark.asyncio
-async def test_chat_proxy_not_running_returns_503(client, monkeypatch):
-    """POST /chat when proxy is not running returns 503."""
+async def test_chat_model_the_gateway_cannot_serve_returns_503(client, monkeypatch):
+    """POST /chat for a model no backend serves returns 503 naming the gateway
+    (the only LLM path since LiteLLM removal 2b-2a)."""
     await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
-    proxy = _fake_proxy(running=False)
-    monkeypatch.setattr(client._transport.app.state, "llm_proxy", proxy)
 
     resp = await client.post(
         "/api/taos-agent/chat",
@@ -352,7 +351,7 @@ async def test_chat_proxy_not_running_returns_503(client, monkeypatch):
     )
     assert resp.status_code == 503
     error = resp.json()["error"].lower()
-    assert "proxy" in error or "lite" in error
+    assert "gateway" in error and "gpt-4o" in error
 
 
 @pytest.mark.asyncio

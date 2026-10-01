@@ -12,7 +12,6 @@ from tinyagentos.auth_context import require_admin
 from tinyagentos.backend_adapters import get_adapter
 from tinyagentos.config import save_config_locked, VALID_BACKEND_TYPES
 from tinyagentos.lifecycle_manager import LifecycleManager
-from tinyagentos.litellm_config import get_litellm_master_key
 from tinyagentos.providers import CLOUD_TYPES
 
 logger = logging.getLogger(__name__)
@@ -73,31 +72,6 @@ async def get_provider_types():
         "cloud": sorted(CLOUD_TYPES),
         "local": sorted(LOCAL_TYPES),
     }
-
-
-async def _resolve_backend_secrets(
-    app_state, backends: list[dict]
-) -> dict[str, str]:
-    """Build a name→value map of every ``api_key_secret`` referenced
-    from ``backends``. Used to refresh the LiteLLM subprocess env on
-    reload so newly-added/rotated provider keys take effect without
-    a full app restart."""
-    secrets_store = getattr(app_state, "secrets", None)
-    if secrets_store is None:
-        return {}
-    out: dict[str, str] = {}
-    for backend in backends:
-        name = backend.get("api_key_secret")
-        if not name or name in out:
-            continue
-        try:
-            rec = await secrets_store.get(name)
-        except Exception as exc:
-            logger.warning("provider reload: secret lookup %s failed: %s", name, exc)
-            continue
-        if rec and rec.get("value"):
-            out[name] = rec["value"]
-    return out
 
 
 async def _discover_provider_models(
@@ -187,11 +161,11 @@ async def _refresh_backend(
     return backend
 
 
-async def _refresh_all_cloud_backends(app_state, config, proxy) -> int:
+async def _refresh_all_cloud_backends(app_state, config) -> int:
     """Re-probe every cloud backend in ``config.backends`` in parallel,
-    update their ``models`` lists, persist the config, and SIGHUP LiteLLM
-    so the new ``model_list`` takes effect. Returns the number of cloud
-    backends that were probed.
+    update their ``models`` lists and persist the config. The gateway reads
+    the routing table from the config per call, so there is nothing to
+    reload. Returns the number of cloud backends that were probed.
     """
     cloud = [b for b in config.backends if b.get("type") in CLOUD_TYPES]
     if not cloud:
@@ -201,9 +175,6 @@ async def _refresh_all_cloud_backends(app_state, config, proxy) -> int:
         return_exceptions=True,
     )
     await save_config_locked(config, config.config_path)
-    if proxy and proxy.is_running():
-        resolved = await _resolve_backend_secrets(app_state, config.backends)
-        await proxy.reload_config(config.backends, secrets=resolved)
     return len(cloud)
 
 
@@ -212,7 +183,7 @@ def _cloud_model_ids(backend: dict) -> set[str]:
 
     A set (not a list) so detection is duplicate-insensitive: a transient
     duplicate id in a re-probed catalog must not read as a real change and
-    trigger a needless LiteLLM reload.
+    trigger a needless config write.
     """
     return {
         (m.get("id") or m.get("name") or "") if isinstance(m, dict) else str(m)
@@ -220,13 +191,13 @@ def _cloud_model_ids(backend: dict) -> set[str]:
     }
 
 
-async def refresh_cloud_backends_if_changed(app_state, config, proxy) -> bool:
-    """Re-probe cloud backends; persist + reload LiteLLM ONLY if a model list
-    actually changed (so a stable catalog doesn't trigger needless reloads that
-    disrupt in-flight requests). Returns True only if a reload actually happened.
+async def refresh_cloud_backends_if_changed(app_state, config) -> bool:
+    """Re-probe cloud backends; persist the config ONLY if a model list
+    actually changed. Returns True when it changed and was persisted.
 
-    This is what the periodic refresher calls — it keeps LiteLLM's model_list
-    fresh as upstream provider catalogs gain/lose models, without a restart.
+    This is what the periodic refresher calls — it keeps the gateway's
+    routing table (read from the config per call) fresh as upstream provider
+    catalogs gain/lose models, without a restart.
     """
     cloud = [b for b in config.backends if b.get("type") in CLOUD_TYPES]
     if not cloud:
@@ -240,43 +211,37 @@ async def refresh_cloud_backends_if_changed(app_state, config, proxy) -> bool:
     if before == after:
         return False
     await save_config_locked(config, config.config_path)
-    if not (proxy and proxy.is_running()):
-        # Catalog changed and we persisted it, but with no live proxy there is
-        # nothing to reload — don't claim a reload that didn't happen.
-        logger.info("provider refresh: cloud model list changed — persisted (LiteLLM not running, no reload)")
-        return False
-    resolved = await _resolve_backend_secrets(app_state, config.backends)
-    await proxy.reload_config(config.backends, secrets=resolved)
-    logger.info("provider refresh: cloud model list changed — reloaded LiteLLM")
+    logger.info("provider refresh: cloud model list changed — persisted")
     return True
 
 
-async def _fetch_litellm_models(proxy) -> list[dict]:
-    """Fetch ``/v1/models`` from the running LiteLLM proxy using the master
-    key. Returns the raw ``data`` list (list of dicts) or ``[]`` on any
-    failure. LiteLLM's response shape is OpenAI-compatible:
-    ``{"data": [{"id": "...", ...}], "object": "list"}``.
+async def _fetch_litellm_models(proxy, app_state=None) -> list[dict]:
+    """The model catalog, read IN PROCESS from the routing table.
+
+    It used to be LiteLLM's ``/v1/models`` fetched with the LiteLLM master
+    key; since LiteLLM removal stage 2a it is the same table LiteLLM was
+    configured from (``llm_gateway.resolve.routing_table``), so the picker
+    works with LiteLLM stopped and nothing presents the master key. The
+    shape is unchanged: OpenAI-style ``{"id", "object", "created",
+    "owned_by"}`` entries, one per distinct model name, in routing order.
+    The name and the ``proxy`` argument are kept for the callers (and are
+    renamed with LiteLLM in stage 2b). Returns ``[]`` without an app state.
     """
-    if not proxy or not proxy.is_running():
+    if app_state is None:
         return []
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                f"{proxy.url}/v1/models",
-                headers={"Authorization": f"Bearer {get_litellm_master_key(getattr(proxy, '_data_dir', None))}"},
-            )
-        if resp.status_code != 200:
-            logger.warning(
-                "LiteLLM /v1/models returned HTTP %d: %.200s",
-                resp.status_code, resp.text,
-            )
-            return []
-        body = resp.json()
-        data = body.get("data") if isinstance(body, dict) else None
-        return data if isinstance(data, list) else []
-    except Exception as exc:
-        logger.warning("LiteLLM /v1/models fetch failed: %s", exc)
+        from tinyagentos.llm_gateway.resolve import routing_table
+
+        table = routing_table(app_state)
+    except Exception as exc:  # noqa: BLE001 - an empty catalog, never a 500
+        logger.warning("model catalog: routing table unavailable: %s", exc)
         return []
+    seen: dict[str, None] = {}
+    for entry in table:
+        name = entry.get("model_name")
+        if isinstance(name, str) and name:
+            seen.setdefault(name, None)
+    return [{"id": n, "object": "model", "created": 0, "owned_by": "taos"} for n in seen]
 
 
 def seed_cache_from_config(app_state) -> None:
@@ -328,8 +293,8 @@ async def _do_background_refresh(app_state) -> None:
         if config is None:
             return
         proxy = getattr(app_state, "llm_proxy", None)
-        await _refresh_all_cloud_backends(app_state, config, proxy)
-        data = await _fetch_litellm_models(proxy)
+        await _refresh_all_cloud_backends(app_state, config)
+        data = await _fetch_litellm_models(proxy, app_state)
         if data:
             import time as _time
             import asyncio as _asyncio
@@ -627,11 +592,6 @@ async def add_provider(request: Request, body: ProviderCreate):
             entry["models"] = list(PROVIDER_DEFAULT_MODELS[entry["type"]])
     config.backends.append(entry)
     await save_config_locked(config, config.config_path)
-    # Reconfigure LLM proxy if running
-    proxy = getattr(request.app.state, "llm_proxy", None)
-    if proxy and proxy.is_running():
-        resolved = await _resolve_backend_secrets(request.app.state, config.backends)
-        await proxy.reload_config(config.backends, secrets=resolved)
     # Invalidate the models cache so the next dialog open re-reads LiteLLM
     # with the newly-added provider.  Clear the payload too so an empty
     # live fetch after a config change cannot fall back to a stale catalog.
@@ -678,10 +638,6 @@ async def patch_provider(request: Request, name: str, body: ProviderPatch):
     if backend.get("type") in CLOUD_TYPES:
         await _refresh_backend(request.app.state, backend)
     await save_config_locked(config, config.config_path)
-    proxy = getattr(request.app.state, "llm_proxy", None)
-    if proxy and proxy.is_running():
-        resolved = await _resolve_backend_secrets(request.app.state, config.backends)
-        await proxy.reload_config(config.backends, secrets=resolved)
     # Invalidate the models cache so the next dialog open re-reads LiteLLM
     # with the updated routing.  Clear the payload too so an empty live
     # fetch after a config change cannot fall back to a stale catalog.
@@ -747,8 +703,8 @@ async def get_litellm_models(request: Request, refresh: bool = False):
     if cached_payload is None:
         proxy = getattr(app_state, "llm_proxy", None)
         config = app_state.config
-        await _refresh_all_cloud_backends(app_state, config, proxy)
-        data = await _fetch_litellm_models(proxy)
+        await _refresh_all_cloud_backends(app_state, config)
+        data = await _fetch_litellm_models(proxy, app_state)
         import time as _time
         if data:
             payload: dict = {"data": data, "object": "list"}
@@ -795,8 +751,8 @@ async def force_refresh_models(request: Request):
     config = app_state.config
     cached_payload = getattr(app_state, "litellm_models_cache", None)
 
-    await _refresh_all_cloud_backends(app_state, config, proxy)
-    data = await _fetch_litellm_models(proxy)
+    await _refresh_all_cloud_backends(app_state, config)
+    data = await _fetch_litellm_models(proxy, app_state)
 
     if data:
         import time as _time
@@ -876,10 +832,6 @@ async def delete_provider(request: Request, name: str):
         )
     config.backends = [b for b in config.backends if b.get("name") != name]
     await save_config_locked(config, config.config_path)
-    proxy = getattr(request.app.state, "llm_proxy", None)
-    if proxy and proxy.is_running():
-        resolved = await _resolve_backend_secrets(request.app.state, config.backends)
-        await proxy.reload_config(config.backends, secrets=resolved)
     # Invalidate the models cache so the deleted provider's models no longer
     # appear in the picker on the next open.  Clear the payload too so an
     # empty live fetch after deletion cannot fall back to a stale catalog.

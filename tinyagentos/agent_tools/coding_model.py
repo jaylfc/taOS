@@ -5,9 +5,11 @@ supplies the real driver: it converts the loop transcript to OpenAI-style chat
 messages, hands the model the workspace tools, calls the completion, and parses
 the reply back into the loop's step shape ({"type": "tool_calls"|"final"}).
 
-The completion call is injectable (``completion_fn``) so this is testable
-without a live model or a network round trip; the default lazily imports
-litellm so importing this module never requires litellm to be installed.
+The completion call is supplied by the caller (``completion_fn``), so this is
+testable without a live model or a network round trip. There is no default:
+the old one called ``litellm.acompletion`` in process, and litellm is no
+longer a taOS dependency (LiteLLM removal 2b-2a). A production caller passes
+a function that posts to the in-process LLM gateway.
 """
 
 from __future__ import annotations
@@ -132,21 +134,19 @@ def parse_completion(response) -> dict:
     return {"type": "final", "text": _message_field(message, "content") or ""}
 
 
-async def _default_completion(model: str, messages: list[dict], tools: list[dict]):
-    # Lazy import so this module never hard-requires litellm at import time.
-    import litellm
-
-    return await litellm.acompletion(model=model, messages=messages, tools=tools)
-
-
 def make_litellm_model_step(model: str, *, system: str | None = None, completion_fn=None):
     """Build a model_step for run_tool_loop backed by a chat-completions model.
 
-    completion_fn(model, messages, tools) -> response is injectable (defaults to
-    litellm.acompletion). The returned async callable takes the loop transcript
-    and returns the next step.
+    completion_fn(model, messages, tools) -> response is required (an
+    OpenAI-shaped chat completion, dict or object). The returned async callable
+    takes the loop transcript and returns the next step.
     """
-    call = completion_fn or _default_completion
+    if completion_fn is None:
+        raise TypeError(
+            "make_litellm_model_step needs completion_fn: there is no in-process "
+            "litellm default any more; pass a function that calls the LLM gateway"
+        )
+    call = completion_fn
     tools = to_openai_tools()
 
     async def model_step(transcript: list[dict]) -> dict:

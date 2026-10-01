@@ -233,3 +233,92 @@ class TestM2CanAcceptFailOpen:
         ok, why = res.can_admit(self._task(4096))
         assert not ok, "a genuinely full GPU must refuse a 4 GB task"
         assert why and "insufficient memory" in why
+
+
+# ── H2: explicit unregister leaks a running arbiter task ────────────────────
+
+class TestH2UnregisterCancelsArbiter:
+    """``unregister_worker`` must cancel the worker's running GPU arbiter tasks.
+
+    The admin-unregister path released the lease rows but never told the arbiter,
+    so a running task survived with its VRAM reservation and ``_running`` slot
+    held. A returning worker (or a fresh claimant) would then run concurrently
+    with the orphan on the same physical GPU — the shared-GPU corruption class
+    #1992 is about. Uses a REAL GpuArbiter + real lease/reservation, not a mock,
+    so both halves of the invariant (cancelled task + freed resources) are
+    actually exercised.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unregister_cancels_running_arbiter_task(self):
+        from tinyagentos.scheduler.gpu_arbiter import GpuArbiter
+        from tinyagentos.scheduler.types import Capability, Priority, Task
+
+        mgr = ClusterManager()
+        w = _worker("gpu-box", free_vram_mb=8192)
+        w.resources = ["gpu-cuda-0"]
+        mgr._workers["gpu-box"] = w
+
+        # Local probe is present so admission holds a real VRAM reservation;
+        # the cluster manager lets _run_gpu_task claim a real lease.
+        arbiter = GpuArbiter(
+            cluster_manager=mgr,
+            vram_probe=lambda: (8192, 8192),
+            max_queue_size=10,
+        )
+        mgr._gpu_arbiter = arbiter
+
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def long_running(_resource):
+            started.set()
+            try:
+                await asyncio.sleep(60)  # never finishes on its own
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        task = Task(
+            id="t-unreg",
+            capability=Capability.LLM_CHAT,
+            payload=long_running,
+            preferred_resources=[],
+            priority=Priority.INTERACTIVE_AGENT,
+            estimated_vram_mb=1024,
+        )
+
+        async def submitter():
+            try:
+                await arbiter.submit_gpu(
+                    task, required_vram_mb=1024,
+                    resource_id="gpu-box:gpu-cuda-0",
+                )
+            except asyncio.CancelledError:
+                return "cancelled"
+            return "completed"
+
+        submit_coro = asyncio.create_task(submitter())
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        # Preconditions: a live lease, a running slot, and a VRAM reservation.
+        assert len(mgr.get_leases()) == 1
+        assert "t-unreg" in arbiter._running
+        assert "t-unreg" in arbiter._pending_reservations
+        assert arbiter._vram.reserved_vram_mb == 1024
+
+        assert await mgr.unregister_worker("gpu-box") is True
+
+        # (a) the arbiter task is cancelled. Bounded wait (no wait_for, which
+        # would cancel the very coroutine under test and fake a pass).
+        done, _pending = await asyncio.wait({submit_coro}, timeout=1)
+        assert done, "unregister did not cancel the running arbiter task"
+        assert submit_coro.result() == "cancelled"
+        assert cancelled.is_set(), "running GPU payload was not cancelled"
+        assert "t-unreg" not in arbiter._running
+        assert "t-unreg" not in arbiter._running_tasks
+        # (b) ... and its VRAM reservation is freed.
+        assert "t-unreg" not in arbiter._pending_reservations
+        assert arbiter._vram.reserved_vram_mb == 0
+        # The lease rows are gone too (the pre-existing half of the behaviour).
+        assert mgr.get_leases() == []

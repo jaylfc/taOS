@@ -63,6 +63,43 @@ async def _resolve_container_project(name: str) -> str | None:
     return None
 
 
+async def get_container_state(name: str) -> dict | None:
+    """Return ``{"project", "status"}`` for a container across ALL projects.
+
+    ``status`` is incus's own word (``Running``, ``Stopped``, ``Frozen`` ...).
+    Returns None when the container is not found or incus cannot be queried
+    (binary absent, daemon down, malformed output) so callers can fall back to
+    the stored agent state instead of failing.
+    """
+    try:
+        code, output = await _run(["incus", "list", "--all-projects", "-f", "json"])
+    except (FileNotFoundError, OSError):
+        return None
+    if code != 0:
+        return None
+    try:
+        instances = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    for inst in instances:
+        if isinstance(inst, dict) and inst.get("name") == name:
+            return {
+                "project": inst.get("project") or "default",
+                "status": inst.get("status") or "Unknown",
+            }
+    return None
+
+
+async def _project_args(name: str) -> list[str]:
+    """``["--project", <p>]`` for the container's project, or ``[]`` (ambient)
+    when it cannot be resolved. Mirrors destroy_container's lookup."""
+    try:
+        proj = await _resolve_container_project(name)
+    except (FileNotFoundError, OSError):
+        proj = None
+    return ["--project", proj] if proj else []
+
+
 async def container_exists(name: str) -> bool:
     """Return True iff a container with the given name is known to the runtime.
 
@@ -155,8 +192,12 @@ async def resolve_agent_container(slug: str, display_name: str | None = None) ->
 
 
 async def list_containers(prefix: str = "taos-agent-") -> list[ContainerInfo]:
-    """List all agent containers."""
-    code, output = await _run(["incus", "list", "-f", "json"])
+    """List all agent containers, across ALL incus projects.
+
+    Agent containers live in a restricted project (e.g. ``user-999``) on
+    multi-user installs, so an ambient-project listing would miss them.
+    """
+    code, output = await _run(["incus", "list", "--all-projects", "-f", "json"])
     if code != 0:
         logger.error(f"incus list failed (exit {code}): {output}")
         raise RuntimeError(f"incus list failed (exit {code}): {output.strip()}")
@@ -172,7 +213,10 @@ async def list_containers(prefix: str = "taos-agent-") -> list[ContainerInfo]:
             continue
         status = c.get("status", "Unknown")
         ip = None
-        network = c.get("state", {}).get("network", {})
+        # A stopped instance reports "state": {"network": null} (and "state"
+        # itself can be null), so coerce both to {} rather than trusting
+        # dict.get defaults, which only apply when the key is absent.
+        network = (c.get("state") or {}).get("network") or {}
         for iface in network.values():
             for addr in iface.get("addresses", []):
                 if addr.get("family") == "inet" and addr.get("scope") == "global":
@@ -331,12 +375,19 @@ async def push_file(name: str, local_path: str, remote_path: str) -> tuple[int, 
 
 
 async def start_container(name: str) -> dict:
-    code, output = await _run(["incus", "start", name])
+    """Start a container in whatever project it lives in.
+
+    On a Frozen (paused) instance ``incus start`` unfreezes it, which is how
+    resume is implemented (see incus cmd/incus/action.go).
+    """
+    proj_args = await _project_args(name)
+    code, output = await _run(["incus", "start", *proj_args, name])
     return {"success": code == 0, "output": output}
 
 
 async def stop_container(name: str, force: bool = False) -> dict:
-    cmd = ["incus", "stop", name]
+    proj_args = await _project_args(name)
+    cmd = ["incus", "stop", *proj_args, name]
     if force:
         cmd.append("--force")
     code, output = await _run(cmd)
@@ -344,7 +395,15 @@ async def stop_container(name: str, force: bool = False) -> dict:
 
 
 async def restart_container(name: str) -> dict:
-    code, output = await _run(["incus", "restart", name])
+    proj_args = await _project_args(name)
+    code, output = await _run(["incus", "restart", *proj_args, name])
+    return {"success": code == 0, "output": output}
+
+
+async def pause_container(name: str) -> dict:
+    """Freeze a running container (``incus pause``) in its own project."""
+    proj_args = await _project_args(name)
+    code, output = await _run(["incus", "pause", *proj_args, name])
     return {"success": code == 0, "output": output}
 
 

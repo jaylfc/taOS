@@ -47,6 +47,20 @@ async def _ensure_agent_model_key_store(client, tmp_path_factory):
     yield
     await store.close()
 
+@pytest_asyncio.fixture(autouse=True)
+async def _ensure_cluster_pairing_store(client, tmp_path_factory):
+    """Init app.state.cluster_pairing on a fresh DB; the test client registers
+    the store but does not run the lifespan that init()s it."""
+    store = client._transport.app.state.cluster_pairing
+    if store is not None:
+        if store._db is not None:
+            await store.close()
+        store.db_path = tmp_path_factory.mktemp("cluster_pairing_authz") / "pairing.db"
+        await store.init()
+    yield
+    if store is not None and store._db is not None:
+        await store.close()
+
 # A non-loopback peer address so the loopback-only prepare-shutdown carve-out
 # in AuthMiddleware does not apply (the default ASGITransport peer is loopback).
 _LAN_PEER = ("192.168.1.10", 51234)
@@ -783,6 +797,7 @@ def _stub_cluster(app, monkeypatch, *, online: bool = True):
     cluster.unregister_worker = AsyncMock(return_value=True)
     task_router = MagicMock()
     task_router.route_request = AsyncMock(return_value=({"ok": True}, "w1"))
+    
     monkeypatch.setattr(app.state, "cluster_manager", cluster, raising=False)
     monkeypatch.setattr(app.state, "task_router", task_router, raising=False)
     return cluster, task_router
@@ -863,3 +878,97 @@ class TestClusterAdminAllowed:
         finally:
             await bare.aclose()
         cluster.unregister_worker.assert_awaited_once_with("w1")
+
+# ---------------------------------------------------------------------------
+# Cluster admin DELETE when pairing store is unavailable (DEFECT 1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestClusterAdminDeleteWithoutPairingStore:
+    """DELETE /api/cluster/workers/{name} must fail closed when pairing store is unavailable."""
+
+    async def test_delete_without_pairing_store_refuses(self, client, app):
+        """When app.state.cluster_pairing is None, admin DELETE -> 503.
+
+        The worker row should remain present in the cluster manager because
+        the pairing store is unavailable and we never skipped the revoke.
+        """
+        # Set cluster_pairing to None to simulate unavailable store
+        app.state.cluster_pairing = None
+
+        # Create a worker in the cluster manager so we can test DELETE
+        from tinyagentos.cluster.worker_protocol import WorkerInfo
+        cluster = app.state.cluster_manager
+        worker = WorkerInfo(
+            name="test-worker",
+            url="http://test-worker:9000",
+            capabilities=["chat"],
+            status="online",
+        )
+        cluster._workers["test-worker"] = worker
+
+        # Admin DELETE should fail with 503 when pairing store is unavailable
+        resp = await client.delete("/api/cluster/workers/test-worker")
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["code"] == "STORE_UNAVAILABLE"
+        assert resp.json()["error"] == "pairing store unavailable"
+
+        # Worker row should still be present because DELETE failed
+        assert cluster.get_worker("test-worker") is not None
+        assert cluster.get_worker("test-worker").name == "test-worker"
+
+    async def test_local_token_delete_without_pairing_store_refuses(self, app):
+        """Local token DELETE also must fail closed when pairing store is unavailable."""
+        # Set cluster_pairing to None
+        app.state.cluster_pairing = None
+
+        # Create a worker in the cluster manager
+        from tinyagentos.cluster.worker_protocol import WorkerInfo
+        cluster = app.state.cluster_manager
+        worker = WorkerInfo(
+            name="local-test-worker",
+            url="http://local-test-worker:9000",
+            capabilities=["chat"],
+            status="online",
+        )
+        cluster._workers["local-test-worker"] = worker
+
+        # Local token DELETE should also fail with 503
+        from tests.test_global_routers_authz import _local_token_client
+        bare = _local_token_client(app)
+        try:
+            resp = await bare.delete("/api/cluster/workers/local-test-worker")
+        finally:
+            await bare.aclose()
+
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["code"] == "STORE_UNAVAILABLE"
+        assert resp.json()["error"] == "pairing store unavailable"
+
+        # Worker row should still be present
+        assert cluster.get_worker("local-test-worker") is not None
+
+    async def test_delete_with_uninitialised_pairing_store_refuses(self, client, app):
+        """When cluster_pairing exists but its DB was never initialised, admin
+        DELETE -> 503. The worker row must remain present."""
+        store = app.state.cluster_pairing
+        assert store is not None
+        await store.close()
+        store._db = None
+
+        from tinyagentos.cluster.worker_protocol import WorkerInfo
+        cluster = app.state.cluster_manager
+        # Persist the worker so unregister_worker would delete it if called.
+        await cluster._registry_store.init()
+        worker = WorkerInfo(
+            name="uninit-worker",
+            url="http://uninit-worker:9000",
+            capabilities=["chat"],
+            status="online",
+        )
+        cluster._workers["uninit-worker"] = worker
+
+        resp = await client.delete("/api/cluster/workers/uninit-worker")
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["code"] == "STORE_UNAVAILABLE"
+        assert cluster.get_worker("uninit-worker") is not None

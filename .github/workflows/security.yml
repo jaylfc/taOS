@@ -39,7 +39,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -e ".[dev,proxy,worker]"
+        run: pip install -e ".[dev,worker]"
 
       - name: Install uv
         run: pip install uv

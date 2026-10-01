@@ -36,6 +36,7 @@ import { EffectsLayer } from "@/theme/effects/EffectsLayer";
 import { SafetyFloor } from "@/components/SafetyFloor";
 import { withCsrf, getCsrfToken } from "@/lib/csrf";
 import { useLockOnScreenOff } from "@/shell/useLockOnScreenOff";
+import { primeDeviceClass } from "@/lib/mobile-shell";
 
 interface SystemShortcutsProps {
   toggleSearch: () => void;
@@ -292,6 +293,9 @@ export function App() {
   // later re-login.
   useOnAuthReady(() => {
     void restoreActiveTheme();
+    // Learn once whether this is a taOSmobile handset, so app opens can go to
+    // the device shell as their own windows (lib/mobile-shell).
+    void primeDeviceClass();
   });
 
   // Apply reduce-effects / performance mode (#58) as a root attribute so the CSS
@@ -339,20 +343,17 @@ export function App() {
   }, []);
 
   const handleMobileOpenApp = useCallback((appId: string) => {
-    // If already open, focus it
-    const existing = windows.find((w) => w.appId === appId);
-    if (existing) {
-      setActiveWindowId(existing.id);
-    } else {
-      const app = getApp(appId);
-      if (app) {
-        const wid = openWindow(appId, app.defaultSize);
-        setActiveWindowId(wid);
-      }
+    // openWindow focuses an already-open window itself (returning its id), and
+    // on a taOSmobile handset hands the open to the device shell first -- so
+    // do not short-circuit an existing window here.
+    const app = getApp(appId);
+    if (app) {
+      const wid = openWindow(appId, app.defaultSize);
+      setActiveWindowId(wid || null);
     }
     setCardSwitcherOpen(false);
     setSearchOpen(false);
-  }, [windows, openWindow]);
+  }, [openWindow]);
 
   const handleMobileClose = useCallback(() => {
     if (activeWindowId) {

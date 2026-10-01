@@ -16,13 +16,13 @@ You are being asked to produce a health report. This is a read-only task — do 
 4. **Open file descriptors.** Run `ls /proc/self/fd 2>/dev/null | wc -l` to count your own open FDs. Then run `lsof -p $$ 2>/dev/null | tail -20` for the top 20 by recency. Flag if FD count is above 256.
 
 5. **Network reachability.** Test the following endpoints and report HTTP status code or connection error for each:
-   - LiteLLM proxy: `curl -sf -o /dev/null -w "%{http_code}" http://localhost:4000/health 2>/dev/null || echo "unreachable"`
+   - LLM gateway (this container's `127.0.0.1:4000`): `curl -s -o /dev/null -w "%{http_code}" http://localhost:4000/v1/models 2>/dev/null || echo "unreachable"` (401 is healthy: no key was sent)
    - taOS controller: `curl -sf -o /dev/null -w "%{http_code}" http://localhost:6969/api/health 2>/dev/null || echo "unreachable"`
    - DNS resolution: `nslookup example.com 2>/dev/null | head -4 || echo "DNS unavailable"`
 
 6. **Summary paragraph.** Write a 3–5 sentence plain-language summary of overall health. Use this structure: "As of <timestamp>, this agent is in <good/degraded/critical> health. [Key issues]. [Notable observations]. [Recommended next steps, if any]."
 
-7. **Status table.** Produce a markdown table with columns: Check | Status | Detail. One row per check above (systemd, error logs, FDs, LiteLLM, taOS, DNS).
+7. **Status table.** Produce a markdown table with columns: Check | Status | Detail. One row per check above (systemd, error logs, FDs, LLM gateway, taOS, DNS).
 
 **Reminders**
 - This is a report only. Do not restart services, clear logs, or change any settings.

@@ -152,12 +152,30 @@ operator, not from any database. Store it in TWO locations that survive a machin
 migration, both `chmod 600`, outside any git tree, and make one authenticated call
 to verify it before considering onboarding finished. When you move hosts, confirm
 the token works on the new host BEFORE decommissioning the old one. Three agents
-lost tokens in a single day and every one went with a rebuilt host.
+lost tokens in a single day and every one went with a rebuilt host. Every mint
+response now returns that rule alongside the token (the `storage_guidance` field
+on register / mint-internal / auth-request-poll / rotate responses), for the same
+reason the rule matters: the seconds after the handover are the only chance the
+holder gets.
 
-Losing it is not merely inconvenient: recovery mints a NEW identity with no
-grants, while the old identity keeps its own unless you revoke them (below) or
-revoke the identity itself. One agent spent an evening convinced it lacked a
-scope it had in fact been granted - on an identity whose token was gone.
+**Losing it no longer mints a new identity.** `POST
+/api/agents/registry/{canonical_id}/rotate-tokens` rotates the credential ON the
+same canonical identity: it moves the identity's `token_min_iat` cutoff past
+every token already issued and returns one fresh token, minted AT that cutoff, in
+the same call. The superseded token is then rejected with `401 token superseded`
+and the replacement works immediately; the `canonical_id` never changes and the
+identity keeps its grants, so recovery stops scattering grants across orphan
+identities. The replacement carries the identity's `sub` / `user_id` /
+`framework` but not the superseded token's `project_id` claim; that claim has
+been advisory since #1862 (grants, not the claim, decide project-scoped
+authority) and rotation does not touch them, so the replacement's reach is
+unchanged. Owner or admin may rotate any identity they own, and an agent may
+rotate its OWN identity with its own live registry JWT (the route is on the
+middleware allowlist) -- which is the "rotate my credential" action an agent needs
+when it suspects its token is stale or leaked, with no human in the loop. Before
+this the only recovery was "mint a NEW identity": the old row kept its grants
+while the replacement started empty, and one agent spent an evening convinced it
+lacked a scope it had in fact been granted - on an identity whose token was gone.
 
 **Scope grants are revocable, per scope and per project.** `agent_grants_store`
 gained `revoke_grant(canonical_id, scope, project_id=...)` and
@@ -651,11 +669,42 @@ The registry-JWT surface, by scope:
   author is taken from the verified token, never from the request body.
 - **canvas_read**: `GET .../canvas/elements` (`?include_deleted=true` is the raw
   JSON backup: soft-deleted rows too, flagged `deleted`), `.../canvas/watch-projection`,
-  `.../canvas/snapshot.png|.tldr`, `.../canvas/stream`. **canvas_write**: `POST .../canvas/elements`,
+  `.../canvas/snapshot.png|.tldr`, `.../canvas/stream`, `.../canvas/elements/{id}/original`,
+  `.../canvas/legacy?include_deleted=1`. **canvas_write**: `POST .../canvas/elements`,
   `PATCH|DELETE .../canvas/elements/{id}`. A `PATCH` payload replaces the element's
   payload, except that a `user_shape`'s stored `tldraw_shape` is always kept verbatim
   (omitting or changing it has no effect, and it counts toward the 64 KiB cap). `DELETE`
   is a soft delete; the row stays recoverable.
+
+### Recovering a user's drawing
+
+When a user accidentally deletes a canvas element, the row is soft-deleted
+(`deleted_at` is set) and disappears from the normal listing. Two agent-callable
+surfaces let the user or an agent recover the data by hand:
+
+1. **Single element recovery**: call `GET /api/projects/{project_id}/canvas/elements/{element_id}/original`
+   with a `canvas_read` token. The placeholder label the UI shows on a deleted
+   element carries the `element_id`; call this endpoint for that id. The response
+   returns the element's original `payload` verbatim, plus the extracted
+   `tldraw_shape` and `excalidraw_element` blobs (or `null` when absent), so the
+   user can re-create the shape from the raw data.
+
+2. **Whole-board recovery**: call `GET /api/projects/{project_id}/canvas/legacy?include_deleted=1`
+   with a `canvas_read` token. This returns every row whose payload holds a
+   `tldraw_shape`, including soft-deleted ones, so an agent can enumerate what
+   needs recovering and call the per-element original endpoint for each.
+
+3. **File-based recovery**: the whole-board export stays `GET .../canvas/snapshot.tldr`,
+   which writes a `.tldr` file the user can open in stock tldraw. The `taosctl`
+   verbs `canvas-original <project_id> <element_id>`,
+   `canvas-legacy <project_id> [--include-deleted]`, and
+   `canvas-export-tldr <project_id> [-o FILE]` expose the same three operations
+   from the CLI.
+
+All three endpoints return an existence-hiding 404 when the token is bound to a
+different project, and 403 when the agent lacks the `canvas_read` scope or the
+`can_read_canvas` member flag.
+
 - **files_read**: `GET /api/projects/{slug}/files` (list), `.../files/watch`,
   `GET .../files/{path}` (download), `.../trash`, `.../stats`. **files_write**:
   `POST .../files/upload` (multipart), `POST .../mkdir`, `DELETE .../files/{path}`,
@@ -701,7 +750,8 @@ gets `expires_at = approval time + duration_secs`, and every auth path treats
 the grant as gone once that passes. Omit the field for an unbounded grant.
 A bool, string, float, zero, negative or over-ten-years value is refused with
 **422** at request time. The rule is: a grant with no duration is unbounded,
-and a bound that is set is never silently dropped or lengthened.
+and a bound that is set is never silently dropped or lengthened. To explicitly
+renew or extend an existing bound, set `renew: true` on the approve body.
 
 Deferred binding (`defer_binding=True`) mints the token and grants UNBOUND
 (project_id=None) with the same `expires_at` from `duration_secs`. When the
@@ -709,6 +759,10 @@ agent is later bound to a project via `POST /api/projects/{id}/members/assign-ag
 the project-bound grant **inherits that `expires_at`**. If the deferred grant
 has expired, the binding is refused. When both a deferred grant with expiry and
 a request with expiry exist, the earlier bound is kept (never lengthened).
+An expired row is never silently widened to unbounded: if the existing grant
+is already expired and the caller supplies no `expires_at`, the expired row is
+preserved as-is. If the caller supplies a new bounded `expires_at`, that fresh
+bound replaces the dead one.
 
 Multi-project identities (taOS #1862): one agent identity (the registry JWT) may
 belong to several projects at once. The grants table keys a grant on
@@ -996,11 +1050,16 @@ that SAME canonical_id instead:
   counted by the route first, so a burst of concurrent self-requests cannot
   slip past it and flood the approver's queue.
 - `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/approve`
-  `{granted_scopes, project_id?}`: owner/admin only. The admin may narrow but
+  `{granted_scopes, project_id?, renew?}`: owner/admin only. The admin may narrow but
   never widen the requested scopes; each granted scope is added via
   `add_grant(canonical_id, scope, project_id)` (idempotent on the
   `(canonical_id, scope, project_id)` UNIQUE key, so re-approving is a no-op). No
-  new identity is created.
+  new identity is created. `renew` defaults to false: when the scope already
+  carries an `expires_at`, the earlier of the existing and any new bound is kept
+  (never silently dropped or lengthened). Set `renew: true` to explicitly extend
+  or replace the bound. The scope request's own `duration_secs` (if present) is
+  also wired through as `expires_at`. An expired existing grant is replaced by a
+  fresh bounded re-approval, or kept as-is if the re-approval is unbounded.
 - `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/deny`:
   owner/admin only.
 - `GET /api/agents/registry/{canonical_id}/scope-requests` (optional
@@ -1066,7 +1125,9 @@ All owner-gated registry routes are existence-hiding (#2106): an authenticated
 caller who is not the owner gets the same 404 body as a nonexistent
 `canonical_id`, on the scope-request create/read/approve/deny routes above and
 on registry PATCH, DELETE (revoke), rotate-tokens, and
-`PUT /api/agents/{id}/org`.
+`PUT /api/agents/{id}/org`. `rotate-tokens` additionally authorizes the agent
+itself when it presents its OWN live registry JWT (a self-rotation), so a request
+carrying a valid token for a DIFFERENT identity is still the same 404.
 Agents must not treat a 404 from these routes as proof an id does not exist,
 and must not expect a 403 to distinguish "exists, not yours". Admin-only
 lifecycle routes (approve/reject/suspend/reactivate) still 403 non-admins
@@ -1160,7 +1221,8 @@ arrives via the status poll). The bundle has:
 
 - `controller.endpoints`: the controller's reachable addresses: non-loopback
   LAN IPv4s (priority ordered, operator override first) and the mesh (Tailscale)
-  node IP when joined. No relay in Phase 1.
+  node IP when joined. An optional relay endpoint is present when
+  `TAOS_CONTROLLER_RELAY_URL` is configured with `https://`.
 - `apis`: the agent-JWT-reachable surface, scoped EXACTLY to the granted scopes
   and mirroring the middleware canvas allowlist so the advertised routes are the
   ones the token can call: task routes when `project_tasks` is granted; canvas
@@ -1174,6 +1236,8 @@ arrives via the status poll). The bundle has:
   agent manual links, scoped Projects/Canvas summary, the A2A authenticated-proxy
   contract, and explicit instructions to write the identity/project/token-file/bus
   contract into the agent's OWN memory and to poll every `check_interval_secs`).
+  For `harness=grok` the guide includes a Grok-specific section covering secure-form
+  token storage (no file or chat), routine polling, and the shared-account warning.
 
 See `docs/design/external-agent-project-invite.md` (issue #1780) for the full
 design; the bundle advertises canvas routes only when the corresponding scope
@@ -1597,6 +1661,53 @@ where `revoked=0 OR blocked=1`, so a blocked device counts against
 `_MAX_DEVICES_PER_USER` until it is unblocked, at which point the row falls out
 and the slot frees. Deliberate: a blocked device is a retained safety valve the
 owner can still see and act on.
+
+## Cluster capability + placement map (`GET /api/cluster/map`, admin-only)
+
+Route module `tinyagentos/routes/cluster_map.py`. **Admin session only**: the
+auth middleware answers `401` to a cookie-less caller (this path is not in the
+middleware's exempt list) and `_require_admin` answers `403` to a signed-in
+non-admin, so no agent scope reaches it. Read-only by construction — it owns no
+state and reads the cluster manager's existing getters (`get_workers()` plus the
+GPU arbiter's `get_leases()`), the same state routing and scheduling consult, so
+it adds no second inventory to keep in sync. The nuance: those are two separate,
+non-atomic reads assembled per request, so the map can reflect slightly
+different state than a routing decision taken a moment later — it is a
+snapshot, not a lock.
+
+- `nodes` -- one entry per REGISTERED node, offline rows included (a node that
+  stopped heartbeating is exactly what the view exists for). Each carries
+  `health` (heartbeat freshness, using the same 60 s / 300 s thresholds the
+  desktop computes), `tier_id`, hardware, VRAM (`free_mb` / `used_mb` /
+  `total_mb`, `null` when the node reports no probe — never coerced to 0),
+  `backends`, `placement` rows and any active GPU `leases`.
+- `placement` -- one row per model: `state` is `loaded` (resident now) or
+  `installed` (declared on the node, not resident). Derived from each worker's
+  `backends[].available_models` (`status` `loaded` / otherwise), which survives
+  a stopped backend, so a node with everything installed and nothing running
+  reports installed-only rows instead of vanishing from the map. A backend with
+  no `available_models` (no manifest, or one that does not cover its software)
+  falls back to its `models` catalog against the `loaded_models` residency set;
+  the absence of a `loaded_models` key is no residency signal, so nothing reads
+  `loaded`. Note the corollary: the non-ollama backends (llama.cpp / vLLM /
+  sd-cpp) publish no in-memory probe — their `loaded_models` is empty by design
+  — so a model they are actively serving still reads `installed`, following the
+  worker's own `available_models[].status`.
+- `capabilities` -- the union of capabilities across the mesh, each split into
+  mutually exclusive buckets: `active_nodes` (serving now), `installed_nodes`
+  (present but not serving) and `potential_nodes` (hardware could run it,
+  nothing installed yet). A node that serves a capability is reported as
+  active and never also as installed or merely capable; the finer detail (a
+  node serving one model while another for the same capability sits installed)
+  lives in that node's own `placement` rows. A `loaded` placement row counts
+  as active. **Only nodes still heartbeating (health `online` or `stale`) count
+  as active**: the manager retains an offline worker with its last-reported
+  capabilities and loaded models, and those are not reachable capacity, so an
+  offline node's retained capabilities land in `installed_nodes` instead.
+  Capability strings are reported as the workers and catalog manifests write
+  them (`chat`, `image-generation`, `llm-chat`, ...); the endpoint does not
+  invent a normalised vocabulary.
+
 ## Controller generation echo (split-brain protection)
 
 Route module `tinyagentos/routes/cluster.py`, manager logic in
@@ -1688,6 +1799,7 @@ The allowlist is the union of:
 - Observatory (`/api/observatory/*`, scope `observatory_control`).
 - Container requests (`/api/containers/requests`, `/api/container-requests`, `/api/containers/requests/{id}/provision`, `/api/containers/requests/{id}/destroy`, `/api/agents/containers/quota`).
 - Agent self-serve (`/api/agents/me/models` GET, `/api/agents/me/model` POST).
+- **Credential rotation** (`POST /api/agents/registry/{id}/rotate-tokens`) -- identity-only, no scope grant: the route requires the JWT's `sub` to equal the path `canonical_id`, so an agent can rotate its own token and nobody else's. Returns the replacement token and the `storage_guidance` string; the superseded token is rejected by the identity's `token_min_iat` cutoff.
 - **Desktop control (system taOS Agent only)**: `POST /api/desktop/command`, `POST /api/desktop/screenshot`, `POST /api/desktop/layout` (native agent's registry JWT sets `user_id` to the owner, so desktop commands are delivered to the owner's desktop).
 - **Skill-exec (system taOS Agent only)**: `POST /api/skill-exec/{skill_id}/call`, `GET /api/skill-exec/tools` (native agent's registry JWT with `SYSTEM_AGENT_API_SCOPES`).
 
@@ -1771,17 +1883,97 @@ valid for admin/system callers but is no longer bound to any agent name.
 ## In-process LLM gateway (`/api/llm/v1`, scoped gateway keys, session or host local token)
 
 `tinyagentos/llm_gateway/` is the in-controller replacement for the LiteLLM
-proxy. It is mounted only when the controller starts with
-`TAOS_LLM_GATEWAY=1`; otherwise `/api/llm/v1/*` does not exist (404 for a
-signed-in caller). LiteLLM keeps running beside it, unchanged.
+proxy, and since LiteLLM removal stage 2b-2a it is the ONLY LLM path: there is
+no LiteLLM process, and `TAOS_LLM_GATEWAY=0` (or `false` / `no` / `off`) is
+ignored (logged once at startup); `/api/llm/v1/*` is always mounted.
+
+How agents reach it. An agent's base URL does not change: it is still
+`http://127.0.0.1:4000/v1` inside its container (openclaw:
+`http://127.0.0.1:4000`). That address is the incus proxy device
+`taos-proxy-litellm`; its host side (`connect`) used to be LiteLLM's host port
+(`server.litellm_port`, 7834) and is now the gateway's AGENT LISTENER,
+`127.0.0.1:7838` on the host (`server.llm_gateway_port` or
+`TAOS_LLM_GATEWAY_PORT`; `0` disables the listener, which leaves agents with
+no LLM path; not 7837, which is the MLX backend's port). The device keeps its
+`taos-proxy-litellm` name and its in-container listen side; there is no
+rename migration. The listener binds
+loopback only and serves an allowlist, all from the gateway itself:
+`/v1/models`, `/v1/chat/completions` and `/v1/embeddings` (what
+`TAOS_EMBEDDING_URL` points at), and the un-prefixed forms. Embeddings used to
+be relayed to LiteLLM; since LiteLLM removal stage 2a (tsk-ilqzq6) the gateway
+routes them itself (`llm_gateway/embeddings.py`: `taos-embedding-default` and
+discovered embedding models to the Ollama-shaped backend's `/api/embed`, a
+llama.cpp/OpenAI-compatible model to its `/embeddings`), under the same key
+allowlist and usage recording as chat, so nothing an agent calls needs
+LiteLLM running. An agent's key must name the embedding model (e.g.
+`taos-embedding-default`) to use it: `scoped_key_models` adds the
+embedding alias to every mint and re-scope, so the key always allows
+embeddings. Chat answers also carry
+`reasoning_content` (same text) wherever the upstream sent `reasoning`, as
+LiteLLM did. A remote agent has no gateway path (no proxy device, loopback
+listener): a remote deploy is REFUSED with "remote agents need the network LLM
+gateway, not built yet" (decision dec-26f4cw), and the cutover skips an
+existing remote agent with the same reason. Every other path is a 404, including
+LiteLLM's admin API (`/key/generate`, `/model/new`, `/config/update`,
+`/user/new`) and `/v1/messages` / `/v1/responses`. Paths are normalised first
+(a trailing slash cannot route around the gateway) and request bodies are
+capped at 32 MiB (413). Every response carries `x-taos-llm-listener: <nonce>`,
+a value minted fresh at each controller start.
+
+At every controller start `llm_gateway/cutover.py` reconciles each local
+agent's device, resolving the container's incus project (agent containers
+live in e.g. `user-999`) and passing `--project`:
+
+- The listener must be VERIFIED first: `GET /v1/models` with no key has to
+  answer with this start's nonce in `x-taos-llm-listener` and the gateway's
+  own 401 (`code: invalid_api_key`). Accepting TCP is not enough: a
+  different process holding the port (an unauthenticated model server, say)
+  would otherwise receive every agent's traffic. Unverified: nobody is moved
+  onto it, agents already on it are left as they are (there is no LiteLLM to
+  send them back to), and new local deploys are refused with the reason.
+- A device whose `connect` is an old LiteLLM host port (4000, 7834, or the
+  configured `server.litellm_port`) is moved to the listener
+  UNCONDITIONALLY: that port is dead. Whether the gateway can serve EVERY
+  model its key allows (`cutover.models_problem`, read from the same routing
+  table) no longer decides the move; a problem is logged on the agent's
+  item. A model is servable when its highest-priority route is
+  OpenAI-compatible (`openai`,
+  `openrouter`, `deepseek`), Anthropic, or Ollama-shaped on a backend of
+  type `ollama`, `rkllama` or `hailo-ollama` (all three serve
+  `/v1/chat/completions` at the refs taOS installs; hailo-ollama streams
+  Ollama NDJSON, which the gateway translates to OpenAI SSE). New deploys
+  run the same check and record a warning step instead of failing.
+- When the agent's key is its own `agent_keys` row, its gateway key is
+  minted from it first (same hash, `key_id` `gk_lit_...`, same allowlist, so
+  the key the agent already holds keeps working) and checked to be live,
+  then the device is set to the listener. No restart, no redeploy.
+- An agent whose key cannot be read (no key recorded, the old master key, a
+  key the local key store does not hold such as a LiteLLM Postgres virtual
+  key, or another agent's key) is still moved, nothing is minted for it, and
+  the reason ("re-key or redeploy it") is logged on its item. Remote agents
+  have no device and are skipped.
+- A container that errors or hangs (each incus call is capped at 30 s) is
+  logged and skipped; the rest are still reconciled.
+
+Only a device whose current value was read and recognised is changed, so a
+second run changes nothing. New local deploys go straight to the listener
+once it has been verified, with `OPENAI_BASE_URL=http://127.0.0.1:4000/v1`
+and `TAOS_EMBEDDING_URL=http://127.0.0.1:4000/v1/embeddings` (the container's
+own address, never the host's `litellm_port`). By hand (the same commands the
+reconcile runs):
+`incus config device get <container> taos-proxy-litellm connect --project <project>`
+and
+`incus config device set <container> taos-proxy-litellm connect=tcp:127.0.0.1:7838 --project <project>`.
 
 - `GET /api/llm/v1/models`: OpenAI list shape. Every chat model name in the
   routing table, plus the alias `taos-default` first.
-- `POST /api/llm/v1/chat/completions`: non-streaming only (`stream: true` is a
-  400 until streaming lands). The body is forwarded verbatim, `tools` /
+- `POST /api/llm/v1/chat/completions`: streaming and non-streaming. The body
+  is forwarded verbatim, `tools` /
   `tool_choice` / `tool_calls` included; only `model` is rewritten to the
-  backend's own id. Only OpenAI-compatible backends (LiteLLM's `openai/`
-  prefix) are served; any other backend type is a 501 naming the model.
+  backend's own id. OpenAI-compatible backends (LiteLLM's `openai/` and
+  `openrouter/` prefixes; OpenRouter defaults to
+  `https://openrouter.ai/api/v1`), Ollama's `/v1` surface and Anthropic
+  (translated) are served; any other backend type is a 501 naming the model.
   Upstream failures and timeouts are a 502; the backend's key and URL never
   appear in a response or a log line.
 
@@ -1789,8 +1981,8 @@ It is deliberately NOT bare `/v1`: `/v1/models` and `/v1/chat/completions`
 are Agent-as-a-Model (consent-key auth, see `routes/agent_model_api.py`) and
 are unchanged.
 
-Routing: model names resolve through `litellm_config.build_model_list`, the
-same function `generate_litellm_config` wraps, read per request.
+Routing: model names resolve through `litellm_config.build_model_list`, read
+per request (the LiteLLM config writer that also wrapped it is gone).
 `taos-default` resolves per request to the taOS agent's model preference
 (desktop settings `("user", "taos_agent")["model"]`, set by
 `PATCH /api/taos-agent/settings`), so changing it needs no restart.
@@ -1808,9 +2000,20 @@ so OpenAI clients surface it as bad credentials. `gateway_caller` accepts:
   or one node (`node:<id>`), stored only as a SHA-256 hash, compared with
   `hmac.compare_digest`, optionally expiring. It may use exactly the models it
   names: an EMPTY list denies every model (LiteLLM read it as allow-all);
-- a legacy per-agent LiteLLM key (`sk-taos-...`, the `agent_keys` table), with
-  its allowlist;
-- the per-install LiteLLM master key, as admin (parity with the LiteLLM hook).
+- an agent's LiteLLM key (`sk-taos-...`), with its allowlist: the gateway key
+  minted from it by the cutover once that exists (its revocation is final),
+  otherwise the `agent_keys` row itself.
+
+The old per-install LiteLLM master key is NOT accepted (it was admin until
+cutover stage 1): it is a 401 like any unknown key. The host's own callers
+(the reasoning judge, for one) use the host local token. Since stage 2b-2a
+nothing generates or reads the master key at all (an old install may still
+have the `.litellm_master_key` file; nothing uses it): every deploy gets a key
+scoped to its models from the local key store
+(`TAOS_DISABLE_AGENT_MASTER_KEY_FALLBACK` no longer does anything), the taOS
+agent's opencode likewise, per-agent key admin (mint / re-scope / delete /
+usage) is the local key store with no process gating it, and the provider
+model catalog is read in process from the routing table.
 
 The `taos-default` alias rule: a caller allowed `taos-default` may use
 whatever it CURRENTLY resolves to, without the concrete model in its list.
@@ -1841,7 +2044,7 @@ the choice is made, from two config.yaml keys:
 - `taos_agent.framework`: `auto` (default; picoclaw on mobile, opencode
   elsewhere), `opencode` or `picoclaw` (operator overrides).
 
-PicoClaw needs the LLM gateway (`TAOS_LLM_GATEWAY=1`) and a `picoclaw` binary
+PicoClaw needs the LLM gateway (on unless `TAOS_LLM_GATEWAY=0`) and a `picoclaw` binary
 (`TAOS_PICOCLAW_BIN`, PATH, `/usr/local/bin`, `/usr/bin`). Without either,
 opencode runs and the reason is logged, e.g. exactly
 `picoclaw preferred, gateway disabled, using opencode`. An unknown config

@@ -1722,6 +1722,31 @@ class TestBumpTokenMinIat:
         assert row["token_min_iat"] == 0
 
     @pytest.mark.asyncio
+    async def test_bump_advances_strictly_even_for_a_stale_ts(self, store):
+        """Successive bumps never share a cutoff, whatever ``ts`` is passed.
+
+        The update is a single ``MAX(token_min_iat + 1, ?)``: two rotations that
+        read the same stored cutoff and both computed a target from it (or a
+        caller passing a stale/smaller ts) must still land on DIFFERENT values.
+        A shared cutoff is the dangerous case -- a rotation's replacement would
+        be born already superseded (``iat == token_min_iat`` is accepted, so the
+        previous token survives too).
+        """
+        row = await store.register(framework="test", display_name="test-agent")
+        cid = row["canonical_id"]
+
+        first = await store.bump_token_min_iat(cid, 1000)
+        assert first["token_min_iat"] == 1000
+
+        # A smaller/stale ts still advances by one rather than rewriting 1000.
+        second = await store.bump_token_min_iat(cid, 500)
+        assert second["token_min_iat"] == 1001
+
+        # And a ts equal to the stored value advances too.
+        third = await store.bump_token_min_iat(cid, 1001)
+        assert third["token_min_iat"] == 1002
+
+    @pytest.mark.asyncio
     async def test_bump_nonexistent_returns_none(self, store):
         """bump_token_min_iat on an unknown canonical_id returns None."""
         result = await store.bump_token_min_iat("no-such-agent-20260101-000000", 1700000000)

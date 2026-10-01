@@ -13,17 +13,19 @@ class GatewayError(Exception):
     """Raised anywhere under the gateway routes; rendered by ``handle_gateway_error``."""
 
     def __init__(self, status: int, message: str, *, type: str = "invalid_request_error",
-                 code: str | None = None):
+                 code: str | None = None, headers: dict | None = None):
         super().__init__(message)
         self.status = status
         self.message = message
         self.type = type
         self.code = code
+        self.headers = headers
 
     def response(self) -> JSONResponse:
         return JSONResponse(
             openai_error_body(self.message, type=self.type, code=self.code),
             status_code=self.status,
+            headers=self.headers,
         )
 
 
@@ -50,3 +52,8 @@ def model_not_permitted(model: str) -> GatewayError:
 
 def upstream_error(message: str) -> GatewayError:
     return GatewayError(502, message, type="api_error", code="upstream_error")
+
+
+def rate_limit_error(message: str, retry_after: str | None = None) -> GatewayError:
+    headers = {"retry-after": retry_after} if retry_after else None
+    return GatewayError(429, message, type="rate_limit_error", code="rate_limit_exceeded", headers=headers)

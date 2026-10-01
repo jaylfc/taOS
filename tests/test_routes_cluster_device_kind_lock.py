@@ -103,10 +103,10 @@ async def test_device_register_and_heartbeat_as_worker_stays_device(client, app)
 
 
 @pytest.mark.asyncio
-async def test_device_removed_from_registry_cannot_come_back_as_worker(client, app):
-    """An admin removes the device's registry row (DELETE), but its node key is
-    still in the pairing store. Re-registering with that key must not produce
-    a kind=worker node: the kind is bound to the key at issuance."""
+async def test_device_removed_from_registry_cannot_come_back_at_all(client, app):
+    """An admin removes the device's registry row (DELETE). Its pairing key is
+    revoked in the same step, so the deleted node cannot authenticate at all
+    (heartbeat/register return 401). The node must re-pair from scratch."""
     await app.state.cluster_pairing.init()
     cluster = app.state.cluster_manager
     name, key = await _pair_board(client, app, board_id="DV02")
@@ -114,11 +114,17 @@ async def test_device_removed_from_registry_cannot_come_back_as_worker(client, a
     assert resp.status_code == 200, resp.text
     assert cluster.get_worker(name) is None
 
+    # Re-registering with the old key must fail with 401 (key revoked).
     resp = await _signed_post(client, key, name, "/api/cluster/workers", _as_worker(name))
-    assert resp.status_code in (200, 403), resp.text
-    w = cluster.get_worker(name)
-    assert w is None or w.kind == "device"
-    _assert_never_a_job_candidate(cluster, name)
+    assert resp.status_code == 401, resp.text
+    assert "worker_not_paired" in resp.json().get("code", "")
+
+    # Heartbeat also fails with 401.
+    hb = await _signed_post(client, key, name, "/api/cluster/heartbeat",
+                            {"name": name, "load": 0.0})
+    assert hb.status_code == 401, hb.text
+    assert "worker_not_paired" in hb.json().get("code", "")
+
     await app.state.cluster_pairing.close()
 
 
@@ -156,4 +162,22 @@ async def test_ble_confirm_over_existing_worker_name_is_409(client, app):
     assert confirmed.status_code == 409, confirmed.text
     assert await app.state.cluster_pairing.get_signing_key("gpu-box") == key
     assert cluster.get_worker("gpu-box").kind == "worker"
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_of_unknown_worker_still_revokes_its_key(client, app):
+    """Pair a node but never register it. Admin DELETE returns 404, but the
+    node's signing key is still revoked so it cannot authenticate."""
+    await app.state.cluster_pairing.init()
+    name = "unknown-paired-worker"
+    key = await pair_worker(client, app, name, "http://10.0.0.99:9000")
+    # Do NOT register the worker; cluster manager has no row for it.
+
+    resp = await client.delete(f"/api/cluster/workers/{name}")
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["error"] == "Worker not found"
+
+    # Key must be revoked even though the worker row was absent.
+    assert await app.state.cluster_pairing.get_signing_key(name) is None
     await app.state.cluster_pairing.close()

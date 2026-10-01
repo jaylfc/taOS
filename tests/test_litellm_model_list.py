@@ -1,10 +1,7 @@
-"""The LiteLLM routing table has ONE builder.
+"""The gateway routing table has ONE builder: ``build_model_list``.
 
-`generate_litellm_config` (the LiteLLM proxy's config) and the in-process LLM
-gateway (tinyagentos/llm_gateway) must route a model name to the same backend.
-They can only be guaranteed to agree if both read the same table, so the pure
-"model list" half of the config generator lives in `build_model_list` and the
-config generator is a thin wrapper around it.
+The LiteLLM proxy config that also wrapped it is gone (LiteLLM removal stage
+2b-2a); what is left is the builder itself and its discovery switch.
 """
 from __future__ import annotations
 
@@ -29,26 +26,6 @@ BACKENDS = [
     },
     {"name": "npu", "type": "rkllama", "url": "http://npu.test:8080", "priority": 3},
 ]
-
-
-def test_config_model_list_is_exactly_build_model_list():
-    discovered = {"http://npu.test:8080": ["nomic-embed-text", "qwen2.5"]}
-    config = lc.generate_litellm_config(BACKENDS, master_key="k", discovered=discovered)
-    assert config["model_list"] == lc.build_model_list(BACKENDS, discovered=discovered)
-
-
-def test_generate_litellm_config_calls_build_model_list(monkeypatch):
-    sentinel = [{"model_name": "sentinel", "litellm_params": {"model": "openai/sentinel"}}]
-    seen = {}
-
-    def fake(backends, default_model="default", **kw):
-        seen["args"] = (backends, default_model, kw)
-        return sentinel
-
-    monkeypatch.setattr(lc, "build_model_list", fake)
-    config = lc.generate_litellm_config(BACKENDS, master_key="k", discovered={})
-    assert config["model_list"] is sentinel
-    assert seen["args"][0] is BACKENDS
 
 
 def test_discover_false_never_probes(monkeypatch):

@@ -18,7 +18,10 @@ import re
 from tinyagentos.cluster.capabilities import hardware_to_targets, potential_capabilities as _potential_capabilities
 from tinyagentos.cluster.optimiser import ClusterOptimiser
 from tinyagentos.cluster.worker_auth import _HMACError, require_worker_hmac
-from tinyagentos.cluster.worker_protocol import WorkerInfo
+from tinyagentos.cluster.worker_protocol import (
+    WorkerInfo,
+    invalid_resource_classes,
+)
 from tinyagentos.auth_context import require_admin
 from tinyagentos.rate_limit import MovingWindowLimiter, rate_limited_response
 from tinyagentos.routes.auth import _require_admin
@@ -425,6 +428,9 @@ async def register_worker(request: Request, body: WorkerRegister):
     bad = _bad_hardware(hw)
     if bad:
         return JSONResponse({"error": bad}, status_code=400)
+    bad_res = _bad_resources(body.resources)
+    if bad_res:
+        return JSONResponse({"error": bad_res}, status_code=400)
     info = WorkerInfo(
         name=body.name,
         url=body.url,
@@ -586,6 +592,26 @@ def _bad_hardware(hw: dict | None) -> str | None:
     return None
 
 
+def _bad_resources(resources: list[str] | None) -> str | None:
+    """Return an error string if the resource inventory breaks the class grammar.
+
+    The advertised inventory is what the controller authorises lease claims
+    against and shows in the cluster UI. install-worker.sh exports
+    TAOS_WORKER_RESOURCES, so this list is partly operator-supplied; storing an
+    unchecked string here would let a typo (or a bad override) reach the
+    scheduler. The class grammar is the one in
+    docs/design/resource-scheduler.md, shared with ClusterManager via
+    worker_protocol.RESOURCE_CLASS_RE.
+    """
+    invalid = invalid_resource_classes(resources)
+    if invalid:
+        return (
+            "resources must be scheduler resource classes "
+            f"(docs/design/resource-scheduler.md); got: {', '.join(invalid)}"
+        )
+    return None
+
+
 @router.post("/api/cluster/heartbeat")
 async def worker_heartbeat(request: Request, body: HeartbeatBody):
     # HMAC gate — only paired, registered workers may heartbeat.
@@ -602,6 +628,9 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
     bad_hw = _bad_hardware(body.hardware)
     if bad_hw:
         return JSONResponse({"error": bad_hw}, status_code=400)
+    bad_res = _bad_resources(body.resources)
+    if bad_res:
+        return JSONResponse({"error": bad_res}, status_code=400)
     cluster = request.app.state.cluster_manager
     ok = cluster.heartbeat(
         body.name,
@@ -637,10 +666,29 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
 
 @router.delete("/api/cluster/workers/{name}", dependencies=_ADMIN)
 async def unregister_worker(request: Request, name: str):
+    # Revoke the pairing key BEFORE deleting the worker row. If the store is
+    # unavailable or revoke raises, refuse with 503 so the row is never deleted
+    # while its key survives. Never skip revoke even if the worker row is absent.
+    pairing = getattr(request.app.state, "cluster_pairing", None)
+    if pairing is None:
+        return JSONResponse({
+            "error": "pairing store unavailable",
+            "code": "STORE_UNAVAILABLE",
+        }, status_code=503)
+
+    try:
+        await pairing.revoke(name)
+    except Exception:
+        return JSONResponse({
+            "error": "pairing store unavailable",
+            "code": "STORE_UNAVAILABLE",
+        }, status_code=503)
+
     cluster = request.app.state.cluster_manager
     removed = await cluster.unregister_worker(name)
     if not removed:
         return JSONResponse({"error": "Worker not found"}, status_code=404)
+
     _revoke_node_model_keys(request, name)
     return {"status": "removed", "name": name}
 

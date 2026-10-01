@@ -60,6 +60,18 @@ describe("ConsentActions", () => {
     expect(screen.getByRole("button", { name: /deny/i })).toBeInTheDocument();
   });
 
+  it("shows the shared-VM warning when harness is grok", () => {
+    vi.stubGlobal("fetch", okFetch());
+    render(<ConsentActions requestId="req-1" scopes={["memory_read"]} harness="grok" />);
+    expect(screen.getByText(/This token will be readable by all bots on this Grok account/i)).toBeInTheDocument();
+  });
+
+  it("does not show the shared-VM warning when harness is not grok", () => {
+    vi.stubGlobal("fetch", okFetch());
+    render(<ConsentActions requestId="req-1" scopes={["memory_read"]} harness="claude" />);
+    expect(screen.queryByText(/This token will be readable by all bots on this Grok account/i)).not.toBeInTheDocument();
+  });
+
   it("posts the requested scopes to the approve endpoint and calls onResolved", async () => {
     const fetchMock = okFetch();
     vi.stubGlobal("fetch", fetchMock);
@@ -409,6 +421,28 @@ describe("ConsentActions", () => {
     // No dropped or added badges.
     expect(container.querySelectorAll('[data-state="dropped"]')).toHaveLength(0);
     expect(container.querySelectorAll('[data-state="added"]')).toHaveLength(0);
+  });
+
+  it("renders the human duration text when humanDuration is provided", () => {
+    render(
+      <ConsentActions
+        requestId="req-dur"
+        scopes={["memory_read"]}
+        humanDuration="expires 1 hour after approval"
+      />,
+    );
+    expect(screen.getByText("expires 1 hour after approval")).toBeInTheDocument();
+  });
+
+  it("renders 'no expiry' when humanDuration is 'no expiry'", () => {
+    render(
+      <ConsentActions
+        requestId="req-ne"
+        scopes={["memory_read"]}
+        humanDuration="no expiry"
+      />,
+    );
+    expect(screen.getByText("no expiry")).toBeInTheDocument();
   });
 
   const missingProjectScopes = [
@@ -786,5 +820,26 @@ describe("consentPayload", () => {
       requestId: "x",
       scopes: [],
     });
+  });
+
+  it("extracts framework as harness when present", () => {
+    const payload = consentPayload({
+      request_id: "req-1",
+      requested_scopes: ["memory_read"],
+      framework: "grok",
+    });
+    expect(payload).toEqual({
+      requestId: "req-1",
+      scopes: ["memory_read"],
+      harness: "grok",
+    });
+  });
+
+  it("omits harness when framework is absent", () => {
+    const payload = consentPayload({
+      request_id: "req-2",
+      requested_scopes: ["memory_read"],
+    });
+    expect(payload?.harness).toBeUndefined();
   });
 });

@@ -231,7 +231,7 @@ iwr -useb https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-w
 **Sudo and freshness.** The Linux/macOS worker installer is designed to run on **either a fresh Debian install or your existing system.** No clean slate required. It installs cleanly on Debian, Ubuntu, Fedora, Arch, Alpine, and macOS.
 
 - **Linux (recommended path):** the installer runs in two phases. Phase 1 runs on the bare host: it installs incus, nftables, and btrfs-progs, creates a privileged LXC named `taos-worker` backed by a btrfs storage pool (`taos-worker-pool`), adds an nftables DNAT rule that forwards bare-host port `:8443` to the LXC, then re-executes the script inside the container. Phase 2 runs inside the `taos-worker` LXC: it installs the Python runtime, clones the repo, builds the worker venv at `~/.local/share/tinyagentos-worker/`, and installs `/etc/systemd/system/tinyagentos-worker.service` as a root-run system unit inside the container. The worker daemon itself is outbound-only to the controller.
-- **macOS:** the two-phase LXC flow is skipped (incus is Linux-only). The script installs directly on the host and registers the worker as a launchd agent (`~/Library/LaunchAgents/com.tinyagentos.worker.plist`), auto-started at login.
+- **macOS:** the two-phase LXC flow is skipped (incus is Linux-only). The script installs directly on the host, pairs the worker with the controller (writing the signing key to `$INSTALL_DIR/.taos-worker-state`, the directory the plist points `TAOS_WORKER_STATE_DIR` at, so the daemon does not come up "not paired"), and registers it as a launchd agent (`~/Library/LaunchAgents/com.tinyagentos.worker.plist`), auto-started at login. It also picks the worker's resource class from the hardware: **Apple Silicon (Metal present) registers as `gpu-metal`** (MLX, llama.cpp Metal, or Core ML on unified memory, 1 concurrent task), while an **Intel Mac (or an arm64 VM with no Metal GPU) falls back to `cpu-inference`**. The detected classes are exported as `TAOS_WORKER_RESOURCES` (override it to force a class, or set `TAOS_FORCE_METAL=1` to force the Apple Silicon branch when a probe reports nothing) and baked into the plist, so the registration survives a re-login even while no GPU backend is loaded yet. The controller validates the advertised classes against the resource grammar in `docs/design/resource-scheduler.md` and rejects a registration or heartbeat carrying an unknown class.
 
 A truly clean Debian install is the smoothest experience because nothing else is competing for ports or sysfs paths, but the script is hardened against common existing-system gotchas: it detects headless environments and skips the desktop tray, it gracefully handles unreadable `/sys/kernel/debug` paths on hosts that mount debugfs but restrict it, and it scopes its writes to `~/.local/share/tinyagentos-worker/` plus the systemd unit.
 
@@ -511,10 +511,10 @@ Run `curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/ins
 | `/home/<user>/tinyagentos/.venv/` | Python virtualenv. All Python deps live here, never `pip install` to system Python. |
 | `/home/<user>/tinyagentos/data/` | All persistent state. **One directory to back up.** Contains: agent state YAMLs, agent memory SQLite indexes, agent workspaces, secrets DB, scheduler history, channel credentials, downloaded models, torrent settings, telemetry opt-in flag. |
 | `/home/<user>/.cache/qmd/index.sqlite` | User memory index (taOSmd knowledge base for personal notes). Per-agent indexes live separately under `data/agent-memory/{name}/index.sqlite`. |
-| Ports listened on | **6969** (controller HTTP API + web UI), **6970** (browser-proxy second-origin, `TAOS_BROWSER_PROXY_PORT`), **7832** (qmd embedding service), **4000** (LiteLLM proxy, localhost only by default) |
+| Ports listened on | **6969** (controller HTTP API + web UI), **6970** (browser-proxy second-origin, `TAOS_BROWSER_PROXY_PORT`), **7832** (qmd embedding service), **7838** (LLM gateway agent listener, loopback only) |
 | Env vars set | `TAOS_SPA_DIR=$INSTALL_DIR/static/desktop` (points the controller at the staged desktop bundle for non-editable `pip install .` users) |
-| OS packages added | python3 + venv + pip, git, curl, ca-certificates, libtorrent-rasterbar (model torrent mesh), Node.js 22 (qmd + SPA build), sqlite3, libsqlcipher (encrypted secrets), vulkan-tools (hardware detection), postgresql (LiteLLM virtual keys) |
-| User accounts created | The distro `postgres` system user is created when PostgreSQL is installed. A `litellm` Postgres role and database are created for virtual-key management. Everything else runs as the user who ran the installer. |
+| OS packages added | python3 + venv + pip, git, curl, ca-certificates, libtorrent-rasterbar (model torrent mesh), Node.js 22 (qmd + SPA build), sqlite3, libsqlcipher (encrypted secrets), vulkan-tools (hardware detection) |
+| User accounts created | None for the LLM layer any more. Everything runs as the user who ran the installer. Older installs may still have a `litellm` Postgres role and database from before LiteLLM was removed; nothing uses them now. |
 
 ### Hailo-10H install (`scripts/install-hailo.sh`)
 
@@ -722,7 +722,6 @@ uv run exo
 - [docs/design/framework-agnostic-runtime.md](docs/design/framework-agnostic-runtime.md). containers hold code, hosts hold state (load-bearing architectural rule)
 - [docs/superpowers/specs/2026-04-11-taos-framework-integration-bridge-design.md](docs/superpowers/specs/2026-04-11-taos-framework-integration-bridge-design.md). TAOS Framework Integration Bridge design (OpenClaw → Hermes → OpenClaw round-trip, not yet implemented)
 - [docs/mirror-policy.md](docs/mirror-policy.md). binary mirror governance: what is mirrored, SHA256 verification, self-hosting guide
-- [docs/deploy/platform.md](docs/deploy/platform.md). Runbook for the tinyagentos.com platform LXC, covering landing page, docs site, and bittorrent tracker. Uses `scripts/install-platform-lxc.sh` on the Proxmox host to provision. Infrastructure for the project's public web presence, not part of the taOS product itself.
 
 ## Development
 
@@ -859,4 +858,4 @@ taOS is open source under the [GNU Affero General Public License v3.0 or later](
 
 You may use, modify, and self-host taOS freely under the AGPL, including for your own organisation's internal business purposes. The AGPL's one condition for network use is that if you run a modified taOS as a service for others, you make your modified source available to those users, also under the AGPL.
 
-A separate **commercial license** is available from jaylfc for anyone who wants to use taOS on terms the AGPL does not grant them -- for example embedding it in a proprietary product, or offering it as a hosted or managed service without releasing modifications under the AGPL. See [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) or contact info@taos.my.
+There is no separate commercial license: AGPL-3.0-or-later is the only license taOS is offered under, and contributions are accepted under the same terms.

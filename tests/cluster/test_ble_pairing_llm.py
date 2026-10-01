@@ -12,6 +12,7 @@ the key back in its error, the gateway switched off. Then the happy path.
 from __future__ import annotations
 
 import logging
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -150,13 +151,15 @@ async def test_gateway_off_sends_llm_null_and_mints_nothing(tmp_path, store):
 
 
 def test_gateway_flag_is_read_from_the_same_switch_that_mounts_it(tmp_path, monkeypatch):
+    # The gateway is always mounted since LiteLLM removal 2b-2a, so the old
+    # "0" off switch no longer turns the board's LLM provision off either.
+    monkeypatch.setenv("TAOS_LLM_GATEWAY", "0")
+    old_off = BlePairingManager(data_dir=tmp_path, cluster_manager=ClusterManager(),
+                                pairing_store=None, bind_port=1)
     monkeypatch.delenv("TAOS_LLM_GATEWAY", raising=False)
-    off = BlePairingManager(data_dir=tmp_path, cluster_manager=ClusterManager(),
-                            pairing_store=None, bind_port=1)
-    monkeypatch.setenv("TAOS_LLM_GATEWAY", "1")
     on = BlePairingManager(data_dir=tmp_path, cluster_manager=ClusterManager(),
                            pairing_store=None, bind_port=1)
-    assert (off._llm_enabled, on._llm_enabled) == (False, True)
+    assert (old_off._llm_enabled, on._llm_enabled) == (True, True)
 
 
 # -- happy path ---------------------------------------------------------------
@@ -203,3 +206,60 @@ async def test_repair_leaves_exactly_one_live_key(tmp_path, store):
 
     assert _live(tmp_path, old) is None
     assert _live(tmp_path, new) is not None
+
+
+# -- orb: never mint a model key ----------------------------------------------
+
+@pytest.mark.asyncio
+async def test_orb_pairing_sends_llm_none_and_never_calls_mint(tmp_path, store):
+    """An Orb board must never receive a model key: the provision carries
+    llm: null and mint_for_node is not invoked."""
+    board = FakeBoard(board_id="ORB1", caps=["agent", "orb"])
+    mgr = _mgr(tmp_path, store, {"a": board})
+    started = await mgr.start("a")
+    with patch("tinyagentos.llm_gateway.auth.mint_for_node", return_value="a" * 16) as mock_mint:
+        await mgr.confirm(started["session"])
+    assert board.responder.provisioned is not None
+    assert board.responder.provisioned["llm"] is None
+    mock_mint.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_orb_repair_revokes_old_key_and_mints_nothing(tmp_path, store):
+    """An Orb re-paired under a name that already had a model key must
+    revoke that old key and mint nothing new."""
+    # First pair a taosusb to create a live gateway key.
+    first = FakeBoard(board_id="ORBR1", name="taOSusb-ORBR1")
+    mgr1 = _mgr(tmp_path, store, {"a": first})
+    await mgr1.confirm((await mgr1.start("a"))["session"])
+    old_key = first.responder.provisioned["llm"]["key"]
+    assert _live(tmp_path, old_key) is not None
+
+    # Revoke the device so it can be re-paired; the gateway key survives.
+    assert await store.revoke("taOSusb-ORBR1")
+    assert _live(tmp_path, old_key) is not None
+
+    # Now pair an orb under the same name.
+    orb = FakeBoard(board_id="ORBR1", name="taOSusb-ORBR1", caps=["agent", "orb"])
+    mgr2 = _mgr(tmp_path, store, {"a": orb})
+    with patch("tinyagentos.llm_gateway.auth.mint_for_node", return_value="a" * 16) as mock_mint:
+        await mgr2.confirm((await mgr2.start("a"))["session"])
+
+    assert _live(tmp_path, old_key) is None
+    mock_mint.assert_not_called()
+    assert orb.responder.provisioned["llm"] is None
+
+
+@pytest.mark.asyncio
+async def test_taosusb_with_llm_enabled_still_gets_llm_block(tmp_path, store):
+    """Control: a taosusb board with the gateway on still receives a full
+    llm block in its provision."""
+    board = FakeBoard(board_id="USB1")
+    mgr = _mgr(tmp_path, store, {"a": board})
+    started = await mgr.start("a")
+    await mgr.confirm(started["session"])
+
+    llm = board.responder.provisioned["llm"]
+    assert llm is not None
+    assert llm["base"] == URL + "/api/llm/v1"
+    assert _live(tmp_path, llm["key"]) is not None

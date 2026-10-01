@@ -24,6 +24,7 @@ from fastapi import Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from tinyagentos.agent_db import find_agent
+from tinyagentos.llm_gateway.cutover import llm_gateway_live_port, llm_gateway_models_check
 from tinyagentos.config import (
     normalize_agent,
     save_config_locked,
@@ -209,6 +210,8 @@ async def import_hermes_agent(
                 extra_config={
                     "llm_proxy": llm_proxy,
                     "registry": request.app.state.registry,
+                    "llm_gateway_port": llm_gateway_live_port(request.app.state),
+                    "llm_gateway_models_problem": llm_gateway_models_check(request.app.state),
                 },
                 secrets_store=secrets_store,
             ))

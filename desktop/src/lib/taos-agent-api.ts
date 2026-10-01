@@ -9,6 +9,8 @@ export interface TaosAgentConfig {
   key_masked: string | null;
   framework: "opencode";
   system: true;
+  /** Effective device class ("mobile" on a taOSmobile handset); null when unknown. */
+  device_class?: string | null;
 }
 
 async function _request(url: string, method: string, body?: unknown): Promise<unknown> {

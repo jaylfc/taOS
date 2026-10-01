@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from tinyagentos.config import AppConfig, save_config_locked, validate_config
+from tinyagentos.hardware import _detect_device_class
 from tinyagentos.auto_update import resolve_tracked_branch, is_valid_branch_name, PREF_NAMESPACE
 from tinyagentos.data_snapshot import snapshot_data_dir
 from tinyagentos.middleware.upload_body_limit import register_upload_cap
@@ -259,12 +260,26 @@ async def save_platform_settings(request: Request, body: PlatformUpdate):
 
 @router.get("/api/settings/llm-proxy")
 async def llm_proxy_status(request: Request):
-    """Return LLM proxy status for the settings page."""
-    proxy = request.app.state.llm_proxy
+    """Return LLM proxy status for the settings page.
+
+    The proxy agents use IS the in-process gateway (the only LLM path since
+    LiteLLM removal 2b-2a): ``port`` is its agent listener (what each
+    container's ``127.0.0.1:4000`` forwards to) and ``running`` says this
+    start verified the listener as its own. There is no LiteLLM to report.
+    """
+    from tinyagentos import llm_gateway
+    from tinyagentos.llm_gateway.cutover import llm_gateway_live_port
+
+    state = request.app.state
+    port = getattr(state, "llm_gateway_agent_port", None)
+    if port is None:
+        port = llm_gateway.agent_port(state.config)
     return {
-        "running": proxy.is_running() if hasattr(proxy, "is_running") else False,
-        "port": proxy.port if hasattr(proxy, "port") else 7834,
-        "backends": len(request.app.state.config.backends),
+        "mode": "gateway",
+        "running": bool(llm_gateway_live_port(state)),
+        "port": port,
+        "url": "/api/llm/v1",
+        "backends": len(state.config.backends),
     }
 
 
@@ -761,12 +776,44 @@ def _find_uv(project_dir: Path) -> str | None:
     return None
 
 
+
+
 # Optional-dependency extras the updater must install so a `uv sync --frozen`
 # does not prune them out of the venv. Single source of truth for the Python
 # side; `scripts/install-server.sh` installs the same set via
-# `pip install -e ".[proxy]"`, and `test_updater_dep_install.py` asserts the two
-# stay in parity so they cannot silently drift (the bug that stripped litellm).
-UPDATE_EXTRAS: tuple[str, ...] = ("proxy",)
+# `$(taos_controller_extras)`, and `test_updater_dep_install.py` asserts the two
+# stay in parity so they cannot silently drift. There are none by default (the
+# LiteLLM `proxy` extra is gone); a handset (detected via
+# hardware._detect_device_class() or TAOS_EXTRAS_BLE=1) adds the "ble" extra so
+# Orb scan/pair routes work. TAOS_EXTRAS_BLE=0 excludes ble (rare).
+
+def _compute_update_extras() -> tuple[str, ...]:
+    """Compute UPDATE_EXTRAS based on device class and TAOS_EXTRAS_BLE env var.
+
+    Mirrors install-server.sh's logic: ble is added only on a taOSmobile handset
+    (hardware._detect_device_class() == "mobile") unless TAOS_EXTRAS_BLE=1 (force include)
+    or TAOS_EXTRAS_BLE=0 (force exclude). This ensures the scan/pair routes work on
+    a stock install while allowing operators with BLE dongles on non-handset hosts
+    to opt in.
+    """
+    import os
+
+    # Detect handset using the same signal as the controller
+    device_class = _detect_device_class()
+    is_handset = device_class == "mobile"
+
+    # Override via environment variable
+    taos_extras_ble = os.getenv("TAOS_EXTRAS_BLE")
+    if taos_extras_ble is not None:
+        if taos_extras_ble in ("1", "true"):
+            # Force include ble
+            return ("ble",)
+        elif taos_extras_ble in ("0", "false"):
+            # Force exclude ble
+            return ()
+
+    # Default: include ble on handsets only
+    return ("ble",) if is_handset else ()
 
 
 async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
@@ -777,11 +824,12 @@ async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
     deps onto a user's box. When uv is not present we fall back to the legacy
     ``pip install -e .`` so installs without uv still update.
 
-    Both paths carry the ``proxy`` extra (litellm + prisma) to match
-    ``install-server.sh``'s ``pip install -e ".[proxy]"``. The LLM proxy is a
-    core dependency, not optional: a bare ``uv sync --frozen`` prunes the venv
-    to the locked default set and silently uninstalls litellm, disabling the
-    proxy on every update and breaking basic agent functionality.
+    On a taOSmobile handset (detected via hardware._detect_device_class()) both
+    paths carry the ``ble`` extra so Orb scan/pair routes work; otherwise no
+    extra (the LiteLLM ``proxy`` extra is gone). Use TAOS_EXTRAS_BLE=1 to force
+    include ble on a non-handset, or TAOS_EXTRAS_BLE=0 to exclude it even on a
+    handset. A bare ``uv sync --frozen`` prunes the venv to the locked default
+    set plus the named extras, so an extra left out here is uninstalled.
 
     Capture output and surface failures -- silently swallowing a failed install
     lands users on a grey-screen the next time they restart, because the new
@@ -796,7 +844,7 @@ async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
         # HOME=project_dir so uv resolves its data/cache dir correctly under the
         # service user whose HOME is the install dir (the Pi layout).
         env = {**os.environ, "HOME": str(project_dir)}
-        extra_args = [arg for extra in UPDATE_EXTRAS for arg in ("--extra", extra)]
+        extra_args = [arg for extra in _compute_update_extras() for arg in ("--extra", extra)]
         cmd = [uv_cmd, "sync", "--frozen", *extra_args]
         logger.info("Updater dependency install: %s", " ".join(cmd))
         return await _run_capture(cmd, cwd=str(project_dir), env=env)
@@ -806,7 +854,9 @@ async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
         if candidate.exists():
             pip_cmd = str(candidate)
             break
-    pip_target = f".[{','.join(UPDATE_EXTRAS)}]"
+    extras = _compute_update_extras()
+    # ``.[]`` is not a valid pip target: brackets only when there is an extra.
+    pip_target = f".[{','.join(extras)}]" if extras else "."
     logger.info("Updater dependency install: uv not found, using %s install -e %s", pip_cmd, pip_target)
     return await _run_capture(
         [pip_cmd, "install", "-e", pip_target],

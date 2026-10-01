@@ -39,7 +39,7 @@ restore, and backup. See `docs/design/framework-agnostic-runtime.md`
 
 ### POST /api/trace — write an event
 
-Used by the LiteLLM callback and in-container runtimes. Not typically called
+Used by in-container runtimes. Not typically called
 by humans directly.
 
 ```bash
@@ -78,8 +78,8 @@ curl -s "http://127.0.0.1:6969/api/agents/tom/trace?limit=50" \
 
 ### POST /api/lifecycle/notify — arm keep-alive timer
 
-Used by the LiteLLM callback after every completion to reset the idle
-keep-alive timer for image-gen backends.
+Resets a backend's idle keep-alive timer. The LLM gateway resets it in
+process after every completion, so LLM calls do not post here any more.
 
 ```bash
 curl -s -X POST http://127.0.0.1:6969/api/lifecycle/notify \
@@ -262,7 +262,7 @@ makes writes idempotent if the same event is posted twice.
 - `tinyagentos/trace_store.py` — `AgentTraceStore`, `TraceStoreRegistry`,
   `ENVELOPE_V1_SCHEMA`
 - `tinyagentos/routes/trace.py` — HTTP surface
-- `tinyagentos/litellm_callback.py` — automatic `llm_call` capture
+- `tinyagentos/llm_gateway/forward.py` — automatic `llm_call` capture (the gateway records every call)
 - `docs/design/framework-agnostic-runtime.md` — "Per-agent trace capture"
   (design) and "Programmatic access (local token)"
 - `docs/design/user-memory.md` — how user memory and agent traces relate

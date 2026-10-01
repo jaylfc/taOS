@@ -40,7 +40,7 @@ The line that matters most after a failed boot is the last Python traceback befo
 sudo systemctl restart tinyagentos
 ```
 
-This is the big hammer: it also restarts LiteLLM (a child process of the controller) and re-runs the desktop bundle check. A clean boot takes roughly a minute on SBC hardware. Verify with triage steps 3 to 5.
+This is the big hammer: it also restarts the LLM gateway's agent listener (part of the controller) and re-runs the desktop bundle check. A clean boot takes roughly a minute on SBC hardware. Verify with triage steps 3 to 5.
 
 Stop and start separately when you need a gap (for example to move the data dir):
 
@@ -56,10 +56,9 @@ sudo systemctl start tinyagentos
 | Component | What it is | Restart |
 |---|---|---|
 | Controller | `tinyagentos.service`, the main app on :6969 (+ browser proxy on :6970) | `sudo systemctl restart tinyagentos` |
-| LiteLLM | model router on `127.0.0.1:7834` (legacy installs may use 4000), child process of the controller, config under `/tmp/taos-litellm/` | restart the controller (it respawns LiteLLM) |
+| LLM gateway | in the controller: `/api/llm/v1`, plus the agent listener on `127.0.0.1:7838` that each agent's `127.0.0.1:4000` proxy device forwards to. Always on (the only LLM path since LiteLLM was removed; `TAOS_LLM_GATEWAY=0` is ignored). Each start moves any agent device still on an old LiteLLM port (4000 / 7834) to it | restart the controller |
 | qmd | shared embed/rerank provider, `qmd.service` on :7832 | `sudo systemctl restart qmd` |
 | Agent containers | one LXC per agent, named `taos-agent-<name>` | `incus restart taos-agent-<name>` (or start/stop) |
-| Postgres | LiteLLM's database | `sudo systemctl restart postgresql` |
 | Store apps (Docker) | one container per installed app | `docker restart <name>` (`docker ps` to list) |
 | RK3588 extras | `rkllama.service` (NPU models), `taos-rk3588-perf.service` (boot-time governors) | `sudo systemctl restart rkllama` |
 | Workers | separate boxes, paired via the cluster | see `worker-lxc-enrollment.md` |
@@ -75,7 +74,7 @@ Notes:
 
 ```bash
 # What is listening where
-ss -tlnp | grep -E "6969|6970|7834|7832"
+ss -tlnp | grep -E "6969|6970|7834|7838|7832"
 
 # Is the process hung rather than dead? Dump live Python stacks
 sudo /opt/tinyagentos/.venv/bin/pip install py-spy   # once
@@ -103,7 +102,7 @@ df -h /opt /var
 | unit `active (running)`, :6970 listening, :6969 dead, journal shows a startup traceback | main server failed startup, proxy kept the process alive (#756) | fix the traceback's cause, then `systemctl restart tinyagentos` |
 | `status=217/USER` | the `taos` system user does not exist (installer ran without privileges) | re-run the installer with sudo (#753) |
 | Port already in use on 6969/6970 | a previous half-dead process still holds the port | `sudo systemctl stop tinyagentos`, confirm with `ss -tlnp`, `kill` any leftover, start again |
-| UI loads but models error | LiteLLM child or postgres down | triage `ss \| grep 7834` (or 4000 on legacy installs), `systemctl status postgresql`, restart the controller |
+| UI loads but models error | gateway agent listener not verified, or the backend serving the model is down | triage `ss -tlnp \| grep 7838`, check the controller log for `llm gateway`, restart the controller |
 | taOS asks you to **create an account** on a machine that already had one | the account store `data/.auth_user.json` is unreadable — typically NUL-filled by an unclean power-off | **do not fill the form in.** See [Corrupt account store](#corrupt-account-store-create-an-account-on-a-configured-install) below |
 
 ---
