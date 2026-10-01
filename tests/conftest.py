@@ -47,6 +47,7 @@ def _collect_data_mtimes() -> dict[str, tuple[float, int]]:
 
 _XDIST = bool(os.environ.get("PYTEST_XDIST_WORKER"))
 _DATA_MUTATIONS: list[str] = []
+_XDIST_CONTROLLER_MUTATIONS: list[str] = []
 
 
 @pytest.fixture(autouse=True, scope="function")
@@ -72,13 +73,28 @@ def _guard_data_dir_mutation(request):
             )
 
 
+def pytest_testnodedown(node, error):
+    _XDIST_CONTROLLER_MUTATIONS.extend(node.workeroutput.get("data_mutations", []))
+
+
 def pytest_sessionfinish(session, exitstatus):
-    if _XDIST and _DATA_MUTATIONS:
-        raise RuntimeError(
-            "PROJECT_DIR/data was mutated during the xdist session. The following "
-            f"files were created or modified: {', '.join(sorted(set(_DATA_MUTATIONS)))}. "
-            "Tests must not write into the repo's data directory."
-        )
+    if hasattr(session.config, "workeroutput"):
+        if _DATA_MUTATIONS:
+            session.config.workeroutput["data_mutations"] = list(set(_DATA_MUTATIONS))
+    else:
+        if _XDIST_CONTROLLER_MUTATIONS:
+            print(
+                "PROJECT_DIR/data was mutated during the xdist session. The following "
+                f"files were created or modified: {', '.join(sorted(set(_XDIST_CONTROLLER_MUTATIONS)))}. "
+                "Tests must not write into the repo's data directory."
+            )
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        elif _DATA_MUTATIONS:
+            raise RuntimeError(
+                "PROJECT_DIR/data was mutated during the session. The following "
+                f"files were created or modified: {', '.join(sorted(set(_DATA_MUTATIONS)))}. "
+                "Tests must not write into the repo's data directory."
+            )
 
 
 # ---------------------------------------------------------------------------
