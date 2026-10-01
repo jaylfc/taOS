@@ -81,7 +81,7 @@ for helper in taos-kiosk-idle taos-kiosk-power taos-kiosk-screen \
               taos-kiosk-dt2w taos-kiosk-dt2w-run taos-kiosk-power-hold \
               taos-kiosk-volume taos-sensord taos-kiosk-charger taos-kiosk-charge-play taos-shot \
               taos-kiosk-live \
-              taos-power-apply taos-session-mode; do
+              taos-power-apply taos-session-mode taos-usb-mode; do
     install -m 755 "$HERE/bin/$helper" "/usr/local/bin/$helper"
     echo "installed /usr/local/bin/$helper"
 done
