@@ -1,0 +1,5 @@
+### Fixed
+- Bot-review gate no longer treats CodeRabbit's auto-reply notice (`<!-- This is an auto-generated reply by CodeRabbit -->`) as a real review. The notice is posted when a `@coderabbitai review` trigger is acknowledged but the review has not yet run (rate-limit recovery). Previously this auto-reply flipped the gate green with zero review content.
+- `is_real_item()` now requires positive evidence of review content (APPROVED/CHANGES_REQUESTED state, walkthrough with Run ID + signals, inline findings, or structured review body with code/finding markers). The fail-open fallback that counted any unrecognised non-empty CodeRabbit comment as real has been removed.
+- Added `is_coderabbit_auto_reply()` detector and folded it into `is_coderabbit_scaffolding()` as a third per-fragment detector, maintaining detector isolation so one regressing cannot mask another.
+- The `bot-review-allow` waiver label continues to work for deliberate lead overrides of stub-only verdicts.

@@ -1070,10 +1070,39 @@ class TestDetectorIsolation:
 
     Each body below is matched by EXACTLY one detector. Neutering that detector
     loses protection for its body but leaves the other detectors' bodies caught,
-    so no single neuter can stay green by leaning on a different detector."""
+    so no single neuter can stay green by leaning on a different detector.
+
+    With the fail-closed default (positive evidence required), pure stub bodies
+    that lack review content (no findings, no Run ID + signals, no code refs)
+    are still rejected by the default even when their specific detector is
+    neutered. The isolation property is verified by ensuring other detectors
+    still catch their respective stubs, and by using bodies with positive
+    evidence in the neutering tests where the detector is the only thing
+    keeping them red.
+    """
 
     RL_BODY = "Review rate limited. Please try again later."
     FAILURE_BODY = "Review failed by coderabbit.ai"
+    # Bodies with positive evidence that would be real EXCEPT for the specific
+    # stub detector. Used to verify isolation: when the detector is neutered,
+    # these should pass (protection lost), while other detectors' stubs still fail.
+    RL_BODY_WITH_FINDINGS = (
+        "## Review\n\n### Findings\n\nLine 42: potential memory leak here.\n\n"
+        "Note: review rate limited for next run."
+    )
+    ACK_BODY_WITH_FINDINGS = (
+        "<!-- CodeRabbit review command invocation: v2:11111111-1111-1111-1111-111111111111 -->\n"
+        "## Review\n\n### Findings\n\nLine 42: potential memory leak here."
+    )
+    FAILURE_BODY_WITH_FINDINGS = (
+        "Review failed by coderabbit.ai\n\n"
+        "## Review\n\n### Findings\n\nLine 42: potential memory leak here."
+    )
+    AUTO_REPLY_BODY_WITH_FINDINGS = (
+        "<!-- This is an auto-generated reply by CodeRabbit -->\n"
+        "Your plan includes PR reviews subject to rate limits. Reviews are available now.\n\n"
+        "## Review\n\n### Findings\n\nLine 42: potential memory leak here."
+    )
 
     def test_rate_limit_body_rejected(self, check_mod) -> None:
         item = check_mod.CRItem(id=1, body=self.RL_BODY, is_review=True, review_state="COMMENTED")
@@ -1081,10 +1110,21 @@ class TestDetectorIsolation:
 
     def test_neutering_rate_limit_loses_only_its_protection(self, check_mod) -> None:
         with patch.object(check_mod, "is_rate_limit_stub", return_value=False):
-            rl = check_mod.CRItem(id=1, body=self.RL_BODY, is_review=True, review_state="COMMENTED")
+            # Body with findings that only the rate-limit detector blocks
+            rl = check_mod.CRItem(
+                id=1, body=self.RL_BODY_WITH_FINDINGS, is_review=True, review_state="COMMENTED"
+            )
             assert check_mod.is_real_item(rl) is True  # protection lost
+            # Other detectors' pure stubs still caught (by them or fail-closed)
             ack = check_mod.CRItem(id=2, body=ACK_BODY, is_review=True, review_state="COMMENTED")
             assert not check_mod.is_real_item(ack)  # acknowledgement still caught
+            failure = check_mod.CRItem(id=3, body=self.FAILURE_BODY, is_review=True, review_state="COMMENTED")
+            assert not check_mod.is_real_item(failure)  # failure notice still caught
+            auto_reply = check_mod.CRItem(
+                id=4, body="<!-- This is an auto-generated reply by CodeRabbit -->\nReviews available.",
+                is_review=True, review_state="COMMENTED",
+            )
+            assert not check_mod.is_real_item(auto_reply)  # auto-reply still caught
 
     def test_acknowledgement_body_rejected(self, check_mod) -> None:
         item = check_mod.CRItem(id=1, body=ACK_BODY, is_review=True, review_state="COMMENTED")
@@ -1092,10 +1132,19 @@ class TestDetectorIsolation:
 
     def test_neutering_acknowledgement_loses_only_its_protection(self, check_mod) -> None:
         with patch.object(check_mod, "is_coderabbit_acknowledgement", return_value=False):
-            ack = check_mod.CRItem(id=1, body=ACK_BODY, is_review=True, review_state="COMMENTED")
+            ack = check_mod.CRItem(
+                id=1, body=self.ACK_BODY_WITH_FINDINGS, is_review=True, review_state="COMMENTED"
+            )
             assert check_mod.is_real_item(ack) is True  # protection lost
             failure = check_mod.CRItem(id=2, body=self.FAILURE_BODY, is_review=True, review_state="COMMENTED")
             assert not check_mod.is_real_item(failure)  # failure notice still caught
+            auto_reply = check_mod.CRItem(
+                id=3, body="<!-- This is an auto-generated reply by CodeRabbit -->\nReviews available.",
+                is_review=True, review_state="COMMENTED",
+            )
+            assert not check_mod.is_real_item(auto_reply)  # auto-reply still caught
+            rl = check_mod.CRItem(id=4, body=self.RL_BODY, is_review=True, review_state="COMMENTED")
+            assert not check_mod.is_real_item(rl)  # rate-limit still caught
 
     def test_failure_notice_body_rejected(self, check_mod) -> None:
         item = check_mod.CRItem(id=1, body=self.FAILURE_BODY, is_review=True, review_state="COMMENTED")
@@ -1103,24 +1152,59 @@ class TestDetectorIsolation:
 
     def test_neutering_failure_notice_loses_only_its_protection(self, check_mod) -> None:
         with patch.object(check_mod, "is_coderabbit_failure_notice", return_value=False):
-            failure = check_mod.CRItem(id=2, body=self.FAILURE_BODY, is_review=True, review_state="COMMENTED")
+            failure = check_mod.CRItem(
+                id=2, body=self.FAILURE_BODY_WITH_FINDINGS, is_review=True, review_state="COMMENTED"
+            )
             assert check_mod.is_real_item(failure) is True  # protection lost
             ack = check_mod.CRItem(id=1, body=ACK_BODY, is_review=True, review_state="COMMENTED")
             assert not check_mod.is_real_item(ack)  # acknowledgement still caught
+            auto_reply = check_mod.CRItem(
+                id=3, body="<!-- This is an auto-generated reply by CodeRabbit -->\nReviews available.",
+                is_review=True, review_state="COMMENTED",
+            )
+            assert not check_mod.is_real_item(auto_reply)  # auto-reply still caught
+            rl = check_mod.CRItem(id=4, body=self.RL_BODY, is_review=True, review_state="COMMENTED")
+            assert not check_mod.is_real_item(rl)  # rate-limit still caught
 
-    def test_neutering_every_detector_loses_every_protection(self, check_mod) -> None:
-        """The trap the audit caught, reproduced: neutering ALL stub detectors
-        must let EVERY stub kind through (green), not stay red on one because an
-        untested detector was left on. Each stub must flip independently."""
+    def test_auto_reply_body_rejected(self, check_mod) -> None:
+        body = "<!-- This is an auto-generated reply by CodeRabbit -->\nReviews are available now."
+        item = check_mod.CRItem(id=1, body=body, is_review=True, review_state="COMMENTED")
+        assert not check_mod.is_real_item(item)
+
+    def test_neutering_auto_reply_loses_only_its_protection(self, check_mod) -> None:
+        with patch.object(check_mod, "is_coderabbit_auto_reply", return_value=False):
+            auto_reply = check_mod.CRItem(
+                id=1, body=self.AUTO_REPLY_BODY_WITH_FINDINGS, is_review=True, review_state="COMMENTED"
+            )
+            assert check_mod.is_real_item(auto_reply) is True  # protection lost
+            ack = check_mod.CRItem(id=2, body=ACK_BODY, is_review=True, review_state="COMMENTED")
+            assert not check_mod.is_real_item(ack)  # acknowledgement still caught
+            failure = check_mod.CRItem(id=3, body=self.FAILURE_BODY, is_review=True, review_state="COMMENTED")
+            assert not check_mod.is_real_item(failure)  # failure notice still caught
+            rl = check_mod.CRItem(id=4, body=self.RL_BODY, is_review=True, review_state="COMMENTED")
+            assert not check_mod.is_real_item(rl)  # rate-limit still caught
+
+    def test_fail_closed_default_catches_stubs_without_positive_evidence(self, check_mod) -> None:
+        """Even with ALL stub detectors neutered, pure stub bodies that lack
+        positive evidence of review content are still rejected by the fail-closed
+        default. This is the key behavioral change: the default is now fail-closed,
+        not fail-open."""
         with patch.object(check_mod, "is_rate_limit_stub", return_value=False), \
              patch.object(check_mod, "is_coderabbit_acknowledgement", return_value=False), \
-             patch.object(check_mod, "is_coderabbit_failure_notice", return_value=False):
+             patch.object(check_mod, "is_coderabbit_failure_notice", return_value=False), \
+             patch.object(check_mod, "is_coderabbit_auto_reply", return_value=False):
             rl = check_mod.CRItem(id=1, body=self.RL_BODY, is_review=True, review_state="COMMENTED")
             ack = check_mod.CRItem(id=2, body=ACK_BODY, is_review=True, review_state="COMMENTED")
             failure = check_mod.CRItem(id=3, body=self.FAILURE_BODY, is_review=True, review_state="COMMENTED")
-            assert check_mod.is_real_item(rl) is True
-            assert check_mod.is_real_item(ack) is True
-            assert check_mod.is_real_item(failure) is True
+            auto_reply = check_mod.CRItem(
+                id=4, body="<!-- This is an auto-generated reply by CodeRabbit -->\nReviews available.",
+                is_review=True, review_state="COMMENTED",
+            )
+            # All pure stubs still fail because they lack positive evidence
+            assert not check_mod.is_real_item(rl)
+            assert not check_mod.is_real_item(ack)
+            assert not check_mod.is_real_item(failure)
+            assert not check_mod.is_real_item(auto_reply)
 
 
 class TestIsCoderabbitZeroFindingReview:
