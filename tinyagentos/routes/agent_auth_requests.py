@@ -8,6 +8,7 @@ POST   /api/agents/auth-requests/{request_id}/approve  — approve + mint identi
 POST   /api/agents/auth-requests/{request_id}/deny     — deny the request (admin only)
 GET    /api/agents/auth-requests                       — list pending requests (admin only)
 GET    /api/agents/scope-vocabulary                    — grantable scopes + the project-bound subset
+GET    /api/agents/scope-requests                      — list scope requests (admin: all; owner: their agents)
 
 The two public endpoints (create + status poll) are added to auth_middleware.EXEMPT_PATHS
 so unauthenticated external agents can reach them.  The opaque UUID request_id acts as a
@@ -15,7 +16,7 @@ capability token for the poll endpoint — only the caller who received the id c
 
 Security notes
 --------------
-* The token field is returned ONLY on status == 'accepted'.
+ * The token field is returned ONLY on status == 'accepted'.
 * Admin gate on approve / deny / list — checked via current_user + is_admin flag.
 * Abuse cap: at most _PENDING_CAP pending requests per (identity_claim, framework) pair;
   further submissions receive 429.
@@ -1872,6 +1873,75 @@ _PUBLIC_SCOPE_REQUEST_FIELDS = (
 def _public_scope_request(rec: dict) -> dict:
     """Project a stored scope-request row onto its public response shape."""
     return {field: rec.get(field) for field in _PUBLIC_SCOPE_REQUEST_FIELDS}
+
+
+@router.get("/api/agents/scope-requests")
+async def list_all_scope_requests(
+    request: Request,
+    status: Optional[str] = None,
+    user: CurrentUser = Depends(current_user),
+):
+    """List scope requests across every agent the caller is allowed to inspect.
+
+    * Admin — sees requests for all agents.
+    * Owner — sees requests only for agents they own.
+    * Everyone else — 403.
+
+    ``?status`` accepts ``pending``, ``accepted``, ``refused``, ``approved``
+    (alias for accepted), ``denied`` (alias for refused), or ``all`` (default
+    when omitted).  The response is ordered oldest-first.
+
+    Each row carries an extra ``agent_display_name`` field taken from the
+    registry so the caller does not have to join the two sources itself.
+    """
+    registry = _get_registry_store(request)
+    store = _get_scope_requests_store(request)
+
+    if user.is_admin:
+        agents = await registry.list_all()
+    else:
+        agents = await registry.list_for_user(user.user_id)
+        if not agents:
+            raise HTTPException(status_code=403, detail="forbidden")
+
+    canonical_ids = [a["canonical_id"] for a in agents]
+    name_map = {a["canonical_id"]: a.get("display_name", "") for a in agents}
+
+    # Normalise the user-facing filter values onto the store vocabulary.
+    if status is not None:
+        status = status.lower()
+        if status == "all":
+            norm = None
+        elif status == "approved":
+            norm = "accepted"
+        elif status == "denied":
+            norm = "refused"
+        elif status in _SCOPE_REQUEST_STATUSES:
+            norm = status
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"unknown status {status!r}; valid: "
+                    f"pending, approved, denied, all"
+                ),
+            )
+    else:
+        norm = None
+
+    rows: list[dict] = []
+    for cid in canonical_ids:
+        rows.extend(await store.list_for(cid, norm))
+
+    rows.sort(key=lambda r: (r["created_ts"], r["id"]))
+
+    out = []
+    for r in rows:
+        public = _public_scope_request(r)
+        public["agent_display_name"] = name_map.get(r["canonical_id"], "")
+        out.append(public)
+
+    return {"requests": out}
 
 
 @router.get("/api/agents/registry/{canonical_id}/scope-requests")

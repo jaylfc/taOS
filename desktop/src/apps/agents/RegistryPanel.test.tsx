@@ -921,7 +921,7 @@ describe("RegistryPanel pending scope requests", () => {
     );
   }, 10_000);
 
-  it("renders nothing (and no error) when the read is refused with the existence-hiding 404", async () => {
+  it("renders a permission error when the read is refused with the existence-hiding 404", async () => {
     vi.stubGlobal("fetch", makeScopeFetch({ ok: false, status: 404 }));
 
     render(<RegistryPanel />);
@@ -940,6 +940,8 @@ describe("RegistryPanel pending scope requests", () => {
     expect(
       screen.queryByRole("region", { name: /pending scope requests/i }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "You do not have permission to view requests for this agent.",
+    );
   }, 10_000);
 });

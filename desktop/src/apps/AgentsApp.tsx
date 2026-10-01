@@ -18,6 +18,7 @@ import { ImportWizard } from "./agents/ImportWizard";
 import { ArchivedAgentsPanel } from "./agents/ArchivedAgents";
 import { RegistryPanel } from "./agents/RegistryPanel";
 import { BaseImagesPanel } from "./agents/BaseImagesPanel";
+import { RequestsPanel } from "./agents/RequestsPanel";
 import { fetchTaosAgentConfig } from "@/lib/taos-agent-api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 
@@ -120,6 +121,8 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
   // panel fetches its own config on open). Shown as the model indicator line on
   // the system agent's card; failures are silently ignored.
   const [taosModel, setTaosModel] = useState<string | undefined>(undefined);
+  const [contentTab, setContentTab] = useState<"registry" | "requests">("registry");
+  const [pendingRequestCount, setPendingRequestCount] = useState(0);
   const isMobile = useIsMobile();
   const openWindow = useProcessStore((s) => s.openWindow);
 
@@ -295,6 +298,15 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
     fetchAgents();
     fetchArchived();
   }, [fetchAgents, fetchArchived]);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ count: number }>).detail;
+      if (detail?.count != null) setPendingRequestCount(detail.count);
+    };
+    window.addEventListener("taos:scope-requests-count", handler);
+    return () => window.removeEventListener("taos:scope-requests-count", handler);
+  }, []);
 
   useRefreshOnFocus(fetchAgents);
 
@@ -652,8 +664,52 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
               onRestore={handleRestore}
               onPurge={handlePurge}
             />
-            <RegistryPanel />
-            <BaseImagesPanel />
+            <nav
+              className="flex items-center gap-1 border-b border-white/5"
+              aria-label="Content tabs"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={contentTab === "registry"}
+                onClick={() => setContentTab("registry")}
+                className={`text-xs font-medium px-3 py-2 transition-colors ${
+                  contentTab === "registry"
+                    ? "text-shell-text border-b-2 border-accent"
+                    : "text-shell-text-secondary hover:text-shell-text"
+                }`}
+              >
+                Registry
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={contentTab === "requests"}
+                onClick={() => setContentTab("requests")}
+                className={`text-xs font-medium px-3 py-2 transition-colors relative ${
+                  contentTab === "requests"
+                    ? "text-shell-text border-b-2 border-accent"
+                    : "text-shell-text-secondary hover:text-shell-text"
+                }`}
+              >
+                Requests
+                {pendingRequestCount > 0 && (
+                  <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-amber-500/20 text-amber-300 text-[10px] px-1.5 py-0.5 min-w-[18px]">
+                    {pendingRequestCount}
+                  </span>
+                )}
+              </button>
+            </nav>
+            {contentTab === "registry" ? (
+              <>
+                <RegistryPanel />
+                <BaseImagesPanel />
+              </>
+            ) : (
+              <div className="mt-3 rounded-lg border border-white/5 bg-white/[0.02] min-h-[200px]">
+                <RequestsPanel />
+              </div>
+            )}
           </div>
         ) : (
           <div className="p-4">
@@ -745,8 +801,52 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
               onRestore={handleRestore}
               onPurge={handlePurge}
             />
-            <RegistryPanel />
-            <BaseImagesPanel />
+            <nav
+              className="flex items-center gap-1 border-b border-white/5"
+              aria-label="Content tabs"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={contentTab === "registry"}
+                onClick={() => setContentTab("registry")}
+                className={`text-xs font-medium px-3 py-2 transition-colors ${
+                  contentTab === "registry"
+                    ? "text-shell-text border-b-2 border-accent"
+                    : "text-shell-text-secondary hover:text-shell-text"
+                }`}
+              >
+                Registry
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={contentTab === "requests"}
+                onClick={() => setContentTab("requests")}
+                className={`text-xs font-medium px-3 py-2 transition-colors relative ${
+                  contentTab === "requests"
+                    ? "text-shell-text border-b-2 border-accent"
+                    : "text-shell-text-secondary hover:text-shell-text"
+                }`}
+              >
+                Requests
+                {pendingRequestCount > 0 && (
+                  <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-amber-500/20 text-amber-300 text-[10px] px-1.5 py-0.5 min-w-[18px]">
+                    {pendingRequestCount}
+                  </span>
+                )}
+              </button>
+            </nav>
+            {contentTab === "registry" ? (
+              <>
+                <RegistryPanel />
+                <BaseImagesPanel />
+              </>
+            ) : (
+              <div className="mt-3 rounded-lg border border-white/5 bg-white/[0.02] min-h-[200px]">
+                <RequestsPanel />
+              </div>
+            )}
           </div>
         )}
       </div>

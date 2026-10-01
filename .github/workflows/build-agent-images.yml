@@ -159,6 +159,38 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Extract openclaw version from install.sh
+        if: matrix.base == 'openclaw'
+        id: extract_openclaw_version
+        run: |
+          set -euo pipefail
+          # Collect DISTINCT versions so a matching echo/error line does not
+          # pollute the result (grep -oE anchors on the version token, then
+          # sort -u collapses duplicates).
+          VERSIONS=$(grep -oE 'openclaw@[0-9]+(\.[0-9]+)+' app-catalog/agents/openclaw/scripts/install.sh | sed 's/openclaw@//' | sort -u)
+
+          COUNT=$(printf '%s\n' "$VERSIONS" | wc -l)
+          if [ "$COUNT" -ne 1 ]; then
+            echo "ERROR: Expected exactly one distinct openclaw version in install.sh, found $COUNT" >&2
+            printf '%s\n' "$VERSIONS" >&2
+            exit 1
+          fi
+
+          VERSION=$(printf '%s\n' "$VERSIONS" | head -n1)
+
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: Failed to extract openclaw version from install.sh" >&2
+            exit 1
+          fi
+
+          if ! [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
+            echo "ERROR: Invalid openclaw version format: '$VERSION' (expected format: X.Y.Z where X, Y, Z are numbers)" >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Extracted openclaw version: $VERSION"
+
       # Approach A: install incus in the runner and build the base image
       # by launching a real container. GitHub's ubuntu-latest and
       # ubuntu-24.04-arm runners support nested unprivileged containers.
@@ -224,13 +256,14 @@ jobs:
 
       - name: Bake openclaw into the base container
         if: matrix.base == 'openclaw'
+        env:
+          OPENCLAW_VERSION: ${{ steps.extract_openclaw_version.outputs.version }}
         run: |
-          sudo incus exec build-base -- bash -eux <<'BASH'
+          sudo incus exec build-base --env OPENCLAW_VERSION="$OPENCLAW_VERSION" -- bash -eux <<'BASH'
           export DEBIAN_FRONTEND=noninteractive
-          # Upstream OpenClaw from npm (latest) — no fork. The deploy-time
-          # install.sh also installs openclaw@latest, so this just warms the
-          # base image with a current build.
-          npm install -g --unsafe-perm openclaw@latest
+          # Upstream OpenClaw from npm — pinned to the same version the
+          # deploy-time install.sh uses (single source of truth).
+          npm install -g --unsafe-perm "openclaw@${OPENCLAW_VERSION}"
 
           # Sanity check
           test -f /usr/lib/node_modules/openclaw/dist/entry.js \
@@ -298,13 +331,14 @@ jobs:
 
   release:
     needs: [detect, build]
+    if: ${{ !cancelled() && needs.detect.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: taos-*-base-*
+          pattern: taos-*base-*
           merge-multiple: true
 
       - name: List downloaded assets

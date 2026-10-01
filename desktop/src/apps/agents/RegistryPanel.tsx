@@ -177,11 +177,12 @@ function PendingScopeRequests({
       );
       if (seq !== loadSeq.current) return;
       if (!res.ok) {
-        // A 404 here is the existence-hiding response for a caller who is
-        // neither the owner nor an admin -- render nothing rather than an
-        // error, since there is no action for them to take.
+        const msg =
+          res.status === 404
+            ? "You do not have permission to view requests for this agent."
+            : `Failed to load scope requests (${res.status})`;
         setRequests([]);
-        setErr(res.status === 404 ? null : `Failed to load scope requests (${res.status})`);
+        setErr(msg);
         return;
       }
       const data = (await res.json()) as { requests?: ScopeRequest[] };

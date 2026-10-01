@@ -458,3 +458,153 @@ async def test_convert_to_lxc_uses_local_controller_and_bearer_token(monkeypatch
     assert req.full_url.startswith("http://127.0.0.1:6969")
     assert req.full_url.endswith("/api/settings/llm-proxy")
     assert req.get_header("Authorization") == "Bearer test-token-123"
+
+
+@pytest.mark.asyncio
+async def test_convert_to_lxc_401_stderr_names_token_not_reachability(monkeypatch, tmp_path, capsys):
+    """A 401 from the local controller must name the token/auth problem,
+    not 'cannot reach'.
+
+    On BASE this FAILS because _get_verified_gateway_port catches all
+    exceptions and prints the reachability message.
+    """
+    import urllib.request
+    import urllib.error
+
+    from tinyagentos.cli.worker import _convert_to_lxc
+
+    monkeypatch.setattr(
+        "tinyagentos.cli.worker.list_flat_mode_agents",
+        lambda: [],
+    )
+    fake_run = types.SimpleNamespace(returncode=0)
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: fake_run)
+
+    monkeypatch.setattr(
+        "tinyagentos.cli.worker.resolve_data_dir",
+        lambda: tmp_path,
+    )
+    fake_config = types.SimpleNamespace(server={"litellm_port": 7834})
+    monkeypatch.setattr(
+        "tinyagentos.cli.worker.load_config",
+        lambda path: fake_config,
+    )
+
+    def fake_urlopen(req, *a, **k):
+        raise urllib.error.HTTPError(
+            req.full_url, 401, "Unauthorized", req.headers, None,
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    args = types.SimpleNamespace(controller_url="http://controller:6969", yes=True)
+    rc = await _convert_to_lxc(args)
+    assert rc != 0
+
+    captured = capsys.readouterr()
+    assert "cannot reach" not in captured.err.lower()
+    assert "token" in captured.err.lower() or "rejected" in captured.err.lower()
+
+
+@pytest.mark.asyncio
+async def test_convert_to_lxc_config_failure_exits_before_drain(monkeypatch, tmp_path):
+    """A bad config.yaml must abort before drain_and_delete_agents runs.
+
+    On BASE this FAILS because load_config runs after drain_and_delete_agents.
+    """
+    from tinyagentos.cli.worker import _convert_to_lxc
+
+    drain_calls = []
+
+    async def fake_drain(agents):
+        drain_calls.append(agents)
+
+    monkeypatch.setattr(
+        "tinyagentos.cli.worker.drain_and_delete_agents",
+        fake_drain,
+    )
+
+    monkeypatch.setattr(
+        "tinyagentos.cli.worker.list_flat_mode_agents",
+        lambda: [{"name": "taos-agent-a", "state": "RUNNING"}],
+    )
+
+    # Pass the gateway-port preflight so we reach the config load.
+    async def fake_gw():
+        return 7838
+
+    monkeypatch.setattr(
+        "tinyagentos.cli.worker._get_verified_gateway_port",
+        fake_gw,
+    )
+
+    # load_config raises ValueError to simulate bad YAML.
+    def bad_load_config(path):
+        raise ValueError("bad config")
+
+    monkeypatch.setattr(
+        "tinyagentos.cli.worker.load_config",
+        bad_load_config,
+    )
+
+    args = types.SimpleNamespace(controller_url="http://controller:6969", yes=True)
+    rc = await _convert_to_lxc(args)
+    assert rc != 0
+    assert drain_calls == []
+
+
+@pytest.mark.asyncio
+async def test_gateway_port_404_is_not_reported_as_auth(monkeypatch, tmp_path, capsys):
+    """A 404 from the local controller must not print 'rejected the token'.
+
+    Only 401/403 are auth errors. A 404 (older controller without
+    /api/settings/llm-proxy, or any other non-auth failure) should report
+    the HTTP status without telling the user to log in.
+    """
+    import urllib.error
+
+    from tinyagentos.cli.worker import _convert_to_lxc
+
+    monkeypatch.setattr(
+        "tinyagentos.cli.worker.list_flat_mode_agents",
+        lambda: [],
+    )
+    fake_run = types.SimpleNamespace(returncode=0)
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: fake_run)
+
+    monkeypatch.setattr(
+        "tinyagentos.cli.worker.resolve_data_dir",
+        lambda: tmp_path,
+    )
+    fake_config = types.SimpleNamespace(server={"litellm_port": 7834})
+    monkeypatch.setattr(
+        "tinyagentos.cli.worker.load_config",
+        lambda path: fake_config,
+    )
+
+    class FakeResponse:
+        def __init__(self, payload_bytes):
+            self._payload = payload_bytes
+
+        def read(self):
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, *a, **k):
+        raise urllib.error.HTTPError(
+            req.full_url, 404, "Not Found", req.headers, None,
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    args = types.SimpleNamespace(controller_url="http://controller:6969", yes=True)
+    rc = await _convert_to_lxc(args)
+    assert rc != 0
+
+    captured = capsys.readouterr()
+    assert "rejected the token" not in captured.err.lower()

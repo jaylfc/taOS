@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 from tinyagentos.app import resolve_data_dir
-from tinyagentos.cli.taosctl.client import TaosClient
+from tinyagentos.cli.taosctl.client import ApiError, TaosClient
 from tinyagentos.cluster.convert_to_lxc import (
     drain_and_delete_agents,
     list_flat_mode_agents,
@@ -63,6 +63,21 @@ async def _get_verified_gateway_port() -> int:
     """
     try:
         resp = await asyncio.to_thread(TaosClient().get, "/api/settings/llm-proxy")
+    except ApiError as exc:
+        if exc.status in (401, 403):
+            print(
+                f"ERROR: local controller rejected the token (HTTP {exc.status}): "
+                "set TAOS_TOKEN or run taosctl login. "
+                f"Detail: {exc.message}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"ERROR: local controller returned HTTP {exc.status} for "
+                f"/api/settings/llm-proxy: {exc.message}",
+                file=sys.stderr,
+            )
+        return 0
     except Exception as exc:
         print(
             "ERROR: cannot reach local controller at http://127.0.0.1:6969 "
@@ -97,6 +112,19 @@ async def _convert_to_lxc(args) -> int:
     if gateway_port == 0:
         return 1
 
+    # Load config and build LLMProxy before touching anything. A bad
+    # config.yaml must abort having deleted nothing.
+    try:
+        data_dir = resolve_data_dir()
+        config = load_config(data_dir / "config.yaml")
+    except (ValueError, OSError) as exc:
+        print(f"ERROR: invalid config: {exc}", file=sys.stderr)
+        return 1
+    llm_proxy = LLMProxy(
+        port=config.server.get("litellm_port", 7834),
+        data_dir=data_dir,
+    )
+
     print("Enumerating flat-mode agents...")
     agents = list_flat_mode_agents()
     if not agents:
@@ -129,14 +157,6 @@ async def _convert_to_lxc(args) -> int:
     if r.returncode != 0:
         print(f"install-worker.sh failed with code {r.returncode}", file=sys.stderr)
         return r.returncode
-
-    # Create LLMProxy for per-agent key minting during redeploy.
-    data_dir = resolve_data_dir()
-    config = load_config(data_dir / "config.yaml")
-    llm_proxy = LLMProxy(
-        port=config.server.get("litellm_port", 7834),
-        data_dir=data_dir,
-    )
 
     print("Redeploying agents into worker LXC...")
     agent_cfgs = _load_agents_json()
