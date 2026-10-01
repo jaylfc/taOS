@@ -26,7 +26,6 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
-from tinyagentos.litellm_config import get_litellm_master_key
 from tinyagentos.opencode_runtime import OpenCodeServer, OpenCodeServerConfig
 
 logger = logging.getLogger(__name__)
@@ -173,9 +172,9 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
     The key is scoped to the full ``permitted_models`` set read from the
     ``taos_agent`` desktop_settings namespace (falls back to ``[model]``).
 
-    If the server was created while LiteLLM was not yet ready (born degraded),
-    it is torn down and rebuilt transparently on the next call once the proxy
-    is running so callers never need to know about the race.
+    Its model calls go to the in-process LLM gateway; there is no LiteLLM
+    readiness race any more (LiteLLM removal 2b-2a removed the "born degraded"
+    rebuild).
 
     Returns the running :class:`~tinyagentos.opencode_runtime.OpenCodeServer`.
     """
@@ -211,30 +210,7 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
         app_state.taos_opencode_sessions = sessions
 
     existing: OpenCodeServer | None = servers.get(model)
-    born_degraded = getattr(app_state, "taos_opencode_born_degraded", None)
-    if born_degraded is None:
-        born_degraded = {}
-        app_state.taos_opencode_born_degraded = born_degraded
 
-
-    # Self-heal: if the cached server was born before LiteLLM was ready and
-    # LiteLLM is now running, tear down the degraded server and fall through
-    # to a fresh build so the key re-scope and model_ids are applied properly.
-    if existing is not None and born_degraded.get(model, False):
-        llm_proxy_check = getattr(app_state, "llm_proxy", None)
-        if llm_proxy_check is not None and llm_proxy_check.is_running():
-            logger.info(
-                "taos_agent_runtime: LiteLLM now ready; rebuilding taOS opencode server "
-                "for %s that was born degraded", model,
-            )
-            try:
-                await existing.stop()
-            except Exception:
-                logger.debug("taos_agent_runtime: error stopping degraded server", exc_info=True)
-            servers.pop(model, None)
-            sessions.pop(model, None)
-            born_degraded[model] = False
-            existing = None
 
     if existing is None:
         # Stop-on-model-change: all per-model servers share TAOS_OPENCODE_PORT,
@@ -257,7 +233,6 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
                     logger.debug("taos_agent_runtime: error stopping old server", exc_info=True)
                 servers.pop(other_model, None)
                 sessions.pop(other_model, None)
-                born_degraded.pop(other_model, None)
         # Clear the legacy session id so the desktop chat path does not feed
         # a stale session from a now-stopped model to the new server.
         app_state.taos_opencode_session_id = None
@@ -271,12 +246,7 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
         if desktop_settings is not None:
             try:
                 prefs = await desktop_settings.get_preference("user", "taos_agent") or {}
-                stored = prefs.get("permitted_models", [])
-                if stored:
-                    # Always ensure the current model is in the set.
-                    permitted_models = list(stored)
-                    if model not in permitted_models:
-                        permitted_models = [model, *permitted_models]
+                permitted_models = permitted_models_for(model, prefs)
                 stored_key = prefs.get("llm_key") or None
             except Exception:
                 logger.debug("taos_agent_runtime: could not read taos_agent prefs", exc_info=True)
@@ -285,21 +255,31 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
         # (re-scoping it to the current permitted set), else mint once and persist
         # it. create_agent_key uses a fixed alias, so re-minting would 400 on the
         # alias collision — persisting the value avoids that and keeps it stable.
+        # The deployer injects TAOS_EMBEDDING_MODEL=taos-embedding-default into
+        # every agent that has an LLM proxy, so the taOS agent's key must also
+        # allow the embedding alias. This is now added inside llm_proxy.create_agent_key.
         llm_proxy = getattr(app_state, "llm_proxy", None)
         litellm_key: str | None = None
-        born_degraded_now = False
-        if llm_proxy is None or not llm_proxy.is_running():
-            born_degraded_now = True
         if stored_key:
             litellm_key = stored_key
             if llm_proxy is not None:
                 try:
                     rescoped = await llm_proxy.update_agent_key(stored_key, permitted_models)
                     if not rescoped:
+                        # The stored key is not in the local key store (legacy
+                        # Postgres key or another agent's key). Mint a fresh
+                        # local-store key so the gateway can accept it.
                         logger.warning(
                             "taos_agent_runtime: re-scoping the taOS agent key returned False "
-                            "(key scope may be stale)"
+                            "(key not in local store); minting a new local-store key"
                         )
+                        litellm_key = _mint_local_taos_agent_key(app_state, permitted_models)
+                        if litellm_key and desktop_settings is not None:
+                            try:
+                                prefs["llm_key"] = litellm_key
+                                await desktop_settings.save_preference("user", "taos_agent", prefs)
+                            except Exception:
+                                logger.debug("taos_agent_runtime: persisting key failed", exc_info=True)
                 except Exception:
                     logger.debug("taos_agent_runtime: re-scoping stored key failed", exc_info=True)
         elif llm_proxy is not None:
@@ -314,7 +294,22 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
                 except Exception:
                     logger.debug("taos_agent_runtime: persisting key failed", exc_info=True)
         if not litellm_key:
-            litellm_key = get_litellm_master_key(getattr(app_state, "data_dir", None))
+            # No key from the key service (none on app.state, or it could
+            # not mint): a key scoped to the permitted models straight from
+            # the local key store, which the LLM gateway accepts.
+            litellm_key = _mint_local_taos_agent_key(app_state, permitted_models)
+            if litellm_key and desktop_settings is not None:
+                try:
+                    prefs["llm_key"] = litellm_key
+                    await desktop_settings.save_preference("user", "taos_agent", prefs)
+                except Exception:
+                    logger.debug("taos_agent_runtime: persisting key failed", exc_info=True)
+        if not litellm_key:
+            logger.error(
+                "taos_agent_runtime: no scoped LLM key could be minted for the taOS "
+                "agent; it starts without one (the LiteLLM master key is never used)"
+            )
+            litellm_key = ""
         app_state.taos_opencode_key = litellm_key
 
         # Get the native agent's scoped credential (rotated token) for taOS API access.
@@ -366,7 +361,7 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
             home=home,
             port=TAOS_OPENCODE_PORT,
             server_password=app_state.taos_opencode_password,
-            litellm_base_url=f"http://127.0.0.1:{llm_proxy.port if llm_proxy is not None else 7834}/v1",
+            litellm_base_url=await _llm_base_url(app_state, permitted_models),
             litellm_key=litellm_key,
             model_ids=permitted_models,
             taos_api_base_url=taos_api_base_url,
@@ -374,7 +369,6 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
         )
         server = OpenCodeServer(cfg)
         servers[model] = server
-        born_degraded[model] = born_degraded_now
         if model not in sessions:
             sessions[model] = None
 
@@ -390,6 +384,66 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
     # spuriously time out the very first taOS-agent chat.
     await server.ensure_running(deadline_s=180.0)
     return server
+
+
+def _mint_local_taos_agent_key(app_state, models: list[str]) -> str | None:
+    """A ``taos-agent`` key scoped to ``models`` from the local key store."""
+    from tinyagentos.litellm_keystore import LiteLLMKeyStore, default_keystore_path
+    from tinyagentos.llm_proxy import scoped_key_models
+
+    data_dir = getattr(app_state, "data_dir", None)
+    if data_dir is None:
+        return None
+    try:
+        return LiteLLMKeyStore(default_keystore_path(Path(data_dir))).mint(
+            "taos-agent", scoped_key_models(models or None))
+    except Exception:
+        logger.warning("taos_agent_runtime: local key store mint failed", exc_info=True)
+        return None
+
+
+def permitted_models_for(model: str, prefs: dict | None) -> list[str]:
+    """The taOS agent's permitted model set: the stored one (current model
+    always included, first when added), else just ``model``."""
+    stored = (prefs or {}).get("permitted_models") or []
+    if not stored:
+        return [model]
+    permitted = list(stored)
+    return permitted if model in permitted else [model, *permitted]
+
+
+async def opencode_gateway_problem(app_state, model: str, prefs: dict | None) -> str | None:
+    """Why the in-process gateway cannot serve opencode's permitted models,
+    or None. Same inputs and checks as the cutover applies to container
+    agents. With LiteLLM gone this no longer picks another path; callers use
+    it to explain a model error up front."""
+    from tinyagentos.llm_gateway.cutover import models_problem
+
+    try:
+        problem = await models_problem(app_state, permitted_models_for(model, prefs))
+    except Exception as exc:  # noqa: BLE001 - unknown routability is a problem
+        problem = f"routability check failed: {type(exc).__name__}"
+    return f"the taOS LLM gateway cannot serve it: {problem}" if problem else None
+
+
+async def _llm_base_url(app_state, models: list[str]) -> str:
+    """Where the taOS agent's opencode sends model calls: the in-process LLM
+    gateway on this controller. It is the only LLM path since LiteLLM removal
+    2b-2a; a model the gateway cannot route is logged here and answered with a
+    model error at request time."""
+    from tinyagentos.llm_gateway.cutover import models_problem
+    from tinyagentos.llm_gateway.router import PREFIX
+
+    try:
+        problem = await models_problem(app_state, models)
+    except Exception as exc:  # noqa: BLE001 - logged, the gateway is still the path
+        problem = f"routability check failed: {type(exc).__name__}"
+    if problem:
+        logger.warning("taos_agent_runtime: the LLM gateway cannot serve the taOS agent's models: %s",
+                       problem)
+    config = getattr(app_state, "config", None)
+    port = int((getattr(config, "server", None) or {}).get("port", 6969))
+    return f"http://127.0.0.1:{port}{PREFIX}"
 
 
 async def stop_taos_opencode_server(app_state) -> None:
@@ -416,7 +470,6 @@ async def stop_taos_opencode_server(app_state) -> None:
             logger.debug("taos_agent_runtime: error during stop", exc_info=True)
     app_state.taos_opencode_servers = {}
     app_state.taos_opencode_sessions = {}
-    app_state.taos_opencode_born_degraded = {}
     app_state.taos_opencode_session_id = None
 
 # ---------------------------------------------------------------------------

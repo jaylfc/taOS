@@ -784,12 +784,27 @@ describe("MessageList", () => {
       );
       expect(checkSvg).toBeFalsy();
     });
+
+    it("renders exactly one tick element for own completed dm-remote message", () => {
+      renderWithMsg({
+        channel: channel({ type: "dm-remote", members: ["user", "hub:peer"] }),
+        messages: [
+          msg({
+            channel_id: "dmr-1",
+            author_id: "user",
+            delivered_at: 1700000001,
+          }),
+        ],
+      });
+      const tickWrappers = document.querySelectorAll('[data-message-id="m1"] span.ml-1.inline-flex');
+      expect(tickWrappers).toHaveLength(1);
+    });
   });
 
   describe("A2A receipt ticks", () => {
     it("renders single check (sent) when no receipt row exists", () => {
       renderWithMsg({
-        channel: channel({ type: "dm-remote", members: ["user", "peer"] }),
+        channel: channel({ type: "group", settings: { kind: "a2a" }, members: ["user", "peer"] }),
         messages: [
           msg({ channel_id: "ch1", author_id: "user", receipts: [] }),
         ],
@@ -803,7 +818,7 @@ describe("MessageList", () => {
 
     it("renders double check (delivered) when receipt has no seen_at", () => {
       renderWithMsg({
-        channel: channel({ type: "dm-remote", members: ["user", "peer"] }),
+        channel: channel({ type: "group", settings: { kind: "a2a" }, members: ["user", "peer"] }),
         messages: [
           msg({
             channel_id: "ch1",
@@ -823,7 +838,7 @@ describe("MessageList", () => {
 
     it("renders coloured double check (seen) when receipt has seen_at", () => {
       renderWithMsg({
-        channel: channel({ type: "dm-remote", members: ["user", "peer"] }),
+        channel: channel({ type: "group", settings: { kind: "a2a" }, members: ["user", "peer"] }),
         messages: [
           msg({
             channel_id: "ch1",
@@ -844,7 +859,7 @@ describe("MessageList", () => {
 
     it("does not render receipt tick for non-own messages", () => {
       renderWithMsg({
-        channel: channel({ type: "dm-remote", members: ["user", "peer"] }),
+        channel: channel({ type: "group", settings: { kind: "a2a" }, members: ["user", "peer"] }),
         messages: [
           msg({
             channel_id: "ch1",

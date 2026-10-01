@@ -205,8 +205,7 @@ class TestWorkspaceUsage:
         assert data["available"] is False
 
     async def test_usage_404_for_unknown_agent(self, client):
-        # LLM proxy not running, so it returns "not running" before checking agent
+        # Usage is read from taOS's own key store (LiteLLM removal 2a), so a
+        # stopped LiteLLM no longer short-circuits: an unknown agent is a 404.
         resp = await client.get("/api/agents/nonexistent/workspace/usage")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["available"] is False
+        assert resp.status_code == 404

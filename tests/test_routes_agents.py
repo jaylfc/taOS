@@ -1016,7 +1016,8 @@ class TestAgentArchiveLifecycle:
         assert op_names.index("rename") < op_names.index("start")
 
     async def test_restore_env_rewrite_uses_incus_config_set(self, client, app, monkeypatch):
-        """When proxy is running, set_env is called with OPENAI_API_KEY=<new>."""
+        """Restore mints a new key (no process needed) and set_env pushes it as
+        OPENAI_API_KEY (and LITELLM_API_KEY)."""
         env_calls = []
 
         async def fake_deploy(req):
@@ -1051,7 +1052,6 @@ class TestAgentArchiveLifecycle:
         monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
 
         proxy = app.state.llm_proxy
-        monkeypatch.setattr(proxy, "is_running", lambda: True)
         async def fake_create_agent_key(name, models=None, budget_duration=None):
             return "sk-incus-key"
         monkeypatch.setattr(proxy, "create_agent_key", fake_create_agent_key)

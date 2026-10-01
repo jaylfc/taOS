@@ -1,2 +1,0 @@
-### Fixed
-- `test_unregister_unknown_worker` now initializes `app.state.cluster_pairing` before the DELETE request and closes it afterwards, matching the pattern used by sibling tests. This fixes a false 503 failure caused by the new fail-closed behavior in the cluster node DELETE route.

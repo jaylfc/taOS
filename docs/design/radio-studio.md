@@ -132,9 +132,10 @@ skill's `tool_schema` into Hermes's function-calling format.
 storage) cannot start on ARM hosts (Pi, RK3588) where Prisma does not ship a
 compatible `libquery-engine` binary. This is a known upstream gap, not a taOS bug.
 
-**Workaround today:** taOS already falls back to the shared LiteLLM master key
-on ARM hosts that cannot run Prisma (`TAOS_DISABLE_AGENT_MASTER_KEY_FALLBACK=1`
-to opt out). Radio Studio agents on ARM hosts should:
+**Workaround today:** on ARM hosts that cannot run Prisma, taOS mints each
+agent a scoped key in its own local key store (the LLM gateway accepts it; the
+shared LiteLLM master key is never handed to an agent). Radio Studio agents on
+ARM hosts should:
 
 - Default to OpenClaw or SmolAgents (no Prisma dependency) for rf-scanning tasks.
 - Surface a banner in the studio: "Hermes is unavailable on this ARM host

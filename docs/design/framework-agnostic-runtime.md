@@ -105,7 +105,7 @@ Audit as of **2026-04-17**. Pass = aligned with rule. Fail = needs migration.
 | openclaw.json + env file | Written by `install.sh` inside the container at install time; lives at `/root/.openclaw/` | **Pass** |
 | QMD embedding + index service | Single host `qmd.service` systemd unit on :7832 routing per-tenant via `dbPath` | **Pass** |
 | Per-agent memory isolation | `data/agent-memory/{name}/index.sqlite` inside container; addressed by dbPath | **Pass** |
-| LiteLLM `/v1/embeddings` | Auto-discovers ollama-compatible backends, exposes `taos-embedding-default` alias | **Pass** |
+| Gateway `/v1/embeddings` | Served by the in-process LLM gateway (no LiteLLM): auto-discovers ollama-compatible backends, exposes `taos-embedding-default` alias | **Pass** |
 | Container upgrade / framework swap | Runbooks in `docs/runbooks/`, automated test pending | **Gap** |
 
 ## Migration — what changed vs. the old bind-mount model

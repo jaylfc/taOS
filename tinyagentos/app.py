@@ -86,7 +86,6 @@ from tinyagentos.app_orchestrator import AppOrchestrator
 from tinyagentos.computer_use import ComputerUseManager
 from tinyagentos.webhook_notifier import WebhookNotifier
 from tinyagentos.llm_proxy import LLMProxy
-from tinyagentos.litellm_migrate import migrate as _litellm_migrate
 from tinyagentos.agent_image import ensure_all_base_images_present as _ensure_agent_images_present
 from tinyagentos.agent_image import is_prefetch_enabled as _is_prefetch_enabled
 from tinyagentos.agent_image import register_prefetch_endpoint
@@ -410,47 +409,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     auth_manager = AuthManager(data_dir)
     webhook_notifier = WebhookNotifier(config.to_dict())
     notif_store.set_webhook_notifier(webhook_notifier)
-    # Optional Postgres URL for LiteLLM's virtual key store. When this
-    # file is present, LiteLLM can mint per-agent keys via /key/generate;
-    # otherwise the deployer falls back to the shared master key. See
-    # docs/design/framework-agnostic-runtime.md.
-    db_url_path = data_dir / ".litellm_db_url"
-    db_url = db_url_path.read_text().strip() if db_url_path.exists() else None
-    # Authorize per-agent virtual keys against taOS's own SQLite key store via
-    # LiteLLM's custom_auth hook, instead of its Postgres/prisma virtual-key
-    # table. Lets per-agent keys work with NO DATABASE_URL and no prisma (the
-    # ARM / no-Postgres fix) and gives every install real per-agent isolation.
-    # Default ON whenever there is NO Postgres configured (the common case,
-    # incl. every ARM install). A Postgres-backed install already has per-agent
-    # keys via LiteLLM's native table, so defer to it rather than silently
-    # switching on upgrade (which would orphan its already-minted keys and 401
-    # running agents). Force in-house even with Postgres via a
-    # ``.litellm_force_inhouse_keys`` marker; disable entirely via
-    # ``.litellm_disable_inhouse_keys``.
-    if (data_dir / ".litellm_disable_inhouse_keys").exists():
-        inhouse_keys = False
-    elif (data_dir / ".litellm_force_inhouse_keys").exists():
-        inhouse_keys = True
-    else:
-        inhouse_keys = db_url is None
-    # Read the local auth token so LLMProxy can forward it to LiteLLM's
-    # subprocess — otherwise the taOS callback can't POST llm_call events
-    # back to /api/trace and the 401s fill the log instead of trace rows.
-    local_token_path = data_dir / ".auth_local_token"
-    local_token = local_token_path.read_text().strip() if local_token_path.exists() else None
+    # Per-agent key admin over the local key and budget stores. There is no
+    # LiteLLM process any more (removal stage 2b-2a); ``port`` is the old
+    # LiteLLM host port, kept only so the startup cutover can recognise proxy
+    # devices that still point at it and move them to the gateway.
     llm_proxy = LLMProxy(
         port=config.server.get("litellm_port", 7834),
-        controller_port=controller_port,
-        database_url=db_url,
-        local_token=local_token,
-        # registry lets generate_litellm_config register installed local
-        # models (e.g. gemma-4-e2b-gguf) as LiteLLM model_name aliases
-        # routing through the matching backend's URL. Without it, the
-        # agent picker can show a local model but chatting with it 400s
-        # at the proxy because no alias exists for that model_name.
-        registry=registry,
         data_dir=data_dir,
-        inhouse_keys=inhouse_keys,
     )
     channel_hub_router = MessageRouter()
     adapter_manager = AdapterManager(channel_hub_router)
@@ -1005,33 +970,6 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         except Exception:
             logger.exception("agent base image bootstrap scheduling failed")
 
-        # LiteLLM bring-up runs in the background so the startup guard clears
-        # immediately. migrate must finish before start (it generates the prisma
-        # client the LiteLLM subprocess imports). All consumers null-check
-        # llm_proxy.is_running() so they degrade gracefully while the proxy warms.
-        async def _litellm_bringup() -> None:
-            try:
-                try:
-                    await _litellm_migrate(data_dir)
-                except Exception:
-                    logger.exception("litellm prisma migration failed — virtual keys will not work")
-                resolved_secrets: dict[str, str] = {}
-                for backend in config.backends:
-                    name = backend.get("api_key_secret")
-                    if not name or name in resolved_secrets:
-                        continue
-                    try:
-                        rec = await secrets_store.get(name)
-                    except Exception as exc:
-                        logger.warning("llm_proxy: secret lookup for %s failed: %s", name, exc)
-                        continue
-                    if rec and rec.get("value"):
-                        resolved_secrets[name] = rec["value"]
-                await llm_proxy.start(config.backends, secrets=resolved_secrets)
-            except Exception:
-                pass  # LiteLLM is optional
-
-        _create_supervised_task(_litellm_bringup(), app.state._background_tasks)
         # Start background health monitor
         from tinyagentos.health import HealthMonitor
         monitor = HealthMonitor(config, metrics_store, qmd_client, http_client, notif_store)
@@ -1199,21 +1137,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # can call it after each write.
         app.state.trace_registry.set_emitter(_otel_emitter)
         # Phase 4: reasoning judge — fire on lifecycle session_end.
-        from tinyagentos import llm_gateway as _llm_gateway
         from tinyagentos.otel.judge import ReasoningJudge
-        if _llm_gateway.enabled():
-            # The gateway on this controller, as the host (local token = the
-            # admin kind). The LiteLLM master key no longer opens it.
-            _judge = ReasoningJudge(
-                litellm_base_url=f"http://127.0.0.1:{controller_port}/api/llm/v1",
-                litellm_api_key=app.state.auth.get_local_token() or "",
-            )
-        else:
-            from tinyagentos.litellm_config import get_litellm_master_key
-            _judge = ReasoningJudge(
-                litellm_base_url=f"http://localhost:{app.state.llm_proxy.port}/v1",
-                litellm_api_key=get_litellm_master_key(data_dir),
-            )
+        # The gateway on this controller, as the host (local token = the
+        # admin kind). The gateway is always mounted (LiteLLM removal 2b-2a).
+        _judge = ReasoningJudge(
+            litellm_base_url=f"http://127.0.0.1:{controller_port}/api/llm/v1",
+            litellm_api_key=app.state.auth.get_local_token() or "",
+        )
         app.state.trace_registry.set_judge(_judge)
 
         # Bridge session registry — per-agent queue + accumulator for openclaw.
@@ -1238,29 +1168,6 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.install_progress import get_global_store
         app.state.install_progress_store = get_global_store()
 
-        # LiteLLM config reload on catalog change — keeps the proxy's
-        # routing table in sync with live backend state. Subscriber is
-        # a no-op if the proxy isn't running (LiteLLM not installed) or
-        # if the catalog signature hasn't changed.
-        async def _reload_llm_proxy_on_catalog_change() -> None:
-            if not llm_proxy.is_running():
-                return
-            # Re-resolve secrets so rotated keys or newly-added providers
-            # that changed between SIGHUPs pick up the current values.
-            resolved: dict[str, str] = {}
-            for backend in config.backends:
-                name = backend.get("api_key_secret")
-                if not name or name in resolved:
-                    continue
-                try:
-                    rec = await secrets_store.get(name)
-                except Exception:
-                    continue
-                if rec and rec.get("value"):
-                    resolved[name] = rec["value"]
-            await llm_proxy.reload_config(config.backends, secrets=resolved)
-
-        backend_catalog.subscribe(_reload_llm_proxy_on_catalog_change)
 
         # Start the score cache — bridges the async benchmark store to the
         # scheduler's sync admission path via a 15s polling loop.
@@ -1491,9 +1398,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.agent_budget_store import AgentBudgetStore, default_budget_path
         app.state.agent_budget_store = AgentBudgetStore(default_budget_path(data_dir))
 
-        # LiteLLM -> gateway cutover: point each agent's LLM proxy device at
-        # the gateway agent listener (flag on) or back at LiteLLM (flag off).
-        # A no-op unless __main__ recorded the listener port on app.state.
+        # Gateway cutover: point every agent proxy device still on an old
+        # LiteLLM port at the gateway agent listener (there is no LiteLLM to
+        # go back to). A no-op unless __main__ recorded the listener port.
         from tinyagentos.llm_gateway.cutover import run_startup_reconcile
         _create_supervised_task(run_startup_reconcile(app.state), app.state._background_tasks)
 
@@ -1536,7 +1443,6 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await cluster_manager.stop()
         if app.state.gpu_arbiter is not None:
             await app.state.gpu_arbiter.stop()
-        llm_proxy.stop()
         try:
             from tinyagentos.taos_agent_runtime import stop_taos_opencode_server
             await stop_taos_opencode_server(app.state)

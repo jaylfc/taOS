@@ -5,6 +5,8 @@ import html
 import json
 import math
 import random
+import re
+import secrets
 import socket
 from pathlib import Path
 import logging
@@ -13,6 +15,7 @@ import threading
 import time
 import zlib
 from collections import OrderedDict
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 
 import httpx
@@ -503,6 +506,17 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
   overscroll-behavior: contain;
 }
 .ls-feed::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+/* Command output from a device agent. df, free and ip all speak in columns,
+   and a proportional font turns them into a wall of text -- the one place on
+   this screen where monospace is the honest rendering rather than a style.
+   pre-wrap because the lines are already wrapped by the board and re-wrapping
+   them on whitespace would shuffle the columns anyway. */
+.ls-bubble[data-mono="1"] {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 12px; line-height: 1.35; white-space: pre-wrap;
+  overflow-x: auto;
+}
 
 /* PRESSING THE ACTIVE CATEGORY CLEARS THE FEED AWAY. Jay asked for it, and it
    is the one thing a lock screen full of cards could not do: see the screen
@@ -3428,7 +3442,10 @@ _LOCK_SCREEN_SCRIPT = r"""
       // without a key there is no way to put keyboard focus back on the island
       // the user was actually on -- an index would silently move the focus to a
       // different agent whenever the list reorders.
-      el.setAttribute("data-agent", name);
+      // A device agent carries its OWN key (`device:<slug>`), so a plugged-in
+      // board and a TAOS_LOCK_DEMO_AGENTS placeholder of the same name cannot
+      // land on the same island and hand each other's payload to one node.
+      el.setAttribute("data-agent", agent.key || name);
       el.setAttribute("data-state", busy ? "busy" : "idle");
       if (agent.attention) el.setAttribute("data-attention", "1");
       if (isDoneStatus(status)) el.setAttribute("data-done", "1");
@@ -3599,8 +3616,12 @@ _LOCK_SCREEN_SCRIPT = r"""
       for (var j = 0; j < agents.length; j++) {
         var agent = agents[j];
         var name = agent.name || "agent";
-        var el = Object.prototype.hasOwnProperty.call(existing, name)
-          ? existing[name] : null;
+        // Look up by the SAME key island() writes to data-agent. Looking up by
+        // name never matched a device island (key `device:<slug>`), so it was
+        // rebuilt, entrance animation and all, on every poll.
+        var key = agent.key || name;
+        var el = Object.prototype.hasOwnProperty.call(existing, key)
+          ? existing[key] : null;
         // A reconfigured agent -- new portrait, different framework -- is the
         // one case where the element itself is wrong rather than merely stale.
         if (el && el.getAttribute("data-identity") !== islandIdentity(agent)) {
@@ -3614,7 +3635,7 @@ _LOCK_SCREEN_SCRIPT = r"""
         }
         // Claimed: a second agent sharing this name gets its own island
         // rather than the two of them fighting over one element.
-        delete existing[name];
+        delete existing[key];
         want.push(el);
       }
       // Whatever the payload no longer lists has genuinely gone away, and
@@ -5219,8 +5240,72 @@ _LOCK_SCREEN_SCRIPT = r"""
     };
     var RADIOS = [["wifi", "Wi‑Fi"], ["bluetooth", "Bluetooth"]];
 
+    // The USB-C port tile, after the radios. It is left out of the list until a
+    // read says this phone offers a mode, so a dev box shows nothing.
+    var USB_LABELS = { ncm: "USB network", charging: "Charge only", mtp: "File transfer" };
+    var USB_GLYPH = '<path d="M12 3v13"/><circle cx="12" cy="19" r="2"/>'
+      + '<path d="M12 9l4-2v3M12 12l-4-2v-2"/>';
+    var usbState = { available: [] };
+    var lastRadios = {};
+
+    function usbTile() {
+      var btn = partOf(togglesEl, "usb", "ls-toggle", "button");
+      if (btn.type !== "button") {
+        btn.type = "button";
+        btn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">'
+          + USB_GLYPH + "</svg>";
+        btn.appendChild(document.createElement("span"));
+        btn.addEventListener("click", function () { cycleUsb(btn); });
+      }
+      var cur = USB_LABELS[usbState.mode];
+      setText(btn.lastChild, cur || "USB");
+      // Unknown is not a position on the dial: disabled rather than shown in a
+      // mode nobody measured.
+      btn.disabled = !cur;
+      setAttrIfChanged(btn, "aria-pressed", "false");
+      setAttrIfChanged(btn, "data-usb-mode", usbState.mode || "");
+      return btn;
+    }
+
+    function paintUsb(state) {
+      usbState = state || { available: [] };
+      paintRadios(lastRadios);
+    }
+
+    function cycleUsb(btn) {
+      if (btn.getAttribute("data-busy") === "1") return;
+      var avail = usbState.available || [];
+      var next = avail[(avail.indexOf(usbState.mode) + 1) % avail.length];
+      if (!next) return;
+      btn.setAttribute("data-busy", "1");
+      // No optimistic repaint: this can take ~10s, and the answer is the
+      // read-back, which may well not be what was asked for.
+      fetch("/auth/lock-usb", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-taOS-Console": "1" },
+        body: JSON.stringify({ mode: next })
+      }).then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          btn.removeAttribute("data-busy");
+          if (d) paintUsb(d); else loadUsb();
+        })
+        .catch(function () {
+          btn.removeAttribute("data-busy");
+          loadUsb();
+        });
+    }
+
+    function loadUsb() {
+      fetch("/auth/lock-usb", { credentials: "same-origin" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { if (d) paintUsb(d); })
+        .catch(function () { /* leave the tile as it is */ });
+    }
+
     function paintRadios(state) {
       if (!togglesEl) return;
+      lastRadios = state;
       var want = [];
       for (var i = 0; i < RADIOS.length; i++) {
         (function (key, label) {
@@ -5252,6 +5337,7 @@ _LOCK_SCREEN_SCRIPT = r"""
           want.push(btn);
         })(RADIOS[i][0], RADIOS[i][1]);
       }
+      if ((usbState.available || []).length) want.push(usbTile());
       placeInOrder(togglesEl, want);
     }
 
@@ -5349,6 +5435,7 @@ _LOCK_SCREEN_SCRIPT = r"""
     function openShade() {
       loadBrightness();
       loadRadios();
+      loadUsb();
       openSheet("shade");
     }
 
@@ -6412,6 +6499,9 @@ _LOCK_SCREEN_SCRIPT = r"""
       // microphone must never outlive the sheet that opened it.
       if (window.taosOSK) window.taosOSK.disable();
       stopVoice();
+      // The device thread poll belongs to the open sheet. Its own tick also
+      // checks, but that leaves one request after the sheet is gone.
+      if (typeof stopDevicePoll === "function") stopDevicePoll();
       setKeyboardOffset(0);
       var el = sheetEl(current);
       // Wait out the slide before hiding, or the sheet vanishes mid-animation.
@@ -6805,6 +6895,7 @@ _LOCK_SCREEN_SCRIPT = r"""
 
     function openChat(agent) {
       chatAgent = agent;
+      startDevicePoll(agent);
       chatName.textContent = agent.name || "agent";
       chatSub.textContent = agent.status || "";
       fillAvatar(chatAv, agent);
@@ -6832,7 +6923,11 @@ _LOCK_SCREEN_SCRIPT = r"""
         }, 60);
       }, 420);
 
-      fetch("/auth/lock-thread/" + encodeURIComponent(slugFor(agent.name || "")), {
+      // A device agent's slug is GIVEN, never derived: the board chose it, the
+      // phone validated it, and it is the key of the thread. Deriving one from
+      // the display name would work right up until two boards differ only in
+      // case.
+      fetch("/auth/lock-thread/" + encodeURIComponent(threadSlug(agent)), {
         credentials: "same-origin"
       }).then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
@@ -6865,14 +6960,115 @@ _LOCK_SCREEN_SCRIPT = r"""
       });
     }
 
+    function threadSlug(agent) {
+      return (agent && agent.slug) || slugFor((agent && agent.name) || "");
+    }
+
+    // Messages already on screen, keyed by id:seq. The device posts progress
+    // lines as the work runs, so this thread GROWS while the sheet is open --
+    // and a poller that rebuilt the list every two seconds would replay every
+    // bubble's entrance animation, which is the flicker bug this screen has
+    // already been through once. Append only what is new.
+    var deviceSeen = {};
+    var devicePoll = null;
+
+    function paintDeviceMessages(messages) {
+      var added = false;
+      for (var i = 0; i < (messages || []).length; i++) {
+        var m = messages[i];
+        // ROLE IS PART OF THE KEY. /auth/lock-send puts the user's own words in
+        // the thread under the id it just minted with seq 0, and the device's
+        // FIRST message for that same id is also seq 0 ("working on it…").
+        // Keyed on id:seq alone the two collide and the device's opening line
+        // is silently dropped -- the sheet would sit on the user's question
+        // with no sign the board had picked it up.
+        var key = String(m.role || "") + ":" + String(m.id || "") + ":" + String(m.seq);
+        if (deviceSeen[key]) continue;
+        deviceSeen[key] = true;
+        var el = bubble({ role: m.role, text: m.text, at: m.at });
+        // Command output is a block of columns -- df, free, ip -- and a
+        // proportional font turns it into a wall. The user's own words are
+        // left alone.
+        if (m.role !== "user") el.setAttribute("data-mono", "1");
+        msgsEl.appendChild(el);
+        added = true;
+      }
+      if (added) msgsEl.scrollTop = msgsEl.scrollHeight;
+    }
+
+    function stopDevicePoll() {
+      if (devicePoll) { window.clearInterval(devicePoll); devicePoll = null; }
+    }
+
+    function startDevicePoll(agent) {
+      stopDevicePoll();
+      deviceSeen = {};
+      if (!agent || !agent.device) return;
+      var slug = threadSlug(agent);
+      // 2s: the board posts progress while apt runs, and a slower poll makes a
+      // working update look like a hung one.
+      devicePoll = window.setInterval(function () {
+        if (!screenEl || screenEl.getAttribute("data-sheet") !== "chat") {
+          stopDevicePoll();
+          return;
+        }
+        fetch("/auth/lock-thread/" + encodeURIComponent(slug),
+              { credentials: "same-origin" })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) {
+            if (!d) return;
+            paintDeviceMessages(d.messages);
+            // The board can be unplugged mid-conversation. Say so rather than
+            // leaving a composer that silently posts into nothing.
+            if (d.online === false) {
+              chatSub.textContent = "Offline — unplugged";
+              if (composer) composer.disabled = true;
+              if (sendBtn) sendBtn.disabled = true;
+            }
+          })
+          .catch(function () {});
+      }, 2000);
+    }
+
     function send() {
       if (!composer) return;
       var text = composer.value.trim();
       if (!text) return;
       var now = Date.now() / 1000;
+      if (sendBtn) sendBtn.disabled = true;
+
+      // A DEVICE agent is a real board with a real command path, so this is a
+      // real send: the text goes to the phone, the phone relays it, and the
+      // reply comes back through the thread poll rather than being invented
+      // here. The bubble is NOT drawn locally -- the server puts the user's
+      // words in the thread first, so the poll paints them, and drawing them
+      // here as well would show everything the user typed twice.
+      if (chatAgent && chatAgent.device) {
+        composer.value = "";
+        fetch("/auth/lock-send/" + encodeURIComponent(threadSlug(chatAgent)), {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: text })
+        })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (d) {
+            if (!d || !d.ok) {
+              msgsEl.appendChild(bubble({
+                role: "agent",
+                text: (d && (d.detail || d.error)) || "The device did not answer.",
+                at: Date.now() / 1000
+              }));
+              msgsEl.scrollTop = msgsEl.scrollHeight;
+            }
+          })
+          .catch(function () {})
+          .then(function () { if (sendBtn) sendBtn.disabled = false; });
+        return;
+      }
+
       msgsEl.appendChild(bubble({ role: "user", text: text, at: now }));
       composer.value = "";
-      if (sendBtn) sendBtn.disabled = true;
       msgsEl.scrollTop = msgsEl.scrollHeight;
       // A reply only comes back in a demo thread. Outside demo mode there is no
       // agent on the other end of this sheet -- the lock screen is pre-auth and
@@ -9290,6 +9486,17 @@ async def lock_widgets(request: Request):
             if remaining is not None:
                 agent["next_change_ms"] = int(round(remaining * 1000))
 
+    # Live device agents: physical boards that are plugged in right now.
+    #
+    # MERGED HERE rather than served from their own endpoint because the lock
+    # screen already polls this one and reconciles the islands by key -- a
+    # second list would mean a second poll and two painters racing over the
+    # same row. Their keys are namespaced (`device:<slug>`) so a board can
+    # never collide with a TAOS_LOCK_DEMO_AGENTS placeholder of the same name.
+    if _device_agents_enabled(request):
+        for entry in _device_live():
+            agents.append(_device_island(entry))
+
     # Pending decisions. An agent that is blocked waiting on a human is the one
     # thing on this screen that is actually ASKING for something, so it gets the
     # attention ring -- everything else here is status. Best-effort for the same
@@ -9371,7 +9578,11 @@ async def lock_widgets(request: Request):
         1 for a in agents
         if not a.get("system") and a["status"].strip().lower() not in resting
     )
-    visible = agents[:6]
+    # NO cap on the islands (Jay: "there shouldnt be a cap"); the feed scrolls.
+    # A cap of six silently cut off a plugged-in board, which is appended last,
+    # whenever five demo agents were configured. New agents go at the BOTTOM,
+    # in arrival order (Jay; custom ordering comes later).
+    visible = agents
     payload = {
         "agents": visible,
         "agent_total": len(agents),
@@ -9381,7 +9592,7 @@ async def lock_widgets(request: Request):
         "threads": bool(demo),
     }
     # Only agents actually SENT can schedule the client's next fetch -- a
-    # rotation happening off the visible six would tell the client to poll
+    # rotation happening off the sent list would tell the client to poll
     # sooner for a change it could never paint anyway.
     refresh_in_ms = _demo_refresh_in_ms(
         [a["next_change_ms"] for a in visible if "next_change_ms" in a]
@@ -9658,6 +9869,20 @@ async def lock_thread(slug: str, request: Request):
     """
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
+    # A DEVICE thread is real, not scripted, so it is checked first and on its
+    # own flag. The sheet polls one endpoint either way -- it should not have
+    # to know whether the agent it is talking to is a board or a placeholder.
+    if _device_agents_enabled(request) and _DEVICE_SLUG_RE.match(slug or ""):
+        live = {e["slug"] for e in _device_live()}
+        with _DEVICE_LOCK:
+            thread = list(_DEVICE_THREADS.get(slug, []))
+        if slug in live or thread:
+            return JSONResponse({
+                "slug": slug, "messages": thread, "device": True, "demo": True,
+                # The sheet greys the composer when the board has gone.
+                "online": slug in live,
+            })
+
     if not _demo_enabled(request):
         return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -9665,6 +9890,371 @@ async def lock_thread(slug: str, request: Request):
     if not safe:
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse({"slug": safe, "messages": _demo_thread(safe), "demo": True})
+
+
+# ---------------------------------------------------------------------------
+# DEVICE AGENTS: a physical board that appears on the lock screen while it is
+# plugged in, and disappears when it is not.
+#
+# Jay's taOSusb demo. A Pi Zero on a USB expansion board runs a real agent
+# (PicoClaw), heartbeats here every 5s, and is asked to do things from the
+# lock screen's chat sheet. @taOS-dev owns the device half; this is the phone
+# half, and the contract between them is TAOSUSB-DEMO.md.
+#
+# ⛔ THE THING TO KEEP HOLD OF: this screen renders BEFORE SIGN-IN, so what is
+# built here lets someone holding a LOCKED phone make a physical device run a
+# command. That is deliberate, it is what Jay asked for, and it is why every
+# route below is (a) behind its own flag, off on a real device, (b) marked
+# `demo: true` in every payload, (c) console-only, and (d) useless without the
+# pairing token.
+#
+# ⚠ THE DEVICE-SIDE CONTROL IS NOT AN ALLOWLIST. The spec promised one and I
+# repeated it here; @taOS-dev then measured that PicoClaw v0.3.1 cannot do it
+# (`custom_allow_patterns` only EXEMPTS from its deny list, and the real
+# allowlist field is unreachable from config). The control is the OS instead,
+# and it is stronger: the agent runs unprivileged with no sudo under a
+# hardened unit, and the single privileged action -- the OS update -- goes
+# through a root drop box, the same shape as /run/taos-power here. Recorded
+# because "there is an allowlist" is the kind of comfortable sentence that
+# outlives the thing it describes.
+#
+# STATE IS IN MEMORY AND THAT IS CORRECT. A device agent exists only while it
+# is heartbeating; a restart of the controller should forget every board, not
+# resurrect one that was unplugged an hour ago.
+
+#: Contract numbers, agreed with @taOS-dev on bus 4475/4480. The device beats
+#: every 5s; two missed beats is gone. The 8s is NOT arbitrary -- the shot list
+#: wants the island gone ~15s after the board is unplugged, and the lock
+#: screen's widgets poll is the other half of that budget.
+_DEVICE_LIVENESS_SECS = 8.0
+
+#: Slugs are REJECTED, not sanitised. The slug lands in a URL path and is the
+#: key of a thread, so two boards that differ only in case or punctuation must
+#: not quietly become one conversation.
+_DEVICE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+
+#: Device islands live in their OWN key namespace. The lock screen reconciles
+#: islands by key, so a board called "taosusb" and a TAOS_LOCK_DEMO_AGENTS
+#: entry of the same name would otherwise fight over one island -- each poll
+#: would hand the other's payload to the same node.
+_DEVICE_KEY_PREFIX = "device:"
+
+#: Thread caps. `apt upgrade` on a Pi Zero emits thousands of lines, and this
+#: is a pre-auth screen holding the output in the phone's memory. The device
+#: trims first (a few progress lines and a summary, 4 KB per message) -- these
+#: are the backstop for when it does not.
+_DEVICE_THREAD_LINES = 200
+_DEVICE_THREAD_BYTES = 64 * 1024
+_DEVICE_MESSAGE_BYTES = 4 * 1024
+#: What may be RELAYED to the board. @taOS-dev's agentd 400s above 2000, so
+#: sending more is a round trip that can only fail.
+_DEVICE_SEND_CHARS = 2000
+#: Ceiling on the per-board dedup set.
+_DEVICE_SEEN_MAX = 2000
+_DEVICE_TRIM_MARKER = "…earlier output trimmed"
+
+#: Live boards and their threads. Guarded because heartbeats, messages and the
+#: lock screen's polls all arrive on different requests.
+_DEVICE_LOCK = threading.Lock()
+_DEVICE_AGENTS: dict[str, dict] = {}
+_DEVICE_THREADS: dict[str, list[dict]] = {}
+#: (id, seq) pairs already appended, per slug. A device that retries a POST it
+#: already delivered must not print the same progress line twice.
+_DEVICE_SEEN: dict[str, set] = {}
+
+
+def _device_agents_enabled(request: Request) -> bool:
+    """Its OWN flag, not the demo-agents one, AND the demo-mode switch.
+
+    Device agents are a bigger exposure than a scripted island -- they carry a
+    real command path to real hardware -- so turning the scripted demo on must
+    never turn this on as a side effect. Read through _demo_value like every
+    other TAOS_LOCK_DEMO_* flag, so the Settings switch also takes the board
+    path down: with demo mode off, heartbeats are refused and no board island
+    or thread is served. The two conditions only ever narrow each other.
+    """
+    return bool(_demo_value("TAOS_LOCK_DEMO_DEVICE_AGENTS", request).strip())
+
+
+def _device_token() -> str | None:
+    """The pairing token, from a file the drop-in points at.
+
+    NOT an environment variable: the value would then be readable in
+    /proc/<pid>/environ by anything running as the user, and it is the only
+    thing standing between "someone on the Wi-Fi" and an island on a locked
+    phone. @taOS-dev generates it at provisioning; the device reads its own
+    copy from /etc/taosusb/pair.token.
+    """
+    path = os.environ.get("TAOS_DEVICE_AGENT_TOKEN_FILE", "").strip()
+    if not path:
+        return None
+    try:
+        token = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return token or None
+
+
+def _device_authorised(request: Request) -> bool:
+    """Constant-time compare against the pairing token.
+
+    A missing token file is a REFUSAL, never an open door: a misconfigured
+    phone that accepted unauthenticated heartbeats would look exactly like a
+    working one right up until someone else's board appeared on the screen.
+    """
+    want = _device_token()
+    if not want:
+        return False
+    header = request.headers.get("authorization", "")
+    prefix = "bearer "
+    if not header.lower().startswith(prefix):
+        return False
+    return secrets.compare_digest(header[len(prefix):].strip(), want)
+
+
+def _device_live(now: float | None = None) -> list[dict]:
+    """Boards heard from within the liveness window, newest first."""
+    now = time.time() if now is None else now
+    with _DEVICE_LOCK:
+        return [
+            dict(entry) for entry in _DEVICE_AGENTS.values()
+            if now - entry.get("last_seen", 0.0) <= _DEVICE_LIVENESS_SECS
+        ]
+
+
+def _device_island(entry: dict) -> dict:
+    """One live board, in the shape the lock screen's islands already speak.
+
+    `link` is rendered, never inferred. The device measures it from
+    /sys/class/udc/*/state: "usb" means a computer really enumerated the
+    gadget, "power" means it is on a charger with nobody plugged in. Guessing
+    here would turn a measurement back into a story.
+    """
+    link = entry.get("link") or ""
+    status = "Online · USB" if link == "usb" else "Online"
+    if link == "power":
+        # Jay: "power only" -> "idle". Lowercase "idle" is also a RESTING
+        # status to the page, so the island draws as at rest, not busy.
+        status = "Idle"
+    return {
+        "key": _DEVICE_KEY_PREFIX + entry["slug"],
+        "name": entry.get("name") or entry["slug"],
+        "framework": entry.get("framework", ""),
+        "framework_icon": _framework_icon(entry.get("framework", "")),
+        "status": status,
+        "avatar": _avatar_url(entry.get("name") or entry["slug"]),
+        # Both true, and both load-bearing: `device` is what makes the page
+        # send to this agent for real instead of drawing a bubble, and `demo`
+        # is what marks the whole surface as demo content.
+        "device": True,
+        "demo": True,
+        "slug": entry["slug"],
+    }
+
+
+def _device_thread_append(slug: str, message: dict) -> None:
+    """Append one message, then hold the thread to its caps.
+
+    Trimmed from the FRONT with a marker rather than silently: a sheet that
+    quietly loses the beginning of a health check reads as the agent having
+    answered something else.
+    """
+    with _DEVICE_LOCK:
+        thread = _DEVICE_THREADS.setdefault(slug, [])
+        thread.append(message)
+        trimmed = False
+        while len(thread) > _DEVICE_THREAD_LINES:
+            thread.pop(0)
+            trimmed = True
+        total = sum(len(m.get("text", "")) for m in thread)
+        while total > _DEVICE_THREAD_BYTES and len(thread) > 1:
+            total -= len(thread.pop(0).get("text", ""))
+            trimmed = True
+        if trimmed and thread and thread[0].get("text") != _DEVICE_TRIM_MARKER:
+            thread.insert(0, {
+                "role": "system", "text": _DEVICE_TRIM_MARKER,
+                "at": int(time.time()), "id": "", "seq": -1,
+            })
+
+
+@router.post("/device-agent/heartbeat")
+async def device_agent_heartbeat(request: Request):
+    """A board saying it is here. Bearer token, demo flag.
+
+    NOT console-only: this arrives over the network from the board, which is
+    the whole point. The token is therefore the entire gate, which is why a
+    missing token file refuses rather than opens.
+    """
+    if not _device_agents_enabled(request):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not _device_authorised(request):
+        return JSONResponse({"error": "unauthorised"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    slug = str(body.get("slug", "")).strip()
+    if not _DEVICE_SLUG_RE.match(slug):
+        return JSONResponse({"error": "bad slug"}, status_code=400)
+    # THE URL IS PINNED TO THE CALLER, AND REBUILT FROM PARTS.
+    #
+    # @taOS-dev demonstrated the hole rather than arguing it: a heartbeat
+    # claiming url="http://127.0.0.1:<port>/internal/admin-action?x=" made the
+    # phone POST to "/internal/admin-action?x=/chat" -- the query swallows the
+    # path this code used to append -- against a LOCAL service, carrying the
+    # bearer token. That is an SSRF with credentials, from a pre-auth surface.
+    #
+    # Two defences, because one of them is only a filter. The host must be the
+    # address the heartbeat actually came from, so a board can only ever name
+    # itself; and the stored value is REBUILT from scheme/host/port, so there
+    # is no attacker-controlled string left to concatenate a path onto.
+    url = str(body.get("url", "")).strip()
+    parsed = urlparse(url)
+    peer = getattr(getattr(request, "client", None), "host", None)
+    if parsed.scheme != "http" or not parsed.hostname:
+        return JSONResponse({"error": "bad url"}, status_code=400)
+    if parsed.query or parsed.fragment or parsed.path not in ("", "/"):
+        return JSONResponse({"error": "url must have no path or query"}, status_code=400)
+    if parsed.username or parsed.password:
+        return JSONResponse({"error": "bad url"}, status_code=400)
+    if peer and parsed.hostname != peer:
+        # A board may only point at itself. The address it connects FROM is
+        # the one fact here nobody on the other end gets to choose.
+        return JSONResponse({"error": "url must match the caller"}, status_code=400)
+    try:
+        port = parsed.port or 80
+    except ValueError:
+        return JSONResponse({"error": "bad url"}, status_code=400)
+    url = "http://%s:%d" % (parsed.hostname, port)
+    with _DEVICE_LOCK:
+        _DEVICE_AGENTS[slug] = {
+            "slug": slug,
+            "name": str(body.get("name", "")).strip() or slug,
+            "framework": str(body.get("framework", "")).strip().lower(),
+            "url": url,
+            "link": str(body.get("link", "")).strip().lower(),
+            "last_seen": time.time(),
+        }
+    return JSONResponse({"ok": True, "slug": slug, "demo": True})
+
+
+@router.post("/device-agent/message")
+async def device_agent_message(request: Request):
+    """Progress lines and final replies, posted back by the board."""
+    if not _device_agents_enabled(request):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not _device_authorised(request):
+        return JSONResponse({"error": "unauthorised"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    slug = str(body.get("slug", "")).strip()
+    if not _DEVICE_SLUG_RE.match(slug):
+        return JSONResponse({"error": "bad slug"}, status_code=400)
+    with _DEVICE_LOCK:
+        known = slug in _DEVICE_AGENTS
+    if not known:
+        # A board we have never heard heartbeat from cannot write to a thread.
+        return JSONResponse({"error": "unknown device"}, status_code=404)
+    msg_id = str(body.get("id", "")).strip()
+    try:
+        seq = int(body.get("seq", 0))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "seq must be an integer"}, status_code=400)
+    # Truncated HERE as well as on the device. The device promises 4 KB per
+    # message; this is what happens when a promise meets a bug.
+    text = str(body.get("text", ""))[:_DEVICE_MESSAGE_BYTES]
+
+    with _DEVICE_LOCK:
+        seen = _DEVICE_SEEN.setdefault(slug, set())
+        if len(seen) > _DEVICE_SEEN_MAX:
+            # Bounded: this grows once per message for the life of a board, and
+            # a board that is plugged in all day would otherwise be a slow leak
+            # on a phone. Clearing wholesale (rather than evicting) can only
+            # ever re-admit a retry of something older than the last 2000
+            # messages, which cannot still be in flight.
+            seen.clear()
+        if (msg_id, seq) in seen:
+            # Idempotent by contract: a retried delivery is a no-op, not a
+            # second copy of the same line.
+            return JSONResponse({"ok": True, "duplicate": True, "demo": True})
+        seen.add((msg_id, seq))
+    _device_thread_append(slug, {
+        "role": "agent", "text": text, "at": int(time.time()),
+        "id": msg_id, "seq": seq, "done": bool(body.get("done")),
+    })
+    return JSONResponse({"ok": True, "demo": True})
+
+
+@router.post("/lock-send/{slug}")
+async def lock_send(slug: str, request: Request):
+    """Relay what was typed on the lock screen to the board. Console-only.
+
+    Returns as soon as the board has ACCEPTED the text. It must not wait for
+    the work: `apt update` on a Zero takes 30-90s and an upgrade takes many
+    minutes, and a lock screen whose send button hangs for a minute reads as
+    broken. The replies come back through /device-agent/message.
+
+    The full lock-POST gate, not just loopback: this relays text to real
+    hardware WITH the pairing token, and a web page open in the phone's own
+    browser is loopback too -- a no-cors text/plain POST would otherwise ride
+    straight through to the board. Checked before anything else, so the
+    refusal is the same whatever the device flag says.
+    """
+    refused = _lock_post_refusal(request)
+    if refused is not None:
+        return refused
+    if not _device_agents_enabled(request):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not _DEVICE_SLUG_RE.match(slug or ""):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    live = {entry["slug"]: entry for entry in _device_live()}
+    entry = live.get(slug)
+    if entry is None:
+        # Unplugged between the island being drawn and the send landing.
+        return JSONResponse({"error": "device is not online"}, status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    text = str(body.get("text", "")).strip()
+    if not text:
+        return JSONResponse({"error": "text required"}, status_code=400)
+    if len(text) > _DEVICE_SEND_CHARS:
+        # Refused here rather than sent and bounced: the board answers 400
+        # above this, and a round trip that can only fail is worse than a
+        # straight answer.
+        return JSONResponse(
+            {"error": "text too long", "max": _DEVICE_SEND_CHARS}, status_code=400
+        )
+
+    token = _device_token()
+    msg_id = secrets.token_hex(8)
+    # The user's own words go into the thread FIRST, so the sheet shows what
+    # was asked even if the board never answers.
+    _device_thread_append(slug, {
+        "role": "user", "text": text[:_DEVICE_MESSAGE_BYTES],
+        "at": int(time.time()), "id": msg_id, "seq": 0,
+    })
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                entry["url"] + "/chat",
+                json={"id": msg_id, "text": text},
+                headers={"Authorization": "Bearer %s" % token} if token else {},
+            )
+    except httpx.HTTPError as exc:
+        # The board's own failure, said out loud: "no route to host" is a
+        # different problem from "the agent refused it".
+        return JSONResponse(
+            {"error": "device did not answer", "detail": str(exc)}, status_code=502
+        )
+    if resp.status_code >= 400:
+        return JSONResponse(
+            {"error": "device refused", "status": resp.status_code}, status_code=502
+        )
+    return JSONResponse({"ok": True, "id": msg_id, "slug": slug, "demo": True})
 
 
 #: The lock screen's weather is FIXED to Liverpool, in Celsius and mph.
@@ -11433,15 +12023,11 @@ async def lock_events(request: Request):
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
 
-    queue: asyncio.Queue = asyncio.Queue(maxsize=8)
-    _LOCK_EVENT_WAITERS.add(queue)
-    # Snapshotted here, in the same synchronous step that registers the queue,
-    # so a screen event landing afterwards reaches this client through the
-    # queue and is never lost or reordered behind a stale snapshot.
-    initial_state = _LOCK_SCREEN_STATE
-
     async def stream():
         try:
+            queue: asyncio.Queue = asyncio.Queue(maxsize=8)
+            _LOCK_EVENT_WAITERS.add(queue)
+            initial_state = _LOCK_SCREEN_STATE
             # An immediate byte, so the browser's EventSource resolves its
             # connection rather than sitting in CONNECTING until the first real
             # event -- which could be hours.
@@ -11661,6 +12247,132 @@ async def set_lock_radios(request: Request):
     # radio refuses.
     await asyncio.sleep(1.2)
     return JSONResponse(_read_radios())
+
+
+_USB_BIN = "/usr/local/bin/taos-usb-mode"
+
+#: Wall-clock bound on POST /lock-usb waiting for a switch to land. Each read
+#: is two helper calls of up to 4s, so counting iterations alone let a hung
+#: helper hold the request for minutes.
+_USB_SETTLE_SECONDS = 12.0
+_usb_clock = time.monotonic
+
+#: What the page may ask for, mapped to the verb the root helper accepts. CLOSED.
+_USB_VERBS = {
+    "ncm": "usb-ncm",
+    "charging": "usb-charging",
+    "mtp": "usb-mtp",
+}
+
+
+def _read_usb() -> dict:
+    """USB-C port mode, read as the controller user. Never raises.
+
+    `taos-usb-mode` prints `mode: ...`, `saved: ...` and so on, and
+    `taos-usb-mode list` the modes this phone can do. A missing binary (a dev
+    box) or any failure gives {"available": []}, which the page reads as "hide
+    the tile". A mode outside the closed set reads as "unknown".
+    """
+    import subprocess
+
+    state: dict = {"available": []}
+    try:
+        got = subprocess.run(
+            [_USB_BIN], capture_output=True, text=True, timeout=4,
+        )
+    except Exception:
+        return state
+    if got.returncode != 0:
+        return state
+    for line in got.stdout.splitlines():
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        key, value = key.strip().lower(), value.strip().lower()
+        if key in ("mode", "saved"):
+            state[key] = value if value in _USB_VERBS else "unknown"
+    # A failing `list` keeps the mode already read: the tile still hides
+    # (available stays empty), but the POST poll can see a switch land.
+    try:
+        got = subprocess.run(
+            [_USB_BIN, "list"], capture_output=True, text=True, timeout=4,
+        )
+    except Exception:
+        return state
+    if got.returncode == 0:
+        state["available"] = [
+            m for m in got.stdout.split() if m in _USB_VERBS
+        ]
+    return state
+
+
+@router.get("/lock-usb")
+async def lock_usb(request: Request):
+    """Current USB-C port mode and the modes this phone offers. Console-only."""
+    if not _request_is_console(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    return JSONResponse(await asyncio.to_thread(_read_usb))
+
+
+@router.post("/lock-usb")
+async def set_lock_usb(request: Request):
+    """Switch the USB-C port between network, charge-only and file transfer.
+    Console-only.
+
+    Same drop box as the radios: the root helper runs `taos-usb-mode set MODE`,
+    which also saves the mode across reboots.
+
+    ⚠ Charge-only cuts the USB network link, so together with Wi-Fi off it can
+    strand a headless handset. That is correct for a switch a PERSON flicks,
+    and it is exactly why the mode list is closed and nothing automated writes
+    it.
+
+    A switch can take up to ~8s to land (ncm restarts a systemd helper), so
+    this polls the read-back until it matches or 12s of wall clock pass, and
+    answers with the READ-BACK even when it never lands: the page shows the
+    truth, not the request.
+    """
+    refusal = _lock_post_refusal(request)
+    if refusal is not None:
+        return refusal
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    mode = body.get("mode") if isinstance(body, dict) else None
+    if not isinstance(mode, str) or mode not in _USB_VERBS:
+        return JSONResponse({"error": "mode required"}, status_code=400)
+    current = await asyncio.to_thread(_read_usb)
+    if mode not in current.get("available", []):
+        return JSONResponse({"error": "mode not available"}, status_code=400)
+
+    try:
+        _write_power_request(_USB_VERBS[mode])
+    except OSError as exc:
+        return JSONResponse(
+            {"error": "request failed", "detail": str(exc)}, status_code=503
+        )
+    state = current
+    deadline = _usb_clock() + _USB_SETTLE_SECONDS
+    for _ in range(24):
+        remaining = deadline - _usb_clock()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(0.5, remaining))
+        remaining = deadline - _usb_clock()
+        if remaining <= 0:
+            break
+        # A hung helper must not carry the request past the deadline. The
+        # abandoned read finishes in its thread on the helper's own timeout.
+        try:
+            state = await asyncio.wait_for(
+                asyncio.to_thread(_read_usb), remaining
+            )
+        except asyncio.TimeoutError:
+            break
+        if state.get("mode") == mode:
+            break
+    return JSONResponse(state)
 
 
 @router.post("/lock-volume-key")

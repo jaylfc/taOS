@@ -774,5 +774,31 @@ describe("ThreadPanel", () => {
       );
       expect(onMarkSeen).toHaveBeenCalledWith(stubParent.id);
     });
+
+    it("calls onMarkSeen for live replies not in the fetched messages", async () => {
+      const liveReply = {
+        id: "live-reply-1",
+        author_id: "eve",
+        author_type: "user" as const,
+        content: "Live reply from eve",
+        created_at: 1700000300,
+      };
+      const onMarkSeen = vi.fn();
+      render(
+        <ThreadPanel
+          channelId="ch1"
+          parentId="p1"
+          onClose={vi.fn()}
+          onSend={vi.fn()}
+          authorCtx={{ currentUserId: "user", currentUserDisplayName: null }}
+          onMarkSeen={onMarkSeen}
+          liveReplies={[liveReply]}
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByText(liveReply.content)).toBeInTheDocument(),
+      );
+      expect(onMarkSeen).toHaveBeenCalledWith(liveReply.id);
+    });
   });
 });

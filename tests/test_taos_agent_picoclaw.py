@@ -395,36 +395,18 @@ async def test_framework_switch_requires_admin(mobile):
 # ---------------------------------------------------------------------------
 
 @_ASYNC
-async def test_picoclaw_with_gateway_disabled_falls_back_visibly(mobile, monkeypatch, caplog):
+@pytest.mark.parametrize("choice", ["picoclaw", "auto"])
+async def test_old_gateway_off_flag_no_longer_downgrades_picoclaw(mobile, monkeypatch, choice):
+    """TAOS_LLM_GATEWAY=0 used to force opencode (picoclaw needs the gateway).
+    The gateway is always on since LiteLLM removal 2b-2a, so the flag is
+    ignored and picoclaw stays the effective harness on a handset."""
     app, client = mobile
     monkeypatch.setenv("TAOS_LLM_GATEWAY", "0")
-    caplog.set_level(logging.INFO)
-    resp = await client.put("/api/taos-agent/framework", json={"framework": "picoclaw"})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["framework"] == "opencode"
-    cfg = await _framework(client)
-    # The EFFECTIVE harness, never the preference.
-    assert cfg["framework"] == "opencode"
-    assert cfg["framework_preference"] == "picoclaw"
-    assert cfg["framework_reason"] == FALLBACK_REASON
-    assert await _lock_framework(client, monkeypatch) == "opencode"
-    assert FALLBACK_REASON in caplog.text
-    assert not _picoclaw_config_path(app).exists()
-    assert _live_keys(app) == 0
-
-
-@_ASYNC
-async def test_auto_on_mobile_with_gateway_disabled_falls_back(mobile, monkeypatch, caplog):
-    app, client = mobile
-    monkeypatch.setenv("TAOS_LLM_GATEWAY", "0")
-    caplog.set_level(logging.INFO)
-    resp = await client.put("/api/taos-agent/framework", json={"framework": "auto"})
+    resp = await client.put("/api/taos-agent/framework", json={"framework": choice})
     assert resp.status_code == 200, resp.text
     cfg = await _framework(client)
-    assert cfg["framework"] == "opencode"
-    assert cfg["framework_reason"] == FALLBACK_REASON
-    assert FALLBACK_REASON in caplog.text
+    assert cfg["framework"] == "picoclaw"
+    assert cfg["framework_reason"] != FALLBACK_REASON
 
 
 # ---------------------------------------------------------------------------

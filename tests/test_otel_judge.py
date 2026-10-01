@@ -21,7 +21,6 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from tinyagentos.litellm_config import get_litellm_master_key
 from tinyagentos.otel.judge import ReasoningJudge, _format_trace, _resolve_judge_model
 from tinyagentos.trace_store import AgentTraceStore
 
@@ -349,21 +348,25 @@ async def test_trace_store_no_judge_is_noop(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# R2-9: judge must send the real LiteLLM master key, not "taos-internal"
+# R2-9: judge must send a real key (the host local token), not "taos-internal"
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_judge_sends_real_proxy_key(tmp_path):
     """R2-9: construct the judge as app.py does and verify the Authorization
-    header carries the real LiteLLM master key, not the 'taos-internal' default.
+    header carries the real key app.py passes (the host local token, which
+    the in-process gateway accepts), not the 'taos-internal' default.
 
     Before the fix, app.py:1151 passed only the base URL, so the judge
     defaulted to "taos-internal" and every call was rejected by litellm_auth
     with 401 — the judge has been dead since introduction.
     """
-    real_key = get_litellm_master_key(tmp_path)
+    from tinyagentos.auth import AuthManager
 
-    # Construct the judge as app.py does, passing the real proxy key.
+    real_key = AuthManager(tmp_path).get_local_token()
+    assert real_key
+
+    # Construct the judge as app.py does, passing the host local token.
     judge = ReasoningJudge(
         litellm_base_url="http://testserver/v1",
         litellm_api_key=real_key,

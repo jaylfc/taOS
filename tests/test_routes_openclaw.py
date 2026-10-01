@@ -190,8 +190,10 @@ async def test_bootstrap_no_agent_param(bearer_client):
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_missing_llm_key(tmp_path, openclaw_app):
-    """409 when agent exists but llm_key is absent."""
+async def test_bootstrap_missing_llm_key_is_re_minted(tmp_path, openclaw_app):
+    """An agent with no llm_key gets one minted from the local key store (no
+    LiteLLM process needed since LiteLLM removal 2b-2a; this used to be a 409
+    whenever LiteLLM was not running)."""
     app = openclaw_app
     # Patch config to have an agent without llm_key.
     for a in app.state.config.agents:
@@ -216,7 +218,12 @@ async def test_bootstrap_missing_llm_key(tmp_path, openclaw_app):
         headers={"Authorization": f"Bearer {token}"},
     ) as c:
         resp = await c.get("/api/openclaw/bootstrap?agent=mybot")
-    assert resp.status_code == 409
+    assert resp.status_code == 200, resp.text
+    from tinyagentos.litellm_keystore import LiteLLMKeyStore, default_keystore_path
+    agent = next(a for a in app.state.config.agents if a.get("name") == "mybot")
+    assert agent.get("llm_key")
+    rec = LiteLLMKeyStore(default_keystore_path(app.state.data_dir)).lookup(agent["llm_key"])
+    assert rec is not None and rec["agent"] == "mybot"
 
     for attr in ("canvas_store", "chat_channels", "chat_messages", "expert_agents",
                  "streaming_sessions", "shared_folders", "agent_messages",

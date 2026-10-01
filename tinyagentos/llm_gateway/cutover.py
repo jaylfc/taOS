@@ -1,27 +1,34 @@
-"""Move agents between LiteLLM and the gateway by retargeting one proxy device.
+"""Move agents onto the gateway by retargeting one proxy device.
 
 Every local agent container reaches its LLM at its OWN ``127.0.0.1:4000``
 through the incus proxy device ``taos-proxy-litellm``. Its ``connect`` side
-names a host port: the LiteLLM proxy (``server.litellm_port``, 7834 on new
-installs) or, once cut over, the gateway's agent listener (7838). Changing
-that one value moves the agent. Its base URL, its config files and its
-process are untouched, so nothing is redeployed or restarted.
+names a host port: the gateway's agent listener (7838) or, on a container
+deployed before the cutover, the old LiteLLM proxy port (4000 on legacy
+installs, 7834 on newer ones, or the configured ``server.litellm_port``).
+Changing that one value moves the agent. Its base URL, its config files and
+its process are untouched, so nothing is redeployed or restarted. The device
+keeps its ``taos-proxy-litellm`` name and its in-container listen side
+(``127.0.0.1:4000``): renaming it would mean re-adding a device on every
+existing container, for no behaviour change.
 
-:func:`reconcile_agents` runs once at controller startup:
+:func:`reconcile_agents` runs once at controller startup. LiteLLM is gone
+(removal stage 2b-2a), so a device still on a LiteLLM port points at a dead
+port and is moved to the listener UNCONDITIONALLY. When the agent's key is
+its own local key-store row, its gateway key is minted first; a key that
+cannot be mirrored (none, another agent's, a LiteLLM Postgres virtual key)
+or a model the gateway cannot route no longer keeps the agent where it is.
+The agent is still moved, and the reason is reported on its item so an
+operator can re-key or redeploy it.
 
-- gateway ON: for each agent, mint its gateway key from its LiteLLM
-  ``agent_keys`` row FIRST, confirm the key is live, then point the device at
-  the listener. An agent whose key cannot be read (no key, the shared master
-  key, a key the local store does not hold, a key of another agent) stays on
-  LiteLLM and is reported. Nothing unscoped is ever minted.
-- gateway OFF (rollback): every device that points at the listener is pointed
-  back at LiteLLM. The minted gateway rows are left in place; LiteLLM never
-  reads them.
+The one thing that is never done: moving a device onto a listener this start
+could not verify as its own (the identity nonce, see
+:func:`wait_for_listener`). A stranger on the port would otherwise receive
+every agent's traffic and key.
 
-Both directions only ever change a device whose current value they have READ
-and recognised; an unreadable or unexpected value is reported and left
-alone. A second run changes nothing. Every incus call names the container's
-own project (agent containers live in e.g. ``user-999``, not ``default``).
+Only a device whose current value was READ and recognised is changed; an
+unreadable or unexpected value is reported and left alone. A second run
+changes nothing. Every incus call names the container's own project (agent
+containers live in e.g. ``user-999``, not ``default``).
 """
 from __future__ import annotations
 
@@ -37,20 +44,24 @@ from tinyagentos.litellm_keystore import LiteLLMKeyStore, default_keystore_path,
 logger = logging.getLogger(__name__)
 
 DEVICE = "taos-proxy-litellm"
+# A remote agent has no proxy device and the agent listener is loopback-only,
+# so it has no path to the gateway. Decision dec-26f4cw: a remote deploy is
+# refused with this reason, and an existing remote agent is reported with it.
+REMOTE_NO_GATEWAY_REASON = (
+    "remote agents need the network LLM gateway, not built yet (the gateway's "
+    "agent listener is loopback-only and a remote agent has no proxy device)"
+)
+# Host ports the LiteLLM proxy listened on: 4000 (legacy installs, pinned by
+# config.py) and 7834 (the later default). The configured
+# ``server.litellm_port`` is added at run time. A device connecting to any of
+# them points at a dead port and is moved to the gateway.
+LEGACY_LITELLM_PORTS = (4000, 7834)
 # Per incus call; a hung container costs this much, then the next agent runs.
 _INCUS_TIMEOUT = 30
 
 
 def _target(port: int) -> str:
     return f"tcp:127.0.0.1:{int(port)}"
-
-
-def _master_key(data_dir: Path) -> str | None:
-    try:
-        value = (Path(data_dir) / ".litellm_master_key").read_text().strip()
-    except OSError:
-        return None
-    return value or None
 
 
 async def _container_projects() -> dict[str, str] | None:
@@ -97,14 +108,16 @@ def _container_name(agent: dict) -> str:
     return agent.get("container_name") or f"taos-agent-{agent.get('name')}"
 
 
-def _key_problem(agent: dict, store: LiteLLMKeyStore, master: str | None) -> str | None:
-    """Why this agent's LiteLLM key cannot become a gateway key, or None."""
+def _key_problem(agent: dict, store: LiteLLMKeyStore) -> str | None:
+    """Why this agent's key cannot become a gateway key, or None."""
     key = agent.get("llm_key")
     if not isinstance(key, str) or not key:
-        return "no LiteLLM key recorded for this agent"
-    if master is not None and key == master:
-        return ("agent holds the shared LiteLLM master key, which the gateway "
-                "refuses; re-key or redeploy it to move it to the gateway")
+        return "no LLM key recorded for this agent; re-key or redeploy it"
+    row = store.agent_key_by_hash(token_hash(key))
+    if row is None or row.get("agent") != agent.get("name"):
+        return ("its key is not a local key-store row of this agent (unknown, "
+                "another agent's, or a LiteLLM Postgres virtual key); re-key or "
+                "redeploy it")
     return None
 
 
@@ -116,12 +129,17 @@ async def models_problem(state, models: Iterable[str]) -> str | None:
 
     Read from the same routing table the gateway routes with. A model is
     servable when its highest-priority route is Anthropic (translated),
-    OpenAI-compatible (``openai`` / ``openrouter``), or Ollama-shaped on a
-    backend of type ``ollama`` (the only one known to expose
-    ``/v1/chat/completions``; rkllama and hailo-ollama do not). Anything
-    unknown is a problem: an agent is never moved on a guess.
+    OpenAI-compatible (``openai`` / ``openrouter`` / ``deepseek``), or
+    Ollama-shaped on a backend type that exposes ``/v1/chat/completions`` at
+    the ref taOS installs (``forward.OLLAMA_V1_BACKEND_TYPES``: ollama,
+    rkllama, and hailo-ollama, whose NDJSON stream the gateway translates).
+    Anything unknown is a problem: an agent is never moved on a guess.
     """
-    from tinyagentos.llm_gateway.forward import OLLAMA_PROVIDERS, OPENAI_COMPATIBLE_PROVIDERS
+    from tinyagentos.llm_gateway.forward import (
+        OLLAMA_PROVIDERS,
+        OLLAMA_V1_BACKEND_TYPES,
+        OPENAI_COMPATIBLE_PROVIDERS,
+    )
     from tinyagentos.llm_gateway.resolve import (
         TAOS_DEFAULT,
         default_chat_model,
@@ -133,12 +151,13 @@ async def models_problem(state, models: Iterable[str]) -> str | None:
     if not models:
         return "its key allows no models, so there is nothing to serve"
     table = routing_table(state)
-    config = getattr(state, "config", None)
-    backend_types = {
-        b.get("name"): b.get("type")
-        for b in (getattr(config, "backends", None) or []) if isinstance(b, dict)
-    }
+    from tinyagentos.litellm_config import EMBEDDING_ALIAS
+
     for requested in models:
+        if requested == EMBEDDING_ALIAS:
+            # Served by the gateway's /embeddings (not a chat route): an
+            # allowlist that grants it must not bounce the agent to LiteLLM.
+            continue
         name = requested
         if requested == TAOS_DEFAULT:
             name = await default_chat_model(state)
@@ -151,10 +170,9 @@ async def models_problem(state, models: Iterable[str]) -> str | None:
         if route.provider == "anthropic" or route.provider in OPENAI_COMPATIBLE_PROVIDERS:
             continue
         if route.provider in OLLAMA_PROVIDERS:
-            btype = backend_types.get(route.backend_name)
-            if btype == "ollama":
+            if route.backend_type in OLLAMA_V1_BACKEND_TYPES:
                 continue
-            return (f"model {requested!r} is served by a {btype or 'unknown'!r} backend "
+            return (f"model {requested!r} is served by a {route.backend_type or 'unknown'!r} backend "
                     "without /v1/chat/completions")
         return (f"model {requested!r} is served by a {route.provider or 'unknown'!r} backend "
                 "the gateway cannot forward yet")
@@ -165,23 +183,25 @@ async def reconcile_agents(
     *,
     agents: Iterable[dict],
     data_dir: Path,
-    gateway_on: bool,
     gateway_port: int,
-    litellm_port: int,
+    legacy_ports: Iterable[int] = LEGACY_LITELLM_PORTS,
     listener_ready: bool,
     models_problem: ModelsProblem | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Point each local agent's LLM proxy device where the flag says.
+    """Point each local agent's LLM proxy device at the gateway listener.
 
-    ``models_problem(models)`` says why the gateway cannot serve an agent's
-    allowlist (or None). Without it routability is unknown and, with the
-    gateway on, nobody is moved onto it.
+    ``legacy_ports`` are the host ports LiteLLM listened on; a device that
+    connects to one of them is moved. ``models_problem(models)`` says why the
+    gateway cannot serve an agent's allowlist (or None); it no longer blocks
+    the move, it is reported.
 
     Returns ``{"repointed": [...], "unchanged": [...], "skipped": [...]}``,
-    each item ``{"agent", ...}``; skipped items carry a ``reason``.
+    each item ``{"agent", ...}``; skipped and repointed items may carry a
+    ``reason``.
     """
     report: dict[str, list[dict[str, Any]]] = {"repointed": [], "unchanged": [], "skipped": []}
-    gw, lite = _target(gateway_port), _target(litellm_port)
+    gw = _target(gateway_port)
+    legacy = {_target(p) for p in legacy_ports if p} - {gw}
     agents = [a for a in agents if isinstance(a, dict) and a.get("name")]
     if not agents:
         return report
@@ -189,25 +209,19 @@ async def reconcile_agents(
     def skip(name: str, reason: str) -> None:
         report["skipped"].append({"agent": name, "reason": reason})
 
-    if gw == lite:
-        for a in agents:
-            skip(a["name"], "gateway listener port equals the LiteLLM port")
-        return report
-
     try:
         projects = await _container_projects()
     except Exception as exc:  # noqa: BLE001 - reported per agent below
         logger.warning("llm gateway cutover: listing containers failed: %s", type(exc).__name__)
         projects = None
-    store = LiteLLMKeyStore(default_keystore_path(data_dir)) if gateway_on else None
-    master = _master_key(data_dir) if gateway_on else None
+    store = LiteLLMKeyStore(default_keystore_path(data_dir))
 
     for agent in agents:
         name = agent["name"]
         try:
             await _reconcile_one(
-                agent, report, skip, projects=projects, store=store, master=master,
-                gateway_on=gateway_on, gw=gw, lite=lite, listener_ready=listener_ready,
+                agent, report, skip, projects=projects, store=store,
+                gw=gw, legacy=legacy, listener_ready=listener_ready,
                 models_problem=models_problem,
             )
         except Exception as exc:  # noqa: BLE001 - one bad container never stops the rest
@@ -215,11 +229,22 @@ async def reconcile_agents(
     return report
 
 
-async def _reconcile_one(agent, report, skip, *, projects, store, master, gateway_on,
-                         gw, lite, listener_ready, models_problem) -> None:
+async def _route_problem(models_problem, row) -> str | None:
+    if row is None:
+        return None
+    if models_problem is None:
+        return "routability of its models is unknown (no check supplied)"
+    try:
+        return await models_problem(list(row["allowed_models"]))
+    except Exception as exc:  # noqa: BLE001 - reported, never blocks
+        return f"routability check failed: {type(exc).__name__}"
+
+
+async def _reconcile_one(agent, report, skip, *, projects, store, gw, legacy,
+                         listener_ready, models_problem) -> None:
     name = agent["name"]
     if agent.get("remote"):
-        skip(name, "remote agent: no proxy device (it reaches LiteLLM over the network)")
+        skip(name, REMOTE_NO_GATEWAY_REASON)
         return
     container = _container_name(agent)
     if projects is None:
@@ -233,79 +258,38 @@ async def _reconcile_one(agent, report, skip, *, projects, store, master, gatewa
     if current is None:
         skip(name, f"could not read {DEVICE} connect on {container} (project {project})")
         return
-
-    if not gateway_on:
-        if current == lite:
-            report["unchanged"].append({"agent": name, "connect": current})
-        elif current == gw:
-            if await _set_connect(container, project, lite):
-                report["repointed"].append({"agent": name, "connect": lite})
-            else:
-                skip(name, f"incus refused to set {DEVICE} connect back to LiteLLM")
-        else:
-            skip(name, f"unexpected {DEVICE} connect {current!r}: left alone")
-        return
-
-    if current not in (gw, lite):
+    if current != gw and current not in legacy:
         skip(name, f"unexpected {DEVICE} connect {current!r}: left alone")
         return
 
-    # Gateway ON. 1) the key must be this agent's local key-store key.
-    problem = _key_problem(agent, store, master)
-    row = None
-    if problem is None:
-        row = store.agent_key_by_hash(token_hash(agent["llm_key"]))
-        if row is None or row.get("agent") != name:
-            problem = ("its LiteLLM key is not a local key-store row of this agent "
-                       "(unknown, another agent's, or a LiteLLM Postgres virtual key)")
-    # 2) the gateway must be able to serve every model the key allows.
-    route_problem = None
-    if problem is None:
-        if models_problem is None:
-            route_problem = "routability of its models is unknown (no check supplied)"
-        else:
-            route_problem = await models_problem(list(row["allowed_models"]))
+    key_problem = _key_problem(agent, store)
+    row = None if key_problem else store.agent_key_by_hash(token_hash(agent["llm_key"]))
+    route_problem = await _route_problem(models_problem, row)
+    problems = [p for p in (key_problem, route_problem) if p]
+    if key_problem is None:
+        # Idempotent. The gateway also accepts the plain key-store key, so a
+        # failed mirror is reported, not fatal.
+        if store.mint_mirror(name, agent["llm_key"]) is None or not store.live_mirror(name, agent["llm_key"]):
+            problems.append("its gateway key could not be minted from its key-store row")
 
-    if current == gw and not listener_ready:
-        # Pointed at a listener this start could not verify (dead, or a
-        # stranger on the port): back to LiteLLM, which is known.
-        if await _set_connect(container, project, lite):
-            report["repointed"].append({"agent": name, "connect": lite,
-                                        "reason": "gateway agent listener not verified"})
-        else:
-            skip(name, f"incus refused to set {DEVICE} connect back to LiteLLM")
-        return
     if current == gw:
-        if route_problem is not None:
-            # On the gateway but the gateway can no longer serve it: back to
-            # LiteLLM, which can.
-            if await _set_connect(container, project, lite):
-                report["repointed"].append({"agent": name, "connect": lite, "reason": route_problem})
-            else:
-                skip(name, f"incus refused to set {DEVICE} connect back to LiteLLM")
-            return
-        if problem is None:
-            store.mint_mirror(name, agent["llm_key"])  # idempotent
-        else:
-            logger.warning("llm gateway cutover: %s is on the gateway but %s", name, problem)
+        if problems:
+            logger.warning("llm gateway cutover: %s is on the gateway but %s", name, "; ".join(problems))
         report["unchanged"].append({"agent": name, "connect": current})
         return
 
-    # current == lite
-    if problem is not None or route_problem is not None:
-        skip(name, problem or route_problem)
-        return
+    # current is a dead LiteLLM port.
     if not listener_ready:
-        skip(name, "the gateway agent listener was not verified: left on LiteLLM")
+        skip(name, f"still on old LiteLLM port {current}: the gateway agent listener "
+                   "was not verified on this start, so nothing is moved onto it")
         return
-    # 3) mint the gateway key BEFORE the device moves, and check it is live.
-    if store.mint_mirror(name, agent["llm_key"]) is None or not store.live_mirror(name, agent["llm_key"]):
-        skip(name, "its gateway key could not be minted from its LiteLLM key row")
-        return
-    if await _set_connect(container, project, gw):
-        report["repointed"].append({"agent": name, "connect": gw})
-    else:
+    if not await _set_connect(container, project, gw):
         skip(name, f"incus refused to set {DEVICE} connect to the gateway")
+        return
+    item: dict[str, Any] = {"agent": name, "connect": gw, "from": current}
+    if problems:
+        item["reason"] = "; ".join(problems)
+    report["repointed"].append(item)
 
 
 # Startup probe budget: the listener starts beside the main server, so give
@@ -365,7 +349,7 @@ def llm_gateway_models_check(state) -> ModelsProblem:
 
 
 def llm_gateway_live_port(state) -> int:
-    """The agent listener port new deploys may target, or 0 (stay on LiteLLM).
+    """The agent listener port new deploys may target, or 0 (not verified).
 
     Non-zero only after the startup reconcile verified the listener's
     identity nonce; a dead listener, or a stranger on its port, is never
@@ -380,40 +364,42 @@ async def run_startup_reconcile(state) -> dict | None:
     """Lifespan hook: reconcile every configured agent once, log the result.
 
     Runs only when ``__main__`` recorded the agent listener port on the app
-    state (so tests and embedded apps never touch incus).
+    state (so tests and embedded apps never touch incus). The gateway is
+    always on: ``TAOS_LLM_GATEWAY=0`` no longer moves anyone back.
     """
     from tinyagentos import llm_gateway
 
     port = getattr(state, "llm_gateway_agent_port", None)
     if port is None:
         return None
-    # Listener disabled (port 0) counts as OFF: agents go back to LiteLLM,
-    # recognised by the default listener port.
-    on = llm_gateway.enabled() and bool(port)
+    llm_gateway.enabled()  # logs once if the old off switch is still set
     identity = getattr(state, "llm_gateway_listener_identity", None)
     ready = (
         await wait_for_listener(port, identity=identity, attempts=_PROBE_ATTEMPTS, delay=_PROBE_DELAY)
-        if on else False
+        if port else False
     )
     state.llm_gateway_listener_ready = ready
-    if on and not ready:
+    if not ready:
         logger.error(
             "llm gateway: this controller's agent listener was not verified on 127.0.0.1:%s; "
-            "no agent is moved onto it (and any already there go back to LiteLLM)", port,
+            "no agent is moved onto it, and agents still on an old LiteLLM port have no LLM path",
+            port,
         )
     config = getattr(state, "config", None)
     agents = list(getattr(config, "agents", None) or [])
     if not agents:
         return None
     proxy = getattr(state, "llm_proxy", None)
-    litellm_port = int(getattr(proxy, "port", None) or 7834)
+    legacy = {*LEGACY_LITELLM_PORTS}
+    configured = getattr(proxy, "port", None)
+    if configured:
+        legacy.add(int(configured))
     try:
         report = await reconcile_agents(
             agents=agents,
             data_dir=Path(state.data_dir),
-            gateway_on=on,
             gateway_port=port or llm_gateway.DEFAULT_AGENT_PORT,
-            litellm_port=litellm_port,
+            legacy_ports=sorted(legacy),
             listener_ready=ready,
             models_problem=llm_gateway_models_check(state),
         )
@@ -421,15 +407,14 @@ async def run_startup_reconcile(state) -> dict | None:
         logger.exception("llm gateway cutover: reconcile failed; agents left where they were")
         return None
     state.llm_gateway_cutover_report = report
-    direction = "gateway" if on else "LiteLLM"
     for item in report["repointed"]:
-        where = "the gateway" if item["connect"] == _target(port or 0) else "LiteLLM"
-        logger.warning("llm gateway cutover: %s now on %s (%s)%s", item["agent"], where, item["connect"],
+        logger.warning("llm gateway cutover: %s moved from %s to the gateway (%s)%s", item["agent"],
+                       item.get("from"), item["connect"],
                        f": {item['reason']}" if item.get("reason") else "")
     for item in report["skipped"]:
         logger.warning("llm gateway cutover: %s left as is: %s", item["agent"], item["reason"])
     logger.info(
-        "llm gateway cutover (%s): %d repointed, %d unchanged, %d skipped",
-        direction, len(report["repointed"]), len(report["unchanged"]), len(report["skipped"]),
+        "llm gateway cutover: %d repointed, %d unchanged, %d skipped",
+        len(report["repointed"]), len(report["unchanged"]), len(report["skipped"]),
     )
     return report

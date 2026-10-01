@@ -154,6 +154,8 @@ def fragment(payload, mid, chunk_size):
         raise ValueError("mid must be 0-255")
     if chunk_size < 1:
         raise ValueError("chunk_size must be >= 1")
+    if len(payload) > MAX_MESSAGE:
+        raise ValueError("oversize")
     chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)] or [b""]
     out = []
     for i, c in enumerate(chunks):
@@ -173,31 +175,45 @@ class Reassembler:
         self.max_message = max_message
         self.max_inflight = max_inflight
         self._buf = {}   # mid -> bytearray, insertion order == arrival order of each id's FIRST
+        self.last_drop = None   # documented attribute: drop reason, reset on EVERY feed()
 
     def feed(self, frag):
         """Feed one wire fragment. Returns the reassembled payload (bytes) when a message
         completes, else None."""
+        self.last_drop = None
         if len(frag) < 2:
             return None   # too short to carry flags+mid; not a real fragment
         flags, mid = frag[0], frag[1]
         chunk = frag[2:]
+        
+        # Check for unknown flag bits (anything other than FLAG_FIRST|FLAG_LAST)
+        valid_flags = FLAG_FIRST | FLAG_LAST
+        if flags & ~valid_flags:
+            # Unknown flag bits set
+            self.last_drop = "bad_flags"
+            return None
+        
         first, last = bool(flags & FLAG_FIRST), bool(flags & FLAG_LAST)
         if first:
             if mid in self._buf:
                 # A second FIRST for an id still being reassembled is corruption, not a resend:
                 # drop the in-flight message. The sender must use a fresh id to try again.
                 del self._buf[mid]
+                self.last_drop = "duplicate_first"
                 return None
             if len(self._buf) >= self.max_inflight:
+                self.last_drop = "inflight"
                 return None   # too many messages in flight; drop the new one
             self._buf[mid] = bytearray(chunk)
         else:
             if mid not in self._buf:
+                self.last_drop = "orphan"
                 return None   # orphan continuation fragment: nothing to append to
             self._buf[mid].extend(chunk)
         buf = self._buf.get(mid)
         if buf is not None and len(buf) > self.max_message:
             del self._buf[mid]
+            self.last_drop = "oversize"
             return None
         if last:
             return bytes(self._buf.pop(mid, b""))
@@ -232,17 +248,31 @@ def derive_code(T):
     return "%06d" % (int.from_bytes(h, "big") % 1_000_000)
 
 
-def _reject_weak(secret):
-    # X25519 accepts any 32 bytes as a public key; a low-order/identity point yields an
-    # all-zero (or otherwise degenerate) shared secret. Cheap to check, worth checking.
-    if secret == b"\x00" * len(secret):
-        raise ValueError("weak/low-order key material")
-    return secret
+def _validate_key_not_weak(key_bytes):
+    """Validate that an X25519 public key (32 bytes) is not all-zero or low-order.
+    
+    Returns the key if valid, raises ValueError if weak.
+    """
+    # All-zero key is caught first for cheapness
+    if key_bytes == b"\x00" * 32:
+        raise ValueError("weak_key")
+    
+    try:
+        # Attempt a trial exchange with a throwaway key to catch low-order points
+        # and all-zero shared secrets (older cryptography builds return it instead of raising)
+        throwaway_priv = X25519PrivateKey.generate()
+        shared = throwaway_priv.exchange(X25519PublicKey.from_public_bytes(key_bytes))
+        if shared == b"\x00" * 32:
+            raise ValueError("weak_key")
+    except ValueError as e:
+        raise ValueError("weak_key") from e
+    return key_bytes
 
 
 def derive_session_key(eph_priv, eph_peer_pub, static_priv, static_peer_pub, T):
-    ikm = (_reject_weak(eph_priv.exchange(eph_peer_pub)) +
-           _reject_weak(static_priv.exchange(static_peer_pub)))
+    # Shared secrets are validated as weak keys in the hello parsing phase
+    ikm = (eph_priv.exchange(eph_peer_pub) +
+           static_priv.exchange(static_peer_pub))
     return HKDF(algorithm=hashes.SHA256(), length=32, salt=T, info=b"taos-ble-pair-v2").derive(ikm)
 
 
@@ -423,6 +453,7 @@ class PairResponder:
     def _on_hello(self, msg):
         if msg.get("v") != PROTO_VERSION:
             return _err("unsupported protocol version (board speaks v%d)" % PROTO_VERSION)
+        # Parse keys first - malformed input gets 'bad hello'
         try:
             cpub = unb64(msg["cpub"], 32)
             c_epub = unb64(msg["epub"], 32)
@@ -430,6 +461,12 @@ class PairResponder:
             X25519PublicKey.from_public_bytes(c_epub)
         except (KeyError, ValueError, TypeError):
             return _err("bad hello")
+        # Then validate keys are not weak - weak keys get 'weak_key'
+        try:
+            _validate_key_not_weak(cpub)
+            _validate_key_not_weak(c_epub)
+        except ValueError:
+            return _err("weak_key")
         b_epriv, b_epub = x25519_keypair()
         b_n = os.urandom(16)
         bpub_bytes, b_epub_bytes = pub_bytes(self.static_pub), pub_bytes(b_epub)
@@ -545,8 +582,14 @@ class PairInitiator:
         if p is None or "commit" in p:
             raise ValueError("no hello in flight")
         p["board_id"] = board_id
-        p["bpub"] = unb64(msg["bpub"], 32)
-        p["b_epub"] = unb64(msg["epub"], 32)
+        # Parse board keys
+        bpub = unb64(msg["bpub"], 32)
+        b_epub = unb64(msg["epub"], 32)
+        # Validate board keys are not weak/low-order
+        _validate_key_not_weak(bpub)
+        _validate_key_not_weak(b_epub)
+        p["bpub"] = bpub
+        p["b_epub"] = b_epub
         p["commit"] = unb64(msg["commit"], 32)
         return json.dumps({"t": "nonce", "n": b64(p["n"])}).encode("utf-8")
 

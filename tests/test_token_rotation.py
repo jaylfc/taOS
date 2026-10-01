@@ -10,7 +10,11 @@ import pytest_asyncio
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from tinyagentos.agent_registry_store import mint_registry_token
+from tinyagentos.agent_registry_store import (
+    TOKEN_STORAGE_GUIDANCE,
+    mint_registry_token,
+    verify_registry_token,
+)
 from tinyagentos.agent_token_auth import check_agent_identity, check_agent_scope
 from taos_test_csrf import csrf_event_hooks
 
@@ -364,6 +368,177 @@ class TestRotateTokensRoute:
             "/api/agents/registry/no-such-agent-20260101-000000/rotate-tokens"
         )
         assert resp.status_code == 404
+
+class TestRotateReissuesCredentialOnSameIdentity:
+    """RED-FIRST core of taOS #2158: 'rotate' replaces the credential ON the
+    SAME canonical identity instead of minting a new one.
+
+    Before this the recovery path was "mint a NEW identity": the old row kept
+    its grants and the agent came back with a different canonical_id, so grants
+    scattered across identities nobody could reconcile. These tests pin that a
+    rotation returns a working replacement for the SAME canonical_id and leaves
+    the superseded token rejected.
+    """
+
+    @pytest.mark.asyncio
+    async def test_rotate_reissues_on_same_cid_and_supersedes_the_old_token(
+        self, agent_app, app
+    ):
+        cid, old_token = await _register_and_mint(
+            app, user_id="admin", scopes=("a2a_receive",)
+        )
+        # The credential we are about to supersede works to begin with.
+        assert await check_agent_scope(_FakeRequest(app, old_token), "a2a_receive") == cid
+
+        resp = await agent_app.post(f"/api/agents/registry/{cid}/rotate-tokens")
+        assert resp.status_code == 200
+        body = resp.json()
+
+        # SAME identity, not a new one: the canonical_id is unchanged and the
+        # identity's grants are still where they were (nothing was orphaned).
+        assert body["canonical_id"] == cid
+        assert (await app.state.agent_registry.get(cid)) is not None
+        grants = await app.state.agent_grants.list_grants(cid)
+        assert any(g["scope"] == "a2a_receive" for g in grants)
+
+        # A replacement credential comes back in the same call.
+        new_token = body["token"]
+        assert new_token and new_token != old_token
+
+        # The mechanism, read straight off the tokens: the replacement sits at
+        # or after the new cutoff, the superseded one strictly before it.
+        private_pem, public_pem = app.state.agent_registry_keypair
+        assert verify_registry_token(old_token, public_pem)["iat"] < body["token_min_iat"]
+        assert verify_registry_token(new_token, public_pem)["iat"] >= body["token_min_iat"]
+
+        # The old token is dead...
+        with pytest.raises(HTTPException) as exc:
+            await check_agent_scope(_FakeRequest(app, old_token), "a2a_receive")
+        assert exc.value.status_code == 401
+        assert exc.value.detail == "token superseded"
+
+        # ...and the replacement is live. Both mints happen within the same
+        # second here, which is exactly the case a naive `cutoff = now` gets
+        # wrong (the old iat would equal the cutoff and survive).
+        assert await check_agent_scope(_FakeRequest(app, new_token), "a2a_receive") == cid
+
+    @pytest.mark.asyncio
+    async def test_rotate_response_carries_storage_guidance(self, agent_app, app):
+        cid, _token = await _register_and_mint(app, user_id="admin")
+        resp = await agent_app.post(f"/api/agents/registry/{cid}/rotate-tokens")
+        assert resp.status_code == 200
+        assert resp.json()["storage_guidance"] == TOKEN_STORAGE_GUIDANCE
+
+    @pytest.mark.asyncio
+    async def test_rotate_twice_keeps_one_identity_and_only_latest_lives(
+        self, agent_app, app
+    ):
+        """Two rotations leave ONE registry row and only the newest token live."""
+        cid, first = await _register_and_mint(app, user_id="admin")
+        second = (
+            await agent_app.post(f"/api/agents/registry/{cid}/rotate-tokens")
+        ).json()["token"]
+        third_resp = await agent_app.post(f"/api/agents/registry/{cid}/rotate-tokens")
+        assert third_resp.status_code == 200
+        third = third_resp.json()["token"]
+
+        for dead in (first, second):
+            with pytest.raises(HTTPException) as exc:
+                await check_agent_scope(_FakeRequest(app, dead), "a2a_receive")
+            assert exc.value.detail == "token superseded"
+
+        assert await check_agent_scope(_FakeRequest(app, third), "a2a_receive") == cid
+        # No duplicate identity was created by either rotation.
+        assert len(await app.state.agent_registry.list_all()) == 1
+
+
+class TestSelfServiceRotation:
+    """An agent may rotate its OWN credential with its own live registry JWT
+    (an agent that suspects its token is stale or leaked must not have to wait
+    for a human), but never another agent's."""
+
+    @pytest.mark.asyncio
+    async def test_agent_rotates_itself_with_its_own_token(self, agent_app, app):
+        cid, old_token = await _register_and_mint(app, user_id="u")
+        resp = await agent_app.post(
+            f"/api/agents/registry/{cid}/rotate-tokens",
+            headers={"Authorization": f"Bearer {old_token}"},
+        )
+        assert resp.status_code == 200
+        new_token = resp.json()["token"]
+        assert new_token and new_token != old_token
+
+        # Self-rotation supersedes the caller's own old token too (the point of
+        # the action when a credential is suspected leaked) and the replacement
+        # proves identity.
+        with pytest.raises(HTTPException) as exc:
+            await check_agent_identity(_FakeRequest(app, old_token))
+        assert exc.value.detail == "token superseded"
+        assert await check_agent_identity(_FakeRequest(app, new_token)) == cid
+
+    @pytest.mark.asyncio
+    async def test_agent_token_cannot_rotate_another_agent(self, agent_app, app):
+        """A different agent's live token is refused with the not-found 404."""
+        _cid_a, token_a = await _register_and_mint(app, user_id="u")
+        # A second identity, distinct handle so both can be active.
+        registry = app.state.agent_registry
+        rec_b = await registry.register(
+            framework="test", display_name="Other", origin="external-selfjoin",
+            handle="@other",
+        )
+        cid_b = rec_b["canonical_id"]
+        await registry.set_status(cid_b, "active")
+
+        resp = await agent_app.post(
+            f"/api/agents/registry/{cid_b}/rotate-tokens",
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+        assert resp.status_code == 404
+        # The target identity was not touched.
+        assert (await registry.get(cid_b))["token_min_iat"] == 0
+
+    @pytest.mark.asyncio
+    async def test_superseded_token_cannot_rotate_itself(self, agent_app, app):
+        """A token killed by a rotation cannot use rotate to outlive it."""
+        cid, old_token = await _register_and_mint(app, user_id="u")
+        # Rotate as the owner/admin, then try to rotate again with the dead token.
+        await agent_app.post(f"/api/agents/registry/{cid}/rotate-tokens")
+        cutoff_after_first = (await app.state.agent_registry.get(cid))["token_min_iat"]
+        assert cutoff_after_first > 0
+        resp = await agent_app.post(
+            f"/api/agents/registry/{cid}/rotate-tokens",
+            headers={"Authorization": f"Bearer {old_token}"},
+        )
+        assert resp.status_code == 404
+        # The cutoff did not move for the failed attempt: it is still the exact
+        # value the first rotation set, not merely some positive number (the
+        # first rotation already made `> 0` true, so that alone proved nothing).
+        assert (
+            await app.state.agent_registry.get(cid)
+        )["token_min_iat"] == cutoff_after_first
+
+
+class TestStorageGuidanceAtMint:
+    """The storage rule ships WITH the token, not only in the docs."""
+
+    @pytest.mark.asyncio
+    async def test_register_response_carries_storage_guidance(self, agent_app):
+        resp = await agent_app.post(
+            "/api/agents/registry/register",
+            json={"framework": "openclaw", "display_name": "Guidance Agent"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["storage_guidance"] == TOKEN_STORAGE_GUIDANCE
+
+    @pytest.mark.asyncio
+    async def test_internal_mint_response_carries_storage_guidance(self, agent_app):
+        resp = await agent_app.post(
+            "/api/agents/registry/mint-internal",
+            json={"handle": "@taOS-dev-x", "slug": "taosdevx", "scopes": ["a2a_send"]},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["storage_guidance"] == TOKEN_STORAGE_GUIDANCE
+
 
 class TestEnforceRotationCutoffHelper:
     """Unit tests for the shared rotation-cutoff check.

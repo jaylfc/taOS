@@ -151,6 +151,18 @@ def _extract_tree_to_dir(ref: str, dest: Path, repo_root: Path = REPO_ROOT) -> N
         tar.extractall(dest)
 
 
+def _ast_fallback(abs_file: Path, file_path: str, name: str) -> bool:
+    """AST scan fallback: when exec_module fails for any reason, read the
+    source and check whether the symbol is defined, without importing."""
+    try:
+        source = abs_file.read_text(encoding="utf-8", errors="ignore")
+        symbols = _extract_symbols(source, file_path)
+        return f"{file_path}:{name}" in symbols
+    except Exception as exc:
+        print(f"AST fallback failed for {file_path}: {type(exc).__name__}")
+        return False
+
+
 def _resolve_symbol(merge_result_dir: Path, file_path: str, name: str) -> bool:
     """Check if a symbol is still importable from the merge result.
 
@@ -254,8 +266,12 @@ def _resolve_symbol(merge_result_dir: Path, file_path: str, name: str) -> bool:
         for part in name_parts:
             obj = getattr(obj, part)
         return True
-    except Exception:
-        return False
+    except SystemExit as exc:
+        print(f"AST fallback used for {file_path}: import-time {type(exc).__name__}")
+        return _ast_fallback(abs_file, file_path, name)
+    except Exception as exc:
+        print(f"AST fallback used for {file_path}: import-time {type(exc).__name__}")
+        return _ast_fallback(abs_file, file_path, name)
     finally:
         # Drop everything exec_module() added, then restore the explicitly
         # snapshotted entries. Order matters: the generic sweep would otherwise

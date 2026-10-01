@@ -17,10 +17,8 @@ async def test_sources_without_journald(client, app, tmp_path, monkeypatch):
     """With journald absent, journald-kind sources are unavailable, and the
     file/client sources still resolve without raising."""
     monkeypatch.setattr(system_logs, "_journalctl_missing", lambda: True)
-    # Point llmproxy at a clean, empty directory so this assertion does not
-    # depend on whatever is (or isn't) left over in the real default
-    # /tmp/taos-litellm on the host running the tests.
-    monkeypatch.setattr(app.state.llm_proxy, "config_dir", tmp_path / "no-litellm-here")
+    # The LiteLLM process (whose stderr log this source read) is gone; the
+    # key service has no config_dir, so the source resolves unavailable.
 
     resp = await client.get("/api/system-logs/sources")
     assert resp.status_code == 200

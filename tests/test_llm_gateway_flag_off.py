@@ -1,4 +1,7 @@
-"""The LLM gateway is mounted by default; TAOS_LLM_GATEWAY=0/false/no/off unmounts it.
+"""The LLM gateway is ALWAYS mounted: TAOS_LLM_GATEWAY=0/false/no/off is a logged no-op.
+
+It used to unmount the gateway and roll agents back to LiteLLM. LiteLLM is gone
+(removal stage 2b-2a), so there is nothing to roll back to.
 
 Mounting is decided at create_app, so each flag value needs its own app; no
 other state is shared, so these tests are order-free by construction. The
@@ -27,27 +30,27 @@ def _build(tmp_data_dir, monkeypatch, flag):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("flag", ["0", "false", "no", "off", " OFF "],
                          ids=["0", "false", "no", "off", "OFF-padded"])
-async def test_gateway_routes_are_404_when_the_flag_is_off(tmp_data_dir, monkeypatch, flag):
-    app = _build(tmp_data_dir, monkeypatch, flag)
+async def test_off_flag_is_a_logged_no_op(tmp_data_dir, monkeypatch, caplog, flag):
+    import tinyagentos.llm_gateway as llm_gateway
+
+    monkeypatch.setattr(llm_gateway, "_off_warned", False)
+    with caplog.at_level("WARNING", logger="tinyagentos.llm_gateway"):
+        app = _build(tmp_data_dir, monkeypatch, flag)
+    paths = {getattr(r, "path", "") for r in app.routes}
+    assert {"/api/llm/v1/models", "/api/llm/v1/chat/completions"} <= paths
     token = app.state.auth.get_local_token()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
                            headers={"Authorization": f"Bearer {token}"}) as c:
         models = await c.get("/api/llm/v1/models")
-        chat = await c.post(
-            "/api/llm/v1/chat/completions",
-            json={"model": "taos-default", "messages": [{"role": "user", "content": "hi"}]},
-        )
-    assert models.status_code == 404, models.text
-    assert chat.status_code == 404, chat.text
-    paths = {getattr(r, "path", "") for r in app.routes}
-    assert not any(p.startswith("/api/llm/") for p in paths)
+    assert models.status_code != 404, models.text
+    assert llm_gateway.enabled() is True
+    assert any("is ignored" in r.getMessage() for r in caplog.records), caplog.text
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("flag", [None, "1", "", "true", "yes"], ids=["unset", "1", "empty", "true", "yes"])
 async def test_flag_on_mounts_the_routes(tmp_data_dir, monkeypatch, flag):
-    """Control for the test above: the same probe sees the routes when on,
-    and on is the default."""
+    """The same probe with the flag unset or truthy: mounted as well."""
     app = _build(tmp_data_dir, monkeypatch, flag)
     paths = {getattr(r, "path", "") for r in app.routes}
     assert {"/api/llm/v1/models", "/api/llm/v1/chat/completions"} <= paths

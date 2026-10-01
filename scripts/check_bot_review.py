@@ -92,6 +92,10 @@ CODERABBIT_AUTO_SUMMARY_RE = re.compile(
     r"<!-- This is an auto-generated comment: summarize by coderabbit\.ai -->",
     re.IGNORECASE,
 )
+CODERABBIT_REVIEW_IN_PROGRESS_RE = re.compile(
+    r"review in progress by coderabbit\.ai",
+    re.IGNORECASE,
+)
 CODERABBIT_SCAFFOLDING_RE = re.compile(
     rf"{CODERABBIT_ACKNOWLEDGEMENT_RE.pattern}|{CODERABBIT_FAILURE_RE.pattern}",
     re.IGNORECASE,
@@ -132,6 +136,7 @@ CODERABBIT_FILES_SELECTED_RE = re.compile(
 EXIT_OK = 0
 EXIT_STUB = 1
 EXIT_ERROR = 2
+EXIT_FORK_UNREVIEWED = 3
 
 # A human-placed label that explicitly waives the bot-review gate for a PR
 # whose only CodeRabbit output is a rate-limit stub or auto-generated
@@ -141,6 +146,7 @@ EXIT_ERROR = 2
 # `gate-integrity-allow` for the gate-integrity guard. Read from the API at
 # run time, never from a stale event payload.
 DEFAULT_ALLOW_LABEL = "bot-review-allow"
+LEAD_REVIEWED_LABEL = "lead-reviewed"
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -161,6 +167,7 @@ CHECK_RUN_NAMES = frozenset({CHECK_RUN_NAME, "bot-review-gate"})
 VERDICT_TO_CONCLUSION = {
     EXIT_OK: "success",
     EXIT_STUB: "failure",
+    EXIT_FORK_UNREVIEWED: "failure",
 }
 
 
@@ -273,6 +280,20 @@ def is_coderabbit_auto_summary(body: str | None) -> bool:
     return bool(CODERABBIT_AUTO_SUMMARY_RE.search(body))
 
 
+def is_coderabbit_review_in_progress(body: str | None) -> bool:
+    """Return True if a body is CodeRabbit's review-in-progress placeholder.
+
+    When CodeRabbit starts processing a new review it edits its existing
+    auto-summary comment to insert a 'review in progress' marker, a Run ID
+    and a Files-processed list before the review actually completes. That
+    placeholder must never read as a real review: the review is still
+    running, so bot-review-gate must stay red until CodeRabbit posts the
+    completed walkthrough."""
+    if not body:
+        return False
+    return bool(CODERABBIT_REVIEW_IN_PROGRESS_RE.search(body))
+
+
 def is_coderabbit_failure_notice(body: str | None) -> bool:
     """Return True if a body is CodeRabbit's failure notice -- posted when a
     review run fails."""
@@ -371,11 +392,12 @@ def is_real_item(item: CRItem) -> bool:
     A rate-limit stub is never real. Review objects with state APPROVED or
     CHANGES_REQUESTED are real regardless of body content (the review state
     itself is the substantive signal). CodeRabbit scaffolding (acknowledgement
-    reply / failure notice) is never real. For issue comments carrying the
-    auto-summary marker, the walkthrough detector applies: a Run ID plus at
-    least one signal (quota-decrement line, no-actionable phrase, or
-    Files-processed list) means a real review ran. Other comments are real
-    when they carry non-empty, non-stub body text.
+    reply / failure notice) is never real. CodeRabbit's review-in-progress
+    placeholder is never real. For issue comments carrying the auto-summary
+    marker, the walkthrough detector applies: a Run ID plus at least one
+    signal (quota-decrement line, no-actionable phrase, or Files-processed
+    list) means a real review ran. Other comments are real when they carry
+    non-empty, non-stub body text.
     """
     if is_rate_limit_stub(item.body):
         return False
@@ -384,6 +406,8 @@ def is_real_item(item: CRItem) -> bool:
         if state in ("APPROVED", "CHANGES_REQUESTED"):
             return True
     if is_coderabbit_scaffolding(item.body):
+        return False
+    if is_coderabbit_review_in_progress(item.body):
         return False
     if not item.is_review and is_coderabbit_auto_summary(item.body):
         return is_coderabbit_walkthrough(item.body)
@@ -500,6 +524,69 @@ def collect_pr_labels(
     }
 
 
+def collect_pr_reviews(
+    owner: str, repo: str, pr_number: int, token: str | None = None,
+) -> list[dict] | None:
+    """Fetch all reviews on a PR via the GitHub REST API.
+
+    Returns None on infrastructure failure, [] if no reviews exist.
+    """
+    token = token or _get_token()
+    base = f"{API}/repos/{owner}/{repo}/pulls/{pr_number}"
+    data = _api_get(f"{base}/reviews", token)
+    if data is None:
+        return None
+    return [r for r in data if isinstance(r, dict)]
+
+
+def get_collaborator_permission(
+    owner: str, repo: str, login: str, token: str | None = None,
+) -> str | None:
+    """Fetch a collaborator's permission level via the GitHub REST API.
+
+    Returns the permission string ("admin", "write", "read", "none") on
+    success, None on infrastructure failure.
+    """
+    token = token or _get_token()
+    url = f"{API}/repos/{owner}/{repo}/collaborators/{login}/permission"
+    data = _api_get(url, token)
+    if data is None:
+        return None
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        return data[0].get("permission", "").lower()
+    if isinstance(data, dict):
+        return data.get("permission", "").lower()
+    return ""
+
+
+def is_fork_pr(
+    owner: str, repo: str, pr_number: int, token: str | None = None,
+) -> tuple[bool | None, str | None]:
+    """Return (is_fork, head_sha) for the PR.
+
+    is_fork is True if the PR is a fork PR, False if it is an in-repo PR,
+    None on infrastructure failure.
+
+    A null head.repo (deleted fork) counts as a fork.
+    """
+    token = token or _get_token()
+    data = _api_get(f"{API}/repos/{owner}/{repo}/pulls/{pr_number}", token)
+    if data is None:
+        return None, None
+    pr = data[0] if isinstance(data, list) and data else {}
+    if not isinstance(pr, dict):
+        return None, None
+    head = pr.get("head") or {}
+    base = pr.get("base") or {}
+    head_repo = head.get("repo")
+    if head_repo is None:
+        return True, head.get("sha", "")
+    head_full = head_repo.get("full_name", "")
+    base_repo = base.get("repo") or {}
+    base_full = base_repo.get("full_name", "")
+    return head_full != base_full, head.get("sha", "")
+
+
 def classify(items: list[CRItem]) -> tuple[int, str]:
     """Classify CR items and determine the exit code + message.
 
@@ -534,7 +621,9 @@ def classify(items: list[CRItem]) -> tuple[int, str]:
     # / failure notice), which the gate must treat the same way -- it must not
     # land on the absent/PASS path above.
     has_stubs = any(
-        is_rate_limit_stub(i.body) or is_coderabbit_scaffolding(i.body)
+        is_rate_limit_stub(i.body)
+        or is_coderabbit_scaffolding(i.body)
+        or is_coderabbit_review_in_progress(i.body)
         for i in items
     )
     if has_stubs:
@@ -556,6 +645,7 @@ def check_bot_review(
     owner: str, repo: str, pr_number: int,
     allow_label: str = DEFAULT_ALLOW_LABEL,
     token: str | None = None,
+    _is_fork: bool | None = None,
 ) -> tuple[int, str]:
     """Check a PR's CodeRabbit output for stubs.
 
@@ -576,7 +666,102 @@ def check_bot_review(
     trigger was accepted with no review produced -- neither is a defect in
     the PR). It does NOT cover EXIT_ERROR (cannot fetch CR items), which
     must stay fail-closed on a genuine cannot-see.
+
+    Fork PRs receive no automated review. For a fork PR the CodeRabbit
+    classification is irrelevant: the verdict is EXIT_OK only when a
+    maintainer has approved (APPROVED review by a collaborator with admin
+    or write permission) or the `lead-reviewed` label is present. Otherwise
+    the verdict is EXIT_FORK_UNREVIEWED (3). The `bot-review-allow` label
+    does NOT waive the fork verdict: it waives stub-shaped bot output, and
+    a fork PR has no bot output to be stubbed.
     """
+    if _is_fork is None:
+        fork_result, head_sha = is_fork_pr(owner, repo, pr_number, token)
+        if fork_result is None:
+            return EXIT_ERROR, (
+                f"error: could not determine if PR #{pr_number} is a fork "
+                f"(exit {EXIT_ERROR})"
+            )
+        _is_fork = fork_result
+    else:
+        head_sha = None
+
+    if _is_fork:
+        if head_sha is None:
+            _, head_sha = is_fork_pr(owner, repo, pr_number, token)
+        if not head_sha:
+            return EXIT_ERROR, (
+                f"error: fork PR has no head sha (exit {EXIT_ERROR})"
+            )
+        labels = collect_pr_labels(owner, repo, pr_number, token)
+        if labels is None:
+            return EXIT_ERROR, (
+                f"error: could not fetch labels for fork PR #{pr_number} "
+                f"(exit {EXIT_ERROR})"
+            )
+        if LEAD_REVIEWED_LABEL in labels:
+            return EXIT_OK, (
+                f"bot-review-gate: fork PR -- lead review present "
+                f"(lead-reviewed label) (exit {EXIT_OK})"
+            )
+
+        reviews = collect_pr_reviews(owner, repo, pr_number, token)
+        if reviews is None:
+            return EXIT_ERROR, (
+                f"error: could not fetch reviews for fork PR #{pr_number} "
+                f"(exit {EXIT_ERROR})"
+            )
+
+        # Build each reviewer's latest decisive review (by submitted_at,
+        # ignoring COMMENTED), then require that the latest review is
+        # APPROVED on the current head sha by a maintainer.
+        latest_by_login: dict[str, dict] = {}
+        for review in reviews:
+            state = (review.get("state") or "").upper()
+            if state == "COMMENTED":
+                continue
+            user = review.get("user") or {}
+            login = user.get("login")
+            if not login:
+                continue
+            submitted_at = review.get("submitted_at") or ""
+            prev = latest_by_login.get(login)
+            if prev is None or submitted_at > (prev.get("submitted_at") or ""):
+                latest_by_login[login] = review
+
+        first_failed_login: str | None = None
+        for review in latest_by_login.values():
+            state = (review.get("state") or "").upper()
+            if state != "APPROVED":
+                continue
+            commit_id = review.get("commit_id") or ""
+            if commit_id != head_sha:
+                continue
+            user = review.get("user") or {}
+            login = user.get("login")
+            if not login:
+                continue
+            perm = get_collaborator_permission(owner, repo, login, token)
+            if perm is None:
+                first_failed_login = login
+                continue
+            if perm in ("admin", "write"):
+                return EXIT_OK, (
+                    f"bot-review-gate: fork PR -- lead review present "
+                    f"({login} has {perm} permission) (exit {EXIT_OK})"
+                )
+
+        if first_failed_login is not None:
+            return EXIT_ERROR, (
+                f"error: could not fetch permission for {first_failed_login} on "
+                f"{owner}/{repo} (exit {EXIT_ERROR})"
+            )
+        return EXIT_FORK_UNREVIEWED, (
+            f"FAIL: fork PR requires lead review "
+            f"(no maintainer approval on head sha, no lead-reviewed label) "
+            f"(exit {EXIT_FORK_UNREVIEWED})"
+        )
+
     items = collect_coderabbit_items(owner, repo, pr_number, token)
     if items is None:
         return EXIT_ERROR, (

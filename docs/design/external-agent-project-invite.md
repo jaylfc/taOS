@@ -416,10 +416,10 @@ agent with a stored token can re-discover addresses without a new invite).
   },
   "controller": {
     "endpoints": [
-      {"kind": "lan",   "url": "http://192.168.1.20:6969",  "priority": 1},
-      {"kind": "lan",   "url": "http://10.0.40.5:6969",     "priority": 2},
-      {"kind": "mesh",  "url": "http://100.64.0.7:6969",    "priority": 3},
-      {"kind": "relay", "url": "https://jay.taos.my",        "priority": 4}
+      {"kind": "relay", "url": "https://jay.taos.my",        "priority": 1},
+      {"kind": "lan",   "url": "http://192.168.1.20:6969",  "priority": 2},
+      {"kind": "lan",   "url": "http://10.0.40.5:6969",     "priority": 3},
+      {"kind": "mesh",  "url": "http://100.64.0.7:6969",    "priority": 4}
     ],
     "health_path": "/api/health",
     "registry_pubkey_path": "/api/agents/registry/pubkey"
@@ -465,10 +465,11 @@ Field sourcing:
 - `mesh` endpoint: `mesh_status().node_ip` when joined. Included because the
   remote machine may already be on the same tailnet (Jay's laptop is); a
   non-mesh machine simply fails the probe and moves on.
-- `relay` endpoint: present only when account-linked + mesh joined. The
-  public relay hostname is not currently persisted by
-  `mesh_credentials.py` (it stores account_id/host_id/tailnet_name); the
-  join ready payload or an account call must supply it (open question 6).
+- `relay` endpoint: present when `TAOS_CONTROLLER_RELAY_URL` is configured
+  with an `https://` URL. The relay is emitted at
+  priority 1, ahead of LAN and mesh endpoints. An `http://` relay URL or a
+  public `TAOS_CONTROLLER_CALLBACK_HOST` is omitted with a logged warning
+  rather than advertised in cleartext.
 - `apis`: exactly the agent-JWT-reachable surface from
   `auth_middleware._AGENT_TASK_ROUTES` and `_A2A_BUS_*_PATHS`. Note the raw
   bus (:7900) is deliberately NOT in the bundle: it is unauthenticated and

@@ -1402,3 +1402,31 @@ async def test_store_create_enforces_pending_cap_atomically(tmp_path):
         assert other["canonical_id"] == "agent-2"
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_create_persists_duration_secs(tmp_path):
+    """AgentScopeRequestsStore.create must persist duration_secs so that
+    approve_scope_request can derive expires_at from it."""
+    store = AgentScopeRequestsStore(tmp_path / "scope.db")
+    await store.init()
+    try:
+        rec = await store.create(
+            canonical_id="agent-1",
+            requested_scopes=["a2a_receive"],
+            duration_secs=3600,
+        )
+        assert rec["duration_secs"] == 3600
+
+        back = await store.get(rec["id"])
+        assert back is not None
+        assert back["duration_secs"] == 3600
+
+        none_rec = await store.create(
+            canonical_id="agent-1",
+            requested_scopes=["a2a_send"],
+            duration_secs=None,
+        )
+        assert none_rec["duration_secs"] is None
+    finally:
+        await store.close()

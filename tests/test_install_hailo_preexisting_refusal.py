@@ -145,6 +145,23 @@ def _mock_systemctl_unit_without_marker(tmp_path: Path) -> None:
     mock.chmod(0o755)
 
 
+def _mock_systemctl_unit_no_marker(tmp_path: Path) -> None:
+    """systemctl that reports hailo-ollama.service exists but has NO OLLAMA_HOST marker."""
+    mock = tmp_path / "systemctl"
+    mock.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"list-unit-files"* ]]; then\n'
+        '    echo "hailo-ollama.service"\n'
+        'elif [[ "$*" == *"cat hailo-ollama.service"* ]]; then\n'
+        '    echo "[Unit]"\n'
+        '    echo "Description=Upstream hailo-ollama"\n'
+        '    echo "[Service]"\n'
+        '    echo "ExecStart=hailo-ollama"\n'
+        'fi\n'
+    )
+    mock.chmod(0o755)
+
+
 def _mock_systemctl_unit_with_marker(tmp_path: Path) -> None:
     """systemctl that reports hailo-ollama.service exists WITH the taOS marker."""
     mock = tmp_path / "systemctl"
@@ -295,6 +312,31 @@ def test_preexisting_unit_without_marker_refuses(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
+def test_upstream_unit_without_marker_is_refused(tmp_path: Path) -> None:
+    """An upstream hailo-ollama.service with NO OLLAMA_HOST marker must refuse with exit 3.
+    
+    This is the bug from #3201: the detection code only checks if the marker is WRONG,
+    but not if the marker is MISSING. An upstream unit without any OLLAMA_HOST line
+    was accepted as our own install (rc 0) instead of being refused (rc 3).
+    """
+    _mock_systemctl_unit_no_marker(tmp_path)
+    result = _run_detection(
+        tmp_path,
+        "    return 1\n",
+        path=str(tmp_path),
+    )
+    assert result.returncode == 3, (
+        f"upstream unit without marker must refuse with exit 3; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    combined = (result.stdout + result.stderr).lower()
+    assert "upstream" in combined or "marker" in combined, (
+        f"refusal message must mention upstream or marker; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
 def test_preexisting_binary_outside_install_dir_refuses(tmp_path: Path) -> None:
     """An upstream hailo-ollama binary outside the install directory must refuse."""
     _mock_hailo_ollama_binary_outside_dir(tmp_path)
@@ -336,55 +378,6 @@ def test_install_server_reports_hailo_conflict() -> None:
 
 def test_install_worker_reports_hailo_conflict() -> None:
     _assert_caller_reports_conflict(CALLERS["worker"], "install-worker.sh")
-
-
-def test_server_script_branches_on_exit_3_with_conflict_message() -> None:
-    """install-server.sh must have a branch keyed to exit status 3 from
-    install-hailo.sh whose message names the :8000 conflict (pre-existing
-    hailo-ollama on :8000, taOS backend not installed on 7836)."""
-    text = SERVER_SCRIPT.read_text()
-    assert "install-hailo.sh" in text, "install-hailo.sh not referenced in install-server.sh"
-    has_exit3_branch = (
-        re.search(r"rc=\$\?|rc=\$?", text) and
-        (re.search(r"3\).*", text) or re.search(r"== 3", text) or re.search(r"-eq 3", text))
-    ) or "exit 3" in text
-    conflict_mentioned = (
-        "8000" in text and
-        ("pre-existing" in text.lower() or "conflict" in text.lower())
-    )
-    assert has_exit3_branch, (
-        "install-server.sh must capture install-hailo.sh exit code and branch "
-        "on status 3 (refused: pre-existing instance). Current pattern uses "
-        "`cmd || warn` which cannot distinguish exit 3 from other failures."
-    )
-    assert conflict_mentioned, (
-        "install-server.sh's exit-3 branch must name the conflict: "
-        "pre-existing hailo-ollama on :8000, taOS backend not installed on 7836."
-    )
-
-
-def test_worker_script_branches_on_exit_3_with_conflict_message() -> None:
-    """install-worker.sh must have a branch keyed to exit status 3 from
-    install-hailo.sh whose message names the :8000 conflict."""
-    text = WORKER_SCRIPT.read_text()
-    assert "install-hailo.sh" in text, "install-hailo.sh not referenced in install-worker.sh"
-    has_exit3_branch = (
-        re.search(r"rc=\$\?|rc=\$?", text) and
-        (re.search(r"3\).*", text) or re.search(r"== 3", text) or re.search(r"-eq 3", text))
-    ) or "exit 3" in text
-    conflict_mentioned = (
-        "8000" in text and
-        ("pre-existing" in text.lower() or "conflict" in text.lower())
-    )
-    assert has_exit3_branch, (
-        "install-worker.sh must capture install-hailo.sh exit code and branch "
-        "on status 3 (refused: pre-existing instance). Current pattern uses "
-        "`cmd || warn` which cannot distinguish exit 3 from other failures."
-    )
-    assert conflict_mentioned, (
-        "install-worker.sh's exit-3 branch must name the conflict: "
-        "pre-existing hailo-ollama on :8000, taOS backend not installed on 7836."
-    )
 
 
 def test_probe_url_uses_localhost_not_0000() -> None:

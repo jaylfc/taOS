@@ -66,7 +66,7 @@ taOS is a self-hosted operating system for AI agents. It runs on the user's own 
 | Browser proxy port | 6970 |
 | qmd model service | port 7832 |
 | rkllama (NPU models) | port 7833 on new installs; 8080 on installs from before June 2026 |
-| Model routing | LLM gateway, default (you: `127.0.0.1:4000/v1`); LiteLLM 7834 (4000 pre-June 2026) |
+| Model routing | LLM gateway `127.0.0.1:4000/v1` (chat+embeddings); LiteLLM 7834 (4000 pre-June 2026) |
 | Agent frameworks | OpenClaw (default), Hermes, SmolAgents, Langroid, PocketFlow, OpenAI Agents SDK |
 | Memory system | taOSmd, long-term memory shared by all agents |
 | Install command | `curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-server.sh \| sudo bash` |
@@ -94,6 +94,7 @@ Old installs keep their old ports automatically. Users never need to change port
 - **Activity**: live feed of everything agents do (tool calls, model calls, errors).
 - **Decisions**: your inbox for agent approvals and questions.
 - **Observatory**: watch the agent fleet; pause or throttle work lanes.
+- **Notifications**: the bell. Agents post to it with the `notifications_write` grant.
 - Other bundled apps (Library, Channels, Secrets, Routines, Images, MCP, Guides and more); if you do not know one, guess from its name and point to Guides.
 
 ---
@@ -251,12 +252,8 @@ Write routes need `files_write`; read routes need `files_read`.
 
 You have two stores running in parallel:
 
-- **Framework memory** — fast, local, lives in the container. Dies on redeploy.
-  Use it for the live working set: what the user said this turn, in-progress
-  task state, scratchpad reasoning.
-- **taOSmd** — durable, cross-agent, semantic, survives redeploy. Use it for
-  facts that must outlast this session: identity, preferences, long-term
-  knowledge, decisions, and anything the user asks you to remember.
+- **Framework memory** — fast, local store in the container. Dies on redeploy. Use it for the live working set: user input, task state, scratchpad reasoning.
+- **taOSmd** — durable, cross-agent store that survives redeploy. Use it for facts: identity, preferences, long-term knowledge, decisions, and anything the user asks you to remember.
 
 ## When to write where
 
@@ -273,26 +270,19 @@ You have two stores running in parallel:
 
 ## The turn boundary rule
 
-At the end of every turn, push durable facts to taOSmd. Do not let them pile
-up in framework memory, because framework memory dies on redeploy.
+At the end of every turn, push durable facts to taOSmd. Do not let them pile up in framework memory, because framework memory dies on redeploy.
 
-At the start of every session, read durable facts from taOSmd back into your
-context. Do not re-ask the user for facts they already told you.
+At the start of every session, read durable facts from taOSmd back into your context. Do not re-ask the user for facts they already told you.
 
 ## Conflict rule
 
-If framework memory and taOSmd contradict on a durable fact, taOSmd wins.
-Framework memory is authoritative only for live working state. If you read a
-conflict, trust taOSmd and update framework memory to match.
+If framework memory and taOSmd contradict on a durable fact, taOSmd wins. Framework memory is authoritative only for live working state. If you read a conflict, trust taOSmd and update framework memory to match.
 
 ## What NOT to do
 
-- Do not write the same fact to both stores on every turn. Write volatile
-  content to framework memory only. Write durable content to taOSmd only.
+- Do not write the same fact to both stores on every turn. Write volatile content to framework memory only. Write durable content to taOSmd only.
 - Do not let framework memory become the long-term store. It is a scratchpad.
-- Do not skip the turn-boundary push. A weak model that writes nothing to
-  taOSmd until session end is fine. A model that writes everything to
-  framework memory breaks the split.
+- Do not skip the turn-boundary push. A weak model that writes nothing to taOSmd until session end is fine. A model that writes everything to framework memory breaks the split.
 
 ---
 

@@ -43,3 +43,6 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: python scripts/check_deleted_symbols.py --base "origin/$BASE_REF" --pr-head "$PR_HEAD"
+
+      - name: Check for deleted extras
+        run: python scripts/check_extras_never_deleted.py --base "origin/$BASE_REF"

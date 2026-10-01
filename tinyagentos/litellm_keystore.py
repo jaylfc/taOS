@@ -70,6 +70,10 @@ MIRROR_KEY_PREFIX = "gk_lit_"
 _IS_MIRROR = f"substr(key_id, 1, {len(MIRROR_KEY_PREFIX)}) = '{MIRROR_KEY_PREFIX}'"
 
 
+# PRAGMA user_version once the one-shot embedding-alias grant has run.
+_EMBED_ALIAS_VERSION = 1
+
+
 def mirror_key_id(key_hash: str) -> str:
     return MIRROR_KEY_PREFIX + key_hash[:16]
 
@@ -97,6 +101,7 @@ class LiteLLMKeyStore:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
             self._migrate_agent_key_hashes(conn)
+            self._migrate_embedding_alias(conn)
 
     @staticmethod
     def _migrate_agent_key_hashes(conn: sqlite3.Connection) -> None:
@@ -124,6 +129,58 @@ class LiteLLMKeyStore:
                 "UPDATE agent_keys SET token_hash = ? WHERE token = ?",
                 (token_hash(row["token"]), row["token"]),
             )
+
+    @staticmethod
+    def _migrate_embedding_alias(conn: sqlite3.Connection) -> None:
+        """Grant the embedding alias to agent keys minted before it was granted.
+
+        Every mint path now scopes an agent key to its models PLUS
+        ``taos-embedding-default`` (``llm_proxy.scoped_key_models``), and the
+        deployer hands every agent ``TAOS_EMBEDDING_MODEL`` set to that alias.
+        Keys minted earlier lack it, so those agents get 403 on
+        ``/v1/embeddings``. This adds it once to live agent keys in both tables
+        (a ``gk_lit_`` mirror is kept in step with its ``agent_keys`` row).
+
+        Runs ONCE per file (``PRAGMA user_version`` 0 -> 1): re-adding the
+        alias on every open would silently undo a later deliberate revocation.
+        An empty allowlist is deny-all and stays that way.
+        """
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= _EMBED_ALIAS_VERSION:
+            return
+        # Take the write lock BEFORE reading the allowlists, so a concurrent
+        # set_models (the other process) cannot land between our read and our
+        # write and be overwritten. Re-check the marker under the lock: another
+        # opener may have finished the grant while we waited.
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= _EMBED_ALIAS_VERSION:
+            return
+        from tinyagentos.litellm_config import EMBEDDING_ALIAS
+
+        def _grant(raw: str) -> str | None:
+            models = _models(raw)
+            if not models or EMBEDDING_ALIAS in models:
+                return None
+            return json.dumps(models + [EMBEDDING_ALIAS])
+
+        for row in conn.execute("SELECT token, allowed_models FROM agent_keys").fetchall():
+            new = _grant(row["allowed_models"])
+            if new is not None:
+                conn.execute(
+                    "UPDATE agent_keys SET allowed_models = ? WHERE token = ?",
+                    (new, row["token"]),
+                )
+        for row in conn.execute(
+            "SELECT key_id, allowed_models FROM gateway_keys "
+            "WHERE kind = 'agent' AND revoked_ts IS NULL"
+        ).fetchall():
+            new = _grant(row["allowed_models"])
+            if new is not None:
+                conn.execute(
+                    "UPDATE gateway_keys SET allowed_models = ? WHERE key_id = ?",
+                    (new, row["key_id"]),
+                )
+        conn.execute(f"PRAGMA user_version = {_EMBED_ALIAS_VERSION}")
 
     def mint(self, agent: str, allowed_models: list[str] | None) -> str:
         """Create a fresh token for an agent scoped to allowed_models.

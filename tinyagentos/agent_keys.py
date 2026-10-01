@@ -14,12 +14,13 @@ async def re_mint_agent_key(
     config_path: str,
     models: list[str] | None = None,
 ) -> str | None:
-    """Re-mint a missing per-agent LiteLLM key and persist it.
+    """Re-mint a missing per-agent LLM key and persist it.
 
-    Returns the new plaintext key on success, or None if the proxy is
-    unavailable or the mint failed.
+    The key is minted in the local key store (no process involved). Returns
+    the new plaintext key on success, or None if there is no key service or
+    the mint failed.
     """
-    if proxy is None or not proxy.is_running():
+    if proxy is None:
         return None
     if models is None:
         models = [m for m in [agent.get("model"), *(agent.get("fallback_models") or [])] if m]

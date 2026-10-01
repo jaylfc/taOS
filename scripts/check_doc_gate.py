@@ -15,7 +15,8 @@ by a doc edit stays PR-wide: a fragment or doc in any commit of the range
 satisfies the rule. An unscoped trailer covers every rule its commit trips;
 `Docs-Reviewed: [rule, rule] <why>` narrows it to the named rules, which is
 the only way a squash-shaped single commit can waive one rule and still be
-held to the others (a name that matches no rule waives nothing).
+held to the others (a name that matches no rule waives nothing). Multiple
+scoped trailers in one commit union their rule names.
 
 Two layers:
   invariants  -- deterministic sanity checks (Layer A). Currently: every
@@ -458,16 +459,36 @@ def _commit_waivers(
     commit_messages: list[str], trailer: str
 ) -> list[set[str] | None | bool]:
     """For each commit message: False when it carries no usable trailer,
-    None for an unscoped trailer, or the set of rule names it is scoped to."""
+    None for an unscoped trailer, or the set of rule names it is scoped to.
+
+    Unscoped trailers (no [scope]) cover every rule. Multiple scoped trailers
+    union their rule names: any [a] followed by [b] waives both a and b.
+    """
     waivers: list[set[str] | None | bool] = []
     for message in commit_messages:
-        scope: set[str] | None | bool = False
+        collected: set[str] | None = None
+        found_unscoped = False
         for line in message.splitlines():
             parsed = _trailer_scope(line, trailer)
-            if parsed is not None:
-                scope = parsed[0]
-                break
-        waivers.append(scope)
+            if parsed is None:
+                # Not a trailer line at all; skip
+                continue
+            names, why = parsed
+            if names is None:
+                # Unscoped trailer: covers all rules
+                found_unscoped = True
+            else:
+                # Scoped trailer: collect rule names
+                if collected is None:
+                    collected = set(names)
+                else:
+                    collected |= set(names)
+        if found_unscoped:
+            waivers.append(None)
+        elif collected is None:
+            waivers.append(False)
+        else:
+            waivers.append(collected)
     return waivers
 
 
@@ -748,7 +769,6 @@ def _log_trailer_usage(commits: list[tuple], trailer: str) -> None:
                 covers = ", ".join(sorted(paths)) if paths else "no files (inert)"
                 msg += f" [covers: {covers}]"
             print(msg)
-            break
 
 
 def get_trailer(config: dict) -> str:

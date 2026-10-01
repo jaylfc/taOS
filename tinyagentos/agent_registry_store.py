@@ -320,6 +320,22 @@ def _b64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s)
 
 
+# The one place the "how do I keep this credential" rule is written down.  It
+# is returned WITH every minted token (``storage_guidance`` in the mint
+# responses) because the seconds right after the handover are the only chance
+# the holder gets: the token is shown once and stored nowhere retrievable.  The
+# rule itself is old (it lived only in docs and convention, never in the
+# product); inlining it at mint is what makes it actionable.
+TOKEN_STORAGE_GUIDANCE = (
+    "Store this token in TWO locations that survive a machine migration "
+    "(a rebuilt or replaced host takes a single copy with it). Both copies must "
+    "be mode 0600 (owner read/write only) and outside any git working tree. The "
+    "token is shown once and is stored nowhere retrievable; if it is lost, "
+    "rotate this identity to get a replacement token rather than minting a new "
+    "agent."
+)
+
+
 def mint_registry_token(
     canonical_id: str,
     private_key_pem: bytes,
@@ -328,6 +344,7 @@ def mint_registry_token(
     framework: str = "",
     project_id: Optional[str] = None,
     principal_type: str = "agent",
+    iat: Optional[int] = None,
 ) -> str:
     """Return a signed compact EdDSA JWT: <header>.<payload>.<signature> (base64url).
 
@@ -348,6 +365,12 @@ def mint_registry_token(
       project_id    - project binding, present only when non-empty; absent means
                       the token is global (not bound to any project)
 
+    ``iat`` overrides the issuance timestamp (Unix seconds).  Rotation passes
+    the identity's new ``token_min_iat`` cutoff here so the replacement token is
+    born AT the cutoff and therefore clears it, even when the credential it
+    supersedes was minted in the same second -- see
+    ``rotate_tokens`` in routes/agent_registry.py for why that matters.
+
     Signed with Ed25519 over the UTF-8 bytes of ``<header_b64url>.<payload_b64url>``.
     """
     from cryptography.hazmat.primitives.serialization import load_pem_private_key
@@ -360,7 +383,7 @@ def mint_registry_token(
     claims: dict = {
         "sub": canonical_id,
         "iss": "taos-registry",
-        "iat": int(time.time()),
+        "iat": int(time.time()) if iat is None else int(iat),
         "jti": uuid.uuid4().hex,
         "principal_type": principal_type,
     }
@@ -1009,8 +1032,16 @@ class AgentRegistryStore(BaseStore):
         return await self.set_status(canonical_id, "revoked")
 
     async def bump_token_min_iat(self, canonical_id: str, ts: int) -> Optional[dict]:
-        """Set *canonical_id*'s ``token_min_iat`` to *ts*, invalidating every
-        token minted before that Unix timestamp.
+        """Advance *canonical_id*'s ``token_min_iat`` to at least *ts*, and
+        STRICTLY past whatever it was, invalidating every token minted before
+        the new cutoff.
+
+        The advance happens in ONE statement -- ``MAX(token_min_iat + 1, ?)`` --
+        so a caller cannot compute a cutoff from a stale read and land on a
+        value a concurrent rotation already used.  Two rotations must never
+        share a cutoff: the second would mint a token whose ``iat`` equals the
+        cutoff and the first rotation's replacement would survive it, silently
+        leaving a superseded credential live.
 
         The caller is responsible for authorisation (admin/session-owner checks).
         Returns the updated record, or ``None`` if *canonical_id* does not exist.
@@ -1021,7 +1052,8 @@ class AgentRegistryStore(BaseStore):
         if record is None:
             return None
         await self._db.execute(
-            "UPDATE agent_registry SET token_min_iat = MAX(token_min_iat, ?) WHERE canonical_id = ?",
+            "UPDATE agent_registry SET token_min_iat = MAX(token_min_iat + 1, ?) "
+            "WHERE canonical_id = ?",
             (ts, canonical_id),
         )
         await self._db.commit()

@@ -453,23 +453,26 @@ class TestTheRoute:
         assert candidates, "expected at least one rotating agent in the fixture"
         assert body["refresh_in_ms"] == max(1000, min(15000, min(candidates) + 150))
 
-    def test_only_agents_actually_sent_can_drive_refresh_in_ms(self, widgets, monkeypatch):
-        """The response only ever returns the first six agents -- a rotation
-        happening off that visible slice must not schedule the client around
-        a change it could never paint. Seven scripted agents: the taOS Agent
-        takes slot one, so the last scripted one is the seventh demo entry
-        and falls off the visible six."""
+    def test_every_agent_is_sent_and_the_soonest_drives_refresh_in_ms(self, widgets, monkeypatch):
+        """No cap on the islands (Jay: "there shouldnt be a cap"; a cap of six
+        cut a plugged-in board off the bottom). So every scripted agent is
+        sent, and the one due to change soonest schedules the client's next
+        fetch even when it is the seventh demo entry -- the slot the old cap
+        dropped. Refresh is still computed only from agents actually SENT."""
         names = [f"Agent {i}" for i in range(7)]
         scripts = {n: ["Step one", "Step two"] for n in names}
         monkeypatch.setattr(auth, "_DEMO_TASK_SCRIPTS", scripts)
-        # Make the hidden one the soonest to change by a wide margin.
+        # Make the last one the soonest to change by a wide margin.
         monkeypatch.setattr(auth, "_demo_task_phase",
                             lambda n: 19.9 if n == names[-1] else 0.0)
         body = widgets(agents=",".join(names))
         sent = [a["name"] for a in body["agents"]]
-        assert names[-1] not in sent and len(sent) == 6
-        visible = [a["next_change_ms"] for a in body["agents"] if "next_change_ms" in a]
-        assert body["refresh_in_ms"] == max(1000, min(15000, min(visible) + 150))
+        assert all(n in sent for n in names) and len(sent) == 8
+        last = next(a for a in body["agents"] if a["name"] == names[-1])
+        others = [a["next_change_ms"] for a in body["agents"]
+                  if "next_change_ms" in a and a["name"] != names[-1]]
+        assert last["next_change_ms"] < min(others)
+        assert body["refresh_in_ms"] == max(1000, min(15000, last["next_change_ms"] + 150))
 
     def test_no_scripted_agents_means_no_refresh_in_ms(self, widgets):
         body = widgets(agents="Nobody:hermes:Idle,Also Nobody:openclaw:Idle")

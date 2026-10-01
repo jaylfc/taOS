@@ -1,21 +1,17 @@
 """Unit tests for tinyagentos/litellm_config.py.
 
-Tests config generation and master-key loading in isolation: no real LiteLLM
-process, no network calls, no live hardware reads.
+Tests the gateway model table (build_model_list) and model discovery in isolation: no
+network calls, no live hardware reads.
 """
 from __future__ import annotations
 
-import os
-import stat
-from pathlib import Path
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
 
 import pytest
 
 import tinyagentos.litellm_config as cfg_mod
 from tinyagentos.litellm_config import (
-    get_litellm_master_key,
-    generate_litellm_config,
+    build_model_list,
     _is_embedding_model,
     _local_backend_models_from_registry,
     _discover_ollama_models,
@@ -24,104 +20,10 @@ from tinyagentos.litellm_config import (
 )
 
 
-@pytest.fixture(autouse=True)
-def clear_key_cache():
-    cfg_mod._master_key_cache.clear()
-    yield
-    cfg_mod._master_key_cache.clear()
-
-
-# ---------------------------------------------------------------------------
-# get_litellm_master_key
-# ---------------------------------------------------------------------------
-
-class TestGetLiteLLMMasterKey:
-
-    def test_returns_key_with_prefix(self, tmp_path):
-        key = get_litellm_master_key(tmp_path)
-        assert key.startswith("sk-taos-")
-
-    def test_persists_key_to_disk(self, tmp_path):
-        key = get_litellm_master_key(tmp_path)
-        key_file = tmp_path / ".litellm_master_key"
-        assert key_file.exists()
-        assert key_file.read_text().strip() == key
-
-    def test_key_file_mode_0600(self, tmp_path):
-        get_litellm_master_key(tmp_path)
-        key_file = tmp_path / ".litellm_master_key"
-        mode = stat.S_IMODE(key_file.stat().st_mode)
-        assert mode == 0o600
-
-    def test_returns_cached_key_on_repeated_call(self, tmp_path):
-        k1 = get_litellm_master_key(tmp_path)
-        k2 = get_litellm_master_key(tmp_path)
-        assert k1 is k2
-
-    def test_reads_existing_key_from_disk(self, tmp_path):
-        key_path = tmp_path / ".litellm_master_key"
-        key_path.write_text("sk-taos-persisted\n")
-        key = get_litellm_master_key(tmp_path)
-        assert key == "sk-taos-persisted"
-
-    def test_different_dirs_independent_keys(self, tmp_path):
-        da = tmp_path / "a"
-        db = tmp_path / "b"
-        da.mkdir()
-        db.mkdir()
-        ka = get_litellm_master_key(da)
-        kb = get_litellm_master_key(db)
-        assert ka != kb
-
-    def test_none_data_dir_returns_in_memory_key(self):
-        key = get_litellm_master_key(None)
-        assert key.startswith("sk-taos-")
-
-    def test_none_data_dir_uses_separate_cache(self):
-        k1 = get_litellm_master_key(None)
-        k2 = get_litellm_master_key(None)
-        assert k1 == k2
-
-    def test_none_dir_and_path_dir_cached_independently(self, tmp_path):
-        k_mem = get_litellm_master_key(None)
-        k_disk = get_litellm_master_key(tmp_path)
-        assert k_mem != k_disk
-
-    def test_file_exists_error_branch_reads_winner_key(self, tmp_path, monkeypatch):
-        winner = "sk-taos-winner"
-        (tmp_path / ".litellm_master_key").write_text(winner)
-
-        real_open = os.open
-
-        def _fake_open(path, flags, mode=0o666):
-            if "litellm_master_key" in str(path) and (flags & os.O_EXCL):
-                raise FileExistsError("simulated race")
-            return real_open(path, flags, mode)
-
-        monkeypatch.setattr(os, "open", _fake_open)
-        loaded = get_litellm_master_key(tmp_path)
-        assert loaded == winner
-
-    def test_empty_existing_file_raises_runtime_error(self, tmp_path, monkeypatch):
-        key_path = tmp_path / ".litellm_master_key"
-        key_path.write_text("   \n")
-
-        real_open = os.open
-
-        def _fake_open(path, flags, mode=0o666):
-            if "litellm_master_key" in str(path) and (flags & os.O_EXCL):
-                raise FileExistsError("simulated race")
-            return real_open(path, flags, mode)
-
-        monkeypatch.setattr(os, "open", _fake_open)
-        with pytest.raises(RuntimeError, match="empty"):
-            get_litellm_master_key(tmp_path)
-
-    def test_creates_parent_dirs_if_missing(self, tmp_path):
-        deep = tmp_path / "a" / "b" / "c"
-        key = get_litellm_master_key(deep)
-        assert key.startswith("sk-taos-")
-        assert (deep / ".litellm_master_key").exists()
+def _model_table(backends, **kwargs) -> dict:
+    """The gateway routing table: ``build_model_list`` (the LiteLLM config
+    writer that wrapped it is gone, LiteLLM removal stage 2b-2a)."""
+    return {"model_list": build_model_list(backends, **kwargs)}
 
 
 # ---------------------------------------------------------------------------
@@ -188,57 +90,18 @@ class TestIsEmbeddingModel:
 
 
 # ---------------------------------------------------------------------------
-# generate_litellm_config -- structure
+# model table -- structure
 # ---------------------------------------------------------------------------
 
 class TestGenerateLiteLLMStructure:
 
-    def test_returns_required_top_level_keys(self):
-        config = generate_litellm_config([])
-        assert set(config.keys()) == {
-            "model_list",
-            "router_settings",
-            "general_settings",
-            "litellm_settings",
-        }
-
-    def test_router_settings_defaults(self):
-        config = generate_litellm_config([])
-        rs = config["router_settings"]
-        assert rs["routing_strategy"] == "simple-shuffle"
-        assert rs["num_retries"] == 2
-        assert rs["timeout"] == 120
-        assert rs["enable_pre_call_checks"] is False
-
-    def test_general_settings_disable_spend_logs(self):
-        config = generate_litellm_config([])
-        gs = config["general_settings"]
-        assert gs["background_health_checks"] is False
-        assert gs["disable_spend_logs"] is True
-
-    def test_master_key_in_general_settings(self):
-        config = generate_litellm_config([], master_key="sk-taos-test")
-        assert config["general_settings"]["master_key"] == "sk-taos-test"
-
-    def test_master_key_auto_generated_when_not_supplied(self):
-        config = generate_litellm_config([])
-        mk = config["general_settings"]["master_key"]
-        assert mk.startswith("sk-taos-")
-
-    def test_litellm_settings_callbacks(self):
-        config = generate_litellm_config([])
-        assert (
-            config["litellm_settings"]["callbacks"]
-            == "taos_callback.proxy_handler_instance"
-        )
-
     def test_empty_backends_empty_model_list(self):
-        config = generate_litellm_config([])
+        config = _model_table([])
         assert config["model_list"] == []
 
 
 # ---------------------------------------------------------------------------
-# generate_litellm_config -- single ollama backend
+# model table -- single ollama backend
 # ---------------------------------------------------------------------------
 
 class TestGenerateLiteLLMOllamaBackend:
@@ -247,7 +110,7 @@ class TestGenerateLiteLLMOllamaBackend:
         backends = [
             {"name": "ollama-local", "type": "ollama", "url": "http://localhost:11434"}
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         ml = config["model_list"]
         assert len(ml) == 1
         entry = ml[0]
@@ -265,7 +128,7 @@ class TestGenerateLiteLLMOllamaBackend:
                 "model": "llama3",
             }
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         entry = config["model_list"][0]
         assert entry["litellm_params"]["model"] == "ollama_chat/llama3"
 
@@ -273,7 +136,7 @@ class TestGenerateLiteLLMOllamaBackend:
         backends = [
             {"name": "o", "type": "ollama", "url": "http://host:11434/"}
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         entry = config["model_list"][0]
         assert entry["litellm_params"]["api_base"] == "http://host:11434"
 
@@ -281,19 +144,19 @@ class TestGenerateLiteLLMOllamaBackend:
         backends = [
             {"name": "o", "type": "ollama", "url": "http://h:11434", "priority": 5}
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         assert config["model_list"][0]["metadata"]["priority"] == 5
 
     def test_default_priority_is_99(self):
         backends = [
             {"name": "o", "type": "ollama", "url": "http://h:11434"}
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         assert config["model_list"][0]["metadata"]["priority"] == 99
 
 
 # ---------------------------------------------------------------------------
-# generate_litellm_config -- rkllama backend
+# model table -- rkllama backend
 # ---------------------------------------------------------------------------
 
 class TestGenerateLiteLLMRkllamaBackend:
@@ -302,14 +165,14 @@ class TestGenerateLiteLLMRkllamaBackend:
         backends = [
             {"name": "rk-box", "type": "rkllama", "url": "http://192.168.1.50:8080"}
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         entry = config["model_list"][0]
         assert entry["litellm_params"]["model"] == "ollama_chat/default"
         assert entry["litellm_params"]["api_base"] == "http://192.168.1.50:8080"
 
 
 # ---------------------------------------------------------------------------
-# generate_litellm_config -- hailo-ollama backend (S5)
+# model table -- hailo-ollama backend (S5)
 # ---------------------------------------------------------------------------
 
 class TestGenerateLiteLLMHailoOllamaBackend:
@@ -320,7 +183,7 @@ class TestGenerateLiteLLMHailoOllamaBackend:
         backends = [
             {"name": "hailo-box", "type": "hailo-ollama", "url": "http://localhost:7836"}
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         entry = config["model_list"][0]
         assert entry["litellm_params"]["model"] == "ollama_chat/default"
         assert entry["litellm_params"]["api_base"] == "http://localhost:7836"
@@ -332,7 +195,7 @@ class TestGenerateLiteLLMHailoOllamaBackend:
             {"name": "hailo-box", "type": "hailo-ollama", "url": "http://h:7836"}
         ]
         discovered = {"http://h:7836": ["nomic-embed-text"]}
-        config = generate_litellm_config(backends, discovered=discovered)
+        config = _model_table(backends, discovered=discovered)
         ml = config["model_list"]
         embed_entries = [e for e in ml if e.get("model_info", {}).get("mode") == "embedding"]
         assert len(embed_entries) >= 1
@@ -340,7 +203,7 @@ class TestGenerateLiteLLMHailoOllamaBackend:
 
 
 # ---------------------------------------------------------------------------
-# generate_litellm_config -- cloud backends
+# model table -- cloud backends
 # ---------------------------------------------------------------------------
 
 class TestGenerateLiteLLMCloudBackend:
@@ -354,7 +217,7 @@ class TestGenerateLiteLLMCloudBackend:
                 "api_key": "sk-real-key",
             }
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         ml = config["model_list"]
         # Two declared-model entries + one "default" entry
         assert len(ml) == 3
@@ -377,7 +240,7 @@ class TestGenerateLiteLLMCloudBackend:
                 "api_key": "sk-key",
             }
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         assert config["model_list"][0]["model_name"] == "gpt-4o"
 
     def test_cloud_backend_with_api_key_secret(self):
@@ -389,7 +252,7 @@ class TestGenerateLiteLLMCloudBackend:
                 "api_key_secret": "OPENAI_API_KEY",
             }
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         entry = config["model_list"][0]
         assert entry["litellm_params"]["api_key"] == "os.environ/OPENAI_API_KEY"
 
@@ -397,7 +260,7 @@ class TestGenerateLiteLLMCloudBackend:
         backends = [
             {"name": "bad-cloud", "type": "openai"}
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         # Should still produce a default entry (the cloud warning is just a log)
         assert any(e["model_name"] == "default" for e in config["model_list"])
 
@@ -411,7 +274,7 @@ class TestGenerateLiteLLMCloudBackend:
                 "api_key": "kilo-key",
             }
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         entry = config["model_list"][0]
         assert entry["model_name"] == "kimi-k2"
         assert entry["litellm_params"]["api_base"] == "http://kilocode.example.com/v1"
@@ -426,7 +289,7 @@ class TestGenerateLiteLLMCloudBackend:
                 "api_key": "or-key",
             }
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         entry = config["model_list"][0]
         assert entry["litellm_params"]["api_base"] == "https://openrouter.ai/api/v1"
 
@@ -439,7 +302,7 @@ class TestGenerateLiteLLMCloudBackend:
                 "api_key": "ant-key",
             }
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         entry = config["model_list"][0]
         assert "api_base" not in entry["litellm_params"]
 
@@ -452,14 +315,14 @@ class TestGenerateLiteLLMCloudBackend:
                 "api_key": "ds-key",
             }
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         entry = config["model_list"][0]
         # deepseek is native LiteLLM; no explicit api_base unless url given
         assert "api_base" not in entry["litellm_params"]
 
 
 # ---------------------------------------------------------------------------
-# generate_litellm_config -- priority sorting
+# model table -- priority sorting
 # ---------------------------------------------------------------------------
 
 class TestGenerateLiteLLMPrioritySort:
@@ -470,7 +333,7 @@ class TestGenerateLiteLLMPrioritySort:
             {"name": "high", "type": "ollama", "url": "http://high:11434", "priority": 1},
             {"name": "mid", "type": "ollama", "url": "http://mid:11434", "priority": 5},
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         names = [e["metadata"]["backend_name"] for e in config["model_list"]]
         assert names == ["high", "mid", "low"]
 
@@ -479,13 +342,13 @@ class TestGenerateLiteLLMPrioritySort:
             {"name": "a", "type": "ollama", "url": "http://a:11434", "priority": 1},
             {"name": "b", "type": "ollama", "url": "http://b:11434", "priority": 1},
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         names = [e["metadata"]["backend_name"] for e in config["model_list"]]
         assert names == ["a", "b"]
 
 
 # ---------------------------------------------------------------------------
-# generate_litellm_config -- embedding discovery
+# model table -- embedding discovery
 # ---------------------------------------------------------------------------
 
 class TestGenerateLiteLLMEmbeddingDiscovery:
@@ -495,7 +358,7 @@ class TestGenerateLiteLLMEmbeddingDiscovery:
             {"name": "ollama-local", "type": "ollama", "url": "http://h:11434"}
         ]
         discovered = {"http://h:11434": ["nomic-embed-text"]}
-        config = generate_litellm_config(backends, discovered=discovered)
+        config = _model_table(backends, discovered=discovered)
         ml = config["model_list"]
         # default entry + embedding entry + alias entry
         assert len(ml) == 3
@@ -516,7 +379,7 @@ class TestGenerateLiteLLMEmbeddingDiscovery:
             "http://h1:11434": ["nomic-embed-text"],
             "http://h2:11434": ["mxbai-embed-large"],
         }
-        config = generate_litellm_config(backends, discovered=discovered)
+        config = _model_table(backends, discovered=discovered)
         alias_entries = [e for e in config["model_list"] if e["model_name"] == EMBEDDING_ALIAS]
         assert len(alias_entries) == 1
         # The alias should point to the first discovered embedding
@@ -527,7 +390,7 @@ class TestGenerateLiteLLMEmbeddingDiscovery:
             {"name": "ollama-local", "type": "ollama", "url": "http://h:11434"}
         ]
         discovered = {"http://h:11434": ["llama3.1-8b", "qwen2.5-7b"]}
-        config = generate_litellm_config(backends, discovered=discovered)
+        config = _model_table(backends, discovered=discovered)
         ml = config["model_list"]
         # Only the default entry; no embedding entries
         assert len(ml) == 1
@@ -538,7 +401,7 @@ class TestGenerateLiteLLMEmbeddingDiscovery:
             {"name": "ollama-local", "type": "ollama", "url": "http://h:11434"}
         ]
         discovered = {"http://h:11434": ["bge-reranker-v2"]}
-        config = generate_litellm_config(backends, discovered=discovered)
+        config = _model_table(backends, discovered=discovered)
         ml = config["model_list"]
         assert len(ml) == 1
 
@@ -549,7 +412,7 @@ class TestGenerateLiteLLMEmbeddingDiscovery:
         ]
         discovered = {"http://h:11434": None}
         with patch.object(cfg_mod, "_discover_ollama_models", return_value=[]):
-            config = generate_litellm_config(backends, discovered=discovered)
+            config = _model_table(backends, discovered=discovered)
         assert config["model_list"][0]["model_name"] == "default"
 
     def test_mixed_chat_and_embedding_discovered(self):
@@ -557,7 +420,7 @@ class TestGenerateLiteLLMEmbeddingDiscovery:
             {"name": "ollama-local", "type": "ollama", "url": "http://h:11434"}
         ]
         discovered = {"http://h:11434": ["llama3", "nomic-embed-text", "qwen2.5"]}
-        config = generate_litellm_config(backends, discovered=discovered)
+        config = _model_table(backends, discovered=discovered)
         ml = config["model_list"]
         # default + embedding + alias
         assert len(ml) == 3
@@ -567,7 +430,7 @@ class TestGenerateLiteLLMEmbeddingDiscovery:
 
 
 # ---------------------------------------------------------------------------
-# generate_litellm_config -- local backend with registry
+# model table -- local backend with registry
 # ---------------------------------------------------------------------------
 
 class TestGenerateLiteLLMLocalBackendModels:
@@ -600,7 +463,7 @@ class TestGenerateLiteLLMLocalBackendModels:
             ],
         })()
         reg = self._make_registry(installed, {"gemma-4-e2b-gguf": manifest})
-        config = generate_litellm_config(backends, registry=reg)
+        config = _model_table(backends, registry=reg)
         ml = config["model_list"]
         # default + local-installed model
         assert len(ml) == 2
@@ -614,7 +477,7 @@ class TestGenerateLiteLLMLocalBackendModels:
         backends = [
             {"name": "ollama-local", "type": "ollama", "url": "http://h:11434"}
         ]
-        config = generate_litellm_config(backends, registry=type("R", (), {})())
+        config = _model_table(backends, registry=type("R", (), {})())
         assert len(config["model_list"]) == 1
 
     def test_none_registry_skips_local_models(self):
@@ -625,7 +488,7 @@ class TestGenerateLiteLLMLocalBackendModels:
                 "url": "http://192.168.1.50:8080",
             }
         ]
-        config = generate_litellm_config(backends, registry=None)
+        config = _model_table(backends, registry=None)
         assert len(config["model_list"]) == 1
 
     def test_local_model_deduplicated_per_backend(self):
@@ -649,7 +512,7 @@ class TestGenerateLiteLLMLocalBackendModels:
             ],
         })()
         reg = self._make_registry(installed, {"gemma-4-e2b-gguf": manifest})
-        config = generate_litellm_config(backends, registry=reg)
+        config = _model_table(backends, registry=reg)
         ml = config["model_list"]
         # Should still be 2 (default + one local entry), not 3
         assert len(ml) == 2
@@ -665,7 +528,7 @@ class TestGenerateLiteLLMLocalBackendModels:
         installed = [{"id": "not-a-model"}]
         manifest = type("M", (), {"type": "dataset", "variants": []})()
         reg = self._make_registry(installed, {"not-a-model": manifest})
-        config = generate_litellm_config(backends, registry=reg)
+        config = _model_table(backends, registry=reg)
         assert len(config["model_list"]) == 1
 
     def test_manifest_without_get_method(self):
@@ -683,13 +546,13 @@ class TestGenerateLiteLLMLocalBackendModels:
             def list_installed(self):
                 return installed
 
-        config = generate_litellm_config(backends, registry=_Reg())
+        config = _model_table(backends, registry=_Reg())
         # some-model has no .get(), so manifest is None, skipped
         assert len(config["model_list"]) == 1
 
 
 # ---------------------------------------------------------------------------
-# generate_litellm_config -- api_key handling
+# model table -- api_key handling
 # ---------------------------------------------------------------------------
 
 class TestGenerateLiteLLMApiKey:
@@ -703,7 +566,7 @@ class TestGenerateLiteLLMApiKey:
                 "api_key": "sk-custom-key",
             }
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         entry = config["model_list"][0]
         assert entry["litellm_params"]["api_key"] == "sk-custom-key"
 
@@ -717,7 +580,7 @@ class TestGenerateLiteLLMApiKey:
                 "api_key_secret": "MY_SECRET",
             }
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         entry = config["model_list"][0]
         assert entry["litellm_params"]["api_key"] == "os.environ/MY_SECRET"
 
@@ -725,13 +588,13 @@ class TestGenerateLiteLLMApiKey:
         backends = [
             {"name": "ollama-local", "type": "ollama", "url": "http://h:11434"}
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         entry = config["model_list"][0]
         assert "api_key" not in entry["litellm_params"]
 
 
 # ---------------------------------------------------------------------------
-# generate_litellm_config -- mixed backends
+# model table -- mixed backends
 # ---------------------------------------------------------------------------
 
 class TestGenerateLiteLLMMixedBackends:
@@ -747,7 +610,7 @@ class TestGenerateLiteLLMMixedBackends:
                 "priority": 2,
             },
         ]
-        config = generate_litellm_config(backends)
+        config = _model_table(backends)
         ml = config["model_list"]
         # local default + openai gpt-4o + openai default
         assert len(ml) == 3
@@ -760,7 +623,7 @@ class TestGenerateLiteLLMMixedBackends:
         backends = [
             {"name": "o", "type": "ollama", "url": "http://h:11434"}
         ]
-        config = generate_litellm_config(backends, default_model="my-primary")
+        config = _model_table(backends, default_model="my-primary")
         assert config["model_list"][0]["model_name"] == "my-primary"
 
 

@@ -176,6 +176,9 @@ def register_all_routers(app):
     from tinyagentos.routes.cluster_capability import router as cluster_capability_router
     app.include_router(cluster_capability_router, dependencies=_csrf)
 
+    from tinyagentos.routes.cluster_map import router as cluster_map_router
+    app.include_router(cluster_map_router, dependencies=_csrf)
+
     from tinyagentos.routes.cluster_ble import router as cluster_ble_router
     app.include_router(cluster_ble_router, dependencies=_csrf)
 
@@ -435,12 +438,13 @@ def register_all_routers(app):
     from tinyagentos.routes.agent_model_api import router as agent_model_api_router
     app.include_router(agent_model_api_router, dependencies=_csrf)
 
-    # In-process LLM gateway (/api/llm/v1), the LiteLLM replacement. On by
-    # default; TAOS_LLM_GATEWAY=0 leaves it unmounted, so off is a 404.
+    # In-process LLM gateway (/api/llm/v1), the LiteLLM replacement. Always
+    # mounted: since LiteLLM removal 2b-2a it is the only LLM path, and
+    # TAOS_LLM_GATEWAY=0 is a logged no-op (see llm_gateway.enabled).
     from tinyagentos import llm_gateway
-    if llm_gateway.enabled():
-        from tinyagentos.llm_gateway.router import mount as mount_llm_gateway
-        mount_llm_gateway(app, dependencies=_csrf)
+    llm_gateway.enabled()  # logs once if the old off switch is still set
+    from tinyagentos.llm_gateway.router import mount as mount_llm_gateway
+    mount_llm_gateway(app, dependencies=_csrf)
 
     from tinyagentos.routes.agent_model_keys import router as agent_model_keys_router
     app.include_router(agent_model_keys_router, dependencies=_csrf)

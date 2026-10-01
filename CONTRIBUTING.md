@@ -6,11 +6,9 @@ Welcome - and thanks for your interest in contributing. taOS is a self-hosted AI
 
 ---
 
-## License & Contributor License Agreement
+## License
 
-taOS is open source under the **GNU Affero General Public License v3.0 or later** (AGPL-3.0-or-later; see [`LICENSE`](LICENSE)). A separate commercial license is available from jaylfc for uses the AGPL does not grant, for example embedding taOS in a proprietary product or offering it as a hosted service without releasing your modifications under the AGPL (see [`COMMERCIAL-LICENSE.md`](COMMERCIAL-LICENSE.md)).
-
-To keep this sustainable, **all contributors must agree to the Contributor License Agreement ([`CLA.md`](CLA.md))** before their contributions are merged. The CLA grants jaylfc the right to include and **relicense** your contributions under the project's licenses; **you keep ownership of your work**. You sign once - on your first pull request, comment **"I have read the CLA Document and I hereby sign the CLA"** and the CLA check turns green; it then covers all your future contributions.
+taOS is open source under the **GNU Affero General Public License v3.0 or later** (AGPL-3.0-or-later; see [`LICENSE`](LICENSE)). There is no separate commercial license and no Contributor License Agreement: your contributions are accepted under the same AGPL-3.0-or-later terms as the rest of the project, and you keep the copyright in your work.
 
 ---
 
@@ -58,6 +56,14 @@ Open a GitHub issue with:
 Open a GitHub issue describing:
 - The use case you are trying to solve
 - Why it belongs in the core project rather than a plugin or external tool
+
+### Fork PRs
+
+Fork PRs receive no automated review. **Lead review is the gate for fork PRs:** a maintainer review (an APPROVED review from a collaborator with admin or write permission on the current head sha, or the `lead-reviewed` label) is required before a fork PR can merge.
+
+For a fork PR the CodeRabbit classification is irrelevant: the verdict is EXIT_OK only when a maintainer has approved (APPROVED review by a collaborator with admin or write permission) or the `lead-reviewed` label is present. Otherwise the verdict is EXIT_FORK_UNREVIEWED (3). The `bot-review-allow` label does NOT waive the fork verdict: it waives stub-shaped bot output, and a fork PR has no bot output to be stubbed.
+
+The `lead-reviewed` label is the always-working path. An approval-based pass requires a successful read of `collaborators/{login}/permission`; we have not yet measured whether the read-only `GITHUB_TOKEN` of a fork `pull_request` run can read that endpoint, so a failed permission read fails closed (EXIT_ERROR) rather than guessing. The `bot-review-gate` check stays red until a maintainer approves the PR with a review on the current head sha (or applies the `lead-reviewed` label). Expected turnaround is within 24-48 hours for routine code changes; complex changes requiring multiple reviews may take longer.
 
 ### Adding Apps to the Catalog
 

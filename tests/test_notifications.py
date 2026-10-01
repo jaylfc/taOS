@@ -36,12 +36,17 @@ class TestNotificationStore:
 
     async def test_mark_read(self, notif_store):
         await notif_store.add("A", "a")
+        await notif_store.add("B", "b")
         items = await notif_store.list()
-        notif_id = items[0]["id"]
+        # Select the most recent by title (list() orders by timestamp DESC;
+        # if timestamps tie the order is not guaranteed).
+        notif_id = next(i["id"] for i in items if i["title"] == "B")
         await notif_store.mark_read(notif_id)
-        assert await notif_store.unread_count() == 0
+        assert await notif_store.unread_count() == 1
         items = await notif_store.list()
-        assert items[0]["read"] is True
+        # The "B" notification should now be read
+        b_item = next(i for i in items if i["title"] == "B")
+        assert b_item["read"] is True
 
     async def test_mark_all_read(self, notif_store):
         await notif_store.add("A", "a")
@@ -85,33 +90,41 @@ class TestNotificationStore:
         await notif_store.add("A", "a")
         await notif_store.add("B", "b")
         items = await notif_store.list()
-        await notif_store.mark_read(items[0]["id"])
+        # Mark the most recent ("B") as read
+        b_id = next(i["id"] for i in items if i["title"] == "B")
+        await notif_store.mark_read(b_id)
         unread = await notif_store.list(unread_only=True)
         assert len(unread) == 1
+        assert unread[0]["title"] == "A"
 
     async def test_archive_hides_from_active_list(self, notif_store):
         await notif_store.add("A", "a")
         await notif_store.add("B", "b")
         items = await notif_store.list()
-        await notif_store.archive(items[0]["id"])
+        # Archive the most recent ("B")
+        b_id = next(i["id"] for i in items if i["title"] == "B")
+        await notif_store.archive(b_id)
         active = await notif_store.list()
         assert len(active) == 1
-        assert items[0]["id"] not in [i["id"] for i in active]
+        assert b_id not in [i["id"] for i in active]
 
     async def test_archived_appears_in_history(self, notif_store):
         await notif_store.add("A", "a")
         items = await notif_store.list()
-        await notif_store.archive(items[0]["id"])
+        a_id = next(i["id"] for i in items if i["title"] == "A")
+        await notif_store.archive(a_id)
         history = await notif_store.list_archived()
         assert len(history) == 1
-        assert history[0]["id"] == items[0]["id"]
+        assert history[0]["id"] == a_id
 
     async def test_archive_excluded_from_unread_count(self, notif_store):
         await notif_store.add("A", "a")
         await notif_store.add("B", "b")
         assert await notif_store.unread_count() == 2
         items = await notif_store.list()
-        await notif_store.archive(items[0]["id"])
+        # Archive the most recent ("B")
+        b_id = next(i["id"] for i in items if i["title"] == "B")
+        await notif_store.archive(b_id)
         # Dismissed notification no longer counts toward the badge.
         assert await notif_store.unread_count() == 1
 

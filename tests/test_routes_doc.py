@@ -12,7 +12,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 BUILD_SCRIPT = REPO_ROOT / "scripts" / "build-routes-doc.py"
 COMMITTED_OUTPUT = REPO_ROOT / "docs" / "routes.md"
 
-MAX_CHARS = 19000
+MAX_CHARS = 21200
 
 MUST_CONTAIN = [
     "project_tasks",

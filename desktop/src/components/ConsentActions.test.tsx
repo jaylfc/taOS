@@ -60,6 +60,18 @@ describe("ConsentActions", () => {
     expect(screen.getByRole("button", { name: /deny/i })).toBeInTheDocument();
   });
 
+  it("shows the shared-VM warning when harness is grok", () => {
+    vi.stubGlobal("fetch", okFetch());
+    render(<ConsentActions requestId="req-1" scopes={["memory_read"]} harness="grok" />);
+    expect(screen.getByText(/This token will be readable by all bots on this Grok account/i)).toBeInTheDocument();
+  });
+
+  it("does not show the shared-VM warning when harness is not grok", () => {
+    vi.stubGlobal("fetch", okFetch());
+    render(<ConsentActions requestId="req-1" scopes={["memory_read"]} harness="claude" />);
+    expect(screen.queryByText(/This token will be readable by all bots on this Grok account/i)).not.toBeInTheDocument();
+  });
+
   it("posts the requested scopes to the approve endpoint and calls onResolved", async () => {
     const fetchMock = okFetch();
     vi.stubGlobal("fetch", fetchMock);
@@ -808,5 +820,26 @@ describe("consentPayload", () => {
       requestId: "x",
       scopes: [],
     });
+  });
+
+  it("extracts framework as harness when present", () => {
+    const payload = consentPayload({
+      request_id: "req-1",
+      requested_scopes: ["memory_read"],
+      framework: "grok",
+    });
+    expect(payload).toEqual({
+      requestId: "req-1",
+      scopes: ["memory_read"],
+      harness: "grok",
+    });
+  });
+
+  it("omits harness when framework is absent", () => {
+    const payload = consentPayload({
+      request_id: "req-2",
+      requested_scopes: ["memory_read"],
+    });
+    expect(payload?.harness).toBeUndefined();
   });
 });

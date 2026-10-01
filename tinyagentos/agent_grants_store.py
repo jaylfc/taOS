@@ -138,6 +138,7 @@ class AgentGrantsStore(BaseStore):
         tier: str = "once",
         project_id: Optional[str] = None,
         expires_at: Optional[str] = None,
+        renew: bool = False,
     ) -> dict:
         """Insert or replace a grant for (canonical_id, scope, project_id).
 
@@ -145,6 +146,12 @@ class AgentGrantsStore(BaseStore):
         ``INSERT OR REPLACE`` would NOT replace an existing NULL-project_id row
         (it would append a second one). We make re-approval idempotent by
         explicitly deleting the matching key (NULL-safe via IS) before inserting.
+
+        ``expires_at`` is preserved under the ``renew`` rule: a bound, once set,
+        is never silently dropped or lengthened. When ``renew=False`` (the
+        default) the stored row keeps the *earlier* of the existing and new
+        ``expires_at``. ``renew=True`` allows the caller to explicitly extend or
+        replace the bound.
         """
         if self._db is None:
             raise RuntimeError("AgentGrantsStore not initialised — call init() first")
@@ -154,6 +161,42 @@ class AgentGrantsStore(BaseStore):
         # cannot interleave (which would either drop each other's row before the
         # SELECT-back returns None, or collide on the UNIQUE at INSERT).
         async with self._write_lock:
+            # Read the existing row before deleting so the renew rule can
+            # preserve the earlier bound.
+            existing_row = await (
+                await self._db.execute(
+                    "SELECT expires_at FROM agent_grants "
+                    "WHERE canonical_id = ? AND scope = ? AND project_id IS ?",
+                    (canonical_id, scope, project_id),
+                )
+            ).fetchone()
+            existing_expires = (
+                existing_row["expires_at"] if existing_row else None
+            )
+
+            if renew:
+                effective_expires = expires_at
+            else:
+                # Keep the earlier bound: if either side is unbounded (None),
+                # keep the other side's bound. If both are bounded, keep the
+                # earlier instant.
+                if existing_expires is None:
+                    effective_expires = expires_at
+                elif expires_at is None:
+                    effective_expires = existing_expires
+                else:
+                    existing_dt = datetime.fromisoformat(existing_expires)
+                    new_dt = datetime.fromisoformat(expires_at)
+                    if existing_dt <= datetime.now(timezone.utc):
+                        # Existing row is already expired: a fresh bounded
+                        # re-approval replaces the dead bound. An unbounded
+                        # call (expires_at is None) is handled above.
+                        effective_expires = expires_at
+                    elif existing_dt <= new_dt:
+                        effective_expires = existing_expires
+                    else:
+                        effective_expires = expires_at
+
             # Remove any existing row for the exact key first (NULL-safe match).
             await self._db.execute(
                 "DELETE FROM agent_grants "
@@ -166,7 +209,7 @@ class AgentGrantsStore(BaseStore):
                     (canonical_id, scope, tier, project_id, granted_at, expires_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (canonical_id, scope, tier, project_id, now, expires_at),
+                (canonical_id, scope, tier, project_id, now, effective_expires),
             )
             await self._db.commit()
             row = await (

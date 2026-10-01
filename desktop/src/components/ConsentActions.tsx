@@ -127,6 +127,7 @@ export function ConsentActions({
   source = "auth_requests",
   canonicalId,
   humanDuration,
+  harness,
 }: {
   requestId: string;
   scopes: string[];
@@ -139,6 +140,7 @@ export function ConsentActions({
   source?: string;
   canonicalId?: string;
   humanDuration?: string;
+  harness?: string;
 }) {
   // `granted` is what the approve call will actually send. It defaults to the
   // full requested set, so the out-of-the-box behaviour (grant exactly what was
@@ -457,6 +459,11 @@ export function ConsentActions({
           </p>
         </div>
       )}
+      {harness === "grok" && (
+        <p className="mb-2 text-[11px] text-amber-300">
+          This token will be readable by all bots on this Grok account.
+        </p>
+      )}
       {needsProject && (
           <div className="mb-2">
             {requestedProjectId && requestedProjectNotFound && (
@@ -587,7 +594,7 @@ export function ConsentActions({
  * Returns null when the shape is missing. */
 export function consentPayload(
   data: Record<string, unknown> | undefined,
-): { requestId: string; scopes: string[]; projectId?: string; canonicalId?: string; humanDuration?: string } | null {
+): { requestId: string; scopes: string[]; projectId?: string; canonicalId?: string; humanDuration?: string; harness?: string } | null {
   if (!data) return null;
   const requestId = data.request_id;
   if (typeof requestId !== "string") return null;
@@ -596,5 +603,6 @@ export function consentPayload(
   const projectId = typeof data.project_id === "string" ? data.project_id : undefined;
   const canonicalId = typeof data.canonical_id === "string" ? data.canonical_id : undefined;
   const humanDuration = typeof data.human_duration === "string" ? data.human_duration : undefined;
-  return { requestId, scopes, projectId, canonicalId, humanDuration };
+  const harness = typeof data.framework === "string" ? data.framework : undefined;
+  return { requestId, scopes, projectId, canonicalId, humanDuration, harness };
 }

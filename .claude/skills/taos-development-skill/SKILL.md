@@ -261,7 +261,7 @@ time, so patching the module attribute AFTER `create_app` does nothing.
   component test fails CI), `desktop-e2e` (the Playwright suite under `desktop/tests`, run on
   webkit - see "Desktop SPA build + test" below), a "Verify app starts" `create_app` import
   smoke, `lint`
-  (`compileall`), `docs-build`, and `cla`. `docs-build` is the only job with the mkdocs
+  (`compileall`), and `docs-build`. `docs-build` is the only job with the mkdocs
   toolchain installed (mkdocs is NOT a project dependency, so `uv sync` does not provide
   it): it runs `tests/test_mkdocs_exclude.py` with `TAOS_DOCS_BUILD_TESTS=1`, which turns
   off the `importorskip` the ordinary shards rely on — put any test that has to build the
@@ -297,25 +297,6 @@ time, so patching the module attribute AFTER `create_app` does nothing.
   actually inspected. If you change a PR's base and this gate goes red, that is
   the new diff being judged, not a flake -- re-read what the failure names.
 
-## CLA - HUMAN signs
-
-taOS requires a Contributor License Agreement for first-time contributors. The CLA bot
-flags the PR with a `cla: fail` check.
-
-**The agent does NOT sign the CLA.** Posting the acceptance text accepts a legal agreement - that is the human account-holder's action, not the agent's.
-
-### Procedure when `cla: fail` appears:
-
-1. Verify the commit author email matches a GitHub-verified email.
-   If the email was wrong, amend the commit with the correct email, force-push.
-2. Surface the bot's comment + link to the human. Do NOT post the acceptance text yourself.
-   Do NOT post `recheck`.
-
-The bot accepts a PR comment in this format (for the human to post):
-```
-I have read the CLA Document and I hereby sign the CLA
-```
-
 ## PR / CI flow (fork specifics)
 
 1. After creating the draft PR, check both `gh pr checks <PR#>` **and**
@@ -323,7 +304,7 @@ I have read the CLA Document and I hereby sign the CLA
    `pr checks` while it awaits approval.
 2. **If the CI run shows `action_required`**: the first-time-contributor workflow-approval policy
    is blocking it. Surface this to the human - do not re-poll, re-push, or re-create the PR.
-   Lightweight checks (CLA, Gitar, CodeRabbit) run independently and don't need approval.
+   Lightweight checks (Gitar, CodeRabbit) run independently and don't need approval.
 3. Once code is done and local tests pass, `gh pr ready`. Address review feedback with additional
    commits on the same branch. The maintainer merges upstream.
 

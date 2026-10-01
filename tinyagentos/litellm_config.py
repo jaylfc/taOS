@@ -1,16 +1,15 @@
-"""Pure config-generation logic for the LiteLLM proxy.
+"""The model table the LLM gateway routes with.
 
-Contains the functions that build a LiteLLM configuration dict from the
-TinyAgentOS backend list.  Process-management concerns (subprocess, PIDs,
-start/stop) live in ``tinyagentos.llm_proxy``; import direction is strictly
-one-way: ``llm_proxy`` imports from here, never the reverse.
+``build_model_list`` turns the TinyAgentOS backend list into the routing
+table (model name -> backend) that ``llm_gateway.resolve`` and
+``llm_gateway.embeddings`` read. Its entries keep the LiteLLM-shaped
+``litellm_params`` keys they had when this table also fed the LiteLLM proxy
+config; that writer and the proxy are gone (LiteLLM removal stage 2b-2a).
+The module keeps its name until the cosmetic rename (stage 2b-2b).
 """
 from __future__ import annotations
 
 import logging
-import os
-import secrets as _secrets
-from pathlib import Path
 
 import httpx
 
@@ -23,67 +22,6 @@ logger = logging.getLogger(__name__)
 # LiteLLM routes it to whatever concrete embedding model the host has.
 # See docs/design/framework-agnostic-runtime.md.
 EMBEDDING_ALIAS = "taos-embedding-default"
-
-# Per-install master key cache — keyed by resolved data_dir so multiple
-# data dirs in the same process (tests) don't collide.
-_master_key_cache: dict[str, str] = {}
-
-
-def get_litellm_master_key(data_dir: Path | None = None) -> str:
-    """Return the per-install LiteLLM master key, generating it on first use.
-
-    The key is stored at ``<data_dir>/.litellm_master_key`` with mode 0600.
-    On first call for a given data_dir the file is created with a random key;
-    subsequent calls (same process or new process) re-read it from disk.
-
-    When ``data_dir`` is None the call falls back to a process-lifetime
-    in-memory key so callers that don't know the data dir (e.g. tests) still
-    get a consistent value within a single process.
-
-    The master key is used only to authorise admin operations against the
-    LiteLLM proxy (key generation, key deletion, /v1/models).  Per-agent
-    virtual keys stored in Postgres are independent tokens and are NOT
-    invalidated when the master key changes.
-    """
-    cache_key = str(data_dir) if data_dir is not None else "__in_memory__"
-    if cache_key in _master_key_cache:
-        return _master_key_cache[cache_key]
-
-    if data_dir is not None:
-        key_path = Path(data_dir) / ".litellm_master_key"
-        if key_path.exists():
-            key = key_path.read_text().strip()
-            if key:
-                _master_key_cache[cache_key] = key
-                return key
-        # Generate and persist a new per-install key using O_CREAT|O_EXCL so
-        # only one concurrent caller wins the creation race.  The loser gets
-        # EEXIST (FileExistsError) and reads whatever the winner wrote.
-        key = "sk-taos-" + _secrets.token_urlsafe(32)
-        key_path.parent.mkdir(parents=True, exist_ok=True)
-        encoded = key.encode()
-        try:
-            fd = os.open(str(key_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            try:
-                os.write(fd, encoded)
-            finally:
-                os.close(fd)
-            logger.info("Generated new per-install LiteLLM master key at %s", key_path)
-        except FileExistsError:
-            # Another process/thread won the race — read the key it wrote.
-            key = key_path.read_text().strip()
-            if not key:
-                raise RuntimeError(
-                    f"LiteLLM master key file {key_path} exists but is empty; "
-                    "remove it and restart to regenerate."
-                )
-    else:
-        # No data dir — generate an in-memory key for this process lifetime.
-        key = "sk-taos-" + _secrets.token_urlsafe(32)
-
-    _master_key_cache[cache_key] = key
-    return key
-
 
 def _is_embedding_model(name: str) -> bool:
     """Classify a model name as embedding vs chat.
@@ -310,6 +248,7 @@ def build_model_list(
                     "metadata": {
                         "priority": backend.get("priority", 99),
                         "backend_name": backend.get("name", ""),
+                        "backend_type": backend_type,
                     },
                 })
 
@@ -319,6 +258,7 @@ def build_model_list(
             "metadata": {
                 "priority": backend.get("priority", 99),
                 "backend_name": backend.get("name", ""),
+                "backend_type": backend_type,
             },
         })
 
@@ -357,6 +297,7 @@ def build_model_list(
                     "metadata": {
                         "priority": backend.get("priority", 99),
                         "backend_name": backend_name,
+                        "backend_type": backend_type,
                         "source": "local-installed",
                     },
                 })
@@ -384,6 +325,7 @@ def build_model_list(
                     "metadata": {
                         "priority": backend.get("priority", 99),
                         "backend_name": backend.get("name", ""),
+                        "backend_type": backend_type,
                     },
                 })
                 if not aliased_embedding_claimed:
@@ -394,60 +336,10 @@ def build_model_list(
                         "metadata": {
                             "priority": backend.get("priority", 99),
                             "backend_name": backend.get("name", ""),
+                            "backend_type": backend_type,
                             "aliases": discovered_name,
                         },
                     })
                     aliased_embedding_claimed = True
 
     return model_list
-
-
-def generate_litellm_config(
-    backends: list[dict],
-    default_model: str = "default",
-    *,
-    registry=None,
-    master_key: str | None = None,
-    discovered: dict[str, list[str]] | None = None,
-    inhouse_keys: bool = False,
-) -> dict:
-    """Generate LiteLLM config from TinyAgentOS backend list.
-
-    The ``model_list`` is ``build_model_list`` verbatim (see there for what
-    it contains); this adds LiteLLM's router, auth and callback settings.
-    """
-    model_list = build_model_list(
-        backends, default_model, registry=registry, discovered=discovered,
-    )
-    resolved_master_key = master_key if master_key is not None else get_litellm_master_key()
-    general_settings = {
-        "master_key": resolved_master_key,
-        "background_health_checks": False,
-        "disable_spend_logs": True,
-    }
-    if inhouse_keys:
-        # Authorize per-agent keys against taOS's SQLite key store via the
-        # custom_auth hook instead of LiteLLM's Postgres virtual-key table.
-        # The loader resolves this dotted path relative to the config dir, so
-        # write_config writes a sibling ``taos_auth.py`` re-exporting the hook.
-        # No DATABASE_URL is needed (the ARM / no-Postgres fix).
-        general_settings["custom_auth"] = "taos_auth.user_api_key_auth"
-        general_settings["custom_auth_run_common_checks"] = False
-    return {
-        "model_list": model_list,
-        "router_settings": {
-            "routing_strategy": "simple-shuffle",
-            "num_retries": 2,
-            "timeout": 120,
-            "enable_pre_call_checks": False,
-        },
-        "general_settings": general_settings,
-        # LiteLLM's proxy reads custom logger classes from
-        # ``litellm_settings.callbacks``. The loader (get_instance_fn) resolves
-        # the dotted path relative to the config file's directory — so the
-        # sibling ``taos_callback.py`` shim written by ``write_config`` below
-        # imports our installed module and re-exports the instance.
-        "litellm_settings": {
-            "callbacks": "taos_callback.proxy_handler_instance",
-        },
-    }

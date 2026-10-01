@@ -56,9 +56,8 @@ def main() -> None:
         app.state.main_port = port
 
     # LLM gateway agent listener (loopback only): where each agent's
-    # 127.0.0.1:4000 proxy device points once it is on the gateway. The port
-    # is recorded even when the gateway is off, so the startup reconcile can
-    # point agents back at LiteLLM (rollback).
+    # 127.0.0.1:4000 proxy device points. The startup reconcile moves any
+    # device still on an old LiteLLM port here.
     gateway_port = _gateway_listener_port(config, taken={port, proxy_port})
     if hasattr(app, "state"):
         import secrets
@@ -123,9 +122,10 @@ def _gateway_listener_port(config, *, taken: set) -> int:
 
 
 def _gateway_listener_wanted(gateway_port: int) -> bool:
-    from tinyagentos import llm_gateway
+    """True unless the listener port is 0 (disabled or clashing).
 
-    return bool(gateway_port) and llm_gateway.enabled()
+    The gateway itself is always on since LiteLLM removal 2b-2a."""
+    return bool(gateway_port)
 
 
 def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port: int = 0) -> None:
@@ -170,11 +170,9 @@ def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port
         # it from the host side, and nothing off-host may.
         from tinyagentos.llm_gateway.listener import create_agent_listener_app
 
-        litellm_port = int(getattr(getattr(app.state, "llm_proxy", None), "port", None) or 7834)
         gateway_config = uvicorn.Config(
             create_agent_listener_app(
-                app, litellm_port=litellm_port,
-                identity=getattr(app.state, "llm_gateway_listener_identity", None),
+                app, identity=getattr(app.state, "llm_gateway_listener_identity", None),
             ),
             host="127.0.0.1", port=gateway_port, backlog=128, lifespan="off",
             timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECS,
@@ -212,9 +210,10 @@ async def _serve_sidecar(server) -> None:
 
     Its failure, including uvicorn's ``sys.exit(1)`` on a port already in use,
     is logged and swallowed here, inside the coroutine, so it can never take
-    the controller down. Agents then simply stay on LiteLLM: the cutover only
-    repoints once the listener has answered with this start's identity nonce, so a
-    different process that holds the port is never mistaken for it.
+    the controller down. Agents then have no LLM path until the next start
+    (there is no LiteLLM any more): the cutover only repoints once the listener
+    has answered with this start's identity nonce, so a different process that
+    holds the port is never mistaken for it.
     """
     import logging
 
@@ -222,7 +221,8 @@ async def _serve_sidecar(server) -> None:
         await server.serve()
     except (Exception, SystemExit) as exc:  # noqa: BLE001 - never fatal
         logging.getLogger(__name__).error(
-            "llm gateway agent listener stopped (%s); agents stay on LiteLLM",
+            "llm gateway agent listener stopped (%s); agents have no LLM path "
+            "until it is back",
             type(exc).__name__,
         )
 

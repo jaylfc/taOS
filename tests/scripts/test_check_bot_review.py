@@ -123,6 +123,12 @@ class TestIsRealItem:
         )
         assert not check_mod.is_real_item(item)
 
+    def test_coderabbit_review_in_progress_is_not_real(self, check_mod) -> None:
+        item = check_mod.CRItem(
+            id=1, body=IN_PROGRESS_BODY, is_review=False,
+        )
+        assert not check_mod.is_real_item(item)
+
     def test_coderabbit_acknowledgement_review_is_not_real(self, check_mod) -> None:
         item = check_mod.CRItem(
             id=1, body=ACK_BODY, is_review=True, review_state="COMMENTED",
@@ -423,13 +429,39 @@ class TestClassify:
         assert "rate-limit stub" not in message
         assert "scaffolding" not in message
 
+    def test_review_in_progress_only_fails(self, check_mod) -> None:
+        """A body carrying the 'review in progress by coderabbit.ai' marker is
+        NOT a real review: the review is still running, so bot-review-gate must
+        stay red (exit 1, FAIL / stub)."""
+        items = [check_mod.CRItem(id=1, body=IN_PROGRESS_BODY, is_review=False)]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 1
+        assert "FAIL" in message
+        assert "stub" in message
+
+    def test_review_in_progress_control_real_walkthrough_still_passes(
+        self, check_mod,
+    ) -> None:
+        """Control: a real completed walkthrough (Run ID + Files selected + no
+        actionable phrase) must still PASS after the in-progress fix lands."""
+        body = (
+            "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+            "**Run ID**: abc123-def456\n"
+            "Files selected for processing (3)\n"
+            "No actionable comments were generated in the recent review."
+        )
+        items = [check_mod.CRItem(id=1, body=body, is_review=False)]
+        exit_code, message = check_mod.classify(items)
+        assert exit_code == 0
+        assert "real CodeRabbit review" in message
+
 
 class TestCheckBotReview:
     """Integration tests that mock collect_coderabbit_items."""
 
     def test_absent_returns_ok_with_note(self, check_mod) -> None:
         with patch.object(check_mod, "collect_coderabbit_items", return_value=[]):
-            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2419)
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2419, _is_fork=False)
         assert exit_code == 0
         assert "absent, not stubbed" in message
 
@@ -441,7 +473,7 @@ class TestCheckBotReview:
         ]
         with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
              patch.object(check_mod, "collect_pr_labels", return_value=set()):
-            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2416)
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2416, _is_fork=False)
         assert exit_code == 1
         assert "FAIL" in message
         assert "stub" in message
@@ -456,13 +488,13 @@ class TestCheckBotReview:
             ),
         ]
         with patch.object(check_mod, "collect_coderabbit_items", return_value=items):
-            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2366)
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2366, _is_fork=False)
         assert exit_code == 0
         assert "real CodeRabbit review" in message
 
     def test_api_failure_returns_error(self, check_mod) -> None:
         with patch.object(check_mod, "collect_coderabbit_items", return_value=None):
-            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 99999)
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 99999, _is_fork=False)
         assert exit_code == 2
         assert "error" in message.lower()
 
@@ -475,6 +507,8 @@ class TestMain:
             ),
         ]
         with patch.object(
+            check_mod, "_api_get", return_value=[{"head": {"repo": {"full_name": "jaylfc/taOS"}}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}],
+        ), patch.object(
             check_mod, "collect_coderabbit_items", return_value=items,
         ), patch.object(check_mod, "collect_pr_labels", return_value=set()):
             rc = check_mod.main(["2416", "--owner", "jaylfc", "--repo", "taOS"])
@@ -489,6 +523,8 @@ class TestMain:
             ),
         ]
         with patch.object(
+            check_mod, "_api_get", return_value=[{"head": {"repo": {"full_name": "jaylfc/taOS"}}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}],
+        ), patch.object(
             check_mod, "collect_coderabbit_items", return_value=items,
         ):
             rc = check_mod.main(["2366", "--owner", "jaylfc", "--repo", "taOS"])
@@ -498,6 +534,8 @@ class TestMain:
 
     def test_main_exit_0_on_absent(self, check_mod, capsys: pytest.CaptureFixture) -> None:
         with patch.object(
+            check_mod, "_api_get", return_value=[{"head": {"repo": {"full_name": "jaylfc/taOS"}}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}],
+        ), patch.object(
             check_mod, "collect_coderabbit_items", return_value=[],
         ):
             rc = check_mod.main(["2419", "--owner", "jaylfc", "--repo", "taOS"])
@@ -507,6 +545,8 @@ class TestMain:
 
     def test_main_exit_2_on_api_error(self, check_mod, capsys: pytest.CaptureFixture) -> None:
         with patch.object(
+            check_mod, "_api_get", return_value=[{"head": {"repo": {"full_name": "jaylfc/taOS"}}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}],
+        ), patch.object(
             check_mod, "collect_coderabbit_items", return_value=None,
         ):
             rc = check_mod.main(["99999", "--owner", "jaylfc", "--repo", "taOS"])
@@ -520,7 +560,9 @@ class TestMain:
         items = [
             check_mod.CRItem(id=1, body="Review rate limited", is_review=False),
         ]
-        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+        with patch.object(
+            check_mod, "_api_get", return_value=[{"head": {"repo": {"full_name": "jaylfc/taOS"}}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}],
+        ), patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
              patch.object(check_mod, "collect_pr_labels",
                           return_value={check_mod.DEFAULT_ALLOW_LABEL}):
             rc = check_mod.main(["2578", "--owner", "jaylfc", "--repo", "taOS"])
@@ -533,7 +575,9 @@ class TestMain:
         items = [
             check_mod.CRItem(id=1, body="Review rate limited", is_review=False),
         ]
-        with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
+        with patch.object(
+            check_mod, "_api_get", return_value=[{"head": {"repo": {"full_name": "jaylfc/taOS"}}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}],
+        ), patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
              patch.object(check_mod, "collect_pr_labels",
                           return_value={"my-custom-label"}):
             rc = check_mod.main(
@@ -594,7 +638,7 @@ class TestWaiverLabel:
         with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
              patch.object(check_mod, "collect_pr_labels",
                           return_value={check_mod.DEFAULT_ALLOW_LABEL}):
-            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578, _is_fork=False)
         assert exit_code == 0
         assert "WAIVED" in message
         assert check_mod.DEFAULT_ALLOW_LABEL in message
@@ -608,7 +652,7 @@ class TestWaiverLabel:
         ]
         with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
              patch.object(check_mod, "collect_pr_labels", return_value=set()):
-            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578, _is_fork=False)
         assert exit_code == 1
         assert "FAIL" in message
 
@@ -623,13 +667,13 @@ class TestWaiverLabel:
         with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
              patch.object(check_mod, "collect_pr_labels",
                           return_value={check_mod.DEFAULT_ALLOW_LABEL}):
-            code_with, msg_with = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+            code_with, msg_with = check_mod.check_bot_review("jaylfc", "taOS", 2578, _is_fork=False)
         assert code_with == 0
         assert "WAIVED" in msg_with
 
         with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
              patch.object(check_mod, "collect_pr_labels", return_value=set()):
-            code_without, msg_without = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+            code_without, msg_without = check_mod.check_bot_review("jaylfc", "taOS", 2578, _is_fork=False)
         assert code_without == 1
         assert "FAIL" in msg_without
 
@@ -640,7 +684,7 @@ class TestWaiverLabel:
         with patch.object(check_mod, "collect_coderabbit_items", return_value=None), \
              patch.object(check_mod, "collect_pr_labels",
                           return_value={check_mod.DEFAULT_ALLOW_LABEL}):
-            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578, _is_fork=False)
         assert exit_code == 2
         assert "error" in message.lower()
 
@@ -656,7 +700,7 @@ class TestWaiverLabel:
         with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
              patch.object(check_mod, "collect_pr_labels",
                           return_value={check_mod.DEFAULT_ALLOW_LABEL}):
-            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578, _is_fork=False)
         assert exit_code == 0
         assert "WAIVED" in message
 
@@ -670,7 +714,7 @@ class TestWaiverLabel:
         with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
              patch.object(check_mod, "collect_pr_labels",
                           return_value={check_mod.DEFAULT_ALLOW_LABEL}):
-            _, message = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+            _, message = check_mod.check_bot_review("jaylfc", "taOS", 2578, _is_fork=False)
         assert "WAIVED" in message
         # The waiver message must not look like a real PASS -- "real CodeRabbit
         # review" only appears on a genuine pass, never on a waiver.
@@ -686,7 +730,7 @@ class TestWaiverLabel:
         with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
              patch.object(check_mod, "collect_pr_labels",
                           return_value={check_mod.DEFAULT_ALLOW_LABEL}) as mock_labels:
-            exit_code, _ = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+            exit_code, _ = check_mod.check_bot_review("jaylfc", "taOS", 2578, _is_fork=False)
         assert exit_code == 0
         mock_labels.assert_called_once_with("jaylfc", "taOS", 2578, None)
 
@@ -697,7 +741,7 @@ class TestWaiverLabel:
         ]
         with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
              patch.object(check_mod, "collect_pr_labels", return_value={"some-other-label"}):
-            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578, _is_fork=False)
         assert exit_code == 1
         assert "FAIL" in message
 
@@ -709,7 +753,7 @@ class TestWaiverLabel:
         ]
         with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
              patch.object(check_mod, "collect_pr_labels", return_value=None):
-            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 2578, _is_fork=False)
         assert exit_code == 1
         assert "FAIL" in message
 
@@ -724,7 +768,7 @@ class TestWaiverLabel:
         ]
         with patch.object(check_mod, "collect_coderabbit_items", return_value=items), \
              patch.object(check_mod, "collect_pr_labels") as mock_labels:
-            exit_code, _ = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+            exit_code, _ = check_mod.check_bot_review("jaylfc", "taOS", 2578, _is_fork=False)
         assert exit_code == 0
         mock_labels.assert_not_called()
 
@@ -733,9 +777,388 @@ class TestWaiverLabel:
         are not fetched to avoid an unnecessary API call."""
         with patch.object(check_mod, "collect_coderabbit_items", return_value=[]), \
              patch.object(check_mod, "collect_pr_labels") as mock_labels:
-            exit_code, _ = check_mod.check_bot_review("jaylfc", "taOS", 2578)
+            exit_code, _ = check_mod.check_bot_review("jaylfc", "taOS", 2578, _is_fork=False)
         assert exit_code == 0
         mock_labels.assert_not_called()
+
+
+class TestForkPrGate:
+    """Fork PRs receive no automated review: lead review is the gate.
+
+    Acceptance arms from the task:
+      A: fork PR, zero reviews, zero labels, no CodeRabbit output -> EXIT_FORK_UNREVIEWED
+      B: fork PR + APPROVED review by admin -> EXIT_OK; same review by read -> still EXIT_FORK_UNREVIEWED
+      C: fork PR + lead-reviewed label -> EXIT_OK; fork PR + bot-review-allow only -> still EXIT_FORK_UNREVIEWED
+      D: in-repo PR with stub -> unchanged EXIT_STUB; in-repo PR with real items -> unchanged PASS
+      E: head.repo == null (deleted fork) -> treated as fork
+    """
+
+    FORK_PR_DATA = [{"head": {"repo": {"full_name": "external-user/taOS"}, "sha": "head_sha_abc"}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}]
+    IN_REPO_PR_DATA = [{"head": {"repo": {"full_name": "jaylfc/taOS"}, "sha": "head_sha_abc"}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}]
+    DELETED_FORK_PR_DATA = [{"head": {"repo": None, "sha": "head_sha_abc"}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}]
+
+    def _mock_api(self, check_mod, pr_data, reviews=None, labels=None, permission=None, issue_comments=None):
+        """Build a side_effect for _api_get that handles all URLs check_bot_review touches."""
+        # Special sentinel values to simulate API failures (return None from _api_get)
+        _REVIEWS_API_ERROR = "__REVIEWS_API_ERROR__"
+        _LABELS_API_ERROR = "__LABELS_API_ERROR__"
+        _PERMISSION_API_ERROR = "__PERMISSION_API_ERROR__"
+        
+        reviews_api_error = reviews == _REVIEWS_API_ERROR
+        labels_api_error = labels == _LABELS_API_ERROR
+        permission_api_error = permission == _PERMISSION_API_ERROR
+        
+        reviews_data = [] if reviews is None or reviews_api_error else reviews
+        issue_comments = issue_comments or []
+        call_count = 0
+        labels_data = [] if labels is None or labels_api_error else labels
+
+        def side_effect(url, token=None):
+            nonlocal call_count
+            call_count += 1
+
+            if "/pulls/" in url and "/reviews" not in url and "/comments" not in url and "/collaborators" not in url:
+                if call_count == 1:
+                    return pr_data
+                if labels_api_error:
+                    return None
+                return [{"labels": labels_data}]
+            if url.endswith("/reviews"):
+                if reviews_api_error:
+                    return None
+                return reviews_data
+            if "/collaborators/" in url and "/permission" in url:
+                if permission_api_error:
+                    return None
+                if permission is not None:
+                    return [{"permission": permission}]
+                return None
+            if "/issues/" in url and "/comments" in url:
+                return issue_comments
+            if url.endswith("/comments"):
+                return []
+            return []
+
+        return side_effect
+
+    # Arm A: fork PR, zero reviews, zero labels, no CodeRabbit -> EXIT_FORK_UNREVIEWED
+    def test_fork_pr_unreviewed_red(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA, reviews=[], labels=[],
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3001)
+        assert exit_code == check_mod.EXIT_FORK_UNREVIEWED
+        assert "FAIL: fork PR requires lead review" in message
+        assert "no maintainer approval on head sha, no lead-reviewed label" in message
+
+    # Arm B: fork PR + APPROVED review by admin on head sha -> EXIT_OK
+    def test_fork_pr_approved_by_admin_green(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            reviews=[{"id": 1, "state": "APPROVED", "commit_id": "head_sha_abc", "submitted_at": "2026-09-30T00:00:00Z", "user": {"login": "jaylfc"}}],
+            permission="admin",
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3002)
+        assert exit_code == check_mod.EXIT_OK
+        assert "fork PR -- lead review present" in message
+        assert "admin" in message
+
+    # Arm B control: APPROVED review by read-only -> still EXIT_FORK_UNREVIEWED
+    def test_fork_pr_approved_by_read_only_still_red(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            reviews=[{"id": 1, "state": "APPROVED", "commit_id": "head_sha_abc", "submitted_at": "2026-09-30T00:00:00Z", "user": {"login": "drive-by"}}],
+            permission="read",
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3003)
+        assert exit_code == check_mod.EXIT_FORK_UNREVIEWED
+        assert "FAIL: fork PR requires lead review" in message
+
+    # Arm C: fork PR + lead-reviewed label -> EXIT_OK
+    def test_fork_pr_lead_reviewed_label_green(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            labels=[{"name": check_mod.LEAD_REVIEWED_LABEL}],
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3004)
+        assert exit_code == check_mod.EXIT_OK
+        assert "lead-reviewed label" in message
+
+    # Arm C control: fork PR + bot-review-allow only -> still EXIT_FORK_UNREVIEWED
+    def test_fork_pr_bot_review_allow_only_still_red(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            labels=[{"name": check_mod.DEFAULT_ALLOW_LABEL}],
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3005)
+        assert exit_code == check_mod.EXIT_FORK_UNREVIEWED
+        assert "FAIL: fork PR requires lead review" in message
+
+    # Arm D control: in-repo PR with rate-limit stub -> unchanged EXIT_STUB
+    def test_in_repo_pr_stub_unchanged(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.IN_REPO_PR_DATA,
+            issue_comments=[{"user": {"login": "coderabbitai[bot]"}, "body": "Review rate limited", "id": 1}],
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3006)
+        assert exit_code == check_mod.EXIT_STUB
+        assert "FAIL" in message
+        assert "stub" in message
+
+    # Arm D control: in-repo PR with real items -> unchanged PASS
+    def test_in_repo_pr_real_items_unchanged(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.IN_REPO_PR_DATA,
+            issue_comments=[{"user": {"login": "coderabbitai[bot]"}, "body": "## Review\n\nFound an issue.", "id": 1}],
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3007)
+        assert exit_code == check_mod.EXIT_OK
+        assert "real CodeRabbit review" in message
+
+    # Arm E: head.repo == null (deleted fork) -> treated as fork
+    def test_deleted_fork_treated_as_fork(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.DELETED_FORK_PR_DATA, reviews=[], labels=[],
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3008)
+        assert exit_code == check_mod.EXIT_FORK_UNREVIEWED
+        assert "FAIL: fork PR requires lead review" in message
+
+    # API error on fork detection -> fail-closed EXIT_ERROR
+    def test_fork_detection_api_error_fails_closed(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", return_value=None):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3009)
+        assert exit_code == check_mod.EXIT_ERROR
+        assert "error" in message.lower()
+
+    # bot-review-allow does NOT waive a fork verdict
+    def test_bot_review_allow_does_not_waive_fork(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            labels=[{"name": check_mod.DEFAULT_ALLOW_LABEL}],
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3010)
+        assert exit_code == check_mod.EXIT_FORK_UNREVIEWED
+        assert "FAIL: fork PR requires lead review" in message
+
+    # 2(a): admin APPROVED on an older commit_id -> EXIT_FORK_UNREVIEWED
+    def test_fork_pr_approved_on_older_commit_red(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            reviews=[
+                {
+                    "id": 1, "state": "APPROVED",
+                    "commit_id": "old_sha_xyz",
+                    "submitted_at": "2026-09-29T23:00:00Z",
+                    "user": {"login": "jaylfc"},
+                }
+            ],
+            permission="admin",
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3011)
+        assert exit_code == check_mod.EXIT_FORK_UNREVIEWED
+        assert "FAIL: fork PR requires lead review" in message
+
+    # 2(b): admin APPROVED then CHANGES_REQUESTED by the same login -> EXIT_FORK_UNREVIEWED
+    def test_fork_pr_approved_then_changes_requested_same_login_red(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            reviews=[
+                {
+                    "id": 1, "state": "APPROVED",
+                    "commit_id": "head_sha_abc",
+                    "submitted_at": "2026-09-29T23:00:00Z",
+                    "user": {"login": "jaylfc"},
+                },
+                {
+                    "id": 2, "state": "CHANGES_REQUESTED",
+                    "commit_id": "head_sha_abc",
+                    "submitted_at": "2026-09-30T00:00:00Z",
+                    "user": {"login": "jaylfc"},
+                },
+            ],
+            permission="admin",
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3012)
+        assert exit_code == check_mod.EXIT_FORK_UNREVIEWED
+        assert "FAIL: fork PR requires lead review" in message
+
+    # 2(c) control: admin APPROVED on the head sha -> EXIT_OK
+    def test_fork_pr_approved_on_head_sha_green(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            reviews=[
+                {
+                    "id": 1, "state": "APPROVED",
+                    "commit_id": "head_sha_abc",
+                    "submitted_at": "2026-09-30T00:00:00Z",
+                    "user": {"login": "jaylfc"},
+                }
+            ],
+            permission="admin",
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3013)
+        assert exit_code == check_mod.EXIT_OK
+        assert "fork PR -- lead review present" in message
+        assert "admin" in message
+
+    # 3: label read returns None -> EXIT_ERROR (fail closed)
+    def test_fork_pr_label_read_failure_fails_closed(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            reviews=[],
+            labels="__LABELS_API_ERROR__",
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3014)
+        assert exit_code == check_mod.EXIT_ERROR
+        assert "error" in message.lower()
+        assert "label" in message.lower()
+
+    # 4: permission read returns None -> EXIT_ERROR (fail closed)
+    def test_fork_pr_permission_read_failure_fails_closed(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            reviews=[
+                {
+                    "id": 1, "state": "APPROVED",
+                    "commit_id": "head_sha_abc",
+                    "submitted_at": "2026-09-30T00:00:00Z",
+                    "user": {"login": "jaylfc"},
+                }
+            ],
+            permission="__PERMISSION_API_ERROR__",  # Simulate API failure for permission read
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3015)
+        assert exit_code == check_mod.EXIT_ERROR
+        assert "error" in message.lower()
+        assert "permission" in message.lower()
+
+    # 5: reviews read returns None -> EXIT_ERROR (fail closed)
+    def test_fork_pr_reviews_read_failure_fails_closed(self, check_mod) -> None:
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, self.FORK_PR_DATA,
+            reviews="__REVIEWS_API_ERROR__",  # Simulate API failure for reviews read
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3016)
+        assert exit_code == check_mod.EXIT_ERROR
+        assert "error" in message.lower()
+        assert "review" in message.lower()
+
+    # 6: empty head sha -> EXIT_ERROR (null commit_id must never match "")
+    def test_fork_pr_empty_head_sha_fails_closed(self, check_mod) -> None:
+        """A fork PR with no head sha must fail closed. An empty head sha would
+        match a review with commit_id="" (or None), which is a security hole."""
+        empty_head_sha_data = [{"head": {"repo": {"full_name": "external-user/taOS"}, "sha": ""}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}]
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
+            check_mod, empty_head_sha_data,
+            reviews=[
+                {
+                    "id": 1, "state": "APPROVED",
+                    "commit_id": "",
+                    "submitted_at": "2026-09-30T00:00:00Z",
+                    "user": {"login": "jaylfc"},
+                }
+            ],
+            permission="admin",
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3017)
+        assert exit_code == check_mod.EXIT_ERROR
+        assert "error" in message.lower()
+        assert "head sha" in message.lower()
+
+    def _mock_api_with_permission_map(self, check_mod, pr_data, reviews=None, labels=None, permission_map=None, issue_comments=None):
+        """Like _mock_api but permission_map is dict of login -> permission value.
+        None means API failure (returns None from _api_get)."""
+        _LABELS_API_ERROR = "__LABELS_API_ERROR__"
+        labels_api_error = labels == _LABELS_API_ERROR
+        reviews_data = [] if reviews is None else reviews
+        issue_comments = issue_comments or []
+        labels_data = [] if labels is None or labels_api_error else labels
+        call_count = 0
+
+        def side_effect(url, token=None):
+            nonlocal call_count
+            call_count += 1
+
+            if "/pulls/" in url and "/reviews" not in url and "/comments" not in url and "/collaborators" not in url:
+                if call_count == 1:
+                    return pr_data
+                if labels_api_error:
+                    return None
+                return [{"labels": labels_data}]
+            if url.endswith("/reviews"):
+                return reviews_data
+            if "/collaborators/" in url and "/permission" in url:
+                login = url.split("/collaborators/")[1].split("/")[0]
+                perm = None
+                if permission_map is not None:
+                    perm = permission_map.get(login)
+                if perm == "__PERMISSION_API_ERROR__":
+                    return None
+                if perm is not None:
+                    return [{"permission": perm}]
+                return None
+            if "/issues/" in url and "/comments" in url:
+                return issue_comments
+            if url.endswith("/comments"):
+                return []
+            return []
+
+        return side_effect
+
+    def test_fork_failed_permission_read_does_not_mask_later_approval(self, check_mod) -> None:
+        """A fork PR has two APPROVED reviews on the head SHA: login A first
+        (permission read -> None) and login B second ('write'). The verdict
+        must be EXIT_OK. On the base head it is EXIT_ERROR."""
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api_with_permission_map(
+            check_mod, self.FORK_PR_DATA,
+            reviews=[
+                {
+                    "id": 1, "state": "APPROVED",
+                    "commit_id": "head_sha_abc",
+                    "submitted_at": "2026-09-30T00:00:00Z",
+                    "user": {"login": "login_a"},
+                },
+                {
+                    "id": 2, "state": "APPROVED",
+                    "commit_id": "head_sha_abc",
+                    "submitted_at": "2026-09-30T00:01:00Z",
+                    "user": {"login": "login_b"},
+                },
+            ],
+            permission_map={
+                "login_a": None,
+                "login_b": "write",
+            },
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3018)
+        assert exit_code == check_mod.EXIT_OK
+        assert "fork PR -- lead review present" in message
+        assert "write" in message
+
+    def test_fork_only_failed_permission_read_is_error(self, check_mod) -> None:
+        """The only APPROVED review comes from a login whose permission read
+        returns None. The verdict must be EXIT_ERROR (fail-closed is kept).
+        This must pass both before and after the fix."""
+        with patch.object(check_mod, "_api_get", side_effect=self._mock_api_with_permission_map(
+            check_mod, self.FORK_PR_DATA,
+            reviews=[
+                {
+                    "id": 1, "state": "APPROVED",
+                    "commit_id": "head_sha_abc",
+                    "submitted_at": "2026-09-30T00:00:00Z",
+                    "user": {"login": "login_a"},
+                },
+            ],
+            permission_map={
+                "login_a": None,
+            },
+        )):
+            exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3019)
+        assert exit_code == check_mod.EXIT_ERROR
+        assert "error" in message.lower()
+        assert "permission" in message.lower()
+        assert "login_a" in message
 
 
 # ---------------------------------------------------------------------------
@@ -1108,19 +1531,33 @@ class TestDetectorIsolation:
             ack = check_mod.CRItem(id=1, body=ACK_BODY, is_review=True, review_state="COMMENTED")
             assert not check_mod.is_real_item(ack)  # acknowledgement still caught
 
+    def test_review_in_progress_body_rejected(self, check_mod) -> None:
+        item = check_mod.CRItem(id=1, body=IN_PROGRESS_BODY, is_review=True, review_state="COMMENTED")
+        assert not check_mod.is_real_item(item)
+
+    def test_neutering_review_in_progress_loses_only_its_protection(self, check_mod) -> None:
+        with patch.object(check_mod, "is_coderabbit_review_in_progress", return_value=False):
+            ip = check_mod.CRItem(id=1, body=IN_PROGRESS_BODY, is_review=True, review_state="COMMENTED")
+            assert check_mod.is_real_item(ip) is True  # protection lost
+            ack = check_mod.CRItem(id=2, body=ACK_BODY, is_review=True, review_state="COMMENTED")
+            assert not check_mod.is_real_item(ack)  # acknowledgement still caught
+
     def test_neutering_every_detector_loses_every_protection(self, check_mod) -> None:
         """The trap the audit caught, reproduced: neutering ALL stub detectors
         must let EVERY stub kind through (green), not stay red on one because an
         untested detector was left on. Each stub must flip independently."""
         with patch.object(check_mod, "is_rate_limit_stub", return_value=False), \
              patch.object(check_mod, "is_coderabbit_acknowledgement", return_value=False), \
-             patch.object(check_mod, "is_coderabbit_failure_notice", return_value=False):
+             patch.object(check_mod, "is_coderabbit_failure_notice", return_value=False), \
+             patch.object(check_mod, "is_coderabbit_review_in_progress", return_value=False):
             rl = check_mod.CRItem(id=1, body=self.RL_BODY, is_review=True, review_state="COMMENTED")
             ack = check_mod.CRItem(id=2, body=ACK_BODY, is_review=True, review_state="COMMENTED")
             failure = check_mod.CRItem(id=3, body=self.FAILURE_BODY, is_review=True, review_state="COMMENTED")
+            ip = check_mod.CRItem(id=4, body=IN_PROGRESS_BODY, is_review=True, review_state="COMMENTED")
             assert check_mod.is_real_item(rl) is True
             assert check_mod.is_real_item(ack) is True
             assert check_mod.is_real_item(failure) is True
+            assert check_mod.is_real_item(ip) is True
 
 
 class TestIsCoderabbitZeroFindingReview:
@@ -1466,7 +1903,7 @@ class TestTrueGateFailure:
         with patch.object(check_mod, "collect_coderabbit_items",
                           return_value=self._pr2554_items(check_mod)):
             exit_code, _ = check_mod.check_bot_review("jaylfc", "taOS", 2554,
-                                                      token="t")
+                                                       token="t", _is_fork=False)
         # Review-detection surface on #2554: scaffolding-only, must be red.
         assert exit_code == 1
         ec2, msg2 = check_mod.classify(self._pr2554_items(check_mod))
@@ -1661,7 +2098,12 @@ class TestJobOwnedRunsSkipped:
 
     @staticmethod
     def _mock_list(check_runs):
+        call_count = 0
         def side_effect(url, token=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return [{"head": {"repo": {"full_name": "jaylfc/taOS"}}, "base": {"repo": {"full_name": "jaylfc/taOS"}}}]
             return [{"total_count": len(check_runs), "check_runs": check_runs}]
         return side_effect
 
@@ -1775,6 +2217,63 @@ WALKTHROUGH_WITH_QUOTA_BODY = (
 )
 
 FAILURE_NOTICE_BODY = "Review failed by coderabbit.ai"
+
+IN_PROGRESS_BODY = (
+    "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+    "<!-- review_stack_entry_start -->\n"
+    "\n"
+    '<a href=\"https://app.coderabbit.ai/change-stack/jaylfc/taOS/pull/3322?cs_source=review_comment\"><img src=\"https://storage.googleapis.com/coderabbit_public_assets/review-stack-in-coderabbit-ui-dark.svg?v=2\" alt=\"Review in Change Stack →\" width=\"220\" height=\"32\"></a>\n'
+    "\n"
+    "Navigate logical layers of code changes, visualize relationships, and explore their blast radius.\n"
+    "\n"
+    "<!-- review_stack_entry_end -->\n"
+    "<!-- This is an auto-generated comment: review in progress by coderabbit.ai -->\n"
+    "\n"
+    "> [!NOTE]\n"
+    "> Currently processing new changes in this PR. This may take a few minutes, please wait...\n"
+    "> \n"
+    "> <details>\n"
+    "> <summary>⚙️ Run configuration</summary>\n"
+    "> \n"
+    "> **Configuration used**: Repository: jaylfc/taOS/.coderabbit.yaml\n"
+    "> \n"
+    "> **Review profile**: CHILL\n"
+    "> \n"
+    "> **Plan**: Advanced\n"
+    "> \n"
+    "> **Run ID**: `52507aab-dd7c-4c4b-8f45-c0cf71edfbff`\n"
+    "> \n"
+    "> </details>\n"
+    "> \n"
+    "> <details>\n"
+    "> <summary>📥 Commits</summary>\n"
+    "> \n"
+    "> Reviewing files that changed from the base of the PR and between 9ad82bd5f08c69384a9981952da8483f17f7d500 and 8dc3adf094303d30828550ccdeae5e4ea7c83997.\n"
+    "> \n"
+    "> </details>\n"
+    "> \n"
+    "> <details>\n"
+    "> <summary>📒 Files selected for processing (3)</summary>\n"
+    "> \n"
+    "> * `changelog.d/tsk-b7cabt-fix-flaky-notification-tests.md`\n"
+    "> * `tests/test_notifications.py`\n"
+    "> * `tests/test_notifications_agent_grant.py`\n"
+    "> \n"
+    "> </details>\n"
+    "> \n"
+    "> ```ascii\n"
+    ">  ____________________________________________________________________\n"
+    "> < There is a 100% chance that this message is relevant to your code. >\n"
+    ">  --------------------------------------------------------------------\n"
+    ">   \\\n"
+    ">    \\   \\\n"
+    ">         \\ /\\\n"
+    ">         ( )\n"
+    ">       .( o ).\n"
+    "> ```\n"
+    "\n"
+    "<!-- end of auto-generated comment: review in progress by coderabbit.ai -->\n"
+)
 
 
 class TestWalkthroughPositiveClassification:

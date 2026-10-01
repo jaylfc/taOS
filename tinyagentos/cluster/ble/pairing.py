@@ -54,6 +54,8 @@ from tinyagentos.cluster.worker_protocol import WorkerInfo
 
 logger = logging.getLogger(__name__)
 
+DEVICE_CAPS_ALLOWED = frozenset({"agent", "orb"})
+
 MAX_SESSIONS = 2
 SESSION_TTL_S = 120.0
 _HELLO_TIMEOUT_S = 10.0
@@ -71,6 +73,30 @@ _MID_NONCE = 2
 # request by the gateway (llm_gateway/resolve.py TAOS_DEFAULT).
 BOARD_LLM_MODELS = ["taos-default"]
 LLM_PATH = "/api/llm/v1"
+
+
+def _device_caps(caps: list[str]) -> list[str]:
+    """Return the device capabilities for a worker registration.
+    
+    Always includes "agent", plus any caps from DEVICE_CAPS_ALLOWED that the board sent.
+    Unknown caps are dropped and logged once at INFO with the board_id.
+    Returns a deduplicated list in stable order ("agent" first)."""
+    result = ["agent"]
+    seen = {"agent"}
+    for cap in caps:
+        if cap in DEVICE_CAPS_ALLOWED and cap not in seen:
+            result.append(cap)
+            seen.add(cap)
+        elif cap not in DEVICE_CAPS_ALLOWED:
+            logger.info("Board with unknown capabilities: dropping '%s' from %s", cap, caps)
+    return result
+
+
+def _platform_from_caps(caps: list[str]) -> str:
+    """Derive platform from board info caps: 'orb' when 'orb' in caps, else 'taosusb'."""
+    if isinstance(caps, list) and "orb" in caps:
+        return "orb"
+    return "taosusb"
 
 
 class BluetoothError(Exception):
@@ -145,6 +171,7 @@ class PairSession:
     initiator: "proto.PairInitiator"
     code: str
     created_at: float
+    caps: list[str] = field(default_factory=list)
     reassembler: "proto.Reassembler" = field(default_factory=proto.Reassembler)
 
 
@@ -242,6 +269,9 @@ class BlePairingManager:
             msg = reassembler.feed(frag)
             if msg is not None:
                 return msg
+            # Log drop reason if present (from Reassembler.last_drop)
+            if reassembler.last_drop is not None:
+                logger.debug("ble pairing: fragment dropped (%s)", reassembler.last_drop)
 
     # -- public API -----------------------------------------------------
 
@@ -326,6 +356,10 @@ class BlePairingManager:
             name = info.get("name")
             state = info.get("state")
             pairable = bool(info.get("pairable", False))
+            caps_raw = info.get("caps")
+            if not isinstance(caps_raw, list):
+                caps_raw = []
+            caps = [c for c in caps_raw if isinstance(c, str)]
             if not isinstance(board_id, str) or not board_id:
                 raise PairError(504, "bad or missing info from board")
             if state != "unpaired" or not pairable:
@@ -364,6 +398,7 @@ class BlePairingManager:
             initiator=initiator,
             code=code,
             created_at=time.time(),
+            caps=caps,
             reassembler=reassembler,
         )
         async with self._lock:
@@ -384,10 +419,13 @@ class BlePairingManager:
         if sess is None:
             raise PairError(404, "unknown or expired pairing session")
 
-        # The board's own advertised name (e.g. "taOSusb-7K3Q") is already the
-        # node's identity -- reuse it as the registry name rather than
-        # re-deriving one, so it matches what the board itself displays.
-        name = sess.board_name or f"taOSusb-{sess.board_id}"
+        platform = _platform_from_caps(sess.caps)
+        if sess.board_name:
+            name = sess.board_name
+        elif platform == "orb":
+            name = f"taOS Orb-{sess.board_id}"
+        else:
+            name = f"taOSusb-{sess.board_id}"
         # That name is the board's claim, not ours: it may not collide with
         # any other node. A registered worker's name is refused outright; a
         # device name is only reusable once an admin has revoked it (a reset
@@ -417,20 +455,23 @@ class BlePairingManager:
                 # A board re-paired under the same name (reset, not revoked)
                 # leaves its old model key behind; one live key per node.
                 revoke_for_node(name, data_dir=self._data_dir)
-                llm_key = mint_for_node(name, BOARD_LLM_MODELS, data_dir=self._data_dir)
+                if platform != "orb":
+                    llm_key = mint_for_node(
+                        name, BOARD_LLM_MODELS, data_dir=self._data_dir
+                    )
+                    llm = {"base": urls[0] + LLM_PATH, "key": llm_key}
             except Exception as exc:
                 await self._rollback(name, key, sess)
                 await self._close_session(sess)
                 # type only: never the exception text, which is not ours to vouch for
                 raise PairError(500, f"failed to mint model key: {type(exc).__name__}") from exc
-            llm = {"base": urls[0] + LLM_PATH, "key": llm_key}
 
         worker = WorkerInfo(
             name=name,
             url="",
             kind="device",
-            platform="taosusb",
-            capabilities=["agent"],
+            platform=platform,
+            capabilities=_device_caps(sess.caps),
             signing_key=key,
         )
         try:

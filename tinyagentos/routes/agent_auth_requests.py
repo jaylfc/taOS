@@ -31,7 +31,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StrictInt
 
 from aiosqlite import IntegrityError
-from tinyagentos.agent_registry_store import agent_slug_or_fallback, mint_registry_token
+from tinyagentos.agent_registry_store import (
+    TOKEN_STORAGE_GUIDANCE,
+    agent_slug_or_fallback,
+    mint_registry_token,
+)
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.base_store import PendingCapExceeded
 from tinyagentos.routes.projects import _free_suggestions
@@ -81,6 +85,11 @@ VALID_SCOPES = frozenset({
     # per-project grant authorizes that project only. The route verifies the grant.
     "decisions_read",
     "decisions_write",
+    # Agent notifications: post taOS notifications through the store so SSE
+    # and web-push fire. A global grant authorizes OS-level posts (to admins);
+    # a per-project grant authorizes that project only. The route verifies
+    # the grant.
+    "notifications_write",
     # Doc-review stamps: read/set review state on a project's docs
     # (project-bound like project_tasks). Reconciled from master at beta.45 -
     # the routes shipped on every install while the scope was missing here.
@@ -135,6 +144,7 @@ class ApproveBody(BaseModel):
     granted_scopes: list[str]
     project_id: Optional[str] = None
     defer_binding: bool = False
+    renew: bool = False
 
 
 class AssignAgentBody(BaseModel):
@@ -168,6 +178,7 @@ class CreateScopeRequest(BaseModel):
 class ApproveScopeBody(BaseModel):
     granted_scopes: list[str]
     project_id: Optional[str] = None
+    renew: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +620,10 @@ async def get_auth_request_status(request: Request, request_id: str):
     if record["status"] == "accepted":
         result["canonical_id"] = record["canonical_id"]
         result["token"] = record["token"]
+        # The token is handed over here, so the storage rule travels with it --
+        # this is the last moment the holder can be told, and the token is not
+        # retrievable afterwards.
+        result["storage_guidance"] = TOKEN_STORAGE_GUIDANCE
     return result
 
 
@@ -720,6 +735,7 @@ async def approve_request_record(
     project_id: str | None = None,
     display_name: str | None = None,
     defer_binding: bool = False,
+    renew: bool = False,
 ) -> dict:
     """Register an agent, mint its token, write grants + relationships +
     membership + a2a sync, and record the decision.
@@ -896,6 +912,7 @@ async def approve_request_record(
                 granted_scopes=granted_scopes,
                 decided_by=decided_by,
                 expires_at=expires_at,
+                renew=renew,
             )
             result = await auth_store.set_decision(
                 record["id"],
@@ -986,7 +1003,7 @@ async def approve_request_record(
     # grant that makes project-scoped calls succeed.
     for scope in granted_scopes:
         await grants_store.add_grant(
-            canonical_id, scope, tier="once", project_id=binding_project, expires_at=expires_at
+            canonical_id, scope, tier="once", project_id=binding_project, expires_at=expires_at, renew=renew
         )
         # Also write a RelationshipManager permission edge so the existing
         # permission-check path (can_communicate etc.) is aware of the agent.
@@ -1071,6 +1088,7 @@ async def add_agent_to_project(
     is_lead: bool = False,
     reconcile: bool = False,
     expires_at: str | None = None,
+    renew: bool = False,
 ) -> dict:
     """Add an ALREADY-REGISTERED agent to ANOTHER project (taOS #1862).
 
@@ -1127,26 +1145,24 @@ async def add_agent_to_project(
     
     if deferred_grant_with_expiry:
         deferred_expires_at = deferred_grant_with_expiry["expires_at"]
-        # Parse both times for comparison
         deferred_dt = datetime.fromisoformat(deferred_expires_at)
         now_dt = datetime.fromisoformat(now)
         if deferred_dt <= now_dt:
-            # Deferred grant has expired - refuse the binding
             raise HTTPException(
                 status_code=400,
                 detail=f"cannot bind agent {canonical_id} to project {project_id}: "
                        f"the agent's deferred grant expired at {deferred_expires_at}",
             )
-        elif target_expires_at is None:
-            # Only deferred grant has expiry - inherit it
-            target_expires_at = deferred_expires_at
-        elif target_expires_at < deferred_expires_at:
-            # Request expires earlier than deferred - keep the earlier (request) bound
+        elif renew:
             pass
-        else:
-            # Request expires later than or at same time as deferred - keep the earlier (deferred) bound
-            # This follows "never lengthen" rule: keep the earlier bound, not the later one
+        elif target_expires_at is None:
             target_expires_at = deferred_expires_at
+        else:
+            target_dt = datetime.fromisoformat(target_expires_at)
+            if target_dt < deferred_dt:
+                pass
+            else:
+                target_expires_at = deferred_expires_at
 
     # Revoke BEFORE adding: the project's grant set becomes exactly
     # ``granted_scopes``. A grant this call does not name is one the operator
@@ -1195,7 +1211,7 @@ async def add_agent_to_project(
     # Write the grants bound to this project and the relationship edge.
     for scope in granted_scopes:
         await grants_store.add_grant(
-            canonical_id, scope, tier="once", project_id=project_id, expires_at=target_expires_at
+            canonical_id, scope, tier="once", project_id=project_id, expires_at=target_expires_at, renew=renew
         )
         await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
 
@@ -1561,6 +1577,7 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
         decided_by=user.user_id,
         project_id=body.project_id,
         defer_binding=body.defer_binding,
+        renew=body.renew,
     )
 
     # Attach duration information to the approval result.
@@ -2004,6 +2021,10 @@ async def approve_scope_request(
         grants_store = _get_grants_store(request)
         rel_mgr = _get_relationships(request)
 
+        # Compute expires_at from the scope request's duration_secs so time-boxed
+        # approvals carry their bound through to the grant row.
+        expires_at = _expires_at_from_duration(req.get("duration_secs"))
+
         # Global (non-project) grants: write the grant + relationship edge bound
         # to the validated project (None = global). Project-scoped grants: route
         # through add_agent_to_project so the membership + a2a channel are synced,
@@ -2017,7 +2038,7 @@ async def approve_scope_request(
         ]
         for scope in other_scopes:
             await grants_store.add_grant(
-                canonical_id, scope, tier="once", project_id=validated_project
+                canonical_id, scope, tier="once", project_id=validated_project, expires_at=expires_at, renew=body.renew
             )
             await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
         if project_scopes:
@@ -2027,6 +2048,8 @@ async def approve_scope_request(
                 project_id=validated_project,
                 granted_scopes=project_scopes,
                 decided_by=user.user_id,
+                expires_at=expires_at,
+                renew=body.renew,
             )
 
         result = await store.set_decision(

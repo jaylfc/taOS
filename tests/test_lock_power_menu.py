@@ -1575,3 +1575,29 @@ class TestTheStreamOpensWithTheCurrentScreenState:
     def test_the_stream_is_still_console_only(self, monkeypatch):
         monkeypatch.setattr(auth, "_request_is_console", lambda _r: False)
         assert _call(auth.lock_events(_Req())).status_code == 403
+
+
+class TestAbandonedClientsDoNotLeakWaiters:
+    """A client that aborts before the stream starts must not leave its queue
+    registered forever."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch):
+        monkeypatch.setattr(auth, "_request_is_console", lambda _r: True)
+        monkeypatch.setattr(auth, "_LOCK_SCREEN_STATE", None)
+        auth._LOCK_EVENT_WAITERS.clear()
+        self._start_size = len(auth._LOCK_EVENT_WAITERS)
+        yield
+        auth._LOCK_EVENT_WAITERS.clear()
+
+    def test_dropping_the_response_without_iterating_does_not_leak(self):
+        for _ in range(3):
+            resp = _call(auth.lock_events(_Req()))
+        assert len(auth._LOCK_EVENT_WAITERS) == self._start_size
+
+    def test_a_client_that_iterates_and_then_disconnects_is_removed(self):
+        async def run():
+            resp = await auth.lock_events(_Req())
+            return [c async for c in resp.body_iterator]
+        _call(run())
+        assert len(auth._LOCK_EVENT_WAITERS) == self._start_size

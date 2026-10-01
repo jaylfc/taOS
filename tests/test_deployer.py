@@ -47,42 +47,26 @@ class TestDeployAgent:
             assert env["TAOS_SKILLS_URL"].endswith("/api/skill-exec")
 
     @pytest.mark.asyncio
-    async def test_remote_deploy_targets_worker_and_skips_proxy(self, tmp_path):
-        """remote= creates on the worker, qualifies downstream incus ops with
-        <remote>:, skips the localhost proxy devices, and keeps the record name
-        unqualified."""
-        req = _req(data_dir=tmp_path, remote="fedora-worker", taos_host="100.78.225.80")
-        exec_names = []
-
-        async def mock_exec(name, cmd, **kwargs):
-            exec_names.append(name)
-            if "hostname -I" in " ".join(cmd):
-                return (0, "10.228.0.9")
-            return (0, "ok")
+    @pytest.mark.parametrize("with_proxy", [False, True], ids=["no-llm-proxy", "llm-proxy"])
+    async def test_remote_deploy_is_refused_before_anything_is_created(self, tmp_path, with_proxy):
+        """Decision dec-26f4cw: the gateway's agent listener is loopback-only,
+        so a remote agent has no LLM path. The deploy is refused by name before
+        a container is created or a key minted."""
+        mock_proxy = MagicMock(spec=["port", "create_agent_key"])
+        mock_proxy.port = 7834
+        mock_proxy.create_agent_key = AsyncMock(return_value="sk-local-key")
+        extra = {"llm_proxy": mock_proxy, "llm_gateway_port": 7838} if with_proxy else None
+        req = _req(data_dir=tmp_path, remote="fedora-worker", taos_host="100.78.225.80",
+                   extra_config=extra)
 
         with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
-             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
-             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
-             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock) as mock_proxy:
-            mock_create.return_value = {"success": True, "name": "taos-agent-test"}
-
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock) as mock_dev:
             result = await deploy_agent(req)
-            assert result["success"] is True
-            # Record name stays unqualified.
-            assert result["container"] == "taos-agent-test"
-            # create_container was told to target the remote.
-            assert mock_create.call_args.kwargs["remote"] == "fedora-worker"
-            # Proxy devices are localhost-only; never attached for a remote deploy.
-            mock_proxy.assert_not_awaited()
-            # Downstream incus ops are qualified with the remote.
-            assert exec_names and all(n.startswith("fedora-worker:") for n in exec_names)
-            # The agent's callback host is the controller's Tailscale IP.
-            env = mock_create.call_args.kwargs["env"]
-            assert "100.78.225.80" in env["TAOS_BRIDGE_URL"]
-            # The LiteLLM base must target the controller over the network for a
-            # remote deploy, never the container's own loopback (no proxy device).
-            assert "100.78.225.80" in env["OPENAI_BASE_URL"]
-            assert "127.0.0.1" not in env["OPENAI_BASE_URL"]
+        assert result["success"] is False
+        assert "remote agents need the network LLM gateway, not built yet" in result["error"]
+        mock_create.assert_not_awaited()
+        mock_dev.assert_not_awaited()
+        mock_proxy.create_agent_key.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_one_trace_bind_mount(self, tmp_path):
@@ -197,16 +181,14 @@ class TestDeployAgent:
     @pytest.mark.asyncio
     async def test_deployment_with_llm_proxy_injects_embedding_url(self, tmp_path):
         """LLM proxy wired - OPENAI_BASE_URL and TAOS_EMBEDDING_URL land in env."""
-        mock_proxy = MagicMock()
-        mock_proxy.is_running.return_value = True
-        mock_proxy.url = "http://localhost:4000"
-        mock_proxy.database_url = None
+        mock_proxy = MagicMock(spec=["port", "create_agent_key"])
+        mock_proxy.port = 7834
         mock_proxy.create_agent_key = AsyncMock(return_value="sk-test-key-123")
 
         req = _req(
             name="proxy-test",
             data_dir=tmp_path,
-            extra_config={"llm_proxy": mock_proxy},
+            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838},
         )
 
         async def mock_exec_fn(name, cmd, **kwargs):
@@ -226,32 +208,31 @@ class TestDeployAgent:
             assert result["llm_key"] == "sk-test-key-123"
             env = mock_create.call_args.kwargs["env"]
             assert env["OPENAI_API_KEY"] == "sk-test-key-123"
-            assert env["OPENAI_BASE_URL"] == "http://localhost:4000/v1"
-            assert env["TAOS_EMBEDDING_URL"] == "http://localhost:4000/v1/embeddings"
+            # The container's own proxy-device address, never the host port.
+            assert env["OPENAI_BASE_URL"] == "http://127.0.0.1:4000/v1"
+            assert env["TAOS_EMBEDDING_URL"] == "http://127.0.0.1:4000/v1/embeddings"
             # No model was specified on this DeployRequest, so the
             # deployer passes models=None and create_agent_key falls
             # back internally to its "default" alias.
             mock_proxy.create_agent_key.assert_called_once_with(
-                "proxy-test", models=None
+                "proxy-test",
+                models=None,
             )
 
     @pytest.mark.asyncio
-    async def test_deploy_fails_when_key_mint_returns_none_no_db(self, tmp_path, monkeypatch):
-        """When LiteLLM runs without a Postgres DB, create_agent_key returns None.
-        With the master-key fallback DISABLED (the hardened/multi-tenant opt-out),
-        the deployer must refuse rather than inject the shared master key, with a
-        clear error directing operators to configure Postgres."""
+    async def test_deploy_mints_a_local_key_when_litellm_mint_returns_none_no_db(self, tmp_path, monkeypatch):
+        """When the key service returns None the deployer mints a scoped key in
+        the local key store directly (never the old master key); the old
+        opt-out env var no longer changes that."""
         monkeypatch.setenv("TAOS_DISABLE_AGENT_MASTER_KEY_FALLBACK", "1")
-        mock_proxy = MagicMock()
-        mock_proxy.is_running.return_value = True
-        mock_proxy.url = "http://localhost:4000"
-        mock_proxy.database_url = None
+        mock_proxy = MagicMock(spec=["port", "create_agent_key"])
+        mock_proxy.port = 7834
         mock_proxy.create_agent_key = AsyncMock(return_value=None)
 
         req = _req(
             name="routing-only",
             data_dir=tmp_path,
-            extra_config={"llm_proxy": mock_proxy},
+            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838},
         )
 
         with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
@@ -260,28 +241,58 @@ class TestDeployAgent:
              patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
             mock_create.return_value = {"success": True, "name": "taos-agent-routing-only"}
             result = await deploy_agent(req)
-            assert result["success"] is False
-            assert "routing-only" in result["error"] or "DATABASE_URL" in result["error"]
-            assert "fallback is disabled" in result["error"]
+            assert result["success"] is True, result
+            from tinyagentos.litellm_keystore import LiteLLMKeyStore, default_keystore_path
+            from tinyagentos.litellm_config import EMBEDDING_ALIAS
+            rec = LiteLLMKeyStore(default_keystore_path(tmp_path)).lookup(result["llm_key"])
+            assert rec == {"agent": "routing-only", "allowed_models": ["default", EMBEDDING_ALIAS]}
+
+    @pytest.mark.asyncio
+    async def test_fallback_mint_with_a_model_keeps_the_embedding_alias(self, tmp_path, monkeypatch):
+        """RED-FIRST (g): fallback mint with a model keeps the embedding alias.
+        proxy.create_agent_key returns None, model='kilo-auto/free', no DB,
+        real local keystore -> allowed_models == ['kilo-auto/free', EMBEDDING_ALIAS]."""
+        monkeypatch.setenv("TAOS_DISABLE_AGENT_MASTER_KEY_FALLBACK", "1")
+        mock_proxy = MagicMock(spec=["port", "create_agent_key"])
+        mock_proxy.port = 7834
+        mock_proxy.create_agent_key = AsyncMock(return_value=None)
+
+        req = _req(
+            name="fallback-emb",
+            model="kilo-auto/free",
+            data_dir=tmp_path,
+            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838},
+        )
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
+            mock_create.return_value = {"success": True, "name": "taos-agent-fallback-emb"}
+            result = await deploy_agent(req)
+            assert result["success"] is True, result
+            from tinyagentos.litellm_keystore import LiteLLMKeyStore, default_keystore_path
+            from tinyagentos.litellm_config import EMBEDDING_ALIAS
+            rec = LiteLLMKeyStore(default_keystore_path(tmp_path)).lookup(result["llm_key"])
+            assert rec["agent"] == "fallback-emb"
+            assert rec["allowed_models"] == ["kilo-auto/free", EMBEDDING_ALIAS]
 
     @pytest.mark.asyncio
     async def test_master_key_never_injected_into_container_env(self, tmp_path):
         """The per-install master key must never appear in the container env —
         not as OPENAI_API_KEY, LITELLM_API_KEY, or any other variable.
         Only scoped per-agent virtual keys are permitted."""
-        from tinyagentos.litellm_config import get_litellm_master_key
-        master_key = get_litellm_master_key(tmp_path)
-        mock_proxy = MagicMock()
-        mock_proxy.is_running.return_value = True
-        mock_proxy.url = "http://localhost:4000"
-        mock_proxy.database_url = "postgresql://u:p@h/db"
-        mock_proxy._data_dir = tmp_path
+        # Old installs still have the LiteLLM master key file on disk.
+        master_key = "sk-taos-stale-litellm-master-key-0123456789"
+        (tmp_path / ".litellm_master_key").write_text(master_key)
+        mock_proxy = MagicMock(spec=["port", "create_agent_key"])
+        mock_proxy.port = 7834
         mock_proxy.create_agent_key = AsyncMock(return_value="sk-scoped-agent-key")
 
         req = _req(
             name="master-key-test",
             data_dir=tmp_path,
-            extra_config={"llm_proxy": mock_proxy},
+            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838},
         )
 
         async def mock_exec_fn(name, cmd, **kwargs):
@@ -312,10 +323,8 @@ class TestDeployAgent:
         allowed to call — primary + fallbacks — so LiteLLM rejects any
         off-scope request instead of silently routing it via the master
         key's unrestricted scope."""
-        mock_proxy = MagicMock()
-        mock_proxy.is_running.return_value = True
-        mock_proxy.url = "http://localhost:4000"
-        mock_proxy.database_url = "postgresql://u:p@h/db"
+        mock_proxy = MagicMock(spec=["port", "create_agent_key"])
+        mock_proxy.port = 7834
         mock_proxy.create_agent_key = AsyncMock(return_value="sk-scoped-key")
 
         req = _req(
@@ -323,7 +332,7 @@ class TestDeployAgent:
             model="kilo-auto/free",
             fallback_models=["kilo-auto/balanced", "kilo-auto/frontier"],
             data_dir=tmp_path,
-            extra_config={"llm_proxy": mock_proxy},
+            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838},
         )
 
         async def mock_exec_fn(name, cmd, **kwargs):
@@ -344,42 +353,22 @@ class TestDeployAgent:
             )
 
     @pytest.mark.asyncio
-    async def test_deploy_fails_loudly_when_db_configured_but_key_mint_fails(self, tmp_path, monkeypatch):
-        """DB configured + /key/generate returns None → deploy ALWAYS fails with
-        a clear error naming the DB host (no credentials leaked), regardless of
-        the fallback opt-out. A configured-but-broken DB is a real fault that
-        must surface, not be masked by the shared master key."""
-        # Explicitly leave the opt-out UNSET to prove the refusal is unconditional.
+    async def test_deploy_fails_loudly_when_the_key_store_refuses(self, tmp_path, monkeypatch):
+        """The key service AND the direct key-store mint both fail: the deploy
+        is refused with a clear error (never an unscoped key)."""
         monkeypatch.delenv("TAOS_DISABLE_AGENT_MASTER_KEY_FALLBACK", raising=False)
-        mock_proxy = MagicMock()
-        mock_proxy.is_running.return_value = True
-        mock_proxy.url = "http://localhost:4000"
-        mock_proxy.database_url = "postgresql://litellm:secret@127.0.0.1:5432/litellm"
+        mock_proxy = MagicMock(spec=["port", "create_agent_key"])
+        mock_proxy.port = 7834
         mock_proxy.create_agent_key = AsyncMock(return_value=None)
-
-        req = _req(
-            name="db-broken",
-            data_dir=tmp_path,
-            extra_config={"llm_proxy": mock_proxy},
-        )
-
-        async def mock_exec_fn(name, cmd, **kwargs):
-            if "hostname -I" in " ".join(cmd):
-                return (0, "10.0.0.15")
-            return (0, "ok")
+        req = _req(name="db-broken", data_dir=tmp_path,
+                   extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838})
 
         with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
-             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec_fn), \
-             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
-             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
-            mock_create.return_value = {"success": True, "name": "taos-agent-db-broken"}
+             patch("tinyagentos.deployer._mint_local_scoped_key", return_value=None):
             result = await deploy_agent(req)
-            assert result["success"] is False
-            assert "virtual key mint failed" in result["error"]
-            # Host part of the DB URL is mentioned so operators can see
-            # which DB instance is misbehaving without leaking credentials.
-            assert "127.0.0.1:5432/litellm" in result["error"]
-            assert "secret" not in result["error"]
+        assert result["success"] is False
+        assert "could not be minted" in result["error"]
+        mock_create.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_deployment_without_llm_proxy(self, tmp_path):
@@ -644,9 +633,9 @@ class TestDeployAgent:
 
     @pytest.mark.asyncio
     async def test_litellm_proxy_device_container_listen_stays_4000(self, tmp_path):
-        """Container-side listen for LiteLLM is always 4000 (baked into agent
-        configs); the host-side connect follows the live proxy port.  With no
-        proxy supplied the deployer falls back to 7834."""
+        """Container-side listen is always 4000 (baked into agent configs).
+        With no llm_proxy supplied the host side is the configured gateway
+        agent listener (7838 by default), never a LiteLLM port."""
         req = _req(name="port-check", data_dir=tmp_path)
 
         async def mock_exec_fn(name, cmd, **kwargs):
@@ -667,21 +656,20 @@ class TestDeployAgent:
                 c for c in mock_proxy.call_args_list if c.args[1] == "taos-proxy-litellm"
             )
             assert litellm_call.kwargs["listen"] == "tcp:127.0.0.1:4000"
-            assert litellm_call.kwargs["connect"] == "tcp:127.0.0.1:7834"
+            assert litellm_call.kwargs["connect"] == "tcp:127.0.0.1:7838"
 
     @pytest.mark.asyncio
-    async def test_litellm_proxy_device_connect_follows_live_proxy_port(self, tmp_path):
-        """When extra_config supplies an llm_proxy object with a custom port,
-        the host-side connect address of the incus proxy device uses that port."""
-        mock_proxy = MagicMock()
-        mock_proxy.is_running.return_value = False
+    async def test_litellm_proxy_device_connect_ignores_the_old_litellm_port(self, tmp_path):
+        """A legacy install's litellm_port (4000) no longer decides anything:
+        the host-side connect is the verified gateway listener port."""
+        mock_proxy = MagicMock(spec=["port", "create_agent_key"])
         mock_proxy.port = 4000  # legacy install kept old port
-        mock_proxy.database_url = None
+        mock_proxy.create_agent_key = AsyncMock(return_value="sk-legacy-port")
 
         req = _req(
             name="legacy-port",
             data_dir=tmp_path,
-            extra_config={"llm_proxy": mock_proxy},
+            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838},
         )
 
         async def mock_exec_fn(name, cmd, **kwargs):
@@ -703,8 +691,8 @@ class TestDeployAgent:
             )
             # Container listen stays 4000 regardless of host port
             assert litellm_call.kwargs["listen"] == "tcp:127.0.0.1:4000"
-            # Host connect follows the live proxy's recorded port
-            assert litellm_call.kwargs["connect"] == "tcp:127.0.0.1:4000"
+            # Host connect is the gateway listener, never the LiteLLM port
+            assert litellm_call.kwargs["connect"] == "tcp:127.0.0.1:7838"
 
     @pytest.mark.asyncio
     async def test_proxy_device_failure_rolls_back(self, tmp_path):
@@ -906,6 +894,42 @@ class TestDeployAgent:
         assert "hermes_typo" not in AGENTS_MD_PATHS
         agents_md_pushes = [d for d in pushed_dsts if "AGENTS.md" in d]
         assert not agents_md_pushes, f"AGENTS.md should not be pushed for unknown framework, got: {agents_md_pushes}"
+
+    @pytest.mark.asyncio
+    async def test_deployed_agent_key_allows_the_embedding_alias(self, tmp_path):
+        """Deploy an agent with model X; the minted key's allowed models include
+        taos-embedding-default so the agent can embed through the gateway.
+        Uses a real LLMProxy with a local keystore so the assertion proves the
+        alias was actually granted, not just that create_agent_key was called."""
+        from tinyagentos.llm_proxy import LLMProxy
+        from tinyagentos.litellm_config import EMBEDDING_ALIAS
+
+        proxy = LLMProxy(port=4000, data_dir=tmp_path)
+
+        req = _req(
+            name="emb-test",
+            model="kilo-auto/free",
+            data_dir=tmp_path,
+            extra_config={"llm_proxy": proxy, "llm_gateway_port": 7838},
+        )
+
+        async def mock_exec(name, cmd, **kwargs):
+            if "hostname -I" in " ".join(cmd):
+                return (0, "10.0.0.5")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
+            mock_create.return_value = {"success": True, "name": "taos-agent-emb-test"}
+            result = await deploy_agent(req)
+            assert result["success"] is True
+            from tinyagentos.litellm_keystore import LiteLLMKeyStore, default_keystore_path
+            rec = LiteLLMKeyStore(default_keystore_path(tmp_path)).lookup(result["llm_key"])
+            assert rec is not None
+            assert rec["agent"] == "emb-test"
+            assert rec["allowed_models"] == ["kilo-auto/free", EMBEDDING_ALIAS]
 
     @pytest.mark.asyncio
     async def test_bridge_url_injected_into_env(self, tmp_path):
@@ -1238,61 +1262,76 @@ class TestContainerFailureExplanation:
 
 
 class TestMasterKeyFallback:
-    """Per-agent virtual key mint failure: gated master-key fallback (#668 regression).
-
-    When LiteLLM can't mint a per-agent scoped key (routing-only / ARM where
-    prisma can't start), deploy falls back to the shared master key on a
-    single-user instance (default) instead of refusing, unless the operator
-    sets TAOS_DISABLE_AGENT_MASTER_KEY_FALLBACK.
+    """Per-agent virtual key mint failure (#668 regression), after LiteLLM
+    removal stage 2a: the deploy mints a scoped key in the local key store;
+    the shared master key is never handed out, with or without
+    TAOS_DISABLE_AGENT_MASTER_KEY_FALLBACK (now a no-op).
     """
 
     def _proxy(self):
-        proxy = MagicMock()
-        proxy.is_running.return_value = True
+        proxy = MagicMock(spec=["port", "create_agent_key"])
+        proxy.port = 7834
         proxy.create_agent_key = AsyncMock(return_value=None)  # mint fails
-        proxy.database_url = None  # routing-only
-        proxy.url = "http://127.0.0.1:7834"
         return proxy
 
     async def _run(self, tmp_path):
         async def mock_exec(name, cmd, **kwargs):
             return (0, "10.0.0.5") if "hostname -I" in " ".join(cmd) else (0, "ok")
         req = _req(data_dir=tmp_path, framework="hermes", model="kilo-auto/free",
-                   extra_config={"llm_proxy": self._proxy()})
+                   extra_config={"llm_proxy": self._proxy(), "llm_gateway_port": 7838})
         with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
              patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
              patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
-             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}), \
-             patch("tinyagentos.llm_proxy.get_litellm_master_key", return_value="sk-master-xyz"):
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
             mock_create.return_value = {"success": True, "name": "taos-agent-test"}
             result = await deploy_agent(req)
             env = mock_create.call_args.kwargs["env"]
             return result, env
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_master_key_by_default(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("TAOS_DISABLE_AGENT_MASTER_KEY_FALLBACK", raising=False)
+    @pytest.mark.parametrize("opt_out", [None, "1"])
+    async def test_mints_a_scoped_key_never_the_master_key(self, tmp_path, monkeypatch, opt_out):
+        if opt_out is None:
+            monkeypatch.delenv("TAOS_DISABLE_AGENT_MASTER_KEY_FALLBACK", raising=False)
+        else:
+            monkeypatch.setenv("TAOS_DISABLE_AGENT_MASTER_KEY_FALLBACK", opt_out)
         result, env = await self._run(tmp_path)
         assert result["success"] is True
-        assert env["LITELLM_API_KEY"] == "sk-master-xyz"
-        assert env["OPENAI_API_KEY"] == "sk-master-xyz"
-        assert any("master key" in s for s in result["steps"])
+        assert env["LITELLM_API_KEY"] != "sk-master-xyz"
+        assert env["OPENAI_API_KEY"] == env["LITELLM_API_KEY"]
+        assert any("local key store" in s for s in result["steps"])
+        assert not any("master key" in s for s in result["steps"])
+
 
     @pytest.mark.asyncio
-    async def test_refuses_when_fallback_disabled(self, tmp_path, monkeypatch):
+    async def test_model_less_deploy_key_allows_default_and_embedding(self, tmp_path, monkeypatch):
+        """RED-FIRST: deploy with no model and no fallbacks (routing-only / no DB path, real local keystore)
+        - the minted key's allowed_models == ["default", EMBEDDING_ALIAS].
+        """
         monkeypatch.setenv("TAOS_DISABLE_AGENT_MASTER_KEY_FALLBACK", "1")
-        async def mock_exec(name, cmd, **kwargs):
-            return (0, "ok")
-        req = _req(data_dir=tmp_path, framework="hermes", model="kilo-auto/free",
-                   extra_config={"llm_proxy": self._proxy()})
-        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock), \
-             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+        mock_proxy = MagicMock(spec=["port", "create_agent_key"])
+        mock_proxy.port = 7834
+        mock_proxy.create_agent_key = AsyncMock(return_value=None)
+
+        req = _req(
+            name="model-less",
+            model=None,
+            fallback_models=[],
+            data_dir=tmp_path,
+            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838},
+        )
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", new_callable=AsyncMock, return_value=(0, "")), \
              patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
              patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
+            mock_create.return_value = {"success": True, "name": "taos-agent-model-less"}
             result = await deploy_agent(req)
-        assert result["success"] is False
-        assert "fallback is disabled" in result["error"]
-
+            assert result["success"] is True, result
+            from tinyagentos.litellm_keystore import LiteLLMKeyStore, default_keystore_path
+            from tinyagentos.litellm_config import EMBEDDING_ALIAS
+            rec = LiteLLMKeyStore(default_keystore_path(tmp_path)).lookup(result["llm_key"])
+            assert rec == {"agent": "model-less", "allowed_models": ["default", EMBEDDING_ALIAS]}
 
 class TestFrameworkAwareBaseImage:
     """Framework-aware prebuilt base image selection (Hermes fast-path)."""

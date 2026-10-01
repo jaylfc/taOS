@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from tinyagentos.llm_gateway.auth import GatewayCaller, gateway_caller
 from tinyagentos.llm_gateway.errors import (
@@ -19,6 +19,7 @@ from tinyagentos.llm_gateway.forward import (
     resolve_api_key,
 )
 from tinyagentos.llm_gateway.anthropic import chat_completion_anthropic
+from tinyagentos.llm_gateway import stt
 from tinyagentos.llm_gateway.resolve import TAOS_DEFAULT, find_routes, model_names, routing_table
 import tinyagentos.llm_gateway.resolve as resolve_mod
 
@@ -135,3 +136,186 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
     if body.get("stream"):
         return await chat_completion_stream(routes, body, principal, state)
     return JSONResponse(await chat_completion(routes, body, principal, state))
+
+
+@router.post("/embeddings")
+async def embeddings(request: Request, caller: GatewayCaller = Depends(gateway_caller)):
+    """OpenAI ``/v1/embeddings`` from the gateway itself (no LiteLLM).
+
+    The same allowlist rule as chat: the requested name must be in the
+    caller's scope. ``taos-embedding-default`` is a name like any other, so an
+    agent embeds through it only when its key allows it.
+    """
+    from tinyagentos.llm_gateway import embeddings as emb
+
+    try:
+        raw = await request.json()
+    except Exception:  # noqa: BLE001 - any parse failure is the caller's
+        raise bad_request("request body must be a JSON object") from None
+    body = emb.validate_body(raw)
+    requested = body["model"]
+    if not caller.may_use(requested):
+        raise model_not_permitted(requested)
+    state = request.app.state
+    routes = emb.find_embedding_routes(await emb.embedding_table(state), requested)
+    if not routes:
+        raise model_not_found(f"model {requested!r} not found")
+    usable = [r for r in routes if emb.servable(r)]
+    if not usable:
+        route = routes[0]
+        raise GatewayError(
+            501,
+            f"model {route.model_name!r} is served by a {route.provider or 'unknown'!r} backend; "
+            "the taOS gateway embeds only through OpenAI-compatible and Ollama-shaped backends",
+            code="backend_not_supported",
+        )
+    return JSONResponse(await emb.create_embedding(usable, body, requested, caller.caller_id, state))
+
+
+# Room for the WAV header and the multipart framing around the audio.
+_STT_FRAMING_SLACK = 64 * 1024
+_STT_BODY_CAP = stt.MAX_PCM_BYTES + _STT_FRAMING_SLACK
+# The text fields (model, response_format) are a few bytes; this bounds a hostile one.
+_STT_FIELD_CAP = 1024
+_STT_FIELDS = {"file", "model", "response_format"}
+
+
+async def _read_capped(request: Request, cap: int) -> bytes:
+    """The request body in memory, 413 the moment it passes ``cap``.
+
+    Deliberately not ``request.form()`` / ``UploadFile``: Starlette would spool
+    the audio part to a temp file before the handler runs, so the cap could not
+    stop the read and audio would touch disk. A declared Content-Length over
+    the cap is refused before a byte is read; without one the stream is cut at
+    the cap.
+    """
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            too_big = int(declared) > cap
+        except ValueError:
+            raise bad_request("invalid Content-Length") from None
+        if too_big:
+            raise GatewayError(413, f"request body over {cap} bytes", code="request_too_large")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > cap:
+            raise GatewayError(413, f"request body over {cap} bytes", code="request_too_large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _parse_multipart(content_type: str, body: bytes) -> dict[str, bytes]:
+    """``{field: bytes}`` for the transcription fields, from an in-memory body.
+
+    python-multipart's low-level ``MultipartParser`` with in-memory callbacks
+    (its ``FormParser`` would spool a large part to a temp file). Unknown
+    fields are dropped; a repeated or oversized wanted field is a 400.
+    """
+    from python_multipart.multipart import MultipartParser, parse_options_header
+
+    mime, params = parse_options_header(content_type.encode("latin-1", "replace"))
+    boundary = params.get(b"boundary")
+    if mime.lower() != b"multipart/form-data" or not boundary:  # RFC 9110: case-insensitive
+        raise bad_request("expected a multipart/form-data body with 'file' and 'model' fields")
+    fields: dict[str, bytearray] = {}
+    state: dict = {"hname": b"", "hvalue": b"", "headers": {}, "name": None, "ended": False}
+
+    def on_part_begin():
+        state.update(hname=b"", hvalue=b"", headers={}, name=None)
+
+    def on_header_field(data, start, end):
+        state["hname"] += data[start:end]
+
+    def on_header_value(data, start, end):
+        state["hvalue"] += data[start:end]
+
+    def on_header_end():
+        state["headers"][state["hname"].lower()] = state["hvalue"]
+        state.update(hname=b"", hvalue=b"")
+
+    def on_headers_finished():
+        disposition = state["headers"].get(b"content-disposition", b"")
+        _, opts = parse_options_header(disposition)
+        name = opts.get(b"name", b"").decode("utf-8", "replace")
+        if name in _STT_FIELDS:
+            if name in fields:
+                raise bad_request(f"field {name!r} sent more than once")
+            fields[name] = bytearray()
+            state["name"] = name
+
+    def on_part_data(data, start, end):
+        name = state["name"]
+        if name is None:
+            return
+        fields[name] += data[start:end]
+        if name != "file" and len(fields[name]) > _STT_FIELD_CAP:
+            raise bad_request(f"field {name!r} is too long")
+
+    def on_end():
+        state["ended"] = True
+
+    parser = MultipartParser(boundary, {
+        "on_part_begin": on_part_begin, "on_header_field": on_header_field,
+        "on_header_value": on_header_value, "on_header_end": on_header_end,
+        "on_headers_finished": on_headers_finished, "on_part_data": on_part_data,
+        "on_end": on_end,
+    })
+    try:
+        parser.write(body)
+        parser.finalize()
+    except GatewayError:
+        raise
+    except Exception:  # noqa: BLE001 - any parse failure is the caller's
+        raise bad_request("malformed multipart body") from None
+    if not state["ended"]:
+        raise bad_request("malformed multipart body")
+    return {k: bytes(v) for k, v in fields.items()}
+
+
+@router.post("/audio/transcriptions")
+async def audio_transcriptions(request: Request, caller: GatewayCaller = Depends(gateway_caller)):
+    """OpenAI ``/v1/audio/transcriptions``, answered by the on-device daemon.
+
+    Multipart ``file`` (16 kHz mono 16-bit PCM WAV, up to 30 s), ``model`` and
+    an optional ``response_format`` (``json``, the default, or ``text``).
+    Local only: nothing here can reach a cloud backend, and neither audio nor
+    transcript is logged, traced or kept. See ``stt`` for the rules and the
+    model-name proposal.
+    """
+    body = await _read_capped(request, _STT_BODY_CAP)
+    fields = _parse_multipart(request.headers.get("content-type", ""), body)
+    wav = fields.get("file")
+    if not wav:
+        raise bad_request("'file' must be a non-empty WAV upload")
+    try:
+        requested = fields.get("model", b"").decode("utf-8").strip()
+        response_format = fields.get("response_format", b"json").decode("utf-8").strip() or "json"
+    except UnicodeDecodeError:
+        raise bad_request("form fields must be UTF-8") from None
+    if not requested:
+        raise bad_request("'model' must be a non-empty string")
+    if response_format not in ("json", "text"):
+        raise bad_request("'response_format' must be 'json' or 'text'")
+    if not caller.may_use(requested):
+        raise model_not_permitted(requested)
+    data_dir = request.app.state.data_dir
+    try:
+        manifest = stt.load_manifest(data_dir)
+    except GatewayError as exc:
+        # Not installed: no name can match, so an unknown name is a 404, not a 409.
+        if exc.code == "stt_not_installed" and requested != stt.STT_ALIAS:
+            raise model_not_found(f"model {requested!r} not found") from None
+        raise
+    if requested not in (stt.STT_ALIAS, manifest["model"]):
+        raise model_not_found(f"model {requested!r} not found")
+    pcm = stt.wav_to_pcm(wav)
+    if await request.is_disconnected():
+        # The client is gone: do not spend the daemon on audio nobody awaits.
+        return Response(status_code=499)
+    text = await stt.transcribe_pcm(pcm, manifest)
+    if response_format == "text":
+        return PlainTextResponse(text)
+    return JSONResponse({"text": text})

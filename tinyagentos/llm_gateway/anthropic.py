@@ -22,6 +22,7 @@ import httpx
 
 from tinyagentos.llm_gateway.errors import GatewayError, upstream_error, bad_request, rate_limit_error
 from tinyagentos.llm_usage.usage import from_anthropic
+from tinyagentos.llm_gateway.forward import _notify_lifecycle
 
 ANTHROPIC_API_BASE = "https://api.anthropic.com"
 ANTHROPIC_VERSION = "2023-06-01"
@@ -445,7 +446,9 @@ async def chat_completion_anthropic(
     response = await _call_anthropic(anthropic_request, api_key)
 
     # Translate back to OpenAI
-    return await _anthropic_to_openai(response, body)
+    result = await _anthropic_to_openai(response, body)
+    _notify_lifecycle(state, route.backend_name)
+    return result
 
 
 async def chat_completion_stream_anthropic(
@@ -506,6 +509,7 @@ async def chat_completion_stream_anthropic(
                         yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
                     if translator.done:
                         yield b"data: [DONE]\n\n"
+                        _notify_lifecycle(state, route.backend_name)
                         return
         finally:
             await resp.aclose()

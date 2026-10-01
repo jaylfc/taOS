@@ -141,8 +141,8 @@ async def test_a_non_ascii_agent_is_findable_by_the_slug_of_its_own_name(store):
 class TestTheGplUnidecodeIsNeverInstalled:
     """``python-slugify[unidecode]`` pulls GPL-only ``Unidecode``.
 
-    The extra is a blocker for the commercial arm of the dual licence (see
-    docs/dependency-licences.md). Without it python-slugify uses
+    We keep it out by choice (see docs/dependency-licences.md): a permissive
+    transliterator covers the need. Without it python-slugify uses
     ``text-unidecode``, whose Artistic-1.0 arm we elect. Enforce that
     mechanically so a dependency refresh cannot quietly swap it in.
     """

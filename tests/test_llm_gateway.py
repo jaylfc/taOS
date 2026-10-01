@@ -42,8 +42,8 @@ ANTHROPIC = {
     "api_key": "sk-ant-nope",
     "priority": 2,
 }
-# A cloud provider the gateway does NOT forward to yet (not OpenAI-compatible,
-# not Ollama, not Anthropic): it must stay a 501, never a network call.
+# A provider outside the forwardable set must be a 501, never a network call.
+# deepseek IS forwardable now; the 501 test narrows the set to prove the guard.
 UNSUPPORTED_PROVIDER = {
     "name": "router-cloud",
     "type": "deepseek",
@@ -537,9 +537,12 @@ async def test_upstream_200_that_is_not_json_is_502(client):
 
 @_ASYNC
 @respx.mock
-async def test_non_openai_backend_is_501_naming_the_model(client):
-    # Anthropic and OpenRouter are served now, so the unsupported example is a
-    # provider the gateway still cannot speak to: deepseek (LiteLLM-native).
+async def test_non_openai_backend_is_501_naming_the_model(client, monkeypatch):
+    # Every chat provider taOS configures is forwardable now (deepseek became
+    # OpenAI-compatible), so the guard is proven by narrowing the forwardable
+    # set back to what it was: a provider outside it is a 501, never a call.
+    from tinyagentos.llm_gateway import forward
+    monkeypatch.setattr(forward, "OPENAI_COMPATIBLE_PROVIDERS", ("openai", "openrouter"))
     _app(client).state.config.backends = [OPENAI_COMPAT, UNSUPPORTED_PROVIDER]
     route = respx.post(url__regex=r".*")
     resp = await client.post(BASE + "/chat/completions", json=_chat("router-model"))
@@ -871,9 +874,8 @@ async def test_models_listing_follows_config_changes_per_request(client):
 
 
 @_ASYNC
-async def test_gateway_reads_the_same_table_as_the_litellm_config(client, monkeypatch):
-    """One source: the gateway's routing table IS build_model_list's output,
-    the same function generate_litellm_config wraps."""
+async def test_gateway_reads_the_one_model_table(client, monkeypatch):
+    """One source: the gateway's routing table IS build_model_list's output."""
     import tinyagentos.litellm_config as lc
 
     calls = []
@@ -890,11 +892,10 @@ async def test_gateway_reads_the_same_table_as_the_litellm_config(client, monkey
 
     from tinyagentos.llm_gateway.resolve import routing_table
     table = routing_table(_app(client).state)
-    config = lc.generate_litellm_config(
-        _app(client).state.config.backends, master_key="k",
+    assert table == real(
+        _app(client).state.config.backends,
         discovered={b["url"]: [] for b in _app(client).state.config.backends},
     )
-    assert table == config["model_list"]
 
 
 # ---------------------------------------------------------------------------
@@ -1391,3 +1392,460 @@ async def test_failover_skips_a_backend_the_gateway_cannot_speak_to(client):
     resp = await client.post(BASE + "/chat/completions", json=_chat())
     _assert_openai_error(resp, 502, "upstream_error")
     assert other.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Backend parity before LiteLLM removal: rkllama, hailo-ollama, deepseek,
+# and the lifecycle keep-alive notify LiteLLM's callback used to send.
+# ---------------------------------------------------------------------------
+
+RKLLAMA_BACKEND = {
+    "name": "npu-rkllama",
+    "type": "rkllama",
+    "url": "http://rkllama.test:8080",
+    "model": "qwen3-1.7b",
+    "priority": 1,
+}
+RKLLAMA_CHAT = "http://rkllama.test:8080/v1/chat/completions"
+HAILO_BACKEND = {
+    "name": "npu-hailo",
+    "type": "hailo-ollama",
+    "url": "http://hailo.test:8000",
+    "model": "qwen2.5-instruct:1.5b",
+    "priority": 1,
+}
+HAILO_CHAT = "http://hailo.test:8000/v1/chat/completions"
+DEEPSEEK = {
+    "name": "ds-cloud",
+    "type": "deepseek",
+    "url": "",
+    "models": [{"id": "deepseek-chat"}],
+    "api_key": "sk-ds-live",
+    "priority": 2,
+}
+
+
+class _PiecewiseStream(httpx.AsyncByteStream):
+    """An upstream body delivered in the exact byte pieces given, so a line
+    split across network reads reaches the gateway split."""
+
+    def __init__(self, pieces: list[bytes]):
+        self.pieces = pieces
+        self.yielded = 0
+
+    async def __aiter__(self):
+        for piece in self.pieces:
+            self.yielded += 1
+            yield piece
+
+
+def _hailo_ndjson(tokens: list[str], done_reason: str = "stop") -> bytes:
+    """hailo-ollama's stream=true answer on /v1/chat/completions: Ollama
+    NDJSON, not SSE (controller.cpp + llm_generation_callback.cpp @1a3ba6be)."""
+    lines = [
+        json.dumps({"model": "qwen2.5-instruct:1.5b", "created_at": "2026-09-30T10:00:00Z",
+                    "message": {"role": "assistant", "content": tok}, "done": False})
+        for tok in tokens
+    ]
+    lines.append(json.dumps({
+        "model": "qwen2.5-instruct:1.5b", "created_at": "2026-09-30T10:00:01Z",
+        "message": {"role": "assistant", "content": ""}, "done": True,
+        "done_reason": done_reason, "total_duration": 123456, "eval_count": len(tokens),
+    }))
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def _awkward_split(data: bytes) -> list[bytes]:
+    """Cut mid-JSON, mid-UTF-8-free ASCII and right before each newline."""
+    cuts = sorted({3, 17, 40, 41, len(data) // 2, len(data) - 1, *[
+        i for i, b in enumerate(data) if b == ord("\n")]})
+    pieces, prev = [], 0
+    for c in cuts:
+        if 0 < c < len(data) and c > prev:
+            pieces.append(data[prev:c])
+            prev = c
+    pieces.append(data[prev:])
+    return pieces
+
+
+def _sse_events(text: str) -> list:
+    assert text.endswith("data: [DONE]\n\n"), text
+    events = []
+    for frame in text.split("\n\n"):
+        if not frame:
+            continue
+        assert frame.startswith("data: "), frame
+        payload = frame[len("data: "):]
+        events.append(payload if payload == "[DONE]" else json.loads(payload))
+    return events
+
+
+@_ASYNC
+@respx.mock
+@pytest.mark.parametrize("done_reason,finish", [("stop", "stop"), ("length", "length")])
+async def test_hailo_ollama_ndjson_stream_becomes_openai_sse(client, monkeypatch, done_reason, finish):
+    """hailo-ollama streams NDJSON; the gateway's real /chat/completions route
+    turns it into OpenAI SSE chunks ending in [DONE], lines split across reads."""
+    app = _app(client)
+    app.state.config.backends = [HAILO_BACKEND]
+    traces = []
+
+    async def fake_record_trace(*args, **kwargs):
+        traces.append(args)
+
+    monkeypatch.setattr("tinyagentos.llm_gateway.forward._record_trace", fake_record_trace)
+    tokens = ["Hel", "lo", ", wor", "ld", "!"]
+    stream = _PiecewiseStream(_awkward_split(_hailo_ndjson(tokens, done_reason)))
+    upstream = respx.post(HAILO_CHAT).mock(return_value=httpx.Response(
+        200, stream=stream, headers={"content-type": "application/x-ndjson"},
+    ))
+    resp = await client.post(BASE + "/chat/completions", json=_chat("default", stream=True))
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    assert stream.yielded > len(tokens) + 1  # the split path really ran
+    sent = json.loads(upstream.calls.last.request.content)
+    assert sent["model"] == "qwen2.5-instruct:1.5b"
+    assert "stream_options" not in sent  # no usage chunk to ask an NDJSON backend for
+
+    events = _sse_events(resp.read().decode("utf-8"))
+    assert events[-1] == "[DONE]"
+    chunks = events[:-1]
+    for c in chunks:
+        assert c["object"] == "chat.completion.chunk"
+        assert c["model"] == "default"
+        assert c["id"] == chunks[0]["id"] and c["id"].startswith("chatcmpl-")
+        assert isinstance(c["created"], int)
+        assert len(c["choices"]) == 1 and c["choices"][0]["index"] == 0
+    assert chunks[0]["choices"][0]["delta"].get("role") == "assistant"
+    text = "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks)
+    assert text == "Hello, world!"
+    assert [c["choices"][0]["finish_reason"] for c in chunks[:-1]] == [None] * (len(chunks) - 1)
+    assert chunks[-1]["choices"][0]["finish_reason"] == finish
+    # Usage is not reported by hailo: the estimated path records the trace.
+    assert len(traces) == 1
+    assert traces[0][3].known is False
+    assert traces[0][7] == "Hello, world!"
+
+
+def _hailo_truncated(kind: str) -> bytes:
+    """Two tokens, then either an NDJSON error line or EOF with no done=true."""
+    body = _hailo_ndjson(["Hel", "lo"]).rstrip(b"\n").rsplit(b"\n", 1)[0] + b"\n"
+    if kind == "error-line":
+        body += json.dumps({"error": "generation failed"}).encode("utf-8") + b"\n"
+    return body
+
+
+@_ASYNC
+@respx.mock
+@pytest.mark.parametrize("kind", ["error-line", "eof-without-done"])
+async def test_hailo_stream_cut_after_first_token_is_not_a_clean_stop(client, kind):
+    """A hailo stream that fails after tokens went out must not end like a
+    finished answer: no finish_reason "stop" chunk and no [DONE], the same as
+    the SSE path, which re-raises once a byte is sent. A truncated reply that
+    looks complete is worse than a visibly broken one."""
+    app = _app(client)
+    app.state.config.backends = [HAILO_BACKEND]
+    stream = _PiecewiseStream(_awkward_split(_hailo_truncated(kind)))
+    respx.post(HAILO_CHAT).mock(return_value=httpx.Response(
+        200, stream=stream, headers={"content-type": "application/x-ndjson"},
+    ))
+    text = ""
+    try:
+        resp = await client.post(BASE + "/chat/completions", json=_chat("default", stream=True))
+        text = resp.read().decode("utf-8")
+    except Exception:  # noqa: BLE001 - the transport may surface the abort as an error
+        pass
+    assert "[DONE]" not in text
+    assert '"finish_reason": "stop"' not in text
+
+
+@_ASYNC
+@respx.mock
+@pytest.mark.parametrize("kind", ["hailo-ndjson", "rkllama-sse"])
+async def test_stream_frame_without_a_delimiter_is_capped(client, kind):
+    """A backend that keeps streaming bytes and never a line/event delimiter
+    must not grow the gateway's buffer without bound: the read timeout only
+    bounds silence. The gateway gives up once a single frame passes the cap,
+    long before the 10 MiB upstream body is drained."""
+    app = _app(client)
+    backend, url, ctype = (
+        (HAILO_BACKEND, HAILO_CHAT, "application/x-ndjson") if kind == "hailo-ndjson"
+        else (RKLLAMA_BACKEND, RKLLAMA_CHAT, "text/event-stream"))
+    app.state.config.backends = [backend]
+    stream = _PiecewiseStream([b"x" * 65536] * 160)
+    respx.post(url).mock(return_value=httpx.Response(
+        200, stream=stream, headers={"content-type": ctype},
+    ))
+    text = ""
+    try:
+        resp = await client.post(BASE + "/chat/completions", json=_chat("default", stream=True))
+        text = resp.read().decode("utf-8")
+    except Exception:  # noqa: BLE001 - the transport may surface the abort as an error
+        pass
+    assert stream.yielded < len(stream.pieces), "the whole oversized body was buffered"
+    assert "[DONE]" not in text
+
+
+@_ASYNC
+@respx.mock
+async def test_rkllama_stream_passes_sse_through_unchanged(client):
+    """rkllama answers /v1/chat/completions with OpenAI SSE: forwarded as-is."""
+    app = _app(client)
+    app.state.config.backends = [RKLLAMA_BACKEND]
+    body = _sse_chunk("hi", finish_reason=None) + _sse_chunk("!") + _sse_done()
+    upstream = respx.post(RKLLAMA_CHAT).mock(return_value=httpx.Response(
+        200, content=body, headers={"content-type": "text/event-stream"},
+    ))
+    resp = await client.post(BASE + "/chat/completions", json=_chat("default", stream=True))
+    assert resp.status_code == 200, resp.text
+    assert resp.read().decode("utf-8") == body
+    assert json.loads(upstream.calls.last.request.content)["model"] == "qwen3-1.7b"
+
+
+@_ASYNC
+@respx.mock
+async def test_hailo_ollama_non_stream_is_forwarded_as_is(client):
+    app = _app(client)
+    app.state.config.backends = [HAILO_BACKEND]
+    respx.post(HAILO_CHAT).mock(return_value=httpx.Response(
+        200, json=_completion("qwen2.5-instruct:1.5b", usage=False)))
+    resp = await client.post(BASE + "/chat/completions", json=_chat("default"))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["choices"][0]["message"]["content"] == "hi"
+
+
+@_ASYNC
+@respx.mock
+@pytest.mark.parametrize("stream", [False, True])
+async def test_deepseek_is_forwarded_openai_compatible_with_its_own_key(client, stream):
+    _app(client).state.config.backends = [OPENAI_COMPAT, DEEPSEEK]
+    if stream:
+        reply = httpx.Response(200, content=_sse_chunk("hi") + _sse_done(),
+                               headers={"content-type": "text/event-stream"})
+    else:
+        reply = httpx.Response(200, json=_completion("deepseek-chat"))
+    route = respx.post("https://api.deepseek.com/v1/chat/completions").mock(return_value=reply)
+    resp = await client.post(BASE + "/chat/completions", json=_chat("deepseek-chat", stream=stream))
+    assert resp.status_code == 200, resp.text
+    req = route.calls.last.request
+    assert req.headers["authorization"] == "Bearer sk-ds-live"
+    assert json.loads(req.content)["model"] == "deepseek-chat"
+
+
+class _FakeLifecycle:
+    def __init__(self, fail: bool = False):
+        self.fail = fail
+        self.calls: list[str] = []
+
+    def notify_task_complete(self, name: str) -> None:
+        self.calls.append(name)
+        if self.fail:
+            raise RuntimeError("lifecycle boom")
+
+
+@_ASYNC
+@respx.mock
+@pytest.mark.parametrize("stream", [False, True])
+async def test_completion_notifies_lifecycle_keepalive_once(client, monkeypatch, stream):
+    """LiteLLM's callback POSTed /api/lifecycle/notify {backend_name} after
+    every completion; the gateway calls the same manager in-process."""
+    app = _app(client)
+    fake = _FakeLifecycle()
+    monkeypatch.setattr(app.state, "lifecycle_manager", fake, raising=False)
+    if stream:
+        reply = httpx.Response(200, content=_sse_chunk("hi") + _sse_done(),
+                               headers={"content-type": "text/event-stream"})
+    else:
+        reply = httpx.Response(200, json=_completion("qwen3-8b"))
+    respx.post(UPSTREAM_CHAT).mock(return_value=reply)
+    resp = await client.post(BASE + "/chat/completions", json=_chat(stream=stream))
+    assert resp.status_code == 200, resp.text
+    resp.read()
+    assert fake.calls == [OPENAI_COMPAT["name"]]
+
+
+@_ASYNC
+@respx.mock
+@pytest.mark.parametrize("stream", [False, True])
+async def test_lifecycle_notify_failure_does_not_fail_the_request(client, monkeypatch, stream):
+    app = _app(client)
+    fake = _FakeLifecycle(fail=True)
+    monkeypatch.setattr(app.state, "lifecycle_manager", fake, raising=False)
+    if stream:
+        reply = httpx.Response(200, content=_sse_chunk("hi") + _sse_done(),
+                               headers={"content-type": "text/event-stream"})
+    else:
+        reply = httpx.Response(200, json=_completion("qwen3-8b"))
+    respx.post(UPSTREAM_CHAT).mock(return_value=reply)
+    resp = await client.post(BASE + "/chat/completions", json=_chat(stream=stream))
+    assert resp.status_code == 200, resp.text
+    body = resp.read().decode("utf-8")
+    assert ("[DONE]" in body) if stream else resp.json()["choices"][0]["message"]["content"] == "hi"
+    assert fake.calls == [OPENAI_COMPAT["name"]]
+
+
+@_ASYNC
+@respx.mock
+async def test_failed_completion_does_not_notify_lifecycle(client, monkeypatch):
+    app = _app(client)
+    fake = _FakeLifecycle()
+    monkeypatch.setattr(app.state, "lifecycle_manager", fake, raising=False)
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(500, json={"error": {"message": "x"}}))
+    resp = await client.post(BASE + "/chat/completions", json=_chat())
+    _assert_openai_error(resp, 502, "upstream_error")
+    assert fake.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Cost recording: backend_type, not backend_name (tsk-3vcvp5)
+# ---------------------------------------------------------------------------
+
+LLAMA_CPP_PI_NPU = {
+    "name": "pi-npu",
+    "type": "llama-cpp",
+    "url": "http://llama.test:8080/v1",
+    "model": "qwen3-4b",
+    "api_key": "sk-llama",
+    "priority": 1,
+}
+
+OPENROUTER_NAMED_OPENAI = {
+    "name": "openai",
+    "type": "openrouter",
+    "url": "https://openrouter.test/api/v1",
+    "models": [{"id": "gpt-4o"}],
+    "api_key": "sk-or-live",
+    "priority": 1,
+}
+
+
+@_ASYNC
+@respx.mock
+async def test_local_backend_with_custom_name_records_zero_cost_chat(client, monkeypatch):
+    """llama-cpp backend named 'pi-npu' records Cost 0.0 known=True reason 'local backend'."""
+    trace_calls = []
+    spend_calls = []
+
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append((args, kwargs))
+
+    def fake_record_spend(*args, **kwargs):
+        spend_calls.append((args, kwargs))
+
+    monkeypatch.setattr("tinyagentos.llm_gateway.forward._record_trace", fake_record_trace)
+    monkeypatch.setattr("tinyagentos.llm_gateway.forward._record_spend", fake_record_spend)
+
+    app = _app(client)
+    app.state.config.backends = [LLAMA_CPP_PI_NPU]
+    route = respx.post("http://llama.test:8080/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=_completion("qwen3-4b"))
+    )
+    resp = await client.post(BASE + "/chat/completions", json=_chat("default"))
+    assert resp.status_code == 200, resp.text
+    assert len(trace_calls) == 1
+    args, _ = trace_calls[0]
+    cost = args[4]
+    assert cost.usd == 0.0
+    assert cost.priced is True
+    assert cost.reason == "local backend"
+    assert len(spend_calls) == 0
+
+
+@_ASYNC
+@respx.mock
+async def test_local_backend_with_custom_name_records_zero_cost_stream(client, monkeypatch):
+    """Streaming through a llama-cpp backend named 'pi-npu' records Cost 0.0."""
+    trace_calls = []
+    spend_calls = []
+
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append((args, kwargs))
+
+    def fake_record_spend(*args, **kwargs):
+        spend_calls.append((args, kwargs))
+
+    monkeypatch.setattr("tinyagentos.llm_gateway.forward._record_trace", fake_record_trace)
+    monkeypatch.setattr("tinyagentos.llm_gateway.forward._record_spend", fake_record_spend)
+
+    app = _app(client)
+    app.state.config.backends = [LLAMA_CPP_PI_NPU]
+    body = _sse_chunk("hi") + _sse_usage_chunk(10, 5) + _sse_done()
+    route = respx.post("http://llama.test:8080/v1/chat/completions").mock(
+        return_value=httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+    )
+    resp = await client.post(BASE + "/chat/completions", json=_chat("default", stream=True))
+    assert resp.status_code == 200, resp.text
+    assert len(trace_calls) == 1
+    args, _ = trace_calls[0]
+    cost = args[4]
+    assert cost.usd == 0.0
+    assert cost.priced is True
+    assert cost.reason == "local backend"
+    assert len(spend_calls) == 0
+
+
+@_ASYNC
+@respx.mock
+async def test_openrouter_named_like_direct_provider_not_priced_from_direct_table(client, monkeypatch):
+    """OpenRouter backend named 'openai' must not be priced from the OpenAI table."""
+    trace_calls = []
+    spend_calls = []
+
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append((args, kwargs))
+
+    def fake_record_spend(*args, **kwargs):
+        spend_calls.append((args, kwargs))
+
+    monkeypatch.setattr("tinyagentos.llm_gateway.forward._record_trace", fake_record_trace)
+    monkeypatch.setattr("tinyagentos.llm_gateway.forward._record_spend", fake_record_spend)
+
+    app = _app(client)
+    app.state.config.backends = [OPENROUTER_NAMED_OPENAI]
+    route = respx.post("https://openrouter.test/api/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=_completion("gpt-4o"))
+    )
+    resp = await client.post(BASE + "/chat/completions", json=_chat("gpt-4o"))
+    assert resp.status_code == 200, resp.text
+    assert len(trace_calls) == 1
+    args, _ = trace_calls[0]
+    cost = args[4]
+    assert cost.usd is None
+    assert cost.priced is False
+
+
+@_ASYNC
+@respx.mock
+async def test_local_backend_with_custom_name_records_zero_cost_embeddings(client, monkeypatch):
+    """llama-cpp backend named 'pi-npu' records Cost 0.0 for embeddings too."""
+    trace_calls = []
+    spend_calls = []
+
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append((args, kwargs))
+
+    def fake_record_spend(*args, **kwargs):
+        spend_calls.append((args, kwargs))
+
+    monkeypatch.setattr("tinyagentos.llm_gateway.forward._record_trace", fake_record_trace)
+    monkeypatch.setattr("tinyagentos.llm_gateway.forward._record_spend", fake_record_spend)
+
+    app = _app(client)
+    app.state.config.backends = [LLAMA_CPP_PI_NPU]
+    route = respx.post("http://llama.test:8080/v1/embeddings").mock(
+        return_value=httpx.Response(200, json={
+            "object": "list",
+            "model": "qwen3-4b",
+            "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]}],
+            "usage": {"prompt_tokens": 4, "total_tokens": 4},
+        })
+    )
+    resp = await client.post(BASE + "/embeddings", json={"model": "default", "input": "hello"})
+    assert resp.status_code == 200, resp.text
+    assert len(trace_calls) == 1
+    args, _ = trace_calls[0]
+    cost = args[4]
+    assert cost.usd == 0.0
+    assert cost.priced is True
+    assert cost.reason == "local backend"
+    assert len(spend_calls) == 0

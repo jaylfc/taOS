@@ -119,12 +119,33 @@ Content-negotiated advert: `Accept: application/json` → the redeem contract (`
 
 ## Connection bundle
 
-- `controller.endpoints` — non-loopback LAN IPv4s (priority ordered, operator override first) and the mesh (Tailscale) node IP when joined; no relay in Phase 1
+- `controller.endpoints` — non-loopback LAN IPv4s (priority ordered, operator override first) and the mesh (Tailscale) node IP when joined; optional relay endpoint when `TAOS_CONTROLLER_RELAY_URL` is configured with `https://`
 - `apis` — agent-JWT-reachable surface, scoped exactly to the granted scopes (mirrors the middleware allowlist)
 - `delivery` — timed-check contract (`poll_path`, `stream_path`, `check_interval_secs`, `cursor: ts`, `filter: mentions+project`)
-- `onboarding` + `guide_markdown` — personalized capability guide (repo link, agent manual links, scoped Projects/Canvas summary, the A2A authenticated-proxy contract)
+- `onboarding` + `guide_markdown` — capability guide (repo + manual links, scoped Projects/Canvas summary, A2A proxy contract, memory + timed checks). `harness=grok` adds secure-form token storage, routine polling and a shared-account warning.
 
 See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes advertise only when that scope was granted.
+
+## Override addresses advertised over HTTP
+
+The operator can set `TAOS_CONTROLLER_CALLBACK_HOST` to control which address the invite bundle advertises for the controller. The following override values are advertised over **HTTP** in the bundle:
+
+- **Tailscale CGNAT IPs** in `100.64.0.0/10` (e.g. `100.78.225.80`)
+- **Tailscale ULA IPs** in `fd7a:115c:a1e0::/48`
+- **Private LAN IPs** (RFC 1918: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
+- **Loopback** (`127.0.0.1`, `::1`, `localhost`)
+- **Hostnames** that end with `.local`, `.lan`, `.home.arpa`, or `.ts.net` (MagicDNS)
+- **Single-label hostnames** with no dot (e.g. `taos`, `controller`)
+
+The following override values are **NOT advertised over HTTP** (omitted with a warning):
+
+- Public IP addresses
+- Public hostnames (e.g. `controller.example.com`, `api.mycompany.com`)
+- Any hostname not matching the trusted suffixes above
+
+When the override is a full URL (e.g. `http://192.168.1.5:6969`), the scheme and port are used as-is, and the LAN IP enumeration deduplicates against the parsed hostname to avoid advertising the same address twice.
+
+**Relay endpoint** (`TAOS_CONTROLLER_RELAY_URL`): Must be `https://` only. HTTP relay URLs are omitted with a warning, even for private addresses.
 
 ---
 
@@ -414,3 +435,19 @@ The updated decision dict, identical shape to `GET /api/decisions/{id}`, with `n
 ## Live update
 
 Publishes a `decision.note` event on the owner's `user:<id>` channel so open surfaces refresh without manual reload.
+
+---
+
+# Agent notifications (`notifications_write` grant)
+
+`POST /api/notifications` body: `title` (max 120 chars), `message` (max 1000 chars), `level` (`info`/`warning`), `source` (ignored on agent path), `data.project_id` (optional).
+
+- Admits exactly `POST /api/notifications` for agent registry bearers. `GET` and mark-read stay session-only.
+- Verifies JWT + grant + project binding via `check_agent_scope_for_project`.
+- Global grant posts to instance admin(s). Per-project grant posts to that project's owner only.
+- `source` from grant. Store row: `agent:<canonical_id>`. `data.from_agent` stamped to canonical_id.
+- `info`/`warning` only. `error` returns 400.
+- Caps: `title` <= 120, `message` <= 1000, `data` <= 4 KB. Violations return 422.
+- Rate limit: 10 posts per 10 minutes per canonical_id. Exceeding returns 429 `{"error": "rate_limited", "retry_after": N}`.
+- Delivery through `store.add`: SSE and web-push fire.
+- Human path unchanged: `_require_admin` gate, any valid level, source from body.
