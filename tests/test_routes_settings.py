@@ -47,6 +47,10 @@ class TestUpdateAlwaysRestarts:
                 new=_fake_restart,
             ),
             patch("tinyagentos.restart_orchestrator.write_pending_restart"),
+            patch(
+                "tinyagentos.update_preflight.check_preflight",
+                return_value=[],  # Mock preflight check to pass
+            ),
         ):
             resp = await client.post("/api/settings/update")
 
@@ -519,6 +523,7 @@ class TestLaunchdMigrationWarning:
             patch("tinyagentos.routes.system._do_restart"),
             patch("tinyagentos.restart_orchestrator.write_pending_restart"),
             patch("tinyagentos.desktop_rebuild.rebuild_desktop_bundle_if_stale", new_callable=AsyncMock, return_value=MagicMock(rebuilt=False, success=True, message="current")),
+            patch("tinyagentos.update_preflight.check_preflight", return_value=[]),
         ):
             resp = await client.post("/api/settings/update")
 
@@ -555,6 +560,7 @@ class TestLaunchdMigrationWarning:
             patch("tinyagentos.routes.system._do_restart"),
             patch("tinyagentos.restart_orchestrator.write_pending_restart"),
             patch("tinyagentos.desktop_rebuild.rebuild_desktop_bundle_if_stale", new_callable=AsyncMock, return_value=MagicMock(rebuilt=False, success=True, message="current")),
+            patch("tinyagentos.update_preflight.check_preflight", return_value=[]),
         ):
             resp = await client.post("/api/settings/update")
 
