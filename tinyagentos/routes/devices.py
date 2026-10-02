@@ -1,13 +1,22 @@
 # tinyagentos/routes/devices.py
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import time
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from urllib.parse import urlparse
 
+from tinyagentos.agent_db import find_agent
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.device_auth import current_user_or_device
+from tinyagentos.routes import agent_archive
+from tinyagentos.routes.agents import pause_container, restart_container, start_container, find_agent as find_agent_route
+from tinyagentos.board_audit import BoardAuditLog
 from tinyagentos.routes.desktop_browser.ssrf import SsrfBlockedError, validate_url_or_raise
 
 router = APIRouter()
@@ -208,3 +217,221 @@ async def unblock_device(
         return JSONResponse({"error": "not found"}, status_code=404)
     changed = await store.unblock(device_id)
     return {"unblocked": True, "changed": changed}
+
+
+# ── device-v1 agent control ──────────────────────────────────────────────────
+
+_pause_restart_rate_limits: dict[str, float] = {}
+
+
+def _check_restart_rate_limit(agent_name: str, device_id: str) -> JSONResponse | None:
+    """Check rate limit for restart (1/min per agent). Returns 429 response or None."""
+    global _pause_restart_rate_limits
+    now = time.time()
+    key = f"device:{device_id}:agent:{agent_name}"
+    last = _pause_restart_rate_limits.get(key, 0)
+    if now - last < 60:
+        retry_after = int(60 - (now - last)) + 1
+        return JSONResponse(
+            {"error": "rate_limited", "retry_after": retry_after},
+            status_code=429,
+        )
+    _pause_restart_rate_limits[key] = now
+    return None
+
+
+def _audit_device_action(device_id: str, action: str, detail: dict | None = None) -> None:
+    """Write an audit record for a device agent action."""
+    audit = getattr(request.app.state, "board_audit", None)
+    if audit is not None:
+        try:
+            asyncio.create_task(
+                audit.record(
+                    task_id=device_id,
+                    event=f"agent_{action}",
+                    actor=f"device:{device_id}",
+                    detail=detail or {},
+                )
+            )
+        except Exception:
+            pass
+
+
+@router.post("/api/device/v1/agents/{name}/pause")
+async def device_agent_pause(
+    request: Request, name: str, user: CurrentUser = Depends(current_user_or_device)
+):
+    """Pause an agent on the device.
+
+    Scope: agents:control. The agent must belong to the device owner.
+    """
+    device = getattr(request.state, "_device", None)
+    if device is None:
+        return JSONResponse({"error": "device bearer required"}, status_code=401)
+    device_id = device["device_id"]
+
+    agent = find_agent(request.app.state.config, name)
+    if not agent:
+        return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
+    # The agent must belong to the device owner.
+    if agent.get("user_id") != user.user_id:
+        return JSONResponse({"error": f"Agent '{name}' does not belong to device owner"}, status_code=404)
+
+    # Rate limit restart is handled separately; pause/resume have no per-agent limit.
+    container_name = f"taos-agent-{name}"
+    result = await pause_container(container_name)
+    if not result.get("success"):
+        return JSONResponse(
+            {
+                "error": f"Could not pause agent '{name}': {result.get('output', '').strip()}",
+                "paused": False,
+            },
+            status_code=500,
+        )
+
+    _audit_device_action(device_id, "pause", {"agent": name})
+    return {"status": "paused", "name": name, "paused": True}
+
+
+@router.post("/api/device/v1/agents/{name}/resume")
+async def device_agent_resume(
+    request: Request, name: str, user: CurrentUser = Depends(current_user_or_device)
+):
+    """Resume an agent on the device.
+
+    Scope: agents:control. The agent must belong to the device owner.
+    """
+    device = getattr(request.state, "_device", None)
+    if device is None:
+        return JSONResponse({"error": "device bearer required"}, status_code=401)
+    device_id = device["device_id"]
+
+    agent = find_agent(request.app.state.config, name)
+    if not agent:
+        return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
+    # The agent must belong to the device owner.
+    if agent.get("user_id") != user.user_id:
+        return JSONResponse({"error": f"Agent '{name}' does not belong to device owner"}, status_code=404)
+
+    container_name = f"taos-agent-{name}"
+    result = await start_container(container_name)
+    if not result.get("success"):
+        return JSONResponse(
+            {
+                "error": f"Could not resume agent '{name}': {result.get('output', '').strip()}",
+                "paused": True,
+            },
+            status_code=500,
+        )
+
+    _audit_device_action(device_id, "resume", {"agent": name})
+    return {"status": "resumed", "name": name, "paused": False}
+
+
+@router.post("/api/device/v1/agents/{name}/restart")
+async def device_agent_restart(
+    request: Request, name: str, user: CurrentUser = Depends(current_user_or_device)
+):
+    """Restart an agent on the device.
+
+    Scope: agents:control. The agent must belong to the device owner.
+    Rate-limited to 1/min per agent (429 {\"error\":\"rate_limited\",\"retry_after\":N}).
+    """
+    device = getattr(request.state, "_device", None)
+    if device is None:
+        return JSONResponse({"error": "device bearer required"}, status_code=401)
+    device_id = device["device_id"]
+
+    rate_limit_response = _check_restart_rate_limit(name, device_id)
+    if rate_limit_response:
+        return rate_limit_response
+
+    agent = find_agent(request.app.state.config, name)
+    if not agent:
+        return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
+    # The agent must belong to the device owner.
+    if agent.get("user_id") != user.user_id:
+        return JSONResponse({"error": f"Agent '{name}' does not belong to device owner"}, status_code=404)
+
+    container_name = f"taos-agent-{name}"
+    result = await restart_container(container_name)
+    if not result.get("success"):
+        return JSONResponse(
+            {
+                "error": f"Could not restart agent '{name}': {result.get('output', '').strip()}",
+            },
+            status_code=500,
+        )
+
+    _audit_device_action(device_id, "restart", {"agent": name})
+    return {"status": "restarted", "name": name}
+
+
+@router.post("/api/device/v1/agents/{name}/messages")
+async def device_agent_send_message(
+    request: Request, name: str, user: CurrentUser = Depends(current_user_or_device)
+):
+    """Send a message to an agent on the device.
+
+    Scope: chat:send + ownership. Body {text} (1..2000 chars, 422 otherwise).
+    The server resolves the owner's DM channel with that agent and posts
+    through the same service call POST /api/chat/messages uses.
+    404 {\"error\":\"agent_not_found\"} when the agent or its DM channel does not exist.
+    The device never supplies a channel_id.
+    """
+    device = getattr(request.state, "_device", None)
+    if device is None:
+        return JSONResponse({"error": "device bearer required"}, status_code=401)
+    device_id = device["device_id"]
+
+    agent = find_agent(request.app.state.config, name)
+    if not agent:
+        return JSONResponse({"error": "agent_not_found"}, status_code=404)
+    # The agent must belong to the device owner.
+    if agent.get("user_id") != user.user_id:
+        return JSONResponse({"error": "agent_not_found"}, status_code=404)
+
+    body = await request.json()
+    text = body.get("text", "")
+    if not isinstance(text, str) or len(text) < 1 or len(text) > 2000:
+        return JSONResponse({"error": "text must be 1-2000 characters"}, status_code=422)
+
+    # Resolve the DM channel for this agent. The channel name is the agent name.
+    ch_store = request.app.state.chat_channels
+    channel = await ch_store.get_channel(name)
+    if not channel:
+        return JSONResponse({"error": "agent_not_found"}, status_code=404)
+
+    # Post message through the same service call as POST /api/chat/messages
+    msg_store = request.app.state.chat_messages
+    ch_store_local = request.app.state.chat_channels
+    hub = request.app.state.chat_hub
+
+    content = text
+    _http_channel = await ch_store_local.get_channel(name)
+    _http_ttl = None
+    if _http_channel and _http_channel.get("settings"):
+        _http_ttl = _http_channel["settings"].get("ephemeral_ttl_seconds")
+    import time as _time
+    _http_expires_at = (_time.time() + _http_ttl) if isinstance(_http_ttl, (int, float)) and _http_ttl > 0 else None
+
+    message = await msg_store.send_message(
+        channel_id=name,
+        author_id=user.user_id,
+        author_type="user",
+        content=content,
+        content_type="text",
+        thread_id=None,
+        embeds=None,
+        components=None,
+        attachments=[],
+        content_blocks=None,
+        metadata=None,
+        state="complete",
+        expires_at=_http_expires_at,
+    )
+    await ch_store_local.update_last_message_at(name)
+    await hub.broadcast(name, {"type": "message", "seq": hub.next_seq(), **message})
+
+    _audit_device_action(device_id, "message", {"agent": name, "text_length": len(text)})
+    return message
