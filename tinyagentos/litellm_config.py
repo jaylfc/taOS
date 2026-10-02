@@ -233,7 +233,7 @@ def build_model_list(
                 # kilocode isn't a native LiteLLM provider — must set api_base
                 if backend_type == "kilocode":
                     per_model_params["api_base"] = url
-                elif url and backend_type not in ("openai", "anthropic"):
+                elif url and backend_type not in ("openai",):
                     # For openrouter and other pass-through types, set api_base
                     # when an explicit url is provided
                     per_model_params["api_base"] = url

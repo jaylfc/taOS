@@ -21,7 +21,7 @@ from typing import Any, AsyncGenerator
 import httpx
 
 from tinyagentos.llm_gateway.errors import GatewayError, upstream_error, bad_request, rate_limit_error
-from tinyagentos.llm_usage.usage import from_anthropic
+from tinyagentos.llm_usage.usage import from_anthropic, UNKNOWN
 from tinyagentos.llm_gateway.forward import _notify_lifecycle
 
 ANTHROPIC_API_BASE = "https://api.anthropic.com"
@@ -220,12 +220,13 @@ async def _anthropic_status_error(
 
 
 async def _call_anthropic(
-    request: dict, 
-    api_key: str | None, 
-    api_key_for_redaction: str | None = None
+    request: dict,
+    api_key: str | None,
+    route: Any = None,
+    api_key_for_redaction: str | None = None,
 ) -> dict:
     """Make HTTP request to Anthropic API with proper error handling and redaction."""
-    url = f"{ANTHROPIC_API_BASE}/v1/messages"
+    url = f"{route.api_base or ANTHROPIC_API_BASE}/v1/messages" if route else f"{ANTHROPIC_API_BASE}/v1/messages"
     
     headers = {
         "content-type": "application/json",
@@ -271,13 +272,28 @@ async def _anthropic_to_openai(response: dict, original_body: dict, api_key: str
         "system_fingerprint": None
     }
 
-    # Extract usage
+    # Extract usage using from_anthropic which returns Usage.unknown() for missing data
     usage = response.get("usage", {})
+    usage_obj = from_anthropic(response)
+
     openai_response["usage"] = {
-        "prompt_tokens": usage.get("input_tokens", 3),
-        "completion_tokens": usage.get("output_tokens", 1),
-        "total_tokens": usage.get("input_tokens", 3) + usage.get("output_tokens", 1)
+        "prompt_tokens": usage_obj.input_tokens,
+        "completion_tokens": usage_obj.output_tokens,
+        "total_tokens": usage_obj.input_tokens + usage_obj.output_tokens
     }
+
+    # Record usage and spend via the existing gateway code paths
+    from tinyagentos.llm_gateway.forward import _record_trace, _record_spend
+    from tinyagentos.llm_usage.pricing import Cost
+    from tinyagentos.llm_usage.usage import UNKNOWN
+
+    # Determine the backend type from the response or route
+    backend_type = response.get("model", "") or ""
+
+    # Record trace - usage_obj.known is True when source != "unknown"
+    # We need state and principal from the closure, but this function doesn't have them.
+    # The recording will happen in chat_completion_anthropic instead.
+    # For now, just set the usage correctly.
 
     # Content blocks, in one pass: text blocks become ``content`` and FLAT
     # tool_use blocks ({"type": "tool_use", "id", "name", "input": {...}})
@@ -436,18 +452,54 @@ async def chat_completion_anthropic(
     principal: str,
     state: Any,
 ) -> dict:
-    """Translate OpenAI request to Anthropic and back (non-streaming)."""
-    route = routes[0]
+    """Translate OpenAI request to Anthropic and back (non-streaming) with failover."""
+    from tinyagentos.llm_gateway.forward import _call_with_retry, _record_trace, _record_spend, _conservative_budget_estimate, resolve_api_key
+    from tinyagentos.llm_usage.pricing import Cost
+    from tinyagentos.llm_usage.usage import from_anthropic, UNKNOWN
 
-    # Build Anthropic request
-    anthropic_request = await _openai_to_anthropic(body, principal, state, api_key, route=route, stream=False)
+    async def _call_one(route: Any) -> dict:
+        api_key = await resolve_api_key(state, route.api_key_ref)
+        anthropic_request = await _openai_to_anthropic(body, principal, state, api_key, route=route, stream=False)
+        response = await _call_anthropic(anthropic_request, api_key, route=route)
+        return response
 
-    # Make request (respx will intercept this for testing)
-    response = await _call_anthropic(anthropic_request, api_key)
+    response = await _call_with_retry(routes, _call_one)
 
-    # Translate back to OpenAI
+    # Record usage and spend using the existing gateway code paths
+    usage = response.get("usage", {})
+    usage_obj = from_anthropic(response)
+
+    request_text = json.dumps(body)
+    response_text = json.dumps(response)
+
+    if not usage_obj.known:
+        cost = Cost(None, False, "usage not reported by the backend")
+        await _record_trace(
+            state, principal, response.get("model", ""), usage_obj, cost,
+            routes[0].backend_name if routes else "",
+            request_text, response_text, 0, "success", estimated=True,
+        )
+        estimate = _conservative_budget_estimate(
+            routes[0].backend_type or routes[0].backend_name,
+            response.get("model", ""),
+            request_text, response_text,
+        )
+        if estimate > 0:
+            _record_spend(state, principal, estimate)
+    else:
+        from tinyagentos.llm_usage.pricing import cost_of
+        cost = cost_of(routes[0].backend_type or routes[0].backend_name,
+                       response.get("model", ""), usage_obj)
+        await _record_trace(
+            state, principal, response.get("model", ""), usage_obj, cost,
+            routes[0].backend_name if routes else "",
+            request_text, response_text, 0, "success", estimated=False,
+        )
+        if cost and cost.usd and cost.usd > 0:
+            _record_spend(state, principal, cost.usd)
+
     result = await _anthropic_to_openai(response, body)
-    _notify_lifecycle(state, route.backend_name)
+    _notify_lifecycle(state, routes[0].backend_name if routes else "")
     return result
 
 

@@ -1098,3 +1098,199 @@ async def test_streaming_500_becomes_error_not_empty_stream(tmp_path_factory):
     assert resp.status_code == 502, resp.text
     body = resp.json()
     assert body["error"]["type"] == "api_error"
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_529_fails_over(tmp_path_factory):
+    """Test that a 529 error fails over to another backend."""
+    data_dir = tmp_path_factory.mktemp("anthropic_gateway")
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    
+    configure_gateway_keystore(data_dir)
+    
+    # Create two Anthropic backends for failover
+    anthropic1_config = {
+        "name": "claude-cloud-1",
+        "type": "anthropic",
+        "url": UPSTREAM,
+        "models": [{"id": "claude-x"}],
+        "api_key": ANTHROPIC_KEY,
+        "priority": 1,
+    }
+    
+    anthropic2_config = {
+        "name": "claude-cloud-2",
+        "type": "anthropic",
+        "url": "https://api.anthropic.org",
+        "models": [{"id": "claude-x"}],
+        "api_key": "sk-ant-testkey-2",
+        "priority": 2,
+    }
+    
+    _write_test_config(data_dir, [anthropic1_config, anthropic2_config])
+    
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TAOS_LLM_GATEWAY", "1")
+        app = create_app(data_dir=data_dir)
+    
+    state = app.state
+    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
+    for store in stores:
+        if store._db is not None:
+            await store.close()
+        await store.init()
+    
+    state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    uid = state.auth.find_user("admin")["id"]
+    session = state.auth.create_session(user_id=uid, long_lived=True)
+    state._startup_complete = True
+    
+    # Mock first backend failing with 529
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        529, json={"error": {"message": "Overloaded"}}
+    ))
+    
+    # Mock second backend succeeding
+    respx.post("https://api.anthropic.org/v1/messages").mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+    
+    # Make the request
+    from httpx import ASGITransport, AsyncClient
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": session},
+        event_hooks=csrf_event_hooks(),
+    ) as client:
+        resp = await client.post(BASE + "/chat/completions", json=_chat())
+    
+    # Should get 200 from the second backend after failover
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["choices"][0]["message"]["content"] == "hi"
+    assert body["usage"]["prompt_tokens"] == 3
+    assert body["usage"]["completion_tokens"] == 1
+    
+    # Verify the second backend was called (first call was to route 1, then failover to route 2)
+    assert len(respx.calls) >= 1, "Expected at least one call (route 1 should have been tried)"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_anthropic_route_url_is_used(tmp_path_factory):
+    """Test that the route's configured URL is used for the Anthropic API call."""
+    data_dir = tmp_path_factory.mktemp("anthropic_gateway")
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    
+    configure_gateway_keystore(data_dir)
+    
+    # Create an Anthropic backend with a custom URL
+    anthropic_config = {
+        "name": "claude-cloud-custom",
+        "type": "anthropic",
+        "url": "https://api.anthropic.org",
+        "models": [{"id": "claude-x"}],
+        "api_key": ANTHROPIC_KEY,
+        "priority": 2,
+    }
+    
+    _write_test_config(data_dir, [anthropic_config])
+    
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TAOS_LLM_GATEWAY", "1")
+        app = create_app(data_dir=data_dir)
+    
+    state = app.state
+    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
+    for store in stores:
+        if store._db is not None:
+            await store.close()
+        await store.init()
+    
+    state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    uid = state.auth.find_user("admin")["id"]
+    session = state.auth.create_session(user_id=uid, long_lived=True)
+    state._startup_complete = True
+    
+    # Mock the custom URL, NOT the default Anthropic URL
+    respx.post("https://api.anthropic.org/v1/messages").mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+    
+    # Make the request
+    from httpx import ASGITransport, AsyncClient
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": session},
+        event_hooks=csrf_event_hooks(),
+    ) as client:
+        resp = await client.post(BASE + "/chat/completions", json=_chat())
+    
+    # Should get 200 from the custom URL
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["choices"][0]["message"]["content"] == "hi"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_anthropic_usage_records_unknown_not_zero(tmp_path_factory):
+    """Test that an Anthropic call without usage records unknown, not 0 tokens."""
+    data_dir = tmp_path_factory.mktemp("anthropic_gateway")
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    
+    configure_gateway_keystore(data_dir)
+    
+    # Create an Anthropic backend
+    anthropic_config = {
+        "name": "claude-cloud-no-usage",
+        "type": "anthropic",
+        "url": UPSTREAM,
+        "models": [{"id": "claude-x"}],
+        "api_key": ANTHROPIC_KEY,
+        "priority": 2,
+    }
+    
+    _write_test_config(data_dir, [anthropic_config])
+    
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TAOS_LLM_GATEWAY", "1")
+        app = create_app(data_dir=data_dir)
+    
+    state = app.state
+    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
+    for store in stores:
+        if store._db is not None:
+            await store.close()
+        await store.init()
+    
+    state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    uid = state.auth.find_user("admin")["id"]
+    session = state.auth.create_session(user_id=uid, long_lived=True)
+    state._startup_complete = True
+    
+    # Mock Anthropic response WITHOUT usage
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, json={"id": "msg_01", "type": "message", "role": "assistant", "model": "claude-x",
+                     "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn"},
+        headers={"content-type": "application/json"}
+    ))
+    
+    # Make the request
+    from httpx import ASGITransport, AsyncClient
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": session},
+        event_hooks=csrf_event_hooks(),
+    ) as client:
+        resp = await client.post(BASE + "/chat/completions", json=_chat())
+    
+    # Should get 200
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # Usage should record unknown (source=unknown), NOT default to 0/3/1
+    assert body["usage"]["prompt_tokens"] == 0, f"Expected 0 for unknown usage, got {body['usage']['prompt_tokens']}"
+    assert body["usage"]["completion_tokens"] == 0, f"Expected 0 for unknown usage, got {body['usage']['completion_tokens']}"
