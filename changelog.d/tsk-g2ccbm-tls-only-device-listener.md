@@ -11,7 +11,25 @@
   certificate DER). Devices must pin the fingerprint from their own TLS
   handshake and abort with `pair_fingerprint_mismatch` on mismatch.
 
+### Fixed
+- TLS listener no longer re-runs the app lifespan (uses `lifespan="off"`),
+  preventing duplicate startup of stores, schedulers, and background loops.
+- TLS listener bind failure (e.g. port already in use) no longer crashes the
+  controller; the failure is logged and the main server stays up.
+- Private key and certificate are now created atomically with mode 0o600 from
+  creation (using `os.open` with `O_CREAT|O_EXCL` and `os.replace`), eliminating
+  the umask window and never swallowing permission errors.
+- Silent TLS listener skip is eliminated: port collision with main/proxy port
+  and missing cert/key are now logged at ERROR level so operators can diagnose
+  why embedded devices cannot connect.
+- Documentation: `push_token` max length corrected to 4096 (was 255);
+  `pair_fingerprint_mismatch` removed from HTTP error table (it is a
+  device-side abort, not a server response); Decision metadata description
+  clarified.
+
 ### Security
 - Added a red-first test (`tests/test_device_tls_listener.py`) covering
   cert persistence, embedded token TLS enforcement, fingerprint propagation,
   and MITM proxy fingerprint divergence.
+- New red-first tests for lifespan isolation, bind-failure resilience, and
+  atomic 0o600 key creation.

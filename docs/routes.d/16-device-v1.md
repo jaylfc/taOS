@@ -15,7 +15,7 @@ are bearer-authenticated (not session-authenticated).
 - `platform`: required, one of `ios`, `android`, `watchos`, `wearos`,
   `embedded`, `linux`, `windows`, `macos`. Unknown returns 400.
 - `display_name`: optional, max 120 chars.
-- `push_token`: optional, max 255 chars.
+- `push_token`: optional, max 4096 chars.
 
 **Request:**
 
@@ -71,7 +71,8 @@ fingerprint it computes from its own TLS handshake, and MUST abort with
 ```
 
 `verify_code` is present only on the creation response (POST); it is NEVER
-surfaced on the poll (GET) or in the Decision.
+surfaced on the poll (GET) or in the Decision. The Decision raised to the
+admin includes `server_cert_fingerprint` in its metadata for reference.
 
 **Response 200 (accepted):**
 
@@ -132,8 +133,9 @@ re-pairing is the only way the pin changes.
 2. The device displays the fingerprint to the user for manual verification.
 3. The device includes the POST `/api/devices/pair-requests` response field
    `server_cert_fingerprint` in the same display.
-4. If the two fingerprints differ, the device MUST abort pairing with error
-   `pair_fingerprint_mismatch`.
+4. If the two fingerprints differ, the device MUST abort pairing locally with
+   error `pair_fingerprint_mismatch`. This is a device-side abort; the server
+   never returns this error code.
 
 The `server_cert_fingerprint` field in the POST response is a server-side
 cross-check only; the authoritative value is always the one the device computes
@@ -151,4 +153,3 @@ from its own handshake.
 | 409 | `pair_request_expired` | Approval arrived after TTL. |
 | 409 | `pair_request_already_accepted` | Duplicate approve on an accepted request. |
 | 429 | `pair_request_pending_cap_exceeded` | Too many open requests. |
-| 500 | `pair_fingerprint_mismatch` | Device-side abort when handshake fingerprint differs from response. |

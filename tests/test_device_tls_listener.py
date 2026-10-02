@@ -133,7 +133,7 @@ async def test_pair_decision_carries_server_cert_fingerprint(app):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_mitm_proxy_fingerprint_differs(app):
+async def test_mitm_proxy_fingerprint_differs(app, tmp_path):
     import datetime
     import socket
 
@@ -147,10 +147,8 @@ async def test_mitm_proxy_fingerprint_differs(app):
     server_cert = x509.load_pem_x509_certificate(server_cert_pem)
     server_fp = _fingerprint_from_der(server_cert.public_bytes(serialization.Encoding.DER))
 
-    proxy_dir = Path("/tmp")
-    proxy_dir.mkdir(parents=True, exist_ok=True)
-    proxy_cert_path = proxy_dir / "proxy_tls.crt"
-    proxy_key_path = proxy_dir / "proxy_tls.key"
+    proxy_cert_path = tmp_path / "proxy_tls.crt"
+    proxy_key_path = tmp_path / "proxy_tls.key"
 
     proxy_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "MITM proxy")])
@@ -179,6 +177,11 @@ async def test_mitm_proxy_fingerprint_differs(app):
         s.bind(("127.0.0.1", 0))
         proxy_port = s.getsockname()[1]
 
+    # Bind backend server to ephemeral port
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        backend_port = s.getsockname()[1]
+
     proxy_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     proxy_ctx.load_cert_chain(str(proxy_cert_path), str(proxy_key_path))
 
@@ -190,7 +193,7 @@ async def test_mitm_proxy_fingerprint_differs(app):
     async def _handle(client_reader, client_writer):
         try:
             backend_reader, backend_writer = await asyncio.open_connection(
-                "127.0.0.1", 6974, ssl=backend_ctx
+                "127.0.0.1", backend_port, ssl=backend_ctx
             )
             async def pipe(src, dst):
                 try:
@@ -214,7 +217,7 @@ async def test_mitm_proxy_fingerprint_differs(app):
     proxy_server = await asyncio.start_server(_handle, "127.0.0.1", proxy_port, ssl=proxy_ctx)
 
     config = uvicorn.Config(
-        app, host="127.0.0.1", port=6974,
+        app, host="127.0.0.1", port=backend_port,
         ssl_certfile=str(server_cert_path), ssl_keyfile=str(server_key_path),
         lifespan="off", log_level="warning",
     )
@@ -247,6 +250,130 @@ async def test_mitm_proxy_fingerprint_differs(app):
         proxy_server.close()
         await proxy_server.wait_closed()
         await asyncio.wait_for(serve_task, 10)
+
+
+# ---------------------------------------------------------------------------
+# (e) RED-FIRST: TLS config must have lifespan="off" to not re-run lifespan
+# ---------------------------------------------------------------------------
+
+def test_tls_listener_does_not_rerun_lifespan(tmp_path):
+    """TLS listener config must have lifespan="off" so it doesn't re-run app lifespan."""
+    from unittest.mock import patch, MagicMock
+
+    from tinyagentos.__main__ import _serve_dual_port
+    from tinyagentos.app import create_app
+
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(__import__("yaml").safe_dump(config))
+    (tmp_path / ".setup_complete").touch()
+
+    app = create_app(data_dir=tmp_path)
+    from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
+    app.state.vapid_keypair = load_or_create_vapid_keypair(tmp_path)
+
+    # Capture the uvicorn.Config objects passed to the server class
+    captured_configs = {}
+
+    import uvicorn
+
+    original_server_init = uvicorn.Server.__init__
+
+    def capturing_init(self, config):
+        captured_configs[id(config)] = config
+        return original_server_init(self, config)
+
+    with patch("uvicorn.Server.__init__", capturing_init):
+        with patch("tinyagentos.__main__._serve_until_first_exit") as mock_serve:
+            mock_serve.return_value = True
+            _serve_dual_port(app, host="127.0.0.1", port=6969, proxy_port=0, gateway_port=0, tls_port=6974)
+
+    # Find the TLS config and check its lifespan
+    tls_config = None
+    for config_obj in captured_configs.values():
+        if getattr(config_obj, "ssl_certfile", None) is not None:
+            tls_config = config_obj
+            break
+
+    assert tls_config is not None, "TLS config should have been created"
+    assert tls_config.lifespan == "off", f"TLS config lifespan should be 'off', got {tls_config.lifespan!r}"
+
+
+# ---------------------------------------------------------------------------
+# (f) RED-FIRST: TLS bind failure must not take controller down
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_tls_listener_bind_failure_keeps_controller_up():
+    """TLS server bind failure must not crash _serve_until_first_exit while main server runs."""
+    import uvicorn
+    import asyncio
+
+    from tinyagentos.__main__ import _serve_until_first_exit
+
+    # Local _NoSignalServer class (mirrors the one in __main__)
+    import contextlib
+    class _NoSignalServer(uvicorn.Server):
+        @contextlib.contextmanager
+        def capture_signals(self):
+            yield
+
+    from unittest.mock import MagicMock
+
+    main_config = uvicorn.Config(
+        MagicMock(), host="127.0.0.1", port=6969, backlog=128
+    )
+    tls_config = uvicorn.Config(
+        MagicMock(), host="127.0.0.1", port=6974, backlog=128,
+        ssl_certfile="/tmp/cert.pem", ssl_keyfile="/tmp/key.pem",
+    )
+
+    main_server = _NoSignalServer(main_config)
+    tls_server = _NoSignalServer(tls_config)
+
+    # Make main server serve() succeed (reach started state)
+    async def main_serve():
+        main_server.started = True
+        await asyncio.sleep(10)  # Keep running
+
+    # Make TLS server serve() raise immediately (bind failure)
+    async def tls_serve_fail():
+        raise OSError("Address already in use")
+
+    main_server.serve = main_serve
+    tls_server.serve = tls_serve_fail
+
+    # Should not raise; main server should still be considered "started"
+    result = await _serve_until_first_exit(main_server, tls_server=tls_server)
+    assert result is True, "Main server should be marked as started despite TLS failure"
+
+
+# ---------------------------------------------------------------------------
+# (g) RED-FIRST: Private key must be created with mode 0o600 atomically
+# ---------------------------------------------------------------------------
+
+def test_device_tls_key_created_0600(tmp_path):
+    """Private key file must be created with 0o600 permissions atomically."""
+    import os
+    import stat
+
+    from tinyagentos.device_tls import load_or_create_device_tls_cert
+
+    cert_path, key_path, _ = load_or_create_device_tls_cert(tmp_path)
+
+    # Check key file mode is 0o600 (owner read/write only)
+    key_mode = os.stat(key_path).st_mode
+    assert stat.S_IMODE(key_mode) == 0o600, f"Key file mode should be 0o600, got {oct(stat.S_IMODE(key_mode))}"
+
+    # Check cert file mode is also 0o600
+    cert_mode = os.stat(cert_path).st_mode
+    assert stat.S_IMODE(cert_mode) == 0o600, f"Cert file mode should be 0o600, got {oct(stat.S_IMODE(cert_mode))}"
 
 
 # ---------------------------------------------------------------------------
