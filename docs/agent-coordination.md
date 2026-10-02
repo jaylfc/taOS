@@ -1334,6 +1334,28 @@ Rules that keep it sound:
   no other change, since it forwards every `pair` message to
   `PairResponder.handle_message`.
 
+### Label PIN second channel
+
+Until the board has a screen (taOSusb S4), the admin compares the 6-digit
+code against a short PIN printed on the board's label at provision time
+(`/var/lib/taosusb/id`). The board surfaces this PIN in the `info`
+characteristic as `"label_pin"`. The controller reads it during
+`POST /api/cluster/ble/pair/start` and returns it as `label_pin` in the
+response. `POST /api/cluster/ble/pair/confirm` takes an optional
+`label_pin` field:
+
+- If the session has a `label_pin` and the provided one does not match, the
+  controller refuses with `403 wrong label pin` and rolls back exactly as a
+  board rejection does.
+- If the session has no `label_pin` (older board), any value is accepted so
+  the endpoint remains backward-compatible.
+- The controller mixes the PIN into the provision payload so a MITM without
+  the label cannot forge a valid provision even if it forces matching codes.
+
+The board half (writing `/var/lib/taosusb/id`, exposing `label_pin` in
+`info`, and verifying the PIN in the provision) is implemented by the
+taOSusb lead.
+
 ## OS change-event stream (`GET /api/os/events`, session-only)
 
 Route module `tinyagentos/routes/os_events.py`. A Server-Sent Events stream of
