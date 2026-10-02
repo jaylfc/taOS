@@ -661,7 +661,35 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
     if not ok:
         return JSONResponse({"error": "Worker not registered"}, status_code=404)
     cluster = request.app.state.cluster_manager
-    return {"status": "ok", "generation": cluster.generation}
+    # HMAC-verified identity: the guard above rejects a heartbeat whose body
+    # name does not match the signed worker name, so a worker can only ever
+    # read its own queue entry.
+    return {
+        "status": "ok",
+        "generation": cluster.generation,
+        # Queued manual benchmark run, if any. The worker agent is a poller,
+        # so the heartbeat response is the only channel the controller has to
+        # hand a "re-run the benchmark" click to a worker: the worker starts
+        # the suite and posts results back, which clears the queue entry.
+        "benchmark_request": await _pending_benchmark_request(request, body.name),
+    }
+
+
+async def _pending_benchmark_request(request: Request, name: str) -> dict | None:
+    """The queued benchmark run for a worker, or None.
+
+    Never raises: a heartbeat must not fail because the benchmark store is
+    uninitialised (tests, early boot) or briefly unavailable -- worst case
+    the worker keeps serving and picks the request up next time.
+    """
+    store = getattr(request.app.state, "benchmark_store", None)
+    if store is None:
+        return None
+    try:
+        return await store.get_pending_request(name)
+    except Exception:  # noqa: BLE001 -- see docstring
+        logger.exception("heartbeat: pending benchmark lookup failed for %s", name)
+        return None
 
 
 @router.delete("/api/cluster/workers/{name}", dependencies=_ADMIN)

@@ -181,6 +181,16 @@ class WorkerAgent:
         # Created eagerly so callers can inspect state; started in run().
         self._update_service: "WorkerUpdateService | None" = None
 
+        # Queued manual benchmark runs. The controller queues the request and
+        # hands it over in the heartbeat response (the agent is a poller with
+        # no inbound HTTP surface); see worker/benchmark_pull.py.
+        from tinyagentos.worker.benchmark_pull import BenchmarkRequestRunner
+        self._benchmark_pull = BenchmarkRequestRunner(
+            controller_url=self.controller_url,
+            worker_name=self.name,
+        )
+        self._last_heartbeat_request: dict | None = None
+
     async def detect_backends(self) -> list[dict]:
         """Discover locally running inference backends via live probing.
 
@@ -788,6 +798,9 @@ class WorkerAgent:
             body = _json.dumps(payload).encode()
             auth_headers = sign_request_headers(self._signing_key, self.name, "POST", path, body)
             auth_headers["content-type"] = "application/json"
+            # Only a response we actually parsed counts as the current queue
+            # state: drop the previous delivery before asking again.
+            self._last_heartbeat_request = None
             async with httpx.AsyncClient(timeout=5) as client:
                 resp = await client.post(
                     f"{self.controller_url}{path}",
@@ -805,6 +818,8 @@ class WorkerAgent:
                             "heartbeat response stopped echoing generation - "
                             "split-brain layer-2 protection may be degraded"
                         )
+                    request = resp_json.get("benchmark_request")
+                    self._last_heartbeat_request = request if isinstance(request, dict) else None
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(f"could not read generation from heartbeat response: {exc}")
                 return resp.status_code
@@ -816,6 +831,16 @@ class WorkerAgent:
             return 0
 
     # ── Worker-initiated drain (taOS #890 C2) ──────────────────────────
+
+    async def _maybe_start_requested_benchmark(self) -> bool:
+        """Start a controller-queued manual benchmark run, if one is waiting.
+
+        The controller re-delivers the queued run on every heartbeat until
+        results arrive; BenchmarkRequestRunner owns the "one run at a time,
+        bounded attempts" decision, and the run itself is the same
+        ``python -m tinyagentos.benchmark.runner`` the first-attach hook uses.
+        """
+        return await self._benchmark_pull.handle(self._last_heartbeat_request)
 
     async def report_update_available(self, reason: str = "update") -> int:
         """Report that an update is available but the worker is still serving.
@@ -953,6 +978,11 @@ class WorkerAgent:
                     # registered flag yet; the controller may still know
                     # us when it comes back. Just retry on next tick.
                     pass
+                # A queued manual benchmark run is delivered in the heartbeat
+                # response (see worker/benchmark_pull.py); only a live
+                # heartbeat can carry one.
+                if status == 200:
+                    await self._maybe_start_requested_benchmark()
                 await asyncio.sleep(5)
         finally:
             if self._update_service is not None:

@@ -47,6 +47,12 @@ Default name is the machine's hostname.
 2. **Discovers backends** — probes standard ports for Ollama (11434), rkllama (8080), llama.cpp (8080), vLLM (8000)
 3. **Registers** with the controller via `POST /api/cluster/workers`
 4. **Heartbeats** every 5 seconds via `POST /api/cluster/heartbeat` with CPU load
+5. **Picks up queued benchmark runs** — a manual "Re-run benchmarks" click is
+   queued on the controller and delivered in the heartbeat response, because
+   the agent polls and has no inbound HTTP surface. The agent then runs
+   `python -m tinyagentos.benchmark.runner` as a subprocess (one run at a time,
+   at most three attempts per request), and posting the results clears the
+   queue entry. See `tinyagentos/worker/benchmark_pull.py`.
 
 ## Standalone binaries
 

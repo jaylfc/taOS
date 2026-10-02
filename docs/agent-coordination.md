@@ -1739,6 +1739,46 @@ registrations and heartbeats.
   silently** when the controller stops echoing generation; a silent pass
   would disarm this protection permanently without anyone seeing it.
 
+## Queued worker benchmark runs (admin-only trigger, heartbeat delivery)
+
+Route modules `tinyagentos/routes/benchmarks.py` (queue + read) and
+`tinyagentos/routes/cluster.py` (delivery); worker side
+`tinyagentos/worker/benchmark_pull.py`.
+
+The worker agent is a poller -- it has no inbound HTTP surface -- so the
+controller cannot push a job to it. A manual benchmark run is therefore
+*queued* and handed over in the heartbeat response:
+
+- `POST /api/workers/{id}/benchmark` (admin-only; optional body
+  `{"force": bool}`) queues a run for one worker and answers `202` with
+  `{"status": "queued", "worker_id", "requested_at", "force"}`. It answers
+  `404` for a worker the controller does not know, and `409` when the worker is
+  not online or a run is already queued -- the "already queued" decision is made
+  inside the single queue write (one conditional upsert), so two concurrent
+  clicks cannot both queue a run; `force: true` replaces the queued run rather
+  than stacking a second one behind it.
+- `POST /api/cluster/heartbeat` echoes the queued run back as
+  `"benchmark_request": {"worker_id", "requested_at", "force"} | null`. The
+  request keeps being delivered until the worker reports results, which is what
+  retries a run that died with the worker mid-suite, and it expires after
+  fifteen minutes so a stale click is never resurrected.
+- Results land on `POST /api/workers/{id}/benchmark/results`. That endpoint is
+  append-only (a re-run adds rows; it never rewrites the first-join baseline),
+  and it clears the queue entry **only when the report names it**: the runner
+  echoes the entry's `requested_at` back as `request_id` (`--request-id`), and
+  the controller clears on a match — the match is part of the `DELETE`
+  statement, so it cannot race a click that replaced the row in between.
+  Clearing by worker id alone would swallow a click made while an earlier run
+  was still working.
+- `GET /api/workers/{id}/benchmark` exposes the queue state as `pending`, which
+  the Cluster app uses to say "waiting for the worker's next heartbeat".
+
+Both the queue and the read side are session surfaces: the trigger is admin-only
+and there is no agent scope for it. Nothing re-runs automatically -- the
+first-attach run in `scripts/install-worker.sh` is still the only automatic one,
+and a manual run reuses the exact same
+`tinyagentos/benchmark/runner.py` code path.
+
 ## Answering a select decision with free text (`other_value`)
 
 Route module `tinyagentos/routes/decisions.py`. Applies to BOTH answer paths:

@@ -11,8 +11,10 @@ and how to interpret the output.
 - **First join**: automatically, once, immediately after registration.
   The worker runs the benchmark as a background task so registration
   itself never blocks.
-- **Manual re-run**: the Workers page exposes a "Run benchmark" button
-  per worker. This is the only way to re-run on existing hardware.
+- **Manual re-run**: the Cluster app's worker panel has a "Re-run
+  benchmarks" button, and `POST /api/workers/<id>/benchmark` does the
+  same thing headlessly. This is the only way to re-run on existing
+  hardware.
 - **Never auto-reruns**: benchmark results persist across worker
   restarts. Hardware does not change, so the numbers don't either.
 
@@ -44,51 +46,48 @@ the real user path instead.
 
 ## Where the results are stored
 
-Controller-side, under `data/worker_benchmarks.json` (runtime-generated;
-the controller writes it when workers report benchmark results; `data/` is
-runtime state and is not tracked in git):
+Controller-side, in `data/benchmarks.db` (`tinyagentos/benchmark/store.py`,
+`data/` is runtime state and is not tracked in git). One row per
+`(worker_id, capability, model, metric, measured_at)`:
 
-```json
-{
-  "taos-debian-cuda": {
-    "ran_at": "2026-04-11T22:14:03Z",
-    "backend": "llama-cpp",
-    "model": "qwen3.5-9b-q4_k_m",
-    "prompt_tps": 912.3,
-    "decode_tps": 56.3,
-    "time_to_first_token_ms": 284,
-    "max_context_tested": 131072,
-    "kv_cache_quant_k": "q8_0",
-    "kv_cache_quant_v": "turbo3",
-    "kv_cache_quant_boundary_layers": 0
-  }
-}
+```text
+worker_id | capability | model | metric          | value | unit  | status | first_join | measured_at
+pi4       | llm-chat   | qwen3 | tokens_per_sec  | 42.5  | tok/s | ok     | 1          | 1775000000.0
 ```
 
-The file is append-only per worker name. Re-running overwrites the
-previous entry for that worker.
+The table is **append-only**: a re-run inserts new rows and never updates or
+deletes an earlier measurement, so the first-join baseline stays available for
+comparison forever. `first_join` marks the one automatic run; every later run
+carries `0`. Exactly one `first_join=1` row per worker can exist — a worker
+that re-posts `first_join=true` has it coerced to a manual run.
+
+`GET /api/workers/<id>/benchmark` returns `latest` (newest row per capability +
+model), `history` (every recorded run, newest first) and `pending` (the queued
+manual run, if one is waiting for the worker's next heartbeat).
 
 ## How it shows in the UI
 
-The Workers page displays:
+The Cluster app's worker panel shows a **Benchmarks** card for the selected
+worker:
 
-- Decode t/s as the primary number
-- Prompt t/s and TTFT as secondary
-- Max context as a bar against the highest context in the cluster
-- A KV quant chip showing `K=q8_0 V=turbo3 B=0` when non-default
+- one line per capability + model: the metric, the newest value with its unit,
+  and how long ago that run measured
+- `first run` on the row that came from the automatic first-attach benchmark
+- a "Re-run benchmarks" button, which queues a run and reports it as queued
+  (the worker starts it on its next heartbeat — a few seconds later)
+- a count of recorded measurements and when the last run landed
 
-A separate "Compare" button opens a side-by-side card against any other
-worker in the cluster, useful for deciding where to route a given
-workload.
+Rows whose `status` is not `ok` show the status (`skipped`, `timeout`, `error`)
+in place of a number, so an unmeasurable backend is visible rather than blank.
 
 ## Report format for external consumption
 
-Other tools can fetch `GET /api/cluster/workers/<name>/benchmark` to
-receive the raw JSON above. The scheduler uses this to make placement
-decisions for capability-aware dispatch. Third parties consuming this
-should treat all fields as optional and default missing fields to null
-rather than assume a fixed shape — we add metrics as the backend
-catalog expands.
+Other tools can fetch `GET /api/workers/<id>/benchmark` to receive the raw
+rows (`latest`, `history`, `pending`). The scheduler uses the same store for
+placement decisions for capability-aware dispatch. Third parties consuming
+this should treat all fields as optional and default missing fields to null
+rather than assume a fixed shape — we add metrics as the backend catalog
+expands.
 
 ## Adding new metrics
 
@@ -124,12 +123,18 @@ Tracked in #223.
 
 ## Manual re-run from the CLI
 
-For headless worker hosts, trigger a re-run via:
+For headless worker hosts, queue a re-run via:
 
 ```bash
-curl -X POST http://<controller>:6969/api/cluster/workers/<name>/benchmark
+# The endpoint is admin-only: present a signed-in session (browser/SPA) or the
+# controller's host local token (TAOS_LOCAL_TOKEN).
+curl -X POST http://<controller>:6969/api/workers/<worker-name>/benchmark \
+  -H "Authorization: Bearer $TAOS_LOCAL_TOKEN"
 ```
 
-The endpoint returns immediately with `{"status": "queued"}` and the
-worker runs the benchmark in the background. Watch the Workers page
-for the result to appear a few seconds later.
+The endpoint returns `202 {"status": "queued", ...}` immediately. The worker
+learns about the run from its next heartbeat (about five seconds later), starts
+the suite in the background, and posts the results back — echoing the queue
+entry's id so the controller clears exactly that run. A request without
+`{"force": true}` while a run is already queued answers `409`; pass
+`-d '{"force": true}'` to replace the queued run.

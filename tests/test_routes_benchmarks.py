@@ -23,6 +23,17 @@ def _make_store(**overrides):
     store.leaderboard = AsyncMock(
         return_value=overrides.get("leaderboard", [])
     )
+    # Queued-run surface: the read route reports `pending`, the results route
+    # clears the queue entry, and the trigger writes one.
+    store.get_pending_request = AsyncMock(
+        return_value=overrides.get("get_pending_request", None)
+    )
+    store.request_run = AsyncMock(
+        return_value=overrides.get("request_run", {})
+    )
+    store.clear_pending_request = AsyncMock(
+        return_value=overrides.get("clear_pending_request", False)
+    )
     return store
 
 
@@ -34,6 +45,7 @@ def _report_payload(**overrides):
         "platform": overrides.get("platform", "linux"),
         "suite_name": overrides.get("suite_name", "default"),
         "first_join": overrides.get("first_join", False),
+        "request_id": overrides.get("request_id", None),
         "results": overrides.get("results", [
             {
                 "task_id": "task-1",
@@ -272,3 +284,82 @@ async def test_get_capability_leaderboard_empty(client, app):
     assert r.status_code == 200
     data = r.json()
     assert data["entries"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_worker_benchmarks_reports_the_queued_run(client, app):
+    """A queued manual run is visible on the read API so the UI can say so."""
+    store = _make_store(
+        get_pending_request={"worker_id": "w1", "requested_at": 1700000000.0, "force": False}
+    )
+    app.state.benchmark_store = store
+
+    r = await client.get("/api/workers/w1/benchmark")
+    assert r.status_code == 200
+    assert r.json()["pending"]["requested_at"] == 1700000000.0
+
+
+@pytest.mark.asyncio
+async def test_post_results_clears_the_matching_queued_run(client, app):
+    """Results carrying the queued run's id are what tells the controller the
+    click was served. The id goes into the DELETE itself (not a read-then-
+    delete), so the match and the removal are one operation."""
+    store = _make_store(clear_pending_request=True)
+    app.state.benchmark_store = store
+
+    r = await client.post(
+        "/api/workers/w1/benchmark/results",
+        json=_report_payload(worker_id="w1", request_id=1700000000.0),
+    )
+    assert r.status_code == 200
+    store.clear_pending_request.assert_awaited_once_with(
+        "w1", requested_at=1700000000.0
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_results_leaves_a_newer_queued_run_alone(client, app):
+    """An in-flight run's report carries the OLDER id. It is passed through
+    unchanged, and the store's conditional DELETE matches nothing -- a run
+    queued while it was working survives."""
+    store = _make_store()
+    app.state.benchmark_store = store
+
+    r = await client.post(
+        "/api/workers/w1/benchmark/results",
+        json=_report_payload(worker_id="w1", request_id=1700000000.0),
+    )
+    assert r.status_code == 200
+    assert r.json()["recorded"] == 1
+    # The route never clears by worker id alone: it always names the run, and
+    # it names the report's own (older) id, so the store's conditional DELETE
+    # leaves any newer queued run in place.
+    store.clear_pending_request.assert_awaited_once_with(
+        "w1", requested_at=1700000000.0
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_results_without_a_request_id_keeps_the_queue(client, app):
+    """The first-attach run (and a hand-run CLI) serves no queue entry, so it
+    clears nothing."""
+    store = _make_store()
+    app.state.benchmark_store = store
+
+    r = await client.post("/api/workers/w1/benchmark/results", json=_report_payload(worker_id="w1"))
+    assert r.status_code == 200
+    store.clear_pending_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_results_without_recorded_rows_keeps_the_queue(client, app):
+    """An empty report must not consume the queued run."""
+    store = _make_store()
+    app.state.benchmark_store = store
+
+    r = await client.post(
+        "/api/workers/w1/benchmark/results",
+        json=_report_payload(worker_id="w1", request_id=1700000000.0, results=[]),
+    )
+    assert r.status_code == 200
+    store.clear_pending_request.assert_not_awaited()
