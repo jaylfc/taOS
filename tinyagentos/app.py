@@ -90,7 +90,7 @@ from tinyagentos.agent_image import ensure_all_base_images_present as _ensure_ag
 from tinyagentos.agent_image import is_prefetch_enabled as _is_prefetch_enabled
 from tinyagentos.agent_image import register_prefetch_endpoint
 from tinyagentos.auto_update import AutoUpdateService
-from tinyagentos.restart_orchestrator import RestartOrchestrator, apply_pending_restart_check, resume_agents_from_notes
+from tinyagentos.restart_orchestrator import RestartOrchestrator, apply_pending_restart_check, resume_agents_from_notes, _refresh_agent_host_from_incus, _refresh_agent_host_from_incus
 from tinyagentos.channel_hub.router import MessageRouter
 from tinyagentos.channel_hub.adapter_manager import AdapterManager
 from tinyagentos.chat.message_store import ChatMessageStore
@@ -947,11 +947,21 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             await apply_pending_restart_check(app.state)
         except Exception:
             logger.exception("boot-time pending restart check failed")
-        # Boot-time: resume any agents that have resume notes from a prior shutdown
+        # Boot-time: refresh all agent hosts from Incus to resolve stale IPs after bridge/project moves
         try:
-            await resume_agents_from_notes(app.state)
+            refreshed_count = 0
+            for agent in config.agents:
+                if agent.get("paused", False):
+                    continue
+                try:
+                    if await _refresh_agent_host_from_incus(agent, app.state):
+                        refreshed_count += 1
+                except Exception:
+                    logger.debug("boot-time host refresh failed for agent %s", agent.get("name", ""))
+            if refreshed_count:
+                logger.info(f"boot-time: refreshed {refreshed_count} agent host records from Incus")
         except Exception:
-            logger.exception("boot-time agent resume failed")
+            logger.exception("boot-time agent host refresh failed")
         # Kick off the one-time agent base image import in the background.
         # Only runs when the user has explicitly opted in via
         # TAOS_PREFETCH_BASE_IMAGE=1. Non-fatal — if GitHub is

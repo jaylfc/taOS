@@ -11,6 +11,9 @@ from typing import Literal
 import httpx
 
 from tinyagentos.atomic_io import atomic_write_text
+from tinyagentos.config import save_config_locked
+from tinyagentos.agent_db import find_agent
+from tinyagentos.containers import list_containers, get_container_state
 
 logger = logging.getLogger(__name__)
 
@@ -476,6 +479,74 @@ def _load_or_synthesize_note(note_path: Path) -> dict:
     }
 
 
+async def _refresh_agent_host_from_incus(agent: dict, app_state) -> bool:
+    """Refresh an agent's host from its current container runtime via Incus.
+    
+    Uses the agent's Incus project (if any) instead of the default project.
+    Returns True if the host was updated, False if it wasn't changed or failed.
+    """
+    name = agent["name"]
+    
+    # Get the current agent record from config
+    current_agent = find_agent(app_state.config, name)
+    
+    if not current_agent:
+        logger.debug("refresh host: agent %s not found in config", name)
+        return False
+    
+    # Get the container name
+    container_name = f"taos-agent-{name}"
+    
+    try:
+        # First try to get the container state to find the project
+        container_state = await get_container_state(container_name)
+        project = container_state.get("project") if container_state else None
+        
+        # If we have the project, use --project flag when listing
+        if project:
+            logger.debug("refresh host: found agent %s in project %s", name, project)
+        else:
+            logger.debug("refresh host: agent %s project not found (will use default)", name)
+            project = "default"
+        
+        # Use list_containers with --all-projects to search across all projects
+        all_containers = await list_containers("taos-agent-")
+        
+        # Find our container in the list
+        container_info = None
+        for c in all_containers:
+            if c.name == container_name:
+                container_info = c
+                break
+        
+        if not container_info or not container_info.ip:
+            logger.debug("refresh host: container %s not found or has no IP (project=%s)", 
+                        container_name, project)
+            return False
+        
+        current_ip = container_info.ip
+        stored_host = current_agent.get("host", "")
+        
+        if current_ip == stored_host:
+            logger.debug("refresh host: agent %s host unchanged (%s)", name, current_ip)
+            return False
+        
+        logger.info("refresh host: agent %s host changed: %s -> %s (project=%s)", 
+                   name, stored_host, current_ip, project)
+        
+        # Update the agent record
+        current_agent["host"] = current_ip
+        
+        # Save the updated config
+        await save_config_locked(app_state.config, app_state.config.config_path)
+        
+        return True
+        
+    except Exception as exc:
+        logger.warning("refresh host: failed to refresh host for agent %s: %s", name, exc)
+        return False
+
+
 async def _post_resume(host: str, port: int, note: dict) -> bool:
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -548,6 +619,12 @@ async def resume_agents_from_notes(app_state) -> None:
             finalize.append((agent, note_path))
             resumed.append(name)
         else:
+            # Refresh agent host from Incus before retrying
+            # This resolves stale IPs when containers move between bridges/projects
+            host_refreshed = await _refresh_agent_host_from_incus(agent, app_state)
+            # Log if host was refreshed to help diagnose issues
+            if host_refreshed:
+                logger.debug("resume: agent %s host refreshed from Incus", name)
             pending.append(name)
 
     if pending:
