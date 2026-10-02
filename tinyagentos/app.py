@@ -1862,6 +1862,17 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     # Register all routers (extracted to routes/register_all_routers)
     from tinyagentos.routes import register_all_routers
+    # Device TLS cert: generate on first boot, persist under data dir (0600).
+    # The fingerprint is served to pairing devices so they can pin it.
+    try:
+        from tinyagentos.device_tls import load_or_create_device_tls_cert
+        _cert_path, _key_path, _tls_fp = load_or_create_device_tls_cert(data_dir)
+        app.state.device_tls_cert_path = _cert_path
+        app.state.device_tls_key_path = _key_path
+        app.state.device_tls_fingerprint = _tls_fp
+    except Exception:
+        logger.exception("device TLS cert could not be created")
+
     register_all_routers(app)
 
     # Agent base image prefetch status endpoint

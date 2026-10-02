@@ -156,6 +156,7 @@ async def create_pair_request(request: Request, body: CreatePairRequest):
     # THIS pair_request (F2) so a racing attacker's request cannot ride the
     # victim's approval.  Approval is surfaced through Decisions exactly like the
     # agent consent loop -- no taOSgo-specific shortcut (F7).
+    _fingerprint = getattr(request.app.state, "device_tls_fingerprint", None)
     admin_id = _admin_user_id(request)
     decision_store = getattr(request.app.state, "decision_store", None)
     if decision_store is not None and admin_id:
@@ -173,6 +174,7 @@ async def create_pair_request(request: Request, body: CreatePairRequest):
                     SERVER_RAISED_KEY: True,
                     "kind": "device_pairing",
                     "pair_request_id": pair_request_id,
+                    **({"server_cert_fingerprint": _fingerprint} if _fingerprint else {}),
                 },
                 context=(
                     f"Pairing request from {body.platform} device "
@@ -199,7 +201,11 @@ async def create_pair_request(request: Request, body: CreatePairRequest):
                 pass
 
     # F3 / criterion 5: verify_code is returned ONLY here -- never on the poll.
-    return {"pair_request_id": pair_request_id, "verify_code": verify_code}
+    result: dict = {"pair_request_id": pair_request_id, "verify_code": verify_code}
+    _fingerprint = getattr(request.app.state, "device_tls_fingerprint", None)
+    if _fingerprint:
+        result["server_cert_fingerprint"] = _fingerprint
+    return result
 
 
 @router.get("/api/devices/pair-requests/{pair_request_id}")
