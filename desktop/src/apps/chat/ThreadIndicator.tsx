@@ -14,7 +14,7 @@ export function ThreadIndicator({
   return (
     <button
       onClick={onOpen}
-      className="mt-1 px-2 py-0.5 text-xs text-sky-200 hover:bg-white/5 rounded"
+      className="mt-1 px-2 py-0.5 text-xs text-sky-200 hover:bg-shell-surface-hover rounded"
       aria-label="Open thread"
     >{label}</button>
   );

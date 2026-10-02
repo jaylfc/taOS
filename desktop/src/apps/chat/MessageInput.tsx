@@ -120,7 +120,7 @@ export function MessageInput({
             <div
               role="listbox"
               aria-label="Mention a member"
-              className="absolute bottom-full left-0 mb-2 w-full max-w-md bg-shell-surface border border-white/10 rounded-lg shadow-xl max-h-60 overflow-y-auto text-sm"
+              className="absolute bottom-full left-0 mb-2 w-full max-w-md bg-shell-surface border border-shell-border-strong rounded-lg shadow-xl max-h-60 overflow-y-auto text-sm"
             >
               {mentionCandidates.map((slug, i) => (
                 <button
@@ -133,10 +133,10 @@ export function MessageInput({
                     onInsertMention(slug);
                   }}
                   className={`w-full text-left px-3 py-1.5 flex items-center gap-2 ${
-                    i === mentionSel ? "bg-white/10" : "hover:bg-white/5"
+                    i === mentionSel ? "bg-shell-border-strong" : "hover:bg-shell-surface-hover"
                   }`}
                 >
-                  <AtSign size={13} className="text-white/40" aria-hidden="true" />
+                  <AtSign size={13} className="text-shell-text-tertiary" aria-hidden="true" />
                   <span className="font-mono text-[13px]">@{slug}</span>
                 </button>
               ))}
