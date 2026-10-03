@@ -102,12 +102,11 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
 
     # Route through appropriate handler based on provider
     if route.provider == "anthropic":
-        api_key = await resolve_api_key(state, route.api_key_ref)
         principal = caller.caller_id
         if body.get("stream"):
             from fastapi.responses import StreamingResponse
             from tinyagentos.llm_gateway.anthropic import chat_completion_stream_anthropic
-            gen = chat_completion_stream_anthropic(routes, body, api_key, principal, state)
+            gen = chat_completion_stream_anthropic(routes, body, principal, state)
             try:
                 first = await gen.__anext__()
             except StopAsyncIteration:
@@ -121,6 +120,7 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
                     yield chunk
 
             return StreamingResponse(_full(), media_type="text/event-stream", headers={"cache-control": "no-cache"})
+        api_key = await resolve_api_key(state, route.api_key_ref)
         return JSONResponse(await chat_completion_anthropic(routes, body, api_key, principal, state))
 
     # Default to OpenAI-compatible handler
