@@ -108,13 +108,14 @@ class DecisionStore(BaseStore):
 
         # tsk-5dulr5: asker-side withdraw columns, added after initial ship.
         # Same guarded-ALTER pattern so existing databases gain them in place.
-        for col, decl in (
-            ("withdraw_reason", "TEXT"),
-            ("withdrawn_at", "REAL"),
-            ("withdrawn_by", "TEXT"),
-        ):
-            if col not in cols:
-                await self._db.execute(f"ALTER TABLE decisions ADD COLUMN {col} {decl}")
+        # Literal statements, one per column: the schema-column guard matches
+        # each ALTER by text and cannot see through an f-string loop.
+        if "withdraw_reason" not in cols:
+            await self._db.execute("ALTER TABLE decisions ADD COLUMN withdraw_reason TEXT")
+        if "withdrawn_at" not in cols:
+            await self._db.execute("ALTER TABLE decisions ADD COLUMN withdrawn_at REAL")
+        if "withdrawn_by" not in cols:
+            await self._db.execute("ALTER TABLE decisions ADD COLUMN withdrawn_by TEXT")
         if not {"withdraw_reason", "withdrawn_at", "withdrawn_by"} <= cols:
             await self._db.commit()
 
